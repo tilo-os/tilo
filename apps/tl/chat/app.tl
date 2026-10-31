@@ -157,14 +157,14 @@ view sidebar(all: Channels) {
                         c: Category => {
                             ui.NavSection(c.name, collapsible: true) {
                                 for ch in c.channels {
-                                    ui.NavItem("{c.name}/{ch.name}", ch.name, icon: .hash, item: ch) {
+                                    ui.NavItem("{c.name}/{ch.name}", ch.name, icon: .hash, item: ch, mentions: mentions(ch)) {
                                         on select: set(shown, "{c.name}/{ch.name}").then(open(ch))
                                     }
                                 }
                             }
                         }
                         ch: TextChannel => {
-                            ui.NavItem("/{ch.name}", ch.name, icon: .hash, item: ch) {
+                            ui.NavItem("/{ch.name}", ch.name, icon: .hash, item: ch, mentions: mentions(ch)) {
                                 on select: set(shown, "/{ch.name}").then(open(ch))
                             }
                         }
@@ -193,7 +193,7 @@ view channel(c: TextChannel) {
     lens replying: Option<Message> = .none
     lens editing: Option<Message> = .none
     lens revised: RichText = RichText("")
-    std.transcript(c, c.messages) { m ->
+    std.transcript(c, c.messages, unread: first_unseen(c)) { m ->
         channel_message(c, m, replying, editing, revised)
         composer: {
             composer(c, draft, replying, "Message #{c.name}")

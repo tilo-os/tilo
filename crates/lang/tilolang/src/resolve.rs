@@ -203,6 +203,10 @@ pub struct Presentation {
     /// `on: n.pinned`: whether the state it toggles is on, read where the action is applied: a
     /// button for it shows as toggled.
     pub on: Option<Expr>,
+    /// `key: "e"`: the plain key that runs the action while its window has the keyboard, and
+    /// (on a row's action) while that row is selected. Read through the person's keymap, never
+    /// as a key code, so it is layout-correct on any keyboard.
+    pub key: Option<String>,
 }
 
 /// `new_note` as "New note".
@@ -574,6 +578,7 @@ impl Env {
                 label_text: None,
                 icon_when: None,
                 on: None,
+                key: a.key.clone(),
             };
             add(
                 CKind::Action,
@@ -1929,6 +1934,7 @@ impl Resolver<'_> {
             label_text: None,
             icon_when: None,
             on: None,
+            key: None,
         };
         let mut seen: Vec<&str> = Vec::new();
         for opt in &a.opts {
@@ -1973,10 +1979,28 @@ impl Resolver<'_> {
                     "`label:` takes text in quotes, without `{ }`, such as `label: \"New note\"`, or an `if` over the subject: `label: if n.pinned { \"Unpin\" } else { \"Pin\" }`",
                 ),
                 ("on", _) => out.on = Some(opt.value.clone()),
+                // `key: "e"`: one plain key, read through the person's keymap.
+                ("key", ExprKind::Str(_)) if plain_text(&opt.value).is_some() => {
+                    let key = plain_text(&opt.value).unwrap_or_default();
+                    if key.chars().count() != 1 || key.chars().any(char::is_whitespace) {
+                        self.err(
+                            "E090",
+                            opt.value.span,
+                            "`key:` takes one character, the key pressed on its own: `key: \"e\"`, `key: \"/\"`",
+                        );
+                    } else {
+                        out.key = Some(key);
+                    }
+                }
+                ("key", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`key:` takes one character in quotes, without `{ }`: `key: \"e\"`",
+                ),
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("an action takes the options `icon:`, `label:` and `on:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                    format!("an action takes the options `icon:`, `label:`, `on:` and `key:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
                 ),
             }
         }

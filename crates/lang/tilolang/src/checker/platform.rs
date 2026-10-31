@@ -155,6 +155,82 @@ impl Checker<'_> {
         Ex::host(Imp::Lenses, vec![r], Ty::List(Box::new(host_ty("Lens"))))
     }
 
+    /// The collection `c` holds and the type of its items, which a fact about a conversation
+    /// reads: a channel and its messages.
+    fn conversation_of(&mut self, what: &str, c: &Ex, span: Span) -> Option<(String, TypeKey)> {
+        let Ty::Record(key) = &c.ty else {
+            return None;
+        };
+        let env = self.env;
+        let found = env.type_info(key).and_then(|info| {
+            info.fields.iter().find_map(|f| match &f.ty {
+                Ty::Collection(item) => match &**item {
+                    Ty::Record(item) => Some((f.clone(), item.clone())),
+                    _ => None,
+                },
+                _ => None,
+            })
+        });
+        let Some((field, item)) = found else {
+            let name = key.name.clone();
+            self.err(
+                "E020",
+                span,
+                format!(
+                    "`{what}` takes a resource holding a collection of records; `{name}` holds none"
+                ),
+            );
+            return None;
+        };
+        Some((field.name, item))
+    }
+
+    /// `first_unseen(c)`: the first item of `c`'s own collection that the person looking has
+    /// not seen, oldest first (a conversation's first unread message), or `.none` when nothing
+    /// of it is unseen. Read from `c`'s versions and the person's seen mark of it, so a
+    /// transcript draws its "new messages" divider where reading left off without counting
+    /// anything. A view that reads it runs again when `c` moves or its mark does.
+    pub(super) fn builtin_first_unseen(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(c) = self.resource_arg("first_unseen", args, span) else {
+            return Ex::error();
+        };
+        let Some((field, item)) = self.conversation_of("first_unseen", &c, span) else {
+            return Ex::error();
+        };
+        let id = self
+            .env
+            .type_info(&item)
+            .map(|info| info.id.clone())
+            .unwrap_or_default();
+        Ex::host(
+            Imp::FirstUnseen,
+            vec![c, Ex::str(&field), Ex::str(&id)],
+            Ty::Option(Box::new(Ty::Record(item))),
+        )
+    }
+
+    /// `mentions(c)`: how many of `c`'s items name the person looking, that they have not seen:
+    /// a channel's mention count beside its unread count (`unseen(c)`), from the same versions
+    /// and seen mark, so a caught-up channel counts none without reading a message.
+    pub(super) fn builtin_mentions(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(c) = self.resource_arg("mentions", args, span) else {
+            return Ex::error();
+        };
+        let Some((field, item)) = self.conversation_of("mentions", &c, span) else {
+            return Ex::error();
+        };
+        let id = self
+            .env
+            .type_info(&item)
+            .map(|info| info.id.clone())
+            .unwrap_or_default();
+        Ex::host(
+            Imp::Mentions,
+            vec![c, Ex::str(&field), Ex::str(&id)],
+            Ty::Int,
+        )
+    }
+
     /// `delivery(r)`: how the outside effect `r`'s actions queued last stands (sending a mail),
     /// `.none` when they queued none: waiting to go online, sending, sent, rejected with the
     /// service's reason, or outcome unknown. A view that reads it runs again when it moves.

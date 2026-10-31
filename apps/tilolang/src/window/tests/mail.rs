@@ -561,15 +561,28 @@ fn the_window_wakes_when_a_held_message_is_due() {
     hold_for(&mut room, 600);
     let draft = sent_reply(&mut room, "Launch plan");
     room.settle();
-    // The window waits for the moment the message is due, not for nothing.
+    // The window waits for something that is not nothing: the moment the message is due, or
+    // the minute the inbox's snooze filter next reads differently.
     let wait = room
         .window
         .instance()
         .wakes_in()
         .expect("a held message sets the window's next wake");
     assert!(
-        wait > std::time::Duration::from_secs(500),
-        "it waits for the hold: {wait:?}"
+        wait <= std::time::Duration::from_secs(610),
+        "it waits no longer than the hold: {wait:?}"
+    );
+    let held = room
+        .window
+        .instance()
+        .host()
+        .expect("the host")
+        .runtime()
+        .held_for()
+        .expect("the message is held");
+    assert!(
+        held > std::time::Duration::from_secs(500),
+        "the message is held for the person's hold: {held:?}"
     );
     assert_eq!(delivery_of(&room, &draft).unwrap().0, "held");
 }
@@ -1002,6 +1015,403 @@ fn conversation_titles(room: &mut Room, of: &ResourceRef) -> Vec<String> {
     let mut texts = Vec::new();
     texts_in(view.tree(), &mut texts);
     texts
+}
+
+/// How many conversations the account's window says its inbox holds now: what its own filter
+/// counts, as its header shows it.
+fn inbox_count(room: &Room, account: &ResourceRef) -> Option<i64> {
+    let view = room
+        .host()
+        .open_resource(account, None)
+        .expect("the account's window opens");
+    count_in(view.tree(), "ui.NavShell")
+}
+
+/// The `overview_count` prop of the first node of `kind`.
+fn count_in(node: &tilolang_tilo::runtime::UiNode, kind: &str) -> Option<i64> {
+    if node.kind == kind
+        && let Some(tilolang_tilo::runtime::Value::Int(n)) = node.props.get("overview_count")
+    {
+        return Some(*n);
+    }
+    node.children.iter().find_map(|c| count_in(c, kind))
+}
+
+/// The wall clock at `hour:minute:second` on `day` of 2026, in the zone this process reads as
+/// the person's.
+fn local(month: u32, day: u32, (hour, minute, second): (u32, u32, u32)) -> ui::time::SystemTime {
+    use chrono::TimeZone as _;
+    let at = chrono::Local
+        .with_ymd_and_hms(2026, month, day, hour, minute, second)
+        .earliest()
+        .expect("the time exists where the person is");
+    let ms = u64::try_from(at.timestamp_millis()).expect("after 1970");
+    ui::time::UNIX_EPOCH
+        .checked_add(ui::time::Duration::from_millis(ms))
+        .expect("the clock reaches it")
+}
+
+/// A mail window pinned to a fixed wall clock, as a test reads a snooze's moment.
+fn room_at(at: ui::time::SystemTime, servers: &Servers) -> Room {
+    ui::time::testing::with_wall(at, || {
+        let mut room = room_with(account(servers));
+        synced(&mut room);
+        room
+    })
+}
+
+// USER REQUIREMENT: snoozing a conversation takes it out of the inbox until a moment, and it
+// comes back then with no window open.
+#[test]
+fn snoozing_takes_a_conversation_out_of_the_inbox_until_its_moment() {
+    use ui::time::testing::with_wall;
+    let _settled = ui::motion::testing::settled();
+    let servers = servers();
+    let mut room = room_at(local(6, 30, (10, 0, 0)), &servers);
+    let account = room.accounts().remove(0);
+    let before = inbox_count(&room, &account).expect("the inbox counts its mail");
+    assert_eq!(
+        before, 2,
+        "the account's two conversations are in the inbox"
+    );
+    let plan = room.thread("Launch plan");
+    let snoozed = with_wall(local(6, 30, (10, 0, 0)), || {
+        room.press(
+            "snooze",
+            vec![
+                RtValue::resource(&plan),
+                RtValue::text("2026-06-30T10:30:00Z"),
+            ],
+        );
+        inbox_count(&room, &account)
+    });
+    assert_eq!(
+        snoozed,
+        Some(before - 1),
+        "a snoozed conversation leaves the inbox"
+    );
+    // The inbox reads the clock (the snooze), so the window wakes at the next minute and the
+    // conversation comes back on its own, with no window open.
+    let wait = room
+        .window
+        .instance()
+        .wakes_in()
+        .expect("a snoozed conversation sets the window's next wake");
+    assert!(
+        wait <= std::time::Duration::from_secs(60),
+        "the window re-reads the time within a minute: {wait:?}"
+    );
+    // The moment passes with no window open: the conversation is in the inbox again.
+    let shown = with_wall(local(6, 30, (10, 31, 0)), || {
+        room.settle();
+        inbox_count(&room, &account)
+    });
+    assert_eq!(
+        shown,
+        Some(before),
+        "back in the inbox once its moment passed"
+    );
+    assert_eq!(
+        with_wall(local(6, 30, (10, 31, 0)), || {
+            room.press("unsnooze", vec![RtValue::resource(&plan)]);
+            inbox_count(&room, &account)
+        }),
+        Some(before),
+        "brought back, it is in the inbox again"
+    );
+}
+
+// USER REQUIREMENT: labels are the person's own; a label is given and taken away, and each
+// label is a place of its own that narrows the list to the conversations that carry it.
+#[test]
+fn a_label_is_given_taken_away_and_lists_its_own_conversations() {
+    let servers = servers();
+    let mut room = room_with(account(&servers));
+    synced(&mut room);
+    let plan = room.thread("Launch plan");
+    room.press(
+        "label",
+        vec![
+            RtValue::resource(&plan),
+            RtValue::text("Work"),
+            RtValue::Bool(true),
+        ],
+    );
+    let labels = room.read(&plan, "labels");
+    assert!(
+        matches!(&labels, RtValue::List(items) if items.iter().any(|l| l == &RtValue::text("Work"))),
+        "the label is on the conversation: {labels:?}"
+    );
+    // The label is the person's own: the root holds it, so it is a place from then on.
+    let root = room.host().root_of(APP).expect("the root");
+    let named: Vec<String> = room
+        .refs(&root, "labels")
+        .iter()
+        .map(|l| room.text(l, "name"))
+        .collect();
+    assert_eq!(named, ["Work"], "the person's labels hold it once");
+
+    // Its place narrows the window to the conversation that carries it.
+    let account = room.accounts().remove(0);
+    let mut view = room
+        .host()
+        .open_resource(&account, None)
+        .expect("the account's window opens");
+    let item = find_kind(view.tree(), "ui.NavItem", "label", "Work")
+        .expect("the sidebar offers the label")
+        .key
+        .clone();
+    view.fire(&item, "select").expect("the label's place opens");
+    view.poll_patches().expect("the window shows the label");
+    assert_eq!(
+        count_in(view.tree(), "ui.NavShell"),
+        Some(1),
+        "only the conversation with the label is listed"
+    );
+
+    // Taken away, the conversation no longer carries it.
+    room.press(
+        "label",
+        vec![
+            RtValue::resource(&plan),
+            RtValue::text("Work"),
+            RtValue::Bool(false),
+        ],
+    );
+    let labels = room.read(&plan, "labels");
+    assert!(
+        !matches!(&labels, RtValue::List(items) if items.iter().any(|l| l == &RtValue::text("Work"))),
+        "the label is gone: {labels:?}"
+    );
+}
+
+/// The first node of `kind` whose prop `name` is `value`.
+fn find_kind<'a>(
+    node: &'a tilolang_tilo::runtime::UiNode,
+    kind: &str,
+    name: &str,
+    value: &str,
+) -> Option<&'a tilolang_tilo::runtime::UiNode> {
+    if node.kind == kind
+        && matches!(node.props.get(name), Some(tilolang_tilo::runtime::Value::Text(t)) if t == value)
+    {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_kind(child, kind, name, value))
+}
+
+// USER REQUIREMENT: a muted conversation stays out of the inbox while new messages keep coming,
+// and is found under Muted until it is brought back, as Gmail mutes a busy thread.
+#[test]
+fn muting_keeps_a_conversation_out_of_the_inbox_until_it_is_brought_back() {
+    let servers = servers();
+    let mut room = room_with(account(&servers));
+    synced(&mut room);
+    let account = room.accounts().remove(0);
+    let before = inbox_count(&room, &account).expect("the inbox counts its mail");
+    let plan = room.thread("Launch plan");
+    room.press("mute", vec![RtValue::resource(&plan)]);
+    assert!(room.flag(&plan, "muted"));
+    assert_eq!(
+        inbox_count(&room, &account),
+        Some(before - 1),
+        "a muted conversation leaves the inbox"
+    );
+    // New mail in it does not bring it back: with it unread again, as a new message leaves it,
+    // it is still out of the inbox.
+    room.press(
+        "mark_read",
+        vec![RtValue::resource(&plan), RtValue::Bool(true)],
+    );
+    assert!(room.flag(&plan, "unread"));
+    assert_eq!(
+        inbox_count(&room, &account),
+        Some(before - 1),
+        "the muted conversation stays out of the inbox while it is answered"
+    );
+    // Its place of its own lists it, so it is not lost.
+    let mut view = room
+        .host()
+        .open_resource(&account, None)
+        .expect("the account's window opens");
+    let muted = find_kind(view.tree(), "ui.NavItem", "label", "Muted")
+        .expect("the sidebar offers Muted")
+        .key
+        .clone();
+    view.fire(&muted, "select").expect("Muted opens");
+    view.poll_patches().expect("the window shows Muted");
+    assert_eq!(
+        count_in(view.tree(), "ui.NavShell"),
+        Some(1),
+        "Muted lists the muted conversation"
+    );
+    // The place the window went to is the window's, so it goes back to the inbox before the
+    // list is read again.
+    let inbox = find_kind(view.tree(), "ui.NavItem", "label", "Inbox")
+        .expect("the sidebar offers the inbox")
+        .key
+        .clone();
+    view.fire(&inbox, "select").expect("the inbox opens");
+    // Bringing it back unmutes it: it is in the inbox again.
+    room.press("to_inbox", vec![RtValue::resource(&plan)]);
+    assert!(!room.flag(&plan, "muted"));
+    assert_eq!(
+        inbox_count(&room, &account),
+        Some(before),
+        "brought back, it is in the inbox again"
+    );
+}
+
+// USER REQUIREMENT: each account signs what it writes with the person's own signature, above
+// what a reply quotes, as every mail client does.
+#[test]
+fn a_new_message_and_an_answer_carry_the_accounts_signature() {
+    let servers = servers();
+    let mut room = room_with(account(&servers));
+    synced(&mut room);
+    let account = room.accounts().remove(0);
+    assert_eq!(
+        room.text(&account, "signature"),
+        "",
+        "an account starts without a signature"
+    );
+    room.press(
+        "set_signature",
+        vec![
+            RtValue::resource(&account),
+            RtValue::text("Sam\nhttps://rivera.example"),
+        ],
+    );
+    assert_eq!(
+        room.text(&account, "signature"),
+        "Sam\nhttps://rivera.example"
+    );
+
+    // A new message starts with it.
+    let RtValue::Ref(draft) = room.press("new_message", vec![RtValue::resource(&account)]) else {
+        panic!("a new message is a draft");
+    };
+    assert_eq!(
+        room.text(&(*draft.target).clone(), "body"),
+        "Sam\nhttps://rivera.example",
+        "a new message carries the signature"
+    );
+
+    // An answer puts it over the quotation it answers.
+    hold_for(&mut room, 0);
+    let plan = room.thread("Launch plan");
+    let RtValue::Ref(reply) = room.press("reply", vec![RtValue::resource(&plan)]) else {
+        panic!("a reply is a draft");
+    };
+    let reply = (*reply.target).clone();
+    let body = room.text(&reply, "body");
+    assert!(
+        body.starts_with("Sam\nhttps://rivera.example\n\nOn "),
+        "the signature comes before the quotation: {body:?}"
+    );
+
+    // A message typed in the conversation goes with it, over the quotation too.
+    room.press(
+        "answer",
+        vec![
+            RtValue::resource(&plan),
+            RtValue::text("Thursday suits me."),
+        ],
+    );
+    room.until("the server to take the answer", |_| {
+        servers.smtp.sent().len() == 1
+    });
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    let said = sent
+        .find("Thursday suits me.")
+        .expect("it says what was typed");
+    let signature = sent
+        .find("https://rivera.example")
+        .expect("it carries the signature");
+    let quotation = sent.find("On 2026-").expect("it quotes what it answers");
+    assert!(
+        said < signature && signature < quotation,
+        "the answer, its signature, then what it quotes: {sent}"
+    );
+}
+#[test]
+fn marking_all_read_reads_every_conversation_and_reaches_the_server() {
+    let servers = servers();
+    let mut room = room_with(account(&servers));
+    synced(&mut room);
+    let account = room.accounts().remove(0);
+    room.press("mark_all_read", vec![RtValue::resource(&account)]);
+    for t in room.refs(&account, "threads") {
+        assert!(!room.flag(&t, "unread"), "every conversation is read");
+    }
+    room.until("the server to hold them read", |_| {
+        servers
+            .imap
+            .messages("INBOX")
+            .iter()
+            .all(|m| m.flags.iter().any(|f| f == "\\Seen"))
+    });
+}
+
+// USER REQUIREMENT: a message can go at a moment instead of now, as Gmail's Schedule send does,
+// and until it goes it can be cancelled and is a draft again.
+#[test]
+fn a_message_sent_later_waits_for_its_moment_and_is_cancelled_before_it() {
+    use ui::time::testing::with_wall;
+    let _settled = ui::motion::testing::settled();
+    let servers = servers();
+    let mut room = room_at(local(6, 30, (10, 0, 0)), &servers);
+    hold_for(&mut room, 0);
+    let plan = room.thread("Launch plan");
+    let RtValue::Ref(draft) = room.press("reply", vec![RtValue::resource(&plan)]) else {
+        panic!("a reply is a draft");
+    };
+    let draft = (*draft.target).clone();
+    // Everything up to its cancellation happens at the pinned clock, so the moment it goes is
+    // still ahead: the frame settles without carrying it out.
+    let wait = with_wall(local(6, 30, (10, 0, 0)), || {
+        room.press(
+            "send_later",
+            vec![
+                RtValue::resource(&draft),
+                RtValue::text("2026-06-30T18:00:00Z"),
+            ],
+        );
+        assert!(room.flag(&draft, "sent"), "it is on its way, at a moment");
+        assert_eq!(
+            room.text(&draft, "send_at"),
+            "2026-06-30T18:00:00Z",
+            "the moment is recorded on the message"
+        );
+        assert_eq!(delivery_of(&room, &draft).unwrap().0, "held");
+        assert!(
+            servers.smtp.sent().is_empty(),
+            "a message sent later does not go yet"
+        );
+        // The window waits for its moment, and no longer.
+        room.window
+            .instance()
+            .wakes_in()
+            .expect("a message sent later sets the window's next wake")
+    });
+    assert!(
+        wait <= std::time::Duration::from_secs(8 * 3600 + 60),
+        "it waits until the moment it goes: {wait:?}"
+    );
+    // Cancelled before it goes: it is a draft again, and it never leaves.
+    with_wall(local(6, 30, (10, 1, 0)), || {
+        room.press("cancel_later", vec![RtValue::resource(&draft)]);
+    });
+    assert!(!room.flag(&draft, "sent"), "it is a draft again");
+    assert!(room.flag(&draft, "recalled"));
+    assert_eq!(delivery_of(&room, &draft).unwrap().0, "withdrawn");
+    for _ in 0..20 {
+        room.settle();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(servers.smtp.sent().is_empty(), "it never went");
 }
 
 // USER REQUIREMENT: a conversation must read as a mail client's does — its subject, each

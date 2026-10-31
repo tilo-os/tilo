@@ -22703,6 +22703,7 @@ dependencies = [
  "tilo-app-state",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-desktop-search",
  "tilo-history",
  "tilo-render-protocol",
  "tilo-resource",

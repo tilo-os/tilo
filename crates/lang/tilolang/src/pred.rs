@@ -29,6 +29,11 @@ pub enum Pred<F> {
     /// The field (an identifier, or a set of them) holds one that matches the pattern, `*`
     /// standing for any text (see [`crate::identifier::matches`]).
     Like(F, String),
+    /// The field holds text a person searched for by a word of it: a case-insensitive substring
+    /// match anywhere inside it, so `launch` finds "The launch plan" and "autumn release". This
+    /// is free text as search reads it (`some words`), where [`Like`](Self::Like) is an
+    /// identifier pattern written with `*`.
+    Text(F, String),
     /// The field holds a value: an option that is some, a set with members.
     Present(F),
 }
@@ -251,6 +256,7 @@ impl<F> Pred<F> {
             Self::Cmp(op, a, b) => Pred::Cmp(*op, a.resolve(map)?, b.resolve(map)?),
             Self::Has(f, v) => Pred::Has(map(f)?, v.clone()),
             Self::Like(f, p) => Pred::Like(map(f)?, p.clone()),
+            Self::Text(f, p) => Pred::Text(map(f)?, p.clone()),
             Self::Present(f) => Pred::Present(map(f)?),
         })
     }
@@ -343,7 +349,12 @@ impl<F> Pred<F> {
                     }
                 }
             }
-            Self::Has(field, _) | Self::Like(field, _) | Self::Present(field) => f(field),
+            Self::Has(field, _)
+            | Self::Like(field, _)
+            | Self::Text(field, _)
+            | Self::Present(field) => {
+                f(field);
+            }
         }
     }
 
@@ -407,6 +418,10 @@ impl<F> Pred<F> {
                     .as_text()
                     .is_some_and(|t| crate::identifier::matches(pattern, t)),
             },
+            // Free text matches anywhere inside a text, without regard to case.
+            Self::Text(f, needle) => value(f)?
+                .as_text()
+                .is_some_and(|t| t.to_lowercase().contains(&needle.to_lowercase())),
             Self::Present(f) => match value(f)? {
                 Lit::Absent => false,
                 Lit::Set(members) => !members.is_empty(),

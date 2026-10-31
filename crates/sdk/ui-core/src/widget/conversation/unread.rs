@@ -63,3 +63,101 @@ impl UnreadDividerFace {
         );
     }
 }
+
+/// The divider as a widget, for a list built of widgets: a band across its column with its
+/// label at the trailing end, over the first line the reader had not read.
+///
+/// It is a part of a transcript, never a component an app names: it is not in the toolkit's
+/// catalogue, and `ui.VirtualList(transcript: true)` places it from what the app says is
+/// unread, so every conversation draws the same one.
+#[crate::component::not_a_component(
+    part,
+    "the divider over the first unread line of a transcript, which `ui.VirtualList(transcript: true)` draws"
+)]
+pub struct UnreadDivider {
+    rect: Rect,
+    /// It was drawn, and shows the same since: a divider never changes, so it repaints only
+    /// where it moved.
+    drawn: bool,
+}
+
+impl UnreadDivider {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            rect: Rect::ZERO,
+            drawn: false,
+        }
+    }
+}
+
+impl Default for UnreadDivider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl crate::widget::Widget for UnreadDivider {
+    fn build_layout(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+    ) -> taffy::NodeId {
+        use crate::widget::TaffyTreeExt as _;
+        let style = taffy::Style {
+            size: taffy::Size {
+                width: taffy::style_helpers::percent(1.0_f32),
+                height: taffy::style_helpers::length(crate::num::f32_of_f64(Self::height(theme))),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    crate::rect_geometry!();
+
+    fn draw(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
+        if presence.should_cull(self.rect) {
+            return;
+        }
+        UnreadDividerFace::paint(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            self.rect,
+            self.rect.x0,
+            self.rect.x1,
+        );
+    }
+
+    fn name(&self) -> &'static str {
+        "UnreadDivider"
+    }
+
+    fn needs_redraw(&self) -> bool {
+        !self.drawn
+    }
+
+    fn mark_drawn(&mut self) {
+        self.drawn = true;
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        Some(AccessNode::new(Role::Heading { level: 3 }).with_name(UnreadDividerFace::label()))
+    }
+}
+
+impl UnreadDivider {
+    /// The height a divider takes, in `theme`: the same as the day divider's band.
+    #[must_use]
+    pub fn height(theme: &Theme) -> f64 {
+        UnreadDividerFace::height(theme)
+    }
+}

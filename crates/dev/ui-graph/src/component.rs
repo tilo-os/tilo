@@ -431,6 +431,10 @@ pub struct Offered {
     pub destructive: bool,
     /// Whether the state it toggles is on, when it toggles one.
     pub on: Option<bool>,
+    /// `key: "e"`: the plain key that runs it while its window has the keyboard (and, on a
+    /// row's action, while that row is selected), as the person's keymap spells it. `None` when
+    /// it declares none.
+    pub key: Option<String>,
     /// The event of the instance choosing it fires.
     pub event: String,
 }

@@ -61,6 +61,7 @@ impl MenuPart {
                 icon: item.icon,
                 destructive: item.destructive,
                 checked: item.checked,
+                key: item.key.clone(),
                 choose: item.choose.clone(),
             }),
             Self::Separator => Self::Separator,

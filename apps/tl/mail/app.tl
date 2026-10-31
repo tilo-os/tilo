@@ -9,6 +9,9 @@ type Account (origin: imap.account) {
     name: Text
     trouble: Text
     online: Bool
+    /// What the account's messages end with: the person's own, per account, as every mail
+    /// client signs a message. Empty for none.
+    signature: Text
     mailboxes: Collection<Mailbox>
     threads: Collection<Thread>
 }
@@ -35,10 +38,21 @@ type Thread (origin: imap.thread) {
     flagged: Bool
     boxes: Set<Text>
     messages: Collection<Message>
+    /// The labels people gave it (Gmail's and Fastmail's): the person's own, never the server's.
+    labels: Set<Text>
+    /// Snoozed until this moment: out of the inbox until then, and back once it has come, with
+    /// no window open. The epoch when it is not snoozed.
+    snoozed_until: Time = Time("1970-01-01T00:00:00Z")
+    /// Muted: the conversation stays out of the inbox while new messages keep coming, as a
+    /// busy conversation is silenced, and it is still found under Muted and All mail.
+    muted: Bool = false
 
     search {
-        filter "Inbox" = boxes.contains("inbox") (icon: .inbox)
+        filter "Inbox" = boxes.contains("inbox") and snoozed_until <= now and not muted (icon: .inbox)
+        filter "Snoozed" = snoozed_until > now (icon: .clock)
+        filter labels (icon: .tag)
         filter flagged "Flagged" (icon: .flag)
+        filter muted "Muted" (icon: .bell_off)
         filter "Sent" = boxes.contains("sent") (icon: .send)
         filter "Archive" = boxes.contains("archive") (icon: .archive)
         filter "Junk" = boxes.contains("junk") (icon: .shield)
@@ -48,6 +62,16 @@ type Thread (origin: imap.thread) {
         hide key
         hide account
         hide boxes
+    }
+}
+
+/// A label the person gave their conversations: their own, never the server's, as Gmail's and
+/// Fastmail's are. A conversation holds its labels by name, so giving one twice makes it once.
+type Label {
+    name: Text (title)
+
+    search {
+        sort name a_z
     }
 }
 
@@ -96,10 +120,12 @@ type Draft {
     }
 }
 
-/// The person's mail: the accounts the workspace's settings hold, and what they are writing.
+/// The person's mail: the accounts the workspace's settings hold, what they are writing, and
+/// the labels they gave their conversations.
 type Mail {
     accounts: Collection<Account>
     drafts: Collection<Draft>
+    labels: Collection<Label>
     /// How many seconds a sent message waits before it goes, so it can be taken back: the
     /// person's setting, ten by default, and what rules out holding it not at all.
     hold: Int = 10
@@ -119,17 +145,38 @@ row view thread_row for Thread
 
 row view draft_row for Draft
 
+/// The signature the account `key` signs its messages with: its own, and empty when it has
+/// none or the account is not one of the person's.
+fn signature_of(m: Mail, key: Text) -> Text {
+    m.accounts.find(a -> a.key == key)?.signature ?? ""
+}
+
+/// `body` with the account's signature over it, as every mail client signs a message: the
+/// signature, a blank line, then what follows it (a quotation). `body` alone when the account
+/// has no signature.
+fn signed(m: Mail, key: Text, body: Text) -> Text {
+    let signature = signature_of(m, key)
+    if signature == "" { body } else { "{signature}{body}" }
+}
+
+/// Sets what the account signs its messages with, or clears it: the person's own, per account.
+action set_signature(a: Account, signature: Text) (icon: .pen_tool, label: "Signature") {
+    a.signature = signature
+}
+
 /// Starts a message from the account.
 primary action new_message(a: Account) -> Draft (icon: .pencil, label: "New message") {
     let m = root Mail
-    m.drafts.insert(Draft(from: a.key))
+    let signature = signature_of(m, a.key)
+    m.drafts.insert(Draft(from: a.key, body: signature))
 }
 
 /// Starts a message from the first account.
 primary action new_draft(m: Mail) -> Draft (icon: .pencil, label: "New message") {
     require not m.accounts.is_empty() "Add a mail account in Settings first"
     let from = m.accounts.first()?.key ?? ""
-    m.drafts.insert(Draft(from: from))
+    let signature = signature_of(m, from)
+    m.drafts.insert(Draft(from: from, body: signature))
 }
 
 /// The subject an answer to a conversation has.
@@ -158,52 +205,52 @@ fn quoted(m: Message) -> Text {
 
 /// Answers the conversation's newest message, to whoever wrote it, quoting it under what is
 /// written.
-primary action reply(t: Thread) -> Draft (icon: .reply) {
+primary action reply(t: Thread) -> Draft (icon: .reply, key: "r") {
     let m = root Mail
     let last = t.messages.last()
-    m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), body: if let l = last { quoted(l) } else { "" }, in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
+    m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), body: signed(m, t.account, if let l = last { quoted(l) } else { "" }), in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
 }
 
 /// Answers the conversation's newest message, to everyone it went to, quoting it.
-action reply_all(t: Thread) -> Draft (icon: .reply_all, label: "Reply all") {
+action reply_all(t: Thread) -> Draft (icon: .reply_all, label: "Reply all", key: "a") {
     let m = root Mail
     let last = t.messages.last()
     m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", cc: if let l = last {
         if l.cc == "" { l.to } else { "{l.to}, {l.cc}" }
-    } else { "" }, subject: re(t.subject), body: if let l = last { quoted(l) } else { "" }, in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
+    } else { "" }, subject: re(t.subject), body: signed(m, t.account, if let l = last { quoted(l) } else { "" }), in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
 }
 
 /// Answers one message of the conversation, to whoever wrote it, quoting it.
 action reply_to(m: Message) -> Draft (icon: .reply) {
     let mail = root Mail
-    mail.drafts.insert(Draft(from: m.account, to: m.from, subject: re(m.subject), body: quoted(m), in_reply_to: m.message_id, references: "{m.references} {m.message_id}"))
+    mail.drafts.insert(Draft(from: m.account, to: m.from, subject: re(m.subject), body: signed(mail, m.account, quoted(m)), in_reply_to: m.message_id, references: "{m.references} {m.message_id}"))
 }
 
 /// Answers one message of the conversation, to everyone it went to but the person answering.
 action reply_all_to(m: Message) -> Draft (icon: .reply_all, label: "Reply all") {
     let mail = root Mail
     let theirs = if m.cc == "" { m.to } else { "{m.to}, {m.cc}" }
-    mail.drafts.insert(Draft(from: m.account, to: m.from, cc: theirs, subject: re(m.subject), body: quoted(m), in_reply_to: m.message_id, references: "{m.references} {m.message_id}"))
+    mail.drafts.insert(Draft(from: m.account, to: m.from, cc: theirs, subject: re(m.subject), body: signed(mail, m.account, quoted(m)), in_reply_to: m.message_id, references: "{m.references} {m.message_id}"))
 }
 
 /// Sends one message of the conversation on, with its sender, when and what it says.
 action forward_message(m: Message) -> Draft (icon: .forward) {
     let mail = root Mail
-    mail.drafts.insert(Draft(from: m.account, subject: "Fwd: {m.subject}", body: "\n\nFrom {m.from_name} <{m.from}> ({m.received}):\n\n> {m.body.replace("\n", "\n> ")}\n"))
+    mail.drafts.insert(Draft(from: m.account, subject: "Fwd: {m.subject}", body: signed(mail, m.account, "\n\nFrom {m.from_name} <{m.from}> ({m.received}):\n\n> {m.body.replace("\n", "\n> ")}\n")))
 }
 
 /// Sends the conversation's newest message on, with its sender and what it says.
-action forward(t: Thread) -> Draft (icon: .forward) {
+action forward(t: Thread) -> Draft (icon: .forward, key: "f") {
     let m = root Mail
     let last = t.messages.last()
     let said = if let l = last {
         "\n\nFrom {l.from_name} <{l.from}> ({l.received}):\n\n> {l.body.replace("\n", "\n> ")}\n"
     } else { "" }
-    m.drafts.insert(Draft(from: t.account, subject: "Fwd: {t.subject}", body: said))
+    m.drafts.insert(Draft(from: t.account, subject: "Fwd: {t.subject}", body: signed(m, t.account, said)))
 }
 
 /// Archives the conversation: its messages leave the inbox.
-action archive(t: Thread) (icon: .archive) {
+action archive(t: Thread) (icon: .archive, key: "e") {
     require t.boxes.any(b -> b == "inbox") "It is not in the inbox"
     for m in t.messages {
         if m.mailbox == "inbox" {
@@ -214,9 +261,10 @@ action archive(t: Thread) (icon: .archive) {
     t.boxes.add("archive")
 }
 
-/// Moves the conversation back to the inbox.
-action to_inbox(t: Thread) (icon: .inbox, label: "Move to inbox") {
-    require not t.boxes.any(b -> b == "inbox") "It is in the inbox"
+/// Moves the conversation back to the inbox, and unmutes it: what a person brings back is what
+/// they want to see again.
+action to_inbox(t: Thread) (icon: .inbox, label: "Move to inbox", key: "i") {
+    require not t.boxes.any(b -> b == "inbox") or t.muted "It is in the inbox"
     for m in t.messages {
         if m.mailbox != "sent" {
             m.mailbox = "inbox"
@@ -226,6 +274,7 @@ action to_inbox(t: Thread) (icon: .inbox, label: "Move to inbox") {
     t.boxes.remove("trash")
     t.boxes.remove("junk")
     t.boxes.add("inbox")
+    t.muted = false
 }
 
 /// Moves the conversation to another mailbox of its account.
@@ -244,7 +293,7 @@ action move_to(t: Thread, to: Mailbox) (label: "Move to…", icon: .folder) {
 }
 
 /// Deletes the conversation: its messages go to the trash.
-destructive action delete(t: Thread) (icon: .trash) {
+destructive action delete(t: Thread) (icon: .trash, key: "#") {
     require not t.boxes.any(b -> b == "trash") "It is in the trash"
     for m in t.messages {
         m.mailbox = "trash"
@@ -257,7 +306,7 @@ destructive action delete(t: Thread) (icon: .trash) {
 }
 
 /// Flags or unflags the conversation.
-action flag(t: Thread, flagged: Bool = not t.flagged) (label: if t.flagged { "Unflag" } else { "Flag" }, icon: .flag, on: t.flagged) {
+action flag(t: Thread, flagged: Bool = not t.flagged) (label: if t.flagged { "Unflag" } else { "Flag" }, icon: .flag, on: t.flagged, key: "s") {
     if let last = t.messages.last() {
         last.flagged = flagged
     }
@@ -269,8 +318,107 @@ action flag(t: Thread, flagged: Bool = not t.flagged) (label: if t.flagged { "Un
     t.flagged = flagged
 }
 
+/// Puts the conversation away until a moment: it leaves the inbox, and comes back once that
+/// moment has come, with no window open. The moment is a field, so it survives closing and
+/// reopening, and an agent snoozes the same way.
+action snooze(t: Thread, until: Time) (icon: .clock, label: "Snooze") {
+    require until > now "Pick a moment still to come"
+    t.snoozed_until = until
+}
+
+/// Puts the conversation away for an hour, the snooze people reach for most.
+action snooze_an_hour(t: Thread) (icon: .clock, label: "Snooze an hour") {
+    snooze(t, now + 1h)
+}
+
+/// Puts the conversation away until tomorrow morning, at nine, in the person's own zone.
+action snooze_until_tomorrow(t: Thread) (icon: .clock, label: "Snooze until tomorrow") {
+    snooze(t, dated("tomorrow 9am", now).at ?? now + 18h)
+}
+
+/// Brings a snoozed conversation back now, whatever its moment was: it is in the inbox again.
+action unsnooze(t: Thread) (icon: .inbox, label: "Bring back") {
+    t.snoozed_until = Time("1970-01-01T00:00:00Z")
+}
+
+/// Gives the conversation a label, or takes one away: `on` says which. The label joins the
+/// person's labels the first time it is given, so it has a filter of its own from then on.
+action label(t: Thread, name: Text, on: Bool = not t.labels.any(l -> l == name)) (icon: .tag) {
+    require name != "" "A label needs a name"
+    let m = root Mail
+    if on { t.labels.add(name) } else { t.labels.remove(name) }
+    if on and not m.labels.any(l -> l.name == name) { m.labels.insert(Label(name: name)) }
+}
+
+/// Renames one of the person's labels, all the conversations that carry it with it.
+action rename_label(m: Mail, l: Label, name: Text) {
+    require name != "" "A label needs a name"
+    require not m.labels.any(x -> x.name == name) "You have a label {name}"
+    for a in m.accounts {
+        for t in a.threads {
+            if t.labels.any(x -> x == l.name) {
+                t.labels.remove(l.name)
+                t.labels.add(name)
+            }
+        }
+    }
+    l.name = name
+}
+
+/// Deletes one of the person's labels, and takes it off every conversation that carries it.
+destructive action delete_label(m: Mail, l: Label) (icon: .trash) {
+    for a in m.accounts {
+        for t in a.threads {
+            if t.labels.any(x -> x == l.name) { t.labels.remove(l.name) }
+        }
+    }
+    m.labels.remove(l)
+}
+
+/// Brings a message back to the outbox: it was sent to go at a moment still to come, and it is
+/// a draft again, whatever the moment.
+action cancel_later(d: Draft) (icon: .undo_2, label: "Cancel scheduled send") {
+    require d.sent and not d.recalled "It is not waiting to go"
+    require delivery(d)?.state != "sent" "It went already"
+    withdraw(d, "Scheduled send cancelled")
+    d.sent = false
+    d.recalled = true
+}
+
+/// Sends the message at a moment instead of now: it waits in the outbox until then, as the
+/// person's hold makes a message wait, and goes with no window open. Until it goes it can be
+/// taken back, and bringing it back leaves it a draft.
+action send_later(d: Draft, at: Time) (icon: .clock, label: "Send later") {
+    require not d.sent or d.recalled "This message went already"
+    require d.to != "" "It goes to nobody yet"
+    require at > now "Pick a moment still to come"
+    outside("smtp.send", (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references), at: at)
+    d.send_at = at
+    d.sent = true
+    d.recalled = false
+}
+
+/// Sends the message at nine tomorrow, the moment people reach for most when they write in the
+/// evening and do not want it to arrive then.
+action send_in_the_morning(d: Draft) (icon: .clock, label: "Send tomorrow morning") {
+    send_later(d, dated("tomorrow 9am", now).at ?? now + 18h)
+}
+
+/// Marks every conversation of the account read.
+action mark_all_read(a: Account) (icon: .mail_open, label: "Mark all read") {
+    for t in a.threads {
+        mark_read(t, false)
+    }
+}
+
+/// Mutes the conversation, or unmutes it: a muted one stays out of the inbox until it is
+/// brought back, whatever its new messages do.
+action mute(t: Thread, muted: Bool = not t.muted) (label: if t.muted { "Unmute" } else { "Mute" }, icon: .bell_off, on: t.muted) {
+    t.muted = muted
+}
+
 /// Marks the conversation read, or unread again.
-action mark_read(t: Thread, unread: Bool = not t.unread) (label: if t.unread { "Mark as read" } else { "Mark as unread" }, icon: .mail_open, on: not t.unread) {
+action mark_read(t: Thread, unread: Bool = not t.unread) (label: if t.unread { "Mark as read" } else { "Mark as unread" }, icon: .mail_open, on: not t.unread, key: "u") {
     if t.unread != unread {
         if unread {
             if let last = t.messages.last() {
@@ -330,7 +478,9 @@ action answer(t: Thread, body: Text) -> Draft (icon: .reply) {
     let m = root Mail
     let last = t.messages.last()
     let said = if let l = last { quoted(l) } else { "" }
-    let d = m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), body: "{body}{said}", in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
+    let signature = signature_of(m, t.account)
+    let lead = if signature == "" { body } else { "{body}\n{signature}" }
+    let d = m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), body: "{lead}{said}", in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
     send(d)
     d
 }
@@ -342,6 +492,18 @@ view compose(d: Draft) {
         text(d.subject, role: .caption)
         text(d.body)
     }
+}
+
+/// The query a label's place has: the conversations that carry it, whatever mailbox they are
+/// in.
+fn label_query(name: Text) -> Text {
+    "labels:\"{name}\""
+}
+
+/// What the window calls the place `query` shows: the filters' and the labels' names, and
+/// "All mail" for every conversation.
+fn place_title(m: Mail, query: Text) -> Text {
+    filters(Thread).find(f -> f.query == query)?.label ?? m.labels.find(l -> label_query(l.name) == query)?.name ?? "All mail"
 }
 
 /// The mail window: every account's mail. The unified inbox is every account's inbox in one
@@ -365,7 +527,7 @@ view mail(m: Mail) {
 view unified(m: Mail) {
     window query: Text = "is:inbox"
     let places = filters(Thread).filter(f -> f.toggle)
-    let title = places.find(p -> p.query == query)?.label ?? "All mail"
+    let title = place_title(m, query)
     if let a = m.accounts.first() {
         let shown = a.threads.matching(query)
         ui.NavShell(content_kind: .document, sidebar_title: .some("All accounts"), overview_title: .some(title), overview_count: .some(shown.len())) {
@@ -376,6 +538,15 @@ view unified(m: Mail) {
                     }
                     ui.NavItem("all", "All mail", icon: .mail) {
                         on select: set(query, "")
+                    }
+                    if not m.labels.is_empty() {
+                        ui.NavSection("Labels") {
+                            for l in m.labels {
+                                ui.NavItem(label_query(l.name), l.name, icon: .tag, count: .some(a.threads.matching(label_query(l.name)).len())) {
+                                    on select: set(query, label_query(l.name))
+                                }
+                            }
+                        }
                     }
                     for acct in m.accounts {
                         ui.NavSection(acct.name) {
@@ -424,12 +595,14 @@ view unified(m: Mail) {
 /// An account's window: its mailboxes in the sidebar with how many unread each holds, the
 /// conversations of the one chosen, newest first, and the one open beside them. Opening a
 /// conversation reads it. The mailbox is the window's, as people type it in search
-/// (`is:inbox`), so everyone looking sees the same list; it starts on the inbox.
+/// (`is:inbox`), so everyone looking sees the same list; it starts on the inbox. The person's
+/// labels come after the mailboxes, each showing the conversations it is on.
 view mailboxes(a: Account) {
     window query: Text = "is:inbox"
+    let m = root Mail
     let places = filters(Thread).filter(f -> f.toggle)
     let shown = a.threads.matching(query)
-    let title = places.find(p -> p.query == query)?.label ?? "All mail"
+    let title = place_title(m, query)
     ui.NavShell(content_kind: .document, sidebar_title: .some(a.address), overview_title: .some(title), overview_count: .some(shown.len())) {
         sidebar: {
             ui.NavList(selected: if query == "" { "all" } else { query }) {
@@ -441,6 +614,15 @@ view mailboxes(a: Account) {
                 }
                 ui.NavItem("all", "All mail", icon: .mail) {
                     on select: set(query, "")
+                }
+                if not m.labels.is_empty() {
+                    ui.NavSection("Labels") {
+                        for l in m.labels {
+                            ui.NavItem(label_query(l.name), l.name, icon: .tag, count: .some(a.threads.matching(label_query(l.name)).len())) {
+                                on select: set(query, label_query(l.name))
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -540,7 +722,9 @@ view conversation(t: Thread) {
 }
 
 /// One message of a conversation: who wrote it, to whom, what it says and, folded under it,
-/// the message it quotes, as Gmail and Apple Mail fold a quotation; and what came with it.
+/// the message it quotes, as Gmail and Apple Mail fold a quotation; and what came with it. The
+/// hover toolbar and the menu are the list item's: wherever the message's layout places them,
+/// the list runs them.
 view message(m: Message) {
     lens quoting: Bool
     let body = as_lines(m.body)
