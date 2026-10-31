@@ -1339,6 +1339,9 @@ pub struct Session {
     night_light: (bool, bool),
     /// The portal's link to the loop, while the portal serves.
     portal: Option<portal_link::SessionLink>,
+    /// The apps this session started, told to the portal: which of them run
+    /// in one of the launcher's sandboxes.
+    launches: std::sync::Arc<Launches>,
     /// The person's device fabric, while this session runs on one.
     fabric: Option<tilo_device_fabric::link::SharedLink>,
     /// The plane the apps it runs read and invoke its services on, while it
@@ -1794,6 +1797,7 @@ impl Session {
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
             night_light: (options.config.night_light, options.config.kept),
             portal: options.portal,
+            launches: std::sync::Arc::clone(&options.launches),
             fabric,
             action_plane,
             screen_locked: false,
@@ -2174,7 +2178,16 @@ impl Session {
             studio.serve(&mut self.compositor);
         }
         if let Some(portal) = &mut self.portal {
-            portal.serve(&mut self.compositor, &self.shared.handle);
+            let documents_served = self
+                .desktop
+                .as_ref()
+                .is_some_and(|desktop| desktop.documents_served());
+            portal.serve(
+                &mut self.compositor,
+                &self.shared.handle,
+                &self.launches,
+                documents_served,
+            );
         }
         self.feed_portal();
         // What the apps copied since the last pass joins the history; a copy

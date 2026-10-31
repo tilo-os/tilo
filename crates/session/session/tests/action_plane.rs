@@ -92,7 +92,12 @@ fn session_hosting(
     // would have recorded for it names that process: what the broker admits
     // the connection by.
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
-    launches.started(std::process::id(), "so.tilo.settings", "the-workspace");
+    launches.started(
+        std::process::id(),
+        "so.tilo.settings",
+        "the-workspace",
+        true,
+    );
     Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,

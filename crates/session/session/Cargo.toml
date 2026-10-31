@@ -142,6 +142,9 @@ tilo-audio-service = { path = "../audio-service", default-features = false }
 # The desktop services the session starts on the buses; screen shares
 # stream the frames the session captured.
 tilo-portal = { path = "../portal", features = ["pipewire"] }
+# The files a person chooses for apps: the session mounts the store the
+# portal grants through, so every launcher finds an app's view to bind.
+tilo-documents = { path = "../../system/documents", features = ["mount"] }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-notifications-service = { path = "../notifications-service" }
 tilo-polkit-agent = { path = "../polkit-agent" }

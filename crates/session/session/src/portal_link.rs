@@ -10,7 +10,7 @@
 //! session feeds: where the screens are, which apps run, when the session
 //! locks and which apps exited.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -31,6 +31,8 @@ use tilo_portal::streams::{
     CaptureSource, CaptureStreams, SourceKind, Stream, StreamRequest, cursor_mode,
 };
 use tilo_service::Wake;
+
+use crate::Launches;
 
 /// The most of a selection a portal app is handed, as the portal bounds it.
 const MAX_CLIPBOARD_BYTES: usize = 4 * 1024 * 1024;
@@ -71,6 +73,8 @@ struct Shared {
     selection_changed: tokio::sync::Notify,
     /// The workspace each app runs in, as the desk has it.
     workspaces: Mutex<BTreeMap<String, String>>,
+    /// The apps this session started in one of the launcher's sandboxes.
+    sandboxed: Mutex<BTreeSet<String>>,
     /// The device scopes each `(workspace, app)` is granted.
     grants: Mutex<BTreeMap<(String, String), Vec<String>>>,
     /// What the portal asked for since the session's last pass.
@@ -121,6 +125,14 @@ impl PortalSide {
     #[must_use]
     pub fn workspace_of(&self, app_id: &str) -> Option<String> {
         self.shared.workspaces.lock_recover().get(app_id).cloned()
+    }
+
+    /// Whether app `app_id` runs in one of the launcher's own sandboxes, as
+    /// this session started it: only such an app's mount namespace holds the
+    /// documents store its files are chosen into.
+    #[must_use]
+    pub fn sandboxed(&self, app_id: &str) -> bool {
+        self.shared.sandboxed.lock_recover().contains(app_id)
     }
 
     /// What the desk's workspaces grant standing in for the person's
@@ -199,6 +211,7 @@ pub fn channel(wake: Wake) -> (PortalSide, SessionLink) {
         selection: Mutex::new((0, Vec::new())),
         selection_changed: tokio::sync::Notify::new(),
         workspaces: Mutex::new(BTreeMap::new()),
+        sandboxed: Mutex::new(BTreeSet::new()),
         grants: Mutex::new(BTreeMap::new()),
         asks: Mutex::new(Vec::new()),
         wake,
@@ -258,11 +271,21 @@ impl SessionLink {
     }
 
     /// Answer everything the portal asked for since the last pass, feed it
-    /// what changed, and push the frames of the streams.
-    pub fn serve(&mut self, compositor: &mut Compositor, desk: &DesktopHandle) {
+    /// what changed, and push the frames of the streams. `documents_served`
+    /// says whether the session serves the files people choose for apps as
+    /// a filesystem, which is what makes a path in it mean anything to the
+    /// app the chooser hands it to.
+    pub fn serve(
+        &mut self,
+        compositor: &mut Compositor,
+        desk: &DesktopHandle,
+        launched: &Launches,
+        documents_served: bool,
+    ) {
         self.shared.serving.store(true, Ordering::Release);
         self.publish_sources(compositor);
         self.publish_desk(desk);
+        self.publish_launches(launched, documents_served);
         self.feed_zones(compositor);
         let asks = std::mem::take(&mut *self.shared.asks.lock_recover());
         for ask in asks {
@@ -314,6 +337,19 @@ impl SessionLink {
         if changed {
             self.shared.sources_changed.store(true, Ordering::Release);
         }
+    }
+
+    /// Tell the portal which of the apps it serves run with the session's
+    /// documents store bound into them: the ones a file the person chooses
+    /// can be answered with a path in that store. None of them, while the
+    /// store is not served: the path would name nothing in their sandbox.
+    fn publish_launches(&self, launched: &Launches, documents_served: bool) {
+        let apps: BTreeSet<String> = if documents_served {
+            launched.sandboxed_apps().into_iter().collect()
+        } else {
+            BTreeSet::new()
+        };
+        *self.shared.sandboxed.lock_recover() = apps;
     }
 
     /// Tell the portal which workspace each app runs in, and what those

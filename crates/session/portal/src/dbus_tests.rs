@@ -60,9 +60,13 @@ async fn bed() -> Bed {
     let state = tempfile::tempdir().expect("a private state directory");
     let store =
         crate::permission_store::PermissionStore::load(Some(state.path().join("permissions.json")));
-    let portal = Portal::new(questions.clone(), authenticator)
-        .with_consents(crate::consent::Consents::new(questions.clone(), None))
-        .with_permissions(store);
+    let portal = Portal::new(
+        questions.clone(),
+        authenticator,
+        tilo_documents::Documents::new(),
+    )
+    .with_consents(crate::consent::Consents::new(questions.clone(), None))
+    .with_permissions(store);
     portal.serve(&backend).await.expect("served");
     let frontend = bus.connect().await;
     frontend

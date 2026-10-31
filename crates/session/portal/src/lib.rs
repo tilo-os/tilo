@@ -67,6 +67,7 @@ pub mod captures;
 pub mod clipboard;
 pub mod consent;
 mod dispatch;
+pub mod doc_store;
 pub mod documents;
 pub mod dynamic_launcher;
 mod eis;
@@ -140,6 +141,12 @@ pub struct PortalCaller {
     pub app_id: String,
     /// The workspace the app runs in, when the session knows it.
     pub workspace: Option<String>,
+    /// The app runs in one of the launcher's own sandboxes: its mount
+    /// namespace holds the session's documents store at
+    /// [`tilo_documents::SANDBOX_DIR`] and nothing of the host it was not
+    /// given, so a file the person chooses for it is answered with a path in
+    /// that store ([`doc_store`]) rather than a host path it cannot open.
+    pub sandboxed: bool,
 }
 
 impl PortalCaller {
@@ -148,6 +155,7 @@ impl PortalCaller {
         Self {
             app_id: app_id.into(),
             workspace: None,
+            sandboxed: false,
         }
     }
 }
@@ -244,14 +252,21 @@ pub struct Portal {
     input_captures: input_capture::InputCaptures,
     shortcuts: global_shortcuts::Shortcuts,
     clipboards: clipboard::Clipboards,
+    documents: tilo_documents::Documents,
 }
 
 impl Portal {
     /// A backend asking through `questions`, taking calls only from the
-    /// frontend `authenticator` vouches for. Access answered for good is
-    /// kept in the person's private state.
+    /// frontend `authenticator` vouches for, and giving apps the files the
+    /// person chose through their one store, `documents` (the table the
+    /// session mounts and its launchers bind views of: [`documents_store`]).
+    /// Access answered for good is kept in the person's private state.
     #[must_use]
-    pub fn new(questions: Questions, authenticator: PortalAuthenticator) -> Self {
+    pub fn new(
+        questions: Questions,
+        authenticator: PortalAuthenticator,
+        documents: tilo_documents::Documents,
+    ) -> Self {
         let consents = Consents::new(
             questions.clone(),
             private_state_root().map(|root| root.join("tilo/portal/consents.json")),
@@ -291,6 +306,7 @@ impl Portal {
             remotes,
             input_captures,
             sessions,
+            documents,
         }
     }
 
@@ -335,6 +351,16 @@ impl Portal {
     pub fn with_permissions(mut self, permissions: permission_store::PermissionStore) -> Self {
         self.permissions = permissions;
         self
+    }
+
+    /// The documents the person chose for an app: one store, which a
+    /// sandboxed app's launcher binds into it, and which answers what the
+    /// file chooser hands out ([`doc_store`]) and what the interfaces take in
+    /// ([`documents`]). It is the table [`documents_store`] opened and the
+    /// session mounted, never a table of the portal's own.
+    #[must_use]
+    pub const fn documents(&self) -> &tilo_documents::Documents {
+        &self.documents
     }
 
     /// The live portal sessions: where the session hears that what the
@@ -786,6 +812,21 @@ pub(crate) fn private_state_root() -> Option<PathBuf> {
     tilo_paths::state_dir().or_else(tilo_paths::runtime_dir)
 }
 
+/// The files the person chooses for apps: the one table the portal grants
+/// through and the session mounts, kept in the store's own file beside the
+/// person's other private portal answers so a file chosen before reopens
+/// where it was.
+///
+/// Open it once: a second table would be served by the mount while the
+/// portal wrote the first. Without a private state directory it is held in
+/// memory only, for as long as the session runs.
+#[must_use]
+pub fn documents_store() -> tilo_documents::Documents {
+    private_state_root().map_or_else(tilo_documents::Documents::new, |root| {
+        tilo_documents::Documents::kept_in(root.join("tilo/documents.json"))
+    })
+}
+
 /// The question handle of portal request `path`.
 pub(crate) fn question_handle(path: &str) -> String {
     format!("portal:{path}")
@@ -798,13 +839,17 @@ pub(crate) mod tests {
     use super::*;
 
     /// A backend asking through `questions` that trusts `:1.1` as its
-    /// frontend and keeps nothing.
-    pub(crate) fn portal(questions: &Questions) -> Portal {
+    /// frontend and keeps nothing, giving apps the files the person chose
+    /// through `documents`.
+    pub(crate) fn portal_with(
+        questions: &Questions,
+        documents: tilo_documents::Documents,
+    ) -> Portal {
         let authenticator = PortalAuthenticator::fixed_for_tests(
             ":1.1".try_into().expect("unique name"),
             Arc::new(|app: &str, _: Option<&str>| Some(PortalCaller::new(app))),
         );
-        Portal::new(questions.clone(), authenticator)
+        Portal::new(questions.clone(), authenticator, documents)
             .with_consents(Consents::new(questions.clone(), None))
     }
 }
