@@ -490,7 +490,8 @@ mod cases {
             w.id_of(0),
             "the nested view is the notes package's code, not the agent's"
         );
-        assert_eq!(text_prop(title, "placeholder"), "Title");
+        // A new note's title starts empty: "Untitled" is only what the field prompts with.
+        assert_eq!(text_prop(title, "placeholder"), "Untitled");
 
         let key = title.key.clone();
         assert_eq!(
@@ -1019,7 +1020,8 @@ mod cases {
         let editor = w.rt.open_resource(&me(), &note, None).unwrap();
         assert_eq!(editor.window(), note.id_string());
         let title = of_kind(editor.tree(), "ui.TextInput")[0];
-        assert_eq!(text_prop(title, "placeholder"), "Title");
+        // A new note's title starts empty: "Untitled" is only what the field prompts with.
+        assert_eq!(text_prop(title, "placeholder"), "Untitled");
         assert_eq!(
             w.rt.default_view(&note.ty).as_deref(),
             Some(apps.notes.view("note_editor").as_str())
