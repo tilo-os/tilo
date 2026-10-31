@@ -16991,6 +16991,7 @@ dependencies = [
  "serde_json",
  "tilo-app",
  "tilo-rich-text",
+ "workspace-hack",
 ]
 
 [[package]]
