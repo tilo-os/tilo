@@ -42,6 +42,7 @@ pub fn prim_component(prim: &str) -> Option<&'static str> {
         "fact" => "Property",
         "avatar" => "Avatar",
         "list_row" => "ListRow",
+        "progress" => "ProgressBar",
         _ => return None,
     })
 }
