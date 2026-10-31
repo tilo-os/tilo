@@ -169,6 +169,13 @@ fn io(error: impl std::fmt::Display) -> Error {
     Error::Io(std::io::Error::other(error.to_string()))
 }
 
+/// The instant a risky display change's wait for the person is measured
+/// from, and against: the clock a test holds, so the wait ends on the
+/// person's answer rather than on how long the machine took to ask.
+fn display_clock_now() -> Instant {
+    tilo_clock::now()
+}
+
 /// What the event loop's sources reach: the state and the backend.
 pub struct LoopData {
     /// The Wayland state, windows and seat.
@@ -510,7 +517,7 @@ impl Compositor {
             x11.publish_x_hints(&mut self.data.state);
         }
         self.configure_from_clients();
-        if let Some(undo) = self.data.state.display_changes.due(Instant::now()) {
+        if let Some(undo) = self.data.state.display_changes.due(display_clock_now()) {
             self.put_back(&undo);
         }
         self.data.state.tick_idle();
@@ -1033,7 +1040,12 @@ impl Compositor {
     /// The person reverts the change they were asked about; false when
     /// `id` is no longer the open question.
     pub fn revert_display_change(&mut self, id: u64) -> Result<bool, Error> {
-        let Some(undo) = self.data.state.display_changes.revert(id, Instant::now()) else {
+        let Some(undo) = self
+            .data
+            .state
+            .display_changes
+            .revert(id, display_clock_now())
+        else {
             return Ok(false);
         };
         self.put_back(&undo);
@@ -1119,7 +1131,7 @@ impl Compositor {
                 test,
                 tool,
             } = pending;
-            let now = Instant::now();
+            let now = display_clock_now();
             if !test
                 && state
                     .display_changes

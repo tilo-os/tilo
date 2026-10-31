@@ -37,6 +37,10 @@ qcms.workspace = true
 tracing.workspace = true
 # Percentiles of the frame pacing it logs.
 tilo-frame-metrics = { path = "../frame-metrics" }
+# How long a risky display change waits for the person: read through the
+# clock a test can hold, so the wait ends when the person answers and not
+# when the machine was slow.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # Monitors are known by their EDID identity, which a layout follows
 # between ports.
 settings-store = { path = "../../system/settings-store" }

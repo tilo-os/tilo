@@ -18317,6 +18317,7 @@ dependencies = [
  "settings-store",
  "smithay",
  "tempfile",
+ "tilo-clock",
  "tilo-color-pipeline",
  "tilo-frame-metrics",
  "tilo-wayland-ext",
