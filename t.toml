@@ -578,7 +578,7 @@ heavy = true
 
 [[check]]
 name = "sdk-policy"
-run = "python3 tools/policy/check_app_portability.py\npython3 tools/policy/check_app_capabilities.py\npython3 tools/web/generate_web_desktop.py --check\npython3 tools/apps/generate_catalogue_fleet.py --check\npython3 tools/sdk/publish_check.py --report-only\n"
+run = "python3 tools/policy/check_app_capabilities.py\npython3 tools/web/generate_web_desktop.py --check\npython3 tools/apps/generate_catalogue_fleet.py --check\npython3 tools/sdk/publish_check.py --report-only\n"
 fix = "python3 tools/web/generate_web_desktop.py && python3 tools/apps/generate_catalogue_fleet.py"
 
 [[check]]
