@@ -416,6 +416,9 @@ struct Shared {
     /// The apps' live activities on the bar, which the clock shows and the
     /// controls pressed on it go back to the app through.
     clock: Rc<chrome::Clock>,
+    /// The running applications' tray items, which the bar shows and whose
+    /// clicks the session hands back to the applications.
+    tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
     /// The desk as this device last wrote it, and when, so a desk that keeps
     /// changing (a drag, a rename) is written once in a while rather than
     /// every frame.
@@ -496,6 +499,11 @@ impl Shared {
                     activity_id,
                 }) => self.clock.press(&command, activity_id.as_deref()),
                 DesktopAsk::Intent(ChromeIntent::HideClock) => self.clock.hide(),
+                // A click on an application's tray icon is the
+                // application's own to answer.
+                DesktopAsk::Intent(ChromeIntent::AppTray { key, request }) => {
+                    self.tray_request(&key, request);
+                }
                 DesktopAsk::Launchpad(action) => self.launchpad(action),
                 DesktopAsk::Shortcut(action) => self.shortcut(action),
                 DesktopAsk::HostAction(action) => self.host_action(&action),
@@ -527,6 +535,35 @@ impl Shared {
         }
         // What the session's own actions asked of it.
         self.follow_asks();
+    }
+
+    /// Hand a click on the tray icon at `key` to the application that owns
+    /// it, as the click reached the bar. An item that went away between the
+    /// click and this ask, or a request the application refuses, is said so
+    /// in the log rather than passed over in silence: the person saw their
+    /// click do nothing and this is why.
+    fn tray_request(&self, key: &str, request: tilo_desktop::chrome::AppTrayRequest) {
+        use tilo_desktop::chrome::AppTrayRequest;
+        let Some(tray) = &self.tray else {
+            tracing::warn!(key, "no tray is served: the click reaches no application");
+            return;
+        };
+        let request = match request {
+            AppTrayRequest::Activate { x, y } => tilo_tray_host::TrayRequest::Activate { x, y },
+            AppTrayRequest::SecondaryActivate { x, y } => {
+                tilo_tray_host::TrayRequest::SecondaryActivate { x, y }
+            }
+            AppTrayRequest::ContextMenu { x, y } => {
+                tilo_tray_host::TrayRequest::ContextMenu { x, y }
+            }
+        };
+        let named = key.to_owned();
+        let refused = tray.request_or_else(key, request, move |error| {
+            tracing::warn!(key = %named, %error, "a tray click did not reach its application");
+        });
+        if let Err(error) = refused {
+            tracing::warn!(key, %error, "a tray click did not reach its application");
+        }
     }
 
     /// Carry out the host action `id` the person chose: what only the
@@ -1424,6 +1461,15 @@ impl Session {
         // the next frame, not the next minute.
         live_activities.set_host_wake(options.wake.handle());
         let clock = Rc::new(chrome::Clock::new(std::sync::Arc::clone(&live_activities)));
+        // An application's tray item registering, changing or going away is
+        // read off the loop: it must reach the bar on the next frame.
+        let tray = options
+            .desktop
+            .as_ref()
+            .and_then(|desktop| desktop.tray().cloned());
+        if let Some(tray) = &tray {
+            tray.set_host_wake(options.wake.handle());
+        }
         let chrome = Rc::new(RefCell::new(chrome::host(
             &handle,
             &options,
@@ -1434,6 +1480,7 @@ impl Session {
                 readings: Rc::clone(&readings),
                 clock: Rc::clone(&clock),
                 notices: notices.clone(),
+                tray: tray.clone(),
             },
             sync.clone(),
             &overview,
@@ -1538,6 +1585,7 @@ impl Session {
             lock,
             notices: notices.clone(),
             clock,
+            tray,
             kept: RefCell::new(None),
             state: options.state.clone(),
             wallpapers,

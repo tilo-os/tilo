@@ -9,9 +9,9 @@ use std::sync::Arc;
 use tilo_action_policy::Role;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
-    ActiveMediaUse, AvatarAsk, ChromeIntent, ChromeOverlays, ClockActivity, ClockSnapshot,
-    DesktopChromeSnapshot, DesktopChromeSource, LinkKind, LinkStatus, MediaKind, OwnChip,
-    SystemStatus, VolumeState,
+    ActiveMediaUse, AppTrayIcon, AppTrayItem, AppTrayStatus, AvatarAsk, ChromeIntent,
+    ChromeOverlays, ClockActivity, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource,
+    LinkKind, LinkStatus, MediaKind, OwnChip, SystemStatus, VolumeState,
 };
 use tilo_desktop::desktop_host::DesktopRules;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome};
@@ -158,12 +158,15 @@ fn clock_reading(
 
 /// What the bar reads of the session besides the desk's tree: the
 /// notifications' state, the device's readings, the apps' live activities,
-/// and where the session's own notices go.
+/// the running applications' tray items, and where the session's own
+/// notices go.
 pub(crate) struct BarFeeds {
     pub(crate) signals: Rc<NoticeSignals>,
     pub(crate) readings: crate::panels::Readings,
     pub(crate) clock: Rc<Clock>,
     pub(crate) notices: DesktopNotifications,
+    /// The applications' tray items, when their watcher serves.
+    pub(crate) tray: Option<Arc<tilo_tray_host::Tray>>,
 }
 
 /// The bar's view of the session: the desktop's tree, the wall clock, and
@@ -190,11 +193,15 @@ pub(crate) struct SessionChrome {
     pub(crate) clock: Rc<Clock>,
     /// The desk's notifications, where a due timer is announced.
     pub(crate) notices: DesktopNotifications,
+    /// The running applications' status-notifier items, as their host keeps
+    /// them.
+    pub(crate) tray: Option<Arc<tilo_tray_host::Tray>>,
     /// The due timer announced last, so an unchanged one is announced once.
     notified: RefCell<Option<String>>,
     /// `(tree revision, minute, the last wave heard, the ask on the
-    /// person's avatar)` the snapshot revision was last bumped for.
-    seen: Cell<(u64, i64, Option<String>, u64)>,
+    /// person's avatar, the tray's revision)` the snapshot revision was last
+    /// bumped for.
+    seen: Cell<(u64, i64, Option<String>, u64, u64)>,
     revision: Cell<u64>,
 }
 
@@ -212,6 +219,7 @@ impl SessionChrome {
             readings,
             clock,
             notices,
+            tray,
         } = feeds;
         Self {
             handle,
@@ -223,8 +231,9 @@ impl SessionChrome {
             readings,
             clock,
             notices,
+            tray,
             notified: RefCell::new(None),
-            seen: Cell::new((u64::MAX, 0, None, u64::MAX)),
+            seen: Cell::new((u64::MAX, 0, None, u64::MAX, u64::MAX)),
             revision: Cell::new(0),
         }
     }
@@ -292,6 +301,7 @@ impl DesktopChromeSource for SessionChrome {
             clock.unix_seconds.div_euclid(60),
             waved.as_ref().map(|notice| notice.from.clone()),
             self.handle.personal_ask_revision(),
+            self.app_tray_revision(),
         );
         if self.seen.replace(seen.clone()) != seen {
             self.revision.set(self.revision.get().wrapping_add(1));
@@ -332,6 +342,22 @@ impl DesktopChromeSource for SessionChrome {
         self.signals.badge(app_id)
     }
 
+    /// Changes whenever an application's tray item appears, changes or
+    /// goes, so the bar redraws that icon and nothing else.
+    fn app_tray_revision(&self) -> u64 {
+        self.tray.as_ref().map_or(0, |tray| tray.revision())
+    }
+
+    /// The running applications' tray items, in the order they registered:
+    /// each one's own title, the app that registered it, and its picture or
+    /// letter badge.
+    fn app_tray(&self) -> Vec<AppTrayItem> {
+        let Some(tray) = &self.tray else {
+            return Vec::new();
+        };
+        tray.snapshot().into_iter().map(app_tray_item).collect()
+    }
+
     /// The ask waiting on the person's own avatar: what the session put to
     /// them there (see [`crate::identity::offer`]), open beside their face
     /// until they answer it or put it off.
@@ -347,6 +373,40 @@ impl DesktopChromeSource for SessionChrome {
     fn intent(&self, intent: ChromeIntent) -> bool {
         self.intents.borrow_mut().push(intent);
         true
+    }
+}
+
+/// One tray item as the bar draws it: the app's own words for it, the app
+/// it demonstrably belongs to, and the pixels it sent or named, with a
+/// letter badge for an icon nothing could draw.
+fn app_tray_item(item: tilo_tray_host::TrayItem) -> AppTrayItem {
+    AppTrayItem {
+        key: item.key,
+        id: item.id.clone(),
+        owner_app: item.address.owner_app.clone(),
+        title: if item.title.trim().is_empty() {
+            item.id
+        } else {
+            item.title
+        },
+        status: match item.status {
+            tilo_tray_host::ItemStatus::Passive => AppTrayStatus::Passive,
+            tilo_tray_host::ItemStatus::Active => AppTrayStatus::Active,
+            tilo_tray_host::ItemStatus::NeedsAttention => AppTrayStatus::NeedsAttention,
+        },
+        icon: match item.icon {
+            tilo_tray_host::TrayIcon::Pixels {
+                width,
+                height,
+                rgba,
+            } => AppTrayIcon::Pixels {
+                width,
+                height,
+                rgba,
+            },
+            tilo_tray_host::TrayIcon::Letter(letter) => AppTrayIcon::Letter(letter),
+        },
+        item_is_menu: item.item_is_menu,
     }
 }
 

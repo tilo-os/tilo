@@ -103,7 +103,7 @@ impl DesktopServices {
             inhibitors,
             Arc::clone(&running),
         ));
-        let tray = runtime.block_on(tray_on(&buses.session));
+        let tray = runtime.block_on(tray_on(&buses.session, Arc::clone(&running)));
         if buses.system != Bus::None {
             runtime.spawn(on_system_bus(
                 buses.system.clone(),
@@ -154,6 +154,13 @@ impl DesktopServices {
             )));
         }
         services
+    }
+
+    /// The applications' tray items, once their watcher serves; the bar
+    /// draws them and the person's clicks go back through it.
+    #[must_use]
+    pub fn tray(&self) -> Option<&Arc<tilo_tray_host::Tray>> {
+        self.tray.as_ref().map(|(tray, _)| tray)
     }
 
     /// The portal backend, once it serves.
@@ -279,11 +286,14 @@ async fn connect(bus: &Bus, system: bool) -> Option<zbus::Connection> {
         .ok()
 }
 
-/// The watcher of the applications' tray items, serving on `bus`. Nothing
-/// in the session draws an item's icon yet; an item that names its icon
-/// rather than sending it is kept without pixels.
+/// The watcher of the applications' tray items, serving on `bus`. An item
+/// that names its icon rather than sending it is drawn from the person's
+/// icon themes, and the app that registered it is named from its process:
+/// the bar shows and words an item as the app's own. Nothing is dropped for
+/// an icon that cannot be found — the host falls back to a letter badge.
 async fn tray_on(
     bus: &Bus,
+    running: Arc<std::sync::Mutex<std::collections::BTreeMap<u32, String>>>,
 ) -> Option<(
     Arc<tilo_tray_host::Tray>,
     tilo_tray_host::watcher::WatcherHandle,
@@ -293,7 +303,10 @@ async fn tray_on(
         Bus::Default => zbus::connection::Builder::session(),
         Bus::Address(address) => zbus::connection::Builder::address(address.as_str()),
     };
-    let tray = tilo_tray_host::Tray::new(Arc::new(|_, _, _| None));
+    let tray = tilo_tray_host::Tray::with_owner_resolver(
+        Arc::new(crate::app_icons::tray_raster),
+        tray_owner_resolver(running),
+    );
     let served = match builder {
         Ok(builder) => tilo_tray_host::watcher::serve(builder, Arc::clone(&tray)).await,
         Err(error) => Err(error),
@@ -302,6 +315,19 @@ async fn tray_on(
         .inspect_err(|error| tracing::warn!(%error, "the tray watcher did not start"))
         .ok()
         .map(|watcher| (tray, watcher))
+}
+
+/// The app the process `pid` demonstrably belongs to, proven as a
+/// notification's sender is: the Flatpak whose sandbox it runs in, else the
+/// app the session sees a window for it. A peer-to-peer item proves
+/// nothing, and an item's own claim is never taken for it.
+fn tray_owner_resolver(
+    running: Arc<std::sync::Mutex<std::collections::BTreeMap<u32, String>>>,
+) -> tilo_tray_host::OwnerResolver {
+    Arc::new(move |pid| {
+        tilo_notifications_service::verified_flatpak_app_id(pid)
+            .or_else(|| running.lock_recover().get(&pid).cloned())
+    })
 }
 
 /// The portal backend and the notifications daemon, serving on `bus`.
