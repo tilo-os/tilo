@@ -24,7 +24,8 @@ use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutStat
 use tilo_action_broker::collab_outbound::PeerPublisher;
 use tilo_action_broker::services::{
     Caller, HostServices, PublishedResources, Reading, ResourceWatch, SearchIndexServices,
-    SpeakerChange, SpeakerServices,
+    ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
+    WorkspaceAuthority, WorkspaceAuthorityHandle,
 };
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
@@ -236,9 +237,10 @@ impl SearchIndexServices for ContentIndex {
 
 /// Serve the session's published resources to the apps on `socket`: the
 /// broker admits each connection by the launch `launches` recorded, asks
-/// `link` for what the services publish, and hands Settings the speaker
-/// groups of `fabric` when this session runs on one. What apps publish of
-/// their own content lands in `content`, the index search reads.
+/// `link` for what the services publish, hands Settings the speaker groups
+/// of `fabric` when this session runs on one, and decides what an app may do
+/// in a room against `desk`. What apps publish of their own content lands in
+/// `content`, the index search reads.
 ///
 /// # Errors
 ///
@@ -251,17 +253,124 @@ pub fn serve(
     fabric: Option<tilo_device_fabric::link::SharedLink>,
     live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
     content: Option<std::sync::Arc<AppContentIndex>>,
+    desk: std::sync::Arc<DeskAuthority>,
+    shortcuts: std::sync::Arc<ShortcutLibrary>,
 ) -> std::io::Result<BrokerHandle> {
-    let services = host_services(link, launches, fabric, live_activities, content);
+    let services = host_services(link, launches, fabric, live_activities, content, shortcuts);
+    let membership: WorkspaceAuthorityHandle = desk;
     tilo_action_broker::collab_broker::spawn_with_services(
         socket,
-        None,
+        Some(membership),
         PeerPublisher::disabled(),
         None,
         services,
         std::sync::Arc::new(Mutex::new(BrokerChannels::default())),
         std::sync::Arc::new(FanoutState::new()),
     )
+}
+
+/// A saved shortcut change on its way to the desk, answered once the session's
+/// loop applied it: the desk belongs to the loop, and the broker asks from its
+/// own thread.
+pub struct StoreRequest {
+    pub room: String,
+    /// The person the broker admitted the change for.
+    pub actor: String,
+    pub change: tilo_automation::ShortcutChange,
+    pub done: tokio::sync::oneshot::Sender<Result<(), String>>,
+}
+
+/// The workspace's shortcuts as the broker keeps and runs them: what a person
+/// saves through the action door lands on the desk the loop shows, and a run
+/// executes on `runtime`.
+pub struct ShortcutLibrary {
+    runtime: tokio::runtime::Handle,
+    changes: tokio::sync::mpsc::UnboundedSender<StoreRequest>,
+}
+
+impl ShortcutLibrary {
+    /// A library whose runs execute on `runtime`, handing what a person saves
+    /// to the loop through the channel it comes with.
+    #[must_use]
+    pub fn new(
+        runtime: tokio::runtime::Handle,
+    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<StoreRequest>) {
+        let (changes, saved) = tokio::sync::mpsc::unbounded_channel();
+        (Self { runtime, changes }, saved)
+    }
+}
+
+impl ShortcutLibraryServices for ShortcutLibrary {
+    fn keymap(&self) -> settings_store::hardware::ShortcutConfig {
+        settings_store::hardware::ShortcutConfig::load()
+    }
+
+    fn store(&self, request: ShortcutLibraryRequest) -> ShortcutStore {
+        let changes = self.changes.clone();
+        Box::pin(async move {
+            let (done, applied) = tokio::sync::oneshot::channel();
+            changes
+                .send(StoreRequest {
+                    room: request.room,
+                    actor: request.actor,
+                    change: request.change,
+                    done,
+                })
+                .map_err(|_| "this session keeps no shortcuts".to_owned())?;
+            applied
+                .await
+                .map_err(|_| "this session stopped before it saved the shortcut".to_owned())?
+        })
+    }
+
+    fn runtime(&self) -> Result<tokio::runtime::Handle, String> {
+        Ok(self.runtime.clone())
+    }
+}
+
+/// The desk the broker's thread decides against: the workspaces it shows and
+/// their shortcuts, as the session's loop last published them.
+///
+/// The desk itself belongs to the loop ([`tilo_desktop_surface::DesktopHandle`]
+/// hands it out on this thread only), while the broker asks about a room from
+/// its own thread. The loop publishes a copy when the desk it shows moved, and
+/// the broker reads the copy.
+pub struct DeskAuthority {
+    tree: Mutex<tilo_desktop_model::DesktopTree>,
+}
+
+impl DeskAuthority {
+    /// The authority over `tree`, as the loop sees it now.
+    #[must_use]
+    pub fn new(tree: tilo_desktop_model::DesktopTree) -> Self {
+        Self {
+            tree: Mutex::new(tree),
+        }
+    }
+
+    /// The desk as the loop shows it now, for the broker's next decision.
+    pub fn publish(&self, tree: tilo_desktop_model::DesktopTree) {
+        *self.tree.lock_recover() = tree;
+    }
+}
+
+impl WorkspaceAuthority for DeskAuthority {
+    fn with_tree(
+        &self,
+        read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
+    ) -> Result<(), String> {
+        read(&self.tree.lock_recover());
+        Ok(())
+    }
+
+    /// A workspace this desk shows is one this device holds, so its shortcuts
+    /// are proven against the revocations its room's document records — which
+    /// this session does not read yet, so none of them is revoked here.
+    fn room_revocations(&self, room: &str) -> Option<tilo_user_identity::RevocationList> {
+        let tree = self.tree.lock_recover();
+        tilo_action_broker::services::room_in(&tree, room)
+            .map(|_workspace| tilo_user_identity::RevocationList::new())
+    }
 }
 
 /// What the apps this session runs reach of it: the resources its services
@@ -273,6 +382,7 @@ fn host_services(
     fabric: Option<tilo_device_fabric::link::SharedLink>,
     live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
     content: Option<std::sync::Arc<AppContentIndex>>,
+    shortcuts: std::sync::Arc<ShortcutLibrary>,
 ) -> HostServices {
     let speakers: Option<std::sync::Arc<dyn SpeakerServices>> = fabric.map(|fabric| {
         std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
@@ -280,6 +390,7 @@ fn host_services(
     let search_index: Option<std::sync::Arc<dyn SearchIndexServices>> = content.map(|content| {
         std::sync::Arc::new(ContentIndex(content)) as std::sync::Arc<dyn SearchIndexServices>
     });
+    let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
     HostServices {
         published: Some(link),
         launcher: Some(launches),
@@ -290,6 +401,9 @@ fn host_services(
         // What an app publishes of its own content is found whether or not
         // it runs, once it is closed and after a restart.
         search_index,
+        // A shortcut a person saves lands on the desk, and a shortcut's run
+        // executes on the session's runtime.
+        shortcut_library: Some(shortcut_library),
         ..HostServices::default()
     }
 }
@@ -327,6 +441,30 @@ fn receipt(services: &mut Services, resource: &str, action: &str, arguments: &[u
             code: "unknown_action".into(),
             message: format!("this session publishes no `{resource}` resource"),
         },
+    }
+}
+
+/// The plane while the session serves it: what the apps ask of the services,
+/// and the broker that answers them on the socket.
+pub(crate) struct Plane {
+    pub(crate) link: std::sync::Arc<Link>,
+    /// The socket the broker answers on: what the launcher hands an app, and
+    /// what a surface app connects for itself.
+    pub(crate) path: std::path::PathBuf,
+    /// The desk the apps' broker decides against, which the loop keeps level
+    /// with the desk it shows.
+    pub(crate) desk: std::sync::Arc<DeskAuthority>,
+    /// Held so the broker's thread ends and its socket is unlinked with the
+    /// session.
+    pub(crate) broker: tilo_action_broker::collab_broker::BrokerHandle,
+}
+
+impl Plane {
+    /// The broker the apps' runs are started on, while it serves one.
+    pub(crate) fn action_broker(
+        &self,
+    ) -> Option<std::sync::Arc<tilo_action_broker::collab_broker::AppActionBroker>> {
+        self.broker.app_action_broker().map(std::sync::Arc::new)
     }
 }
 
@@ -438,7 +576,24 @@ mod tests {
             fabric,
             std::sync::Arc::new(runtime_collab::LiveActivities::default()),
             None,
+            library(),
         )
+    }
+
+    /// A shortcut library whose runs would execute on a runtime of the
+    /// tests' own. Nothing starts a run here: these tests publish and read,
+    /// they save no shortcut.
+    fn library() -> std::sync::Arc<ShortcutLibrary> {
+        static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+        let runtime = RUNTIME.get_or_init(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime for shortcut runs")
+        });
+        let (library, saved) = ShortcutLibrary::new(runtime.handle().clone());
+        drop(saved);
+        std::sync::Arc::new(library)
     }
 
     /// An app publishes what it holds through the broker, and the index the
@@ -454,6 +609,7 @@ mod tests {
             None,
             std::sync::Arc::new(runtime_collab::LiveActivities::default()),
             Some(std::sync::Arc::clone(&content)),
+            library(),
         );
         let search_index = services
             .search_index

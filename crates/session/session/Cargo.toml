@@ -108,7 +108,8 @@ url.workspace = true
 # collaboration plane's peer actor.
 tilo-network-actor = { path = "../network-actor" }
 # This device's rooms: the state of every workspace it joined, held beside the
-# desk, and the enrollment a join redeems its invitation with.
+# desk, the enrollment a join redeems its invitation with, and who saved a
+# shortcut by the proof of a device of theirs.
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The workspace join exchange, over the endpoint the invitation's host names.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
@@ -132,6 +133,13 @@ tilo-service = { path = "../service" }
 # The broker that serves the socket this session's apps speak on, and the
 # provider seam it asks for what the services publish.
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
+# The shortcuts a person saved and the triggers that start them without
+# anyone invoking them.
+tilo-automation = { path = "../../collab/automation" }
+# A schedule's fire time is claimed by one of the person's devices, ranked by
+# the same hash everywhere.
+sha2.workspace = true
+uuid.workspace = true
 # The kernel-attested custody of an executing app process a launch is
 # admitted by.
 runtime-portal = { path = "../../runtime/runtime-portal" }

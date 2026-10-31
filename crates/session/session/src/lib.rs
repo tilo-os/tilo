@@ -28,6 +28,7 @@
 mod a11y_settings;
 mod app_icons;
 mod app_sheets;
+mod automation;
 mod bars;
 pub mod capture;
 mod capture_studio;
@@ -104,6 +105,7 @@ use ui::application::ComponentRunnerInputs;
 use ui::host_operation::ResourceOperationStart;
 use ui::shortcut_table::ShortcutAction;
 
+pub use automation::FinishedShortcutRun;
 pub use bars::BarShown;
 pub use config::SessionConfig;
 pub use controls::{
@@ -128,6 +130,7 @@ use keys::{GuideKeys, Invocations};
 use mount::panels::{KeyContext, mount_controls, mount_device, mount_setup};
 use mount::services::{answered, mount_services, start_action_plane};
 use panels::{Banners, Held};
+use plane::Plane;
 use search::SessionSearch;
 use setup::Setup;
 use tilo_app_launch::Doors as WindowDoors;
@@ -300,18 +303,6 @@ pub enum ActionPlane {
     /// On `path`: a session started for a test, which leaves the machine's
     /// own socket alone.
     At(std::path::PathBuf),
-}
-
-/// The plane while the session serves it: what the apps ask of the services,
-/// and the broker that answers them on the socket.
-struct Plane {
-    link: std::sync::Arc<plane::Link>,
-    /// The socket the broker answers on: what the launcher hands an app, and
-    /// what a surface app connects for itself.
-    path: std::path::PathBuf,
-    /// Held so the broker's thread ends and its socket is unlinked with the
-    /// session.
-    _broker: tilo_action_broker::collab_broker::BrokerHandle,
 }
 
 /// Where quick settings reads the device from.
@@ -1274,6 +1265,12 @@ pub struct Session {
     /// The plane the apps it runs read and invoke its services on, while it
     /// serves one.
     action_plane: Option<Plane>,
+    /// The shortcuts the person saved, started by their triggers.
+    automation: automation::Automation,
+    /// The runtime the shortcuts' runs execute on, which the apps' broker
+    /// starts them on. Kept for the session's life: dropping it stops the
+    /// record feed and the runs still executing on it.
+    _automation_runtime: tokio::runtime::Runtime,
     /// The desktop services the portal and the notifications daemon run
     /// in, fed what the session knows of itself.
     desktop: Option<Rc<desktop_services::DesktopServices>>,
@@ -1641,7 +1638,34 @@ impl Session {
         if let Some(apps) = &options.launch {
             apps.lend_launches(std::sync::Arc::clone(&options.launches));
         }
-        let action_plane = start_action_plane(&options, &live_activities)?;
+        // The shortcuts the person saved and the triggers that start them
+        // without anyone invoking them: armed on the desk this device shows,
+        // and started on the broker below. A run executes here, on a runtime
+        // of its own, and what a person saves through the action door lands
+        // on the desk on the loop's next pass.
+        let automation_runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("tilo-automation")
+            .enable_all()
+            .build()?;
+        let (shortcut_library, saved_shortcuts) =
+            plane::ShortcutLibrary::new(automation_runtime.handle().clone());
+        let action_plane = start_action_plane(
+            &options,
+            &live_activities,
+            &handle,
+            std::sync::Arc::new(shortcut_library),
+        )?;
+        let automation = automation::Automation::new(
+            options.state.as_deref(),
+            options.wake.handle(),
+            handle.clone(),
+            options.person.clone(),
+            saved_shortcuts,
+            // Which of the person's devices this one is, and which of them
+            // are online: each schedule runs on one of them.
+            sync.as_ref().and_then(|sync| sync.fabric()),
+        );
         // The shell-ui socket this session serves: what an app asks about
         // its own tabs arrives there and is answered on this loop's pass.
         let tabs = mount::app_tabs::AppTabs::start(
@@ -1787,6 +1811,8 @@ impl Session {
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             action_plane,
+            automation,
+            _automation_runtime: automation_runtime,
             screen_locked: false,
             desktop: options.desktop,
             running: Vec::new(),
@@ -2196,6 +2222,7 @@ impl Session {
     /// asked in turn.
     fn settle(&mut self) -> Result<(), Error> {
         self.follow_collaboration();
+        self.follow_automation();
         self.shared.follow_personal();
         self.follow_power()?;
         if let Some(comforts) = &mut self.comforts {
@@ -2329,6 +2356,31 @@ impl Session {
         // What became of the invitations redeemed is the directory's to say,
         // and the desk's to show.
         self.shared.follow_enrollments();
+    }
+
+    /// Start the shortcuts whose triggers fired since the last pass, and keep
+    /// the apps' broker's copy of the desk level with the desk shown: a run
+    /// starting there checks the shortcut against it.
+    fn follow_automation(&mut self) {
+        if let Some(plane) = &self.action_plane {
+            // The broker may take a moment to accept connections after it
+            // starts; its runs start from the first pass that finds it.
+            if self.automation.needs_broker()
+                && let Some(broker) = plane.action_broker()
+            {
+                self.automation.attach(broker);
+            }
+            self.automation.settle(Some(&plane.desk));
+        } else {
+            self.automation.settle(None);
+        }
+    }
+
+    /// The shortcut runs that finished and no history recorder took yet,
+    /// oldest first: what the history names its changes by.
+    #[must_use]
+    pub fn take_finished_shortcut_runs(&self) -> Vec<FinishedShortcutRun> {
+        self.automation.take_finished()
     }
 
     /// Where every sheet goes: the display the person is working on, so a
