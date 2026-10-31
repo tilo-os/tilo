@@ -54,7 +54,9 @@ pub const PRIMS: &[Prim] = &[
     prim_of("primary", &[], &[]),
     prim_of("secondary", &[], &[]),
     prim_of("layers", &[], &[]),
-    prim_of("scroll", &[], &["axis"]),
+    // A column that scrolls: down, sideways (`axis: .horizontal`) or both ways (`axis: .both`,
+    // a 2D surface such as a desk of strips).
+    prim_of("scroll", &[], &["axis", "across", "both"]),
     prim_of("spacer", &[], &[]),
     prim_of("fragment", &[], &[]),
     prim_of("text", &["value"], &["role"]),
@@ -147,7 +149,7 @@ pub const CHOICES: &[Choice] = &[
     Choice {
         kind: "axis",
         name: "Axis",
-        variants: &["vertical", "horizontal"],
+        variants: &["vertical", "horizontal", "both"],
     },
     Choice {
         kind: "text_role",
