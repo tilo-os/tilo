@@ -104,7 +104,8 @@ fn owned_service_requires_original_installation() {
 
 #[test]
 fn signal_source_manifest_is_admitted_as_a_headless_managed_service() {
-    let manifest: ManifestView = toml::from_str(include_str!("../signal-provider.toml")).unwrap();
+    let manifest: ManifestView =
+        toml::from_str(include_str!("../../signal-provider.toml")).unwrap();
     let options = RunOptions {
         app_id: Some("so.tilo.signal-provider".into()),
         mode: LaunchMode::Service {
