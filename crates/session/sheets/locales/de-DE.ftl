@@ -468,3 +468,25 @@ portal-allowed-title = Dauerhaft erlaubt
 portal-allowed-detail = { $app } darf { $what } jetzt ohne Nachfrage nutzen. Widerrufe es, damit Tilo beim nächsten Mal wieder fragt.
 portal-revoke = Widerrufen
 portal-keep = Behalten
+
+## Adding a program the person downloaded to their apps, and uninstalling an app
+add-app-title = { $name } zu den Apps hinzufügen?
+add-app-add = Zu den Apps hinzufügen
+add-app-decline = Nicht hinzufügen
+add-app-move = In „Programme“ verschieben
+add-app-move-detail = Bewahrt sie im Ordner „Programme“ in deinen Dateien auf
+uninstall-title = { $name } deinstallieren?
+uninstall-action = Deinstallieren
+uninstall-cancel = Abbrechen
+uninstall-remove-data = Ihre Daten entfernen
+uninstall-remove-data-detail = Deine Einstellungen und gespeicherten Dateien kommen in den Papierkorb, wo du sie wiederherstellen kannst.
+uninstall-device-body = Sie wird für alle auf diesem Computer entfernt.
+uninstall-files = { $count ->
+    [one] Ihre Datei kommt in den Papierkorb, wo du sie wiederherstellen kannst.
+   *[other] Alle { $count } Kopien kommen in den Papierkorb, wo du sie wiederherstellen kannst.
+}
+uninstall-home-folder = Persönlicher Ordner
+uninstall-documents-body = Deine Dokumente bleiben in deinen Arbeitsbereichen.
+uninstall-from-apps-title = { $name } aus den Apps entfernen?
+uninstall-from-apps-action = Aus Apps entfernen
+uninstall-entry-body = Sie gehört zum System, bleibt also auf diesem Computer und erscheint nicht mehr unter deinen Apps.

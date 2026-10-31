@@ -469,3 +469,25 @@ portal-allowed-title = Allowed for good
 portal-allowed-detail = { $app } may now use { $what } without asking. Revoke it to make Tilo ask again next time.
 portal-revoke = Revoke
 portal-keep = Keep
+
+## Adding a program the person downloaded to their apps, and uninstalling an app
+add-app-title = Add { $name } to apps?
+add-app-add = Add to apps
+add-app-decline = Don't add
+add-app-move = Move to Applications
+add-app-move-detail = Keeps it in the Applications folder in your files
+uninstall-title = Uninstall { $name }?
+uninstall-action = Uninstall
+uninstall-cancel = Cancel
+uninstall-remove-data = Remove its data
+uninstall-remove-data-detail = Your settings and saved files go to the Trash, where you can restore them.
+uninstall-device-body = It's removed for everyone on this computer.
+uninstall-files = { $count ->
+    [one] Its file goes to the Trash, where you can restore it.
+   *[other] All { $count } copies go to the Trash, where you can restore them.
+}
+uninstall-home-folder = Home
+uninstall-documents-body = Your documents stay in your workspaces.
+uninstall-from-apps-title = Remove { $name } from apps?
+uninstall-from-apps-action = Remove from apps
+uninstall-entry-body = It's part of the system, so it stays on this computer and no longer shows in your apps.
