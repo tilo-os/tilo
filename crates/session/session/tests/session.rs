@@ -49,6 +49,9 @@ use wayland_client::protocol::{
     wl_shm_pool::WlShmPool, wl_surface::WlSurface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
+use wayland_protocols::wp::text_input::zv3::client::{
+    zwp_text_input_manager_v3::ZwpTextInputManagerV3, zwp_text_input_v3::ZwpTextInputV3,
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_surface, xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
     xdg_wm_base::XdgWmBase,
@@ -66,6 +69,8 @@ struct Seen {
     seat: Option<WlSeat>,
     pointer: Option<WlPointer>,
     keyboard: Option<WlKeyboard>,
+    text_input_manager: Option<ZwpTextInputManagerV3>,
+    text_input: Option<ZwpTextInputV3>,
     configured: bool,
     pointer_inside: bool,
     buttons: Vec<(u32, bool)>,
@@ -139,6 +144,26 @@ impl TestClient {
         if let Some(toplevel) = self.toplevel.take() {
             toplevel.destroy();
         }
+    }
+
+    /// Type into a text field of this window, as a toolkit does when one
+    /// takes the focus: the field asks the compositor for typing, which only
+    /// a keyboard's input method can answer.
+    fn type_into_a_field(&mut self) {
+        let qh = self.queue.handle();
+        if self.seen.text_input.is_none() {
+            let manager = self
+                .seen
+                .text_input_manager
+                .as_ref()
+                .expect("zwp_text_input_manager_v3");
+            let seat = self.seen.seat.as_ref().expect("wl_seat");
+            self.seen.text_input = Some(manager.get_text_input(seat, &qh, ()));
+        }
+        let field = self.seen.text_input.as_ref().expect("a text field");
+        field.enable();
+        field.commit();
+        self.connection.flush().expect("flush");
     }
 
     /// Attach a buffer of one colour (RGBA) and commit it with a frame
@@ -2055,6 +2080,8 @@ fn pixel_at(picture: &image::RgbaImage, x: i32, y: i32) -> [u8; 4] {
 mod bars;
 #[path = "session/chrome.rs"]
 mod chrome;
+#[path = "session/keyboard.rs"]
+mod keyboard;
 #[path = "session/lock.rs"]
 mod lock;
 #[path = "session/lock_recovery.rs"]
@@ -2097,6 +2124,9 @@ impl Dispatch<WlRegistry, ()> for Seen {
                 "wl_shm" => seen.shm = Some(registry.bind(name, 1, qh, ())),
                 "xdg_wm_base" => seen.wm_base = Some(registry.bind(name, 1, qh, ())),
                 "wl_seat" => seen.seat = Some(registry.bind(name, version.min(7), qh, ())),
+                "zwp_text_input_manager_v3" => {
+                    seen.text_input_manager = Some(registry.bind(name, 1, qh, ()));
+                }
                 _ => {}
             }
         }
@@ -2238,6 +2268,8 @@ delegate_noop!(Seen: ignore WlShm);
 delegate_noop!(Seen: ignore WlShmPool);
 delegate_noop!(Seen: ignore WlBuffer);
 delegate_noop!(Seen: ignore WlSurface);
+delegate_noop!(Seen: ignore ZwpTextInputManagerV3);
+delegate_noop!(Seen: ignore ZwpTextInputV3);
 
 /// The display key's action steps the displays from side by side to
 /// showing the same, to only the built-in one, to only the other.

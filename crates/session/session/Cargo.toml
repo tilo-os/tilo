@@ -280,7 +280,8 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-suppor
 # as the person's own gesture.
 tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 wayland-client.workspace = true
-wayland-protocols = { version = "0.32.12", features = ["client"] }
+# The text a field asks a keyboard for, as an app's toolkit speaks it.
+wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
 # A display tool speaking `wlr-output-management` to the session's compositor.
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 # The action host a test's answering device runs its actions through, and the
