@@ -219,7 +219,7 @@ pub fn index_entries(host: &Host) -> Vec<IndexEntry> {
                 resource: hit.resource.clone(),
                 action: action.map(|address| IndexAction {
                     resource: address.resource.clone(),
-                    action: address.action.clone(),
+                    action: address.action,
                 }),
                 title: hit.title.clone(),
                 subtitle: Some(hit.type_name.clone()),

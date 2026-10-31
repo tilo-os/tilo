@@ -328,9 +328,6 @@ pub fn access<F>(
             let column = column_of(f).filter(|c| c.kind == ColumnKind::Ident)?;
             Some(vec![pattern_run(column, pattern, whole_type)])
         }
-        // Free text matched anywhere inside a field's text is read item by item; a text column
-        // is not a run a word's substring bounds.
-        Pred::Text(..) => None,
         Pred::Or(each) => {
             let mut out: Vec<Access> = Vec::new();
             for p in each {
@@ -355,6 +352,8 @@ pub fn access<F>(
             }
             Some(out)
         }
+        // Free text matched anywhere inside a field's text is read item by item, and so is
+        // every other predicate a column is no run of: nothing to narrow a read by.
         _ => None,
     }
 }

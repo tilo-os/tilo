@@ -459,3 +459,128 @@ fn invoke_as(session: &mut Session, resource: &str, action: &str, arguments: &se
         .unwrap_or_else(|error| panic!("{resource} {action}: {error:?}"));
     step(session);
 }
+
+// The arrangement as the shell draws it: every workspace, row, strip and place, by key, as the
+// session publishes it for the shell's views. Which way it is shown is not the arrangement's.
+#[test]
+fn the_arrangement_reads_out_by_key_for_the_shells_views() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    let window = open_window(&mut session, "org.example.Notes");
+    step(&mut session);
+    let reading = session.arrangement().borrow().reading();
+    let key = window.to_string();
+    let place = reading
+        .places
+        .iter()
+        .find(|place| place.key == key)
+        .expect("the place reads out by its key");
+    let strip = reading
+        .strips
+        .iter()
+        .find(|strip| strip.key == place.strip)
+        .expect("its strip reads out, named by the place");
+    assert!(
+        reading.rows.iter().any(|row| row.key == strip.row),
+        "the strip stands in a row the reading names"
+    );
+    assert!(
+        reading
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.key == strip.workspace),
+        "the row is of a workspace the reading names"
+    );
+    assert!(
+        !reading.workspaces.is_empty(),
+        "the desk shows its workspaces"
+    );
+}
+
+// Moving a place to another row through the published action is a place the reading then shows
+// in that row, and undo puts it back — the same both ways. Moving a place into another row's
+// empty strip makes a strip there; undo takes the place back to the strip it came from.
+#[test]
+fn a_move_the_reading_shows_is_undone_to_where_it_was() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    let window = open_window(&mut session, "org.example.Notes");
+    step(&mut session);
+    let from = strip_of(&session, window).expect("it has a strip");
+    let was = row_of(&session, from);
+    let second = add_strip(&session, "Second");
+    step(&mut session);
+
+    invoke_as(
+        &mut session,
+        "shell:arrangement",
+        "move-place",
+        &serde_json::json!({"place": window, "row": second}),
+    );
+    let key = window.to_string();
+    let reading = session.arrangement().borrow().reading();
+    let strip = reading
+        .places
+        .iter()
+        .find(|place| place.key == key.as_str())
+        .and_then(|place| reading.strips.iter().find(|strip| strip.key == place.strip))
+        .expect("the place's strip reads out");
+    assert_eq!(strip.row, second.to_string(), "the reading holds the move");
+
+    session.undo_arrangement().unwrap();
+    step(&mut session);
+    let reading = session.arrangement().borrow().reading();
+    let place = reading
+        .places
+        .iter()
+        .find(|place| place.key == key.as_str())
+        .expect("the place reads out");
+    let strip = reading
+        .strips
+        .iter()
+        .find(|strip| strip.key == place.strip)
+        .expect("the place's strip reads out");
+    assert_eq!(
+        strip.row,
+        was.to_string(),
+        "undo restores the row the reading shows"
+    );
+}
+
+// A strip's width is resized through the published action, one step the person undoes.
+#[test]
+fn resizing_a_strip_is_one_step_and_undone() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    let window = open_window(&mut session, "org.example.Notes");
+    step(&mut session);
+    let strip = strip_of(&session, window).expect("it has a strip");
+    let was = arrangement(&session)
+        .strip(strip)
+        .map(|strip| strip.width.permille())
+        .expect("the strip is in the record");
+
+    invoke_as(
+        &mut session,
+        "shell:arrangement",
+        "resize-strip",
+        &serde_json::json!({"strip": strip, "permille": 333}),
+    );
+    let now = arrangement(&session)
+        .strip(strip)
+        .map(|strip| strip.width.permille())
+        .expect("the strip is in the record");
+    assert_ne!(now, was.max(333), "the width changed");
+    assert_eq!(now, 333, "the strip stands narrow");
+
+    session.undo_arrangement().unwrap();
+    step(&mut session);
+    let back = arrangement(&session)
+        .strip(strip)
+        .map(|strip| strip.width.permille())
+        .expect("the strip is in the record");
+    assert_eq!(back, was, "undo restores the width");
+}
