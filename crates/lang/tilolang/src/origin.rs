@@ -12,6 +12,12 @@
 //! `unread`, `flagged` and `mailbox`): a change of one applies at once and becomes final when
 //! the service accepts it. Code writing any other field of the kind is refused (E113), except
 //! in a scenario, whose seed data stands in for the service.
+//!
+//! Some kinds are the origin's to derive rather than to save: the time, the desk, who is here,
+//! the workspaces on the device. The origin makes them again from nothing at every start, so
+//! they are never put in a collaborative record: [their resources live in the store's unsaved
+//! layer](OriginKind::derived), where a change reaches the views at once and leaves no change
+//! behind to be committed, synced or replayed.
 
 /// A field of an origin's kind.
 #[derive(Clone, Copy, Debug)]
@@ -32,6 +38,12 @@ pub struct OriginKind {
     pub name: &'static str,
     pub doc: &'static str,
     pub fields: &'static [OriginField],
+    /// The origin derives these resources from what it holds: it makes them again from
+    /// nothing each time it starts, so they are never saved to a collaborative record. They
+    /// live in the store's unsaved layer, where a change reaches the views without being
+    /// committed: written, remembered, and gone at the next start, when the origin writes them
+    /// again.
+    pub derived: bool,
 }
 
 const fn field(name: &'static str, ty: &'static str, doc: &'static str) -> OriginField {
@@ -82,6 +94,7 @@ pub const KINDS: &[OriginKind] = &[
         doc: "This device's desk as the session holds it, for the person at it: the time in their \
               style, who they are, their notifications, the workspaces on this device and the \
               tasks running for them. A shell's bar reads it; the session writes it.",
+        derived: true,
         fields: &[
             field(
                 "person",
@@ -145,6 +158,7 @@ pub const KINDS: &[OriginKind] = &[
     OriginKind {
         name: "session.workspace",
         doc: "A workspace on this device's desk.",
+        derived: true,
         fields: &[
             field(
                 "key",
@@ -158,6 +172,7 @@ pub const KINDS: &[OriginKind] = &[
     OriginKind {
         name: "session.person",
         doc: "Someone else here in the workspace in front: a person or an agent.",
+        derived: true,
         fields: &[
             field("key", "Text", "Who they are, by their live presence's id."),
             field("name", "Text", "Their name here."),
@@ -166,6 +181,7 @@ pub const KINDS: &[OriginKind] = &[
     OriginKind {
         name: "session.task",
         doc: "A task running for the person: an agent's or a script's.",
+        derived: true,
         fields: &[
             field("key", "Text", "The task's id."),
             field("title", "Text", "What it is doing, in a few words."),
@@ -181,6 +197,7 @@ pub const KINDS: &[OriginKind] = &[
         doc: "What the IMAP server of one of the workspace's mail accounts holds. The account itself \
               (its address, servers and signature) is the settings', and its credentials stay in \
               custody: `key` names it.",
+        derived: false,
         fields: &[
             field("key", "Text", "The settings account it mirrors, by its id."),
             field("address", "Text", "Its address."),
@@ -210,6 +227,7 @@ pub const KINDS: &[OriginKind] = &[
     OriginKind {
         name: "imap.mailbox",
         doc: "A mailbox of an account.",
+        derived: false,
         fields: &[
             field("key", "Text", "What messages name it by in `mailbox`."),
             field("name", "Text", "Its name."),
@@ -225,6 +243,7 @@ pub const KINDS: &[OriginKind] = &[
     OriginKind {
         name: "imap.thread",
         doc: "A conversation: messages that answer each other.",
+        derived: false,
         fields: &[
             field("key", "Text", "The conversation's id: its first message's."),
             field("account", "Text", "The key of the account it is in."),
@@ -254,6 +273,7 @@ pub const KINDS: &[OriginKind] = &[
     OriginKind {
         name: "imap.message",
         doc: "A message.",
+        derived: false,
         fields: &[
             field(
                 "key",
@@ -317,4 +337,11 @@ impl OriginKind {
     pub fn origin(&self) -> &'static str {
         self.name.split('.').next().unwrap_or(self.name)
     }
+}
+
+/// Whether the kind named `name` is one its origin derives, and so never saved to a
+/// collaborative record ([`OriginKind::derived`]).
+#[must_use]
+pub fn is_derived(name: &str) -> bool {
+    kind(name).is_some_and(|kind| kind.derived)
 }

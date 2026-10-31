@@ -66,7 +66,8 @@ impl Core {
                 let needle = self.text(a.h(1)?)?;
                 let at = text
                     .find(&needle)
-                    .map_or(-1, |at| len_to_i64(text[..at].chars().count()));
+                    .and_then(|at| text.get(..at))
+                    .map_or(-1, |head| len_to_i64(head.chars().count()));
                 ret_i64(at)
             }
             // The characters from `from` to `to`, counted in characters as `len` counts them.

@@ -172,6 +172,8 @@ pub struct TypeSchema {
     pub fields: Vec<FieldSchema>,
     /// Its filter columns: its filters' and those of every other field a `filter` compares.
     pub columns: Vec<ColumnSchema>,
+    /// The outside kind it holds (`type Message (origin: imap.message)`), when it holds one.
+    pub origin: Option<String>,
 }
 
 impl TypeSchema {
@@ -199,7 +201,17 @@ impl TypeSchema {
             name: name.into(),
             fields: Vec::new(),
             columns: Vec::new(),
+            origin: None,
         }
+    }
+
+    /// Whether its origin derives its resources, and so they are never saved to a collaborative
+    /// record: the store keeps them in its unsaved layer ([`crate::store`]).
+    #[must_use]
+    pub fn derived(&self) -> bool {
+        self.origin
+            .as_deref()
+            .is_some_and(tilolang::origin::is_derived)
     }
 
     #[must_use]

@@ -24,6 +24,15 @@
 //! takes the record when it is had ([`TiloStore::sync_from`], or the loader the host gave it
 //! for a write or a field no index holds), catching each index up from its heads.
 //!
+//! **The unsaved layer.** What an origin derives from nothing at every start (the clock, the
+//! desk, the device's state: a type whose origin kind says [`crate::schema::TypeSchema::derived`])
+//! is never put in the record. Its writes go into the same mirror open transaction as any
+//! write, and so are read at once, but committing them queues nothing: they stay in the
+//! mirror's open transaction and its overlay, which is what reads answer from. The record
+//! moving on ([`TiloStore::sync_from`]) drops the store's saved writes (the record has them)
+//! and leaves the derived ones where they are, so an origin's update never round-trips through
+//! the record: no action is committed, no peer replays it, and no index is rebuilt for it.
+//!
 //! One transaction may be open at a time: rolling one back puts the mirror and the overlay back
 //! as the store's earlier writes left them.
 
@@ -87,6 +96,11 @@ struct TxnState {
     touched: BTreeMap<DocId, BTreeSet<FieldKey>>,
     /// How the collections it changed changed, in order.
     listings: Vec<ListingChange>,
+    /// The resources it wrote that are saved to the record, and those their origin derives
+    /// ([`crate::schema::TypeSchema::derived`]): the latter go to the store's unsaved layer.
+    /// One action's transaction writes one kind or the other, never both.
+    saved: usize,
+    derived: usize,
 }
 
 /// What the record moved on from, when known: its heads before, and the versions its new
@@ -155,6 +169,10 @@ struct LocalWrite {
     /// record holds the action: per resource it changed, the invoker and the invocation's
     /// recorded time ([`Inner::provisional_versions`]).
     versions: Option<Ends>,
+    /// Whether it wrote only resources its origin derives ([`crate::schema::TypeSchema::derived`]):
+    /// it is the store's unsaved layer, and no change commits it. The record moving on leaves
+    /// it in the mirror ([`Inner::drop_committed_local`]).
+    derived: bool,
 }
 
 impl LocalWrite {
@@ -290,6 +308,7 @@ impl ListedOnce {
 
 mod outbox;
 mod plan;
+mod unsaved;
 mod versions;
 mod written;
 use versions::{NO_VERSIONS, note_versions};
@@ -939,11 +958,12 @@ impl TiloStore {
     }
 
     /// Bring the store up to date with the room record: when the record's heads moved, the
-    /// store's own writes are dropped from the mirror and the overlay (the record holds them
-    /// now, or will), the record's new changes are applied to the mirror and derived into each
-    /// index, and each subscriber is told which fields of which resources changed. A store
-    /// without the record takes it, and catches each index up from its heads. Returns whether
-    /// the record had moved.
+    /// store's own saved writes are dropped from the mirror and the overlay (the record holds
+    /// them now, or will) — the ones an origin derives stay, as the record never holds them —
+    /// the record's new changes are applied to the mirror and derived into each index, and each
+    /// subscriber is told which fields of which resources changed. A store without the record
+    /// takes it, and catches each index up from its heads. Returns whether the record had
+    /// moved.
     pub fn sync_from(&self, record: &Doc) -> bool {
         let mut inner = self.mutate();
         if inner.mirror.is_none() {
@@ -964,8 +984,10 @@ impl TiloStore {
             .map(|(app, held)| (app.clone(), Arc::clone(&held.snapshot)))
             .collect();
         // The store's own writes leave the mirror: the items they added, removed or moved are
-        // moved again below, as the record has them.
-        let mut items = inner.drop_local_from(0);
+        // moved again below, as the record has them. What an origin derives is never the
+        // record's to have, so those writes stay, and are applied again on the record's new
+        // copy below.
+        let mut items = inner.drop_committed_local();
         inner.rollback();
         let before = inner.index.clone();
         let from = inner.seen.clone();
@@ -977,7 +999,9 @@ impl TiloStore {
             inner.nested.clear();
             inner.stats.full_syncs = inner.stats.full_syncs.saturating_add(1);
             inner.mirror = Some(Arc::new(mirror_of(record)));
-            inner.index = scan_of(inner.mirror.as_deref());
+            inner.rescan();
+            // What an origin derives is not the record's: it is written onto the fresh copy.
+            inner.reapply_derived();
             let reached = everything(&before, &inner.index);
             inner.derive_all(&reached, None);
             inner.changed();
@@ -985,11 +1009,14 @@ impl TiloStore {
             return true;
         };
         inner.stats.incremental_syncs = inner.stats.incremental_syncs.saturating_add(1);
+        // The record's new changes are on the mirror; what an origin derives is written onto
+        // them again, as the rollback took it out.
+        inner.reapply_derived();
         for doc in &changed.nested {
             inner.nested.forget(doc);
         }
         if changed.structure || changed.unplaced {
-            inner.index = scan_of(inner.mirror.as_deref());
+            inner.rescan();
         }
         let reached = if changed.unplaced || changed.layout {
             everything(&before, &inner.index)
@@ -1508,7 +1535,8 @@ impl TiloStore {
     }
 
     /// Create the resource `id` as one committed change: how a per-room singleton gets the same
-    /// id on every replica.
+    /// id on every replica. A resource its origin derives is made in the unsaved layer instead:
+    /// its package's root, whose whole content the origin writes again at every start.
     ///
     /// # Errors
     /// The type is not registered, the resource already exists, or the record cannot be had.
@@ -1543,15 +1571,19 @@ impl TiloStore {
             inner.index.remove(id);
             return Err(error);
         }
-        let action = DynAction {
-            app: record.app.clone(),
-            kind: format!("tl.{}.{}", record.app, schema.name),
-            action_id: crate::action::CREATE_ACTION.to_owned(),
-            args: Json::String(id.to_owned()),
-            authorship: Authorship::default(),
-            edits: vec![edit],
-        };
-        inner.enqueue(action);
+        // What its origin derives is the store's unsaved layer: it is made there, read there,
+        // and gone at the next start, when the origin writes it again.
+        if !schema.derived() {
+            let action = DynAction {
+                app: record.app.clone(),
+                kind: format!("tl.{}.{}", record.app, schema.name),
+                action_id: crate::action::CREATE_ACTION.to_owned(),
+                args: Json::String(id.to_owned()),
+                authorship: Authorship::default(),
+                edits: vec![edit],
+            };
+            inner.enqueue(action);
+        }
         Ok(ResourceRef::root(id, record.ty.clone()))
     }
 }
@@ -2094,6 +2126,7 @@ impl Inner {
         touched: Vec<FieldKey>,
         (items, placed): Moves,
     ) -> Result<BTreeMap<DocId, Vec<ListingChange>>, StoreError> {
+        let derived = unsaved::writes_derived(self, edit.resource(), &touched, &items);
         let applied = {
             let mirror = self
                 .mirror_mut()
@@ -2108,22 +2141,12 @@ impl Inner {
             items,
             placed,
             versions: None,
+            derived,
         };
         let before = (!write.items.is_empty()).then(|| Arc::clone(&self.overlay));
         // Derived either way: a failed edit may have written part of itself.
         self.derive_write(&write);
-        let mut reached: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
-        for key in write
-            .touched
-            .iter()
-            .chain(write.items.iter().map(|(key, _)| key))
-        {
-            reached
-                .entry(key.doc().to_owned())
-                .or_default()
-                .push(key.clone());
-        }
-        self.changed_within(&reached);
+        self.touch(&write);
         let mut listings: BTreeMap<DocId, Vec<ListingChange>> = BTreeMap::new();
         if let (Some(before), Some(held)) = (before, self.apps.get(app).filter(|h| h.ready())) {
             let mut moved = ItemTouches::new();
@@ -2151,59 +2174,6 @@ impl Inner {
         applied.map_err(|error| invalid(error.to_string()))?;
         self.local.push(write);
         Ok(listings)
-    }
-
-    /// Derive one write into the overlay.
-    fn derive_write(&mut self, write: &LocalWrite) {
-        let Some(mirror) = self.mirror.clone() else {
-            return;
-        };
-        let Some(held) = self.apps.get(&write.app).filter(|held| held.ready()) else {
-            return;
-        };
-        let snapshot = Arc::clone(&held.snapshot);
-        let overlay = Arc::make_mut(&mut self.overlay);
-        let mut sink = OverlaySink {
-            overlay,
-            snapshot: Some(&snapshot),
-        };
-        let mut derive = Derive::new(&mirror, &self.index, &self.nested);
-        if let Err(error) = derive.changes(&mut sink, &write.app, &write.reached()) {
-            tracing::warn!(app = write.app, %error, "a change was not indexed");
-        }
-    }
-
-    /// Drop the store's writes from the `start`th on (the caller applies the rest again).
-    /// Returns the collection items they added, removed or moved.
-    fn drop_local_from(&mut self, start: usize) -> ItemTouches {
-        let start = start.min(self.local.len());
-        let mut items = ItemTouches::new();
-        for write in self.local.drain(start..) {
-            for (key, id) in write.items {
-                items.entry(key).or_default().insert(id);
-            }
-        }
-        items
-    }
-
-    /// Drop the mirror's open transaction and apply the store's committed writes again: the
-    /// mirror as those writes left it, without whatever was written after them.
-    fn reapply(&mut self) {
-        self.rollback();
-        let local = self.local.clone();
-        if let Some(mirror) = self.mirror_mut() {
-            for write in &local {
-                // Each applied once already, on this same base: one that fails now is a fault.
-                if let Err(error) = apply_edits(
-                    mirror,
-                    &write.app,
-                    std::slice::from_ref(&write.edit),
-                    &write.seed,
-                ) {
-                    tracing::error!(app = write.app, %error, "a write did not apply again");
-                }
-            }
-        }
     }
 
     /// The mirror, to change: a copy of it when a snapshot still reads it.
@@ -2476,6 +2446,12 @@ impl Store for TiloStore {
         if state.kind.is_none() {
             state.kind = kind;
         }
+        // What its origin derives lives in the store's unsaved layer; the rest is the record's.
+        if lookup(&ty).is_some_and(crate::schema::TypeSchema::derived) {
+            state.derived = state.derived.saturating_add(1);
+        } else {
+            state.saved = state.saved.saturating_add(1);
+        }
         state.edits.push(dyn_edit);
         for change in listings.into_values().flatten() {
             record_splices(&mut state.listings, &change.key, change.splices);
@@ -2495,11 +2471,27 @@ impl Store for TiloStore {
             .txns
             .remove(&txn.0)
             .ok_or_else(|| invalid("no such transaction"))?;
-        let (Some(app), Some(kind)) = (state.app, state.kind) else {
+        let (Some(app), Some(kind)) = (state.app.clone(), state.kind.clone()) else {
             return Ok(());
         };
         if state.edits.is_empty() {
             return Ok(());
+        }
+        // What its origin derives is the store's unsaved layer: it was applied to the mirror's
+        // open transaction and is read through the overlay, and nothing of it is committed,
+        // sent or versioned. It stays there until the record moves on, which leaves it in the
+        // mirror ([`Inner::drop_committed_local`]). An action writes one kind or the other;
+        // one that tried both is a fault, and its derived writes still stay unsaved.
+        if unsaved::commit_derived(&mut inner, &mut state) {
+            return Ok(());
+        }
+        if state.derived > 0 {
+            tracing::error!(
+                app,
+                saved = state.saved,
+                derived = state.derived,
+                "an action wrote both the record's resources and derived ones: the derived ones stay unsaved"
+            );
         }
         // A migration's change records, with what it did, that it ran on its resource.
         if let Some((migration, doc)) = inner.migrating.clone()

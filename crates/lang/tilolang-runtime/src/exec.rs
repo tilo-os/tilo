@@ -1117,9 +1117,9 @@ impl Core {
         let held_until = match held {
             Some(h) => {
                 let at = self.text(h)?;
-                Some(tilolang::calendar::instant(&at).ok_or_else(|| {
+                tilolang::calendar::instant(&at).ok_or_else(|| {
                     HostFail::Trap(format!("`outside(.., at: {at})`: that is not a time"))
-                })?);
+                })?;
                 Some(at)
             }
             None => None,
