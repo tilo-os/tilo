@@ -1904,12 +1904,20 @@ impl Session {
             return Ok(());
         }
         let doors = &self.shared.doors;
-        shell.serve(|resource, action, arguments| {
-            doors
-                .invoke(&ActionAddress::new(resource, action), arguments)
-                .map(drop)
-                .map_err(|error| error.to_string())
-        });
+        let resources = doors.resources();
+        shell.serve(
+            |resource, action, name| {
+                tilo_actions::door::resolve(&resources, &ActionAddress::new(resource, action))
+                    .and_then(|spec| spec.params().iter().find(|param| param.name == name))
+                    .map(|param| param.ty)
+            },
+            |resource, action, arguments| {
+                doors
+                    .invoke(&ActionAddress::new(resource, action), arguments)
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            },
+        );
         // What ran may have asked the session in turn (a menu, a sheet).
         self.settle()?;
         if let Some(shell) = self.shell.as_mut() {

@@ -7,11 +7,9 @@
 /// a surface closes it, as the session's chrome decides. Nothing here draws a window: the
 /// desk's windows are the compositor's, behind this view.
 view desk(d: Desk) {
-    ui.Scroll {
-        stack(gap: .tight) {
-            bar(d)
-            surface_or_rest(d)
-        }
+    stack(gap: .tight) {
+        bar(d)
+        surface_or_rest(d)
     }
 }
 

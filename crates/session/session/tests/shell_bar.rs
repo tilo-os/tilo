@@ -527,10 +527,7 @@ fn the_bars_overview_shows_every_window_and_picking_one_brings_it_front() {
     });
     for w in desk(&session).windows {
         assert!(
-            session
-                .accessible_labels()
-                .iter()
-                .any(|label| *label == w.title),
+            session.accessible_labels().contains(&w.title),
             "the overview shows {:?}: {:?}",
             w.title,
             session.accessible_labels()
@@ -695,11 +692,12 @@ fn a_persons_presence_opens_their_menu() {
     let mut session = session();
     until(&mut session, |session| says(session, &desk(session).clock));
     // Someone else here, as the collaboration plane lists them.
-    let mut member = tilo_desktop::here::LiveMember::default();
-    member.publisher =
-        "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd".to_owned();
-    member.kind = "person".to_owned();
-    member.label = "Mia Clayton".to_owned();
+    let member = tilo_desktop::here::LiveMember {
+        publisher: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd".to_owned(),
+        kind: "person".to_owned(),
+        label: "Mia Clayton".to_owned(),
+        ..tilo_desktop::here::LiveMember::default()
+    };
     session
         .sync()
         .expect("the session takes part in the plane")

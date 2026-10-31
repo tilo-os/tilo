@@ -524,6 +524,18 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         change
     }
 
+    /// An arrangement paints nothing of its own (see [`Self::collect_damage`]), so it is
+    /// dirty exactly when a shown child is. The default (`defaults::needs_redraw`) answers
+    /// `true` for a widget with no children, which made an empty arrangement — a view whose
+    /// every part is conditional and none stands — dirty forever, drawing a frame each time
+    /// it was asked.
+    fn needs_redraw(&self) -> bool {
+        self.slots
+            .iter()
+            .enumerate()
+            .any(|(index, slot)| !self.layout.hidden(index) && slot.element.needs_redraw())
+    }
+
     fn name(&self) -> &str {
         self.layout.name()
     }

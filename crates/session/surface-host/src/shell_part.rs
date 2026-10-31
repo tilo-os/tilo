@@ -2083,7 +2083,7 @@ mod tests_support {
         }
     }
 
-    /// Alt_L, held (`true`) or let go.
+    /// `Alt_L`, held (`true`) or let go.
     pub(super) fn alt(pressed: bool) -> HostKey {
         HostKey {
             modifiers: KeyModifiers {
@@ -2336,7 +2336,7 @@ mod surface_keys {
         let mut reading = super::tests_support::reading_with_windows();
         reading.here = "overview".to_owned();
         let (mut part, link) = part_with(reading);
-        assert!(part.claim_key(&escape(), false) != KeyClaim::Pass);
+        assert_ne!(part.claim_key(&escape(), false), KeyClaim::Pass);
         part.key(&escape());
         assert_eq!(
             link.asked.borrow().front().map(|ask| ask.action.clone()),
@@ -2355,7 +2355,7 @@ mod surface_keys {
     fn a_surface_up_makes_the_part_cover_the_outputs() {
         let mut reading = super::tests_support::reading_with_windows();
         reading.here = "launcher".to_owned();
-        let (mut part, _link) = part_with(reading);
+        let (part, _link) = part_with(reading);
         assert_eq!(
             part.widgets.placement().size,
             (1280, 800),
@@ -2371,4 +2371,3 @@ mod surface_keys {
         key(0xff1b, true)
     }
 }
-
