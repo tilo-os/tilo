@@ -1448,7 +1448,6 @@ desk-widget-remove = { $widget } entfernen
 desk-widget-removed = { $widget } vom Desktop entfernt
 desk-widget-undo = Rückgängig
 desk-team-title = In diesem Arbeitsbereich
-desk-team-place = { $strip } · { $window }
 desk-team-more = +{ $count } weitere
 desk-monitor-title = Dieses Gerät
 desk-monitor-cpu = Prozessor

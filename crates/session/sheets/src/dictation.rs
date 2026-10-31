@@ -358,9 +358,11 @@ impl ResourceApp for DictationApp {
     }
 }
 
-/// What a stage says: its title, the body under it, and a caption below.
+/// What a stage says: its title, the state the body stands in, the body
+/// under it, and a caption below.
 struct Words {
     title: String,
+    state: Option<String>,
     body: String,
     caption: Option<String>,
 }
@@ -369,6 +371,7 @@ struct Words {
 fn words(shown: &Shown) -> Option<Words> {
     let prompt = shown.prompt.as_ref()?;
     let mut caption = None;
+    let mut state = None;
     let (title, body) = match prompt.stage {
         Stage::Asking => {
             caption = Some(t("dictation-ask-caption"));
@@ -388,6 +391,7 @@ fn words(shown: &Shown) -> Option<Words> {
         }
         Stage::Finishing => (t("dictation-title"), t("dictation-finishing")),
         Stage::Recovery => {
+            state = Some(t("dictation-microphone-off"));
             caption = Some(if prompt.copy_failed {
                 t("dictation-copy-failed")
             } else if prompt.copied {
@@ -408,6 +412,7 @@ fn words(shown: &Shown) -> Option<Words> {
     };
     Some(Words {
         title,
+        state,
         body,
         caption,
     })
@@ -439,9 +444,11 @@ fn card(shown: &Shown, seat: Option<&DictationSeat>) -> Element {
         return Box::new(Column::new());
     };
     let footer = answers(prompt, seat);
-    let mut body = Column::new()
-        .with_rhythm(ui::tokens::Rhythm::Tight)
-        .push(Box::new(Text::new(&words.body)));
+    let mut body = Column::new().with_rhythm(ui::tokens::Rhythm::Tight);
+    if let Some(state) = &words.state {
+        body = body.push(Box::new(Text::new(state).with_role(TextRole::Caption)));
+    }
+    body = body.push(Box::new(Text::new(&words.body)));
     if let Some(caption) = &words.caption {
         body = body.push(Box::new(Text::new(caption).with_role(TextRole::Caption)));
     }

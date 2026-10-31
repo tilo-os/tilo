@@ -28,9 +28,31 @@ pub const MAX_ROWS: usize = 6;
 #[derive(Clone, Debug, PartialEq)]
 pub struct TeamMember {
     pub row: RosterRow,
-    /// Where they are: "Research · Notes" (the strip, then the window they
-    /// are on), or `None` when they are in the workspace but on nothing.
-    pub place: Option<String>,
+    /// Where they are, or `None` when they are in the workspace but on
+    /// nothing.
+    pub place: Option<Place>,
+}
+
+/// Where a person is: the strip they are on and the window there, as
+/// separate facts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Place {
+    /// The strip they are on, when it has a name.
+    pub strip: Option<String>,
+    /// The window they are on, when it has a title.
+    pub window: Option<String>,
+}
+
+impl Place {
+    /// Its facts in reading order: the strip, then the window.
+    #[must_use]
+    pub fn facts(&self) -> Vec<ui::widget::Fact> {
+        [self.strip.as_ref(), self.window.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(|text| ui::widget::Fact::text(text.clone()))
+            .collect()
+    }
 }
 
 /// The people in the active workspace other than this person, people
@@ -127,7 +149,7 @@ pub fn presence_id(
 
 /// The strip and window `participant_id` is on in the active workspace.
 #[must_use]
-pub fn place_of(desktop: &DesktopTree, participant_id: &str) -> Option<String> {
+pub fn place_of(desktop: &DesktopTree, participant_id: &str) -> Option<Place> {
     let workspace = desktop.active_workspace()?;
     let tab_id = workspace
         .collaborators
@@ -141,15 +163,14 @@ pub fn place_of(desktop: &DesktopTree, participant_id: &str) -> Option<String> {
             .iter()
             .flat_map(|group| &group.tabs)
             .find(|tab| tab.id == tab_id)?;
-        let title = tab.title.trim();
-        let strip_name = strip.name.trim();
-        Some(match (strip_name.is_empty(), title.is_empty()) {
-            (false, false) => crate::i18n::t_args(
-                "desk-team-place",
-                &[("strip", strip_name.into()), ("window", title.into())],
-            ),
-            (false, true) => strip_name.to_string(),
-            (true, _) => title.to_string(),
-        })
+        let place = Place {
+            strip: Some(strip.name.trim())
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
+            window: Some(tab.title.trim())
+                .filter(|title| !title.is_empty())
+                .map(str::to_owned),
+        };
+        (place.strip.is_some() || place.window.is_some()).then_some(place)
     })
 }

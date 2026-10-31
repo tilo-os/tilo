@@ -1434,7 +1434,6 @@ desk-widget-remove = Remove { $widget }
 desk-widget-removed = { $widget } removed from the desktop
 desk-widget-undo = Undo
 desk-team-title = In this workspace
-desk-team-place = { $strip } · { $window }
 desk-team-more = +{ $count } more
 desk-monitor-title = This machine
 desk-monitor-cpu = Processor
