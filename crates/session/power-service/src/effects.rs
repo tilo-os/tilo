@@ -1,7 +1,25 @@
-//! The `power:sleep` resource's actions. Every one acts on this device
-//! only.
+//! The `power:sleep` and `power:battery` resources' actions. Every one acts
+//! on this device only.
 
 use tilo_resource::Effect;
+
+/// The `power:battery` resource's actions.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.power.battery")]
+pub enum BatteryAction {
+    /// Stop charging at `percent`, where the pack's driver offers a limit.
+    #[effect(
+        own_device,
+        idempotent,
+        label = "Set the charge limit",
+        icon = "battery",
+        keywords = "charge limit, charge cap, charge threshold, battery health, ladelimit"
+    )]
+    SetChargeLimit {
+        #[param("The charge to stop at, in percent")]
+        percent: u32,
+    },
+}
 
 /// The `power:sleep` resource's actions.
 #[derive(Clone, Debug, PartialEq, Effect)]

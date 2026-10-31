@@ -321,6 +321,32 @@ pub trait PowerControl: Send + Sync {
 /// The device's power hardware.
 pub struct SystemPower;
 
+impl SystemPower {
+    /// The session's `power:battery` resource, opened now: what the pack
+    /// reads and the action that sets its charge limit. Blocking: call it off
+    /// the UI thread.
+    fn battery() -> Result<ui::collaboration::SessionResource, String> {
+        crate::device_read::off_ui_thread();
+        ui::collaboration::SessionResource::open(tilo_session_power::BATTERY)
+    }
+
+    /// The battery as the session publishes it, once.
+    fn reading(resource: &ui::collaboration::SessionResource) -> Option<BatteryReading> {
+        let Some(Ok(reading)) = resource.latest() else {
+            return None;
+        };
+        serde_json::from_str(&reading).ok()
+    }
+}
+
+/// What the session's `power:battery` resource says that this pane reads:
+/// the charge limit the pack's driver offers.
+#[derive(serde::Deserialize)]
+struct BatteryReading {
+    #[serde(default)]
+    charge_limit: Option<ChargeCapCapability>,
+}
+
 /// The services reporting the battery, the power supplies and the power
 /// profile.
 const POWER_SERVICES: &[&str] = &[
@@ -374,13 +400,23 @@ impl PowerControl for SystemPower {
     }
 
     fn charge_cap(&self) -> Option<ChargeCapCapability> {
-        crate::device_read::off_ui_thread();
-        os_actions::charge_capability()
+        let resource = Self::battery().ok()?;
+        Self::reading(&resource)?.charge_limit
     }
 
     fn set_charge_limit(&self, percent: u32) -> Result<ChargeCapCapability, String> {
-        crate::device_read::off_ui_thread();
-        os_actions::set_charge_limit_checked(percent)
+        let resource = Self::battery()?;
+        let arguments = serde_json::json!({ "percent": percent });
+        let serde_json::Value::Object(arguments) = arguments else {
+            return Err("the action's arguments are not an object".to_owned());
+        };
+        resource.invoke("set-charge-limit", &arguments)?;
+        // The action answers with the capability the hardware confirmed;
+        // the reading the resource now stands at carries it too, so the pane
+        // holds one shape of it.
+        Self::reading(&Self::battery()?)
+            .and_then(|reading| reading.charge_limit)
+            .ok_or_else(|| "the pack no longer reports a charge limit".to_owned())
     }
 }
 

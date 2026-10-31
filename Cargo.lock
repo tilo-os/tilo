@@ -15276,6 +15276,7 @@ dependencies = [
  "tilo-paths",
  "tilo-pc-keyboard-geometry",
  "tilo-relay-protocol",
+ "tilo-session-power",
  "tilo-test-env",
  "tilo-vello",
  "tilo-wallpapers",
@@ -21506,6 +21507,7 @@ dependencies = [
 name = "tilo-session-power"
 version = "0.1.0"
 dependencies = [
+ "os-actions",
  "serde",
  "serde_json",
  "tilo-actions",
