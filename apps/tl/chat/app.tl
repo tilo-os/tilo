@@ -14,7 +14,8 @@ type Category {
     channels: Collection<TextChannel>
 }
 
-/// Messages in one stream; any message can start a thread.
+/// Messages in one stream; any message can start a thread. A post is a change of its channel,
+/// so `mark others` makes it unseen to everyone but its author: the sidebar counts the new ones.
 type TextChannel {
     name: Text (title)
     topic: Text
@@ -24,7 +25,6 @@ type TextChannel {
     threads: Collection<Thread>
 
     search {
-        // A post is a change of its channel: the sidebar shows how many are new.
         mark others
     }
 }
