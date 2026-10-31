@@ -3284,31 +3284,24 @@ struct PatchCounts {
 
 impl PatchCounts {
     fn record(&mut self, p: &automerge::Patch) {
+        // The record keeps a copy of each workspace's own fields — its name,
+        // its room, its policy and the grants in it — under
+        // `workspaces/<id>/workspace`, written once by whichever device first
+        // lays the record out. What people change is the room document's own
+        // root, so the copy is not a change.
+        if in_workspace_copy(p) {
+            return;
+        }
         let container = path_tail(p);
         match (&p.action, container.as_str()) {
             (
                 automerge::PatchAction::PutMap { key, value, .. },
                 map @ ("grants" | "sandbox" | "members"),
             ) => {
-                let described = match (&value.0, map) {
-                    (Value::Scalar(s), _) => match s.as_ref() {
-                        ScalarValue::Bytes(blob) => match map {
-                            "grants" => serde_json::from_slice::<tilo_action_policy::Grant>(blob)
-                                .ok()
-                                .map(|grant| describe_grant(&grant)),
-                            "sandbox" => serde_json::from_slice::<CapOverride>(blob)
-                                .ok()
-                                .map(|cap| describe_capability(&cap)),
-                            _ => serde_json::from_slice::<tilo_action_policy::Role>(blob)
-                                .ok()
-                                .map(|role| describe_member(key, role)),
-                        },
-                        _ => None,
-                    },
-                    (Value::Object(_), _) => None,
-                };
-                self.grants
-                    .push(described.unwrap_or_else(|| t("activity-capability-unknown")));
+                self.grants.push(
+                    describe_governance(map, key, &value.0)
+                        .unwrap_or_else(|| t("activity-capability-unknown")),
+                );
             }
             (automerge::PatchAction::DeleteMap { .. }, "grants" | "sandbox" | "members") => {
                 self.revokes = self.revokes.saturating_add(1);
@@ -3552,6 +3545,17 @@ impl PatchCounts {
     }
 }
 
+/// Whether `p` lands in the layout record's copy of a workspace's own fields
+/// (`workspaces/<id>/workspace/…`), not in the room document's own root or in
+/// the record's strips, groups and windows.
+fn in_workspace_copy(p: &automerge::Patch) -> bool {
+    let map = |index: usize| match p.path.get(index) {
+        Some((_, Prop::Map(key))) => Some(key.as_str()),
+        _ => None,
+    };
+    map(0) == Some("workspaces") && map(2) == Some("workspace")
+}
+
 /// The map key of the object a patch lands in — `"capabilities"`, `"tabs"`,
 /// `"workspaces"` — or an empty string when the patch targets the root or a
 /// list element whose parent has no name.
@@ -3571,6 +3575,28 @@ fn scalar_string(v: &Value<'_>) -> Option<String> {
             _ => None,
         },
         Value::Object(_) => None,
+    }
+}
+
+/// What one entry of a governance map says, in its own words: a grant, a
+/// sandbox capability or a member with their role.
+fn describe_governance(map: &str, key: &str, value: &Value<'_>) -> Option<String> {
+    let Value::Scalar(s) = value else {
+        return None;
+    };
+    let ScalarValue::Bytes(blob) = s.as_ref() else {
+        return None;
+    };
+    match map {
+        "grants" => serde_json::from_slice::<tilo_action_policy::Grant>(blob)
+            .ok()
+            .map(|grant| describe_grant(&grant)),
+        "sandbox" => serde_json::from_slice::<CapOverride>(blob)
+            .ok()
+            .map(|cap| describe_capability(&cap)),
+        _ => serde_json::from_slice::<tilo_action_policy::Role>(blob)
+            .ok()
+            .map(|role| describe_member(key, role)),
     }
 }
 
