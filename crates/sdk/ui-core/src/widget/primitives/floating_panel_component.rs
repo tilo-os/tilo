@@ -1,9 +1,10 @@
 //! [`FloatingPanel`] as a described component: the body a palette, a popover, the notification
 //! centre or the agent composer stands on.
 
-use crate::component::{Component, Described, SlotViews};
+use crate::component::{Component, Described};
 use crate::widget::Element;
-use crate::widget::arrange::{Fit, Slot};
+use crate::widget::arrange::Slot;
+use crate::widget::arrange::Stack;
 
 use super::FloatingPanel;
 
@@ -36,9 +37,7 @@ impl Described for FloatingPanel {
             content,
             footer,
         } = props;
-        let mut stack = crate::widget::Stack::stack()
-            .gap(crate::tokens::Rhythm::Related)
-            .with_id("floating-body");
+        let mut stack = Stack::stack().gap(crate::tokens::Rhythm::Related);
         for view in content {
             stack = stack.push_slot(Slot::new(view));
         }

@@ -47,6 +47,7 @@ mod search;
 mod setup;
 mod sheets;
 pub mod shell;
+pub mod surfaces;
 pub mod sync;
 mod system_sounds;
 pub mod unlock;
@@ -1221,12 +1222,15 @@ impl Session {
 
         // The desk as the session publishes it, and the shell's bar over the
         // chrome, which reads it through the door.
+        let surfaces = Rc::new(surfaces::Surfaces::new());
         let desk = || desk::Desk {
             handle: handle.clone(),
             person: options.person.clone(),
             signals: Rc::clone(&notice_signals),
             status_panel: options.quick_settings.is_some(),
             sync: sync.clone(),
+            notices: notices.clone(),
+            surfaces: Rc::clone(&surfaces),
         };
         let desk_service = desk();
         let shell = shell::Shell::mount(&mut compositor, &mut doors, desk(), options.scale)
@@ -1911,6 +1915,27 @@ impl Session {
             shell.publish();
         }
         Ok(())
+    }
+
+    /// What the shell's bar reads the desk through: a test stages a reading on it, as a
+    /// collaborating session's presence would arrive.
+    #[must_use]
+    pub fn shell_link(&self) -> Option<Rc<tilo_surface_host::SessionLink>> {
+        self.shell.as_ref().map(shell::Shell::link)
+    }
+
+    /// The collaboration plane this session takes part in, when it does: what a test hands it
+    /// is who is here.
+    #[must_use]
+    pub fn sync(&self) -> Option<&Rc<sync::Client>> {
+        self.shared.sync.as_ref()
+    }
+
+    /// The notifications the desk keeps: what apps sent, and what the centre shows. A test
+    /// posts into it as an app's arrival would land.
+    #[must_use]
+    pub fn notices(&self) -> &tilo_desktop_surface::DesktopNotifications {
+        &self.shared.notices
     }
 
     /// How much work the shell's bar did since the session started:

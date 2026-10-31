@@ -14,8 +14,7 @@ use tilo_surface_host::{Doors, SessionLink, ShellPart, ShellWork};
 use crate::desk::Desk;
 use crate::panels::Held;
 
-/// The shell package's source and its ids lock, as it ships with the session.
-const SOURCE: &str = include_str!("../../../../apps/tl/shell/app.tl");
+/// The shell package's ids lock, as it ships with the session.
 const IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
 
 /// The shell package compiled, or why it does not compile.
@@ -24,7 +23,12 @@ const IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
 /// The package does not compile: its diagnostics.
 pub fn compile() -> Result<tilolang_tilo::tilolang::Compiled, String> {
     let lock = tilolang_tilo::tilolang::IdsLock::parse(IDS).map_err(|error| error.to_string())?;
-    tilolang_tilo::tilolang::compile_package(SOURCE, &lock, &[]).map_err(|diagnostics| {
+    tilolang_tilo::tilolang::compile_package_source(
+        &tilo_surface_host::shell_part::package_source(),
+        &lock,
+        &[],
+    )
+    .map_err(|diagnostics| {
         diagnostics
             .iter()
             .map(|diagnostic| diagnostic.render("apps/tl/shell/app.tl"))
@@ -91,10 +95,17 @@ impl Shell {
     /// Hand the shell the desk when what it is made from changed. Whether it did.
     pub(crate) fn publish(&mut self) -> bool {
         let key = self.desk.key();
-        if self.seen.replace(key) == Some(key) {
+        if self.seen.as_ref() == Some(&key) {
             return false;
         }
+        self.seen = Some(key);
         self.link.publish(self.desk.reading())
+    }
+
+    /// The link the session publishes the desk on and the shell asks through: what a test
+    /// stages a reading on.
+    pub(crate) fn link(&self) -> Rc<SessionLink> {
+        Rc::clone(&self.link)
     }
 
     /// Whether the shell asked something of the door the session has not run yet.
@@ -109,10 +120,13 @@ impl Shell {
     ) {
         let mut invoke = invoke;
         self.link.serve(|ask: &Ask| {
+            // The shell's effects carry their arguments as text, as the outside payload
+            // writes them; the door checks each against the action's own fields, so a number
+            // or a flag arrives as one.
             let arguments: Map<String, Value> = ask
                 .arguments
                 .iter()
-                .map(|(name, value)| (name.clone(), Value::String(value.clone())))
+                .map(|(name, value)| (name.clone(), typed(value)))
                 .collect();
             invoke(&ask.resource, &ask.action, &arguments)
         });
@@ -131,6 +145,18 @@ impl Shell {
     /// Where the bar's control named `name` stands, logical `(x, y, w, h)`.
     pub(crate) fn control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
         self.part.borrow_mut().control_bounds(name)
+    }
+}
+
+/// `value` as the door's arguments take it: a whole number or a flag as one, else text.
+fn typed(value: &str) -> Value {
+    if let Ok(number) = value.parse::<i64>() {
+        return Value::from(number);
+    }
+    match value {
+        "true" => Value::Bool(true),
+        "false" => Value::Bool(false),
+        text => Value::String(text.to_owned()),
     }
 }
 

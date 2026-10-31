@@ -75,15 +75,16 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     ),
     (
         "session.run",
-        "Asks the session for one of the desktop's own actions that take arguments (the \
-         `desktop:chrome` resource's), by its id, as `(action, arguments)`: each argument the \
-         action's name, as the action's own field type writes it in JSON.",
+        "Asks the session to run one of its own actions, by address: the resource and the \
+         action as the door publishes them (a window's `focus` on `desktop:tab:7`, the \
+         chrome's `move-tab-to-strip`, the desk's `show-surface`), then each argument as \
+         `(name, value)` with the name the action's own field has.",
     ),
     (
         "session.notify",
-        "Asks the session for one of the notification centre's actions (the notifications' \
-         resource's: `invoke`, `dismiss`, `clear`, `undo-clear`), by its id, as `(action, \
-         arguments)`.",
+        "The same as `session.run`, for the notification centre's actions: `notifications.banners`' \
+         `open`, `dismiss`, `act` and `reply`, and the desk's `clear-notices` and \
+         `dismiss-notice`.",
     ),
 ];
 

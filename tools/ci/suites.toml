@@ -831,15 +831,15 @@ readers = [
 
 [[cargo]]
 package = "tilo-session"
-# The desk's top bar compiles the tilolang shell package from its source and
-# ids lock.
-inputs = ["apps/tl/shell/app.tl", "apps/tl/shell/app.ids"]
+# The desk's top bar and overlays compile the tilolang shell package from its
+# sources and ids lock, every file of it.
+inputs = ["apps/tl/shell/"]
 readers = ["crates/session/session/src/shell.rs"]
 
 [[cargo]]
 package = "tilo-surface-host"
-# The part's tests read the shell package's source and ids lock they lay out.
-inputs = ["apps/tl/shell/app.tl", "apps/tl/shell/app.ids"]
+# The part's tests read the shell package's sources and ids lock they lay out.
+inputs = ["apps/tl/shell/"]
 readers = ["crates/session/surface-host/src/shell_part.rs"]
 
 [[cargo]]
