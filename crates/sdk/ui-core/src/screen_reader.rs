@@ -788,7 +788,7 @@ pub fn is_form_field(node: &AccessNode) -> bool {
 /// followed by the widgets it hosts.
 pub fn flatten_reading_order(root: &dyn Widget) -> Vec<AccessNode> {
     use crate::a11y_tree::HostedByIndex;
-    use crate::a11y_tree::walk::{A11yVisitor, Visit, walk, walk_synthetic};
+    use crate::a11y_tree::walk::{A11yVisitor, Visit, walk, walk_synthetic_children};
 
     struct Flatten(Vec<AccessNode>);
     impl A11yVisitor for Flatten {
@@ -818,14 +818,11 @@ pub fn flatten_reading_order(root: &dyn Widget) -> Vec<AccessNode> {
             w: &'w dyn Widget,
             children: Vec<AccessNode>,
             (): (),
-            mut hosted: HostedByIndex<'w>,
+            hosted: HostedByIndex<'w>,
             _represented: Vec<&'w dyn Widget>,
             (): &mut (),
         ) {
-            for (index, child) in children.iter().enumerate() {
-                let hosted = hosted.remove(&index).unwrap_or_default();
-                walk_synthetic::<false, Self>(self, w, &mut vec![index], child, hosted, &mut ());
-            }
+            walk_synthetic_children::<false, Self>(self, w, &children, hosted, &mut ());
         }
 
         fn open_synthetic(

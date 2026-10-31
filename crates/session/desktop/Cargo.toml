@@ -56,6 +56,7 @@ word-processor = { path = "../../../apps/word-processor" }
 tilo-app-state = { path = "../../system/app-state" }
 tempfile.workspace = true
 notes = { path = "../../../apps/notes" }
+tilo-tts = { path = "../../system/tts" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, features = ["test-support"] }
 
 [lints]

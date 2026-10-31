@@ -10,6 +10,7 @@
 )]
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use emoji::Recents;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
@@ -123,13 +124,19 @@ impl RecentsStore for MemoryRecents {
     }
 }
 
-/// The chrome over a test desk: the frame that mounts it, the frame that
-/// mounts the desk under it, and the link the host keeps the picker through.
-fn chrome() -> (FrameHarness, FrameHarness, DesktopHandle, EmojiLink) {
+/// The desk and the chrome a window shows over it, before either is mounted.
+struct Desk {
+    surface: DesktopSurface,
+    handle: DesktopHandle,
+    chrome: DesktopChrome,
+    link: EmojiLink,
+}
+
+/// A desk of two strips and the chrome over it, and the link the host keeps
+/// the picker through.
+fn desk() -> Desk {
     let tree = desk_tree();
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
-    let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
-    desk.relayout();
     let link = EmojiLink::new(Box::new(MemoryRecents(Rc::new(RefCell::new(
         Recents::default(),
     )))));
@@ -144,6 +151,25 @@ fn chrome() -> (FrameHarness, FrameHarness, DesktopHandle, EmojiLink) {
         false,
     )
     .with_emoji(link.clone());
+    Desk {
+        surface,
+        handle,
+        chrome,
+        link,
+    }
+}
+
+/// The chrome over a test desk: the frame that mounts it, the frame that
+/// mounts the desk under it, and the link the host keeps the picker through.
+fn chrome() -> (FrameHarness, FrameHarness, DesktopHandle, EmojiLink) {
+    let Desk {
+        surface,
+        handle,
+        chrome,
+        link,
+    } = desk();
+    let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    desk.relayout();
     let mut frame = FrameHarness::for_root(
         ui::state::State::new(),
         chrome,
@@ -156,6 +182,13 @@ fn chrome() -> (FrameHarness, FrameHarness, DesktopHandle, EmojiLink) {
 
 fn hold(frame: &mut FrameHarness, mods: ModifiersState) {
     frame.send_host_event(&WindowEvent::ModifiersChanged(Modifiers::from(mods)));
+}
+
+/// [`hold`], in the window the live app runs.
+fn hold_in(app: &mut ui::App, screen: &Screen, mods: ModifiersState) {
+    let modifiers = Modifiers::from(mods);
+    app.set_surface_modifiers(modifiers);
+    screen.send(app, &WindowEvent::ModifiersChanged(modifiers));
 }
 
 /// A chord with Super held.
@@ -225,6 +258,144 @@ fn highlighted(frame: &mut FrameHarness) -> String {
             .to_owned();
         chrome.emoji().spoken_name(&text)
     })
+}
+
+/// The name of the emoji the person is on, as the card says it, in the
+/// window the live app runs.
+fn highlighted_in(app: &mut ui::App) -> String {
+    let chrome = app
+        .root_widget_mut()
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<DesktopChrome>())
+        .expect("the window mounts the desk's chrome");
+    let text = chrome
+        .emoji()
+        .selected()
+        .expect("the card highlights an emoji")
+        .to_owned();
+    chrome.emoji().spoken_name(&text)
+}
+
+/// What Tilo's own screen reader said, through the toolkit's recording
+/// speaker.
+#[derive(Clone, Default)]
+struct Heard(Arc<Mutex<tts::NullSpeaker>>);
+
+impl Heard {
+    fn last(&self) -> Option<String> {
+        self.0.lock().unwrap().last().map(str::to_owned)
+    }
+
+    fn forget(&self) {
+        self.0.lock().unwrap().reset();
+    }
+}
+
+impl tts::Speaker for Heard {
+    fn speak_utterance(&mut self, utterance: tts::Utterance) {
+        self.0.lock().unwrap().speak_utterance(utterance);
+    }
+    fn stop(&mut self) {
+        self.0.lock().unwrap().stop();
+    }
+    fn set_rate(&mut self, rate: f32) {
+        self.0.lock().unwrap().set_rate(rate);
+    }
+    fn set_voice(&mut self, voice: &str) {
+        self.0.lock().unwrap().set_voice(voice);
+    }
+    fn is_speaking(&self) -> bool {
+        self.0.lock().unwrap().is_speaking()
+    }
+    fn backend_name(&self) -> &'static str {
+        "heard"
+    }
+}
+
+/// The desk's window, as its host shows it: events and frames in, pixels
+/// out.
+struct Screen;
+
+impl ui::app::AppSurface for Screen {
+    fn scale_factor(&self) -> f64 {
+        1.0
+    }
+    fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
+        winit::dpi::PhysicalSize::new(1280, 800)
+    }
+    fn request_redraw(&self) {}
+    fn set_cursor(&self, _cursor: winit::window::CursorIcon) {}
+}
+
+impl Screen {
+    fn send(&self, app: &mut ui::App, event: &WindowEvent) {
+        app.surface_input(self, event.clone(), false);
+    }
+
+    /// One frame of the window, and then what it says of its live regions as
+    /// the next one opens: what the person sees is what the reader reads.
+    fn frame(&self, app: &mut ui::App) {
+        let mut scene = ui::vello::Scene::new();
+        for _ in 0..3 {
+            scene.reset();
+            app.surface_frame(self, &mut scene);
+        }
+        app.surface_accessibility();
+    }
+}
+
+/// Super+. opens the card in a window of its own, with Tilo's own reader
+/// listening: it hears the card's footer, the polite region the card paints
+/// inside its own dialog, and the emoji it names follows the arrows.
+#[test]
+fn the_built_in_reader_hears_the_cards_footer() {
+    let Desk {
+        surface: _surface,
+        handle: _handle,
+        chrome,
+        link,
+    } = desk();
+    let screen = Screen;
+    let mut app = ui::App::new(ui::state::State::new(), Box::new(chrome));
+    app.init_layout();
+    let heard = Heard::default();
+    app.set_screen_reader(Some(ui::screen_reader::ScreenReader::with_speaker(
+        Box::new(heard.clone()),
+    )));
+
+    link.place_at(EmojiPlace {
+        viewport: Some(Rect::new(0.0, 0.0, 1280.0, 800.0)),
+        caret: Some(Rect::new(320.0, 180.0, 322.0, 200.0)),
+    });
+    hold_in(&mut app, &screen, ModifiersState::SUPER);
+    screen.send(&mut app, &key_press(Key::Character(".".into()), None));
+    hold_in(&mut app, &screen, ModifiersState::empty());
+    // A search with more than one answer, so the arrows have somewhere to go.
+    for character in "smile".chars() {
+        screen.send(&mut app, &char_key(&character.to_string()));
+    }
+
+    // The reader says the emoji the person is on, from the footer the card
+    // keeps inside its own subtree.
+    screen.frame(&mut app);
+    let first = highlighted_in(&mut app);
+    assert_eq!(
+        heard.last().as_deref(),
+        Some(first.as_str()),
+        "the reader says the emoji the person is on"
+    );
+
+    // An arrow moves the highlight, and the reader says the next emoji.
+    heard.forget();
+    screen.send(&mut app, &named_key(NamedKey::ArrowRight));
+    screen.frame(&mut app);
+    let next = highlighted_in(&mut app);
+    assert_ne!(next, first, "the arrow moves the highlight");
+    assert_eq!(
+        heard.last().as_deref(),
+        Some(next.as_str()),
+        "and the reader says where the person now is"
+    );
 }
 
 /// Super+. opens the card; a reader reaches it in the published tree and

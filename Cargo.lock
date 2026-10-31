@@ -18560,6 +18560,7 @@ dependencies = [
  "tilo-emoji-catalogue",
  "tilo-sort",
  "tilo-system-stats",
+ "tilo-tts",
  "tilo-ui",
  "tilo-vello",
  "tilo-winit",
