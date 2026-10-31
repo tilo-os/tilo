@@ -18,7 +18,7 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["files.paths"]
-optional = ["app-files", "threads"]
+optional = ["app-files", "threads", "open-uri"]
 
 [resources]
 kinds = ["disk-usage", "disk-usage.recent-folders"]
