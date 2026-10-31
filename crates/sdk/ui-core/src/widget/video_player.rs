@@ -225,6 +225,10 @@ pub struct NowPlaying {
     clippy::struct_excessive_bools,
     reason = "flags are independent widget state, not related toggles"
 )]
+#[crate::component::not_a_component(
+    part,
+    "the player surface `ui.VideoPlayer` is built from, over its app's engine"
+)]
 pub struct VideoPlayer {
     /// `None` in push mode.
     engine: Option<media::MediaEngine>,

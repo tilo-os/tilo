@@ -120,6 +120,10 @@ struct RichTextDirty {
     styled_layout: bool,
 }
 
+#[crate::component::not_a_component(
+    part,
+    "the line `ui.RichTextLine` edits its bound text in"
+)]
 pub struct RichTextLine {
     inner: TextInput,
     /// At most one signal in flight per frame; new signals overwrite the slot.

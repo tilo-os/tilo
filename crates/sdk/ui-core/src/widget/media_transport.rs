@@ -1745,6 +1745,10 @@ fn policy(shared: &Shared, ctx: &mut ManualContext<'_>) -> Result<Size<f32>, Wid
 }
 
 /// The media transport: see the [module docs](self).
+#[crate::component::not_a_component(
+    part,
+    "the band `ui.MediaTransport` is built from, its controls reporting the view's events"
+)]
 pub struct MediaTransport {
     content: Manual,
     shared: Rc<Shared>,

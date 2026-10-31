@@ -293,10 +293,22 @@ impl Image {
         }
     }
 
+    /// The window's pictures it loads a picture through, when it shows one by its address.
+    #[must_use]
+    pub fn pictures(&self) -> Option<&crate::pictures::Pictures> {
+        match &self.source {
+            Source::Loading { pictures, .. } => Some(pictures),
+            _ => None,
+        }
+    }
+
     /// Whether it waits for a picture's bytes: a picture being loaded, or an SVG that paints
-    /// itself. Neither is a failure.
+    /// itself. Neither is a failure, and an address that names nothing waits for nothing.
     fn loading(&self) -> bool {
-        matches!(&self.source, Source::Loading { pictures, picture } if !pictures.failed(picture))
+        matches!(
+            &self.source,
+            Source::Loading { pictures, picture } if !picture.is_empty() && !pictures.failed(picture)
+        )
     }
 
     /// Take the picture its address names, once it has arrived; `true` when that changed what

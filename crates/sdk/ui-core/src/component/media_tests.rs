@@ -150,7 +150,10 @@ fn an_image_is_a_picture_by_its_address_and_shows_its_bytes_when_they_arrive() {
     props.pictures = Some(pictures);
     let image = Image::from_props("photo", props);
     assert_eq!(image.alt(), Some("A blue tile"));
-    // The bytes are in the store: the first read takes them and lays the picture out.
+    // The picture loads on its store's own background: wait for it to decode, then the layout
+    // knows its size.
+    let store = image.pictures().expect("the image's store").store().clone();
+    store.block_until_idle(std::time::Duration::from_secs(5));
     let harness = harness(image);
     assert_eq!(
         harness.root::<Image>().intrinsic_size(),
@@ -301,5 +304,5 @@ fn a_rich_text_line_edits_its_bound_text() {
         .on("enter");
     let props = RichTextLineProps::from_source(&mut node).expect("reads");
     let mut host = harness(DeclaredLine::from_props("line", props));
-    assert_eq!(host.root_mut::<DeclaredLine>().line().name(), "TextInput");
+    assert_eq!(host.root_mut::<DeclaredLine>().line().name(), "RichTextLine");
 }

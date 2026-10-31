@@ -32,6 +32,7 @@ view media(m: Media) {
                 ui.Image(m.photo, alt: "")
                 ui.ImageViewer(m.photo, alt: "The same tile, to zoom")
             }
+            ui.ImageCropEditor(m.photo, left: 0.1, top: 0.1, right: 0.9, bottom: 0.9, aspect: 2.0)
         }
         ui.Section("Cards") {
             ui.MediaGrid(size: .small) {
@@ -117,6 +118,10 @@ view media(m: Media) {
             }
             ui.FloatingPanel(width: 280.0) {
                 ui.Text("A floating panel holds a canvas's own inspector.", role: .caption)
+            }
+            ui.Popover(label: "A popover beside nothing in particular", open: false, side: .below) {
+                ui.ListRow("First choice")
+                ui.ListRow("Second choice")
             }
             if ask {
                 ui.ModalDialog(

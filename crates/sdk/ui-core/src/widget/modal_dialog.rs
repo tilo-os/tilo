@@ -1256,6 +1256,10 @@ struct LayoutKey {
     clippy::struct_excessive_bools,
     reason = "independent open, presentation, hosting and invalidation flags"
 )]
+#[crate::component::not_a_component(
+    part,
+    "the dialog `ui.ModalDialog` is built from, around the view's content"
+)]
 pub struct ModalDialog<C: Widget + ?Sized> {
     action_identity: uuid::Uuid,
     test_id: Option<String>,

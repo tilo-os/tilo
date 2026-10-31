@@ -60,6 +60,10 @@ impl Drag {
     }
 }
 
+#[crate::component::not_a_component(
+    part,
+    "the crop surface `ui.ImageCropEditor` shows its picture in"
+)]
 pub struct ImageCropEditor {
     image: Image,
     image_size: (u32, u32),

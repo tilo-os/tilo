@@ -516,11 +516,11 @@ pub struct DeclaredPopoverButton {
 impl DeclaredPopoverButton {
     /// The button the props describe, its content inside the popover.
     #[must_use]
-    pub fn new(mut props: PopoverButtonProps) -> Self {
+    pub fn new(key: &str, mut props: PopoverButtonProps) -> Self {
         let content = column(std::mem::take(&mut props.content));
         let button = match props.icon {
-            Some(icon) => crate::widget::Button::icon_only(&props.label, icon, &props.label),
-            None => crate::widget::Button::new(&props.label, &props.label),
+            Some(icon) => crate::widget::Button::icon_only(key, icon, &props.label),
+            None => crate::widget::Button::new(key, &props.label),
         };
         let mut pair = button.with_popover(content);
         if let Some(side) = props.side {
@@ -615,7 +615,7 @@ impl Widget for DeclaredPopoverButton {
 impl Described for DeclaredPopoverButton {
     type Props = PopoverButtonProps;
 
-    fn from_props(_key: &str, props: PopoverButtonProps) -> Self {
-        Self::new(props)
+    fn from_props(key: &str, props: PopoverButtonProps) -> Self {
+        Self::new(key, props)
     }
 }

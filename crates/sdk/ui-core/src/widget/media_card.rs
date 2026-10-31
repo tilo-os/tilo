@@ -944,6 +944,10 @@ impl HoverAction {
 }
 
 /// A retained media card. See the module docs.
+#[crate::component::not_a_component(
+    part,
+    "the card of a `ui.MediaGrid`, whose props `ui.MediaCard` gives"
+)]
 pub struct MediaCard {
     source: MediaSource,
     loaded: Option<peniko::ImageData>,
@@ -1056,53 +1060,6 @@ impl MediaCard {
             image_url: None,
         });
         self
-    }
-
-    /// The card's art: a picture by its address, loaded through the window's pictures as it
-    /// arrives, so a card built from a view shows its cover.
-    #[must_use]
-    pub fn picture(mut self, pictures: &crate::pictures::Pictures, picture: &crate::widget::PictureSource) -> Self {
-        if picture.is_empty() {
-            self.source = MediaSource::Placeholder;
-        } else {
-            self.source = MediaSource::Url {
-                store: pictures.store().clone(),
-                url: picture.src.clone(),
-            };
-        }
-        self.loaded = None;
-        self
-    }
-
-    /// The card's art is the icon of a kind of thing, on the neutral tile.
-    #[must_use]
-    pub fn kind(mut self, icon: Icon) -> Self {
-        self.source = MediaSource::Kind(icon);
-        self
-    }
-
-    /// The card's art is its generated placeholder, seeded with its title's initials.
-    #[must_use]
-    pub fn without_art(mut self) -> Self {
-        self.source = MediaSource::Placeholder;
-        self.loaded = None;
-        self
-    }
-
-    /// The card's title.
-    pub fn set_title_of(&mut self, title: Option<String>) {
-        if self.title != title {
-            self.title = title;
-            self.dirty = true;
-        }
-    }
-
-    /// The card's two meta lines.
-    pub fn set_meta_of(&mut self, meta: Vec<String>) {
-        if self.meta != meta {
-            self.meta = meta.into_iter().take(2).collect();
-            self.dirty = true;
-        }
     }
 
     /// Load a creator picture from the same cache used by the retained Avatar.
