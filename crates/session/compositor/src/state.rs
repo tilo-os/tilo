@@ -114,7 +114,7 @@ pub struct State {
     pub(crate) display: DisplayHandle,
     started: Instant,
     compositor_state: CompositorState,
-    pub(crate) xdg_shell_state: XdgShellState,
+    xdg_shell_state: XdgShellState,
     shm_state: ShmState,
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
@@ -142,9 +142,6 @@ pub struct State {
     pub(crate) pointer: Point<f64, Logical>,
     pointer_target: PointerTarget,
     pub(crate) protocols: crate::protocols::Protocols,
-    /// The icons windows set for themselves, and the buffers clients must
-    /// keep alive while their icon object holds them.
-    pub(crate) toplevel_icon: crate::toplevel_icon::ToplevelIconManager,
     /// The icon each window shows, by window id.
     pub(crate) icons: crate::toplevel_icon::Icons,
     pub(crate) lock: crate::lock::Lock,
@@ -221,6 +218,7 @@ impl State {
         seat.add_touch();
         let protocols = crate::protocols::Protocols::new(display);
         let selections = crate::selection::Selections::new(display, &protocols.primary_selection);
+        crate::toplevel_icon::advertise(display);
         Self {
             display: display.clone(),
             started: Instant::now(),
@@ -244,7 +242,6 @@ impl State {
             pointer: Point::from((0.0, 0.0)),
             pointer_target: PointerTarget::Clients,
             protocols,
-            toplevel_icon: crate::toplevel_icon::ToplevelIconManager::new(display),
             icons: crate::toplevel_icon::Icons::default(),
             exited: Arc::default(),
             lock: crate::lock::Lock::new(display),
@@ -1361,9 +1358,7 @@ impl CompositorHandler for State {
 }
 
 impl BufferHandler for State {
-    fn buffer_destroyed(&mut self, buffer: &WlBuffer) {
-        self.toplevel_icon.buffer_destroyed(buffer);
-    }
+    fn buffer_destroyed(&mut self, _buffer: &WlBuffer) {}
 }
 
 impl ShmHandler for State {
@@ -1542,6 +1537,7 @@ smithay::delegate_xdg_shell!(State);
 smithay::delegate_seat!(State);
 smithay::delegate_data_device!(State);
 smithay::delegate_output!(State);
+smithay::delegate_xdg_toplevel_icon!(State);
 
 /// A fresh client's data, for [`DisplayHandle::insert_client`], whose
 /// disconnect is recorded in `exited`.

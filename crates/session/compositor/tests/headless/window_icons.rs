@@ -138,3 +138,71 @@ fn a_client_that_frees_its_icon_and_its_buffer_keeps_the_icon() {
         compositor.windows().len() == 2
     });
 }
+
+#[test]
+fn a_window_that_names_a_theme_icon_shows_that_name() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(
+        &mut compositor,
+        "org.example.Launcher",
+        (200, 160),
+        [20, 30, 40, 255],
+    );
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.icon_manager.is_some()
+    });
+    let id = window_id(&compositor, "org.example.Launcher");
+
+    let qh = client.queue.handle();
+    let manager = client.seen.icon_manager.clone().expect("manager");
+    let icon = manager.create_icon(&qh, ());
+    icon.set_name("org.example.Launcher".to_owned());
+    manager.set_icon(client.toplevel.as_ref().expect("toplevel"), Some(&icon));
+    client.surface.as_ref().expect("surface").commit();
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        window_icon(compositor, id).is_some()
+    });
+    let own = window_icon(&compositor, id).expect("the window's own icon");
+    assert_eq!(
+        own.artwork(),
+        &IconArtwork::Named("org.example.Launcher".to_owned()),
+        "a window that hands over no pixels names what to draw"
+    );
+}
+
+#[test]
+fn an_icon_with_nothing_in_it_clears_the_one_a_window_had() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(
+        &mut compositor,
+        "org.example.Game",
+        (200, 160),
+        [20, 30, 40, 255],
+    );
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.icon_manager.is_some()
+    });
+    let id = window_id(&compositor, "org.example.Game");
+
+    let qh = client.queue.handle();
+    let manager = client.seen.icon_manager.clone().expect("manager");
+    let buffer = client.icon_buffer(32, [16, 32, 48, 255]);
+    let icon = manager.create_icon(&qh, ());
+    icon.add_buffer(&buffer, 1);
+    manager.set_icon(client.toplevel.as_ref().expect("toplevel"), Some(&icon));
+    client.surface.as_ref().expect("surface").commit();
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        window_icon(compositor, id).is_some()
+    });
+
+    // An icon with neither a name nor pixels resets the window's icon, as a
+    // null icon does.
+    let empty = manager.create_icon(&qh, ());
+    manager.set_icon(client.toplevel.as_ref().expect("toplevel"), Some(&empty));
+    client.surface.as_ref().expect("surface").commit();
+    quiet(&mut compositor, &mut client);
+    assert!(
+        window_icon(&compositor, id).is_none(),
+        "an empty icon returns the window to its program's artwork"
+    );
+}

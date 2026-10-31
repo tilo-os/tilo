@@ -103,3 +103,31 @@ whether it changed since it was looked at.
 Remove this once a smithay release keeps committed text-input state,
 including the cursor rectangle, or exposes what the focused field declared
 and where its caret is.
+
+## A toplevel icon outlives the objects that carried it (`xdg_toplevel_icon_v1`)
+
+The protocol says a client may destroy its `xdg_toplevel_icon_v1` right after
+`set_icon`, and its buffers once the icon object is gone, and that the
+toplevel keeps the icon either way. This release kept the protocol objects in
+the surface's cached icon state instead, so an icon read after the client
+freed them found dead objects (and panicked), and never survived the commit
+that makes it current. Freeing the buffer also disconnected the client: the
+icon's buffer-destruction hook could not be unregistered.
+
+- `src/wayland/shm/mod.rs`: `ShmBufferUserData::remove_destruction_hook`
+  removed the first hook whose id *differed* from the one asked for, leaving
+  every hook in place.
+- `src/wayland/xdg_toplevel_icon.rs`: assigning an icon snapshots what it
+  holds — `ToplevelIconData` (its name) with a `ToplevelIconBuffer` per size
+  and scale, each carrying the pixels copied out of the client's pool, the
+  format, size and stride. `ToplevelIconCachedState` keeps that snapshot
+  (shared as an `Arc`, so the commit copies a pointer) rather than the
+  protocol object, so `icon()`, `icon_name()` and `buffers()` keep answering
+  after the client freed the icon and its buffers. An icon with neither a
+  name nor pixels resets the toplevel's icon, as the protocol says a null one
+  does. `set_name`/`add_buffer` stop after the `immutable` error instead of
+  going on to change a frozen icon, and a replaced buffer that is already
+  gone no longer panics the deduplication.
+
+Remove this once a smithay release keeps a toplevel's icon once it is set,
+copied out of the client's pool.

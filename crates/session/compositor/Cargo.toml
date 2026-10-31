@@ -37,9 +37,6 @@ qcms.workspace = true
 tracing.workspace = true
 # Percentiles of the frame pacing it logs.
 tilo-frame-metrics = { path = "../frame-metrics" }
-# State a protocol object keeps while clients hold it, readable from any
-# thread that names the object.
-tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Monitors are known by their EDID identity, which a layout follows
 # between ports.
 settings-store = { path = "../../system/settings-store" }
