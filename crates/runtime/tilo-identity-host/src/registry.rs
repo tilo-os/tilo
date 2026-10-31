@@ -155,7 +155,15 @@ impl IdentityRegistry {
     }
 
     /// Identity selected for `room`, falling back to the default.
+    ///
+    /// A person room ([`collab_types::person_room`]) is derived from its
+    /// person's root key, so it needs no selection of its own: it is the
+    /// room of the identity that key is, whatever this login selected for
+    /// its workspaces.
     pub fn selected_for_workspace(&self, room: &str) -> Option<&IdentityProfile> {
+        if let Some(profile) = self.person_room_identity(room) {
+            return Some(profile);
+        }
         self.workspace_identities
             .get(room)
             .and_then(|id| self.identities.get(id))
@@ -164,6 +172,14 @@ impl IdentityRegistry {
                     .as_ref()
                     .and_then(|id| self.identities.get(id))
             })
+    }
+
+    /// The identity `room` is the person room of, when it is one of this
+    /// registry's identities.
+    fn person_room_identity(&self, room: &str) -> Option<&IdentityProfile> {
+        self.identities
+            .values()
+            .find(|profile| collab_types::person_room(&profile.user_public_key).to_string() == room)
     }
 
     /// Change the default identity after validating it exists.
@@ -799,6 +815,59 @@ mod tests {
                 .selected_for_workspace("room-p")
                 .map(|profile| profile.id.as_str()),
             Some(bob.as_str())
+        );
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    /// A person room needs no selection and never falls back to the default:
+    /// it is the room of the identity its id derives from.
+    #[test]
+    fn a_person_room_is_the_room_of_the_identity_it_derives_from() {
+        let dir = temp_dir("person-room");
+        write_record(&dir.join("alice.json"), &record("Alice", 51));
+        write_record(&dir.join("bob.json"), &record("Bob", 52));
+        let store = IdentityRegistryStore::at(&dir);
+        let registry = store.load_reconciled().expect("read");
+        let person = |name: &str| {
+            registry
+                .identities
+                .values()
+                .find(|profile| profile.display_name == name)
+                .expect(name)
+        };
+        let alice = person("Alice");
+        let room = collab_types::person_room(&alice.user_public_key).to_string();
+        assert_eq!(
+            registry
+                .selected_for_workspace(&room)
+                .map(|profile| profile.display_name.as_str()),
+            Some("Alice"),
+            "the person room maps to the identity it derives from"
+        );
+        // The default identity alone would answer Bob for a room bound to
+        // nothing; the person room is still Alice's, not the default's.
+        let mut rebound = registry.clone();
+        rebound
+            .bind_workspace(room.clone(), &person("Bob").id)
+            .expect("bind");
+        assert_eq!(
+            rebound
+                .selected_for_workspace(&room)
+                .map(|profile| profile.display_name.as_str()),
+            Some("Alice"),
+            "a binding on a person room is never taken"
+        );
+        // A room no identity derives is decided as it always was.
+        let other = collab_types::person_room(&[0x5a; 32]).to_string();
+        assert_eq!(
+            registry
+                .selected_for_workspace(&other)
+                .map(|profile| profile.display_name.as_str()),
+            registry
+                .default_identity
+                .as_ref()
+                .and_then(|id| registry.identities.get(id))
+                .map(|profile| profile.display_name.as_str())
         );
         fs::remove_dir_all(dir).expect("cleanup");
     }
