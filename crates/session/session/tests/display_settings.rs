@@ -109,14 +109,23 @@ fn scale(session: &mut Session, connector: &str) -> Option<f64> {
 }
 
 /// Let the session run until `done` holds.
+///
+/// Counting steps would not do: the display tool answers on its own socket
+/// and thread, and a loaded machine can take many steps' worth of time to get
+/// to it.
+#[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
-    for _ in 0..500 {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
         session.step(Duration::from_millis(2)).expect("step");
         if done(session) {
             return;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "condition not reached"
+        );
     }
-    panic!("condition not reached");
 }
 
 /// The question standing on the person's displays now, if one does.
@@ -359,6 +368,9 @@ fn walking_away_puts_the_previous_layout_back_and_takes_the_question_down() {
 fn a_tools_risky_change_asks_on_every_display_and_keeping_it_for_good_is_remembered() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
+    // The card is what changed between the pictures this test compares: the
+    // bar's own minute turning over is not.
+    let _clock = tilo_test_env::held_wall_clock();
     let mut session = session(2);
     attached(&mut session);
     let mine = DisplayTool::new(
@@ -484,18 +496,23 @@ impl Tool {
         self.connection.flush().expect("flush");
     }
 
-    /// Let the tool and the session talk until `done` holds.
+    /// Let the tool and the session talk until `done` holds, for as long as a
+    /// loaded machine takes: the answer comes over the tool's own socket.
     #[track_caller]
     fn pump(&mut self, session: &mut Session, mut done: impl FnMut(&ToolState) -> bool) {
-        for _ in 0..500 {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
             self.exchange();
             session.step(Duration::from_millis(2)).expect("step");
             self.exchange();
             if done(&self.state) {
                 return;
             }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "condition not reached"
+            );
         }
-        panic!("condition not reached");
     }
 
     fn until_heads(&mut self, session: &mut Session) {
