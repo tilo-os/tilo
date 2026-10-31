@@ -17811,6 +17811,7 @@ name = "tilo-automerge"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "serde_json",
  "tilo-automerge",
  "tilo-automerge-fork",
 ]

@@ -24,6 +24,7 @@
 
 #[cfg(feature = "heap-probe")]
 pub mod heap;
+pub mod json;
 pub mod read;
 pub mod whole;
 mod write;

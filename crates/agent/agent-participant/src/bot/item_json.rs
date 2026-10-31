@@ -4,12 +4,13 @@
 //! The host process never runs app code beside its keys, so it cannot read
 //! an item through the app's model. Records keep their items in maps keyed
 //! by item id, so the item is the first map entry with that key, searched
-//! breadth first, and its subtree is converted generically: maps to
-//! objects, lists to arrays, text to strings, scalars to their JSON values.
-//! What a bot reads is therefore the stored shape, not the app's typed one.
+//! breadth first, and its subtree is read by [`tilo_automerge::json`], the one
+//! JSON mapping every Tilo document stores by. What a bot reads is therefore
+//! the stored shape, not the app's typed one.
 
-use automerge::{ChangeHash, ObjId, ObjType, ReadDoc, ScalarValue, Value as Am};
-use serde_json::{Map, Number, Value};
+use automerge::{ChangeHash, ObjId, ObjType, ReadDoc, Value as Am};
+use serde_json::Value;
+use tilo_automerge::json;
 
 /// How deep the search for an item goes.
 const MAX_DEPTH: usize = 6;
@@ -22,8 +23,9 @@ const MAX_ENTRIES: usize = 10_000;
 pub fn item_json(doc: &impl ReadDoc, heads: &[ChangeHash], item: &str) -> Option<Value> {
     let object = find(doc, heads, item)?;
     let object = collection_value(doc, heads, &object).unwrap_or(object);
-    let mut budget = MAX_ENTRIES;
-    Some(convert(doc, heads, &object, &mut budget))
+    // What JSON cannot hold, or a subtree past the budget, still reports the
+    // item: the bot reads what the document could answer.
+    Some(json::read_at(doc, &object, heads, Some(MAX_ENTRIES)).unwrap_or(Value::Null))
 }
 
 /// The value of a collection's entry: an ordered collection keeps each
@@ -119,61 +121,6 @@ fn find(doc: &impl ReadDoc, heads: &[ChangeHash], item: &str) -> Option<ObjId> {
         level = next;
     }
     None
-}
-
-fn convert(doc: &impl ReadDoc, heads: &[ChangeHash], object: &ObjId, budget: &mut usize) -> Value {
-    match doc.object_type(object) {
-        Ok(ObjType::Map | ObjType::Table) => {
-            let mut out = Map::new();
-            for key in doc.keys_at(object, heads) {
-                let Some(left) = budget.checked_sub(1) else {
-                    break;
-                };
-                *budget = left;
-                let value = entry(doc, heads, doc.get_at(object, key.as_str(), heads), budget);
-                out.insert(key, value);
-            }
-            Value::Object(out)
-        }
-        Ok(ObjType::List) => {
-            let mut out = Vec::new();
-            for index in 0..doc.length_at(object, heads) {
-                let Some(left) = budget.checked_sub(1) else {
-                    break;
-                };
-                *budget = left;
-                out.push(entry(doc, heads, doc.get_at(object, index, heads), budget));
-            }
-            Value::Array(out)
-        }
-        Ok(ObjType::Text) => Value::String(doc.text_at(object, heads).unwrap_or_default()),
-        Err(_) => Value::Null,
-    }
-}
-
-fn entry(
-    doc: &impl ReadDoc,
-    heads: &[ChangeHash],
-    found: Result<Option<(Am<'_>, ObjId)>, automerge::AutomergeError>,
-    budget: &mut usize,
-) -> Value {
-    match found {
-        Ok(Some((Am::Object(_), id))) => convert(doc, heads, &id, budget),
-        Ok(Some((Am::Scalar(scalar), _))) => scalar_json(&scalar),
-        _ => Value::Null,
-    }
-}
-
-fn scalar_json(scalar: &ScalarValue) -> Value {
-    match scalar {
-        ScalarValue::Str(text) => Value::String(text.to_string()),
-        ScalarValue::Int(n) | ScalarValue::Timestamp(n) => Value::from(*n),
-        ScalarValue::Uint(n) => Value::from(*n),
-        ScalarValue::F64(n) => Number::from_f64(*n).map_or(Value::Null, Value::Number),
-        ScalarValue::Boolean(b) => Value::Bool(*b),
-        ScalarValue::Counter(counter) => Value::from(i64::from(counter)),
-        ScalarValue::Null | ScalarValue::Bytes(_) | ScalarValue::Unknown { .. } => Value::Null,
-    }
 }
 
 #[cfg(test)]
