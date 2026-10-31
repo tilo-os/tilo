@@ -60,7 +60,7 @@ engines agree.
 
 ## Measured: the tiered engine
 
-On the arm64 rcargo builder (`rcargo exec`, shared with other builds, so a few percent is
+On an arm64 builder (any cargo drop-in, shared with other builds, so a few percent is
 noise), release, 10 samples, 1k items (Chat: 20 conversations, its thread 1k messages), one
 binary for every engine. p50s in ms. *wasmi before* is the same scenarios on the binary of
 integration a01f8006bee, where wasmtime imports and calls converted every value through `Val`.
