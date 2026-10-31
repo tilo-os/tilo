@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 
 use tilo_network_actor::fabric::DeviceId;
 
-use crate::{ClipboardEntry, DeviceFabric, PersonalFabricAction, RoamingSetting};
+use crate::{ClipboardEntry, DeviceFabric, PersonalFabricAction, RoamingSetting, WakeRoute};
 
 /// Why a personal fabric action did not reach the transport.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +72,15 @@ pub trait FabricLink {
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
         let _ = entries;
     }
+    /// Offer the ways this device's interfaces can be woken to the person's
+    /// other devices, as this device's own record in its next snapshot.
+    ///
+    /// A link whose transport does not carry wake routes yet ignores the
+    /// offer; what their devices offered still merges in from
+    /// [`Self::device_fabric`].
+    fn share_wake_routes(&self, routes: Vec<WakeRoute>) {
+        let _ = routes;
+    }
     /// Offer the person's settings this device holds to their other devices,
     /// as this device's own records in its next snapshot.
     ///
@@ -124,5 +133,9 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
 
     fn share_settings(&self, settings: Vec<RoamingSetting>) {
         (**self).share_settings(settings);
+    }
+
+    fn share_wake_routes(&self, routes: Vec<WakeRoute>) {
+        (**self).share_wake_routes(routes);
     }
 }

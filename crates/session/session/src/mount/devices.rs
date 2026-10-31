@@ -57,6 +57,11 @@ fn read(fabric: &SharedLink) -> Vec<PersonalDevice> {
             online: snapshot.presence.online,
             local: local.as_ref() == Some(&snapshot.owner),
             display: snapshot.presence.capabilities.display,
+            wakeable: snapshot
+                .presence
+                .wake_routes
+                .iter()
+                .any(|route| route.magic_packet),
         })
         .collect();
     devices.sort_by(|left, right| {
@@ -141,6 +146,16 @@ fn press(shared: &Shared, row: &str, part: RowPart) {
         return;
     };
     if device.local {
+        return;
+    }
+    // A device that is away and offered a way to be woken takes a wake-up
+    // signal: nothing plays there to take, so this is what its press is for.
+    if !device.online && device.wakeable {
+        if let Err(refusal) = shared.waking.request(shared, row) {
+            // The panel has no line to show a refusal on; a wake that could
+            // not be planned changes nothing the person sees.
+            tracing::debug!(%refusal, device = row, "a device could not be woken");
+        }
         return;
     }
     let source = shared

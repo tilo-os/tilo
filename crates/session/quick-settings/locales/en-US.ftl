@@ -194,6 +194,7 @@ qs-devices-fabric-unavailable = Personal device fabric is unavailable
 qs-devices-offline = Offline
 qs-devices-online = Online
 qs-devices-play-here = Play { $media } here
+qs-devices-wake = Wake
 qs-edit-move-down = Move down
 qs-edit-move-up = Move up
 qs-edit-required = Required

@@ -118,6 +118,7 @@ pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS
 pub use launches::Launches;
 pub use lists::{AppLists, Lists};
 pub use mount::vpn::KillSwitch;
+pub use mount::wake::{Seams as WakeSeams, WakeInterfaces};
 pub use records::Records;
 pub use rotation::Accelerometer;
 pub use run::{Backend, Reach};
@@ -280,6 +281,7 @@ pub struct Options {
     /// copied here is shared with their other devices through it, and what
     /// they copied there joins the clipboard here.
     pub fabric: Option<tilo_device_fabric::link::SharedLink>,
+    pub wake_seams: mount::wake::Seams,
     /// The person's VPN profile kill switches, when this session runs on a
     /// machine with the helper: a profile set to connect and not connected
     /// blocks traffic while its switch is on. Without one, nothing does.
@@ -419,6 +421,7 @@ impl Default for Options {
             state: None,
             collab: true,
             fabric: None,
+            wake_seams: mount::wake::Seams::default(),
             kill_switch: None,
             action_plane: ActionPlane::default(),
             launches: std::sync::Arc::default(),
@@ -472,6 +475,8 @@ struct Shared {
     fabric: Option<tilo_device_fabric::link::SharedLink>,
     /// The person's devices as the panel was last fed them.
     devices: mount::devices::Devices,
+    /// The wakes this session takes part in.
+    waking: Rc<mount::wake::Wake>,
     /// What plays, as the desk's music widget shows it: written from the
     /// device's reading every frame it is pumped.
     music: tilo_desktop::desk_widgets::DeskMusic,
@@ -1723,6 +1728,7 @@ impl Session {
             device,
             fabric,
             devices: mount::devices::Devices::default(),
+            waking: mount::wake::Wake::new(&options.wake_seams),
             music,
             power,
             workspace_settings,
@@ -2337,6 +2343,8 @@ impl Session {
             // same fabric: what they set here is offered to it, and what
             // they set there reaches the document this session reads.
             self.shared.settings.sync(fabric.as_ref());
+            // The person's sleeping devices, and the probes that follow them.
+            self.shared.waking.follow(&self.shared);
             // What this pass offered the clipboard, and what the pumps just
             // changed, is this device's next word to its other devices.
             if let Some(sync) = &self.shared.sync {

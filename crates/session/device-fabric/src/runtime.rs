@@ -22,7 +22,7 @@ use tilo_user_identity::{DeviceCert, RevocationEntry};
 use crate::{
     ClipboardEntry, DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
     FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricError, FabricStamp, OwnerSession,
-    PersonalFabricAction, PersonalFabricActionEnvelope,
+    PersonalFabricAction, PersonalFabricActionEnvelope, WakeRoute,
 };
 
 /// Request ids remembered so a replayed action is refused.
@@ -291,6 +291,24 @@ impl FabricRuntime {
             return Ok(false);
         }
         local.snapshot.clipboard = entries;
+        self.revise()
+    }
+
+    /// Take the wake routes this device's interfaces now offer, replacing
+    /// what it offered before: an interface that went away stops being a way
+    /// to wake this machine. Returns whether this device's record changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the routes do not make a valid record.
+    pub fn set_wake_routes(&mut self, routes: Vec<WakeRoute>) -> Result<bool, FabricError> {
+        let Some(local) = &mut self.local else {
+            return Ok(false);
+        };
+        if local.snapshot.presence.wake_routes == routes {
+            return Ok(false);
+        }
+        local.snapshot.presence.wake_routes = routes;
         self.revise()
     }
 

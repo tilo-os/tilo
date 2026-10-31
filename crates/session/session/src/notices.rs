@@ -112,7 +112,7 @@ impl Notice {
     }
 
     /// Show it to the person.
-    fn tell(self, notifications: &Notifications) {
+    pub(crate) fn tell(self, notifications: &Notifications) {
         notifications.push(self.into_notification(notifications));
     }
 
@@ -226,6 +226,31 @@ pub fn medium_notice(medium: &Medium) -> Notice {
 #[must_use]
 pub fn announce_medium(notifications: &Notifications, medium: &Medium) -> u32 {
     medium_notice(medium).tell_as(notifications)
+}
+
+/// The notice for how a request to wake one of the person's devices ended,
+/// or `None` while there is nothing to tell: the signal went out and the
+/// session is still waiting for the device.
+#[must_use]
+pub fn wake_notice(event: &tilo_device_fabric::wake::WakeEvent) -> Option<Notice> {
+    use tilo_device_fabric::WakeOutcome;
+    let device = event.label.as_str();
+    let (title, body) = match event.outcome {
+        WakeOutcome::Sent { .. } => return None,
+        WakeOutcome::Rejoined => (
+            t_args("device-wake-rejoined", &[("device", device.into())]),
+            String::new(),
+        ),
+        WakeOutcome::NotRejoined => (
+            t_args("device-wake-not-rejoined", &[("device", device.into())]),
+            t("device-wake-not-rejoined-body"),
+        ),
+        WakeOutcome::NotOnTargetLan | WakeOutcome::SendFailed => (
+            t_args("device-wake-failed", &[("device", device.into())]),
+            t("device-wake-failed-body"),
+        ),
+    };
+    Some(Notice::new(t("device-wake-app-name"), 1, title, body))
 }
 
 /// Room `path`'s filesystem has left, when the path exists.

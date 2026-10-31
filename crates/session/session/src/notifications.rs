@@ -498,6 +498,14 @@ impl SessionNotifications {
     /// Take in what arrived and what the banners asked, and hand the
     /// banners what they show now. `token` mints an activation token for
     /// each notification the person chose, so its app may raise its window.
+    /// Tell the person `notice`, which the session itself raised rather than
+    /// one of their apps.
+    pub(crate) fn tell(&self, notice: crate::notices::Notice) {
+        if let Some(daemon) = &self.daemon {
+            notice.tell(daemon);
+        }
+    }
+
     pub(crate) fn step(&mut self, token: &mut dyn FnMut() -> Option<String>) {
         // Banners whose time on screen ran out leave first.
         self.desktop.expire(ui::time::now());
