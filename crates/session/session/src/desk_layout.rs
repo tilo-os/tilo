@@ -190,6 +190,7 @@ mod tests {
                     y: 0.0,
                     width: 1280.0,
                     height: 800.0,
+                    primary: false,
                 },
                 Display {
                     id: 1,
@@ -198,6 +199,7 @@ mod tests {
                     y: 0.0,
                     width: 2560.0,
                     height: 1440.0,
+                    primary: false,
                 },
             ],
             ..OutputPartition::default()
@@ -213,6 +215,8 @@ mod tests {
         };
         tree.active_strip.insert(WorkspaceId(1), StripId(1));
         tree.set_active_group(StripId(1), 11);
+        // The window the person took across their display.
+        assert!(tree.set_fullscreen(StripId(1), 11, true));
         tree
     }
 
@@ -259,6 +263,11 @@ mod tests {
         assert!(
             writing.window_groups[1].maximized,
             "a maximized group stays maximized"
+        );
+        assert_eq!(
+            back.fullscreen,
+            Some(11),
+            "so does the window taken across the display"
         );
 
         let windows = &writing.window_groups[0];

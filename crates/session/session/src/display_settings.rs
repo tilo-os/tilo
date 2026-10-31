@@ -352,6 +352,13 @@ fn place(config: &mut CompositorDisplayConfig, connector: &str, output: &OutputC
     if !output.enabled {
         config.disabled.insert(connector.to_owned());
     }
+    // The display the person made primary is the one their desk's bar, new
+    // windows and sheets go to. A stored primary the person turned off
+    // stays named here and the compositor names no primary while nothing
+    // is lit on it, so the choice comes back with the display.
+    if output.primary {
+        config.primary = Some(connector.to_owned());
+    }
     if let Some(mode) = output.mode {
         config.modes.insert(
             connector.to_owned(),
@@ -483,6 +490,7 @@ mod tests {
             "DP-1".into(),
             OutputConfig {
                 enabled: false,
+                primary: true,
                 x: 1920,
                 y: 240,
                 scale: 2.0,
@@ -508,6 +516,11 @@ mod tests {
         );
         assert_eq!(config.night_light, Some(3400));
         assert!(config.disabled.contains("DP-1"));
+        assert_eq!(
+            config.primary.as_deref(),
+            Some("DP-1"),
+            "the display the person chose is the primary one"
+        );
         assert_eq!(config.positions.get("DP-1"), Some(&(1920, 240)));
         assert_eq!(config.scales.get("DP-1"), Some(&2.0));
         assert_eq!(

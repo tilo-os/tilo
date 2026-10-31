@@ -37,6 +37,81 @@ pub enum HostedActions {
     },
 }
 
+/// One of the person's devices, as the device fabric reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PersonalDevice {
+    /// The fabric id, which names the device in the panel's effects.
+    pub id: String,
+    pub label: String,
+    /// It has a live session with this device now.
+    pub online: bool,
+    /// This machine.
+    pub local: bool,
+    /// It shows, so where its display stands beside this one's is arranged in
+    /// its settings pane.
+    pub display: bool,
+}
+
+impl PersonalDevice {
+    /// The Settings page where this device is managed: where its display is
+    /// placed beside this one's when it shows, else the person's devices and
+    /// what they keep in step.
+    #[must_use]
+    pub fn settings_link(&self) -> &'static str {
+        if self.display {
+            "settings://displays"
+        } else {
+            "settings://devices_sync"
+        }
+    }
+}
+
+/// The Devices section's rows: one per device other than this one, in
+/// `devices`' order. `playing` titled what plays here when another device
+/// can take it: each row that can says so, and every other row says only
+/// where its device is, since pressing it opens that device's settings.
+#[must_use]
+pub fn device_rows(devices: &[PersonalDevice], playing: Option<&str>) -> Vec<HostedRow> {
+    devices
+        .iter()
+        .filter(|device| !device.local)
+        .map(|device| HostedRow {
+            key: device.id.clone(),
+            title: device.label.clone(),
+            detail: crate::i18n::t(if device.online {
+                "qs-devices-online"
+            } else {
+                "qs-devices-offline"
+            }),
+            icon: Icon::Monitor,
+            selected: false,
+            enabled: true,
+            actions: match playing {
+                Some(title) if device.online => HostedActions::Select(crate::i18n::t_args(
+                    "qs-devices-play-here",
+                    &[("media", title.into())],
+                )),
+                _ => HostedActions::None,
+            },
+        })
+        .collect()
+}
+
+/// The same devices as an accessory's page lists where it can move to, this
+/// device included and marked local.
+#[must_use]
+pub fn handoff_targets(devices: &[PersonalDevice]) -> Vec<crate::HandoffTarget> {
+    devices
+        .iter()
+        .map(|device| crate::HandoffTarget {
+            id: device.id.clone(),
+            label: device.label.clone(),
+            online: device.online,
+            local: device.local,
+        })
+        .collect()
+}
+
 /// One row's face.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostedRow {

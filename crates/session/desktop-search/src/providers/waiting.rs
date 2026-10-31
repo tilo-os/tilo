@@ -96,6 +96,8 @@ impl Source for Waiting {
                 };
                 let target = self.answer(notification)?;
                 Some(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: waiting_kind(),
                     provider: self.id().into(),
                     id: notification.id.as_str().to_owned(),

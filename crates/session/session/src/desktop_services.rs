@@ -49,6 +49,11 @@ pub struct DesktopServices {
     runtime: tokio::runtime::Runtime,
     questions: Questions,
     portal: Option<Portal>,
+    /// The files people choose for apps, while they are served as a
+    /// filesystem: the same table the portal grants through, which a
+    /// launcher binds an app's view of and the app finds at its own
+    /// documents directory. Dropping it unmounts.
+    chosen: Option<tilo_documents::mount::Mounted>,
     notifications: tilo_notifications_service::Notifications,
     roaming: RoamingWifiSlot,
     /// The session bus connection the portal and the daemon serve on, and
@@ -72,10 +77,13 @@ impl DesktopServices {
     /// Start every desktop service `buses` reach, the portal taking its
     /// screenshots with `capture`, sharing the screens, driving the seat and
     /// passing the selection through `side` (the session's own side of it),
-    /// and taking the holds apps ask it for in `inhibitors` (the session's
-    /// own, so they keep the machine awake). One that cannot start (no bus,
-    /// the name taken, no daemon behind it) is logged and the rest carry on;
-    /// the session bus services are serving when this returns.
+    /// Pass the selection through `side` (the session's own side of it),
+    /// and take the holds apps ask it for in `inhibitors` (the session's
+    /// own, so they keep the machine awake). What people choose for apps is
+    /// served as a filesystem here too, from the table the portal grants
+    /// through. One that cannot start (no bus, the name taken, no daemon
+    /// behind it) is logged and the rest carry on; the session bus services
+    /// are serving when this returns.
     ///
     /// # Errors
     /// The runtime they run on could not be made.
@@ -97,16 +105,21 @@ impl DesktopServices {
         let notifications = tilo_notifications_service::Notifications::for_session();
         let roaming = RoamingWifiSlot::default();
         let running = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
-        let (portal, session) = runtime.block_on(on_session_bus(
-            &buses.session,
-            &questions,
-            &notifications,
-            Arc::clone(wake),
+        // One table of chosen files: what the portal grants through, and
+        // what the filesystem a launcher binds an app's view of serves.
+        let documents = tilo_portal::documents_store();
+        let chosen = serve_documents(documents.clone());
+        let (portal, session) = runtime.block_on(on_session_bus(OnSessionBus {
+            bus: &buses.session,
+            questions: &questions,
+            notifications: &notifications,
+            documents,
+            wake: Arc::clone(wake),
             capture,
             side,
             inhibitors,
-            Arc::clone(&running),
-        ));
+            running: Arc::clone(&running),
+        }));
         let tray = runtime.block_on(tray_on(&buses.session, Arc::clone(&running)));
         let system = match buses.system {
             Bus::None => None,
@@ -123,6 +136,7 @@ impl DesktopServices {
             runtime,
             questions,
             portal,
+            chosen,
             notifications,
             roaming,
             session,
@@ -176,6 +190,16 @@ impl DesktopServices {
     #[must_use]
     pub const fn portal(&self) -> Option<&Portal> {
         self.portal.as_ref()
+    }
+
+    /// Whether the files people choose for apps are served as a filesystem
+    /// at [`tilo_documents::mountpoint`], which a launcher binds an app's
+    /// view of: only then is a sandboxed app answered with a path its own
+    /// sandbox holds the file at. Without it the chooser answers with the
+    /// host path, which a sandbox cannot open.
+    #[must_use]
+    pub const fn documents_served(&self) -> bool {
+        self.chosen.is_some()
     }
 
     /// An app exited: what it was granted while it ran is forgotten, and
@@ -284,6 +308,38 @@ impl DesktopServices {
     }
 }
 
+/// Serve the files people choose for apps as a filesystem at
+/// [`tilo_documents::mountpoint`], the table `documents` is: what the portal
+/// grants through and what a launcher binds an app's view of.
+///
+/// `None` where it cannot be served (no runtime directory, no FUSE): the
+/// portal is still told what apps run, but a chooser answering a sandboxed
+/// app then names the host file itself, which the app's sandbox cannot open.
+fn serve_documents(documents: tilo_documents::Documents) -> Option<tilo_documents::mount::Mounted> {
+    let Some(at) = tilo_documents::mountpoint() else {
+        tracing::warn!(
+            "no runtime directory, so the files people choose for apps are not served: \
+             a sandboxed app is handed the host path of the file it picks"
+        );
+        return None;
+    };
+    match tilo_documents::mount::mount(documents, &at) {
+        Ok(mounted) => {
+            tracing::info!(at = %at.display(), "serving the files people choose for apps");
+            Some(mounted)
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                at = %at.display(),
+                "the files people choose for apps are not served: \
+                 a sandboxed app is handed the host path of the file it picks"
+            );
+            None
+        }
+    }
+}
+
 async fn connect(bus: &Bus, system: bool) -> Option<zbus::Connection> {
     let connected = match bus {
         Bus::None => return None,
@@ -346,20 +402,42 @@ fn tray_owner_resolver(
     })
 }
 
-/// The portal backend and the notifications daemon, serving on `bus`.
-async fn on_session_bus(
-    bus: &Bus,
-    questions: &Questions,
-    notifications: &tilo_notifications_service::Notifications,
+/// What the session bus services serve on, and with.
+struct OnSessionBus<'a> {
+    /// The bus they serve on.
+    bus: &'a Bus,
+    questions: &'a Questions,
+    notifications: &'a tilo_notifications_service::Notifications,
+    /// The files people choose for apps: the table the portal grants
+    /// through, which the session serves as a filesystem.
+    documents: tilo_documents::Documents,
+    /// What the session's loop hears of a change in either service.
     wake: tilo_service::Wake,
     capture: Arc<dyn tilo_portal::Capture>,
-    side: &PortalSide,
+    side: &'a PortalSide,
     inhibitors: Option<tilo_power_mgmt::InhibitRegistry>,
     running: Arc<std::sync::Mutex<std::collections::BTreeMap<u32, String>>>,
+}
+
+/// The portal backend and the notifications daemon, serving on the bus
+/// `serving` names.
+async fn on_session_bus(
+    serving: OnSessionBus<'_>,
 ) -> (
     Option<Portal>,
     Option<(zbus::Connection, tilo_notifications_service::Server)>,
 ) {
+    let OnSessionBus {
+        bus,
+        questions,
+        notifications,
+        documents,
+        wake,
+        capture,
+        side,
+        inhibitors,
+        running,
+    } = serving;
     let Some(connection) = connect(bus, false).await else {
         return (None, None);
     };
@@ -369,6 +447,7 @@ async fn on_session_bus(
     let resolver = Arc::new(move |app_id: &str, _window: Option<&str>| {
         Some(PortalCaller {
             workspace: named.workspace_of(app_id),
+            sandboxed: named.sandboxed(app_id),
             ..PortalCaller::new(app_id)
         })
     });
@@ -377,6 +456,7 @@ async fn on_session_bus(
         // An app the frontend could not name is named by its process.
         PortalAuthenticator::session_bus(connection.clone(), resolver)
             .with_identify(Requesters::host().resolver()),
+        documents,
     )
     .with_capture(capture)
     // What shares the session's screens, drives its seat and passes its

@@ -290,6 +290,8 @@ impl Files {
             .map(|parent| parent.to_string_lossy().into_owned())
             .filter(|place| !place.is_empty());
         Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind: if folder {
                 ResourceKind::Folder
             } else {

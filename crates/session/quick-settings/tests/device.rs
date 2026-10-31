@@ -11,15 +11,17 @@
 )]
 
 use std::io::{BufReader, Write};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use tilo_quick_settings::device::testing::{Kept, Machine};
 use tilo_quick_settings::device::{Device, DeviceHost, PlayerLink, SessionRequest};
-use tilo_quick_settings::host::Lent;
+use tilo_quick_settings::host::{FixtureHost, Lent};
+use tilo_quick_settings::hosted::{PersonalDevice, device_rows};
 use tilo_quick_settings::{
     MediaOffer, PowerProfile, QsEffect, QsSection, QuickSettings, QuickSettingsApp,
-    QuickSettingsState,
+    QuickSettingsState, RowPart,
 };
 use ui::framework::testing::HeadlessApp;
 
@@ -764,6 +766,73 @@ impl std::io::Read for Said {
         }
         Ok(n)
     }
+}
+
+/// A press on one of the person's devices is the session's to answer: the
+/// panel names the row's key and which part of it was pressed, and holds no
+/// device fabric of its own.
+#[test]
+fn a_device_row_press_asks_the_session_for_that_row_and_part() {
+    let _settled = ui::motion::testing::settled();
+    let mut state = tilo_quick_settings::scenarios::readings(Some("devices"));
+    state.personal_devices = Some(2);
+    state.device_rows = device_rows(
+        &[
+            PersonalDevice {
+                id: "this-pc".into(),
+                label: "This computer".into(),
+                online: true,
+                local: true,
+                display: true,
+            },
+            PersonalDevice {
+                id: "laptop".into(),
+                label: "Laptop".into(),
+                online: true,
+                local: false,
+                display: true,
+            },
+        ],
+        Some("Clair de lune"),
+    );
+    let host = Rc::new(FixtureHost::new(state));
+    let lent: Rc<dyn tilo_quick_settings::host::PanelHost> = host.clone();
+    let mut app =
+        HeadlessApp::<QuickSettingsApp>::for_person_with_lent("person", Lent(lent)).unwrap();
+    for invoke in tilo_quick_settings::scenarios::actions(Some("devices")) {
+        app.invoke(invoke).unwrap();
+    }
+    app.harness().resize((360, 900)).unwrap();
+    app.settle();
+    let targets = app.harness().targets();
+    assert!(
+        targets.contains_key("qs-device-laptop"),
+        "the other device is a row"
+    );
+    assert!(
+        !targets.contains_key("qs-device-this-pc"),
+        "this machine's own device is not a row"
+    );
+
+    app.harness()
+        .click_named("qs-device-laptop-action")
+        .unwrap();
+    app.settle();
+    app.harness().click_named("qs-device-laptop").unwrap();
+    app.settle();
+    assert_eq!(
+        host.ran(),
+        [
+            QsEffect::PressDevice {
+                row: "laptop".into(),
+                part: RowPart::Action,
+            },
+            QsEffect::PressDevice {
+                row: "laptop".into(),
+                part: RowPart::Row,
+            },
+        ]
+    );
 }
 
 fn player(bus: &str, identity: &str, status: audio::Status) -> audio::Player {

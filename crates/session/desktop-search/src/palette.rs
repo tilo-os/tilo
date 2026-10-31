@@ -19,6 +19,9 @@ use ui::search::system::ResourceKind;
 /// height cut short; `more:{i}` expands `more_rows[i]`.
 const MORE_PREFIX: &str = "more:";
 
+/// The row under the apps that lists every one of them, by its name.
+const ALL_APPS_ID: &str = "all-apps";
+
 /// How far the desk's own search reaches.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Reach {
@@ -181,6 +184,9 @@ pub struct DesktopSearch {
     /// [`ui::search::engine_generation`] when the rows were built: the
     /// content rows come again once the index's code arrived.
     shown_generation: u64,
+    /// Whether this search is the applications alone, each already listed:
+    /// then no row offers to list them all again.
+    catalogue: bool,
     choice: Option<Target>,
 }
 
@@ -213,6 +219,7 @@ impl DesktopSearch {
             auto_selected: None,
             shown_query: None,
             shown_generation: 0,
+            catalogue: false,
             choice: None,
         }
     }
@@ -243,6 +250,9 @@ impl DesktopSearch {
         };
         self.palette.set_scope_token(token);
         self.palette.set_scope_token_action(widen);
+        // The apps alone, listed whole: nothing else is searched, so there
+        // is nothing a row could lead to that is not already here.
+        self.catalogue = data.reach == Reach::Names && !data.window;
         self.sources = Some(Sources::new(data));
         self.choice = None;
         self.shown_query = None;
@@ -398,9 +408,12 @@ impl DesktopSearch {
         let mut rows = Vec::new();
         let mut entries = Vec::new();
         self.more_rows.clear();
+        let browsing = query.trim().is_empty();
         for group in groups {
             let label = group.kind.label().to_owned();
             let capped = group.is_capped();
+            let applications =
+                browsing && !self.catalogue && group.kind == ResourceKind::Application;
             for hit in group.results {
                 entries.push(
                     entry_for(&hit, format!("hit:{}", rows.len()))
@@ -416,6 +429,16 @@ impl DesktopSearch {
                     group.total,
                 ));
                 self.more_rows.push(group.kind);
+            }
+            if applications {
+                // The rest of what the person has: every app, by its name,
+                // where the few they reach for most are listed.
+                entries.push(
+                    CommandEntry::new(ALL_APPS_ID, crate::i18n::t("search-launcher-all-apps"))
+                        .icon(ui::icons::Icon::LayoutGrid)
+                        .group(label)
+                        .group_total(group.total),
+                );
             }
         }
         let kept = chosen.and_then(|chosen| match chosen {
@@ -482,6 +505,13 @@ impl DesktopSearch {
                 .and_then(|more| more.parse().ok())
             {
                 self.expand(more);
+            } else if outcome.id == ALL_APPS_ID {
+                // The catalogue of every app: the desktop lists them all,
+                // by name, as its empty desk's launchpad does.
+                self.choice = Some(Target::Command {
+                    id: crate::model::ALL_APPS_COMMAND.into(),
+                });
+                self.palette.close();
             } else if let Some(hit) = self.hit(&outcome.id) {
                 self.choose_hit(hit, outcome.argument);
             }
@@ -692,6 +722,12 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
     if !hit.facts.is_empty() {
         entry = entry.facts(hit.facts.clone());
     }
+    if !hit.faces.is_empty() {
+        entry = entry.faces(hit.faces.clone());
+    }
+    if let Some(outcome) = &hit.outcome {
+        entry = entry.outcome(outcome.clone());
+    }
     entry.icon(icon)
 }
 
@@ -752,6 +788,114 @@ mod tests {
             crate::i18n::t("search-placeholder"),
             "Search apps, windows, documents and actions\u{2026}",
             "the empty field names those groups"
+        );
+    }
+
+    /// Someone is here: the empty palette leads with them and the call
+    /// they could join, and choosing that row joins it.
+    #[test]
+    fn the_empty_palette_leads_with_who_is_here() {
+        use crate::providers::happening::{CallHere, Happening, PersonHere, WorkspaceHere};
+        let person = PersonHere {
+            id: "ada".into(),
+            name: "Ada".into(),
+            colour: (200, 100, 50),
+            agent: false,
+            away: false,
+            tab: None,
+        };
+        let here = WorkspaceHere {
+            id: 1,
+            room: "room".into(),
+            name: "Studio".into(),
+            active: true,
+            people: vec![person.clone()],
+            windows: Vec::new(),
+            calls: vec![CallHere {
+                channel: "c_voice".into(),
+                name: String::new(),
+                people: vec![person],
+            }],
+        };
+        let mut data = data();
+        data.reach = Reach::Workspace;
+        data.sources
+            .push(Box::new(Happening::new(false, vec![here])));
+        let mut search = DesktopSearch::new();
+        search.open(data);
+        let entries = search.palette().visible_entries();
+        assert_eq!(
+            entries[0].group.as_deref(),
+            Some("Happening now"),
+            "who is here leads the empty palette"
+        );
+        assert_eq!(entries[0].label, "Studio");
+        assert_eq!(entries[0].faces.len(), 1, "their face is worn");
+        let call = entries
+            .iter()
+            .find(|entry| entry.label == "Call")
+            .expect("the call to join");
+        assert_eq!(call.outcome.as_deref(), Some("Join"));
+        let at = entries
+            .iter()
+            .position(|entry| entry.id == call.id)
+            .unwrap();
+        search.palette_mut().set_cursor(at);
+        search.palette_mut().activate_selected();
+        assert!(search.observe(), "choosing a row closes search");
+        let Some(Target::Invoke(invoke)) = search.take_choice() else {
+            panic!("the call is joined by asking Chat");
+        };
+        assert_eq!(invoke.app, "so.tilo.chat");
+        assert_eq!(invoke.address.action.as_str(), "join-call");
+    }
+
+    /// Under the apps the empty palette offers every one of them: the
+    /// catalogue, as the empty desk's launchpad opens it.
+    #[test]
+    fn every_app_is_one_row_under_the_apps() {
+        let mut full = data();
+        full.reach = Reach::Workspace;
+        let mut search = DesktopSearch::new();
+        search.open(full);
+        let entries = search.palette().visible_entries();
+        let last = entries
+            .iter()
+            .rfind(|entry| entry.group.as_deref() == Some("Apps"))
+            .expect("the apps' group");
+        assert_eq!(last.id, ALL_APPS_ID);
+        assert_eq!(last.label, "All apps");
+        let at = entries
+            .iter()
+            .position(|entry| entry.id == ALL_APPS_ID)
+            .unwrap();
+        search.palette_mut().set_cursor(at);
+        search.palette_mut().activate_selected();
+        assert!(search.observe(), "choosing it closes search");
+        assert_eq!(
+            search.take_choice(),
+            Some(Target::Command {
+                id: crate::model::ALL_APPS_COMMAND.into()
+            })
+        );
+
+        // The catalogue itself is every app: it does not offer itself again.
+        let mut catalogue = data();
+        catalogue.reach = Reach::Names;
+        catalogue.windows.clear();
+        catalogue.commands.clear();
+        catalogue.resources.clear();
+        catalogue.sources.clear();
+        let mut search = DesktopSearch::new();
+        search.open(catalogue);
+        let entries = search.palette().visible_entries();
+        assert!(
+            entries.iter().any(|entry| entry.label == "Sheets"),
+            "the catalogue lists the apps: {entries:?}"
+        );
+        assert!(
+            entries.iter().all(|entry| entry.id != ALL_APPS_ID),
+            "and offers no second way into itself"
         );
     }
 
@@ -906,6 +1050,8 @@ mod tests {
                 return Vec::new();
             }
             vec![Hit {
+                faces: Vec::new(),
+                outcome: None,
                 kind: ResourceKind::Note,
                 provider: self.id().into(),
                 id: "groceries".into(),

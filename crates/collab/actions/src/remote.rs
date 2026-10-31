@@ -1190,18 +1190,16 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<ConfirmationReply, ActionHostError>,
     },
-    /// Follow a resource the host publishes: the reading it stands at now,
-    /// and each later one. A host that serves no readings leaves it
-    /// unanswered, and the caller shows nothing rather than making it up.
-    ResourceWatch {
+    /// Retired: the reading of a resource is a session resource, read over
+    /// the session's services as any app reads one. Kept in place because
+    /// the variants after it are encoded by position.
+    RetiredResourceWatch {
         /// What the resource is called, as its actions are addressed.
         resource: String,
     },
-    /// The reading of a watched resource (`Some`, as its state's JSON), and
-    /// every later one as it changes: the answer to [`Self::ResourceWatch`]
-    /// and the pushes that follow. `None` when no service publishes it, and
-    /// again if the one that did goes away.
-    ResourceReading {
+    /// Retired: what answered [`Self::RetiredResourceWatch`]. Kept in place
+    /// with it.
+    RetiredResourceReading {
         resource: String,
         reading: Option<String>,
     },
@@ -1460,15 +1458,6 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         RemoteActionMessage::ConfirmationRequest { correlation, .. } => Pending::ready(
             confirmation::unanswered(correlation, ActionHostError::ConfirmationRequired),
         ),
-        // A reading is served by the host that publishes one (the session a
-        // surface speaks to); a host that does not says so, and the caller
-        // shows nothing rather than making it up.
-        RemoteActionMessage::ResourceWatch { resource } => {
-            Pending::ready(RemoteActionMessage::ResourceReading {
-                resource,
-                reading: None,
-            })
-        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
@@ -1476,7 +1465,8 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         | RemoteActionMessage::RecordResponse { .. }
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
-        | RemoteActionMessage::ResourceReading { .. } => return None,
+        | RemoteActionMessage::RetiredResourceWatch { .. }
+        | RemoteActionMessage::RetiredResourceReading { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
     let (completer, answered) = pending();
@@ -1526,10 +1516,6 @@ pub fn refuse(
         RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
             confirmation::unanswered(*correlation, error)
         }
-        RemoteActionMessage::ResourceWatch { resource } => RemoteActionMessage::ResourceReading {
-            resource: resource.clone(),
-            reading: None,
-        },
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
@@ -1537,7 +1523,8 @@ pub fn refuse(
         | RemoteActionMessage::RecordResponse { .. }
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
-        | RemoteActionMessage::ResourceReading { .. } => return None,
+        | RemoteActionMessage::RetiredResourceWatch { .. }
+        | RemoteActionMessage::RetiredResourceReading { .. } => return None,
     })
 }
 

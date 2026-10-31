@@ -21,7 +21,7 @@ use smithay::backend::renderer::{Bind as _, ExportMem as _, ImportDma as _, Offs
 use smithay::backend::winit::{WinitEvent, WinitGraphicsBackend, init_from_attributes};
 use smithay::output::{Mode, Output};
 use smithay::reexports::calloop::LoopHandle;
-use smithay::utils::{Buffer, Physical, Rectangle, Size, Transform};
+use smithay::utils::{Buffer, Physical, Point, Rectangle, Size, Transform};
 use winit::dpi::PhysicalSize;
 use winit::window::{Window as WinitWindow, WindowAttributes};
 
@@ -142,8 +142,8 @@ impl NestedBackend {
                 config.output_scale(),
             );
         output_config.refresh_mhz = REFRESH_MHZ;
-        let output = output_config.create(&state.display, "nested");
-        state.add_output(&output, output_config.location());
+        let output = output_config.create(&state.display, "nested", Point::from((0, 0)));
+        state.add_output(&output, Point::from((0, 0)));
         let damage = window_damage(&output);
         // The compositor draws the pointer: clients' cursor shapes show.
         window.window().set_cursor_visible(false);

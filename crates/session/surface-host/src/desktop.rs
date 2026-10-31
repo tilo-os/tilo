@@ -53,6 +53,8 @@ struct Desk {
     gesture_config: Option<GestureConfig>,
     /// The monitor on each output, as the compositor knows it.
     monitors: Vec<(LayoutRect, String)>,
+    /// The monitor the person made primary, while it is lit.
+    primary: Option<String>,
 }
 
 impl Desk {
@@ -75,21 +77,25 @@ impl Desk {
             self.host.set_placement(placement);
         }
         // Each display holds its own windows. A monitor is known by where
-        // it sits, as the policy is told it.
+        // it sits, as the policy is told it, and the primary one is the
+        // display the person chose for their bar, windows and sheets.
+        let primary = self.primary.clone();
         let displays: Vec<Output> = outputs
             .iter()
             .map(|output| {
                 let x = f64::from(output.loc.x.saturating_sub(bounds.loc.x));
                 let y = f64::from(output.loc.y.saturating_sub(bounds.loc.y));
+                let monitor = self
+                    .monitors
+                    .iter()
+                    .find(|(rect, _)| rect == output)
+                    .map_or_else(
+                        || format!("output:{},{}", output.loc.x, output.loc.y),
+                        |(_, monitor)| monitor.clone(),
+                    );
                 Output {
-                    monitor: self
-                        .monitors
-                        .iter()
-                        .find(|(rect, _)| rect == output)
-                        .map_or_else(
-                            || format!("output:{},{}", output.loc.x, output.loc.y),
-                            |(_, monitor)| monitor.clone(),
-                        ),
+                    primary: primary.as_deref() == Some(monitor.as_str()),
+                    monitor,
                     rect: ui::kurbo::Rect::new(
                         x,
                         y,
@@ -219,6 +225,7 @@ pub fn desktop_with(
         gestures: Vec::new(),
         gesture_config: Some(GestureConfig::default()),
         monitors: Vec::new(),
+        primary: None,
     }));
     (
         DesktopHost {
@@ -299,6 +306,10 @@ impl crate::Published for DesktopHost {
 impl SurfaceHost for DesktopHost {
     fn layers(&self) -> Vec<HostLayer> {
         self.desk.borrow().host.layers()
+    }
+
+    fn withholds_captures(&self) -> bool {
+        self.desk.borrow().host.withholds_captures()
     }
 
     fn below_windows(&self) -> bool {
@@ -436,8 +447,10 @@ impl WindowPolicy for StripPolicy {
         }
     }
 
-    fn monitors(&mut self, monitors: &[(LayoutRect, String)]) {
-        monitors.clone_into(&mut self.desk.borrow_mut().monitors);
+    fn monitors(&mut self, monitors: &[(LayoutRect, String)], primary: Option<&str>) {
+        let mut desk = self.desk.borrow_mut();
+        monitors.clone_into(&mut desk.monitors);
+        desk.primary = primary.map(str::to_owned);
     }
 
     fn initial_size(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) -> Option<(i32, i32)> {
@@ -627,19 +640,20 @@ impl WindowPolicy for StripPolicy {
     }
 
     /// A window's own asking. A tab has no free geometry: the strip lays it
-    /// out, so a move or a resize asks for nothing, and covering the strip
-    /// is what the window gets instead of a floating window manager's cover
-    /// of the display (maximize, and fullscreen asked of the strip as the
-    /// one window filling it).
+    /// out, so a move or a resize asks for nothing. Covering the display is
+    /// the desktop's either way, the strip filling or the whole display, and
+    /// the compositor is told the desktop took it rather than covering the
+    /// window itself.
     fn request(&mut self, window: &WindowInfo, request: &WindowRequest) -> bool {
-        let covering = match request {
-            WindowRequest::Maximize(on) | WindowRequest::Fullscreen { on, .. } => *on,
+        let mut desk = self.desk.borrow_mut();
+        let answered = match request {
+            WindowRequest::Maximize(on) => desk.policy.set_maximized(window.id, *on),
+            WindowRequest::Fullscreen { on, .. } => desk.policy.set_fullscreen(window.id, *on),
             WindowRequest::Move | WindowRequest::Resize(_) | WindowRequest::Minimize => {
                 return false;
             }
         };
-        let mut desk = self.desk.borrow_mut();
-        if desk.policy.set_maximized(window.id, covering) {
+        if answered {
             desk.host.relayout();
         }
         false

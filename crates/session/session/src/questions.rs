@@ -37,8 +37,8 @@ use tilo_portal::wallpaper::WallpaperQuestion;
 use tilo_service::{Answer, Question, Questions, Services};
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerSeat, FileRequest, FileType};
 use tilo_sheets::portal::{
-    Body, Device, Dialog, DraftRow, DraftValue, Field, PortalEffect, PortalSeat, Prompt,
-    PromptField, PromptKind, Remember, Shortcut,
+    Body, Device, Dialog, Field, PortalEffect, PortalSeat, Prompt, PromptField, PromptKind,
+    Remember, Shortcut,
 };
 use tilo_sheets::{Seat as _, word, words};
 
@@ -81,8 +81,6 @@ enum Plan {
     Bind(Vec<Binding>),
     /// A launcher's name and icon.
     Launcher { name: bool, icons: usize },
-    /// Red, green and blue, typed in.
-    Color,
     /// Confirming agrees, as choice 0.
     Agree,
     /// What was typed into the sheet is the answer, agreeing with it.
@@ -685,26 +683,8 @@ impl Shown {
                     ..Answer::default()
                 })
             }
-            Plan::Color => {
-                let values: Vec<_> = (0..3).map(|at| seat.text(Field::Draft(at))).collect();
-                if !values.iter().all(|value| channel(value)) {
-                    return Err(word("portal-pick-color-incomplete"));
-                }
-                Ok(Answer {
-                    values,
-                    ..Answer::default()
-                })
-            }
         }
     }
-}
-
-/// Whether `typed` is a colour channel: a number from 0 to 1.
-fn channel(typed: &str) -> bool {
-    typed
-        .trim()
-        .parse::<f64>()
-        .is_ok_and(|value| (0.0..=1.0).contains(&value))
 }
 
 /// Whether `name` may name a launcher.
@@ -764,7 +744,6 @@ fn compose(question: &Question) -> Option<Composed> {
         tilo_portal::screenshot::SCREENSHOT_QUESTION => {
             screenshot(&question.handle, &who, details)?
         }
-        tilo_portal::screenshot::PICK_COLOR_QUESTION => pick_color(&question.handle),
         tilo_portal::usb::USB_QUESTION => usb(&question.handle, &who, details)?,
         tilo_portal::app_chooser::APP_CHOOSER_QUESTION => {
             app_chooser(&question.handle, &who, details)?
@@ -1004,41 +983,6 @@ fn screenshot(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)>
     );
     dialog.confirm_label = word("portal-screenshot-take");
     Some((dialog, Plan::Confirm))
-}
-
-/// The colour picker: three channels typed into the sheet.
-fn pick_color(handle: &str) -> (Dialog, Plan) {
-    let mut dialog = review(
-        handle,
-        word("portal-pick-color-title"),
-        String::new(),
-        word("portal-pick-color-detail"),
-    );
-    let channels = [
-        "portal-pick-color-red",
-        "portal-pick-color-green",
-        "portal-pick-color-blue",
-    ];
-    dialog.body = Body::Draft {
-        rows: channels
-            .iter()
-            .enumerate()
-            .map(|(index, key)| DraftRow {
-                index,
-                label: word(key),
-                value: DraftValue::Text {
-                    text: String::new(),
-                    multiline: false,
-                    number: true,
-                    withheld: false,
-                },
-                editable: true,
-            })
-            .collect(),
-        choices: Vec::new(),
-    };
-    dialog.confirm_label = word("portal-pick-color-use");
-    (dialog, Plan::Color)
 }
 
 fn usb(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {

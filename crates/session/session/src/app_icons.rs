@@ -38,8 +38,9 @@ const CACHE_LIMIT: usize = 512;
 enum Layer {
     /// An icon name in the person's themes, or an absolute icon path.
     Named(String),
-    /// Pixels the sender handed over, already decoded and bounded.
-    Pixels(ui::peniko::ImageData),
+    /// Pixels the sender handed over, already decoded and bounded, one per
+    /// size it offered; the one that fills the paint size is picked.
+    Pixels(Vec<ui::peniko::ImageData>),
 }
 
 /// The artwork of one notification: the first of its layers that has
@@ -60,7 +61,7 @@ impl AppImageSource for Artwork {
         let device_px = device_px.clamp(1, ui::icons::MAX_DEVICE_PX);
         for layer in &self.layers {
             match layer {
-                Layer::Pixels(image) => return Some(image.clone()),
+                Layer::Pixels(images) => return pick(images, device_px),
                 Layer::Named(name) => match registry().answer(name, device_px) {
                     Some(Some(image)) => return Some(image),
                     // This theme has no such icon: the next layer shows.
@@ -74,6 +75,47 @@ impl AppImageSource for Artwork {
         }
         None
     }
+}
+
+/// The artwork a window brought of its own: the icon the program set for
+/// that window, whether it handed over pixels or named a theme icon. Keyed by
+/// the window and the icon's serial, so a program that sets another icon is
+/// new artwork and the same one is not painted again.
+pub(crate) fn window(window: u64, icon: &tilo_compositor::WindowIcon) -> AppImage {
+    let layers = match icon.artwork() {
+        tilo_compositor::IconArtwork::Named(name) => vec![Layer::Named(name.clone())],
+        tilo_compositor::IconArtwork::Pixels(images) => {
+            let images = images
+                .iter()
+                .map(|image| {
+                    // `wl_shm` pixels, and an X11 window's, are premultiplied.
+                    let pixels: Arc<Vec<u8>> = Arc::clone(&image.pixels);
+                    let pixels: Arc<dyn AsRef<[u8]> + Send + Sync> = pixels;
+                    ui::raster::rgba8_premultiplied(
+                        ui::peniko::Blob::new(pixels),
+                        image.width,
+                        image.height,
+                    )
+                })
+                .collect();
+            vec![Layer::Pixels(images)]
+        }
+    };
+    AppImage::new(Artwork {
+        key: format!("window:{window}:{}", icon.serial()),
+        layers,
+    })
+}
+
+/// The pixels that fill `device_px`: the smallest offer at least that big, so
+/// artwork is never stretched, else the largest there is.
+fn pick(images: &[ui::peniko::ImageData], device_px: u32) -> Option<ui::peniko::ImageData> {
+    images
+        .iter()
+        .filter(|image| image.width >= device_px)
+        .min_by_key(|image| image.width)
+        .or_else(|| images.iter().max_by_key(|image| image.width))
+        .cloned()
 }
 
 /// The artwork for a notification from `app_id`, hinting `desktop_entry`
@@ -103,7 +145,7 @@ pub(crate) fn notification(
     {
         layers.push(Layer::Named(name));
     }
-    layers.extend(pixels.map(Layer::Pixels));
+    layers.extend(pixels.map(|image| Layer::Pixels(vec![image])));
     if let Some(name) = app_icon.map(str::trim).filter(|name| !name.is_empty()) {
         layers.push(Layer::Named(name.to_owned()));
     }
@@ -430,6 +472,24 @@ mod tests {
         }
         let pixels = artwork.pixels(64).expect("its pixels");
         assert_eq!((pixels.width, pixels.height), (2, 1));
+    }
+
+    /// The pixels a window hands over come in several sizes: the one that
+    /// fills the slot is shown, so the artwork is never stretched.
+    #[test]
+    fn a_windows_icon_is_shown_at_the_size_that_fills_its_slot() {
+        let images: Vec<ui::peniko::ImageData> = [16, 32, 48]
+            .into_iter()
+            .map(|edge| {
+                let bytes = usize::try_from(edge * edge * 4).unwrap_or_default();
+                ui::raster::rgba8_premultiplied(vec![0; bytes], edge, edge)
+            })
+            .collect();
+        let width = |device_px| pick(&images, device_px).map(|image| image.width);
+        assert_eq!(width(20), Some(32));
+        assert_eq!(width(16), Some(16));
+        assert_eq!(width(64), Some(48), "the largest there is, never stretched");
+        assert_eq!(pick(&[], 16).map(|image| image.width), None);
     }
 
     #[test]

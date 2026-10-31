@@ -233,6 +233,8 @@ impl IndexedContent {
             .or_else(|| entry.group.clone())
             .unwrap_or_else(|| (self.app_name)(&slot.app));
         Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind: ResourceKind::Record,
             provider: self.id().into(),
             id: entry_id(slot, &entry.key),
@@ -250,6 +252,8 @@ impl IndexedContent {
     fn unlock_row(&self, app: &str, needle: &str, score: i32) -> Hit {
         let name = (self.app_name)(app);
         Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind: ResourceKind::Record,
             provider: self.id().into(),
             id: format!("{UNLOCK}{ID_SEPARATOR}{app}"),

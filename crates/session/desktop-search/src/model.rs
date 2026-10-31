@@ -52,6 +52,21 @@ pub enum Target {
 /// every other caller of the action protocol does.
 pub const DESKTOP_APP: &str = "tilo.desktop";
 
+/// The resource of the desktop's chrome above the windows: what its own
+/// commands are published on.
+pub const CHROME_RESOURCE: &str = "desktop:chrome";
+
+/// The chrome's action that opens or closes who is here (the people
+/// panel).
+pub const SHOW_COLLABORATORS: &str = "toggle-collaborators";
+
+/// The desktop command that goes to workspace `id` (`desktop.workspace:id`).
+pub const WORKSPACE_COMMAND_PREFIX: &str = "desktop.workspace:";
+
+/// The desktop command that lists every application, each by its name: the
+/// catalogue behind "All apps".
+pub const ALL_APPS_COMMAND: &str = "desktop.all-apps";
+
 /// The action every framework app publishes to show the item at an anchor
 /// (`tilo_app::framework`'s `open`), and its parameter.
 pub const OPEN_ACTION: &str = "open";
@@ -180,6 +195,11 @@ pub struct Hit {
     /// The row's own picture, when its source gives one (an app's hit, an
     /// action's declared icon); else its kind's.
     pub icon: Option<ui::icons::Icon>,
+    /// Faces laid out beside the row: who is there, who is in a call.
+    pub faces: Vec<ui::search::RowFace>,
+    /// What choosing the row gets you, when it is worth saying ("Open",
+    /// "Join"); the kind's own outcome otherwise.
+    pub outcome: Option<String>,
     pub target: Target,
 }
 

@@ -131,6 +131,8 @@ impl Source for Actions<'_> {
                     rank::item_action_match_score(needle, &flat.resource_label)?
                 };
                 Some(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: ResourceKind::Action,
                     provider: ACTIONS.into(),
                     id: flat.key.clone(),

@@ -714,9 +714,9 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationRequest { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
-        // Readings are the surface connection's own, and never reach here.
-        | RemoteActionMessage::ResourceWatch { .. }
-        | RemoteActionMessage::ResourceReading { .. } => None,
+        // Retired verbs: nothing sends them, and nothing answers.
+        | RemoteActionMessage::RetiredResourceWatch { .. }
+        | RemoteActionMessage::RetiredResourceReading { .. } => None,
     }
 }
 

@@ -208,9 +208,7 @@ fn displays_at(places: &[(i32, i32)]) -> Session {
         .iter()
         .enumerate()
         .map(|(index, place)| {
-            let mut output = OutputConfig::new(format!("HEADLESS-{}", index + 1), WIDTH, HEIGHT);
-            output.position = *place;
-            output
+            OutputConfig::new(format!("HEADLESS-{}", index + 1), WIDTH, HEIGHT).at(place.0, place.1)
         })
         .collect();
     session_at(&outputs)

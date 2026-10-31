@@ -9,6 +9,13 @@ fn unsupported() -> io::Error {
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysicalGamepadId(PathBuf);
+impl PhysicalGamepadId {
+    /// The controller at `path`, the way discovery names the ones it finds.
+    #[must_use]
+    pub fn at(path: impl Into<PathBuf>) -> Self {
+        Self(path.into())
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhysicalGamepadInfo {
     pub id: PhysicalGamepadId,

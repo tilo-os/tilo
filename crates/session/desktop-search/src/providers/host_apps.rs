@@ -114,6 +114,8 @@ impl Source for HostApps {
                     .saturating_sub(HOST_APP_STEP)
                     .max(1);
                 Some(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: ResourceKind::Application,
                     provider: self.id().into(),
                     id: app.desktop_id.clone(),

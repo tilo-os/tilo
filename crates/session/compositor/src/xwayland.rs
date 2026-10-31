@@ -333,6 +333,17 @@ impl State {
 
 /// The loop's data answers the window manager's events with the state's
 /// handler: the window manager runs in the loop, the protocol in the state.
+impl LoopData {
+    fn remember_icon(&mut self, window: &X11Surface) {
+        let id = window.window_id();
+        let icon = self
+            .x11_windows
+            .as_ref()
+            .and_then(|x11| x11.window_icon(id));
+        self.state.icons.set(crate::state::x11_window_id(id), icon);
+    }
+}
+
 impl XwmHandler for LoopData {
     fn xwm_state(&mut self, xwm: XwmId) -> &mut X11Wm {
         self.state.xwm_state(xwm)
@@ -352,6 +363,7 @@ impl XwmHandler for LoopData {
         if let Some(x11) = self.x11_windows.as_mut() {
             x11.learn(&window);
         }
+        self.remember_icon(&window);
         self.state.map_window_request(xwm, window);
     }
 
@@ -367,6 +379,9 @@ impl XwmHandler for LoopData {
         if let Some(x11) = self.x11_windows.as_mut() {
             x11.forget(window.window_id());
         }
+        self.state
+            .icons
+            .set(crate::state::x11_window_id(window.window_id()), None);
         self.state.destroyed_window(xwm, window);
     }
 
@@ -375,8 +390,11 @@ impl XwmHandler for LoopData {
             property,
             WmWindowProperty::Class | WmWindowProperty::StartupId | WmWindowProperty::Pid
         );
-        if renamed && let Some(x11) = self.x11_windows.as_mut() {
-            x11.learn(&window);
+        if renamed {
+            if let Some(x11) = self.x11_windows.as_mut() {
+                x11.learn(&window);
+            }
+            self.remember_icon(&window);
         }
     }
 

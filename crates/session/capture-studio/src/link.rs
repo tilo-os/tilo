@@ -70,12 +70,36 @@ pub struct Recording {
     pub paused: bool,
 }
 
+/// What an app asked the person to select, when it asked for something only
+/// they can name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Selection {
+    /// One window the person picks.
+    Window,
+    /// An area the person draws.
+    Area,
+}
+
+impl Selection {
+    /// What the studio captures for it.
+    #[must_use]
+    pub const fn source(self) -> SourceMode {
+        match self {
+            Self::Window => SourceMode::Window,
+            Self::Area => SourceMode::Region,
+        }
+    }
+}
+
 /// What the session hands the studio: what can be captured, and what became
 /// of what was.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scene {
     /// The windows a capture may take, focused first.
     pub windows: Vec<CaptureTarget>,
+    /// What an app asked the person to select: the bar comes up choosing
+    /// exactly that, and settles the app's request once they took it.
+    pub asking: Option<Selection>,
     /// Whether the machine's own sound and a microphone may be taken.
     pub system_audio: bool,
     pub microphone: bool,
@@ -259,6 +283,20 @@ mod tests {
         assert!(link.has_asks());
         assert_eq!(link.take_asks(), [Ask::SaveReplay, Ask::StopRecording]);
         assert!(!link.has_asks());
+    }
+
+    #[test]
+    fn what_the_session_asks_the_person_to_select_wakes_the_studio_for_it() {
+        let link = Link::new();
+        link.publish(Scene::default());
+        link.publish(Scene {
+            asking: Some(Selection::Area),
+            ..Scene::default()
+        });
+        assert_eq!(link.generation(), 1, "the bar comes up asking for an area");
+        assert_eq!(link.scene().asking, Some(Selection::Area));
+        assert_eq!(Selection::Area.source(), SourceMode::Region);
+        assert_eq!(Selection::Window.source(), SourceMode::Window);
     }
 
     #[test]

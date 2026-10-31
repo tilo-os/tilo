@@ -301,6 +301,10 @@ impl SurfaceHost for AppHost {
         }]
     }
 
+    fn withholds_captures(&self) -> bool {
+        self.app.withholds_captures()
+    }
+
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
         let (lx, ly) = self.local(x, y);
         if lx < 0.0 || ly < 0.0 {

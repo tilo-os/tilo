@@ -164,9 +164,7 @@ fn session(places: &[(i32, i32)]) -> Session {
         .iter()
         .enumerate()
         .map(|(index, place)| {
-            let mut output = OutputConfig::new(format!("HEADLESS-{}", index + 1), WIDTH, HEIGHT);
-            output.position = *place;
-            output
+            OutputConfig::new(format!("HEADLESS-{}", index + 1), WIDTH, HEIGHT).at(place.0, place.1)
         })
         .collect();
     let mut session = Session::headless(
@@ -499,7 +497,7 @@ fn a_question_opens_on_the_display_of_the_window_in_focus() {
     let _settled = ui::motion::testing::settled();
     let questions = tilo_service::Questions::new();
     let outputs = [
-        OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT),
+        OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT).at(0, 0),
         OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT).at(WIDTH, 0),
     ];
     let mut session = Session::headless(

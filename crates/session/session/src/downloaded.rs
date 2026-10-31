@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 
-use tilo_app_launch::downloaded::{self, ObservedWindow};
-use tilo_compositor::WindowInfo;
+use tilo_app_launch::downloaded::{self, ObservedWindow, WindowArtwork};
+use tilo_compositor::{IconArtwork, WindowIcon, WindowInfo};
 use tilo_service::Service;
 use tilo_surface_host::{StripPolicy, WindowObserver};
 
@@ -30,11 +30,28 @@ impl WindowObserver for Follow {
             id: window.id,
             app_id: app_id.to_owned(),
             pid: window.pid,
+            artwork: artwork(window.icon.as_ref()),
         });
     }
 
     fn closed(&self, id: u64) {
         self.0.closed(id);
+    }
+}
+
+/// The icon the window set for itself, as the registry reads it: the name it
+/// named, else the largest pixels it offered.
+fn artwork(icon: Option<&Arc<WindowIcon>>) -> Option<WindowArtwork> {
+    match icon?.artwork() {
+        IconArtwork::Named(name) => Some(WindowArtwork::Named(name.clone())),
+        IconArtwork::Pixels(images) => {
+            let image = images.iter().max_by_key(|image| image.width)?;
+            Some(WindowArtwork::Pixels {
+                width: image.width,
+                height: image.height,
+                rgba: Arc::clone(&image.pixels),
+            })
+        }
     }
 }
 

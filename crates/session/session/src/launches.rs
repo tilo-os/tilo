@@ -25,13 +25,19 @@ use tilo_app_launch::doors::ancestry;
 use tilo_desktop_model::Workspace;
 use tilo_lock::MutexRecover as _;
 
-/// One launch the session made: which app it started, in which room, and the
-/// process that runs it.
+/// One launch the session made: which app it started, in which room, the
+/// process that runs it, and whether the launch bound the documents store
+/// into it.
 struct Launch {
     app: String,
     room: String,
     /// The process's start time, in clock ticks since boot.
     start: u64,
+    /// The launch bound the session's documents store into the app, where
+    /// the app opens the files the person chose for it: the launcher does
+    /// that for a package, whose sandbox holds nothing else of the host, and
+    /// for no other kind.
+    sandboxed: bool,
 }
 
 /// One window of a running app the session is connecting: the window's own
@@ -60,7 +66,10 @@ impl Launches {
     /// Record that `pid` runs `app` in `room`, as this session started it: the
     /// app's connection is admitted from here. A pid whose process cannot be
     /// read is recorded by nothing and starts an app that reaches no service.
-    pub fn started(&self, pid: u32, app: &str, room: &str) {
+    ///
+    /// `sandboxed` is whether the launch bound the session's documents store
+    /// into it, which only a package's sandbox is given.
+    pub fn started(&self, pid: u32, app: &str, room: &str, sandboxed: bool) {
         let Some(start) = start_time(pid) else {
             tracing::warn!(
                 pid,
@@ -75,6 +84,7 @@ impl Launches {
                 app: app.to_owned(),
                 room: room.to_owned(),
                 start,
+                sandboxed,
             },
         );
     }
@@ -118,6 +128,23 @@ impl Launches {
         let mut pending = self.shell_ui.lock_recover();
         let index = pending.iter().position(|(asked, _)| asked == app)?;
         Some(pending.remove(index).1)
+    }
+
+    /// The apps this session started with the documents store bound into
+    /// them, and that still run: the ones a portal answer can name a store
+    /// path for.
+    #[must_use]
+    pub fn sandboxed_apps(&self) -> Vec<String> {
+        let mut apps: Vec<String> = self
+            .started
+            .lock_recover()
+            .iter()
+            .filter(|(pid, launch)| launch.sandboxed && start_time(**pid) == Some(launch.start))
+            .map(|(_, launch)| launch.app.clone())
+            .collect();
+        apps.sort();
+        apps.dedup();
+        apps
     }
 
     /// The room of the launch that `pid` is or was started by, when it runs
@@ -341,7 +368,7 @@ mod tests {
             .arg("30")
             .spawn()
             .expect("a process to launch");
-        launches.started(child.id(), app, room);
+        launches.started(child.id(), app, room, true);
         launches.window(app, room, 7, Some(child.id()));
         child.kill().ok();
         child.wait().ok();
@@ -352,6 +379,31 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "the launch that made the window is over"
+        );
+    }
+
+    /// Only a launch that bound the store into its app, and still runs,
+    /// makes that app one whose files are answered with store paths: an app
+    /// the launch bound no store into has none, and neither has one whose
+    /// sandbox is over.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_sandboxed_app_is_one_whose_sandboxed_launch_runs() {
+        let launches = Launches::default();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("a process to launch");
+        launches.started(child.id(), "so.tilo.sandboxed", "room-sandboxed", true);
+        launches.started(std::process::id(), "so.tilo.host", "room-sandboxed", false);
+
+        assert_eq!(launches.sandboxed_apps(), ["so.tilo.sandboxed".to_owned()]);
+
+        child.kill().ok();
+        child.wait().ok();
+        assert!(
+            launches.sandboxed_apps().is_empty(),
+            "the sandbox that was bound is over"
         );
     }
 

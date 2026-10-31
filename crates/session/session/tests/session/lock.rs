@@ -89,8 +89,7 @@ fn the_lock_action_locks_the_session_behind_the_lock_screen_which_a_password_unl
 fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
     const DISPLAYS: [&str; 2] = ["HEADLESS-1", "HEADLESS-2"];
     let _settled = ui::motion::testing::settled();
-    let mut external = OutputConfig::new("HEADLESS-2", 1024, 768);
-    external.position = (WIDTH, 0);
+    let external = OutputConfig::new("HEADLESS-2", 1024, 768).at(WIDTH, 0);
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -184,7 +183,7 @@ fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
 
 /// How far apart two pictures of a screen are, of 255: the most one cell of
 /// the grid they are compared on differs by.
-fn apart(one: &[f64], other: &[f64]) -> f64 {
+pub(super) fn apart(one: &[f64], other: &[f64]) -> f64 {
     one.iter()
         .zip(other)
         .map(|(here, there)| (here - there).abs())
@@ -194,11 +193,11 @@ fn apart(one: &[f64], other: &[f64]) -> f64 {
 /// How much two pictures of the same screen may differ and still be the
 /// same screen: the grid's cells may be resampled differently on displays of
 /// different sizes.
-const CLOSE: f64 = 6.0;
+pub(super) const CLOSE: f64 = 6.0;
 
 /// Step the session until `display` shows the same thing twice running:
 /// what it will show has been drawn, animation and all.
-fn settled_display(session: &mut Session, display: &str) {
+pub(super) fn settled_display(session: &mut Session, display: &str) {
     const STEPS: usize = 120;
     let mut was = session
         .compositor()
@@ -223,7 +222,7 @@ fn settled_display(session: &mut Session, display: &str) {
 /// What a screenshot shows, as the mean brightness of each cell of a grid
 /// laid over it: a screen filling two displays of different sizes fills the
 /// same part of each.
-fn picture(shot: &tilo_compositor::Screenshot) -> Vec<f64> {
+pub(super) fn picture(shot: &tilo_compositor::Screenshot) -> Vec<f64> {
     const COLUMNS: u32 = 16;
     const ROWS: u32 = 10;
     let mut cells = Vec::with_capacity((COLUMNS * ROWS) as usize);

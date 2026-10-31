@@ -188,6 +188,8 @@ directory-try-again = Try again
 directory-community-tag = { $host }'s own
 directory-already-joining = You're already joining { $name }. It opens as soon as it's ready.
 directory-join-failed = Couldn't join { $name }: { $error }
+directory-code-failed = Couldn't join with that link or code: { $error }
+directory-joined-name = Joined workspace
 directory-join-failed-line = Didn't join: { $error }
 directory-here-now = { $count } here now
 directory-active-today = Active today
@@ -316,13 +318,6 @@ portal-print-print = Print
 portal-screenshot-title = Let { $app } take a screenshot?
 portal-screenshot-detail = It gets one picture of the screen as it is now.
 portal-screenshot-take = Take screenshot
-portal-pick-color-title = Pick a colour
-portal-pick-color-detail = Red, green and blue, each from 0 to 1.
-portal-pick-color-red = Red
-portal-pick-color-green = Green
-portal-pick-color-blue = Blue
-portal-pick-color-use = Use colour
-portal-pick-color-incomplete = Each part is a number from 0 to 1.
 portal-usb-title = Give { $app } USB devices?
 portal-usb-detail = { $app } gets the ticked devices until it stops asking or one is unplugged.
 portal-usb-allow = Give selected
@@ -470,3 +465,25 @@ portal-allowed-title = Allowed for good
 portal-allowed-detail = { $app } may now use { $what } without asking. Revoke it to make Tilo ask again next time.
 portal-revoke = Revoke
 portal-keep = Keep
+
+## Adding a program the person downloaded to their apps, and uninstalling an app
+add-app-title = Add { $name } to apps?
+add-app-add = Add to apps
+add-app-decline = Don't add
+add-app-move = Move to Applications
+add-app-move-detail = Keeps it in the Applications folder in your files
+uninstall-title = Uninstall { $name }?
+uninstall-action = Uninstall
+uninstall-cancel = Cancel
+uninstall-remove-data = Remove its data
+uninstall-remove-data-detail = Your settings and saved files go to the Trash, where you can restore them.
+uninstall-device-body = It's removed for everyone on this computer.
+uninstall-files = { $count ->
+    [one] Its file goes to the Trash, where you can restore it.
+   *[other] All { $count } copies go to the Trash, where you can restore them.
+}
+uninstall-home-folder = Home
+uninstall-documents-body = Your documents stay in your workspaces.
+uninstall-from-apps-title = Remove { $name } from apps?
+uninstall-from-apps-action = Remove from apps
+uninstall-entry-body = It's part of the system, so it stays on this computer and no longer shows in your apps.

@@ -173,7 +173,6 @@ pub(super) enum SearchAsk {
 
 const CLOSE_WINDOW: &str = "desktop.close-window";
 const MAXIMIZE_WINDOW: &str = "desktop.maximize-window";
-const WORKSPACE_PREFIX: &str = "desktop.workspace:";
 /// Search command ids and banner action keys of the host's own actions.
 const HOST_PREFIX: &str = "host:";
 /// The least room the palette keeps from the surface's sides.
@@ -596,7 +595,11 @@ fn commands(
     for workspace in &tree.workspaces {
         if workspace.id != tree.active {
             out.push(CommandSpec {
-                id: format!("{WORKSPACE_PREFIX}{}", workspace.id.0),
+                id: format!(
+                    "{}{}",
+                    tilo_desktop_search::WORKSPACE_COMMAND_PREFIX,
+                    workspace.id.0
+                ),
                 title: format!("Switch to {}", workspace.name),
                 subtitle: Some("Workspace".into()),
             });
@@ -995,6 +998,11 @@ impl DesktopSurface {
                     let choice = choice.to_owned();
                     shared.host_choices.push(choice);
                     None
+                } else if id == tilo_desktop_search::ALL_APPS_COMMAND {
+                    // Every app by its name: the applications' own search,
+                    // as the empty desk's launchpad opens it.
+                    shared.search_request = Some(SearchRequest::Applications);
+                    None
                 } else if id == CLOSE_WINDOW {
                     match active {
                         Some(ids) if shared.holders.contains_key(&ids.tab) => {
@@ -1010,7 +1018,7 @@ impl DesktopSurface {
                         Some(Admitted::Maximize(ids, !group.maximized))
                     })
                 } else {
-                    id.strip_prefix(WORKSPACE_PREFIX)
+                    id.strip_prefix(tilo_desktop_search::WORKSPACE_COMMAND_PREFIX)
                         .and_then(|id| id.parse::<u64>().ok())
                         .map(tilo_desktop_model::WorkspaceId)
                         .filter(|id| shared.tree.workspaces.iter().any(|w| w.id == *id))

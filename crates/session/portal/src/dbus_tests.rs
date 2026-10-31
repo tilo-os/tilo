@@ -34,6 +34,8 @@ impl SessionBus {
 /// and a stranger on the same bus.
 struct Bed {
     _bus: SessionBus,
+    /// The person's private state the backend keeps, gone with the bed.
+    _state: tempfile::TempDir,
     questions: Questions,
     portal: Portal,
     frontend: zbus::Connection,
@@ -42,6 +44,12 @@ struct Bed {
 }
 
 async fn bed() -> Bed {
+    bed_with(Arc::new(crate::NoCapture)).await
+}
+
+/// [`bed`], with `capture` standing in for the session's screenshots and
+/// picks.
+async fn bed_with(capture: Arc<dyn crate::Capture>) -> Bed {
     let bus = SessionBus::start();
     let backend = bus.connect().await;
     let questions = Questions::new();
@@ -55,8 +63,17 @@ async fn bed() -> Bed {
     .with_identify(Arc::new(move |pid| {
         (pid == own).then(|| PortalCaller::new("/usr/bin/unsandboxed"))
     }));
-    let portal = Portal::new(questions.clone(), authenticator)
-        .with_consents(crate::consent::Consents::new(questions.clone(), None));
+    let state = tempfile::tempdir().expect("a private state directory");
+    let store =
+        crate::permission_store::PermissionStore::load(Some(state.path().join("permissions.json")));
+    let portal = Portal::new(
+        questions.clone(),
+        authenticator,
+        tilo_documents::Documents::new(),
+    )
+    .with_capture(capture)
+    .with_consents(crate::consent::Consents::new(questions.clone(), None))
+    .with_permissions(store);
     portal.serve(&backend).await.expect("served");
     let frontend = bus.connect().await;
     frontend
@@ -66,6 +83,7 @@ async fn bed() -> Bed {
     let stranger = bus.connect().await;
     Bed {
         _bus: bus,
+        _state: state,
         questions,
         portal,
         frontend,
@@ -177,6 +195,71 @@ async fn only_the_frontend_may_ask() {
         )
         .await;
     assert!(read.is_ok(), "the frontend reads them");
+}
+
+/// A session that picks the colour it was made with, taking no picture.
+struct Palette(f64, f64, f64);
+
+impl crate::Capture for Palette {
+    fn screenshot(
+        &self,
+        _target: crate::CaptureTarget,
+    ) -> crate::Pending<Result<std::path::PathBuf, crate::CaptureError>> {
+        Box::pin(async {
+            Err(crate::CaptureError::Failed(
+                "this session takes no picture".to_owned(),
+            ))
+        })
+    }
+
+    fn color_at_pointer(&self) -> crate::Pending<Result<(f64, f64, f64), crate::CaptureError>> {
+        let colour = (self.0, self.1, self.2);
+        Box::pin(async move { Ok(colour) })
+    }
+
+    fn targets(&self) -> u32 {
+        0
+    }
+}
+
+async fn pick_color(from: &zbus::Connection, request: &str) -> zbus::Result<Reply> {
+    from.call_method(
+        Some(BUS_NAME),
+        OBJECT_PATH,
+        Some("org.freedesktop.impl.portal.Screenshot"),
+        "PickColor",
+        &(
+            ObjectPath::try_from(request).expect("request path"),
+            "org.example.Colour",
+            "",
+            HashMap::<String, OwnedValue>::new(),
+        ),
+    )
+    .await?
+    .body()
+    .deserialize()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_colour_pick_is_answered_with_the_pixel_the_session_reads() {
+    let bed = bed_with(Arc::new(Palette(0.25, 0.5, 1.0))).await;
+    let (code, results) = pick_color(&bed.frontend, REQUEST).await.expect("replied");
+    assert_eq!(code, 0);
+    let (red, green, blue): (f64, f64, f64) = results["color"]
+        .try_clone()
+        .expect("clone")
+        .try_into()
+        .expect("three channels");
+    assert_eq!((red, green, blue), (0.25, 0.5, 1.0));
+    assert!(bed.questions.pending().is_empty(), "nobody was asked");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_frontend_may_pick_a_colour() {
+    let bed = bed_with(Arc::new(Palette(1.0, 1.0, 1.0))).await;
+    let (code, results) = pick_color(&bed.stranger, REQUEST).await.expect("replied");
+    assert_eq!(code, 2, "a stranger's request fails");
+    assert!(results.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -507,4 +590,97 @@ async fn a_monitor_hears_the_session_end_and_answers_it() {
     );
     respond(bed.frontend.clone()).await.expect("answered");
     assert_eq!(bed.portal.awaiting_query_end(), 0);
+}
+
+const PERMISSION_STORE: &str = "org.freedesktop.impl.portal.PermissionStore";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_frontend_may_keep_permissions() {
+    use futures_util::StreamExt as _;
+
+    let bed = bed().await;
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface(PERMISSION_STORE)
+        .expect("interface")
+        .member("Changed")
+        .expect("member")
+        .build();
+    let mut heard = zbus::MessageStream::for_match_rule(rule, &bed.frontend, None)
+        .await
+        .expect("stream");
+
+    let mut permissions = HashMap::new();
+    permissions.insert("org.example.Editor".to_owned(), vec!["yes".to_owned()]);
+    let arguments = (
+        "documents",
+        true,
+        "one",
+        permissions.clone(),
+        OwnedValue::from(zbus::zvariant::Str::from("where")),
+    );
+    let set = |from: zbus::Connection| {
+        let arguments = arguments.clone();
+        async move {
+            from.call_method(
+                Some(BUS_NAME),
+                OBJECT_PATH,
+                Some(PERMISSION_STORE),
+                "Set",
+                &arguments,
+            )
+            .await
+        }
+    };
+    let lookup = |from: zbus::Connection| async move {
+        from.call_method(
+            Some(BUS_NAME),
+            OBJECT_PATH,
+            Some(PERMISSION_STORE),
+            "Lookup",
+            &("documents", "one"),
+        )
+        .await
+    };
+    assert!(set(bed.stranger.clone()).await.is_err(), "not the frontend");
+    assert!(
+        lookup(bed.stranger.clone()).await.is_err(),
+        "nor does a stranger read the store"
+    );
+    assert!(
+        lookup(bed.frontend.clone()).await.is_err(),
+        "the refused call kept nothing"
+    );
+    set(bed.frontend.clone())
+        .await
+        .expect("the frontend kept it");
+    let (kept, data): (HashMap<String, Vec<String>>, OwnedValue) = lookup(bed.frontend.clone())
+        .await
+        .expect("kept")
+        .body()
+        .deserialize()
+        .expect("entry");
+    assert_eq!(kept, permissions);
+    let value: String = data.try_into().expect("value");
+    assert_eq!(value, "where");
+
+    let change = tokio::time::timeout(Duration::from_secs(5), heard.next())
+        .await
+        .expect("heard in time")
+        .expect("a signal")
+        .expect("readable");
+    let (table, id, deleted, data, changed): (
+        String,
+        String,
+        bool,
+        OwnedValue,
+        HashMap<String, Vec<String>>,
+    ) = change.body().deserialize().expect("change");
+    assert_eq!(
+        (table.as_str(), id.as_str(), deleted),
+        ("documents", "one", false)
+    );
+    assert_eq!(changed, permissions);
+    let value: String = data.try_into().expect("value");
+    assert_eq!(value, "where");
 }

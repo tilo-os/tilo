@@ -31,6 +31,14 @@ const JOYCOND_UDEV_TAG: &str = "joycond";
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysicalGamepadId(PathBuf);
 
+impl PhysicalGamepadId {
+    /// The controller at `path`, the way discovery names the ones it finds.
+    #[must_use]
+    pub fn at(path: impl Into<PathBuf>) -> Self {
+        Self(path.into())
+    }
+}
+
 /// A controller approved by the strict local udev classifier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhysicalGamepadInfo {

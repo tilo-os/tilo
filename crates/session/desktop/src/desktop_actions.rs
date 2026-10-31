@@ -15,7 +15,7 @@ use crate::i18n::t;
 /// The operation type every desktop action carries.
 pub const OPERATION: &str = "tilo.desktop.command";
 /// The resource of the chrome above the windows.
-pub const CHROME_RESOURCE: &str = "desktop:chrome";
+pub use tilo_desktop_search::CHROME_RESOURCE;
 /// The resource of the desk under the windows.
 pub const DESK_RESOURCE: &str = "desktop:desk";
 
@@ -101,6 +101,8 @@ pub enum DesktopAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         argument: Option<String>,
     },
+    /// Open or close the people panel: who is here.
+    ToggleCollaborators,
     /// Show the person `person` in the people panel.
     ShowPerson { person: String },
 }
@@ -227,6 +229,12 @@ pub fn chrome_resource() -> ResourceSpec {
             |args| DesktopAction::Shortcut {
                 action: args.text("action").unwrap_or_default().to_owned(),
             },
+        ))
+        .with_action(action(
+            tilo_desktop_search::SHOW_COLLABORATORS,
+            t("desktop-action-toggle-collaborators"),
+            Vec::new(),
+            |_| DesktopAction::ToggleCollaborators,
         ))
         .with_action(action(
             tilo_desktop_search::providers::people::SHOW_PERSON,

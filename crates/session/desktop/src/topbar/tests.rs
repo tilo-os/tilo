@@ -2451,3 +2451,70 @@ fn every_reading_the_machine_has_draws_its_own_glyph() {
     assert_eq!(bar.tray_slot_count(), 1, "nothing known, nothing drawn");
     assert!(bar.tray_pill_rect.width() < known.width());
 }
+
+/// A display of `monitor` at `x`, 1280 by 800, as the desk knows one.
+fn display(id: u32, monitor: &str, x: f64) -> tilo_desktop_model::Display {
+    tilo_desktop_model::Display {
+        id,
+        monitor: monitor.to_owned(),
+        x,
+        y: 0.0,
+        width: 1280.0,
+        height: 800.0,
+        primary: false,
+    }
+}
+
+/// One place per display, each on its own display's rectangle: the display
+/// in use full, the others compact, and the displays a fullscreen window
+/// owns named by their monitor.
+#[test]
+fn the_placement_gives_every_display_a_place_of_its_own() {
+    let mut tree = DesktopTree::default();
+    assert!(tree.reconcile_displays(&[display(0, "panel", 0.0), display(1, "monitor", 1280.0)]));
+    let placement = Placement::of(&tree, &[]);
+    assert_eq!(placement.bars.len(), 2);
+    assert_eq!(placement.bars[0].display, 0);
+    assert!(
+        placement.bars[0].full,
+        "the primary display is the one in use"
+    );
+    assert_eq!(placement.bars[0].rect, Rect::new(0.0, 0.0, 1280.0, 800.0));
+    assert_eq!(placement.bars[1].display, 1);
+    assert!(!placement.bars[1].full, "the other display is compact");
+    assert_eq!(
+        placement.bars[1].rect,
+        Rect::new(1280.0, 0.0, 2560.0, 800.0),
+        "the second display's own rectangle"
+    );
+    assert!(placement.fullscreen.is_empty());
+
+    // The person moving to the other display carries the full bar there.
+    tree.outputs.set_focused(1);
+    let focused = Placement::of(&tree, &[]);
+    assert!(focused.bars[1].full);
+    assert!(!focused.bars[0].full);
+
+    // A fullscreen window names the monitor of its display.
+    assert_eq!(
+        Placement::of(&tree, &["monitor".to_owned()]).fullscreen,
+        [1]
+    );
+    assert!(
+        Placement::of(&tree, &["unplugged".to_owned()])
+            .fullscreen
+            .is_empty()
+    );
+}
+
+/// A desk of one display needs no placing: the bar's own layout stands it
+/// across the desk.
+#[test]
+fn one_display_needs_no_places() {
+    let mut tree = DesktopTree::default();
+    tree.reconcile_displays(&[display(0, "panel", 0.0)]);
+    assert_eq!(
+        Placement::of(&tree, &["panel".to_owned()]),
+        Placement::default()
+    );
+}

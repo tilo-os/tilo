@@ -428,7 +428,10 @@ impl Apps {
         let mut state = self.state.borrow_mut();
         let started = state.spawner.start_with(planned, door, &|pid| {
             if let Some(launches) = &launches {
-                launches.started(pid, &planned.app, room);
+                // The launcher binds the session's documents store into a
+                // package's sandbox and into nothing else, so a package is
+                // the launch whose files are answered with paths in the store.
+                launches.started(pid, &planned.app, room, !planned.kind.is_host());
             }
         });
         let started = match started {

@@ -180,6 +180,11 @@ impl NoticeSignals {
 
     /// How many notifications each app (by verified id) is showing as
     /// unread, where it shows any and this person keeps its badges on.
+    /// The count on `app_id`'s badge.
+    pub(crate) fn badge(&self, app_id: &str) -> u32 {
+        self.badges.borrow().get(app_id).copied().unwrap_or(0)
+    }
+
     pub(crate) fn badges(&self) -> BTreeMap<String, u32> {
         self.badges
             .borrow()

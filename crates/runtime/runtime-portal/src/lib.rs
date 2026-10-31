@@ -24,6 +24,8 @@
 pub mod agent_transport;
 #[cfg(target_os = "linux")]
 pub mod jobs;
+#[cfg(unix)]
+pub mod launch_handoff;
 pub mod local_socket;
 pub mod origin_connector;
 pub mod pending_connection;

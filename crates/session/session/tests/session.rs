@@ -240,6 +240,23 @@ fn session() -> Session {
     .expect("session")
 }
 
+/// A session whose app lists are `lists`: what the desk offers to open.
+fn session_with_lists(lists: tilo_session::AppLists) -> Session {
+    Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            collab: false,
+            search: tilo_session::SearchOptions {
+                lists: tilo_session::Lists::fixed(lists),
+                ..tilo_session::SearchOptions::default()
+            },
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session")
+}
+
 /// A session that keeps this device's desk under `state`, the way one with
 /// a state directory does.
 fn session_keeping(state: &std::path::Path) -> Session {
@@ -405,6 +422,31 @@ fn centre(session: &mut Session, rect: (i32, i32, i32, i32)) -> [u8; 4] {
     shot.pixel(x, y).unwrap()
 }
 
+/// The colours across the bar's band on the display.
+fn band(session: &mut Session) -> std::collections::BTreeSet<[u8; 4]> {
+    let frame = session.compositor().screenshot("HEADLESS-1").unwrap();
+    (0..frame.width)
+        .step_by(4)
+        .filter_map(|x| frame.pixel(x, 12))
+        .collect()
+}
+
+/// The colour the display shows most across the bar's band.
+fn band_colour(session: &mut Session) -> [u8; 4] {
+    let frame = session.compositor().screenshot("HEADLESS-1").unwrap();
+    let mut counts = std::collections::BTreeMap::new();
+    for x in (0..frame.width).step_by(4) {
+        if let Some(pixel) = frame.pixel(x, 12) {
+            *counts.entry(pixel).or_insert(0_usize) += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(colour, _)| colour)
+        .unwrap()
+}
+
 /// Step the session until `done` holds, for up to three seconds of its
 /// clock.
 #[track_caller]
@@ -422,6 +464,88 @@ fn within(
         }
     }
     panic!("condition not reached in time");
+}
+
+/// Wait for the size the desktop configures the window to, draw it at that
+/// size as its client does, and wait until the compositor shows it there.
+fn take_size(session: &mut Session, client: &mut TestClient, app: &str, size: (i32, i32)) {
+    let until = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < until && client.seen.size != Some(size) {
+        client.exchange();
+        session.step(Duration::from_millis(4)).expect("step");
+    }
+    assert_eq!(
+        client.seen.size,
+        Some(size),
+        "the desktop asks the window for its new size"
+    );
+    client.show(size.0, size.1, [200, 40, 40, 255]);
+    let app = app.to_owned();
+    within(session, client, move |session| {
+        window(session.compositor(), &app)
+            .is_some_and(|(_, rect)| (rect.2, rect.3) == (size.0, size.1))
+    });
+}
+
+/// A window taken across the display covers it, the bar's room included,
+/// and the bar draws again once the window gives the display back.
+#[test]
+fn a_full_screen_window_covers_the_display_and_the_bar_comes_back() {
+    const APP: &str = "org.example.Cinema";
+    const RED: [u8; 4] = [200, 40, 40, 255];
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let mut client = mapped(&mut session, APP);
+    let (id, rect) = window(session.compositor(), APP).unwrap();
+    assert!(
+        f64::from(rect.1) >= f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX).floor(),
+        "the window stands under the bar: {rect:?}"
+    );
+    assert!(
+        band(&mut session).len() > 2,
+        "and the bar draws in its band"
+    );
+    assert_ne!(
+        band_colour(&mut session),
+        RED,
+        "the bar's band is not the window"
+    );
+
+    assert!(
+        session
+            .desktop()
+            .with_policy(|policy| policy.set_fullscreen(id, true)),
+        "the desk holds the window"
+    );
+    take_size(&mut session, &mut client, APP, (WIDTH, HEIGHT));
+    assert_eq!(
+        window(session.compositor(), APP),
+        Some((id, (0, 0, WIDTH, HEIGHT))),
+        "the display from its top edge to its bottom"
+    );
+    assert_eq!(
+        band_colour(&mut session),
+        RED,
+        "the bar stepped aside: its band is the window"
+    );
+
+    assert!(
+        session
+            .desktop()
+            .with_policy(|policy| policy.set_fullscreen(id, false))
+    );
+    take_size(&mut session, &mut client, APP, (rect.2, rect.3));
+    assert_eq!(
+        window(session.compositor(), APP),
+        Some((id, rect)),
+        "the window stands where it stood"
+    );
+    assert!(band(&mut session).len() > 2, "the bar is back in its band");
+    assert_ne!(
+        band_colour(&mut session),
+        RED,
+        "and the band is not the window again"
+    );
 }
 
 #[test]
@@ -461,6 +585,7 @@ mod keys {
     pub const D: u32 = 32;
     pub const LEFT_SHIFT: u32 = 42;
     pub const ESCAPE: u32 = 1;
+    pub const ENTER: u32 = 28;
     pub const LEFT_META: u32 = 125;
     pub const VOLUME_UP: u32 = 115;
     pub const MUTE: u32 = 113;
@@ -1669,186 +1794,6 @@ fn workspace_settings_shows_a_tab_and_moves_the_workspace() {
     );
 }
 
-/// Who sits here, as the session acts for them.
-const PERSON: &str = "person";
-
-/// The workspace in front belongs to the person who sits here, as it does
-/// once the room's custody has taken it, with `members` already in it.
-fn own_workspace(session: &Session, members: &[&str]) {
-    let mut tree = session.handle().read(Clone::clone);
-    let workspace = tree.active_workspace_mut().expect("a workspace in front");
-    workspace.set_owner(PERSON.to_owned());
-    for member in members {
-        tilo_desktop::workspace_settings::set_member_role(
-            workspace,
-            &PERSON.to_owned(),
-            &(*member).to_owned(),
-            tilo_action_policy::Role::Viewer,
-        );
-    }
-    session.handle().replace_tree(tree);
-}
-
-/// The sheet as a person presses it: the app the session hosts, lent the
-/// seat the session lends its own, so a press arrives as the person's own.
-fn sheet(session: &Session) -> HeadlessApp<WorkspaceSettingsApp> {
-    let seat = session
-        .workspace_settings()
-        .expect("workspace settings")
-        .clone();
-    let mut app =
-        HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent(PERSON, seat).expect("the sheet");
-    app.harness().resize((1280, 900)).expect("a screen");
-    app.settle();
-    app
-}
-
-/// Press the control `id` of `app`, as a person's own gesture.
-fn press(app: &mut HeadlessApp<WorkspaceSettingsApp>, id: &str) {
-    app.harness()
-        .perform_named(id, &ui::a11y::Action::Activate)
-        .unwrap_or_else(|error| panic!("press {id}: {error}"));
-    app.settle();
-}
-
-/// Activate the element `name` says, as a screen reader does: the menu items
-/// a control opens have no id of their own, only what they say.
-fn activate(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) {
-    let node = app
-        .harness()
-        .a11y_node_named(name)
-        .unwrap_or_else(|| panic!("no element says {name:?}"));
-    app.harness()
-        .perform_a11y_action(node, &ui::a11y::Action::Activate)
-        .unwrap_or_else(|error| panic!("activate {name}: {error}"));
-    app.settle();
-}
-
-/// Show `tab` in the sheet, as pressing its tab does, and let the session
-/// answer with the tab it shows.
-fn show_tab(
-    session: &mut Session,
-    app: &mut HeadlessApp<WorkspaceSettingsApp>,
-    tab: &WorkspaceSettingsEffect,
-) {
-    app.effect(tab).expect("show the tab");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
-}
-
-/// The People tab gives a member another role, and the workspace holds it
-/// afterwards, with the sheet's row saying so.
-#[test]
-fn workspace_settings_sets_a_members_role() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    session.step(Duration::from_millis(1)).unwrap();
-    own_workspace(&session, &["ada"]);
-    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
-    session.step(Duration::from_millis(1)).unwrap();
-    let mut app = sheet(&session);
-    show_tab(
-        &mut session,
-        &mut app,
-        &WorkspaceSettingsEffect::ShowTab {
-            tab: "people".to_owned(),
-        },
-    );
-    press(&mut app, "ws-people-role-ada");
-    activate(&mut app, "Editor");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
-    let role = session.handle().read(|tree| {
-        tree.active_workspace()
-            .and_then(|workspace| workspace.role_of("ada"))
-    });
-    assert_eq!(
-        role,
-        Some(tilo_action_policy::Role::Editor),
-        "ada is an editor of the workspace"
-    );
-    let row = session
-        .workspace_settings()
-        .expect("workspace settings")
-        .settings()
-        .people
-        .people
-        .into_iter()
-        .find(|person| person.key == "ada")
-        .expect("the sheet lists ada");
-    assert_eq!(
-        row.role_key.as_deref(),
-        Some("editor"),
-        "the sheet's row says which role she has"
-    );
-}
-
-/// The Permissions tab gives ada a permission beyond her role, and takes it
-/// back: the workspace holds it in between, and the sheet lists it.
-#[test]
-fn workspace_settings_gives_and_revokes_a_permission() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    session.step(Duration::from_millis(1)).unwrap();
-    own_workspace(&session, &["ada"]);
-    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
-    session.step(Duration::from_millis(1)).unwrap();
-    let mut app = sheet(&session);
-    show_tab(
-        &mut session,
-        &mut app,
-        &WorkspaceSettingsEffect::ShowTab {
-            tab: "permissions".to_owned(),
-        },
-    );
-    press(&mut app, "ws-grant-who");
-    activate(&mut app, "ada");
-    press(&mut app, "ws-grant");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
-    let given = session
-        .workspace_settings()
-        .expect("workspace settings")
-        .settings()
-        .permissions
-        .sections
-        .into_iter()
-        .flat_map(|section| section.permissions)
-        .find(|permission| permission.holder == "ada")
-        .expect("the sheet lists ada's permission");
-    let camera = tilo_desktop_surface::i18n::t("workspace-settings-scope-camera");
-    assert!(
-        given.detail.contains(&camera),
-        "the row says what the permission allows: {}",
-        given.detail
-    );
-    let held = session
-        .handle()
-        .read(|tree| tree.active_workspace().expect("a workspace").sandbox.len());
-    assert_eq!(held, 1, "the workspace gives ada the camera");
-
-    press(&mut app, &format!("ws-permission-revoke-{}", given.key));
-    press(&mut app, "ws-settings-decision.primary");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
-    let left = session
-        .handle()
-        .read(|tree| tree.active_workspace().expect("a workspace").sandbox.len());
-    assert_eq!(left, 0, "the workspace gives the camera to no one again");
-    assert!(
-        session
-            .workspace_settings()
-            .expect("workspace settings")
-            .settings()
-            .permissions
-            .sections
-            .into_iter()
-            .flat_map(|section| section.permissions)
-            .all(|permission| permission.holder != "ada"),
-        "the sheet lists no permission of ada's"
-    );
-}
-
 #[test]
 fn a_portal_question_is_answered_through_the_sheets_actions() {
     use tilo_sheets::Seat as _;
@@ -1957,14 +1902,25 @@ fn pixel_at(picture: &image::RgbaImage, x: i32, y: i32) -> [u8; 4] {
         .0
 }
 
+#[path = "session/bars.rs"]
+mod bars;
 #[path = "session/chrome.rs"]
 mod chrome;
 #[path = "session/lock.rs"]
 mod lock;
+#[path = "session/lock_recovery.rs"]
+mod lock_recovery;
 mod questions;
+#[path = "session/workspace_settings.rs"]
+mod workspace_settings;
 
 #[path = "session/capture_studio.rs"]
 mod capture_studio;
+#[path = "session/portal_capture.rs"]
+mod portal_capture;
+
+#[path = "session/secret_captures.rs"]
+mod secret_captures;
 
 impl Dispatch<WlRegistry, ()> for Seen {
     fn event(
@@ -2136,15 +2092,14 @@ delegate_noop!(Seen: ignore WlSurface);
 #[test]
 fn the_display_action_steps_through_the_ways_of_using_two_displays() {
     let _settled = ui::motion::testing::settled();
-    let mut external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT);
-    external.position = (WIDTH, 0);
+    let external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT).at(WIDTH, 0);
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT), external],
+        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0), external],
     )
     .expect("session");
     let arrangement = |session: &mut Session| {
@@ -2184,116 +2139,6 @@ fn the_display_action_steps_through_the_ways_of_using_two_displays() {
     );
     let corners: std::collections::BTreeSet<_> = extended.iter().map(|output| output.2).collect();
     assert_eq!(corners.len(), 2, "side by side again: {extended:?}");
-}
-
-/// A screenshot the portal asks for is the session's frames: the loop is
-/// woken and answers with a PNG of every display, side by side.
-#[test]
-fn the_portals_screenshot_is_a_picture_of_every_display() {
-    use tilo_portal::Capture as _;
-
-    let _settled = ui::motion::testing::settled();
-    let directory = tempfile::tempdir().unwrap();
-    let wake = tilo_service::LoopWake::default();
-    let (capture, captures) =
-        tilo_session::capture::channel_to(directory.path().to_owned(), wake.handle());
-    let mut external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT);
-    external.position = (WIDTH, 0);
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            wake,
-            captures: Some(captures),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT), external],
-    )
-    .expect("session");
-    session.step(Duration::from_millis(1)).unwrap();
-    let asked = std::thread::spawn(move || {
-        tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(capture.screenshot(tilo_portal::CaptureTarget::Screen))
-    });
-    let started = std::time::Instant::now();
-    while !asked.is_finished() {
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "the screenshot was never answered"
-        );
-        session.step(Duration::from_secs(1)).unwrap();
-    }
-    let path = asked.join().unwrap().expect("a screenshot");
-    assert!(path.starts_with(directory.path()));
-    let picture = image::open(&path).unwrap().to_rgba8();
-    assert_eq!(
-        picture.dimensions(),
-        (
-            u32::try_from(WIDTH * 2).unwrap(),
-            u32::try_from(HEIGHT).unwrap()
-        )
-    );
-}
-
-/// A screenshot of the window with focus is that window's own frame: what
-/// its client drew, not the desk around it.
-#[test]
-fn the_portals_screenshot_of_the_active_window_is_that_window_alone() {
-    use tilo_portal::Capture as _;
-
-    let _settled = ui::motion::testing::settled();
-    let directory = tempfile::tempdir().unwrap();
-    let wake = tilo_service::LoopWake::default();
-    let (capture, captures) =
-        tilo_session::capture::channel_to(directory.path().to_owned(), wake.handle());
-    // What a session can be asked for: everything the displays show and
-    // the window with focus. A window or area the person picks would need
-    // a selector, which the session draws none of.
-    assert_eq!(
-        capture.targets(),
-        tilo_portal::CaptureTarget::Screen.bit() | tilo_portal::CaptureTarget::ActiveWindow.bit()
-    );
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            wake,
-            captures: Some(captures),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-    let _client = mapped(&mut session, "org.example.Terminal");
-    let asked = std::thread::spawn(move || {
-        tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(capture.screenshot(tilo_portal::CaptureTarget::ActiveWindow))
-    });
-    let started = std::time::Instant::now();
-    while !asked.is_finished() {
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "the screenshot was never answered"
-        );
-        session.step(Duration::from_secs(1)).unwrap();
-    }
-    let path = asked.join().unwrap().expect("a screenshot");
-    let picture = image::open(&path).unwrap().to_rgba8();
-    let (width, height) = picture.dimensions();
-    assert!(
-        width < u32::try_from(WIDTH).unwrap() && height < u32::try_from(HEIGHT).unwrap(),
-        "the window, not the display: {width}x{height}"
-    );
-    #[allow(clippy::cast_possible_wrap, reason = "a window's pixels on a screen")]
-    let (middle_x, middle_y) = ((width / 2) as i32, (height / 2) as i32);
-    assert_eq!(
-        pixel_at(&picture, middle_x, middle_y),
-        [200, 40, 40, 255],
-        "the colour its client drew"
-    );
 }
 
 // =====================================================================

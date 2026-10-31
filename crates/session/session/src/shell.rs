@@ -11,7 +11,7 @@ use tilo_compositor::Compositor;
 use tilo_surface_host::shell_part::Ask;
 use tilo_surface_host::{Doors, SessionLink, ShellPart, ShellWork};
 
-use crate::desk::Desk;
+use crate::desk_resource::Desk;
 use crate::panels::Held;
 
 /// The shell package's source and its ids lock, as it ships with the session.
@@ -51,7 +51,7 @@ pub(crate) struct Shell {
     announced: std::cell::RefCell<std::collections::BTreeSet<String>>,
     link: Rc<SessionLink>,
     /// What the desk's reading was last made from.
-    seen: Option<crate::desk::DeskKey>,
+    seen: Option<crate::desk_resource::DeskKey>,
     part: Rc<RefCell<ShellPart>>,
 }
 
@@ -156,5 +156,63 @@ mod tests {
             super::IDS,
             "apps/tl/shell/app.ids is not the lock the package compiles to; write:\n{lock}"
         );
+    }
+}
+
+impl crate::Session {
+    /// Hand the shell's bar the desk when it changed, and run what the bar
+    /// asked through the door, as any caller of the action protocol does.
+    pub(crate) fn follow_shell(&mut self) -> Result<(), crate::Error> {
+        let Some(shell) = self.shell.as_mut() else {
+            return Ok(());
+        };
+        if let Some((_, title, body)) = shell.new_due_timer() {
+            self.shared
+                .notices
+                .post(tilo_desktop_surface::notifications::Notification::new(
+                    title, body,
+                ));
+        }
+        shell.publish();
+        if !shell.has_asks() {
+            return Ok(());
+        }
+        let doors = &self.shared.doors;
+        shell.serve(|resource, action, arguments| {
+            doors
+                .invoke(&tilo_actions::ActionAddress::new(resource, action), arguments)
+                .map(drop)
+                .map_err(|error| error.to_string())
+        });
+        // What ran may have asked the session in turn (a menu, a sheet).
+        self.settle()?;
+        if let Some(shell) = self.shell.as_mut() {
+            shell.publish();
+        }
+        Ok(())
+    }
+
+    /// How much work the shell's bar did since the session started:
+    /// `None` when its package did not start.
+    #[must_use]
+    pub fn shell_work(&self) -> Option<tilo_surface_host::ShellWork> {
+        self.shell.as_ref().map(Shell::work)
+    }
+
+    /// What the shell's bar refused since the session started, in its own
+    /// words: a press whose action could not run.
+    #[must_use]
+    pub fn shell_refusals(&self) -> Vec<String> {
+        self.shell
+            .as_ref()
+            .map(Shell::refusals)
+            .unwrap_or_default()
+    }
+
+    /// Where the shell bar's control named `name` (as assistive technology
+    /// hears it) stands, logical `(x, y, w, h)`: what a test presses it by.
+    #[must_use]
+    pub fn shell_control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
+        self.shell.as_ref()?.control(name)
     }
 }

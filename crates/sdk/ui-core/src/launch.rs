@@ -890,12 +890,16 @@ fn run_parsed(
     // renderer preparation below starts a thread.
     // A surface of the desktop is shown by the session that placed it and
     // reaches it over its own actions socket: it needs no runtime host.
-    let attaches = !is_surface() && (spec.runtime_attachment)(&args);
+    let attaches = !crate::surface_services::is_surface() && (spec.runtime_attachment)(&args);
     if opens_native_window(&args) && attaches {
         attach(spec.app_id).map_err(|error| {
             LaunchError::Operation(format!("native runtime attachment failed: {error}"))
         })?;
     }
+    // A surface app reads what its session publishes over the connection the
+    // session's broker admits for its launch, as any app does; it is made
+    // before the window opens, so the first frame already shows it.
+    crate::surface_services::connect();
     // Threads may start from here on; startup marks are written from their
     // own, never by the thread that marks.
     tilo_startup_metrics::start_writer();
@@ -1313,14 +1317,6 @@ fn selected_local_construction()
         crate::collaboration::CollaborationManager::disabled(),
     )
     .map_err(LaunchError::Operation)
-}
-
-/// Whether the session that started this process placed it as one of its
-/// surfaces: it handed it the actions socket in
-/// [`crate::surface_peer::ACTIONS_FD_ENV`].
-#[cfg(feature = "native")]
-fn is_surface() -> bool {
-    std::env::var_os(crate::surface_peer::ACTIONS_FD_ENV).is_some()
 }
 
 /// The actions socket the session handed this process, when it is a

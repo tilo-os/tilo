@@ -38,6 +38,13 @@ use ui::text_render::TextStyle;
 use ui::widget::ButtonRole;
 
 pub mod agent_access;
+pub mod default_apps;
+
+pub use default_apps::{
+    DefaultAppChoice, default_app_choices, default_apps_status, next_user_default,
+    next_workspace_default,
+};
+use default_apps::{default_app_labels, resource_kind_label};
 pub mod emoji_pane;
 pub mod overlay;
 mod people_pane;
@@ -2810,6 +2817,83 @@ pub fn admit_agent(
         .unwrap_or_default()
 }
 
+/// One agent as the Agents tab lists it, in the person's words: without the
+/// geometry the pane lays it out with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentSummary {
+    /// What it is asked for by.
+    pub agent: String,
+    /// What the person reads: the service's purpose, or the agent's name.
+    pub name: String,
+    /// "Agent" or "Service".
+    pub badge: String,
+    /// What it was admitted with and what it holds beside.
+    pub detail: String,
+}
+
+/// The workspace's agents, each as the Agents tab reads it.
+#[must_use]
+pub fn agent_summaries(ws: &Workspace) -> Vec<AgentSummary> {
+    let mut members = ws.agent_members_at(tilo_clock::unix_now());
+    members.compact_sort_by(|a, b| a.0.cmp(&b.0));
+    members
+        .into_iter()
+        .map(|(agent, kinds)| {
+            let (name, badge, detail) = agent_summary_parts(ws, &agent, kinds);
+            AgentSummary {
+                agent,
+                name,
+                badge,
+                detail,
+            }
+        })
+        .collect()
+}
+
+/// An agent's name, its badge and the line about what it may do: the one
+/// place both the pane and the tab read them.
+fn agent_summary_parts(
+    ws: &Workspace,
+    agent: &str,
+    kinds: tilo_action_policy::KindSet,
+) -> (String, String, String) {
+    let now = tilo_clock::unix_now();
+    let service = service_purpose(ws, agent, now);
+    let name = match &service {
+        Some(service) if !service.purpose.is_empty() => service.purpose.clone(),
+        _ => short_id(agent),
+    };
+    let badge = t(if service.is_some() {
+        "workspace-settings-badge-service"
+    } else {
+        "workspace-settings-badge-agent"
+    });
+    let detail = if let Some(service) = &service {
+        service_member_detail(service)
+    } else {
+        let admission = format!("agent-member:{agent}:");
+        let subject = tilo_action_policy::Subject::agent(agent);
+        let grant_count = ws
+            .policy
+            .grants
+            .iter()
+            .filter(|grant| grant.subject == subject && !grant.id.as_str().starts_with(&admission))
+            .count();
+        t_args(
+            "workspace-settings-agent-detail",
+            &[
+                ("admission", agent_admission_label(kinds).into()),
+                (
+                    "profile",
+                    agent_preset_label(agent_authority_preset(ws, agent)).into(),
+                ),
+                ("count", grant_count.into()),
+            ],
+        )
+    };
+    (name, badge, detail)
+}
+
 /// Geometry for the always-visible entry point into the guided setup.
 pub fn agents_add_rect(pane_rect: Rect) -> Rect {
     Rect::new(
@@ -2964,7 +3048,7 @@ pub fn bots_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<BotRow> {
 
 /// What a bot row says under its name: whether it runs yet, and from which
 /// version. One fact per row, never joined.
-fn bot_detail(bot: &tilo_desktop_model::RoomBot) -> String {
+pub fn bot_detail(bot: &tilo_desktop_model::RoomBot) -> String {
     if bot.installation.is_none() {
         t("workspace-settings-bot-starting")
     } else if bot.paused {
@@ -3373,7 +3457,7 @@ pub fn draw_agents_pane(
         theme,
     );
     for row in &rows {
-        draw_agent_row(scene, transform, row, is_owner, text_renderer, theme);
+        draw_agent_row(scene, transform, ws, row, is_owner, text_renderer, theme);
     }
     draw_bots_section(
         &mut PaintCtx::new(scene, transform, text_renderer, theme),
@@ -3441,6 +3525,7 @@ fn draw_agent_avatar(scene: &mut Scene, transform: Affine, row: &AgentRow, theme
 fn draw_agent_row(
     scene: &mut Scene,
     transform: Affine,
+    ws: &Workspace,
     row: &AgentRow,
     is_owner: bool,
     text_renderer: &mut TextRenderer,
@@ -3450,19 +3535,12 @@ fn draw_agent_row(
     let colors = &tokens.colors;
     draw_row_card(scene, transform, row.row_rect, theme);
     let avatar = draw_agent_avatar(scene, transform, row, theme);
-    let name = match &row.service {
-        Some(service) if !service.purpose.is_empty() => service.purpose.clone(),
-        _ => short_id(&row.agent),
-    };
+    let (name, badge_label, detail) = agent_summary_parts(ws, &row.agent, row.kinds);
     let badge = draw_pill(
         scene,
         transform,
         Point::new(row.role_rect.x0 - 12.0, row.row_rect.center().y),
-        &t(if row.service.is_some() {
-            "workspace-settings-badge-service"
-        } else {
-            "workspace-settings-badge-agent"
-        }),
+        &badge_label,
         ChipStyle::Neutral,
         text_renderer,
         theme,
@@ -3479,19 +3557,6 @@ fn draw_agent_row(
         None,
         &title_style,
     );
-    let admission = agent_admission_label(row.kinds);
-    let detail = if let Some(service) = &row.service {
-        service_member_detail(service)
-    } else {
-        t_args(
-            "workspace-settings-agent-detail",
-            &[
-                ("admission", admission.into()),
-                ("profile", agent_preset_label(row.preset).into()),
-                ("count", row.grant_count.into()),
-            ],
-        )
-    };
     let detail_style = tokens.typography.style(TextRole::Caption);
     let detail = elide(&detail, &detail_style, text_max, text_renderer);
     text_renderer.draw_style(
@@ -3581,23 +3646,6 @@ fn default_app_columns(x0: f64, x1: f64, compact: bool) -> ((f64, f64), (f64, f6
     ((workspace_x1 - control_w, workspace_x1), user)
 }
 
-/// The row label for a resource kind in the desktop's language.
-fn resource_kind_label(resource: &desktop_policy::ResourceKind) -> String {
-    if let Some(ext) = resource.extension_name() {
-        t_args(
-            "workspace-settings-resource-extension",
-            &[("ext", ext.into())],
-        )
-    } else if let Some(scheme) = resource.scheme_name() {
-        t_args(
-            "workspace-settings-resource-scheme",
-            &[("scheme", scheme.into())],
-        )
-    } else {
-        resource.display_label()
-    }
-}
-
 pub fn default_app_rows(
     pane: Rect,
     candidates: &[desktop_policy::AppCandidate],
@@ -3643,13 +3691,6 @@ pub fn default_app_rows(
         .collect()
 }
 
-fn app_name(id: &str, candidates: &[desktop_policy::AppCandidate]) -> String {
-    candidates.iter().find(|a| a.package_id == id).map_or_else(
-        || t("workspace-settings-unavailable-app"),
-        |a| a.display_name.clone(),
-    )
-}
-
 /// Bundles the per-workspace inputs to [`draw_default_apps_pane`] so the
 /// call stays under clippy's argument-count budget, without disturbing
 /// the shared `scene`/`transform`/`text_renderer`/`theme` draw parameters
@@ -3673,24 +3714,14 @@ pub fn draw_default_apps_pane(
         local_user,
         candidates,
     } = *ctx;
-    let resources = candidates
-        .iter()
-        .flat_map(|candidate| candidate.resources.iter())
-        .collect::<std::collections::BTreeSet<_>>()
-        .len();
-    let custom_rules = ws.default_apps.policy.len();
-    let status = if custom_rules == 0 {
-        t_args(
-            "workspace-settings-apps-file-types",
-            &[("count", resources.into())],
-        )
-    } else {
-        t_args(
-            "workspace-settings-apps-custom-rules",
-            &[("count", custom_rules.into())],
-        )
-    };
-    draw_default_apps_header(scene, transform, pane, &status, text_renderer, theme);
+    draw_default_apps_header(
+        scene,
+        transform,
+        pane,
+        &default_apps_status(ws, candidates),
+        text_renderer,
+        theme,
+    );
     let can_admin = ws.may_administer(local_user);
     draw_default_apps_rows(scene, transform, pane, ctx, can_admin, text_renderer, theme);
     if candidates.iter().all(|a| a.resources.is_empty()) {
@@ -3809,32 +3840,8 @@ fn draw_default_apps_rows(
             None,
             &label_style,
         );
-        let policy = ws
-            .default_apps
-            .policy
-            .get(&row.resource)
-            .unwrap_or(&desktop_policy::WorkspaceDefaultPolicy::FollowPersonal);
-        let policy_label = match policy {
-            desktop_policy::WorkspaceDefaultPolicy::FollowPersonal => {
-                t("workspace-settings-follow-personal")
-            }
-            desktop_policy::WorkspaceDefaultPolicy::App(id) => app_name(id, candidates),
-        };
-        let choice = ws
-            .default_apps
-            .user_choices
-            .get(local_user)
-            .and_then(|m| m.get(&row.resource))
-            .unwrap_or(&desktop_policy::UserWorkspaceChoice::FollowWorkspace);
-        let choice_label = match choice {
-            desktop_policy::UserWorkspaceChoice::FollowWorkspace => {
-                t("workspace-settings-use-workspace-choice")
-            }
-            desktop_policy::UserWorkspaceChoice::PersonalDefault => {
-                t("workspace-settings-use-personal-default")
-            }
-            desktop_policy::UserWorkspaceChoice::App(id) => app_name(id, candidates),
-        };
+        let (policy_label, choice_label) =
+            default_app_labels(ws, local_user, &row.resource, candidates);
         draw_cycler(
             scene,
             transform,
@@ -3853,53 +3860,6 @@ fn draw_default_apps_rows(
             text_renderer,
             theme,
         );
-    }
-}
-
-pub fn next_workspace_default(
-    current: Option<&desktop_policy::WorkspaceDefaultPolicy>,
-    resource: &desktop_policy::ResourceKind,
-    candidates: &[desktop_policy::AppCandidate],
-) -> desktop_policy::WorkspaceDefaultPolicy {
-    let apps: Vec<_> = candidates.iter().filter(|a| a.handles(resource)).collect();
-    match current.unwrap_or(&desktop_policy::WorkspaceDefaultPolicy::FollowPersonal) {
-        desktop_policy::WorkspaceDefaultPolicy::FollowPersonal => apps.first().map_or(
-            desktop_policy::WorkspaceDefaultPolicy::FollowPersonal,
-            |a| desktop_policy::WorkspaceDefaultPolicy::App(a.package_id.clone()),
-        ),
-        desktop_policy::WorkspaceDefaultPolicy::App(id) => apps
-            .iter()
-            .position(|a| &a.package_id == id)
-            .and_then(|i| apps.get(i.saturating_add(1)))
-            .map_or(
-                desktop_policy::WorkspaceDefaultPolicy::FollowPersonal,
-                |a| desktop_policy::WorkspaceDefaultPolicy::App(a.package_id.clone()),
-            ),
-    }
-}
-
-pub fn next_user_default(
-    current: Option<&desktop_policy::UserWorkspaceChoice>,
-    resource: &desktop_policy::ResourceKind,
-    candidates: &[desktop_policy::AppCandidate],
-) -> desktop_policy::UserWorkspaceChoice {
-    let apps: Vec<_> = candidates.iter().filter(|a| a.handles(resource)).collect();
-    match current.unwrap_or(&desktop_policy::UserWorkspaceChoice::FollowWorkspace) {
-        desktop_policy::UserWorkspaceChoice::FollowWorkspace => {
-            desktop_policy::UserWorkspaceChoice::PersonalDefault
-        }
-        desktop_policy::UserWorkspaceChoice::PersonalDefault => apps
-            .first()
-            .map_or(desktop_policy::UserWorkspaceChoice::FollowWorkspace, |a| {
-                desktop_policy::UserWorkspaceChoice::App(a.package_id.clone())
-            }),
-        desktop_policy::UserWorkspaceChoice::App(id) => apps
-            .iter()
-            .position(|a| &a.package_id == id)
-            .and_then(|i| apps.get(i.saturating_add(1)))
-            .map_or(desktop_policy::UserWorkspaceChoice::FollowWorkspace, |a| {
-                desktop_policy::UserWorkspaceChoice::App(a.package_id.clone())
-            }),
     }
 }
 

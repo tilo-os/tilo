@@ -23,6 +23,8 @@ tilo-lockdown-policy = { path = "../tilo-lockdown-policy" }
 tilo-paths.workspace = true
 # Naming an unsandboxed requester by the installed app it runs.
 tilo-desktop-entry = { path = "../../system/desktop-entry" }
+# What a sandboxed app is handed in place of the host file the person chose.
+tilo-documents = { path = "../../system/documents" }
 # The person's default apps, for the links the portal opens.
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
 percent-encoding.workspace = true
@@ -65,6 +67,8 @@ pipewire = ["dep:pipewire"]
 [dev-dependencies]
 image = { workspace = true, features = ["png"] }
 tempfile.workspace = true
+# Serving the store as a filesystem, to read back what a chooser handed out.
+tilo-documents = { path = "../../system/documents", features = ["mount"] }
 # The bus the tests run on, which starts without the caller's user database.
 tilo-test-env = { path = "../../dev/test-env" }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }

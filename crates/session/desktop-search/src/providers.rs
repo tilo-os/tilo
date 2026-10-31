@@ -8,6 +8,7 @@ pub mod catalogue;
 pub mod downloaded;
 #[cfg(feature = "indexes")]
 pub mod files;
+pub mod happening;
 pub mod host_apps;
 pub mod jobs;
 pub mod people;
@@ -97,6 +98,8 @@ impl Source for Applications {
             .filter_map(|(app, matched)| {
                 let matched = matched?;
                 Some(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: ResourceKind::Application,
                     provider: self.id().into(),
                     id: app.id.clone(),
@@ -155,6 +158,8 @@ impl Source for Windows {
                     rank::window_match_score(needle, &[&window.title, &window.app_title])?
                 };
                 Some(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: ResourceKind::Custom(WINDOWS_KIND.into()),
                     provider: self.id().into(),
                     id: window.tab.to_string(),
@@ -211,6 +216,8 @@ impl Source for Commands {
                     )?
                 };
                 Some(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: ResourceKind::Action,
                     provider: self.id().into(),
                     id: command.id.clone(),
@@ -314,6 +321,8 @@ impl Source for Actions {
                     rank::item_action_match_score(needle, &flat.resource_label)?
                 };
                 Some(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: ResourceKind::Action,
                     provider: self.id().into(),
                     id: flat.key.clone(),
@@ -399,6 +408,8 @@ impl Source for Published {
                     continue;
                 };
                 hits.push(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: ResourceKind::Action,
                     provider: self.id().into(),
                     id: Self::row_id(published, &action.address),
@@ -596,6 +607,8 @@ impl Source for Content {
                     .unwrap_or(CONTENT_MATCH_SCORE)
                     .min(MAX_PROVIDER_SCORE);
                 hits.push(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: content_kind(&result.kind),
                     provider: self.id().into(),
                     id,
@@ -652,6 +665,8 @@ impl Answers {
         }
         let kind = answers_kind();
         let answer = |id: &str, title: String, subtitle: Option<String>, target: Target| Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind: kind.clone(),
             provider: self.id().into(),
             id: format!("{id}:{typed}"),
@@ -801,6 +816,8 @@ impl WebSearch {
     fn web_search_row(&self, query: &str) -> Hit {
         use crate::answers::web::{fallback_search_url, web_search_uri};
         Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind: web_kind(),
             provider: self.id().into(),
             id: format!("search:{query}"),
@@ -819,6 +836,8 @@ impl WebSearch {
     /// The service named alone: opens its site.
     fn service_row(&self, service: &'static crate::answers::web::Service) -> Hit {
         Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind: websites_kind(),
             provider: self.id().into(),
             id: format!("service:{}", service.id),
@@ -863,6 +882,8 @@ impl WebSearch {
             ),
         };
         Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind: websites_kind(),
             provider: self.id().into(),
             id: format!("query:{}:{query}", service.id),
@@ -1002,6 +1023,8 @@ impl Source for Recents {
             .iter()
             .enumerate()
             .map(|(position, hit)| Hit {
+                faces: Vec::new(),
+                outcome: None,
                 kind: ResourceKind::Custom(RECENT_KIND.into()),
                 provider: self.id().into(),
                 id: format!("{}\u{1f}{}", hit.provider, hit.id),
@@ -1092,6 +1115,8 @@ impl Source for Switches {
                     ],
                 )?;
                 Some(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: ResourceKind::Action,
                     provider: self.id().into(),
                     id: id.clone(),
@@ -1651,6 +1676,8 @@ mod tests {
             }
             fn query(&self, needle: &str) -> Vec<Hit> {
                 vec![Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: ResourceKind::Note,
                     provider: "notes".into(),
                     id: "n".into(),

@@ -330,11 +330,13 @@ fn own_person_name(chosen: Option<String>) -> String {
 }
 
 /// A workspace this person was let into: the room its door's invitation
-/// granted, and the name it was listed under.
+/// granted, the name it was listed under, and the invitation itself, which
+/// this device enrolls into the room's state with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Joined {
     pub(crate) room: String,
     pub(crate) name: String,
+    pub(crate) invitation: String,
 }
 
 /// What the worker is asked.
@@ -348,18 +350,36 @@ enum Ask {
         door: url::Url,
         person: Person,
     },
+    /// Join what the person pasted: an invitation's text, a site, or a
+    /// workspace link.
+    Take { text: String, person: Person },
+}
+
+/// An invitation that admits this person to a room: what a join is granted
+/// with, and what enrolls this device into the room.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Granted {
+    room: String,
+    invitation: String,
 }
 
 /// What the worker answers.
 enum Answer {
     /// What the sites list, and what could not be read.
     Read(Snapshot),
-    /// Where joining the listing `key`, named `name`, stands: the room it
-    /// was granted, or why it was not.
+    /// Where joining the listing `key`, named `name`, stands: what it was
+    /// granted, or why it was not.
     Joined {
         key: String,
         name: String,
-        room: Result<String, String>,
+        granted: Result<Granted, String>,
+    },
+    /// Where joining what the person pasted stands, named `name` when it got
+    /// far enough to know it.
+    Taken {
+        key: String,
+        name: String,
+        granted: Result<Granted, String>,
     },
 }
 
@@ -376,8 +396,11 @@ pub(crate) struct Store {
     status: std::cell::RefCell<Status>,
     listed: std::cell::RefCell<Vec<Listed>>,
     note: std::cell::RefCell<Option<String>>,
-    /// The listing being joined, by its key: one join at a time.
+    /// One join at a time.
     joining: std::cell::RefCell<Option<String>>,
+    /// The join whose enrollment into its room is on its way, by the room's
+    /// key, while it is.
+    settling: std::cell::RefCell<Option<String>>,
     /// Why joining a listing failed, by its key, until it is joined.
     failures: std::cell::RefCell<BTreeMap<String, String>>,
     /// The workspaces joined since the session last took them, for the desk
@@ -461,6 +484,67 @@ impl Store {
             .cloned()
     }
 
+    /// Join what the person pasted into the sheet — an invitation's text, a
+    /// site, or a workspace link — off the frame loop.
+    ///
+    /// # Errors
+    /// Why nothing was asked: nothing was pasted, or this computer has no
+    /// identity to join as.
+    pub(crate) fn take(&self, text: &str) -> Result<(), String> {
+        let text: String = text.split_whitespace().collect();
+        if text.is_empty() {
+            return Err("Paste a link or a code first.".to_owned());
+        }
+        let person = Person::this_computer()?;
+        let Some(asks) = self.worker() else {
+            return Err("the directory has nowhere to ask".to_owned());
+        };
+        *self.joining.borrow_mut() = Some(text.clone());
+        self.failures.borrow_mut().remove(&text);
+        *self.note.borrow_mut() = None;
+        if let Err(error) = asks.send(Ask::Take { text, person }) {
+            *self.joining.borrow_mut() = None;
+            return Err(format!("that was not asked of its host: {error}"));
+        }
+        Ok(())
+    }
+
+    /// The join whose enrollment is on its way, by the room it is for, while
+    /// it is: the sheet says so until it lands.
+    pub(crate) fn expect_enrollment(&self, room: &str) {
+        *self.settling.borrow_mut() = Some(room.to_owned());
+        *self.note.borrow_mut() = Some(tilo_sheets::word("directory-joining"));
+    }
+
+    /// Whether a join is still being settled.
+    pub(crate) fn settling(&self) -> bool {
+        self.settling.borrow().is_some()
+    }
+
+    /// What became of the enrollment into the room of `key`: the join is
+    /// settled, either way.
+    ///
+    /// A failure is said where the person pressed, and the row offers to
+    /// join again.
+    pub(crate) fn enrolled(&self, key: &str, name: &str, result: &Result<(), String>) {
+        if self.settling.borrow().as_deref() != Some(key) {
+            return;
+        }
+        *self.settling.borrow_mut() = None;
+        match result {
+            Ok(()) => *self.note.borrow_mut() = None,
+            Err(reason) => {
+                *self.note.borrow_mut() = Some(tilo_sheets::words(
+                    "directory-join-failed",
+                    &[("name", name), ("error", reason)],
+                ));
+                self.failures
+                    .borrow_mut()
+                    .insert(key.to_owned(), reason.clone());
+            }
+        }
+    }
+
     /// The listing this session is joining, by its key, while it is.
     pub(crate) fn joining(&self) -> Option<String> {
         self.joining.borrow().clone()
@@ -490,12 +574,16 @@ impl Store {
                     *self.listed.borrow_mut() = listings;
                     *self.status.borrow_mut() = Status::Listed;
                 }
-                Answer::Joined { key, name, room } => {
+                Answer::Joined { key, name, granted } => {
                     *self.joining.borrow_mut() = None;
-                    match room {
-                        Ok(room) => {
+                    match granted {
+                        Ok(granted) => {
                             self.failures.borrow_mut().remove(&key);
-                            self.joined.borrow_mut().push(Joined { room, name });
+                            self.joined.borrow_mut().push(Joined {
+                                room: granted.room,
+                                name,
+                                invitation: granted.invitation,
+                            });
                         }
                         Err(reason) => {
                             // The sheet says why, and the row says it was
@@ -503,6 +591,27 @@ impl Store {
                             *self.note.borrow_mut() = Some(tilo_sheets::words(
                                 "directory-join-failed",
                                 &[("name", &name), ("error", &reason)],
+                            ));
+                            self.failures.borrow_mut().insert(key, reason);
+                        }
+                    }
+                }
+                Answer::Taken { key, name, granted } => {
+                    *self.joining.borrow_mut() = None;
+                    match granted {
+                        Ok(granted) => self.joined.borrow_mut().push(Joined {
+                            room: granted.room,
+                            name: if name.is_empty() {
+                                tilo_sheets::word("directory-joined-name")
+                            } else {
+                                name
+                            },
+                            invitation: granted.invitation,
+                        }),
+                        Err(reason) => {
+                            *self.note.borrow_mut() = Some(tilo_sheets::words(
+                                "directory-code-failed",
+                                &[("error", &reason)],
                             ));
                             self.failures.borrow_mut().insert(key, reason);
                         }
@@ -533,8 +642,16 @@ fn work(asks: &mpsc::Receiver<Ask>, answers: &mpsc::Sender<Answer>) {
             } => Answer::Joined {
                 key,
                 name,
-                room: join(&door, &person),
+                granted: join(&door, &person),
             },
+            Ask::Take { text, person } => {
+                let taken = take(&text, &person);
+                Answer::Taken {
+                    key: text,
+                    name: taken.name,
+                    granted: taken.granted,
+                }
+            }
         };
         if answers.send(answer).is_err() {
             return;
@@ -542,12 +659,191 @@ fn work(asks: &mpsc::Receiver<Ask>, answers: &mpsc::Sender<Answer>) {
     }
 }
 
+/// What joining the pasted `text` got: the name the workspace goes by, when
+/// what was pasted says it, and what it was granted.
+struct Taken {
+    name: String,
+    granted: Result<Granted, String>,
+}
+
+/// Join what the person pasted, as [`classify`] reads it: an invitation's
+/// text is redeemed where it says; a site or a workspace link is joined
+/// through the door of the workspace it names, on the site it names.
+///
+/// Blocks on the site: run it off the frame loop.
+fn take(text: &str, person: &Person) -> Taken {
+    let pasted = match classify(text) {
+        Ok(pasted) => pasted,
+        Err(error) => {
+            return Taken {
+                name: String::new(),
+                granted: Err(error),
+            };
+        }
+    };
+    match pasted {
+        Pasted::Invitation { text, entry } => Taken {
+            name: entry.map_or_else(String::new, |entry| site_name(&entry)),
+            granted: verify_invitation(&text, person),
+        },
+        Pasted::Site { entry, room } => {
+            let name = site_name(&entry);
+            let granted = read_site_home(&entry).and_then(|door| join(&door, person)).and_then(
+                |granted| match room {
+                    Some(room) if room.to_string() != granted.room => Err(
+                        "that link is for another workspace on this site: ask whoever shared it for an invitation"
+                            .to_owned(),
+                    ),
+                    _ => Ok(granted),
+                },
+            );
+            Taken { name, granted }
+        }
+    }
+}
+
+/// An invitation redeemed for this person: the room it grants, and the text
+/// the room's host admits this device by.
+fn verify_invitation(text: &str, person: &Person) -> Result<Granted, String> {
+    let verified = tilo_workspace_join::decode_and_verify_invitation_text(
+        text.trim(),
+        Some(person.user),
+        &tilo_user_identity::RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .map_err(|error| format!("that invitation is not for you: {error}"))?;
+    let room = verified.grant().room.clone();
+    tilo_desktop_model::RoomId::parse(&room)
+        .ok_or_else(|| "that invitation names an invalid room".to_owned())?;
+    Ok(Granted {
+        room,
+        invitation: text.trim().to_owned(),
+    })
+}
+
+/// What the person pasted, as the join field reads it.
+enum Pasted {
+    /// An invitation's text, redeemed at the host it names; with the site the
+    /// link it came in is under, when it came in a link.
+    Invitation {
+        text: String,
+        entry: Option<url::Url>,
+    },
+    /// A site, whose home workspace its door admits people to; with the room
+    /// a link named, which must be that workspace.
+    Site {
+        entry: url::Url,
+        room: Option<tilo_desktop_model::RoomId>,
+    },
+}
+
+/// Read what the person pasted: an invitation's text, a workspace link, or a
+/// site.
+fn classify(text: &str) -> Result<Pasted, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("that is not a link or a code".to_owned());
+    }
+    if is_invitation(text) {
+        return Ok(Pasted::Invitation {
+            text: text.to_owned(),
+            entry: None,
+        });
+    }
+    if !text.contains('.') && !text.contains(':') && !text.contains('/') {
+        return Err("that is not a link or a code".to_owned());
+    }
+    if text.contains('#') {
+        let entry = link_entry(text);
+        if let Some(entry) = &entry
+            && let Ok(web_entry) = tilo_reference::link::WebEntry::new(entry)
+            && let Ok(link) = tilo_reference::link::Link::parse(
+                text,
+                &tilo_reference::link::WebEntries::new(vec![web_entry]),
+            )
+        {
+            let entry = site_entry(entry)?;
+            if link.secrets.pair.is_some() {
+                return Err("that link pairs a device with a host, not a workspace".to_owned());
+            }
+            let tilo_reference::link::Scope::Room { room, .. } = link.target.scope else {
+                return Ok(Pasted::Site { entry, room: None });
+            };
+            let room = tilo_desktop_model::RoomId::from(room);
+            if let Some(invitation) = link.secrets.invite {
+                return Ok(Pasted::Invitation {
+                    text: invitation.expose().to_owned(),
+                    entry: Some(entry),
+                });
+            }
+            return Ok(Pasted::Site {
+                entry,
+                room: Some(room),
+            });
+        }
+    }
+    Ok(Pasted::Site {
+        entry: site_entry(text)?,
+        room: None,
+    })
+}
+
+/// Whether `text` is an invitation's text itself.
+fn is_invitation(text: &str) -> bool {
+    tilo_workspace_join::decode_and_verify_invitation_text(
+        text,
+        None,
+        &tilo_user_identity::RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .is_ok()
+}
+
+/// The entry of a web link: everything before its route, without the
+/// full-tab `app/` segment.
+fn link_entry(url: &str) -> Option<String> {
+    let before = url.split_once('#').map_or(url, |(before, _)| before);
+    let before = before.split_once('?').map_or(before, |(before, _)| before);
+    let before = before.strip_suffix("app/").unwrap_or(before);
+    before.ends_with('/').then(|| before.to_owned())
+}
+
+/// What a site calls itself, for a workspace joined by its link: its own
+/// name, else the host's.
+fn site_name(entry: &url::Url) -> String {
+    let home = tilo_net::http::blocking_client()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .ok()
+        .and_then(|client| read_site(&client, entry).ok())
+        .and_then(|read| read.home);
+    home.map_or_else(
+        || entry.host_str().unwrap_or_default().to_owned(),
+        |home| home.name,
+    )
+}
+
+/// The door of the site's home workspace, as its `entry.json` names it.
+/// Blocks on the site.
+fn read_site_home(entry: &url::Url) -> Result<url::Url, String> {
+    let client = tilo_net::http::blocking_client()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .map_err(|error| format!("no network to join over: {error}"))?;
+    let read = read_site(&client, entry)?;
+    let home = read
+        .home
+        .ok_or_else(|| "that site has no workspace to join".to_owned())?;
+    home.admission
+        .ok_or_else(|| "that site joins people by invitation only".to_owned())
+}
+
 /// Ask `door` to admit this person, and verify the invitation it answers
 /// with for them. The room that invitation grants is the workspace joined:
 /// what a directory said about it is not what makes it so.
 ///
 /// Blocks on the door: run it off the frame loop.
-fn join(door: &url::Url, person: &Person) -> Result<String, String> {
+fn join(door: &url::Url, person: &Person) -> Result<Granted, String> {
     let client = tilo_net::http::blocking_client()
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
@@ -595,7 +891,10 @@ fn join(door: &url::Url, person: &Person) -> Result<String, String> {
     let room = verified.grant().room.clone();
     tilo_desktop_model::RoomId::parse(&room)
         .ok_or_else(|| "the door named an invalid room".to_owned())?;
-    Ok(room)
+    Ok(Granted {
+        room,
+        invitation: answer.invitation,
+    })
 }
 
 /// What the community site and `typed` list, in the order the sheet shows

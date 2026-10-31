@@ -386,6 +386,38 @@ impl Workspace {
             .collect()
     }
 
+    /// Whether app `app_id` may act on this desktop beyond its own window at
+    /// `now`: a live [`Capability::DesktopControl`] grant of this
+    /// workspace's.
+    pub fn holds_desktop_control_at(&self, app_id: &str, now: u64) -> bool {
+        let want = SandboxSubject::app(app_id);
+        self.sandbox.iter().any(|cap| {
+            cap.subject == want
+                && cap.effect == Effect::Grant
+                && cap.is_live_at(Some(now))
+                && matches!(
+                    Capability::from_capability(cap),
+                    Some(Capability::DesktopControl { .. })
+                )
+        })
+    }
+
+    /// Take back app `app_id`'s desktop control: every
+    /// [`Capability::DesktopControl`] grant of its, whatever its lifetime.
+    /// Whether there was one.
+    pub fn stop_desktop_control(&mut self, app_id: &str) -> bool {
+        let want = SandboxSubject::app(app_id);
+        !self
+            .revoke_sandbox_matching(|cap| {
+                cap.subject == want
+                    && matches!(
+                        Capability::from_capability(cap),
+                        Some(Capability::DesktopControl { .. })
+                    )
+            })
+            .is_empty()
+    }
+
     /// A **snapshot** of app grants in the portal's `Capability` shape.
     /// Rebuilt from [`Self::sandbox`] on every call — mutating the returned
     /// map edits a temporary and stores nothing. To grant, use

@@ -15,6 +15,10 @@
 //! [`REMOVE`] takes an entry off the apps and leaves its file, and
 //! [`UNINSTALL`] moves every copy of the program to the trash and then takes
 //! the entry off.
+//!
+//! What an action could not do lands in the reading too
+//! ([`DownloadedFailure`]), so the person is told rather than left with
+//! nothing happening.
 
 use serde::{Deserialize, Serialize};
 
@@ -131,12 +135,47 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-/// The registry's reading: the apps the person has, and the programs
-/// running now that have no entry yet.
+/// What the registry was asked to do to an app or an offer, and could not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DownloadedDoing {
+    /// [`ADD`]: the program did not become one of the person's apps.
+    Add,
+    /// [`LOCATE`]: the entry was not pointed at the file.
+    Locate,
+    /// [`REMOVE`]: the entry did not leave the person's apps.
+    Remove,
+    /// [`UNINSTALL`]: the app's copies did not all go to the Trash, or its
+    /// entry did not leave the apps.
+    Uninstall,
+}
+
+/// Something the registry could not do, so a person can be told rather than
+/// left with an action that quietly did nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadedFailure {
+    /// Counts up over the registry's actions: a reader tells a failure it has
+    /// already said from a new one by this, so nothing is said twice.
+    pub attempt: u64,
+    pub doing: DownloadedDoing,
+    /// The app's desktop id, or for [`ADD`] the file that starts the program:
+    /// what the action named.
+    pub subject: String,
+    /// What the person calls it.
+    pub name: String,
+    /// Why it could not be done, in a line.
+    pub detail: String,
+}
+
+/// The registry's reading: the apps the person has, the programs running now
+/// that have no entry yet, and how the registry's last actions went.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DownloadedApps {
     #[serde(default)]
     pub apps: Vec<DownloadedApp>,
     #[serde(default)]
     pub offers: Vec<DownloadedOffer>,
+    /// What could not be done, oldest first, kept until the registry stops.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<DownloadedFailure>,
 }

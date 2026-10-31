@@ -310,6 +310,8 @@ struct CacheFingerprint {
     wave_notice: Option<String>,
     /// The arrival status as it stands, while it is up.
     arrival: Option<(String, bool, u16, u16)>,
+    /// Whether the bar had stepped aside: coming back is a repaint.
+    aside: bool,
 }
 
 /// One application tray icon as last painted: where, and what a click on
@@ -455,9 +457,78 @@ enum BarVariant {
     Compact,
 }
 
+/// One display's bar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BarPlace {
+    /// The display, by the desktop's id for it.
+    pub display: u32,
+    /// The display's whole rectangle: the bar stands on its top edge.
+    pub rect: Rect,
+    /// The full bar (the display in use); the others carry the compact one.
+    pub full: bool,
+}
+
+/// Where the bars go, in the bar's own coordinates.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Placement {
+    /// One per display. Empty: one full bar along the bar's own area.
+    pub bars: Vec<BarPlace>,
+    /// The displays a fullscreen window owns: their bar steps aside.
+    pub fullscreen: Vec<u32>,
+}
+
+impl Placement {
+    /// The bars a desk of `tree` carries: one per display, the display in
+    /// use full and the others compact, each on its own display's
+    /// rectangle. `fullscreen` names the monitors of the displays a
+    /// fullscreen window owns.
+    ///
+    /// A desk showing a single display carries no bars here: one bar
+    /// across the desk needs no placing, and the bar's own layout already
+    /// stands it there.
+    #[must_use]
+    pub fn of(tree: &DesktopTree, fullscreen: &[String]) -> Self {
+        let displays = &tree.outputs.displays;
+        let owned = || {
+            displays
+                .iter()
+                .filter(|display| fullscreen.contains(&display.monitor))
+                .map(|display| display.id)
+                .collect()
+        };
+        if !tree.is_partitioned() {
+            return Self {
+                bars: Vec::new(),
+                fullscreen: owned(),
+            };
+        }
+        let in_use = tree.outputs.focused_display();
+        Self {
+            bars: displays
+                .iter()
+                .map(|display| BarPlace {
+                    display: display.id,
+                    rect: Rect::new(
+                        display.x,
+                        display.y,
+                        display.x + display.width,
+                        display.y + display.height,
+                    ),
+                    full: Some(display.id) == in_use,
+                })
+                .collect(),
+            fullscreen: owned(),
+        }
+    }
+}
+
 /// `DesktopTree`, not `TopBar`, lets `build_tilo_root` stay a pure
 /// function of the tree and avoids a circular borrow against the
 /// shell's owned logical `TopBar`.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag says a different thing about one bar: whether it is focused, whether it shows the person's face, and whether a fullscreen window owns its display"
+)]
 pub struct TopBarChrome {
     explicit_local_user: Option<String>,
     rect: Rect,
@@ -467,6 +538,13 @@ pub struct TopBarChrome {
     /// navigation and the centre widget only. Session controls, the tray
     /// and collaborators live on the primary display's full bar.
     variant: BarVariant,
+    /// The display a compact bar stands on, as [`Placement`] names it; the
+    /// full bar carries none, standing on the display in use.
+    display: Option<u32>,
+    /// A fullscreen window owns this bar's display, so it steps aside:
+    /// it paints nothing and takes nothing until the window gives the
+    /// display back.
+    aside: bool,
     /// Where the bar sits when that is not where layout put it: the
     /// primary display's top edge for the full bar, or its own display's
     /// top edge for a compact one. Height still comes from layout.
@@ -640,6 +718,8 @@ impl TopBarChrome {
             rect: Rect::ZERO,
             laid_out: BarStanding::InColumn,
             variant: BarVariant::Full,
+            display: None,
+            aside: false,
             placement: None,
             workspace_name: String::new(),
             workspace_index: 0,
@@ -786,6 +866,7 @@ impl TopBarChrome {
             can_invite: self.can_invite(),
             wave_notice: self.wave_notice_text(ui::time::now()),
             arrival: self.arrival_shown(ui::time::now()).map(|shown| shown.key()),
+            aside: self.aside,
         }
     }
 
@@ -945,6 +1026,42 @@ impl TopBarChrome {
         self.variant == BarVariant::Compact
     }
 
+    /// Stand this bar on `display`, the display its place in a
+    /// [`Placement`] is found on: the bar reads where its display is from
+    /// there, so it follows its own display rather than the one in use.
+    #[must_use]
+    pub fn on_display(mut self, display: u32) -> Self {
+        self.display = Some(display);
+        self
+    }
+
+    /// The display this bar stands on; `None` for the full bar, which
+    /// stands on the display in use.
+    #[must_use]
+    pub const fn display(&self) -> Option<u32> {
+        self.display
+    }
+
+    /// Step this bar aside (`true`) for a fullscreen window on its
+    /// display: it paints nothing and takes no pointer until the window
+    /// gives the display back.
+    pub fn set_aside(&mut self, aside: bool) {
+        if self.aside != aside {
+            self.aside = aside;
+            if aside {
+                // A bar that is not there cannot hold the keyboard.
+                self.set_focus(false);
+            }
+            self.cache_fp = CacheFingerprint::default();
+        }
+    }
+
+    /// Whether a fullscreen window owns this bar's display.
+    #[must_use]
+    pub const fn steps_aside(&self) -> bool {
+        self.aside
+    }
+
     /// Sit the bar at `rect`'s top edge, `rect`'s width across, instead of
     /// where layout places it; `None` returns it to layout.
     pub fn set_placement(&mut self, rect: Option<Rect>) {
@@ -977,6 +1094,12 @@ impl TopBarChrome {
         self.chrome = Some(chrome);
         self.synced_revision = rev;
         self
+    }
+
+    /// The desktop this bar belongs to, when its host gave it one.
+    #[must_use]
+    pub fn chrome(&self) -> Option<&Chrome> {
+        self.chrome.as_ref()
     }
 
     pub fn sync_from_tree(&mut self, tree: &DesktopTree) {
@@ -1195,6 +1318,10 @@ impl Widget for TopBarChrome {
     /// deadline let the loop sleep through the minute until unrelated input
     /// woke it, and the clock read the minute before.
     fn next_wake_deadline(&self) -> Option<Instant> {
+        // A stepped-aside bar shows no clock to turn over.
+        if self.aside {
+            return None;
+        }
         let now = ui::time::now();
         // Someone here is in a call: their ring breathes, gently.
         let breath = self.call_since.and_then(|_| {
@@ -1270,6 +1397,12 @@ impl Widget for TopBarChrome {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // A fullscreen window owns this bar's display: the bar is not
+        // there, and the window has the room by itself.
+        if self.aside {
+            self.cache_fp.aside = true;
+            return;
+        }
         // Leaving with a maximizing window, or coming back with its
         // restore: the whole bar slides up off its display as it fades.
         if self.with_window_moving() {
@@ -1312,8 +1445,9 @@ impl Widget for TopBarChrome {
             self.focus_origin = FocusOrigin::Keyboard;
         }
         // A hidden bar is not there: whatever is under its strip gets the
-        // input. The host shows it first when it is reached for.
-        if self.presence() == TopBarPresence::Hidden {
+        // input. The host shows it first when it is reached for. One
+        // stepped aside for a fullscreen window is not there either.
+        if self.presence() == TopBarPresence::Hidden || self.aside {
             return;
         }
         match event {
@@ -1646,13 +1780,24 @@ impl Widget for TopBarChrome {
     /// Must keep returning `true` until the first successful draw
     /// fills the cache, or the first frame after layout never paints.
     fn needs_animation_frame(&self) -> bool {
-        self.center_is_moving()
-            || self.center_frame_stale()
-            || self.with_window_moving()
-            || self.arrival_notice_moving(ui::motion::frame_now())
+        // A bar stepped aside for a fullscreen window paints nothing, so
+        // nothing on it moves either.
+        !self.aside
+            && (self.center_is_moving()
+                || self.center_frame_stale()
+                || self.with_window_moving()
+                || self.arrival_notice_moving(ui::motion::frame_now()))
     }
 
     fn needs_redraw(&self) -> bool {
+        // Stepping aside and coming back each repaint; nothing else on a
+        // stepped-aside bar can show.
+        if self.aside != self.cache_fp.aside {
+            return true;
+        }
+        if self.aside {
+            return false;
+        }
         if self.center_is_moving()
             || self.center_frame_stale()
             || self.with_window_moving()

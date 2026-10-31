@@ -62,7 +62,7 @@ use taffy::NodeId as TaffyNodeId;
 use crate::a11y::{AccessNode, AccessibleTextSelection, Action, Role};
 use crate::a11y_child_route::{ChildRoute, Routes, child_route};
 use crate::a11y_tree::HostedByIndex;
-use crate::a11y_tree::walk::{A11yVisitor, Visit, walk, walk_synthetic};
+use crate::a11y_tree::walk::{A11yVisitor, Visit, walk, walk_synthetic_children};
 use crate::text_break::{grapheme_indices, graphemes};
 use crate::widget::Widget;
 
@@ -980,7 +980,7 @@ impl<const BOUND: bool> A11yVisitor for TreeWalk<'_, BOUND> {
             taffy_id,
         }: PendingWidget,
         mut scope: AkScope,
-        mut hosted: HostedByIndex<'w>,
+        hosted: HostedByIndex<'w>,
         represented: Vec<&'w dyn Widget>,
         parent: &mut AkScope,
     ) {
@@ -997,10 +997,7 @@ impl<const BOUND: bool> A11yVisitor for TreeWalk<'_, BOUND> {
         scope.in_focused_widget =
             (taffy_id.is_some() && taffy_id == self.focused) || represents_focus;
         let outer_active = self.owned_active_descendant.take();
-        for (ordinal, synth) in access.children.iter().enumerate() {
-            let hosted = hosted.remove(&ordinal).unwrap_or_default();
-            walk_synthetic::<BOUND, Self>(self, w, &mut vec![ordinal], synth, hosted, &mut scope);
-        }
+        walk_synthetic_children::<BOUND, Self>(self, w, &access.children, hosted, &mut scope);
         if let Some(active) = std::mem::replace(&mut self.owned_active_descendant, outer_active) {
             ak.set_active_descendant(active);
         }

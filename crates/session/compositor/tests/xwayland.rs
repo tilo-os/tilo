@@ -15,7 +15,7 @@
 use std::time::{Duration, Instant};
 
 use tilo_compositor::selection::TEXT_MIME;
-use tilo_compositor::{Compositor, OutputConfig, Selection, StackPolicy};
+use tilo_compositor::{Compositor, IconArtwork, OutputConfig, Selection, StackPolicy};
 use x11rb::connection::Connection as _;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
@@ -464,6 +464,15 @@ fn an_x11_window_knows_its_program_and_its_icon() {
     );
     session.map(window);
     session.pump(|session| !session.compositor.windows().is_empty());
+    // Xwayland associates a window's surface once it is mapped; the icon is
+    // read again then, as part of the window's facts.
+    session.pump(|session| {
+        session
+            .compositor
+            .windows()
+            .first()
+            .is_some_and(|(info, _)| info.icon.is_some())
+    });
     let (info, _) = session.compositor.windows().remove(0);
     let identity = session.compositor.x11_identity(info.id).expect("identity");
     assert_eq!(identity.pid, Some(std::process::id()));
@@ -473,6 +482,15 @@ fn an_x11_window_knows_its_program_and_its_icon() {
     assert_eq!((icon.width, icon.height), (2, 2));
     assert_eq!(icon.pixels.len(), 16);
     assert_eq!(&icon.pixels[..4], &[255, 0, 0, 255]);
+
+    // The window's facts carry the same icon: what the desktop draws.
+    let own = info.icon.expect("the window's own icon");
+    let IconArtwork::Pixels(images) = own.artwork() else {
+        panic!("the pixels the window handed over");
+    };
+    assert_eq!(images.len(), 1);
+    assert_eq!((images[0].width, images[0].height), (2, 2));
+    assert_eq!(&images[0].pixels[..4], &[255, 0, 0, 255]);
 }
 
 #[test]

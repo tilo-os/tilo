@@ -340,7 +340,7 @@ impl App {
             return;
         }
         let protected = self.accessibility.focus_trap_active
-            || self.wants_capture_protection()
+            || self.withholds_captures()
             || self.continuation.retired;
         let metadata = if protected {
             None
@@ -514,7 +514,7 @@ impl App {
         // the original route witness before applying any deferred position.
         if self.private_continuity_route().is_none()
             || self.accessibility.focus_trap_active
-            || self.wants_capture_protection()
+            || self.withholds_captures()
             || self.continuation.retired
         {
             self.continuation.owner_view.pending = None;

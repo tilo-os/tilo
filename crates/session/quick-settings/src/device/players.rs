@@ -18,7 +18,7 @@ use media::handoff::HandoffSource;
 use ui::widget::TransportArt;
 
 use super::refresh::Wake;
-use crate::{MediaOffer, MediaOutput, MediaPlayer, NowPlaying, QsEffect};
+use crate::{MediaOffer, MediaOutput, MediaPlayer, NowPlaying, PlayingSource, QsEffect};
 
 /// Where the helper's lines come and go.
 pub struct PlayerLink {
@@ -157,6 +157,39 @@ impl Players {
         self.table
             .front(self.preferred.as_deref())
             .is_some_and(|player| self.table.status(player) == Status::Playing)
+    }
+
+    /// What the player in front plays, when another of the person's devices
+    /// can continue it: its session, app, title, stream and playhead.
+    ///
+    /// Only a stream the other device can open as it is counts: a source
+    /// this device opened off a workspace or an app's own resource has to be
+    /// brought over first, which is not a hand-over.
+    pub(crate) fn playing_source(&self, now: Instant) -> Option<PlayingSource> {
+        let player = self.table.front(self.preferred.as_deref())?;
+        let url = player.url.as_deref()?;
+        audio::handoff::resume_uri(&ResumeSource::Uri(url.to_owned()))?;
+        let app_id = player.package_id.clone()?;
+        let title = player
+            .title
+            .clone()
+            .filter(|title| !title.trim().is_empty())
+            .or_else(|| player.identity.clone())
+            .unwrap_or_else(|| player.name());
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a playhead in a recording is far inside u64's milliseconds"
+        )]
+        let position_ms = (self.table.position_at(player, now).max(0) / 1_000) as u64;
+        Some(PlayingSource {
+            session_id: audio::handoff::session_id(&app_id, player, url),
+            app_id,
+            title,
+            url: url.to_owned(),
+            position_ms,
+            playing: self.table.status(player) == Status::Playing,
+        })
     }
 
     /// Where the sound can go, as the audio service reads it: the card

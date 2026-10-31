@@ -46,6 +46,7 @@ pub mod output;
 mod output_management;
 mod output_power;
 mod pacing;
+mod pointer_lock;
 pub mod policy;
 mod power;
 mod present;
@@ -61,6 +62,7 @@ pub mod sticky_keys;
 pub mod switch_scan;
 mod tablet;
 mod text_input;
+mod toplevel_icon;
 mod touch;
 mod window_frame;
 mod x11_windows;
@@ -111,9 +113,10 @@ pub use selection::{Selection, TEXT_MIME};
 pub use smithay::utils::Transform;
 pub use state::State;
 pub use switch_scan::{Scan, SwitchConfig, SwitchPair};
-pub use text_input::{TextEntry, TextField, TextFieldRefusal, TextInsertion};
+pub use text_input::{TextCaret, TextEntry, TextField, TextFieldRefusal, TextInsertion};
+pub use toplevel_icon::{IconArtwork, IconImage, WindowIcon};
 pub use window_frame::{Edge, Shadow, WindowFrame};
-pub use x11_windows::{Icon, Identity as X11Identity};
+pub use x11_windows::{Identity as X11Identity, X11Icon};
 
 /// Why the compositor could not start or keep running.
 #[derive(Debug)]
@@ -324,6 +327,19 @@ impl Compositor {
         Ok(())
     }
 
+    /// Drop an output the backend simulates, as unplugging its cable does:
+    /// it leaves the layout, clients stop seeing it and the desktop hears
+    /// the outputs it has now and places its windows on those left.
+    pub fn remove_output(&mut self, name: &str) -> Result<(), Error> {
+        self.data
+            .backend
+            .remove_output(&mut self.data.state, name)?;
+        self.sync_power();
+        self.publish_displays();
+        self.display.flush_clients()?;
+        Ok(())
+    }
+
     /// Host a surface app above the windows (and above earlier hosts), or
     /// under them when it says so ([`SurfaceHost::below_windows`]).
     pub fn add_host(&mut self, mut host: Box<dyn SurfaceHost>) {
@@ -369,6 +385,57 @@ impl Compositor {
     /// Whether the session is locked.
     pub fn locked(&self) -> bool {
         self.data.state.locked()
+    }
+
+    /// Whether the session locked itself — idle, a key or a command — rather
+    /// than a lock client holding it: its own lock screen is what the person
+    /// sees, and what it puts up again when that leaves the screen.
+    pub fn session_locked(&self) -> bool {
+        self.data.state.idle.session.is_locked()
+    }
+
+    /// Whether the session's own lock screen is drawing now. While the
+    /// session is locked, this is the screen the person unlocks on.
+    pub fn lock_screen_drawn(&self) -> bool {
+        self.data.state.lock_screen_drawn()
+    }
+
+    /// Whether a surface of the session's own takes the keyboard now: a
+    /// palette, the overview or the shortcut guide, which see keys before
+    /// any client does.
+    #[must_use]
+    pub fn host_takes_keys(&self) -> bool {
+        self.data
+            .state
+            .hosts
+            .iter()
+            .any(|host| host.wants_keyboard())
+    }
+
+    /// Whether a fullscreen window is up: it owns its display, and with it
+    /// the controller in the person's hands.
+    #[must_use]
+    pub fn fullscreen_window(&self) -> bool {
+        self.data.state.fullscreen()
+    }
+
+    /// Wake [`Compositor::dispatch`] when `fd` is readable, so what arrives
+    /// on it (a controller's presses, a device's hotplug) ends the wait
+    /// rather than waiting for the next turn. Dropping the watch stops it.
+    ///
+    /// What the descriptor says is read by the caller's own source, not
+    /// here: this only ends the wait.
+    pub fn watch_input(&mut self, fd: std::os::fd::OwnedFd) -> Result<InputWatch, Error> {
+        let handle = self.event_loop.handle();
+        let token = handle
+            .insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, _| {
+                Ok(PostAction::Continue)
+            })
+            .map_err(io)?;
+        Ok(InputWatch {
+            handle: handle.clone(),
+            token,
+        })
     }
 
     /// Listen for clients on a fresh `wayland-N` socket in
@@ -426,6 +493,11 @@ impl Compositor {
         self.display.dispatch_clients(&mut self.data.state)?;
         self.sync_text_input();
         self.data.state.refresh();
+        // A constraint or an inhibitor takes effect for what is focused and
+        // under the pointer now, so it is settled once the clients' requests
+        // and this turn's focus changes were handled.
+        self.data.state.sync_pointer_constraint();
+        self.data.state.sync_shortcut_inhibit();
         if let Some(x11) = self.data.x11_windows.as_mut() {
             // The X server's own focus follows the session's, and X clients
             // hear how dense the display is and which pointer to draw.
@@ -526,6 +598,24 @@ impl Compositor {
     /// trusted input method, never as keystrokes.
     pub fn insert_dictation(&mut self, field: TextField, text: &str) -> TextInsertion {
         self.data.state.insert_dictation(field, text)
+    }
+
+    /// Where the focused text field's caret stands in the desk, in logical
+    /// coordinates, from the cursor rectangle its client reported; `None`
+    /// when no field takes text or it never said where its caret is.
+    #[must_use]
+    pub fn text_caret(&self) -> Option<TextCaret> {
+        self.data.state.text_caret()
+    }
+
+    /// Insert `text` into the field the person is typing into, whatever that
+    /// field asks of its content: an emoji keeps none of its secret. The
+    /// text goes through the trusted input method, never as keystrokes.
+    ///
+    /// Answers whether the field declared its content secret, which decides
+    /// whether the text is remembered; `None` when no field takes text now.
+    pub fn insert_active_text(&mut self, text: &str) -> Option<bool> {
+        self.data.state.insert_active_text(text)
     }
 
     /// Flash every output: a visual alert for what a person who cannot hear
@@ -909,6 +999,12 @@ impl Compositor {
         self.data.state.output_infos()
     }
 
+    /// The monitors of the displays a fullscreen window owns: the bar there
+    /// steps aside and leaves the display to the window.
+    pub fn fullscreen_monitors(&self) -> Vec<String> {
+        self.data.state.fullscreen_monitors()
+    }
+
     /// The outputs as Settings reads them: each one's connector, modes,
     /// scale, place and what its sink and the pipeline driving it can do.
     /// Updated by [`Compositor::publish_displays`], which the loop runs on
@@ -945,9 +1041,15 @@ impl Compositor {
     }
 
     /// Whether the panel of the output named `name` is lit (not blanked,
-    /// switched off by a tool or turned off).
+    /// switched off by a tool or turned off); `false` when no output is
+    /// there to light.
     pub fn output_lit(&self, name: &str) -> bool {
-        self.data.state.output_power.lit(name)
+        self.data
+            .state
+            .space
+            .outputs()
+            .any(|output| output.name() == name)
+            && self.data.state.output_power.lit(name)
     }
 
     /// Apply (or test) the display configurations clients sent and tell
@@ -1040,6 +1142,10 @@ impl Compositor {
         if !changes.is_empty() {
             self.configure_outputs(&changes)?;
         }
+        // Which display is primary is told to the desk after the outputs are
+        // as the configuration asked, so it is resolved against the displays
+        // that are lit now.
+        self.data.state.set_primary_output(config.primary.clone());
         Ok(())
     }
 
@@ -1313,7 +1419,8 @@ impl Compositor {
     pub fn x11_identity(&self, id: u64) -> Option<&X11Identity> {
         let x11 = self.data.x11_windows.as_ref()?;
         let window = self.data.state.space.elements().find(|window| {
-            state::describe(&self.data.state.display, window).is_some_and(|info| info.id == id)
+            state::describe(&self.data.state.display, &self.data.state.icons, window)
+                .is_some_and(|info| info.id == id)
         })?;
         x11.identity(window.x11_surface()?.window_id())
     }
@@ -1362,6 +1469,20 @@ impl Compositor {
     #[must_use]
     pub fn waker(&self) -> std::task::Waker {
         std::task::Waker::from(std::sync::Arc::new(LoopWaker(self.event_loop.get_signal())))
+    }
+}
+
+/// A descriptor [`Compositor::watch_input`] polled for the loop: its
+/// readiness ends the wait, and dropping the watch stops the polling.
+#[derive(Debug)]
+pub struct InputWatch {
+    handle: LoopHandle<'static, LoopData>,
+    token: smithay::reexports::calloop::RegistrationToken,
+}
+
+impl Drop for InputWatch {
+    fn drop(&mut self) {
+        self.handle.remove(self.token);
     }
 }
 

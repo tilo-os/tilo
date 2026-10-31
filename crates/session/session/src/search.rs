@@ -34,6 +34,7 @@ use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::catalogue::StoreCatalogue;
 use tilo_desktop_search::providers::downloaded::Downloaded;
 use tilo_desktop_search::providers::files::{FileNames, Files, file_uri};
+use tilo_desktop_search::providers::happening::{Happening, WorkspaceHere};
 use tilo_desktop_search::providers::host_apps::{self, HostApps};
 use tilo_desktop_search::providers::jobs::{JobEntry, Jobs};
 use tilo_desktop_search::providers::places::{Continue, Place, RecentPlaces};
@@ -150,6 +151,10 @@ pub(crate) struct SessionSearch {
     /// The workspaces the desk shows, by room and the name it gives them:
     /// what a row of another workspace says.
     workspaces: RefCell<Vec<(String, String)>>,
+    /// Who is in each workspace and the calls in progress, as the desk and
+    /// the presence it holds say: what the empty palette's first group
+    /// lists.
+    here: RefCell<Vec<WorkspaceHere>>,
     /// The downloaded programs, as of the last reading of the registry.
     downloaded: RefCell<DownloadedRows>,
 }
@@ -203,6 +208,7 @@ impl SessionSearch {
             open_tabs: RefCell::default(),
             notifications: RefCell::default(),
             workspaces: RefCell::default(),
+            here: RefCell::default(),
             downloaded: RefCell::default(),
         }
     }
@@ -250,6 +256,12 @@ impl SessionSearch {
                 .collect();
             *self.downloaded.borrow_mut() = DownloadedRows { reading, published };
         }
+    }
+
+    /// Who is in the person's workspaces now, as their presence and the
+    /// desk's collaborators say it: the empty palette's first group.
+    pub(crate) fn set_here(&self, workspaces: Vec<WorkspaceHere>) {
+        *self.here.borrow_mut() = workspaces;
     }
 
     /// The workspaces this device shows, by room and the name the desk gives
@@ -548,6 +560,10 @@ impl SearchHost for SessionSearch {
             ),
         };
         let mut sources: Vec<Box<dyn Source>> = vec![
+            Box::new(Happening::new(
+                scope == SearchScope::All,
+                self.here.borrow().clone(),
+            )),
             Box::new(settings),
             Box::new(catalogue),
             Box::new(Rc::clone(&kept.host_apps)),
@@ -696,6 +712,7 @@ mod tests {
                     .collect(),
                 catalogue: Vec::new(),
                 icons: std::collections::BTreeMap::new(),
+                candidates: Vec::new(),
             }
         }
     }

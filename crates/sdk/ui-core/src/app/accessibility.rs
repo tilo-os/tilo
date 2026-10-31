@@ -996,35 +996,41 @@ impl App {
 
     /// Announces changed [live regions](crate::a11y::AccessNode::live)
     /// without moving focus.
+    ///
+    /// The regions come from the tree the window publishes — the
+    /// [`walk`](crate::a11y_tree::walk) the AccessKit bridge takes — so a
+    /// region inside a widget's own synthetic subtree (a card's footer
+    /// under its dialog) is a region for this reader as it is for an
+    /// external one.
     #[cfg(feature = "native")]
     fn scan_live_regions(&mut self) {
-        fn visit(w: &dyn Widget, out: &mut Vec<(String, crate::a11y::Politeness, String)>) {
-            let Ok(_entry) = crate::bound_dispatch::enter_widget(w) else {
-                return;
-            };
-            if let Some(node) = w.accessibility()
-                && let (Some(politeness), Some(name)) = (node.live, node.name.clone())
-            {
-                out.push((name, politeness, crate::screen_reader::describe(&node)));
-            }
-            w.for_each_child(&mut |child| visit(child, out));
-        }
         if self.accessibility.screen_reader.is_none() {
             return;
         }
         // A live region without an accessible name can't be tracked stably
         // across frames, so it's skipped.
-        let mut seen: Vec<(String, crate::a11y::Politeness, String)> = Vec::new();
-        visit(self.root_widget.as_ref(), &mut seen);
+        let mut regions = LiveRegionScan(Vec::new());
+        crate::a11y_tree::walk::walk::<true, _>(
+            &mut regions,
+            self.root_widget.as_ref(),
+            None,
+            &mut (),
+        );
+        let seen = regions.0;
 
         let mut current_keys = std::collections::HashSet::new();
         let mut to_announce: Vec<(crate::a11y::Politeness, String)> = Vec::new();
-        for (key, politeness, text) in seen {
-            current_keys.insert(key.clone());
-            let changed = self.accessibility.live_region_last.get(&key) != Some(&text);
+        for LiveRegion {
+            name,
+            politeness,
+            text,
+        } in seen
+        {
+            current_keys.insert(name.clone());
+            let changed = self.accessibility.live_region_last.get(&name) != Some(&text);
             self.accessibility
                 .live_region_last
-                .insert(key, text.clone());
+                .insert(name, text.clone());
             // Clearing a region to empty updates the snapshot silently.
             if changed && !text.is_empty() {
                 to_announce.push((politeness, text));
@@ -1824,6 +1830,95 @@ impl App {
 
 /// The change origin the screen reader chord records in the settings file.
 const SCREEN_READER_CHORD_ORIGIN: &str = "screen-reader-chord";
+
+/// A [live region](crate::a11y::AccessNode::live) of the tree a window
+/// publishes: the name that tracks it across frames, how urgently it speaks,
+/// and what the reader says for it now.
+#[cfg(feature = "native")]
+struct LiveRegion {
+    name: String,
+    politeness: crate::a11y::Politeness,
+    text: String,
+}
+
+/// Collects every live region of the tree a window publishes: the
+/// [`walk`](crate::a11y_tree::walk) the AccessKit bridge exports, so a
+/// widget's synthetic children are reached as the bridge reaches them.
+#[cfg(feature = "native")]
+struct LiveRegionScan(Vec<LiveRegion>);
+
+#[cfg(feature = "native")]
+impl LiveRegionScan {
+    fn note(&mut self, node: &crate::a11y::AccessNode) {
+        if let (Some(politeness), Some(name)) = (node.live, node.name.clone()) {
+            self.0.push(LiveRegion {
+                name,
+                politeness,
+                text: crate::screen_reader::describe(node),
+            });
+        }
+    }
+}
+
+#[cfg(feature = "native")]
+impl crate::a11y_tree::walk::A11yVisitor for LiveRegionScan {
+    type Scope = ();
+    type Pending = crate::a11y::AccessNode;
+    type SyntheticPending = ();
+
+    fn open(
+        &mut self,
+        w: &dyn Widget,
+        _slot: Option<(&dyn Widget, usize)>,
+        (): &mut (),
+    ) -> crate::a11y_tree::walk::Visit<crate::a11y::AccessNode, ()> {
+        let Some(node) = w.accessibility() else {
+            return crate::a11y_tree::walk::Visit::Collapse;
+        };
+        self.note(&node);
+        crate::a11y_tree::walk::Visit::Node(node, ())
+    }
+
+    fn close<'w>(
+        &mut self,
+        owner: &'w dyn Widget,
+        node: crate::a11y::AccessNode,
+        (): (),
+        hosted: crate::a11y_tree::HostedByIndex<'w>,
+        _represented: Vec<&'w dyn Widget>,
+        (): &mut (),
+    ) {
+        crate::a11y_tree::walk::walk_synthetic_children::<true, Self>(
+            self,
+            owner,
+            &node.children,
+            hosted,
+            &mut (),
+        );
+    }
+
+    fn open_synthetic(
+        &mut self,
+        _owner: &dyn Widget,
+        _path: &[usize],
+        node: &crate::a11y::AccessNode,
+        (): &mut (),
+    ) -> ((), ()) {
+        self.note(node);
+        ((), ())
+    }
+
+    fn close_synthetic(
+        &mut self,
+        _owner: &dyn Widget,
+        _path: &[usize],
+        _node: &crate::a11y::AccessNode,
+        (): (),
+        (): (),
+        (): &mut (),
+    ) {
+    }
+}
 
 /// What a handled input asks [`App::commit_action_with`] to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

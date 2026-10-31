@@ -78,6 +78,10 @@ pub struct Layout {
     /// Each dialog shown, and the area it floats centred over: its
     /// parent's, or the display the person works on for one without.
     pub floating: Vec<(u64, Rect)>,
+    /// The window covering the display the person works on, if one is: it
+    /// fills that display's whole area, the bar's room included, and the
+    /// bar steps aside while it does.
+    pub fullscreen: Option<u64>,
 }
 
 /// Windows waiting for their tab, shared with the surface's tile source.
@@ -381,7 +385,8 @@ impl DesktopPolicy {
     }
 
     /// The display the person works on: the focused one across several,
-    /// else the primary.
+    /// else the primary. The partition answers both: focus falls back to
+    /// the display the person made primary in Settings, else the first.
     fn working_display(&self) -> Option<&Display> {
         let focused = self.handle.focused_display();
         self.displays
@@ -827,6 +832,18 @@ impl DesktopPolicy {
             .is_some_and(|tab| self.handle.maximize_tab(tab, maximized))
     }
 
+    /// Cover the display with `window`, or give it back: what a client asks
+    /// for itself, and what the window menu asks of it. False when the
+    /// desktop holds no such window (a dialog floats over one).
+    pub fn set_fullscreen(&mut self, window: u64, fullscreen: bool) -> bool {
+        if self.floating.contains_key(&window) {
+            return false;
+        }
+        self.handle
+            .read(|tree| tab_of(tree, window))
+            .is_some_and(|tab| self.handle.fullscreen_tab(tab, fullscreen))
+    }
+
     /// `window` is waiting for the person: its tab says so until they
     /// look at it. False when the desktop holds no such window or it is
     /// the one in front.
@@ -920,6 +937,7 @@ impl DesktopPolicy {
             }
         }
         Layout {
+            fullscreen: self.handle.read(covering_window),
             shown,
             hidden,
             floating,
@@ -997,6 +1015,18 @@ fn foreign(tab: &Tab) -> Option<u64> {
 
 fn window_of(tree: &DesktopTree, tab: TabId) -> Option<u64> {
     tabs(tree).find(|t| t.id == tab).and_then(foreign)
+}
+
+/// The window covering the display the person works on, if one is: the tab
+/// in front of the group the desk took full screen there.
+fn covering_window(tree: &DesktopTree) -> Option<u64> {
+    let group = tree.fullscreen_group()?;
+    tree.workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .find(|candidate| candidate.id == group)
+        .and_then(|group| window_of(tree, group.active_tab))
 }
 
 fn tab_of(tree: &DesktopTree, window: u64) -> Option<TabId> {

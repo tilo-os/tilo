@@ -19,6 +19,7 @@ use std::time::Instant;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
+use smithay::desktop::PopupManager;
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::zwp_text_input_v3::{
     ContentHint, ContentPurpose, ZwpTextInputV3,
@@ -27,7 +28,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource as _};
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
 use smithay::wayland::input_method::{InputMethodHandler, InputMethodManagerState, PopupSurface};
-use smithay::wayland::text_input::{TextInputManagerState, TextInputSeat};
+use smithay::wayland::text_input::{CommittedState, TextInputManagerState, TextInputSeat};
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 
 use crate::input::{InputEvent, Switch};
@@ -157,20 +158,11 @@ impl State {
     /// The text field the person is typing into, as dictation names it.
     pub(crate) fn dictation_field(&self) -> Result<TextField, TextFieldRefusal> {
         let mut field = Err(TextFieldRefusal::NoField);
-        self.seat.text_input().with_active_text_input_committed(
-            |input, surface, revision, content| {
-                // A field that never declared a content type is an ordinary
-                // one-line text field.
-                let (hint, purpose) =
-                    content.unwrap_or((ContentHint::empty(), ContentPurpose::Normal));
-                // Digits count as a secret: the on-screen keyboard treats a
-                // digits field as a PIN pad too.
-                let secret = hint.intersects(ContentHint::HiddenText | ContentHint::SensitiveData)
-                    || matches!(
-                        purpose,
-                        ContentPurpose::Digits | ContentPurpose::Password | ContentPurpose::Pin
-                    );
-                let refusal = if secret {
+        self.seat
+            .text_input()
+            .with_active_text_input_committed(|input, surface, committed| {
+                let (hint, purpose) = content_type(committed);
+                let refusal = if secret(committed.content_type) {
                     Some(TextFieldRefusal::Secret)
                 } else if purpose == ContentPurpose::Terminal {
                     Some(TextFieldRefusal::Unsupported)
@@ -181,14 +173,13 @@ impl State {
                     || {
                         Ok(TextField {
                             id: field_id(input, surface),
-                            revision: u64::from(revision),
+                            revision: u64::from(committed.serial),
                             multiline: hint.contains(ContentHint::Multiline),
                         })
                     },
                     Err,
                 );
-            },
-        );
+            });
         field
     }
 
@@ -209,6 +200,97 @@ impl State {
         self.seat.text_input().done(false);
         TextInsertion::Inserted
     }
+
+    /// Insert `text` into the field the person is typing into, whatever it
+    /// asks for: an emoji holds nothing of the field's secret. The text goes
+    /// through the trusted input method, never as keystrokes.
+    ///
+    /// Answers whether the field declared its content secret, which decides
+    /// whether the text is remembered; `None` when no field takes text now.
+    pub(crate) fn insert_active_text(&self, text: &str) -> Option<bool> {
+        let mut sensitive = None;
+        self.seat
+            .text_input()
+            .with_active_text_input_committed(|input, _, committed| {
+                sensitive = Some(secret(committed.content_type));
+                input.commit_string(Some(text.to_owned()));
+            });
+        if sensitive.is_some() {
+            self.seat.text_input().done(false);
+        }
+        sensitive
+    }
+
+    /// Where the focused field's caret stands in the desk, in logical
+    /// coordinates: the cursor rectangle its client last committed, placed on
+    /// the surface it types into. `None` when no field takes text, it never
+    /// reported one, or its window is not on screen.
+    pub(crate) fn text_caret(&self) -> Option<TextCaret> {
+        let mut caret = None;
+        self.seat
+            .text_input()
+            .with_active_text_input_committed(|_, surface, committed| {
+                let Some(rect) = committed.cursor_rectangle else {
+                    return;
+                };
+                let Some(window) = self.window_geometry(surface) else {
+                    return;
+                };
+                caret = Some(TextCaret {
+                    x: f64::from(window.loc.x.saturating_add(rect.loc.x)),
+                    y: f64::from(window.loc.y.saturating_add(rect.loc.y)),
+                    width: f64::from(rect.size.w.max(0)),
+                    height: f64::from(rect.size.h.max(0)),
+                });
+            });
+        caret
+    }
+
+    /// Where `surface` stands in the desk: a window of the space, or a popup
+    /// on one — a field the person types into may live in either.
+    fn window_geometry(&self, surface: &WlSurface) -> Option<Rectangle<i32, Logical>> {
+        for window in self.space.elements() {
+            let toplevel = window.toplevel()?;
+            let rect = self.space.element_geometry(window)?;
+            if toplevel.wl_surface() == surface {
+                return Some(rect);
+            }
+            let popup = PopupManager::popups_for_surface(toplevel.wl_surface())
+                .find(|(popup, _)| popup.wl_surface() == surface);
+            if let Some((_, offset)) = popup {
+                return Some(Rectangle::new(rect.loc + offset, rect.size));
+            }
+        }
+        None
+    }
+}
+
+/// Where a text field's caret stands, in the desk's logical coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextCaret {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// What a field declared of itself: the content type it last committed, or
+/// the one of an ordinary one-line text field when it never said.
+fn content_type(committed: &CommittedState) -> (ContentHint, ContentPurpose) {
+    committed
+        .content_type
+        .unwrap_or((ContentHint::empty(), ContentPurpose::Normal))
+}
+
+/// Whether a field whose content type is `content` takes a secret. Digits
+/// count too: the on-screen keyboard treats a digits field as a PIN pad.
+fn secret(content: Option<(ContentHint, ContentPurpose)>) -> bool {
+    let (hint, purpose) = content.unwrap_or((ContentHint::empty(), ContentPurpose::Normal));
+    hint.intersects(ContentHint::HiddenText | ContentHint::SensitiveData)
+        || matches!(
+            purpose,
+            ContentPurpose::Digits | ContentPurpose::Password | ContentPurpose::Pin
+        )
 }
 
 /// Which field a text-input object makes on a surface, for the life of this
@@ -279,15 +361,7 @@ impl InputMethodHandler for State {
     }
 
     fn parent_geometry(&self, parent: &WlSurface) -> Rectangle<i32, Logical> {
-        self.space
-            .elements()
-            .find(|window| {
-                window
-                    .toplevel()
-                    .is_some_and(|toplevel| toplevel.wl_surface() == parent)
-            })
-            .and_then(|window| self.space.element_geometry(window))
-            .unwrap_or_default()
+        self.window_geometry(parent).unwrap_or_default()
     }
 }
 

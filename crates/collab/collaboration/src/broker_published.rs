@@ -4,7 +4,7 @@
 //! shows a reading is woken at each one.
 
 use super::{
-    BridgeState, PublishedCommand, SETTINGS_COMMAND_BRIDGE, SdkCommand, enqueue_sdk_command, mpsc,
+    BridgeState, PUBLISHED_COMMAND_BRIDGE, PublishedCommand, SdkCommand, enqueue_sdk_command, mpsc,
 };
 use crate::time::Duration;
 use std::sync::Arc;
@@ -54,7 +54,7 @@ impl SessionResource {
         let wake = Arc::new(std::sync::Mutex::new(None));
         let (first_tx, first_rx) = mpsc::sync_channel(1);
         let (cancel, cancel_rx) = tokio::sync::watch::channel(());
-        let sender = SETTINGS_COMMAND_BRIDGE
+        let sender = PUBLISHED_COMMAND_BRIDGE
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
             .map_err(|_| "The session's services are unavailable.")?
@@ -121,7 +121,7 @@ impl SessionResource {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), String> {
-        let sender = SETTINGS_COMMAND_BRIDGE
+        let sender = PUBLISHED_COMMAND_BRIDGE
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
             .map_err(|_| "The session's services are unavailable.")?

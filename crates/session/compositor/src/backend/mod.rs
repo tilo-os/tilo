@@ -79,6 +79,15 @@ pub trait Backend {
         )))
     }
 
+    /// Drop the output named `name` the backend simulates, as pulling its
+    /// cable does: it leaves the layout and clients stop seeing it.
+    /// Backends with real outputs watch for that themselves and refuse.
+    fn remove_output(&mut self, _state: &mut State, name: &str) -> Result<(), BackendError> {
+        Err(BackendError(format!(
+            "{name}: this backend's outputs are its devices"
+        )))
+    }
+
     /// Apply a display configuration (already checked to name real
     /// outputs, with usable scales and one output left on), or with `test`
     /// only say whether it could be applied. All or nothing. Outputs it

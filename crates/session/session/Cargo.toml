@@ -10,6 +10,14 @@ license.workspace = true
 name = "tilo-session"
 path = "src/main.rs"
 
+# A surface app the tests start the way the session starts a panel: it reads
+# what the session publishes and changes it, and reports both in a file. Never
+# installed — the image names the binaries it carries.
+[[bin]]
+name = "tilo-surface-probe"
+path = "tests/bin/surface_probe.rs"
+test = false
+
 # The session's loop walks no path after startup. The audit watches the
 # process's main thread, and `libtest` runs every test on a thread of its own,
 # so this target is the process's `main` driving the session itself.
@@ -43,6 +51,7 @@ tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-surface = { path = "../desktop-surface" }
 # The desk's window policy, whose tab calls an app's asks are answered with.
 tilo-desktop-policy = { path = "../desktop-policy" }
+desktop-policy = { path = "../../system/desktop-policy", default-features = false }
 tilo-desktop-search = { path = "../desktop-search", features = ["indexes", "settings", "catalogue"] }
 tilo-dictation = { path = "../dictation" }
 app-catalogue = { path = "../../packaging/app-catalogue" }
@@ -58,6 +67,9 @@ tilo-wallpapers = { path = "../../platform/tilo-wallpapers" }
 app-cli = { path = "../../packaging/app-cli" }
 # Following the directories search's lists are read from.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+# What the person picks in the emoji picker is remembered between sessions.
+emoji = { path = "../../text/emoji" }
+tilo-durable-writer = { path = "../../platform/tilo-durable-writer" }
 # The records the workspaces on this device hold: the room indexes search
 # reads them from, as the apps that write them keep them, and the document
 # store the reference bringing one here is written into.
@@ -79,6 +91,9 @@ tilo-capture-studio = { path = "../capture-studio" }
 tilo-notification-banners = { path = "../notification-banners" }
 tilo-onboarding-host = { path = "../onboarding-host" }
 tilo-sheets = { path = "../sheets" }
+# The wireless display sheet speaks the projector service's control socket; the
+# sender stacks themselves (Miracast, GStreamer) stay in the service.
+tilo-projector = { path = "../../system/projector", default-features = false }
 # The directory of public workspaces a site serves: what joins list and
 # what a site's door and directory answer.
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
@@ -86,6 +101,8 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # a grant signed for this person's key joins it.
 tilo-workspace-join = { path = "../../collab/workspace-join" }
 tilo-clock = { path = "../../platform/tilo-clock" }
+# The models an agent may plan with: the person's own provider settings.
+agent-provider-config = { path = "../../agent/provider-config" }
 # The sanctioned blocking HTTP client, which installs the crypto provider.
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking", "json"] }
 reqwest = { workspace = true, features = ["blocking", "json"] }
@@ -94,6 +111,13 @@ url.workspace = true
 # Who is here: the session's own membership of each workspace's room, on the
 # collaboration plane's peer actor.
 tilo-network-actor = { path = "../network-actor" }
+# This device's rooms: the state of every workspace it joined, held beside the
+# desk, and the enrollment a join redeems its invitation with.
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+# The workspace join exchange, over the endpoint the invitation's host names.
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+# The web grammar of a workspace link, which says what a pasted link joins.
+tilo-reference = { path = "../../collab/reference" }
 # This device's relays wait in the collaboration endpoint until a workspace
 # it shows has someone else in it, and its key is published only then.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
@@ -143,6 +167,9 @@ tilo-audio-service = { path = "../audio-service", default-features = false }
 # The desktop services the session starts on the buses; screen shares
 # stream the frames the session captured.
 tilo-portal = { path = "../portal", features = ["pipewire"] }
+# The files a person chooses for apps: the session mounts the store the
+# portal grants through, so every launcher finds an app's view to bind.
+tilo-documents = { path = "../../system/documents", features = ["mount"] }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-notifications-service = { path = "../notifications-service" }
 tilo-polkit-agent = { path = "../polkit-agent" }
@@ -192,6 +219,14 @@ tilo-test-env = { path = "../../dev/test-env" }
 test-http = { path = "../../dev/test-http" }
 # A host's key, signing the invitation a test's door answers with.
 ed25519-dalek.workspace = true
+# A site's workspace as a site runs it: the host on this machine that
+# governs the room a join enrolls into, folding what its pages write, and
+# the page of its person that recorded there first.
+tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
+tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
+# The worker a host admits the records of its members through.
+tilo-automerge-isolate.workspace = true
+sha2.workspace = true
 # What `NetworkManager` says, fed in rather than read from a bus.
 tilo-nm = { path = "../../system/tilo-nm" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
@@ -203,8 +238,6 @@ tilo-onboarding = { path = "../onboarding" }
 # The prepared-setup and journal fixtures: what a device holds before setup runs.
 tilo-onboarding-host = { path = "../onboarding-host", features = ["test-support"] }
 tilo-quick-settings = { path = "../quick-settings", features = ["test-support"] }
-# What an external reader asks a panel's accessibility tree over AT-SPI2.
-atspi-proxies = { version = "0.13.0", default-features = false, features = ["wrappers", "tokio"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 # The sheets' apps mounted for a person, so a test presses a control of one
 # as the person's own gesture.

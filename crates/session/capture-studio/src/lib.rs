@@ -32,7 +32,7 @@ pub mod link;
 pub mod resource;
 pub mod surface;
 
-pub use link::{Ask, Kept, Link, Recording, Scene, Studio, Take};
+pub use link::{Ask, Kept, Link, Recording, Scene, Selection, Studio, Take};
 pub use resource::{Capture, CaptureEffect, CaptureStudioApp};
 pub use surface::StudioSurface;
 

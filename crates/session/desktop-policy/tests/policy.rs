@@ -59,6 +59,14 @@ fn settle(driver: &mut ui::headless::FrameHarness) {
     assert!(settled, "the desktop still moves after a thousand frames");
 }
 
+/// Step `count` frames: the placement is applied as the change lands, and
+/// the fade it starts over the other windows plays out.
+fn frames(driver: &mut ui::headless::FrameHarness, count: usize) {
+    for _ in 0..count {
+        on_clock(FRAME, || driver.relayout());
+    }
+}
+
 fn window(id: u64, app: &str) -> Window {
     Window {
         id,
@@ -348,6 +356,7 @@ fn displays(policy: &mut DesktopPolicy) {
     let output = |monitor: &str, x: f64| Output {
         monitor: monitor.into(),
         rect: Rect::new(x, 0.0, x + WIDTH / 2.0, 800.0),
+        primary: false,
     };
     assert!(policy.set_displays(&[output("left", 0.0), output("right", WIDTH / 2.0)]));
 }
@@ -376,6 +385,50 @@ fn each_display_holds_the_windows_opened_while_it_had_focus() {
     settle(&mut driver);
     assert_eq!(policy.display_of(1), Some(order[1]));
     assert_eq!(policy.focused(), Some(1));
+}
+
+#[test]
+fn a_window_taken_full_screen_covers_its_display() {
+    let (mut driver, mut policy) = mount();
+    map(&mut driver, &mut policy, 1, "a");
+    map(&mut driver, &mut policy, 2, "b");
+    let place = |layout: &Layout, id: u64| {
+        layout
+            .shown
+            .iter()
+            .find(|(window, _)| *window == id)
+            .unwrap()
+            .1
+    };
+    let before = place(&policy.layout(), 1);
+    assert!(
+        before.width() < WIDTH - 0.5,
+        "two windows share the strip: {before:?}"
+    );
+    assert_eq!(policy.layout().fullscreen, None);
+
+    assert!(policy.set_fullscreen(1, true), "the desktop holds it");
+    frames(&mut driver, 30);
+    let layout = policy.layout();
+    assert_eq!(layout.fullscreen, Some(1), "the desk says which one covers");
+    let cover = place(&layout, 1);
+    assert!(
+        cover.x0.abs() < 0.5
+            && cover.y0.abs() < 0.5
+            && (cover.x1 - WIDTH).abs() < 0.5
+            && cover.height() > before.height() + 0.5,
+        "the display from its top edge to its bottom: {cover:?} against {before:?}"
+    );
+
+    assert!(policy.set_fullscreen(1, false));
+    frames(&mut driver, 30);
+    let layout = policy.layout();
+    assert_eq!(layout.fullscreen, None, "the display is given back");
+    let back = place(&layout, 1);
+    assert!(
+        (back.x0 - before.x0).abs() < 0.5 && (back.width() - before.width()).abs() < 0.5,
+        "the window stands where it stood: {back:?} against {before:?}"
+    );
 }
 
 #[test]

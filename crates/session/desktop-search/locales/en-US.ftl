@@ -14,6 +14,24 @@ search-unlock-app = Unlock { $app } to search for “{ $query }”
 search-unlock-app-detail = { $app } is locked
 search-kind-settings = Settings
 search-kind-people = People
+search-kind-happening = Happening now
+search-launcher-all-apps = All apps
+search-launcher-here-one = { $name } is here
+search-launcher-here-two = { $name } and { $other } are here
+search-launcher-here-many = { $count ->
+    [one] { $name } and 1 other are here
+   *[other] { $name } and { $count } others are here
+}
+search-launcher-with-one = With { $name }
+search-launcher-with-two = With { $name } and { $other }
+search-launcher-with-many = { $count ->
+    [one] With { $name } and 1 other
+   *[other] With { $name } and { $count } others
+}
+search-launcher-call = Call
+search-launcher-call-in = Call in { $channel }
+search-launcher-outcome-open = Open
+search-launcher-outcome-join = Join
 search-kind-jobs = Running
 search-kind-continue = Continue
 search-kind-waiting = Waiting on you
@@ -67,3 +85,5 @@ search-downloaded-program = Program
 search-downloaded-missing = Can't find this app
 search-downloaded-locate = Locate { $name }
 search-downloaded-add = Add { $name } to apps
+search-downloaded-uninstall = Uninstall { $name }
+search-downloaded-remove = Remove { $name } from apps

@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use desktop_entry::downloaded::ProcessFacts;
 use serde_json::{Map, Value};
 use tilo_actions::remote::downloaded_apps as wire;
-use tilo_app_launch::downloaded::{Downloaded, ObservedWindow, RESOURCE};
+use tilo_app_launch::downloaded::{Downloaded, ObservedWindow, RESOURCE, WindowArtwork};
 use tilo_service::Service;
 use tilo_test_env::TestEnv;
 
@@ -81,6 +81,7 @@ fn window(id: u64, app_id: &str, program: &Path) -> (ObservedWindow, ProcessFact
             id,
             app_id: app_id.to_owned(),
             pid: Some(4_000 + id as u32),
+            artwork: None,
         },
         ProcessFacts {
             exe: program.to_path_buf(),
@@ -223,6 +224,30 @@ fn an_added_program_shows_its_artwork() {
     )
     .expect("the entry Tilo wrote");
     assert!(entry.contains(&format!("Icon={artwork}")), "{entry}");
+}
+
+/// A program dropped with no artwork of its own is offered with the icon its
+/// window set for itself, so the question shows the program and not a blank.
+#[test]
+fn a_programs_offer_shows_the_icon_its_window_set() {
+    let env = environment(&[(PathBuf::from("Downloads/Loose.AppImage"), appimage())]);
+    let program = env.join("Downloads/Loose.AppImage");
+    let mut service = registry();
+    let (mut observed, facts) = window(9, "org.example.Loose", &program);
+    // A red square, the way a window hands its icon over.
+    observed.artwork = Some(WindowArtwork::Pixels {
+        width: 2,
+        height: 2,
+        rgba: std::sync::Arc::new([255u8, 0, 0, 255].repeat(4)),
+    });
+    service.handle().observed(observed, facts);
+
+    let offer = offer_at(&program, &mut service);
+    assert_eq!(offer.name, "Loose");
+    let artwork = offer.artwork.expect("the icon its window set");
+    let kept = ui::png::read_rgba8(&artwork).expect("a PNG");
+    assert_eq!((kept.width, kept.height), (2, 2));
+    assert_eq!(&kept.rgba[..4], &[255, 0, 0, 255]);
 }
 
 /// Deleting the file behind an app reads as the file being gone, and

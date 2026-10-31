@@ -43,7 +43,10 @@ use crate::navigation::{
 };
 use crate::session::{ActivityAsk, ActivityReads, ActivityRequests};
 
+use paging::{can_pan, pan_row, panned_to, sideways, vertical};
+
 mod arrivals;
+mod artwork;
 #[cfg(test)]
 mod close_motion_tests;
 mod displays;
@@ -52,6 +55,7 @@ mod live_shares;
 mod notices;
 #[cfg(test)]
 mod open_motion_tests;
+mod paging;
 mod personal_ask;
 mod search;
 mod seed;
@@ -153,6 +157,10 @@ struct Shared {
     /// Whoever holds each window someone else opened, by tab
     /// ([`DesktopHandle::set_holders`]).
     holders: HashMap<TabId, ui::widget::TabHolder>,
+    /// The windows the sharing app lists for its picker, as last published
+    /// ([`DesktopSurface::offer_window_shares`]): a window's menu offers the
+    /// share row exactly for these.
+    window_offers: Vec<ui::window_share::OpenWindow>,
     /// The windows waiting for the person ([`DesktopHandle::ask_attention`]),
     /// until each has their focus.
     asking: std::collections::BTreeSet<TabId>,
@@ -217,6 +225,9 @@ struct Shared {
     /// Bumped whenever `presentation` changes. Unlike `revision` it never
     /// asks a host to save or share the tree.
     presented: u64,
+    /// The artwork each window brought of its own, by the compositor's id
+    /// for it ([`DesktopHandle::set_window_artwork`]).
+    artwork: std::collections::BTreeMap<u64, ui::icons::AppImage>,
     /// Where the host confirms in passing what left nothing to see.
     acknowledger: ui::widget::acknowledgement::Acknowledger,
 }
@@ -641,6 +652,9 @@ enum RowOp {
     Pan(StripId, f64),
     Scroll(StripId, GroupId, ScrollAction),
     History(StripId, GroupId, TabId, HistoryDirection),
+    /// The share row of a window: share it with its workspace's people, or
+    /// stop sharing it.
+    WindowShare(TabId, bool),
 }
 
 pub struct DesktopSurface {
@@ -741,11 +755,6 @@ const SWIPE_GAP: Duration = Duration::from_millis(200);
 /// How soon search looks again for an app's answer that is still coming.
 const SEARCH_ANSWER_POLL: Duration = Duration::from_millis(50);
 
-/// Logical pixels a line of sideways wheel travels: the 40 px to the line a
-/// trackpad's pixels are weighed against when telling sideways from
-/// vertical, so both kinds of input move the strip alike.
-const WHEEL_LINE_PX: f64 = 40.0;
-
 /// Sideways travel that steps focus one window on a strip that cannot pan
 /// that way. About the width of a window: a Normal one is two thirds of a
 /// 1280 px strip, so a spin steps about as many windows on a strip that fits
@@ -776,63 +785,6 @@ struct Swipe {
     last: Instant,
 }
 
-/// A wheel event's sideways travel in logical pixels when horizontal motion
-/// dominates, positive forward (toward later windows, like Super+Right).
-/// Winit's deltas are negative for a wheel turned (or fingers scrolling)
-/// rightward, which scrolls content toward its later columns and so moves
-/// forward; it reports pixels physical. The shell's overlay host classifies
-/// wheel input the same way.
-fn sideways(delta: MouseScrollDelta, scale_factor: f64) -> Option<f64> {
-    let (dx, dy) = match delta {
-        MouseScrollDelta::LineDelta(x, y) => {
-            (f64::from(x) * WHEEL_LINE_PX, f64::from(y) * WHEEL_LINE_PX)
-        }
-        MouseScrollDelta::PixelDelta(p) => {
-            let scale = scale_factor.max(f64::EPSILON);
-            (p.x / scale, p.y / scale)
-        }
-    };
-    (dx.abs() > dy.abs()).then_some(-dx)
-}
-
-/// A wheel event's vertical travel in logical pixels, positive for a wheel
-/// turned (or fingers scrolling) downward, which winit reports negative.
-fn vertical(delta: MouseScrollDelta, scale_factor: f64) -> f64 {
-    match delta {
-        MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * WHEEL_LINE_PX,
-        MouseScrollDelta::PixelDelta(p) => -p.y / scale_factor.max(f64::EPSILON),
-    }
-}
-
-/// The window a pan left the person looking at: the focused one while it is
-/// still wholly in view, else the one showing the most of itself, the one
-/// nearer the middle of the view between two showing as much.
-fn panned_to(row: &GroupRow, focused: Option<GroupId>) -> Option<GroupId> {
-    let (left, right) = row.visible_canvas_span();
-    let middle = f64::midpoint(left, right);
-    let shown = |x0: f64, x1: f64| (x1.min(right) - x0.max(left)).max(0.0);
-    let spans = row.group_canvas_spans();
-    if spans
-        .iter()
-        .any(|&(id, x0, x1)| Some(id) == focused && shown(x0, x1) >= x1 - x0 - 0.5)
-    {
-        return focused;
-    }
-    spans
-        .iter()
-        .filter(|&&(_, x0, x1)| shown(x0, x1) > 0.0)
-        .min_by(|&&(_, a0, a1), &&(_, b0, b1)| {
-            let (a, b) = (shown(a0, a1), shown(b0, b1));
-            if (a - b).abs() > 0.5 {
-                b.total_cmp(&a)
-            } else {
-                let off = |x0: f64, x1: f64| (f64::midpoint(x0, x1) - middle).abs();
-                off(a0, a1).total_cmp(&off(b0, b1))
-            }
-        })
-        .map(|&(id, _, _)| id)
-}
-
 impl DesktopSurface {
     /// Present `tree`. `salt` is this device's peer salt for new ids.
     pub fn new(tree: DesktopTree, salt: u16, tiles: Box<dyn TileSource>) -> (Self, DesktopHandle) {
@@ -841,6 +793,7 @@ impl DesktopSurface {
         let shared = Rc::new(RefCell::new(Shared {
             tree,
             holders: HashMap::new(),
+            window_offers: Vec::new(),
             asking: std::collections::BTreeSet::new(),
             opens: true,
             revision: 1,
@@ -870,6 +823,7 @@ impl DesktopSurface {
             arrivals: Vec::new(),
             presentation: Presentation::default(),
             presented: 0,
+            artwork: std::collections::BTreeMap::new(),
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
         }));
         let acknowledger = shared.borrow().acknowledger.clone();
@@ -1161,13 +1115,16 @@ impl DesktopSurface {
             && let Some(strip) = workspace.strips.iter().find(|s| s.id == strip_id)
         {
             let focused = tree.active_group_for(strip_id);
-            let (row, deferred) = build_row_lazily(
+            let (mut row, deferred) = build_row_lazily(
                 self.tiles.as_mut(),
                 self.controls.as_ref(),
                 workspace,
                 strip,
                 focused,
             );
+            // A row comes back with the window covering this display, so a
+            // rebuild while it covers does not take it back.
+            row.set_fullscreen(tree.fullscreen_group(), false);
             // The focused window, built first, is also the one in view.
             if self.reveal.is_none() {
                 self.reveal = focused.map(|group| (strip_id, group));
@@ -1312,13 +1269,16 @@ impl DesktopSurface {
                     .flat_map(|group| &group.tabs)
                     .any(|tab| live.contains_key(&tab.id));
                 if survives {
-                    let row = build_row(
+                    let mut row = build_row(
                         self.tiles.as_mut(),
                         self.controls.as_ref(),
                         workspace,
                         strip,
                         &mut live,
                     );
+                    if tree.active_strip_id() == Some(strip.id) {
+                        row.set_fullscreen(tree.fullscreen_group(), false);
+                    }
                     self.rows.insert(strip.id, row);
                 }
             }
@@ -1551,6 +1511,11 @@ impl DesktopSurface {
                             ops.push(RowOp::ToggleMaximized(ids.strip, ids.group));
                         }
                     }
+                    Admitted::Fullscreen(ids, fullscreen) if live(&shared.tree, ids) => {
+                        // The row reads this in `present`; the window taken
+                        // across the display takes the whole strip with it.
+                        shared.tree.set_fullscreen(ids.strip, ids.group, fullscreen);
+                    }
                     Admitted::Rename(ids, name) if live(&shared.tree, ids) => {
                         if let Some(group) = find_group(&mut shared.tree, ids.strip, ids.group)
                             && let Some(tab) = group.tabs.iter_mut().find(|tab| tab.id == ids.tab)
@@ -1642,7 +1607,13 @@ impl DesktopSurface {
                         }
                         continue;
                     }
-                    _ => continue,
+                    // Everything else is a window menu's row: the desktop's
+                    // own moves, widths and closes of one window.
+                    other => {
+                        if !window_menu::apply(&mut shared, &other, &mut ops) {
+                            continue;
+                        }
+                    }
                 }
                 shared.changed();
             }
@@ -1724,6 +1695,9 @@ impl DesktopSurface {
                     {
                         self.structure_dirty = true;
                     }
+                }
+                RowOp::WindowShare(tab, share) => {
+                    self.ask_window_share(tab, share);
                 }
             }
         }
@@ -1847,6 +1821,15 @@ impl DesktopSurface {
     /// host's viewport.
     fn present(&mut self) {
         self.lay_out_displays();
+        // The window the person took across the display takes the whole
+        // strip with it: its row drops the gutters and the other windows
+        // step aside, wherever the person last panned them. A row is built
+        // with this too; here it follows the window menu or the chord
+        // between rebuilds.
+        let fullscreen = self.shared.borrow().tree.fullscreen_group();
+        if let Some(row) = self.shown_row() {
+            row.set_fullscreen(fullscreen, false);
+        }
         let (route, width) = {
             let shared = self.shared.borrow();
             (
@@ -2206,14 +2189,11 @@ impl DesktopSurface {
     }
 }
 
-/// Pan `row` to `offset` the way the shell's direct strip pan does, within
-/// the legal range, and keep it there when the strip's geometry changes. A
-/// strip showing a maximized window stays at home.
 /// The shown strip's node style over the row's `own`: tiled windows keep
-/// wallpaper under them, so their bottom border and corners show; a
-/// maximized one takes the band.
+/// wallpaper under them, so their bottom border and corners show; a window
+/// filling the strip or taken across the display takes that band instead.
 fn strip_style(row: &GroupRow, own: Style) -> Style {
-    let bottom = if row.groups.iter().any(|group| group.maximized) {
+    let bottom = if row.is_fullscreen() || row.groups.iter().any(|group| group.maximized) {
         0.0
     } else {
         STRIP_BOTTOM_GUTTER_PX
@@ -2221,34 +2201,6 @@ fn strip_style(row: &GroupRow, own: Style) -> Style {
     let mut style = own;
     style.margin.bottom = ui::taffy::LengthPercentageAuto::length(ui::num::f32_of_f64(bottom));
     style
-}
-
-fn pan_row(row: &mut GroupRow, offset: f64) -> bool {
-    if row.groups.iter().any(|g| g.maximized) {
-        return false;
-    }
-    let target = offset.clamp(0.0, row.pan_max_scroll_x());
-    let now = ui::time::now();
-    row.begin_strip_pan();
-    let moved = row.update_strip_pan(target - row.scroll_x(), now);
-    row.end_strip_pan(now);
-    if moved {
-        row.hold_strip_pan();
-    }
-    moved
-}
-
-/// Whether `row` can pan `travel` from where it rests.
-fn can_pan(row: &GroupRow, travel: f64) -> bool {
-    if row.groups.iter().any(|g| g.maximized) {
-        return false;
-    }
-    let offset = row.scroll_x();
-    if travel > 0.0 {
-        offset < row.pan_max_scroll_x() - 0.5
-    } else {
-        travel < 0.0 && offset > 0.5
-    }
 }
 
 fn observe_ids(minter: &mut IdMinter, tree: &DesktopTree) {
@@ -2433,11 +2385,15 @@ impl Widget for DesktopSurface {
             self.present();
             self.refresh_presentation();
         }
+        // Last, so a row this pass rebuilt shows its windows' own artwork in
+        // the same frame it appeared in.
+        let artwork = self.sync_window_artwork();
         changed
             || row_changed
             || bars_changed
             || share_asked
             || embeds_changed
+            || artwork
             || self.structure_dirty
     }
 

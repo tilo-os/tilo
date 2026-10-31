@@ -61,6 +61,10 @@ pub const LABEL: &str = "Downloaded apps";
 /// person's home they can see in their files.
 const APPLICATIONS: &str = "Applications";
 
+/// How many of its failures the registry keeps in its reading: far more than
+/// a person sees at once, and bounded all the same.
+const KEPT_FAILURES: usize = 16;
+
 /// A window that named itself, as the compositor tells the session about it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObservedWindow {
@@ -70,6 +74,23 @@ pub struct ObservedWindow {
     pub app_id: String,
     /// The process that opened it, when the compositor knows it.
     pub pid: Option<u32>,
+    /// The icon the window set for itself, when it set one.
+    pub artwork: Option<WindowArtwork>,
+}
+
+/// A window's own icon, as it came from the compositor: the program's fallback
+/// artwork for the entry it would get.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WindowArtwork {
+    /// A theme icon name, or an absolute icon path, the window named.
+    Named(String),
+    /// The pixels the window handed over, premultiplied RGBA (`width *
+    /// height * 4` bytes), one offer of the sizes it made.
+    Pixels {
+        width: u32,
+        height: u32,
+        rgba: Arc<Vec<u8>>,
+    },
 }
 
 impl ObservedWindow {
@@ -80,6 +101,49 @@ impl ObservedWindow {
         let app_id = self.app_id.trim();
         !app_id.is_empty() && !app_id.starts_with("anon-")
     }
+}
+
+/// The window's own icon as an entry names it: the theme's file for a name,
+/// the pixels as a PNG. The fallback artwork of the entry its program would
+/// get, so a program that brings no image of its own is still not a blank
+/// square. Reads the disk for a name, so it runs on the worker.
+fn window_icon(artwork: Option<&WindowArtwork>) -> Option<downloaded::Icon> {
+    match artwork? {
+        WindowArtwork::Named(name) => {
+            let file = desktop_entry::icon_theme::lookup(name, 256, 1)?;
+            downloaded::Icon::sniff(std::fs::read(file.path).ok()?)
+        }
+        WindowArtwork::Pixels {
+            width,
+            height,
+            rgba,
+        } => {
+            let straight = straight_alpha(rgba);
+            downloaded::Icon::sniff(ui::png::encode_rgba8(*width, *height, &straight).ok()?)
+        }
+    }
+}
+
+/// `rgba` with each pixel's colour no longer multiplied by its alpha, which is
+/// how a PNG holds it.
+fn straight_alpha(rgba: &[u8]) -> Vec<u8> {
+    let mut straight = rgba.to_vec();
+    for pixel in straight.chunks_exact_mut(4) {
+        let Some(alpha) = pixel.get(3).copied().map(u16::from) else {
+            continue;
+        };
+        if alpha == 0 {
+            continue;
+        }
+        for channel in pixel.iter_mut().take(3) {
+            let colour = u16::from(*channel)
+                .saturating_mul(255)
+                .checked_div(alpha)
+                .unwrap_or(0);
+            *channel = u8::try_from(colour.min(255)).unwrap_or(u8::MAX);
+        }
+    }
+    straight
 }
 
 /// A program running now that has no entry: what adding it would add.
@@ -118,6 +182,13 @@ struct State {
     /// The entries whose file was missing at the last scan: only one that
     /// has just gone missing is followed.
     missing: HashSet<String>,
+    /// How many of its actions failed: the count each failure is tagged
+    /// with, so a reader says each one once.
+    attempts: u64,
+    /// What its actions could not do, oldest first, for the person: the last
+    /// [`KEPT_FAILURES`], so a person who keeps trying cannot grow it without
+    /// end.
+    failures: Vec<wire::DownloadedFailure>,
 }
 
 impl State {
@@ -136,6 +207,7 @@ impl State {
                     declined: offer.declined,
                 })
                 .collect(),
+            failures: self.failures.clone(),
         }
     }
 }
@@ -329,7 +401,7 @@ impl Core {
             &program,
             &WindowFacts {
                 app_id: window.app_id.clone(),
-                icon: None,
+                icon: window_icon(window.artwork.as_ref()),
             },
         );
         match store.update_location(&identity, &program) {
@@ -482,8 +554,13 @@ impl Core {
                 .map(|offer| (offer.program.clone(), offer.identity.clone()))
         };
         let Some((mut program, identity)) = offer else {
-            tracing::warn!(file = %file.display(), "asked to add a downloaded program that is not running");
-            return false;
+            let named = file_name(file);
+            return self.failed(
+                wire::DownloadedDoing::Add,
+                &file.display().to_string(),
+                &named,
+                "the program is not running any more".to_owned(),
+            );
         };
         // Only an `AppImage` is one self-contained file; anything else may
         // need the files beside it and stays where it is.
@@ -492,8 +569,12 @@ impl Core {
             match downloaded::move_into(&program.path, &folder) {
                 Ok(moved) => program.path = moved,
                 Err(error) => {
-                    tracing::warn!(%error, program = %program.path.display(), "could not move a downloaded app into Applications");
-                    return false;
+                    return self.failed(
+                        wire::DownloadedDoing::Add,
+                        &file.display().to_string(),
+                        &identity.name,
+                        error.to_string(),
+                    );
                 }
             }
         }
@@ -504,8 +585,12 @@ impl Core {
                 "added a downloaded app"
             ),
             Err(error) => {
-                tracing::warn!(%error, program = %program.path.display(), "could not add a downloaded app");
-                return false;
+                return self.failed(
+                    wire::DownloadedDoing::Add,
+                    &file.display().to_string(),
+                    &identity.name,
+                    error.to_string(),
+                );
             }
         }
         self.state.lock_recover().offers.remove(file);
@@ -549,8 +634,13 @@ impl Core {
             return false;
         };
         if let Err(error) = store.locate(desktop_id, path) {
-            tracing::warn!(%desktop_id, %error, "could not point a downloaded app's entry at its file");
-            return false;
+            let name = self.name_of(desktop_id);
+            return self.failed(
+                wire::DownloadedDoing::Locate,
+                desktop_id,
+                &name,
+                error.to_string(),
+            );
         }
         desktop_entry::cache::refresh();
         self.rebuild()
@@ -562,8 +652,13 @@ impl Core {
             return false;
         };
         if let Err(error) = store.remove(desktop_id) {
-            tracing::warn!(%desktop_id, %error, "could not take a downloaded app off the person's apps");
-            return false;
+            let name = self.name_of(desktop_id);
+            return self.failed(
+                wire::DownloadedDoing::Remove,
+                desktop_id,
+                &name,
+                error.to_string(),
+            );
         }
         desktop_entry::cache::refresh();
         self.rebuild()
@@ -575,9 +670,14 @@ impl Core {
         let Some(store) = &self.store else {
             return false;
         };
+        let name = self.name_of(desktop_id);
         let Some(recorded) = store.entry(desktop_id) else {
-            tracing::warn!(%desktop_id, "asked to uninstall a downloaded app that is not there");
-            return false;
+            return self.failed(
+                wire::DownloadedDoing::Uninstall,
+                desktop_id,
+                &name,
+                "it is not in the person's apps any more".to_owned(),
+            );
         };
         // Every copy goes: a leftover one would bring the app back by
         // running it, and all of them can be restored from the trash.
@@ -585,17 +685,58 @@ impl Core {
             if std::fs::symlink_metadata(&copy).is_err() {
                 continue;
             }
-            if let Err(error) = host_fs::trash::trash(&copy) {
-                tracing::warn!(path = %copy.display(), %error, "could not move a downloaded program to the trash");
-                return false;
+            if let Err(detail) = host_fs::trash::trash(&copy) {
+                return self.failed(wire::DownloadedDoing::Uninstall, desktop_id, &name, detail);
             }
         }
         if let Err(error) = store.remove(desktop_id) {
-            tracing::warn!(%desktop_id, %error, "could not take an uninstalled app off the person's apps");
-            return false;
+            return self.failed(
+                wire::DownloadedDoing::Uninstall,
+                desktop_id,
+                &name,
+                error.to_string(),
+            );
         }
         desktop_entry::cache::refresh();
         self.rebuild()
+    }
+
+    /// The name the person knows the app `desktop_id` by, as the last read
+    /// listed it; its id when they have not got it any more.
+    fn name_of(&self, desktop_id: &str) -> String {
+        self.state
+            .lock_recover()
+            .apps
+            .iter()
+            .find(|app| app.desktop_id == desktop_id)
+            .map_or_else(|| desktop_id.to_owned(), |app| app.name.clone())
+    }
+
+    /// Record that the registry could not do `doing` to `subject` (which the
+    /// person calls `name`), so the person is told instead of their action
+    /// quietly doing nothing. The reading changed.
+    fn failed(
+        &self,
+        doing: wire::DownloadedDoing,
+        subject: &str,
+        name: &str,
+        detail: String,
+    ) -> bool {
+        tracing::warn!(%detail, subject, "could not do what the person asked of a downloaded app");
+        let mut state = self.state.lock_recover();
+        state.attempts = state.attempts.wrapping_add(1);
+        let attempt = state.attempts;
+        if state.failures.len() == KEPT_FAILURES {
+            state.failures.remove(0);
+        }
+        state.failures.push(wire::DownloadedFailure {
+            attempt,
+            doing,
+            subject: subject.to_owned(),
+            name: name.to_owned(),
+            detail,
+        });
+        true
     }
 
     /// Note that the apps were read at `generation`, before the worker reads
@@ -718,6 +859,15 @@ fn presentation(app: &wire::DownloadedApp) -> tilo_actions::ResourcePresentation
         badge: Some(kind_label(app.kind).to_owned()),
         preview: app.comment.clone(),
     }
+}
+
+/// What a person calls the program at `file` before anything named it: the
+/// file's own name.
+fn file_name(file: &Path) -> String {
+    file.file_name().map_or_else(
+        || file.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
 }
 
 /// What a person calls a [`wire::DownloadedKind`].

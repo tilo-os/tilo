@@ -16,6 +16,7 @@ use std::rc::Rc;
 
 use tilo_actions::ActionAddress;
 use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
+use tilo_desktop::desk_widgets::DeskFold;
 use tilo_desktop::desktop_actions::CHROME_RESOURCE;
 use tilo_desktop::osd::OsdKind;
 use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
@@ -282,14 +283,27 @@ pub(crate) struct SessionKeys {
     /// The desktop's shortcut table, shared with the shortcut guide so the
     /// guide explains the chords the keys resolve against.
     shortcuts: Rc<RefCell<ShortcutConfig>>,
+    /// The display sheet's presentation: Super+P puts it up while it is not
+    /// there, and once it is, the chord moves inside it instead.
+    displays: Option<tilo_sheets::Presentation>,
     invocations: Invocations,
     /// The apps' shortcuts, which work wherever the keyboard is.
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
     /// The shortcut guide's keys while it is up: what it holds back from
     /// the desktop behind it, and the chord it waits for.
     guide: GuideKeys,
+    /// Whether a desk widget has its card open, which Escape folds. The desk
+    /// is under the windows and hears no keys itself, so it says here what
+    /// its keys are worth.
+    fold: DeskFold,
     /// The shortcut resources whose chords are held down, by key.
     held: RefCell<BTreeMap<u32, String>>,
+    /// The controller the person last drove the desktop with, which a press
+    /// of their own replaces: the guide then leads with the keyboard.
+    controller: Rc<Cell<Option<ui::ControllerFamily>>>,
+    /// Whether the keys being routed are a controller's own, standing for
+    /// its presses rather than the person's fingers on a keyboard.
+    controller_keys: Rc<Cell<bool>>,
 }
 
 impl SessionKeys {
@@ -298,14 +312,51 @@ impl SessionKeys {
         invocations: Invocations,
         portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
         guide: GuideKeys,
+        fold: DeskFold,
+        displays: Option<tilo_sheets::Presentation>,
+        controller: Rc<Cell<Option<ui::ControllerFamily>>>,
+        controller_keys: Rc<Cell<bool>>,
     ) -> Self {
         Self {
             shortcuts,
+            displays,
             invocations,
             portal,
             guide,
+            fold,
             held: RefCell::new(BTreeMap::new()),
+            controller,
+            controller_keys,
         }
+    }
+
+    /// Whether `key` is the desk's own: Escape folds the card a desk widget
+    /// has open, and what sits behind the desk does not hear it.
+    fn folds_the_desk(&self, key: &HostKey) -> bool {
+        key.unmodified_keysym == keysyms::Escape && self.fold.is_open()
+    }
+
+    /// Whether `key` is the display sheet's chord, which puts the sheet up:
+    /// Super+P, as the desktop's fixed table names it. A sheet that is up is
+    /// not opened again: what is drawn takes the chord and moves the
+    /// highlight inside it.
+    fn opens_the_display_sheet(&self, key: &HostKey) -> bool {
+        let Some(displays) = &self.displays else {
+            return false;
+        };
+        if displays.is_drawn() {
+            return false;
+        }
+        let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
+        let ui::winit::keyboard::Key::Character(letter) = &logical else {
+            return false;
+        };
+        let state = modifiers.state();
+        letter.eq_ignore_ascii_case("p")
+            && state.super_key()
+            && !state.shift_key()
+            && !state.control_key()
+            && !state.alt_key()
     }
 
     /// The app shortcut a press of `key` is, as its published resource.
@@ -322,8 +373,23 @@ impl SessionKeys {
         )
     }
 
-    /// The invocation a press is, and how it is claimed.
-    fn resolve(&self, key: &HostKey, locked: bool) -> Option<(Invocation, KeyClaim)> {
+    /// The desktop's shortcut `key` is bound to, as the table names it.
+    fn configured_action(&self, key: &HostKey) -> Option<ShortcutAction> {
+        let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
+        let shortcuts = self.shortcuts.borrow();
+        tilo_desktop::shortcuts::configured_shortcut_action(&shortcuts, &logical, modifiers)
+    }
+
+    /// The invocation a press is, and how it is claimed. `inhibited` while a
+    /// focused client holds the desktop's shortcuts (a virtual machine, a
+    /// remote desktop): only a hardware key and locking the session stay the
+    /// desktop's then.
+    fn resolve(
+        &self,
+        key: &HostKey,
+        locked: bool,
+        inhibited: bool,
+    ) -> Option<(Invocation, KeyClaim)> {
         if let Some(hardware) = classify(key.keysym) {
             if locked && !hardware.while_locked {
                 return None;
@@ -342,6 +408,19 @@ impl SessionKeys {
         }
         if locked {
             return None;
+        }
+        if inhibited {
+            // The client showing another machine answers its own chords;
+            // locking this one is never its to keep, or it could hide the
+            // way out of itself.
+            let action = self.configured_action(key)?;
+            return (action == ShortcutAction::Lock)
+                .then(|| (Invocation::shortcut(action), KeyClaim::Take));
+        }
+        // Super+P is the display sheet's, as it is on every desktop: the
+        // keys the fixed table names come before any app's chord.
+        if self.opens_the_display_sheet(key) {
+            return Some((Invocation::new(DISPLAYS, "open-sheet"), KeyClaim::Take));
         }
         // An app's bound shortcut is the person's answer to its sheet: it
         // is pressed like the desktop's own chords are.
@@ -364,7 +443,7 @@ impl SessionKeys {
     /// A press the guide is up over: it answers only what is its own, and
     /// while it waits for a new chord, that press is the chord.
     fn guide_key(&self, key: &HostKey) {
-        let resolved = self.resolve(key, false);
+        let resolved = self.resolve(key, false, false);
         // F1 and the desktop's help chord stay the guide's own way out,
         // waiting for a chord or not.
         if let Some((invocation, _)) = &resolved
@@ -413,7 +492,7 @@ impl SurfaceHost for SessionKeys {
 
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 
-    fn claim_key(&mut self, key: &HostKey, locked: bool) -> KeyClaim {
+    fn claim_key(&mut self, key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim {
         if self.guide.up() {
             if self.guide.listening().is_some() {
                 // The guide waits for a shortcut's new keys: every press is
@@ -426,11 +505,14 @@ impl SurfaceHost for SessionKeys {
             // the guide.
             if classify(key.keysym).is_none() {
                 return self
-                    .resolve(key, locked)
+                    .resolve(key, locked, inhibited)
                     .map_or(KeyClaim::Pass, |(_, claim)| claim);
             }
         }
-        self.resolve(key, locked)
+        if self.folds_the_desk(key) {
+            return KeyClaim::Take;
+        }
+        self.resolve(key, locked, inhibited)
             .map_or(KeyClaim::Pass, |(_, claim)| claim)
     }
 
@@ -445,8 +527,18 @@ impl SurfaceHost for SessionKeys {
             }
             return;
         }
+        // A press of the person's own: the guide leads with the keyboard
+        // again. The controller's own presses reach here too, standing for
+        // its buttons, and say nothing about a keyboard.
+        if !self.controller_keys.get() {
+            self.controller.set(None);
+        }
         if self.guide.up() {
             self.guide_key(key);
+            return;
+        }
+        if self.folds_the_desk(key) {
+            self.fold.ask();
             return;
         }
         // A repeat of a key taken once is not run again (only a level key
@@ -458,7 +550,7 @@ impl SurfaceHost for SessionKeys {
                 .push(Invocation::new(&resource, "activate"));
             return;
         }
-        if let Some((invocation, _)) = self.resolve(key, false) {
+        if let Some((invocation, _)) = self.resolve(key, false, false) {
             self.invocations.borrow_mut().push(invocation);
         }
     }
@@ -487,6 +579,10 @@ mod tests {
             Invocations::default(),
             None,
             GuideKeys::default(),
+            DeskFold::default(),
+            None,
+            Rc::new(Cell::new(None)),
+            Rc::new(Cell::new(false)),
         )
     }
 
@@ -500,6 +596,10 @@ mod tests {
             Invocations::default(),
             None,
             guide.clone(),
+            DeskFold::default(),
+            None,
+            Rc::new(Cell::new(None)),
+            Rc::new(Cell::new(false)),
         );
         (keys, guide)
     }
@@ -513,16 +613,16 @@ mod tests {
             KeyModifiers::default(),
         );
         assert_eq!(
-            keys.resolve(&volume, true),
+            keys.resolve(&volume, true, false),
             Some((
                 Invocation::new(QUICK_SETTINGS, "volume-up").showing(OsdKind::Volume),
                 KeyClaim::TakeRepeating
             ))
         );
         let airplane = key(KEY_XF86_RFKILL, None, KeyModifiers::default());
-        assert_eq!(keys.resolve(&airplane, true), None);
+        assert_eq!(keys.resolve(&airplane, true, false), None);
         assert_eq!(
-            keys.resolve(&airplane, false),
+            keys.resolve(&airplane, false, false),
             Some((
                 Invocation::new(QUICK_SETTINGS, "toggle-airplane-mode")
                     .showing(OsdKind::AirplaneMode),
@@ -531,7 +631,8 @@ mod tests {
         );
         let play = key(keysyms::XF86_AudioPlay, None, KeyModifiers::default());
         assert_eq!(
-            keys.resolve(&play, true).map(|(invocation, _)| invocation),
+            keys.resolve(&play, true, false)
+                .map(|(invocation, _)| invocation),
             Some(Invocation::new(MEDIA, "play-pause").showing(OsdKind::Play))
         );
     }
@@ -541,13 +642,13 @@ mod tests {
         let keys = keys();
         let print = key(keysyms::Print, None, KeyModifiers::default());
         assert_eq!(
-            keys.resolve(&print, false),
+            keys.resolve(&print, false, false),
             Some((
                 Invocation::new(CAPTURE_STUDIO, "screenshot"),
                 KeyClaim::Take
             ))
         );
-        assert_eq!(keys.resolve(&print, true), None);
+        assert_eq!(keys.resolve(&print, true, false), None);
     }
 
     #[test]
@@ -559,7 +660,7 @@ mod tests {
         };
         let tab = key(keysyms::Tab, None, logo);
         assert_eq!(
-            keys.resolve(&tab, false),
+            keys.resolve(&tab, false, false),
             Some((
                 Invocation::shortcut(ShortcutAction::WorkspaceOverview),
                 KeyClaim::Take
@@ -570,9 +671,9 @@ mod tests {
             "workspace_overview"
         );
         // Chords wait while the session is locked; plain typing is never one.
-        assert_eq!(keys.resolve(&tab, true), None);
+        assert_eq!(keys.resolve(&tab, true, false), None);
         let a = key(keysyms::a, Some('a'), KeyModifiers::default());
-        assert_eq!(keys.resolve(&a, false), None);
+        assert_eq!(keys.resolve(&a, false, false), None);
     }
 
     #[test]
@@ -580,7 +681,7 @@ mod tests {
         let keys = keys();
         let f1 = key(keysyms::F1, None, KeyModifiers::default());
         assert_eq!(
-            keys.resolve(&f1, false),
+            keys.resolve(&f1, false, false),
             Some((
                 Invocation::shortcut(ShortcutAction::ShortcutHelp),
                 KeyClaim::Take
@@ -591,7 +692,7 @@ mod tests {
             "shortcut_help"
         );
         // The lock screen shows no desktop, and no guide to its keys.
-        assert_eq!(keys.resolve(&f1, true), None);
+        assert_eq!(keys.resolve(&f1, true, false), None);
     }
 
     #[test]
@@ -602,7 +703,7 @@ mod tests {
             ..KeyModifiers::default()
         };
         let space = key(keysyms::space, Some(' '), logo);
-        assert_eq!(keys.claim_key(&space, false), KeyClaim::Take);
+        assert_eq!(keys.claim_key(&space, false, false), KeyClaim::Take);
         keys.key(&space);
         assert!(
             keys.invocations.borrow().is_empty(),
@@ -611,7 +712,7 @@ mod tests {
         );
         // The guide's own key still reaches the desktop, which closes it.
         let f1 = key(keysyms::F1, None, KeyModifiers::default());
-        assert_eq!(keys.claim_key(&f1, false), KeyClaim::Take);
+        assert_eq!(keys.claim_key(&f1, false, false), KeyClaim::Take);
         keys.key(&f1);
         assert_eq!(
             keys.invocations.borrow().as_slice(),
@@ -620,14 +721,17 @@ mod tests {
         // A key that answers nothing at all is not the guide's to take: the
         // sheet behind it moves its focus with Tab.
         let tab = key(keysyms::Tab, None, KeyModifiers::default());
-        assert_eq!(keys.claim_key(&tab, false), KeyClaim::Pass);
+        assert_eq!(keys.claim_key(&tab, false, false), KeyClaim::Pass);
         // A hardware key changes a level whatever is on screen.
         let volume = key(
             keysyms::XF86_AudioRaiseVolume,
             None,
             KeyModifiers::default(),
         );
-        assert_eq!(keys.claim_key(&volume, false), KeyClaim::TakeRepeating);
+        assert_eq!(
+            keys.claim_key(&volume, false, false),
+            KeyClaim::TakeRepeating
+        );
         keys.invocations.borrow_mut().clear();
         keys.key(&volume);
         assert_eq!(
@@ -646,7 +750,7 @@ mod tests {
             ..KeyModifiers::default()
         };
         let j = key(keysyms::j, Some('j'), control);
-        assert_eq!(keys.claim_key(&j, false), KeyClaim::Take);
+        assert_eq!(keys.claim_key(&j, false, false), KeyClaim::Take);
         keys.key(&j);
         assert_eq!(
             guide.take_caught(),
@@ -669,10 +773,75 @@ mod tests {
         assert_eq!(guide.take_caught(), []);
         // Escape leaves the waiting to the guide, which stays up.
         let escape = key(keysyms::Escape, None, KeyModifiers::default());
-        assert_eq!(keys.claim_key(&escape, false), KeyClaim::Take);
+        assert_eq!(keys.claim_key(&escape, false, false), KeyClaim::Take);
         keys.key(&escape);
         assert_eq!(guide.take_caught(), [Caught::Cancelled]);
         assert_eq!(guide.listening(), None);
         assert!(guide.up(), "the guide itself stays up");
+    }
+
+    #[test]
+    fn a_client_holding_the_shortcuts_keeps_the_chords_but_not_the_way_to_lock() {
+        let mut keys = keys();
+        let logo = KeyModifiers {
+            logo: true,
+            ..KeyModifiers::default()
+        };
+        let tab = key(keysyms::Tab, None, logo);
+        assert_eq!(keys.claim_key(&tab, false, false), KeyClaim::Take);
+        assert_eq!(
+            keys.claim_key(&tab, false, true),
+            KeyClaim::Pass,
+            "the virtual machine answers its own Tab"
+        );
+        // Locking the session stays the desktop's: a machine that could hold
+        // that chord could hide the way out of itself.
+        let lock = key(keysyms::l, Some('l'), logo);
+        assert_eq!(keys.claim_key(&lock, false, false), KeyClaim::Take);
+        assert_eq!(keys.claim_key(&lock, false, true), KeyClaim::Take);
+        keys.invocations.borrow_mut().clear();
+        keys.key(&lock);
+        assert_eq!(
+            keys.invocations.borrow().as_slice(),
+            [Invocation::shortcut(ShortcutAction::Lock)]
+        );
+        // A hardware key changes a level whatever a client holds.
+        let volume = key(
+            keysyms::XF86_AudioRaiseVolume,
+            None,
+            KeyModifiers::default(),
+        );
+        assert_eq!(
+            keys.claim_key(&volume, false, true),
+            KeyClaim::TakeRepeating
+        );
+    }
+
+    #[test]
+    fn escape_folds_the_card_a_widget_has_open_and_nothing_behind_it_hears_it() {
+        let fold = DeskFold::default();
+        let mut keys = SessionKeys::new(
+            Rc::new(RefCell::new(ShortcutConfig::default())),
+            Invocations::default(),
+            None,
+            GuideKeys::default(),
+            fold.clone(),
+            None,
+            Rc::new(Cell::new(None)),
+            Rc::new(Cell::new(false)),
+        );
+        let escape = key(keysyms::Escape, None, KeyModifiers::default());
+        // Folded cards want no key: Escape goes on to whatever is up.
+        assert_eq!(keys.claim_key(&escape, false, false), KeyClaim::Pass);
+
+        fold.set_open(true);
+        assert_eq!(
+            keys.claim_key(&escape, false, false),
+            KeyClaim::Take,
+            "an open card folds on Escape before anything else hears it"
+        );
+        keys.key(&escape);
+        assert!(fold.take_asked(), "the key asks the desk to fold");
+        assert!(!fold.take_asked(), "and asks once");
     }
 }

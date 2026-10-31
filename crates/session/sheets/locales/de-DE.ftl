@@ -187,6 +187,8 @@ directory-try-again = Erneut versuchen
 directory-community-tag = von { $host }
 directory-already-joining = Du trittst { $name } bereits bei. Es öffnet sich, sobald es bereit ist.
 directory-join-failed = { $name } konnte nicht beigetreten werden: { $error }
+directory-code-failed = Mit diesem Link oder Code konnte nicht beigetreten werden: { $error }
+directory-joined-name = Beigetretenes Workspace
 directory-join-failed-line = Nicht beigetreten: { $error }
 directory-here-now = { $count } gerade hier
 directory-active-today = Heute aktiv
@@ -315,13 +317,6 @@ portal-print-print = Drucken
 portal-screenshot-title = { $app } einen Bildschirmausschnitt geben?
 portal-screenshot-detail = Es bekommt ein Bild des Bildschirms, wie er jetzt ist.
 portal-screenshot-take = Bildschirmausschnitt geben
-portal-pick-color-title = Eine Farbe wählen
-portal-pick-color-detail = Rot, Grün und Blau, jeweils von 0 bis 1.
-portal-pick-color-red = Rot
-portal-pick-color-green = Grün
-portal-pick-color-blue = Blau
-portal-pick-color-use = Farbe verwenden
-portal-pick-color-incomplete = Jeder Teil ist eine Zahl von 0 bis 1.
 portal-usb-title = { $app } USB-Geräte geben?
 portal-usb-detail = { $app } bekommt die angehakten Geräte, bis es nicht mehr fragt oder eins abgezogen wird.
 portal-usb-allow = Ausgewählte geben
@@ -469,3 +464,25 @@ portal-allowed-title = Dauerhaft erlaubt
 portal-allowed-detail = { $app } darf { $what } jetzt ohne Nachfrage nutzen. Widerrufe es, damit Tilo beim nächsten Mal wieder fragt.
 portal-revoke = Widerrufen
 portal-keep = Behalten
+
+## Adding a program the person downloaded to their apps, and uninstalling an app
+add-app-title = { $name } zu den Apps hinzufügen?
+add-app-add = Zu den Apps hinzufügen
+add-app-decline = Nicht hinzufügen
+add-app-move = In „Programme“ verschieben
+add-app-move-detail = Bewahrt sie im Ordner „Programme“ in deinen Dateien auf
+uninstall-title = { $name } deinstallieren?
+uninstall-action = Deinstallieren
+uninstall-cancel = Abbrechen
+uninstall-remove-data = Ihre Daten entfernen
+uninstall-remove-data-detail = Deine Einstellungen und gespeicherten Dateien kommen in den Papierkorb, wo du sie wiederherstellen kannst.
+uninstall-device-body = Sie wird für alle auf diesem Computer entfernt.
+uninstall-files = { $count ->
+    [one] Ihre Datei kommt in den Papierkorb, wo du sie wiederherstellen kannst.
+   *[other] Alle { $count } Kopien kommen in den Papierkorb, wo du sie wiederherstellen kannst.
+}
+uninstall-home-folder = Persönlicher Ordner
+uninstall-documents-body = Deine Dokumente bleiben in deinen Arbeitsbereichen.
+uninstall-from-apps-title = { $name } aus den Apps entfernen?
+uninstall-from-apps-action = Aus Apps entfernen
+uninstall-entry-body = Sie gehört zum System, bleibt also auf diesem Computer und erscheint nicht mehr unter deinen Apps.

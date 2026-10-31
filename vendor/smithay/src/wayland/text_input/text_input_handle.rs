@@ -66,7 +66,7 @@ impl TextInput {
     /// committed. Returns whether there is such an instance.
     fn with_active_text_input_committed<F>(&mut self, mut f: F) -> bool
     where
-        F: FnMut(&ZwpTextInputV3, &WlSurface, u32, Option<(ContentHint, ContentPurpose)>),
+        F: FnMut(&ZwpTextInputV3, &WlSurface, &CommittedState),
     {
         let active_id = match &self.active_text_input_id {
             Some(active_text_input_id) => active_text_input_id,
@@ -94,12 +94,7 @@ impl TextInput {
             None => return false,
         };
 
-        f(
-            &text_input.instance,
-            surface,
-            committed.serial,
-            committed.content_type,
-        );
+        f(&text_input.instance, surface, committed);
         true
     }
 }
@@ -207,18 +202,19 @@ impl TextInputHandle {
     }
 
     /// Access what the active text-input instance's client last committed:
-    /// the serial of that commit and the content type it declared.
+    /// the serial of that commit, the content type it declared and the cursor
+    /// rectangle it reported.
     ///
     /// Returns whether there is an active instance whose client has
-    /// committed; the callback runs only then. The content type is `None`
-    /// when the client never declared one.
+    /// committed; the callback runs only then. A part of the state is `None`
+    /// when the client never declared it.
     pub fn with_active_text_input_committed<F>(&self, mut f: F) -> bool
     where
-        F: FnMut(&ZwpTextInputV3, &WlSurface, u32, Option<(ContentHint, ContentPurpose)>),
+        F: FnMut(&ZwpTextInputV3, &WlSurface, &CommittedState),
     {
         let mut inner = self.inner.lock().unwrap();
-        inner.with_active_text_input_committed(|ti, surface, serial, content_type| {
-            f(ti, surface, serial, content_type);
+        inner.with_active_text_input_committed(|ti, surface, committed| {
+            f(ti, surface, committed);
         })
     }
 
@@ -355,17 +351,21 @@ where
                 // otherwise only hand to the input method and lose. Every
                 // accepted commit is a new revision of what the field
                 // committed: typing, a caret moved, a layout change. A commit
-                // that does not restate the content type keeps the type
-                // committed before it: clients send it only when it changes.
+                // that does not restate the content type or the cursor
+                // rectangle keeps the one committed before it: clients send
+                // them only when they change.
                 if let Some(instance) = tracked(&mut guard.instances, resource) {
-                    let content_type = new_state.content_type.or_else(|| {
-                        instance
-                            .committed_state
-                            .and_then(|committed| committed.content_type)
-                    });
+                    let previous = instance.committed_state;
+                    let content_type = new_state
+                        .content_type
+                        .or_else(|| previous.and_then(|committed| committed.content_type));
+                    let cursor_rectangle = new_state
+                        .cursor_rectangle
+                        .or_else(|| previous.and_then(|committed| committed.cursor_rectangle));
                     instance.committed_state = Some(CommittedState {
                         serial: instance.serial,
                         content_type,
+                        cursor_rectangle,
                     });
                 }
 
@@ -448,12 +448,18 @@ struct Instance {
 }
 
 /// The state a client last committed: the serial of the commit that
-/// accepted it, and the content type it declared (kept from an earlier
-/// commit when a commit does not restate it).
+/// accepted it, the content type it declared and the cursor rectangle it
+/// reported (each kept from an earlier commit when a commit does not restate
+/// it).
 #[derive(Clone, Copy, Debug)]
-struct CommittedState {
-    serial: u32,
-    content_type: Option<(ContentHint, ContentPurpose)>,
+pub struct CommittedState {
+    /// The serial of the commit that accepted it: any commit since moves it.
+    pub serial: u32,
+    /// What the field declared of its content, or `None` when it never did.
+    pub content_type: Option<(ContentHint, ContentPurpose)>,
+    /// Where the field's caret is on its surface, in its own logical
+    /// coordinates.
+    pub cursor_rectangle: Option<Rectangle<i32, Logical>>,
 }
 
 fn tracked<'a>(

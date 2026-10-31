@@ -9,18 +9,26 @@
 //! shows it, keeps what it shows current, and answers what it asks: the new
 //! keys of a shortcut, the pair's defaults back, the guide gone.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig, ShortcutConfigError};
 use tilo_sheets::Seat as _;
-use tilo_sheets::shortcut_guide::{Guide, GuideEffect, GuideSeat};
+use tilo_sheets::shortcut_guide::{Faces, Guide, GuideEffect, GuideSeat, Modality};
+use ui::ControllerFamily;
 
+use crate::controller_nav::{FaceRole, face_button};
 use crate::keys::{Caught, GuideKeys};
 
 /// What the guide last showed, as the guide was given it: the table, the
-/// shortcut waiting for a chord, and why the last change was refused.
-type Shown = (ShortcutConfig, Option<String>, Option<String>);
+/// shortcut waiting for a chord, why the last change was refused, and the
+/// controller the person last used, if any.
+type Shown = (
+    ShortcutConfig,
+    Option<String>,
+    Option<String>,
+    Option<ControllerFamily>,
+);
 
 /// The guide's sheet, and the shortcut table it explains.
 pub(crate) struct ShortcutGuide {
@@ -37,6 +45,10 @@ pub(crate) struct ShortcutGuide {
     /// Why the last change was refused, shown while the guide waits for the
     /// keys it explains.
     message: RefCell<Option<String>>,
+    /// The controller the person last drove the desktop with: the guide
+    /// explains its buttons rather than the keyboard while it is the input
+    /// in hand.
+    controller: Rc<Cell<Option<ControllerFamily>>>,
     /// The table, shortcut and message the guide was last built from, and
     /// that guide: it is built again only when one of them changed.
     built: RefCell<Option<(Shown, Guide)>>,
@@ -48,6 +60,7 @@ impl ShortcutGuide {
         table: Rc<RefCell<ShortcutConfig>>,
         keys: GuideKeys,
         portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
+        controller: Rc<Cell<Option<ControllerFamily>>>,
     ) -> Self {
         Self {
             seat,
@@ -55,6 +68,7 @@ impl ShortcutGuide {
             keys,
             portal,
             message: RefCell::new(None),
+            controller,
             built: RefCell::new(None),
         }
     }
@@ -234,7 +248,13 @@ impl ShortcutGuide {
         let table = self.table.borrow();
         let listening = self.keys.listening();
         let message = self.message.borrow().clone();
-        let shown = (table.clone(), listening.clone(), message.clone());
+        let controller = self.controller.get();
+        let shown = (
+            table.clone(),
+            listening.clone(),
+            message.clone(),
+            controller,
+        );
         if self
             .built
             .borrow()
@@ -246,8 +266,25 @@ impl ShortcutGuide {
         let mut guide = tilo_sheets::shortcut_guide::keyboard_guide(&table);
         guide.listening = listening;
         guide.message = message;
+        // A controller in hand is explained by its own buttons, drawn with
+        // the legends that controller prints.
+        if let Some(family) = controller {
+            guide.modality = Modality::Controller;
+            guide.controller = Some(family);
+            guide.faces = faces(family);
+        }
         seat.show(guide.clone());
         *self.built.borrow_mut() = Some((shown, guide));
+    }
+}
+
+/// Which face button carries each role on `family`, as the guide draws them.
+fn faces(family: ControllerFamily) -> Faces {
+    Faces {
+        confirm: face_button(family, FaceRole::Confirm),
+        cancel: face_button(family, FaceRole::Cancel),
+        third: face_button(family, FaceRole::Third),
+        fourth: face_button(family, FaceRole::Fourth),
     }
 }
 

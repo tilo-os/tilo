@@ -27,10 +27,11 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use tilo_capture_studio::{
-    Ask, Frame, Kept, REPLAY_FPS, Recorder, Recording, Scene, Settings, Studio, Take,
+    Ask, Frame, Kept, REPLAY_FPS, Recorder, Recording, Scene, Selection, Settings, Studio, Take,
 };
 use tilo_compositor::capture::Target;
-use tilo_compositor::{Compositor, Screenshot, Selection};
+use tilo_compositor::{Compositor, Screenshot};
+use tilo_portal::CaptureError;
 use tilo_surface_host::Doors;
 use ui::vello::kurbo::Rect;
 use ui::widget::{CaptureDestination, CapturePreview, CaptureTarget, ScreenshotKept, SourceMode};
@@ -53,6 +54,9 @@ pub(crate) struct CaptureStudio {
     directory: PathBuf,
     /// The last screenshot, for its receipt and for opening it again.
     last: Option<Kept>,
+    /// An app's screenshot of what only the person can name, while it waits
+    /// for them: the studio is up choosing exactly that.
+    asking: Option<Asked>,
     /// What feeds the recorder now: a recording, or the replay buffer.
     feeding: Option<Feeding>,
     /// The recording that runs, as the studio shows it.
@@ -61,6 +65,19 @@ pub(crate) struct CaptureStudio {
     replay: Option<u8>,
     /// How many clips the replay buffer gave.
     replay_saves: u64,
+}
+
+/// A screenshot an app asked the person for.
+struct Asked {
+    /// The request it belongs to, so a request the app closed takes only its
+    /// own selection down.
+    id: u64,
+    /// What the person is asked to select.
+    selection: Selection,
+    /// Where the picture is written: the portal's own folder, never the
+    /// person's.
+    directory: PathBuf,
+    reply: tokio::sync::oneshot::Sender<Result<PathBuf, CaptureError>>,
 }
 
 /// Frames going into a recorder.
@@ -100,6 +117,7 @@ pub(crate) fn mount(
                 seat,
                 directory: options.pictures.clone().unwrap_or_else(screenshots),
                 last: None,
+                asking: None,
                 feeding: None,
                 recording: None,
                 replay: None,
@@ -131,16 +149,70 @@ impl CaptureStudio {
         for ask in self.seat.link().take_asks() {
             self.answer(ask, compositor);
         }
+        // Asked after what the person took, so a screenshot that settled an
+        // app's request is an answer rather than a selection left closed.
+        self.cancel_asking();
         self.feed(compositor);
         self.publish(compositor);
     }
 
+    /// Ask the person for what an app's screenshot of `target` needs: the
+    /// window they pick or the area they draw. The app is answered once
+    /// they took it, or that it was cancelled when they close the bar.
+    pub(crate) fn ask_selection(
+        &mut self,
+        target: tilo_portal::CaptureTarget,
+        id: u64,
+        reply: tokio::sync::oneshot::Sender<Result<PathBuf, CaptureError>>,
+        directory: PathBuf,
+    ) {
+        let Some(selection) = selection_of(target) else {
+            let _ = reply.send(Err(CaptureError::Failed(format!(
+                "a {target:?} is not the person's to take"
+            ))));
+            return;
+        };
+        if self.asking.is_some() {
+            // One at a time: the person is already choosing for another app,
+            // and their choice would answer neither well.
+            let _ = reply.send(Err(CaptureError::Failed(
+                "another screenshot selection is already open".to_owned(),
+            )));
+            return;
+        }
+        self.asking = Some(Asked {
+            id,
+            selection,
+            directory,
+            reply,
+        });
+        self.presentation().open(false);
+    }
+
+    /// Request `id` is not waited for any more: close what is up for it.
+    pub(crate) fn withdraw(&mut self, id: u64) {
+        if self.asking.as_ref().is_none_or(|asked| asked.id != id) {
+            return;
+        }
+        self.asking = None;
+        self.presentation().close();
+    }
+
+    /// The person closed the selector without taking anything: the app is
+    /// told it was cancelled rather than left waiting.
+    fn cancel_asking(&mut self) {
+        if self.asking.is_none() || self.presentation().is_drawn() {
+            return;
+        }
+        let Some(asked) = self.asking.take() else {
+            return;
+        };
+        let _ = asked.reply.send(Err(CaptureError::Cancelled));
+    }
+
     fn answer(&mut self, ask: Ask, compositor: &mut Compositor) {
         match ask {
-            Ask::Screenshot(take) => match self.screenshot(&take, compositor) {
-                Ok(kept) => self.last = Some(kept),
-                Err(error) => tracing::warn!(%error, "a screenshot was not taken"),
-            },
+            Ask::Screenshot(take) => self.screenshot_asked(&take, compositor),
             Ask::StartRecording(take) => self.start(take, compositor),
             Ask::PauseRecording => {
                 if let Some(feeding) = &mut self.feeding {
@@ -186,8 +258,8 @@ impl CaptureStudio {
     }
 
     fn start(&mut self, take: Take, compositor: &mut Compositor) {
-        let path = unique(&self.directory, "recording", "mp4");
-        let frame = match grab(compositor, &take) {
+        let path = crate::capture::unique(&self.directory, "recording", "mp4");
+        let frame = match grab(compositor, &take, self.presentation().place()) {
             Ok(frame) => frame,
             Err(error) => {
                 tracing::warn!(%error, "a recording was not started");
@@ -247,7 +319,7 @@ impl CaptureStudio {
             // One encode feeds a recording and the replay buffer together.
             return;
         }
-        let frame = match grab(compositor, &take) {
+        let frame = match grab(compositor, &take, self.presentation().place()) {
             Ok(frame) => frame,
             Err(error) => {
                 tracing::warn!(%error, "the replay buffer was not armed");
@@ -279,7 +351,7 @@ impl CaptureStudio {
         let Some(feeding) = self.feeding.as_mut() else {
             return;
         };
-        let path = unique(&self.directory, "replay", "mp4");
+        let path = crate::capture::unique(&self.directory, "replay", "mp4");
         match feeding.recorder.save_replay(path) {
             Ok(frames) => {
                 tracing::info!(frames, "a clip of what just happened was saved");
@@ -291,6 +363,7 @@ impl CaptureStudio {
 
     /// Take one frame into the recorder when it is due.
     fn feed(&mut self, compositor: &mut Compositor) {
+        let place = self.presentation().place();
         let Some(feeding) = self.feeding.as_mut() else {
             return;
         };
@@ -305,7 +378,7 @@ impl CaptureStudio {
             return;
         }
         feeding.last = Some(now);
-        let frame = match grab(compositor, &feeding.take) {
+        let frame = match grab(compositor, &feeding.take, place) {
             Ok(frame) => frame,
             Err(error) => {
                 tracing::warn!(%error, "a frame of the recording was not read");
@@ -328,17 +401,39 @@ impl CaptureStudio {
         }
     }
 
+    /// A screenshot the person took: what an app asked for, when it asked
+    /// for exactly that, or the studio's own.
+    fn screenshot_asked(&mut self, take: &Take, compositor: &mut Compositor) {
+        let asking = self
+            .asking
+            .as_ref()
+            .is_some_and(|asked| asked.selection.source() == take.source);
+        if asking {
+            let Some(asked) = self.asking.take() else {
+                return;
+            };
+            let kept = keep(
+                &asked.directory,
+                compositor,
+                take,
+                self.presentation().place(),
+            );
+            let _ = asked.reply.send(kept);
+            return;
+        }
+        match self.screenshot(take, compositor) {
+            Ok(kept) => self.last = Some(kept),
+            Err(error) => tracing::warn!(%error, "a screenshot was not taken"),
+        }
+    }
+
     /// Take a screenshot of `take` and keep it: a file, and the clipboard
     /// when asked.
     fn screenshot(&self, take: &Take, compositor: &mut Compositor) -> Result<Kept, String> {
-        let frame = grab(compositor, take)?;
-        std::fs::create_dir_all(&self.directory).map_err(|error| error.to_string())?;
-        let path = unique(&self.directory, "screenshot", "png");
+        let frame = grab(compositor, take, self.presentation().place())?;
         let picture = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone())
             .ok_or("a frame of the wrong size")?;
-        picture
-            .save_with_format(&path, image::ImageFormat::Png)
-            .map_err(|error| error.to_string())?;
+        let path = crate::capture::keep(&self.directory, &picture)?;
         let kept = Kept {
             kept: ScreenshotKept::SAVED,
             path,
@@ -375,7 +470,8 @@ impl CaptureStudio {
     /// Hand the studio what it shows now.
     fn publish(&self, compositor: &Compositor) {
         let scene = Scene {
-            windows: windows(compositor),
+            windows: windows(compositor, self.presentation().place()),
+            asking: self.asking.as_ref().map(|asked| asked.selection),
             system_audio: false,
             microphone: false,
             kept: self.last.clone(),
@@ -392,18 +488,25 @@ impl CaptureStudio {
 fn copy(kept: &Kept, compositor: &mut Compositor) -> Result<(), String> {
     let png = std::fs::read(&kept.path).map_err(|error| error.to_string())?;
     compositor
-        .set_selection(Selection::Clipboard, vec![(String::from("image/png"), png)])
+        .set_selection(
+            tilo_compositor::Selection::Clipboard,
+            vec![(String::from("image/png"), png)],
+        )
         .map_err(|error| error.to_string())
 }
 
-/// The windows a capture may take, as the studio lists them.
-fn windows(compositor: &Compositor) -> Vec<CaptureTarget> {
+/// The windows a capture may take, as the studio lists them: where they
+/// stand on the display the studio covers, which is the surface it draws on
+/// and the one a press lands on.
+fn windows(compositor: &Compositor, place: Option<Place>) -> Vec<CaptureTarget> {
     let focused = compositor.focused_shareable_window();
+    let (left, top) = place.map_or((0, 0), |(x, y, _, _)| (x, y));
     compositor
         .shareable_windows()
         .into_iter()
         .filter_map(|(id, app_id, title)| {
             let (x, y, width, height) = compositor.shareable_window_rect(&id)?;
+            let (x, y) = (x.saturating_sub(left), y.saturating_sub(top));
             let rect = Rect::new(
                 f64::from(x),
                 f64::from(y),
@@ -424,8 +527,35 @@ fn windows(compositor: &Compositor) -> Vec<CaptureTarget> {
         .collect()
 }
 
+/// A display's rectangle, as the sheet it carries is placed: its corner in
+/// the layout.
+type Place = (i32, i32, u32, u32);
+
+/// `take`'s picture, written as a PNG under `directory`; its path. This is
+/// what an app is handed: the file stays out of the person's own folders.
+fn keep(
+    directory: &Path,
+    compositor: &mut Compositor,
+    take: &Take,
+    place: Option<Place>,
+) -> Result<PathBuf, CaptureError> {
+    let frame = grab(compositor, take, place).map_err(CaptureError::Failed)?;
+    let picture = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba)
+        .ok_or_else(|| CaptureError::Failed("a frame of the wrong size".to_owned()))?;
+    crate::capture::keep(directory, &picture).map_err(CaptureError::Failed)
+}
+
+/// What the studio selects for the portal's `target`.
+fn selection_of(target: tilo_portal::CaptureTarget) -> Option<Selection> {
+    match target {
+        tilo_portal::CaptureTarget::Window => Some(Selection::Window),
+        tilo_portal::CaptureTarget::Area => Some(Selection::Area),
+        tilo_portal::CaptureTarget::Screen | tilo_portal::CaptureTarget::ActiveWindow => None,
+    }
+}
+
 /// A frame of what `take` names, from the compositor's own rendering.
-fn grab(compositor: &mut Compositor, take: &Take) -> Result<Frame, String> {
+fn grab(compositor: &mut Compositor, take: &Take, place: Option<Place>) -> Result<Frame, String> {
     match take.source {
         SourceMode::Display => {
             let picture = crate::capture::picture(compositor)?;
@@ -457,21 +587,32 @@ fn grab(compositor: &mut Compositor, take: &Take) -> Result<Frame, String> {
         SourceMode::Region if take.regions.is_empty() => {
             Err("no selection was made to capture".to_owned())
         }
-        SourceMode::Region => regions(compositor, &take.regions),
+        SourceMode::Region => regions(compositor, &take.regions, place),
     }
 }
 
-/// The selections taken from the output the studio is over, next to each
+/// The selections taken from the display the studio is over, next to each
 /// other as they were made.
-fn regions(compositor: &mut Compositor, regions: &[Rect]) -> Result<Frame, String> {
-    let output = compositor
-        .outputs()
-        .into_iter()
-        .next()
+fn regions(
+    compositor: &mut Compositor,
+    regions: &[Rect],
+    place: Option<Place>,
+) -> Result<Frame, String> {
+    // A selection is drawn where the studio is, and its coordinates start at
+    // that display's corner: what is captured is that display, never another
+    // one that happens to be listed first.
+    let outputs = compositor.outputs();
+    let covered = place
+        .and_then(|(x, y, w, h)| {
+            let (w, h) = (i32::try_from(w).ok()?, i32::try_from(h).ok()?);
+            Some((x, y, w, h))
+        })
+        .and_then(|covered| outputs.iter().find(|output| output.rect == Some(covered)))
+        .or_else(|| outputs.first())
         .ok_or("no display is on")?;
-    let (_, _, width, _) = output.rect.ok_or("no display is on")?;
+    let (_, _, width, _) = covered.rect.ok_or("no display is on")?;
     let whole = compositor
-        .read_back(&Target::output(output.name.clone()))
+        .read_back(&Target::output(covered.name.clone()))
         .map_err(|error| error.to_string())?;
     // What is captured is in the studio's own pixels: the frame is in the
     // output's.
@@ -479,7 +620,7 @@ fn regions(compositor: &mut Compositor, regions: &[Rect]) -> Result<Frame, Strin
     let mut shots = Vec::new();
     for region in regions {
         let shot = compositor
-            .read_back_region(&output.name, physical(*region, scale))
+            .read_back_region(&covered.name, physical(*region, scale))
             .map_err(|error| error.to_string())?;
         shots.push(shot);
     }
@@ -557,13 +698,4 @@ fn preview(frame: &Frame) -> CapturePreview {
         rows,
         pixels,
     }
-}
-
-/// A fresh file name under `directory`.
-fn unique(directory: &Path, kind: &str, extension: &str) -> PathBuf {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    directory.join(format!("{kind}-{stamp}.{extension}"))
 }

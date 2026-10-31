@@ -89,11 +89,10 @@ fn one_display() -> Session {
 fn docked() -> Session {
     session_with(
         SessionConfig::default(),
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT), {
-            let mut right = OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT);
-            right.position = (WIDTH, 0);
-            right
-        }],
+        &[
+            OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT).at(0, 0),
+            OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT).at(WIDTH, 0),
+        ],
     )
 }
 

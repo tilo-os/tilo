@@ -29,6 +29,32 @@ pub const KINDS: [ActionKind; 3] = [ActionKind::Read, ActionKind::Undoable, Acti
 /// The three answers, in segment order.
 pub const ANSWERS: [Answer; 3] = [Answer::Allow, Answer::Ask, Answer::Deny];
 
+/// The key a kind of action is asked for by at the door.
+#[must_use]
+pub const fn kind_key(kind: ActionKind) -> &'static str {
+    match kind {
+        ActionKind::Read => "read",
+        ActionKind::Undoable => "change",
+        ActionKind::Outside => "outside",
+    }
+}
+
+/// The kind of action a [`kind_key`] names, if it names one.
+#[must_use]
+pub fn kind_from_key(key: &str) -> Option<ActionKind> {
+    KINDS.into_iter().find(|kind| kind_key(*kind) == key)
+}
+
+/// The kind's name, as the access view heads its line.
+#[must_use]
+pub fn kind_label(kind: ActionKind) -> String {
+    t(match kind {
+        ActionKind::Read => "workspace-settings-agent-access-read",
+        ActionKind::Undoable => "workspace-settings-agent-access-change",
+        ActionKind::Outside => "workspace-settings-agent-access-outside",
+    })
+}
+
 /// One answer the agent has for one kind of action at one scope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AnswerCell {
@@ -207,6 +233,15 @@ pub struct AgentModelOption {
     pub label: String,
 }
 
+impl AgentModelOption {
+    /// What the model is chosen by: its profile and its model's id, which
+    /// read back to this option.
+    #[must_use]
+    pub fn key(&self) -> String {
+        format!("{}/{}", self.profile, self.model)
+    }
+}
+
 /// The models the person may choose for one agent, from their Settings,
 /// and the one it plans with.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -217,6 +252,88 @@ pub struct AgentModels {
     pub chosen: Option<AgentModelOption>,
     /// Every model of the person's switched-on providers.
     pub offered: Vec<AgentModelOption>,
+}
+
+/// The models of `config` the person may choose for `agent`, and the one it
+/// plans with; `None` while they have no switched-on model at all.
+#[must_use]
+pub fn agent_models(
+    config: &agent_provider_config::ProviderConfig,
+    agent: &str,
+) -> Option<AgentModels> {
+    let option =
+        |profile: &agent_provider_config::ProviderProfile,
+         model: &agent_provider_config::ModelDescriptor| AgentModelOption {
+            profile: profile.id.clone(),
+            model: model.id.clone(),
+            label: t_args(
+                "workspace-settings-agent-model-option",
+                &[
+                    ("model", model.display_label().into()),
+                    ("provider", profile.display_label().into()),
+                ],
+            ),
+        };
+    let offered: Vec<_> = config
+        .profiles
+        .iter()
+        .filter(|profile| profile.enabled)
+        .flat_map(|profile| {
+            profile
+                .models
+                .iter()
+                .map(move |model| option(profile, model))
+        })
+        .collect();
+    if offered.is_empty() {
+        return None;
+    }
+    let default = config.active_profile().and_then(|profile| {
+        let default = profile.default_model.as_ref()?;
+        let model = profile.models.iter().find(|model| &model.id == default)?;
+        Some(option(profile, model).label)
+    });
+    let chosen = config.agent_models.get(agent).and_then(|chosen| {
+        offered
+            .iter()
+            .find(|option| option.profile == chosen.profile && option.model == chosen.model)
+            .cloned()
+    });
+    Some(AgentModels {
+        default,
+        chosen,
+        offered,
+    })
+}
+
+/// Have `agent` plan with `model`, or the default with `None`, in the
+/// person's Settings, unless Settings changed meanwhile. Answers the
+/// settings as saved.
+///
+/// # Errors
+///
+/// The message to show when the settings could not be written, or changed
+/// while the choice was being made.
+pub fn choose_agent_model(
+    agent: &str,
+    model: Option<AgentModelOption>,
+) -> Result<agent_provider_config::ProviderConfig, String> {
+    let read = agent_provider_config::ProviderConfig::load();
+    let mut config = read.clone();
+    config.set_agent_model(
+        agent,
+        model.map(|model| agent_provider_config::AgentModel {
+            profile: model.profile,
+            model: model.model,
+        }),
+    )?;
+    if !config
+        .compare_save(&read)
+        .map_err(|error| error.to_string())?
+    {
+        return Err("Settings changed meanwhile; choose again".into());
+    }
+    Ok(config)
 }
 
 /// Something in the agent access view a person can press.
