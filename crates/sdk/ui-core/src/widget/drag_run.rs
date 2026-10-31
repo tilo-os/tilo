@@ -473,10 +473,13 @@ impl DragRun {
         };
         match self.axis {
             RunAxis::Horizontal if grouped => {
-                // Three columns of equal room: each group stands at its own edge of the run,
-                // and the centre group in the middle whatever the side groups weigh.
+                // Three columns: each group stands at its own edge of the run, and the centre
+                // group in the middle whatever the side groups weigh. A column never gives a
+                // group less room than its items take, so a part is never squeezed into a
+                // sliver of itself; a run too narrow for its parts overflows whole, which its
+                // owner sees and gives parts up for.
                 let mut groups = Vec::with_capacity(3);
-                let mut columns = Grid::columns(3).gap(Rhythm::Tight);
+                let mut columns = Grid::columns_keeping_content(3).gap(Rhythm::Tight);
                 for (group, distribute) in [
                     (RunGroup::Leading, Distribute::Start),
                     (RunGroup::Center, Distribute::Center),
@@ -914,16 +917,15 @@ impl Widget for DragRun {
             return taffy.widget_leaf(Style::default(), node_map, self);
         };
         let node = Widget::build_layout(&mut **items, taffy, theme, node_map);
-        // The run takes the width it is given, never more: a bar fills it, and a dock's
-        // packed group is placed in it by the run's `distribute`. A run standing up an edge
-        // hugs its items, so its column takes the height they need.
+        // The run takes the width it is given, never more: a bar's content stretches it across
+        // the edge, and a dock's packed group hugs its items where the run is given no width to
+        // fill. A percentage width would collapse to nothing inside a hugging parent (a dock
+        // beside nothing), and the run would then stand at its parent's middle with its items
+        // spilling both ways.
         if let Ok(style) = taffy.style(node) {
             let mut style = style.clone();
             style.min_size.width = taffy::Dimension::length(0.0_f32);
             style.flex_shrink = 1.0;
-            if self.axis == RunAxis::Horizontal {
-                style.size.width = taffy::style_helpers::percent(1.0_f32);
-            }
             let _ = taffy.set_style(node, style);
         }
         node
