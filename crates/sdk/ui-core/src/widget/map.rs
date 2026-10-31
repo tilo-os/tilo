@@ -632,9 +632,11 @@ impl Widget for Map {
 
     /// A canvas pans both ways: a place past the viewport is reached by panning, not cut off.
     fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
-        Some(crate::widget::LayoutInfo::Scroll(crate::widget::ScrollLayout {
-            direction: crate::widget::ScrollDirection::Both,
-        }))
+        Some(crate::widget::LayoutInfo::Scroll(
+            crate::widget::ScrollLayout {
+                direction: crate::widget::ScrollDirection::Both,
+            },
+        ))
     }
 
     fn get_rect(&self) -> Rect {

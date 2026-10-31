@@ -4,7 +4,8 @@
 ///
 /// The arranging actions are the session's, published on `shell:arrangement` and listed in the
 /// catalogue beside every app's (`crates/session/session/src/arrangement.rs`): open a place into
-/// a strip, move a place into a row, resize a strip, close a place, and pin a place. A person's
+/// a strip, place a resource as one of its views at a canvas point, move a place into a row,
+/// resize a strip, close a place, and pin a place. A person's
 /// drag, the palette, a script and an agent all arrange through those same actions; this file is
 /// where the shell's own views and keys call them. Nothing here changes the record itself: the
 /// session owns it, so there is nothing a shell view could write behind anyone's back.
@@ -21,6 +22,16 @@ action open_into(strip: Text, place: Text, shows: Text, after: Text = "", shown_
     require place != "" "Name the new place"
     require shows != "" "Name the app it shows"
     outside("session.arrange", "open-into \{\"strip\":\"{strip}\",\"place\":\"{place}\",\"shows\":\"{shows}\",\"after\":\"{after}\",\"view\":\"{shown_as}\",\"record\":\"{record}\"\}")
+}
+
+/// Puts the resource `text` finds on the canvas as its primary view (or `view`), standing at the
+/// caret's canvas point `(x, y)`: what typing on the canvas does (shell.md §8, canvas.md §1).
+/// The text runs the one `find` the palette and an agent's `tilo` tool use, so a search here
+/// and a search there are the same search; the session resolves it into an entry naming the
+/// resource and its view, attributed and undoable, and `shows` follows from the resource's app.
+action place_found(text: Text, x: Int, y: Int, shown_as: Text = "") (icon: .map_pin, label: "Place what you find") {
+    require text != "" "Type something to find and place"
+    outside("session.arrange", "place-found \{\"text\":\"{text}\",\"x\":{x},\"y\":{y},\"view\":\"{shown_as}\"}")
 }
 
 /// Moves the place `place` into the row `row`, before the place `before` or last: within a row,
