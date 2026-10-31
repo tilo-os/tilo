@@ -8,7 +8,6 @@ glyph-icon 1 apps/imager/src/app.rs
 glyph-icon 3 apps/logs/src/journal.rs
 glyph-icon 2 apps/settings/src/panes/updates.rs
 glyph-icon 1 apps/video-editor/src/app.rs
-glyph-icon 1 apps/imager/src/setup/destination/installer_app.rs
 glyph-icon 1 crates/session/shell/src/bin/shots/scenario.rs
 glyph-join 1 apps/agent/src/session/agent_loop.rs
 glyph-join 1 apps/agent/src/surface.rs
@@ -148,6 +147,5 @@ glyph-join 3 apps/chat/src/render_chat/members.rs
 glyph-join 1 apps/maps/src/app/results.rs
 raw-colour 1 crates/session/desktop/src/topbar/sharing.rs
 hand-rolled 1 crates/session/desktop/src/topbar/tray.rs
-raw-colour 4 crates/session/desktop/src/topbar/workspace.rs
 raw-colour 1 crates/session/desktop/src/topbar.rs
 glyph-join 1 crates/session/shell/src/notifications/dbus.rs
