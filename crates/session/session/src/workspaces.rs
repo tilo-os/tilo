@@ -129,8 +129,11 @@ pub(crate) fn follow_directory(
         match add_workspace(&joined) {
             Ok(()) => {
                 // The person lands in the workspace they joined, as they do
-                // in any other they are given: the directory's work is done.
-                seat.presentation().close();
+                // in any other they are given: the directory's work is done,
+                // once what the room holds is here.
+                if !directory.settling() {
+                    seat.presentation().close();
+                }
             }
             Err(error) => {
                 tracing::warn!(%error, room = %joined.room, "a joined workspace was not added");
@@ -178,12 +181,12 @@ pub(crate) fn follow_directory(
                 }
             }
             DirectoryEffect::LinkOrCode { text } => {
-                // Joining with a link or an invitation code needs the join
-                // field's exchange, which this session does not host.
-                tracing::debug!(
-                    %text,
-                    "the workspace directory hands links and codes to a join field it has none of"
-                );
+                // A link or a code the person pasted joins at once: what it
+                // is decides where, and the sheet says so until it lands.
+                if let Err(error) = directory.take(&text) {
+                    directory.set_note(Some(error));
+                }
+                seat.show(directory::view(directory, handle));
             }
             DirectoryEffect::Refresh => {
                 directory.ask(None);
@@ -949,7 +952,9 @@ impl crate::Shared {
     }
 
     /// Give this computer the workspace a join was granted, through the
-    /// desk's own action for making one, so the desk keeps its workspaces.
+    /// desk's own action for making one, so the desk keeps its workspaces,
+    /// and redeem the invitation it was granted with: what the room held
+    /// before this device arrived comes with it.
     pub(crate) fn add_joined_workspace(&self, joined: &directory::Joined) -> Result<(), String> {
         self.add_workspace(&joined.room, &joined.name)?;
         // A workspace a door let the person into is whoever let them in's:
@@ -958,7 +963,79 @@ impl crate::Shared {
         if let (Some(personal), Some(room)) = (&self.personal, RoomId::parse(&joined.room)) {
             personal.borrow_mut().joined(room);
         }
+        self.redeem_invitation(joined);
         Ok(())
+    }
+
+    /// Redeem the invitation a join was granted with, off the loop: this
+    /// device becomes a member of the room and takes in its state. A session
+    /// that holds no rooms, or takes no part in the collaboration plane,
+    /// shows the workspace with what this computer itself keeps in it.
+    fn redeem_invitation(&self, joined: &directory::Joined) {
+        let Some(room) = RoomId::parse(&joined.room) else {
+            return;
+        };
+        let (Some(sync), Some(engine)) = (&self.sync, &self.engine) else {
+            return;
+        };
+        let workspace = tilo_desktop_model::WorkspaceId::of_room(room);
+        engine.bind(workspace, room);
+        let asked = sync.enroll(crate::sync::Enrolling {
+            workspace,
+            room,
+            invitation: joined.invitation.clone(),
+        });
+        match asked {
+            Ok(()) => self.directory_store.expect_enrollment(&joined.room),
+            Err(error) => {
+                tracing::warn!(%error, room = %joined.room, "the invitation was not redeemed");
+                engine.unbind(workspace);
+                self.release_workspace(room);
+                self.directory_store.set_note(Some(error));
+            }
+        }
+    }
+
+    /// Take what became of the invitations this session redeemed: the person
+    /// lands in the workspace they joined once the room is held here, or it
+    /// is taken off the desk and the sheet says why.
+    pub(crate) fn follow_enrollments(&self) {
+        let Some(sync) = &self.sync else {
+            return;
+        };
+        let mut settled = false;
+        for enrolled in sync.take_enrolled() {
+            let key = enrolled.room.to_string();
+            let name = self
+                .handle
+                .read(|tree| {
+                    tree.workspaces
+                        .iter()
+                        .find(|workspace| workspace.room() == enrolled.room)
+                        .map(|workspace| workspace.name.clone())
+                })
+                .unwrap_or_else(|| key.clone());
+            if enrolled.result.is_err() {
+                if let Some(engine) = &self.engine {
+                    engine.unbind(enrolled.workspace);
+                }
+                self.release_workspace(enrolled.room);
+            }
+            self.directory_store.enrolled(&key, &name, &enrolled.result);
+            settled = true;
+        }
+        let Some(seat) = &self.directory else {
+            return;
+        };
+        if settled {
+            if self.directory_store.settling() {
+                seat.show(directory::view(&self.directory_store, &self.handle));
+            } else {
+                // The person lands in the workspace they joined: the
+                // directory has nothing left to say.
+                seat.presentation().close();
+            }
+        }
     }
 
     /// Keep the person's own workspaces as all their devices hold them:

@@ -47,6 +47,7 @@ mod display_sheet;
 pub mod displays;
 mod downloaded;
 mod emoji;
+mod engine;
 mod env;
 pub mod fabric;
 mod i18n;
@@ -322,6 +323,7 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 fn start_collaboration(
     options: &Options,
     media: fabric::MediaContinuity,
+    engine: Option<std::sync::Arc<engine::Engine>>,
 ) -> Option<Rc<sync::Client>> {
     if !options.collab {
         return None;
@@ -336,6 +338,7 @@ fn start_collaboration(
     };
     match sync::Client::start(
         identity,
+        engine,
         own,
         sync::configured_hosts(),
         media,
@@ -344,6 +347,29 @@ fn start_collaboration(
         Ok(sync) => Some(Rc::new(sync)),
         Err(error) => {
             tracing::warn!(%error, "the collaboration plane");
+            None
+        }
+    }
+}
+
+/// This device's rooms, holding what every workspace of the desk shows and
+/// what a join takes in, kept beside the desk. `None` when this computer has
+/// no identity to hold them with, or keeps no state to keep them in.
+fn open_engine(
+    options: &Options,
+    handle: &DesktopHandle,
+) -> Option<std::sync::Arc<engine::Engine>> {
+    let workspaces: Vec<_> = handle.read(|tree| {
+        tree.workspaces
+            .iter()
+            .filter(|workspace| !workspace.room().is_nil())
+            .map(|workspace| (workspace.id, workspace.room()))
+            .collect()
+    });
+    match engine::Engine::for_this_device(options.state.as_deref(), workspaces) {
+        Ok(engine) => Some(std::sync::Arc::new(engine)),
+        Err(error) => {
+            tracing::debug!(%error, "this session holds no rooms");
             None
         }
     }
@@ -493,6 +519,9 @@ struct Shared {
     /// Who is here: this session's membership of each workspace's room,
     /// when it takes part in the collaboration plane.
     sync: Option<Rc<sync::Client>>,
+    /// This device's rooms: what every workspace of the desk shows, and what
+    /// a join takes in.
+    engine: Option<std::sync::Arc<engine::Engine>>,
     /// The person's own workspaces, as all their devices hold the list of
     /// them: `None` when this computer has no identity to keep it for.
     personal: Option<RefCell<workspaces::Personal>>,
@@ -1401,7 +1430,8 @@ impl Session {
 
         // The chrome above the windows: its own tree, beside the desk's.
         let intents = Rc::new(RefCell::new(Vec::new()));
-        let sync = start_collaboration(&options, media);
+        let engine = open_engine(&options, &handle);
+        let sync = start_collaboration(&options, media, engine.clone());
         // The person's own workspaces, which their other devices hold with
         // them: kept beside the desk, and opened when this computer knows
         // whose they are.
@@ -1636,6 +1666,7 @@ impl Session {
             asker,
             notice_view: RefCell::new(None),
             sync,
+            engine,
             personal,
             clipboard: mount::clipboard::Clipboard::new(),
             settings: mount::settings_sync::SettingsSync::new(),
@@ -2015,6 +2046,42 @@ impl Session {
         self.shared.directory.as_ref()
     }
 
+    /// The rooms this device holds: the workspaces whose content reached
+    /// this computer, joined ones included.
+    #[must_use]
+    pub fn held_rooms(&self) -> Vec<String> {
+        self.shared
+            .engine
+            .as_ref()
+            .map(|engine| {
+                engine
+                    .rooms()
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// What a held room has of the app `app`'s `record`, as the room last
+    /// admitted it: what a workspace shows of it, and what it held before
+    /// this computer joined.
+    ///
+    /// # Errors
+    /// The room is not held here, or this computer may not read it.
+    pub fn read_record(
+        &self,
+        room: &str,
+        app: &str,
+        record: &str,
+    ) -> Result<Option<Vec<u8>>, String> {
+        self.shared
+            .engine
+            .as_ref()
+            .ok_or_else(|| "this session holds no rooms".to_owned())?
+            .record(room, app, record)
+    }
+
     /// The portal sheet's seat: the portal, authentication and
     /// network-secret services ask through it and read the answers.
     #[must_use]
@@ -2209,6 +2276,9 @@ impl Session {
         };
         self.shared.handle.read(|tree| sync.follow_desktop(tree));
         sync.follow();
+        // What became of the invitations redeemed is the directory's to say,
+        // and the desk's to show.
+        self.shared.follow_enrollments();
     }
 
     /// Where every sheet goes: the display the person is working on, so a

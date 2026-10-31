@@ -99,6 +99,13 @@ url.workspace = true
 # Who is here: the session's own membership of each workspace's room, on the
 # collaboration plane's peer actor.
 tilo-network-actor = { path = "../network-actor" }
+# This device's rooms: the state of every workspace it joined, held beside the
+# desk, and the enrollment a join redeems its invitation with.
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+# The workspace join exchange, over the endpoint the invitation's host names.
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+# The web grammar of a workspace link, which says what a pasted link joins.
+tilo-reference = { path = "../../collab/reference" }
 # This device's relays wait in the collaboration endpoint until a workspace
 # it shows has someone else in it, and its key is published only then.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
