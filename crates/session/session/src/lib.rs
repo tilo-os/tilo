@@ -1378,6 +1378,10 @@ impl Session {
             presentation.theme.motion(),
             presentation.theme.reduce_motion,
         );
+        // The device's readings, which the bar's status cluster shows as the
+        // battery, network and volume glyphs; the quick settings panel fills
+        // them once it is mounted.
+        let readings = Rc::new(RefCell::new(None));
         let chrome = Rc::new(RefCell::new(chrome::host(
             &handle,
             &options,
@@ -1385,6 +1389,7 @@ impl Session {
             Rc::clone(&asks),
             Rc::clone(&notice_signals),
             sync.clone(),
+            &readings,
             &overview,
         )));
         compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
@@ -1392,7 +1397,6 @@ impl Session {
 
         let banners = mount_banners(&mut compositor, &mut doors, &notices, &options);
 
-        let readings = Rc::new(RefCell::new(None));
         let (device, quick_settings) =
             mount_device(&mut compositor, &mut doors, &mut options, &readings);
 

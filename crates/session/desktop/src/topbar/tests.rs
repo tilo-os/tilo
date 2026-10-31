@@ -2362,3 +2362,44 @@ fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
     assert!(bar.collaborator_initials().is_empty());
     assert_eq!(bar.collaborator_overflow(), 0);
 }
+
+/// Each reading the machine has draws its own glyph in the status cluster;
+/// a reading that never arrived draws nothing rather than a stand-in, so an
+/// empty cluster is a machine that read nothing, never a full battery.
+#[test]
+fn every_reading_the_machine_has_draws_its_own_glyph() {
+    let mut bar = sample_chrome();
+    assert_eq!(bar.tray_slot_count(), 1, "the bell alone");
+    bar.status = crate::chrome::SystemStatus {
+        battery_percent: Some(72),
+        battery_charging: false,
+        battery_low: false,
+        battery_critical: false,
+        link: Some(crate::chrome::LinkStatus {
+            kind: crate::chrome::LinkKind::Wifi,
+            name: Some("Home".into()),
+            signal: 4,
+        }),
+        volume: Some(crate::chrome::VolumeState {
+            level: 0.45,
+            muted: false,
+        }),
+        media: Vec::new(),
+        summary: String::new(),
+    };
+    assert_eq!(
+        bar.tray_slot_count(),
+        4,
+        "the bell, the volume, the link and the battery"
+    );
+    lay_out_and_draw(&mut bar, 1280.0);
+    let known = bar.tray_pill_rect;
+    assert!(
+        known.width() > BAR_CONTROL_PX,
+        "the cluster widens by its glyphs"
+    );
+    bar.status = crate::chrome::SystemStatus::default();
+    lay_out_and_draw(&mut bar, 1280.0);
+    assert_eq!(bar.tray_slot_count(), 1, "nothing known, nothing drawn");
+    assert!(bar.tray_pill_rect.width() < known.width());
+}
