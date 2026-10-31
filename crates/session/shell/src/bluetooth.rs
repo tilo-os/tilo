@@ -68,6 +68,16 @@ pub struct PairingPromptHandle {
     inner: Arc<Mutex<PairingState>>,
 }
 
+impl std::fmt::Debug for PairingPromptHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The questions are a live prompt's; a chrome's debug print names the
+        // handle, not what is being asked.
+        formatter
+            .debug_struct("PairingPromptHandle")
+            .finish_non_exhaustive()
+    }
+}
+
 impl PairingPromptHandle {
     pub fn new() -> Self {
         Self::default()

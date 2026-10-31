@@ -19,6 +19,10 @@ use crate::widget::{
     AppModel, Button, ButtonRole, DatePicker, Decorator, ModelPath, PopoverButton, Widget,
 };
 
+#[path = "date_field_component.rs"]
+mod component;
+pub use component::DateFieldProps;
+
 /// What a press in the popover asked for: a day, or no date.
 type Picked = Rc<Cell<Option<Option<NaiveDate>>>>;
 
@@ -58,6 +62,12 @@ impl DateField {
     #[must_use]
     pub fn value(&self) -> Option<NaiveDate> {
         self.value
+    }
+
+    /// Whether the person may clear the date.
+    #[must_use]
+    pub fn is_optional(&self) -> bool {
+        self.optional
     }
 
     /// Show `value`, a date set elsewhere. An open popover stays open on the day it shows.

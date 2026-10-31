@@ -711,6 +711,8 @@ inputs = [
   "crates/dev/ui-examples/examples/common/gallery_scene.rs",
   "crates/browser/paint-stream/tests/fixtures/",
   "crates/browser/tilo-browser-runtime/src/background_work.rs",
+  # The theme bundle's test loads a theme written only against the theme SDK.
+  "crates/sdk/themes/bauhaus/theme.json",
   "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs",
   "tools/test-assets.py",
   # The ratchets find the checkout by its workspace manifest.
@@ -722,6 +724,7 @@ readers = [
   "crates/sdk/ui-core/src/app/close_admission.rs",
   "crates/sdk/ui-core/tests/support/ratchet.rs",
   "crates/sdk/ui-core/src/webview/paint.rs",
+  "crates/sdk/ui-core/src/theme_bundle/tests.rs",
   "crates/sdk/ui-core/tests/typography_visual_regression.rs",
 ]
 # App, shell and framework sources are read only by the look ratchets in the
@@ -753,6 +756,7 @@ inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/letters/"]
 readers = [
   "apps/tilolang/src/packages.rs",
   "apps/tilolang/tests/board.rs",
+  "apps/tilolang/tests/history_undo.rs",
   "apps/tilolang/tests/opening.rs",
   "apps/tilolang/tests/support.rs",
 ]

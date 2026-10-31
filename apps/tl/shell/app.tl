@@ -1,4 +1,8 @@
-app so.tilo.shell "Shell" (icon: .monitor, category: .system)
+app so.tilo.shell "Shell" (icon: .monitor, category: .system, records: .own)
+
+use so.tilo.lang.chat as chat
+use so.tilo.lang.notes as notes
+use so.tilo.lang.tasks as tasks
 
 /// This device's desk as the session holds it: the time in the person's style, who they are,
 /// their notifications, the workspaces on this device, the tasks running for them and the
@@ -105,9 +109,15 @@ type NoticeAction (origin: session.notice_action) {
     label: Text merge register (title)
 }
 
+root arrangement: Arrangement
+
 root Desk
 
+/// The shell's two layers: the desk the person sees (its bar over the surface that is up),
+/// and the top bar alone, which the session's bar part lays out in its band.
 default view desk for Desk
+
+default view desk_view for arrangement
 
 /// Brings the workspace to the front.
 action switch_to(w: Workspace) (icon: .layers, label: "Switch to") {
@@ -175,6 +185,29 @@ action open_rooms(d: Desk) (icon: .layers, label: "Workspaces") {
 /// the person pointed at or what they selected.
 action ask(d: Desk) (icon: .bot, label: "Ask an agent") {
     outside("session.act", "toggle-composer")
+}
+
+/// The person's desk as a window shows it: the top bar over the preset they picked, and the
+/// preset switch beside the bar's actions. The bar reads `desk`, this package's other root, as
+/// any view reads a root of the package it uses. A change of the arrangement runs the preset
+/// body; a change of the desk reading runs the bar.
+view desk_view(a: Arrangement) {
+    let v = viewing
+    ui.NavShell(content_kind: .page) {
+        actions: {
+            bar(root Desk)
+            preset_switch(v)
+        }
+        content: {
+            if v.showing == .frames {
+                framed_canvas(a)
+            } else if v.showing == .spaces {
+                spaces_canvas(a)
+            } else {
+                strips_view(a, v)
+            }
+        }
+    }
 }
 
 /// Where the person is: the system's menu, the workspace in front with the workspaces to

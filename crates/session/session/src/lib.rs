@@ -1899,6 +1899,7 @@ impl Session {
             return Ok(());
         };
         shell.publish();
+        shell.publish_arrangement(self.shared.arrangement.borrow().reading());
         if !shell.has_asks() {
             return Ok(());
         }

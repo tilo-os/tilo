@@ -38,7 +38,7 @@ use tilo_render_protocol::patch::{self as ui, Lane, ToApp, ToUi, Transport, Word
 
 use crate::background::Waker;
 use crate::bundle::Bundle;
-use crate::host::{Host, Opening, Package};
+use crate::host::{Host, Opening, Package, RootView};
 use crate::publish::{COMMIT, HOST_RESOURCE};
 use crate::runtime::meta::{Meta, TypeMeta};
 use crate::runtime::{
@@ -157,6 +157,11 @@ pub struct Config {
     pub record_loader: Option<Box<dyn Fn() -> Option<tilo_resource::Doc>>>,
     /// Where outside effects go; the development log when `None`.
     pub sink: Option<Box<dyn OutsideSink>>,
+    /// The root and the view the window opens over, each by name. A package with more than one
+    /// root (the shell's `Desk` and its `Arrangement`) says which layer this window is;
+    /// [`RootView::default`] takes the package's first root and its default view, as the
+    /// launcher opens an app.
+    pub root: RootView,
 }
 
 /// Commits waiting to be handed to the door, each tagged with the invocation of the door that
@@ -239,6 +244,8 @@ struct Pending {
 )]
 pub struct Instance {
     app: String,
+    /// The root and the view the window opens over, by name.
+    root_view: RootView,
     me: String,
     mode: Mode,
     device: Option<String>,
@@ -330,6 +337,7 @@ impl Instance {
         let told = Rc::new(crate::names::Told::new(&config.me, names));
         Self {
             app: config.app,
+            root_view: config.root,
             me: config.me,
             mode: config.mode,
             device: config.device,
@@ -509,6 +517,15 @@ impl Instance {
     /// the time ever wakes the instance.
     #[must_use]
     pub fn wakes_in(&self) -> Option<std::time::Duration> {
+        let views = self.views_wake_in();
+        match (views, self.held_in()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// How long until the time a view read (`today` in a query) next reads differently.
+    fn views_wake_in(&self) -> Option<std::time::Duration> {
         let at = [self.root.as_ref(), self.detail.as_ref()]
             .into_iter()
             .flatten()
@@ -523,6 +540,12 @@ impl Instance {
         Some(std::time::Duration::from_secs(
             u64::try_from(at.saturating_sub(now)).unwrap_or(0),
         ))
+    }
+
+    /// How long until an outside effect an action held back (`outside(.., at:)`) is due: the
+    /// frame then runs and the host carries it out. `None` when none is held back.
+    fn held_in(&self) -> Option<std::time::Duration> {
+        self.host()?.runtime().held_for()
     }
 
     /// The resource the root view shows.
@@ -777,7 +800,10 @@ impl Instance {
             .detail
             .as_ref()
             .map(|view| (view.target.clone(), view.with.clone()));
-        let (Ok(target), Ok(view)) = (host.root_of(&self.app), host.open_main(&self.app)) else {
+        let (Ok(target), Ok(view)) = (
+            host.root_of_layer(&self.app, &self.root_view),
+            host.open_layer(&self.app, &self.root_view),
+        ) else {
             tracing::warn!(app = self.app, "the new build has no root to open");
             return;
         };
@@ -821,14 +847,14 @@ impl Instance {
 
     /// Open the package's root view.
     fn open_root(&mut self, host: &Host) {
-        let target = match host.root_of(&self.app) {
+        let target = match host.root_of_layer(&self.app, &self.root_view) {
             Ok(target) => target,
             Err(error) => {
                 tracing::warn!(app = self.app, %error, "the app has no root to open");
                 return;
             }
         };
-        match host.open_main(&self.app) {
+        match host.open_layer(&self.app, &self.root_view) {
             Ok(view) => {
                 self.root = Some(Shown::new(target, self.spaced(Lane::Root, view)));
                 if self.detail.take().is_some() {

@@ -28,7 +28,10 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+#[path = "color_swatch_component.rs"]
+mod component;
 use crate::widget::{TaffyTreeExt, Widget};
+pub use component::ColorSwatchPickerProps;
 
 /// One colour a person can pick.
 #[derive(Clone, Debug, PartialEq)]
@@ -424,6 +427,12 @@ impl ColorSwatchPicker {
     pub fn with_selected(mut self, idx: usize) -> Self {
         self.selected = Some(idx);
         self
+    }
+
+    /// How many swatches it offers.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.swatches.len()
     }
 
     pub fn take_choice(&mut self) -> Option<usize> {

@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use tilo_search::{Document, Matching, Page, SearchIndex};
+use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
 use ui::search::index_publication::{IndexEntry, IndexWeight};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind, provider_score};
 
@@ -100,13 +100,24 @@ fn text_index(entries: &[IndexedEntry]) -> SearchIndex {
                     .map(|title| (title.as_str(), IndexWeight::Body)),
             )
             .fold(Document::new(at as u64), |document, (text, weight)| {
-                document.field(text, weight.field_weight())
+                document.field(text, field_weight(weight))
             })
     }));
     if let Err(error) = index.commit() {
         tracing::error!(%error, "could not index apps' content");
     }
     index
+}
+
+/// The index's weight for a field an entry ranks as `weight`.
+fn field_weight(weight: IndexWeight) -> FieldWeight {
+    match weight {
+        IndexWeight::Title => FieldWeight::TITLE,
+        IndexWeight::Identity => FieldWeight::IDENTITY,
+        IndexWeight::Subtitle => FieldWeight::SUBTITLE,
+        IndexWeight::Metadata => FieldWeight::METADATA,
+        IndexWeight::Body => FieldWeight::BODY,
+    }
 }
 
 /// A row's id: where its entry was published from, then its key.

@@ -26,7 +26,7 @@ use tilo_compositor::{CursorIcon, HostKey, HostLayer, KeyClaim, SurfaceHost};
 use tilo_render_protocol::patch::local::pair;
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::background::Waker;
-use tilolang_tilo::host::Host;
+use tilolang_tilo::host::{Host, RootView};
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::origin::{Origin, OriginCx, OriginType, Polled, origin_types};
 use tilolang_tilo::publish::{COMMIT, HOST_RESOURCE};
@@ -60,11 +60,30 @@ const CAP_RUN: &str = "session.run";
 /// The capability that runs one of the notification centre's actions: the same ask as
 /// [`CAP_RUN`], on the panel's resource.
 const CAP_NOTIFY: &str = "session.notify";
+/// The capability that arranges the person's desk: its payload is the published action id and
+/// its arguments, as one line of JSON (`move-place {"place":3,"row":7}`). One capability keeps
+/// the seam small while the arranging actions are a closed set the session publishes.
+const CAP_ARRANGE: &str = "session.arrange";
+/// The resource the person's arrangement is published on, whose actions `session.arrange` names.
+pub const ARRANGEMENT_RESOURCE: &str = "shell:arrangement";
 
 /// Every file of the shell's package (`apps/tl/shell`), by the name the package knows it by: a
-/// package is a directory of `.tl` files, and a new one is listed here to ship.
-pub const FILES: &[(&str, &str)] = &[
+/// package is a directory of `.tl` files, in path order (the package's compiler reads them so),
+/// and each new one is listed here to ship.
+const SHELL_FILES: &[(&str, &str)] = &[
     ("app.tl", include_str!("../../../../apps/tl/shell/app.tl")),
+    (
+        "arrangement.tl",
+        include_str!("../../../../apps/tl/shell/arrangement.tl"),
+    ),
+    (
+        "arranging.tl",
+        include_str!("../../../../apps/tl/shell/arranging.tl"),
+    ),
+    (
+        "canvas.tl",
+        include_str!("../../../../apps/tl/shell/canvas.tl"),
+    ),
     (
         "composer.tl",
         include_str!("../../../../apps/tl/shell/composer.tl"),
@@ -100,19 +119,96 @@ pub const FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/session.tl"),
     ),
     (
+        "strips.tl",
+        include_str!("../../../../apps/tl/shell/strips.tl"),
+    ),
+    (
         "switcher.tl",
         include_str!("../../../../apps/tl/shell/switcher.tl"),
     ),
 ];
+/// The shell package's ids lock.
+const SHELL_IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
 
-/// The shell's package, every file of it.
+/// The packages the shell's views reach (`notes`, `tasks`, `chat`), each as its source and ids
+/// lock, in the order they compile: a package comes after those it imports.
+const SHELL_USES: &[(&str, &str, &str)] = &[
+    (
+        "chat",
+        include_str!("../../../../apps/tl/chat/app.tl"),
+        include_str!("../../../../apps/tl/chat/app.ids"),
+    ),
+    (
+        "notes",
+        include_str!("../../../../apps/tl/notes/app.tl"),
+        include_str!("../../../../apps/tl/notes/app.ids"),
+    ),
+    (
+        "tasks",
+        include_str!("../../../../apps/tl/tasks/app.tl"),
+        include_str!("../../../../apps/tl/tasks/app.ids"),
+    ),
+];
+
+/// The shell package's ids lock, as it ships.
 #[must_use]
-pub fn package_source() -> tilolang_tilo::tilolang::PackageSource {
-    tilolang_tilo::tilolang::PackageSource::new(
-        FILES
+pub const fn shell_ids() -> &'static str {
+    SHELL_IDS
+}
+
+/// The shell's bar layer: the `bar` view over the `Desk` root. The shell package has two
+/// roots (`Desk` and its `Arrangement`), so each layer names its own; the bar is never "the
+/// first root's default view".
+#[must_use]
+pub fn bar_layer() -> RootView {
+    RootView {
+        root: Some("Desk".to_owned()),
+        view: Some("bar".to_owned()),
+    }
+}
+
+/// The shell package and the packages it uses, compiled, the shell last: what a shell's instance
+/// loads, in order. `None` when a package does not compile, which every build of the shell is
+/// checked against, so a test that fails to compile here fails loudly.
+///
+/// # Errors
+/// The packages' diagnostics, rendered with their file names.
+pub fn compile_shell() -> Result<Vec<Compiled>, String> {
+    let mut out: Vec<Compiled> = Vec::new();
+    for (dir, source, ids) in SHELL_USES {
+        let lock = tilolang_tilo::tilolang::IdsLock::parse(ids).map_err(|e| e.to_string())?;
+        let imports: Vec<tilolang_tilo::tilolang::PackageMeta> =
+            out.iter().map(|c| c.meta.clone()).collect();
+        let compiled = tilolang_tilo::tilolang::compile_package(source, &lock, &imports).map_err(
+            |diagnostics| {
+                diagnostics
+                    .iter()
+                    .map(|d| d.render(&format!("apps/tl/{dir}/app.tl")))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            },
+        )?;
+        out.push(compiled);
+    }
+    let lock = tilolang_tilo::tilolang::IdsLock::parse(SHELL_IDS).map_err(|e| e.to_string())?;
+    let source = tilolang_tilo::tilolang::PackageSource::new(
+        SHELL_FILES
             .iter()
-            .map(|(name, text)| ((*name).to_owned(), (*text).to_owned())),
-    )
+            .map(|(path, text)| (format!("apps/tl/shell/{path}"), (*text).to_owned())),
+    );
+    let imports: Vec<tilolang_tilo::tilolang::PackageMeta> =
+        out.iter().map(|c| c.meta.clone()).collect();
+    let shell = tilolang_tilo::tilolang::compile_package_source(&source, &lock, &imports).map_err(
+        |diagnostics| {
+            diagnostics
+                .iter()
+                .map(|d| d.render(d.file.as_deref().unwrap_or("apps/tl/shell/app.tl")))
+                .collect::<Vec<_>>()
+                .join("\n")
+        },
+    )?;
+    out.push(shell);
+    Ok(out)
 }
 
 /// How often the instance and its window may answer each other in one frame before the frame
@@ -257,6 +353,63 @@ pub struct DeskReading {
     pub people: Vec<PersonReading>,
 }
 
+/// A workspace the person's desk shows, as their arrangement names it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArrangementWorkspaceReading {
+    pub key: String,
+    pub name: String,
+}
+
+/// A row of the desk, as the person's arrangement names it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArrangementRowReading {
+    pub key: String,
+    pub workspace: String,
+    pub name: String,
+    pub shell: String,
+}
+
+/// A strip of the desk, as the person's arrangement names it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArrangementStripReading {
+    pub key: String,
+    pub workspace: String,
+    pub row: String,
+    /// Its width in per-mille of its row's usable width.
+    pub width: i64,
+    pub maximized: bool,
+    pub active: String,
+    pub placed: bool,
+    pub canvas_x: i64,
+    pub canvas_y: i64,
+    pub canvas_width: i64,
+    pub canvas_height: i64,
+    pub shell: String,
+}
+
+/// A place of the desk, as the person's arrangement names it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArrangementPlaceReading {
+    pub key: String,
+    pub strip: String,
+    pub shows: String,
+    pub shown_as: String,
+    pub record: String,
+    pub title: String,
+    pub pinned: bool,
+    pub shell: String,
+}
+
+/// The reading of [`ARRANGEMENT_RESOURCE`]: the person's arrangement as the session holds it,
+/// as JSON on the door.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArrangementReading {
+    pub workspaces: Vec<ArrangementWorkspaceReading>,
+    pub rows: Vec<ArrangementRowReading>,
+    pub strips: Vec<ArrangementStripReading>,
+    pub places: Vec<ArrangementPlaceReading>,
+}
+
 /// What a shell asked of the session: an invocation on the door.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Ask {
@@ -273,6 +426,10 @@ pub struct SessionLink {
     reading: RefCell<Option<DeskReading>>,
     /// A reading arrived the origin has not written yet.
     fresh: Cell<bool>,
+    /// The person's arrangement the session last published, and whether the origin has taken
+    /// it in.
+    arrangement: RefCell<Option<ArrangementReading>>,
+    arrangement_fresh: Cell<bool>,
     asked: RefCell<VecDeque<Ask>>,
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
@@ -289,6 +446,17 @@ impl SessionLink {
         }
         *self.reading.borrow_mut() = Some(reading);
         self.fresh.set(true);
+        true
+    }
+
+    /// The session published `reading`, the person's arrangement as it stands now: the shell
+    /// writes it on its next frame when it differs from the last. Whether it did.
+    pub fn publish_arrangement(&self, reading: ArrangementReading) -> bool {
+        if self.arrangement.borrow().as_ref() == Some(&reading) {
+            return false;
+        }
+        *self.arrangement.borrow_mut() = Some(reading);
+        self.arrangement_fresh.set(true);
         true
     }
 
@@ -342,6 +510,35 @@ fn ask_of(capability: &str, payload: &Json) -> Result<Ask, String> {
             arguments: BTreeMap::new(),
         }),
         CAP_RUN | CAP_NOTIFY => run_ask(payload, capability),
+        CAP_ARRANGE => {
+            // `<action id> {json arguments}`, or just the id for an action that takes none.
+            let (action, rest) = word
+                .split_once(' ')
+                .map_or_else(|| (word.trim(), ""), |(a, rest)| (a.trim(), rest.trim()));
+            if action.is_empty() {
+                return Err("session.arrange takes an action id".to_owned());
+            }
+            let given: BTreeMap<String, Json> = if rest.is_empty() {
+                BTreeMap::new()
+            } else {
+                serde_json::from_str(rest).map_err(|error| format!("session.arrange: {error}"))?
+            };
+            let arguments = given
+                .into_iter()
+                .map(|(name, value)| {
+                    let text = match value {
+                        Json::String(text) => text,
+                        other => other.to_string(),
+                    };
+                    (name, text)
+                })
+                .collect();
+            Ok(Ask {
+                resource: ARRANGEMENT_RESOURCE.to_owned(),
+                action: action.to_owned(),
+                arguments,
+            })
+        }
         other => Err(format!("the session takes no outside effect `{other}`")),
     }
 }
@@ -399,6 +596,10 @@ pub struct SessionOrigin {
     rooms: BTreeMap<String, Kept<RoomReading>>,
     notices: BTreeMap<String, Kept<NoticeReading>>,
     notice_actions: BTreeMap<String, Kept<NoticeActionReading>>,
+    arrangement_workspaces: BTreeMap<String, Kept<ArrangementWorkspaceReading>>,
+    arrangement_rows: BTreeMap<String, Kept<ArrangementRowReading>>,
+    arrangement_strips: BTreeMap<String, Kept<ArrangementStripReading>>,
+    arrangement_places: BTreeMap<String, Kept<ArrangementPlaceReading>>,
     /// Effects handed to the session and not answered yet.
     in_flight: BTreeSet<Ask>,
 }
@@ -417,6 +618,10 @@ impl SessionOrigin {
             rooms: BTreeMap::new(),
             notices: BTreeMap::new(),
             notice_actions: BTreeMap::new(),
+            arrangement_workspaces: BTreeMap::new(),
+            arrangement_rows: BTreeMap::new(),
+            arrangement_strips: BTreeMap::new(),
+            arrangement_places: BTreeMap::new(),
             in_flight: BTreeSet::new(),
         }
     }
@@ -445,7 +650,6 @@ impl SessionOrigin {
         };
         let desk = kind("desk")?;
         let field = |ty: &OriginType, name: &str| ty.field(name).map(str::to_owned);
-        let text = |s: &str| Value::Text(s.to_owned());
         let was = self.written.clone().unwrap_or_default();
         let mut fields = Vec::new();
         let mut set = |name: &str, now: Value, changed: bool| {
@@ -708,6 +912,256 @@ fn sync_items<T: Clone + PartialEq>(
     writes
 }
 
+/// The field `name` as a text value.
+fn text(s: &str) -> Value {
+    Value::Text(s.to_owned())
+}
+
+/// The fields of an arrangement workspace, as it is written into the shell's record.
+fn workspace_fields(w: &ArrangementWorkspaceReading) -> Vec<(&'static str, Value)> {
+    vec![("key", text(&w.key)), ("name", text(&w.name))]
+}
+
+/// The fields of a row, as it is written into the shell's record.
+fn row_fields(r: &ArrangementRowReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", text(&r.key)),
+        ("workspace", text(&r.workspace)),
+        ("name", text(&r.name)),
+        ("shell", text(&r.shell)),
+    ]
+}
+
+/// The fields of a strip, as it is written into the shell's record.
+fn strip_fields(s: &ArrangementStripReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", text(&s.key)),
+        ("workspace", text(&s.workspace)),
+        ("row", text(&s.row)),
+        ("width", Value::Int(s.width)),
+        ("maximized", Value::Bool(s.maximized)),
+        ("active", text(&s.active)),
+        ("placed", Value::Bool(s.placed)),
+        ("canvas_x", Value::Int(s.canvas_x)),
+        ("canvas_y", Value::Int(s.canvas_y)),
+        ("canvas_width", Value::Int(s.canvas_width)),
+        ("canvas_height", Value::Int(s.canvas_height)),
+        ("shell", text(&s.shell)),
+    ]
+}
+
+/// The fields of a place, as it is written into the shell's record.
+fn place_fields(p: &ArrangementPlaceReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", text(&p.key)),
+        ("strip", text(&p.strip)),
+        ("shows", text(&p.shows)),
+        ("shown_as", text(&p.shown_as)),
+        ("record", text(&p.record)),
+        ("title", text(&p.title)),
+        ("pinned", Value::Bool(p.pinned)),
+        ("shell", text(&p.shell)),
+    ]
+}
+
+impl SessionOrigin {
+    /// Write the person's arrangement into the shell's `Arrangement` root, when the session
+    /// published one the origin has not written yet. Whether anything was written.
+    fn poll_arrangement(&mut self, cx: &OriginCx<'_>) -> bool {
+        if !self.link.arrangement_fresh.replace(false) {
+            return false;
+        }
+        let Some(reading) = self.link.arrangement.borrow().clone() else {
+            return false;
+        };
+        let Some(types) = cx.host.find_in_packages(|package| {
+            (package.meta.app == cx.app).then(|| origin_types(&package.meta, ORIGIN))
+        }) else {
+            tracing::error!(app = cx.app, "the shell's package is not loaded");
+            return false;
+        };
+        // The root the `Arrangement` type is: `root-<type id>`, made the first time it is
+        // wanted, as `root arrangement` reads it.
+        let Some(kind) = types
+            .iter()
+            .find(|ty| ty.kind == format!("{ORIGIN}.arrangement"))
+        else {
+            // A shell without an arrangement view keeps its bar alone: nothing to write.
+            return false;
+        };
+        let root = if cx.host.store().contains(&format!("root-{}", kind.ty)) {
+            ResourceRef::root(format!("root-{}", kind.ty), kind.ty.clone())
+        } else {
+            match cx.host.runtime().create_root(&kind.ty) {
+                Ok(root) => root,
+                Err(error) => {
+                    tracing::error!(%error, "the shell has no arrangement to write");
+                    return false;
+                }
+            }
+        };
+        let (writes, inserted) = self.arrangement_writes(&reading, &root, &types);
+        match cx
+            .host
+            .runtime()
+            .apply_origin(ORIGIN, writes, Some(cx.now.clone()))
+        {
+            Ok(made) => {
+                self.keep_inserted_arrangement(&reading, &types, inserted, made);
+                true
+            }
+            Err(error) => {
+                tracing::error!(%error, "the person's arrangement could not be written");
+                false
+            }
+        }
+    }
+
+    /// The writes that bring the shell's arrangement root from what was written to `reading`,
+    /// and the items they insert, by type and key.
+    fn arrangement_writes(
+        &mut self,
+        reading: &ArrangementReading,
+        root: &ResourceRef,
+        types: &[OriginType],
+    ) -> (Vec<OriginWrite>, Vec<(String, String)>) {
+        let find = |name: &str| {
+            types
+                .iter()
+                .find(|ty| ty.kind == format!("{ORIGIN}.{name}"))
+        };
+        let mut writes = Vec::new();
+        let Some(ty) = find("arrangement") else {
+            return (writes, Vec::new());
+        };
+        if let (Some(field), Some(item)) = (ty.field("workspaces"), find("arrangement_workspace")) {
+            writes.extend(sync_items(
+                &mut self.arrangement_workspaces,
+                &reading.workspaces,
+                root,
+                field,
+                item,
+                |w| w.key.clone(),
+                workspace_fields,
+            ));
+        }
+        if let (Some(field), Some(item)) = (ty.field("rows"), find("arrangement_row")) {
+            writes.extend(sync_items(
+                &mut self.arrangement_rows,
+                &reading.rows,
+                root,
+                field,
+                item,
+                |r| r.key.clone(),
+                row_fields,
+            ));
+        }
+        if let (Some(field), Some(item)) = (ty.field("strips"), find("arrangement_strip")) {
+            writes.extend(sync_items(
+                &mut self.arrangement_strips,
+                &reading.strips,
+                root,
+                field,
+                item,
+                |s| s.key.clone(),
+                strip_fields,
+            ));
+        }
+        if let (Some(field), Some(item)) = (ty.field("places"), find("arrangement_place")) {
+            writes.extend(sync_items(
+                &mut self.arrangement_places,
+                &reading.places,
+                root,
+                field,
+                item,
+                |p| p.key.clone(),
+                place_fields,
+            ));
+        }
+        // The keys of the items the writes insert, in their order: what the origin must find
+        // where they were made.
+        let inserted = writes
+            .iter()
+            .filter_map(|write| match write {
+                OriginWrite::Insert { ty, fields, .. } => {
+                    let key = types
+                        .iter()
+                        .find(|t| t.ty == *ty)
+                        .and_then(|t| t.field("key"))
+                        .and_then(|id| fields.iter().find(|(f, _)| f == id))
+                        .and_then(|(_, v)| match v {
+                            Value::Text(key) => Some(key.clone()),
+                            _ => None,
+                        });
+                    Some((ty.clone(), key.unwrap_or_default()))
+                }
+                _ => None,
+            })
+            .collect();
+        (writes, inserted)
+    }
+
+    /// Keep where the arrangement items a write inserted were made, by type and key.
+    fn keep_inserted_arrangement(
+        &mut self,
+        reading: &ArrangementReading,
+        types: &[OriginType],
+        inserted: Vec<(String, String)>,
+        made: Vec<Option<ResourceRef>>,
+    ) {
+        let mut made = made.into_iter().flatten();
+        for (ty, key) in inserted {
+            let Some(at) = made.next() else { break };
+            let is = |name: &str| {
+                types
+                    .iter()
+                    .any(|t| t.ty == ty && t.kind == format!("{ORIGIN}.{name}"))
+            };
+            if is("arrangement_workspace")
+                && let Some(was) = reading.workspaces.iter().find(|w| w.key == key)
+            {
+                self.arrangement_workspaces.insert(
+                    key,
+                    Kept {
+                        at,
+                        was: was.clone(),
+                    },
+                );
+            } else if is("arrangement_row")
+                && let Some(was) = reading.rows.iter().find(|r| r.key == key)
+            {
+                self.arrangement_rows.insert(
+                    key,
+                    Kept {
+                        at,
+                        was: was.clone(),
+                    },
+                );
+            } else if is("arrangement_strip")
+                && let Some(was) = reading.strips.iter().find(|s| s.key == key)
+            {
+                self.arrangement_strips.insert(
+                    key,
+                    Kept {
+                        at,
+                        was: was.clone(),
+                    },
+                );
+            } else if is("arrangement_place")
+                && let Some(was) = reading.places.iter().find(|p| p.key == key)
+            {
+                self.arrangement_places.insert(
+                    key,
+                    Kept {
+                        at,
+                        was: was.clone(),
+                    },
+                );
+            }
+        }
+    }
+}
+
 impl SessionOrigin {
     /// Keep where the items a write inserted (`inserted`, by type and key) were made
     /// (`made`, in the writes' order), so the next reading sets or removes them there.
@@ -834,7 +1288,7 @@ impl Origin for SessionOrigin {
     }
 
     fn due(&self) -> bool {
-        self.link.fresh.get() || self.answered()
+        self.link.fresh.get() || self.link.arrangement_fresh.get() || self.answered()
     }
 
     fn poll(&mut self, cx: &OriginCx<'_>) -> Polled {
@@ -842,6 +1296,8 @@ impl Origin for SessionOrigin {
             wrote: false,
             settle: self.answered(),
         };
+        let wrote_arrangement = self.poll_arrangement(cx);
+        polled.wrote |= wrote_arrangement;
         if !self.link.fresh.replace(false) {
             return polled;
         }
@@ -854,7 +1310,7 @@ impl Origin for SessionOrigin {
             tracing::error!(app = cx.app, "the shell's package is not loaded");
             return polled;
         };
-        let root = match cx.host.root_of(cx.app) {
+        let root = match cx.host.root_of_layer(cx.app, &bar_layer()) {
             Ok(root) => root,
             Err(error) => {
                 tracing::error!(%error, "the shell has no desk to write the session into");
@@ -1082,6 +1538,8 @@ impl ShellPart {
                 index_dir: None,
                 record_loader: None,
                 sink: None,
+                // The bar's band shows the bar, not whatever root the package lists first.
+                root: bar_layer(),
             },
             Rc::new(ShellPlatform {
                 packages: Rc::new(packages),
@@ -1644,8 +2102,6 @@ mod tests {
     )]
 
     use super::*;
-
-    const IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
 
     fn reading() -> DeskReading {
         DeskReading {

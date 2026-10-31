@@ -193,6 +193,8 @@ impl Live {
         }
         self.place_built(list, &at);
         self.render_row(core, id)?;
+        // After the row is rendered: its render sets the fragment's children.
+        self.divide_unread(&item, &key, &at);
         Ok(Some(key))
     }
 
@@ -509,6 +511,49 @@ impl Live {
         }
         fits
     }
+
+    /// A row built as it shows takes the "New messages" divider with it when it is the row of
+    /// the item the list's reader has not seen (`first_unseen(c)`): the app says which item
+    /// the list was told, and the divider is the same in every conversation.
+    fn divide_unread(&mut self, item: &Value, row: &str, at: &[usize]) {
+        let Some(unread) = self
+            .node_at(at)
+            .and_then(|node| node.props.get(crate::render::UNREAD))
+            .and_then(|value| match value {
+                Value::Ref(unread) => unread.target.item.clone(),
+                _ => None,
+            })
+        else {
+            return;
+        };
+        if item_ref_id(item) != Some(unread.as_str()) {
+            return;
+        }
+        // The row's fragment is the one the row was just built at; the divider is its first
+        // child, at a key of its own.
+        let Some(node) = self.node_at_mut(at) else {
+            return;
+        };
+        let Some(fragment) = node.children.iter_mut().find(|child| child.key == row) else {
+            return;
+        };
+        if fragment
+            .children
+            .iter()
+            .any(|c| c.kind == crate::render::UNREAD_DIVIDER)
+        {
+            return;
+        }
+        let mut divider = UiNode::empty(
+            crate::render::UNREAD_DIVIDER,
+            &format!("{}~unread", fragment.key),
+        );
+        divider.props.insert(
+            "name".to_owned(),
+            Value::Text(crate::render::UNREAD_DIVIDER.to_owned()),
+        );
+        fragment.children.insert(0, divider);
+    }
 }
 
 /// Whether `now` is made of another query than `before`: another collection, filter or order,
@@ -655,5 +700,13 @@ impl Builder<'_> {
         let id = self.live.add_bound(Bound::new(stub, true));
         self.new.push(id);
         Ok((id, vec![self.live.render(self.core, id)?]))
+    }
+}
+
+/// The id of the item a row was built for, when it is one resource (`Value::Ref`).
+fn item_ref_id(item: &Value) -> Option<&str> {
+    match item {
+        Value::Ref(item) => item.target.item.as_deref(),
+        _ => None,
     }
 }

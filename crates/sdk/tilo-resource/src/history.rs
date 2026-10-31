@@ -327,6 +327,10 @@ pub fn wrote(
     };
     let after_heads = [*hash];
     let mut keys: Vec<String> = Vec::new();
+    // The keys the change's named objects sit under, each read once: a change of a long note
+    // names one object per character typed, and Automerge's way up from an object searches
+    // the document's every operation for that object's op, so per op it is the whole document.
+    let mut reached: Vec<(automerge::ObjId, Option<String>)> = Vec::new();
     for op in change.decode().operations {
         let target = op_obj(doc, &op.obj)?;
         let key = if target == *obj {
@@ -334,14 +338,18 @@ pub fn wrote(
                 automerge::legacy::Key::Map(key) => Some(key.to_string()),
                 automerge::legacy::Key::Seq(_) => None,
             }
+        } else if let Some((_, key)) = reached.iter().find(|(at, _)| *at == target) {
+            key.clone()
         } else {
             // An operation inside an object under `obj`: the key of `obj` on its way up.
-            doc.parents_at(&target, &after_heads)?.find_map(|parent| {
+            let key = doc.parents_at(&target, &after_heads)?.find_map(|parent| {
                 match (parent.obj == *obj, parent.prop) {
                     (true, automerge::Prop::Map(key)) => Some(key),
                     _ => None,
                 }
-            })
+            });
+            reached.push((target.clone(), key.clone()));
+            key
         };
         if let Some(key) = key
             && !keys.contains(&key)
@@ -404,6 +412,275 @@ pub fn held_at(
     match doc.get_at(obj, key, heads)? {
         Some((value, inner)) => crate::value::read_value_at(doc, &value, &inner, heads),
         None => Ok(serde_json::Value::Null),
+    }
+}
+
+/// One text a change typed into: where it sits under the object asked about, and what
+/// the change did to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextEdit {
+    /// The map keys from the object [`spliced_texts`] was given down to this text, in
+    /// reading order: a rich text field's `blocks`, its paragraph's id, `text`.
+    pub path: Vec<String>,
+    /// What the text read before the change and what it reads after it, whole: a reader
+    /// that shows a few words around the change cuts them itself.
+    pub before: String,
+    pub after: String,
+    /// What the change inserted: the character range of `after` it wrote, and its text.
+    pub inserted: Vec<(usize, usize, String)>,
+    /// What the change took away: the character range of `before` it deleted, and its text.
+    pub deleted: Vec<(usize, usize, String)>,
+}
+
+impl TextEdit {
+    /// Whether the change left the text as it was: a mark, not a splice.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inserted.is_empty() && self.deleted.is_empty()
+    }
+
+    /// The name of the paragraph this text is in, when the text sits under one by a map
+    /// key: for rich text, the id of the paragraph whose `text` this is.
+    #[must_use]
+    pub fn block(&self) -> &str {
+        self.path.iter().rev().nth(1).map_or("", String::as_str)
+    }
+}
+
+/// The texts the change `hash` of `doc` spliced into, below the object `root`, each with
+/// what the change inserted into it and what it took away.
+///
+/// Which texts, from the change's own operations: a text object an operation of the change
+/// names is one it spliced, and each is read in place, whole, at the two sides of the change
+/// ([`text_at`]), and the two read as what changed. What a change inserted and what it took
+/// away is what the person sees: a word replaced whole reads as that word, never as the
+/// letters it happens to share with the one it replaced.
+///
+/// The cost is the texts the change spliced: rich text keeps each paragraph in a text of
+/// its own, so a word typed into one paragraph of a long note reads that paragraph, twice,
+/// and nothing else, and neither the note's length nor the document's is read. (Reading a
+/// rich text whole at past heads, or finding a character's place in a text this way, costs
+/// the document's operations: measured, see the test below.)
+///
+/// A change that only marked a run reads as no splice ([`TextEdit::is_empty`]).
+///
+/// # Errors
+/// An operation names an object the document does not hold.
+pub fn spliced_texts(
+    doc: &automerge::Automerge,
+    hash: &ChangeHash,
+    root: &automerge::ObjId,
+) -> Result<Vec<TextEdit>, ModelError> {
+    use automerge::ReadDoc as _;
+    let Some(change) = doc.get_change_by_hash(hash) else {
+        return Ok(Vec::new());
+    };
+    let before_heads = change.deps().to_vec();
+    let after_heads = [*hash];
+    // Which objects the change spliced, from its own operations: each op names its object.
+    // No op is looked up in the document: that search is the document's operations, and a
+    // change of a long note has as many ops as it typed characters.
+    let mut spliced: Vec<automerge::ObjId> = Vec::new();
+    for op in &change.decode().operations {
+        // A mark names the text it covers too, but marks a run of it rather than splicing
+        // it; only a put or a delete changes what the text says.
+        if matches!(
+            op.action,
+            automerge::legacy::OpType::MarkBegin(_) | automerge::legacy::OpType::MarkEnd(_)
+        ) {
+            continue;
+        }
+        let target = op_obj(doc, &op.obj)?;
+        if !spliced.contains(&target) {
+            spliced.push(target);
+        }
+    }
+    // Where each of them sits under `root`, from one walk of the rich text as it reads now.
+    let paths = paths_of(doc, root);
+    let mut out: Vec<TextEdit> = Vec::with_capacity(spliced.len());
+    for target in spliced {
+        let Some((_, path)) = paths
+            .iter()
+            .find(|(at, path)| *at == target && !path.is_empty())
+        else {
+            continue;
+        };
+        let path = path.clone();
+        let before = text_at(doc, &target, &before_heads)?;
+        let after = text_at(doc, &target, &after_heads)?;
+        let (inserted, deleted) = spliced_runs(&before, &after);
+        out.push(TextEdit {
+            path,
+            before,
+            after,
+            inserted,
+            deleted,
+        });
+    }
+    Ok(out)
+}
+
+/// The region of a text a change rewrote, as `(start, end)`: what the two sides do not share
+/// at their start and their end.
+fn region(before: &str, after: &str) -> (usize, usize, usize) {
+    let kept_start = common_chars(before, after, true);
+    let kept_end = common_chars(before, after, false);
+    (
+        kept_start,
+        before.chars().count().saturating_sub(kept_end),
+        after.chars().count().saturating_sub(kept_end),
+    )
+}
+
+/// What `text` says, as a reader reads it: the words outside the block markers a rich text
+/// lays its structure out with (each block's kind and attributes between two markers), its
+/// placeholders dropped.
+fn said(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut open = 0usize;
+    for ch in text.chars() {
+        match ch {
+            '\u{fffc}' => open ^= 1,
+            '\u{fffe}' | '\u{fffd}' => {}
+            other if open == 0 => out.push(other),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// What one text the change read at both sides made of it: the ranges of `after` the change
+/// inserted and the ranges of `before` it removed, each with its text, in reading order.
+///
+/// The runs of one text a change inserted and the runs it removed: each `(start, end, text)`.
+type Spliced = (Vec<(usize, usize, String)>, Vec<(usize, usize, String)>);
+
+/// The two sides differ in one region: what both share at their start and at their end is
+/// what the change kept. A length of zero either way is a text the change made or emptied,
+/// and the whole of it is the change's.
+fn spliced_runs(before: &str, after: &str) -> Spliced {
+    let (kept_start, deleted_end, inserted_end) = region(before, after);
+    // A change to the text's structure alone (an empty paragraph made, a body written whole
+    // over an empty one) writes nothing a reader reads.
+    let speaks = said(before).trim() != said(after).trim();
+    let spoken = |text: &str, start: usize, end: usize| {
+        speaks && !chars_between(text, start, end).trim().is_empty()
+    };
+    let inserted =
+        (kept_start < inserted_end && spoken(after, kept_start, inserted_end)).then(|| {
+            (
+                kept_start,
+                inserted_end,
+                chars_between(after, kept_start, inserted_end),
+            )
+        });
+    let deleted =
+        (kept_start < deleted_end && spoken(before, kept_start, deleted_end)).then(|| {
+            (
+                kept_start,
+                deleted_end,
+                chars_between(before, kept_start, deleted_end),
+            )
+        });
+    (
+        inserted.into_iter().collect(),
+        deleted.into_iter().collect(),
+    )
+}
+
+/// How many characters `a` and `b` share at their start (`from_start`) or their end.
+fn common_chars(a: &str, b: &str, from_start: bool) -> usize {
+    let (a, b) = if from_start {
+        (a.chars().collect::<Vec<_>>(), b.chars().collect::<Vec<_>>())
+    } else {
+        (
+            a.chars().rev().collect::<Vec<_>>(),
+            b.chars().rev().collect::<Vec<_>>(),
+        )
+    };
+    a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
+}
+
+/// The characters of `text` in `[start, end)`.
+fn chars_between(text: &str, start: usize, end: usize) -> String {
+    text.chars()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect()
+}
+
+/// The object the key `key` of the map `obj` holds as of `heads`, or `None` where it
+/// holds none: one seek into the map, never a walk of it.
+///
+/// # Errors
+/// The document cannot be read.
+pub fn object_at(
+    doc: &automerge::Automerge,
+    obj: &automerge::ObjId,
+    key: &str,
+    heads: &[ChangeHash],
+) -> Result<Option<automerge::ObjId>, ModelError> {
+    automerge::ReadDoc::get_at(doc, obj, key, heads)
+        .map(|held| match held {
+            Some((automerge::Value::Object(_), child)) => Some(child),
+            _ => None,
+        })
+        .map_err(ModelError::from)
+}
+
+/// The text the text object `obj` held as of `heads`, read in place: the cost of this
+/// text, never of the document.
+///
+/// # Errors
+/// `obj` is not a text object of the document.
+pub fn text_at(
+    doc: &automerge::Automerge,
+    obj: &automerge::ObjId,
+    heads: &[ChangeHash],
+) -> Result<String, ModelError> {
+    automerge::ReadDoc::text_at(doc, obj, heads).map_err(ModelError::from)
+}
+
+/// How deep the keys from a rich text's field down to a paragraph's text run at most: the
+/// text of a block of the body (`b1.text`), of a note, or of a comment.
+const DEEPEST_TEXT: usize = 3;
+
+/// The map keys from `root` down to the object `obj`, outermost first, or `None` when `obj`
+/// does not sit `DEEPEST_TEXT` keys below `root`.
+///
+/// Read from the top, once for the rich text as it reads now: each map's children are its
+/// own, so the walk costs the maps the text holds and nothing of the document. (Automerge's
+/// way up from an object searches the document's every operation for that object's op, and
+/// its way down at a past version seeks each key a whole document reads: either is the
+/// note's length, and a reader of one entry cannot pay that. Only the texts a change spliced
+/// are read at the past version, and only their own characters.)
+fn paths_of(
+    doc: &automerge::Automerge,
+    root: &automerge::ObjId,
+) -> Vec<(automerge::ObjId, Vec<String>)> {
+    let mut out = Vec::new();
+    walk(doc, root, &mut Vec::new(), DEEPEST_TEXT, &mut out);
+    out
+}
+
+fn walk(
+    doc: &automerge::Automerge,
+    at: &automerge::ObjId,
+    path: &mut Vec<String>,
+    depth: usize,
+    out: &mut Vec<(automerge::ObjId, Vec<String>)>,
+) {
+    use automerge::ReadDoc as _;
+    out.push((at.clone(), path.clone()));
+    if depth == 0 {
+        return;
+    }
+    for key in doc.keys(at) {
+        if let Ok(Some((automerge::Value::Object(_), child))) = doc.get(at, key.as_str()) {
+            path.push(key.clone());
+            walk(doc, &child, path, depth.saturating_sub(1), out);
+            path.pop();
+        }
     }
 }
 
@@ -486,6 +763,103 @@ mod tests {
         assert_eq!(made[0].prop, "note");
         assert!(made[0].before.is_null());
         assert_eq!(made[0].after["title"], "Groceries");
+    }
+
+    #[test]
+    fn a_typed_paragraph_says_which_keys_of_characters_it_typed_and_erased() {
+        use automerge::transaction::Transactable as _;
+        use automerge::{ObjType, ScalarValue};
+        let mut doc = Doc::new();
+        let note = doc.put_object(ROOT, "note", ObjType::Map).unwrap();
+        let body = doc.put_object(&note, "body", ObjType::Map).unwrap();
+        let blocks = doc.put_object(&body, "blocks", ObjType::Map).unwrap();
+        let first = doc.put_object(&blocks, "b1", ObjType::Map).unwrap();
+        let text = doc.put_object(&first, "text", ObjType::Text).unwrap();
+        let other = doc.put_object(&blocks, "b2", ObjType::Map).unwrap();
+        let other_text = doc.put_object(&other, "text", ObjType::Text).unwrap();
+        doc.splice_text(&text, 0, 0, "Groceries and milk").unwrap();
+        doc.splice_text(&other_text, 0, 0, "Untouched").unwrap();
+        commit_stamped_at(&mut doc, 1).unwrap();
+        // One step: a word replaced in the first paragraph, a title written beside it.
+        doc.splice_text(&text, 14, 4, "bread").unwrap();
+        doc.put(&note, "title", ScalarValue::Str("Shopping".into()))
+            .unwrap();
+        let step = commit_stamped_at(&mut doc, 2).unwrap();
+        let edits = spliced_texts(doc.document(), &step, &body).unwrap();
+        assert_eq!(edits.len(), 1, "only the paragraph typed into: {edits:?}");
+        let edit = &edits[0];
+        assert_eq!(edit.path, ["blocks", "b1", "text"]);
+        let inserted: String = edit
+            .inserted
+            .iter()
+            .map(|(_, _, text)| text.as_str())
+            .collect();
+        let deleted: String = edit
+            .deleted
+            .iter()
+            .map(|(_, _, text)| text.as_str())
+            .collect();
+        assert_eq!(inserted, "bread");
+        assert_eq!(deleted, "milk");
+        assert_eq!(edit.before, "Groceries and milk");
+        assert_eq!(edit.after, "Groceries and bread");
+        assert!(!edit.is_empty());
+    }
+
+    #[test]
+    fn a_body_retyped_whole_reads_as_what_was_there_and_what_was_written() {
+        use automerge::ObjType;
+        use automerge::transaction::Transactable as _;
+        let mut doc = Doc::new();
+        let body = doc.put_object(ROOT, "body", ObjType::Map).unwrap();
+        let text = doc.put_object(&body, "text", ObjType::Text).unwrap();
+        doc.splice_text(&text, 0, 0, "Groceries and milk").unwrap();
+        commit_stamped_at(&mut doc, 1).unwrap();
+        // A control hands over its whole text: the whole of what was there goes, and what
+        // was typed in its place comes.
+        doc.splice_text(&text, 0, 15, "Oat milk and bread").unwrap();
+        let step = commit_stamped_at(&mut doc, 2).unwrap();
+        let edits = spliced_texts(doc.document(), &step, &body).unwrap();
+        let edit = &edits[0];
+        let inserted: String = edit
+            .inserted
+            .iter()
+            .map(|(_, _, text)| text.as_str())
+            .collect();
+        let deleted: String = edit
+            .deleted
+            .iter()
+            .map(|(_, _, text)| text.as_str())
+            .collect();
+        assert_eq!(inserted, "Oat milk and bread");
+        // "il" is shared by "milk" and "bread" at the end, so those two stand outside the
+        // region the change rewrote: the reader sees the part that differs, as anybody
+        // reading the two texts sees it.
+        assert_eq!(deleted, "Groceries and m");
+        assert_eq!(edit.before, "Groceries and milk");
+        // The trailing "il" the record kept is still there, after the typed text.
+        assert_eq!(edit.after, "Oat milk and breadilk");
+    }
+
+    #[test]
+    fn a_paragraph_the_change_only_marked_reads_as_no_splice() {
+        use automerge::ObjType;
+        use automerge::marks::Mark;
+        use automerge::transaction::Transactable as _;
+        let mut doc = Doc::new();
+        let body = doc.put_object(ROOT, "body", ObjType::Map).unwrap();
+        let text = doc.put_object(&body, "text", ObjType::Text).unwrap();
+        doc.splice_text(&text, 0, 0, "Groceries").unwrap();
+        commit_stamped_at(&mut doc, 1).unwrap();
+        doc.mark(
+            &text,
+            Mark::new("strong".to_owned(), true, 0, 9),
+            automerge::marks::ExpandMark::Both,
+        )
+        .unwrap();
+        let step = commit_stamped_at(&mut doc, 2).unwrap();
+        let edits = spliced_texts(doc.document(), &step, &body).unwrap();
+        assert!(edits.iter().all(TextEdit::is_empty), "{edits:?}");
     }
 
     fn check_empty_commit_actor_transition(open_empty: bool) {

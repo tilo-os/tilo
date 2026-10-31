@@ -292,6 +292,56 @@ fn with_nothing_changing_the_bar_does_no_work() {
     );
 }
 
+/// The whole session frame for a change the bar shows: a new workspace, the frames the session
+/// runs to bring it to the front, at the median. The tool that compares the tilolang bar to the
+/// Rust bar holds this number.
+#[test]
+fn a_new_workspace_frame_is_measured() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    for _ in 0..20 {
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    // The bar's turns before the change: its own share, measured the same way.
+    let mut frame_ms: Vec<f64> = Vec::new();
+    // One new workspace per round; the session runs on from where the last left it.
+    for _ in 0..25 {
+        let workspaces = desk(&session).workspaces.len();
+        session
+            .invoke(
+                tilo_surface_host::shell_part::CHROME_RESOURCE,
+                "new-workspace",
+                &serde_json::Map::new(),
+            )
+            .unwrap();
+        // The frames it takes: each a step, timed to the frame the change reaches the bar.
+        let mut reached = false;
+        for _ in 0..8 {
+            let started = std::time::Instant::now();
+            session.step(Duration::from_millis(1)).unwrap();
+            let took = started.elapsed().as_secs_f64() * 1000.0;
+            if desk(&session).workspaces.len() > workspaces {
+                frame_ms.push(took);
+                reached = true;
+                break;
+            }
+        }
+        assert!(reached, "the new workspace reaches the desk");
+        // What the frames after it started (a fade, a layout) land.
+        for _ in 0..8 {
+            session.step(Duration::from_millis(1)).unwrap();
+        }
+    }
+    frame_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = frame_ms[frame_ms.len() / 2];
+    println!(
+        "shell bar session frame (new workspace): median {median:.2} ms over {} changes",
+        frame_ms.len()
+    );
+    assert!(frame_ms.len() == 25, "every change was measured");
+}
+
 /// A session bus of its own, as `dbus-run-session` starts one, stopped on drop.
 struct SessionBus {
     daemon: std::process::Child,
