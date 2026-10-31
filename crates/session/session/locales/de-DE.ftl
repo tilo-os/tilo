@@ -86,3 +86,12 @@ drives-unnamed = Wechseldatenträger
 drives-body = Eingesteckt. Öffne es, um zu sehen, was darauf ist, oder wirf es aus, bevor du es abziehst.
 drives-open = Öffnen
 drives-eject = Auswerfen
+
+## Was beim Deinstallieren einer App oder beim Entfernen aus den Apps herauskam.
+app-list-app-name = Apps
+app-list-gone-title = App nicht gefunden
+app-list-gone-body = Sie ist nicht mehr unter deinen Apps.
+app-list-uninstalled = { $name } deinstalliert
+app-list-uninstalled-file = Ihre Datei liegt im Papierkorb.
+app-list-uninstalled-files = Alle ihre Kopien liegen im Papierkorb.
+app-list-removed = { $name } aus deinen Apps entfernt

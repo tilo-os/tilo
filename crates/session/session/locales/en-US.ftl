@@ -84,3 +84,12 @@ drives-unnamed = Removable drive
 drives-body = Plugged in. Open it to see what is on it, or eject it before you pull it out.
 drives-open = Open
 drives-eject = Eject
+
+## What came of uninstalling an app, or taking it off the person's apps.
+app-list-app-name = Apps
+app-list-gone-title = App not found
+app-list-gone-body = It's no longer in your apps.
+app-list-uninstalled = Uninstalled { $name }
+app-list-uninstalled-file = Its file is in the Trash.
+app-list-uninstalled-files = All its copies are in the Trash.
+app-list-removed = Removed { $name } from your apps

@@ -130,16 +130,17 @@ impl crate::Seat for AddSeat {
 
 impl AddSeat {
     /// Ask about `offer`, as a new question: the switch starts off, as
-    /// adding where the file is does.
+    /// adding where the file is does, whether or not this program was asked
+    /// about before.
     pub fn show(&self, offer: Offer) {
+        if let Some(moved) = self.moved.borrow().as_ref() {
+            moved.set(false);
+        }
         if *self.offer.borrow() == Some(offer.clone()) {
             return;
         }
         if let Some(shown) = self.shown.borrow().as_ref() {
             shown.set(offer.clone());
-        }
-        if let Some(moved) = self.moved.borrow().as_ref() {
-            moved.set(false);
         }
         *self.offer.borrow_mut() = Some(offer);
     }
@@ -162,6 +163,13 @@ impl AddSeat {
     /// The answers made since the shell last asked, oldest first.
     pub fn take_asked(&self) -> Vec<AddAppEffect> {
         std::mem::take(&mut *self.asked.borrow_mut())
+    }
+
+    /// Answer as the sheet does, for a caller that answers in its place: a
+    /// test or a capture, which never presses the button.
+    #[doc(hidden)]
+    pub fn answer(&self, effect: AddAppEffect) {
+        self.asked.borrow_mut().push(effect);
     }
 }
 

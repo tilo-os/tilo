@@ -27,6 +27,7 @@
 
 mod a11y_settings;
 mod app_icons;
+mod app_sheets;
 mod bars;
 pub mod capture;
 mod capture_studio;
@@ -135,6 +136,7 @@ use tilo_sheets::lock::LockSeat;
 use tilo_sheets::portal::PortalSeat;
 use tilo_sheets::power::{PowerEffect, PowerSeat};
 use tilo_sheets::shortcut_guide::GuideSeat;
+use tilo_sheets::uninstall::UninstallSeat;
 use tilo_sheets::workspace_settings::WorkspaceSettingsSeat;
 
 pub use os_actions::SessionAction;
@@ -526,6 +528,9 @@ struct Shared {
     /// Whether the keys being routed now are a controller's own, standing
     /// for its presses: those say nothing about a keyboard.
     controller_keys: Rc<Cell<bool>>,
+    /// The questions about the person's apps: whether to add a program they
+    /// downloaded to their apps, and whether to uninstall one.
+    app_sheets: app_sheets::AppSheets,
 }
 
 /// The app a window shows, by its id.
@@ -1108,6 +1113,7 @@ impl Shared {
         );
         self.asker.follow();
         self.shortcut_guide.follow();
+        self.app_sheets.follow();
     }
 
     fn show_quick_settings(&self) {
@@ -1626,6 +1632,8 @@ impl Session {
             display_confirm,
             displays: display_seat,
             shortcut_guide: guide_seat,
+            add_app,
+            uninstall,
         } = mount::sheets::mount_sheets(&mut compositor, &mut doors, &options);
 
         // The capture studio, over everything it captures.
@@ -1702,6 +1710,10 @@ impl Session {
         // consent are only the session's, and the sheet asks about them.
         let dictation =
             dictation::Dictation::mount(&mut compositor, &mut doors, &services, &options);
+        // The questions about the person's apps answer through the registry
+        // of their downloaded programs, which is one of the services.
+        let app_sheets =
+            app_sheets::AppSheets::new(add_app, uninstall, Rc::clone(&services), notices.clone());
 
         let search = Rc::new(SessionSearch::new(options.search, options.apps));
         let asker = questions::Asker::new(
@@ -1778,6 +1790,7 @@ impl Session {
             fullscreen,
             controller,
             controller_keys,
+            app_sheets,
         };
         shared.start_search();
         // What the portal brings comes from any thread, and wakes the loop
@@ -2109,6 +2122,26 @@ impl Session {
     #[must_use]
     pub fn power_menu(&self) -> Option<&PowerSeat> {
         self.shared.power.as_ref()
+    }
+
+    /// The add sheet's seat: the program the person is asked about, when
+    /// one is; `None` when the sheet did not mount.
+    #[must_use]
+    pub fn add_app_sheet(&self) -> Option<&tilo_sheets::add_app::AddSeat> {
+        self.shared.app_sheets.add()
+    }
+
+    /// The uninstall sheet's seat: the app the person is asked about, when
+    /// one is; `None` when the sheet did not mount.
+    #[must_use]
+    pub fn uninstall_sheet(&self) -> Option<&UninstallSeat> {
+        self.shared.app_sheets.uninstall()
+    }
+
+    /// Ask the person whether to uninstall the app whose entry is
+    /// `desktop_id`, which the downloaded programs' registry lists.
+    pub fn ask_uninstall(&self, desktop_id: &str) {
+        self.shared.app_sheets.ask_uninstall(desktop_id);
     }
 
     /// Workspace settings' seat: what it shows, kept current by whoever

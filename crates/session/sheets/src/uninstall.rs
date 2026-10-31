@@ -145,16 +145,17 @@ impl crate::Seat for UninstallSeat {
 
 impl UninstallSeat {
     /// Ask about `app`, as a new question: what the app saved goes with it
-    /// until the person says otherwise.
+    /// until the person says otherwise, whether or not this app was asked
+    /// about before.
     pub fn show(&self, app: App) {
+        if let Some(remove_data) = self.remove_data.borrow().as_ref() {
+            remove_data.set(true);
+        }
         if *self.app.borrow() == Some(app.clone()) {
             return;
         }
         if let Some(shown) = self.shown.borrow().as_ref() {
             shown.set(app.clone());
-        }
-        if let Some(remove_data) = self.remove_data.borrow().as_ref() {
-            remove_data.set(true);
         }
         *self.app.borrow_mut() = Some(app);
     }
@@ -177,6 +178,13 @@ impl UninstallSeat {
     /// The answers made since the shell last asked, oldest first.
     pub fn take_asked(&self) -> Vec<UninstallEffect> {
         std::mem::take(&mut *self.asked.borrow_mut())
+    }
+
+    /// Answer as the sheet does, for a caller that answers in its place: a
+    /// test or a capture, which never presses the button.
+    #[doc(hidden)]
+    pub fn answer(&self, effect: UninstallEffect) {
+        self.asked.borrow_mut().push(effect);
     }
 }
 

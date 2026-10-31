@@ -1,14 +1,15 @@
 //! The sheets the session lends its seats to: the power menu, a workspace's
 //! settings, the directory, the portal apps open links through, the file
-//! picker, the guide, the display sheet and the lock screen — each mounted
-//! over the desktop and what it shows, and handed to the session as the seat
-//! it speaks through.
+//! picker, the guide, the display sheet, the questions about the person's
+//! apps and the lock screen — each mounted over the desktop and what it
+//! shows, and handed to the session as the seat it speaks through.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_compositor::Compositor;
 use tilo_sheets::Seat as _;
+use tilo_sheets::add_app::AddSeat;
 use tilo_sheets::directory::DirectorySeat;
 use tilo_sheets::display_confirm::ConfirmSeat;
 use tilo_sheets::displays::DisplaysSeat;
@@ -17,6 +18,7 @@ use tilo_sheets::lock::LockSeat;
 use tilo_sheets::portal::PortalSeat;
 use tilo_sheets::power::PowerSeat;
 use tilo_sheets::shortcut_guide::GuideSeat;
+use tilo_sheets::uninstall::UninstallSeat;
 use tilo_sheets::workspace_settings::WorkspaceSettingsSeat;
 use tilo_surface_host::Doors;
 
@@ -35,6 +37,8 @@ pub(crate) struct Sheets {
     pub(crate) display_confirm: Option<ConfirmSeat>,
     pub(crate) displays: Option<DisplaysSeat>,
     pub(crate) shortcut_guide: Option<GuideSeat>,
+    pub(crate) add_app: Option<AddSeat>,
+    pub(crate) uninstall: Option<UninstallSeat>,
 }
 
 pub(crate) fn mount_sheets(
@@ -125,6 +129,22 @@ pub(crate) fn mount_sheets(
         who,
         options,
     );
+    let add_app = mount_sheet(
+        compositor,
+        doors,
+        tilo_sheets::add_app::definition(),
+        AddSeat::default(),
+        who,
+        options,
+    );
+    let uninstall = mount_sheet(
+        compositor,
+        doors,
+        tilo_sheets::uninstall::definition(),
+        UninstallSeat::default(),
+        who,
+        options,
+    );
     // Last, so it covers every other sheet, the guide among them: the lock
     // screen shows no key of the desktop behind it.
     let lock = mount_lock_screen(compositor, doors, who, options);
@@ -138,6 +158,8 @@ pub(crate) fn mount_sheets(
         display_confirm,
         displays,
         shortcut_guide,
+        add_app,
+        uninstall,
     }
 }
 
