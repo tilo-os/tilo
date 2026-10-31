@@ -21418,6 +21418,7 @@ version = "0.1.0"
 dependencies = [
  "app-catalogue",
  "app-cli",
+ "atspi-proxies",
  "bounded-command",
  "chrono",
  "collab-types",
