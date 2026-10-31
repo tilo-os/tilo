@@ -1,6 +1,6 @@
 //! [`NavList`] and its items as described components.
 
-use crate::component::{Component, Described, Event, Value};
+use crate::component::{Component, Described, Event, ResourceId, Value};
 use crate::icons::Icon;
 
 use super::{NavItem, NavList, NavSection};
@@ -68,8 +68,16 @@ pub struct NavItemProps {
     pub label: String,
     /// Its glyph.
     pub icon: Option<Icon>,
-    /// How many things it holds.
+    /// How many things it holds: a quiet count in tertiary ink.
     pub count: Option<i64>,
+    /// How many things wait for attention (unread, mentions): the list's one filled badge,
+    /// in the person's colour; zero shows nothing.
+    pub live: Option<i64>,
+    /// Something new waits behind the place: its label stands out at rest.
+    pub unread: bool,
+    /// The resource the place stands for, when it is one (a channel): the host says how much
+    /// of it the person has not seen, in `live`, and lifts the label while anything is.
+    pub item: Option<ResourceId>,
     /// The place was chosen: what choosing it does, beside the list's own `select`.
     #[component(event)]
     pub select: Event,
@@ -81,8 +89,13 @@ impl From<NavItemProps> for NavItem {
         if let Some(icon) = props.icon {
             item = item.icon(icon);
         }
-        if let Some(count) = props.count {
+        if let Some(live) = props.live {
+            item = item.live_count(u32::try_from(live.max(0)).unwrap_or(u32::MAX));
+        } else if let Some(count) = props.count {
             item = item.count(u32::try_from(count.max(0)).unwrap_or(u32::MAX));
+        }
+        if props.unread {
+            item = item.unread(true);
         }
         item
     }

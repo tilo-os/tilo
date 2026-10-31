@@ -313,7 +313,7 @@ view history<R>(of: R) {
                     row(gap: .related, align: .center) {
                         avatar(s.who)
                         stack(gap: .tight) {
-                            ui.Text("{s.who}", role: .label)
+                            ui.Text(s.who.name(), role: .label)
                             ui.Text(what, role: .caption, secondary: true)
                             if not single {
                                 ui.Text(phrase("tilolang-history-changes", count: s.versions.len()), role: .caption, secondary: true)
