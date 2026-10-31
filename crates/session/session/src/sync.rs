@@ -41,7 +41,8 @@ use tilo_device_fabric::DeviceId;
 use tilo_device_fabric::runtime::FabricRuntime;
 use tilo_endpoint_reachability::{Need, Reachability};
 use tilo_network_actor::{
-    HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, RosterDevice, WorkspaceId,
+    HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, RosterDevice, WorkspaceControlRoute,
+    WorkspaceId,
     native_ingress, room_topic_id,
 };
 
@@ -441,6 +442,17 @@ fn room_key(room: &str) -> Vec<u8> {
     .unwrap_or_default()
 }
 
+/// One window stream's message as it reached this device: another member's
+/// shared window, or a member's ask to view one of this device's.
+#[derive(Clone, Debug)]
+pub(crate) struct ReceivedSurface {
+    /// The room's topic it came in on.
+    pub(crate) ws: WorkspaceId,
+    /// The device that published it.
+    pub(crate) from: EndpointId,
+    pub(crate) msg: NeighbourMsg,
+}
+
 /// What the sync thread is asked to do.
 #[derive(Debug)]
 pub(crate) enum Outgoing {
@@ -452,6 +464,20 @@ pub(crate) enum Outgoing {
     Publish {
         ws: WorkspaceId,
         msg: Box<NeighbourMsg>,
+    },
+    /// Send one window's stream on the topic of the room it is shared in,
+    /// to the members that asked to view it and no one else.
+    PublishSurfaceTo {
+        ws: WorkspaceId,
+        msg: Box<NeighbourMsg>,
+        viewers: Vec<neighbour_wire::PeerId>,
+    },
+    /// Say one workspace-control message to `target` alone, over the
+    /// authenticated direct route: which of its windows this device shows.
+    SendControl {
+        ws: WorkspaceId,
+        msg: Box<NeighbourMsg>,
+        target: EndpointId,
     },
     /// Dial a workspace host: an always-on peer that keeps what this
     /// person's devices publish while the others are away.
@@ -530,6 +556,9 @@ pub struct Client {
     notice: RefCell<Option<WaveNotice>>,
     outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
     arrived: std::sync::mpsc::Receiver<NetEvent>,
+    /// The window streams that reached this device: their frames, starts,
+    /// ends and control, which the shares take ([`Self::take_surfaces`]).
+    surfaces: RefCell<Vec<ReceivedSurface>>,
     /// What became of the enrollments asked for since the last call.
     enrolled: std::sync::mpsc::Receiver<Enrolled>,
     /// This device's rooms, which a join enrolls into: `None` when the
@@ -696,6 +725,7 @@ impl Client {
             notice: RefCell::new(None),
             outgoing,
             arrived,
+            surfaces: RefCell::new(Vec::new()),
             enrolled,
             engine,
             link,
@@ -893,10 +923,84 @@ impl Client {
                 _ => {}
             }
         }
+        // A window's stream is not presence: it goes to the shares, which
+        // read it on the pass ([`Self::take_surfaces`]).
+        if self.keep_surface(&event) {
+            return;
+        }
         self.plane.borrow_mut().apply(event);
         self.note_reachability();
         self.show_here();
         self.show_waves();
+    }
+
+    /// Keep `event`'s message for the shares if it is one of a window's
+    /// stream; whether it was.
+    fn keep_surface(&self, event: &NetEvent) -> bool {
+        let NetEvent::Msg { ws, peer, msg, .. } = event else {
+            return false;
+        };
+        if !matches!(
+            msg,
+            NeighbourMsg::SurfaceStreamStart { .. }
+                | NeighbourMsg::SurfaceFrame { .. }
+                | NeighbourMsg::SurfaceStreamEnd { .. }
+                | NeighbourMsg::RemoteInput { .. }
+                | NeighbourMsg::SurfaceKeyframeRequest { .. }
+                | NeighbourMsg::SurfaceViewRequest { .. }
+        ) {
+            return false;
+        }
+        self.surfaces.borrow_mut().push(ReceivedSurface {
+            ws: *ws,
+            from: *peer,
+            msg: msg.clone(),
+        });
+        true
+    }
+
+    /// Take the window-stream messages that reached this device since the
+    /// last call.
+    #[must_use]
+    pub(crate) fn take_surfaces(&self) -> Vec<ReceivedSurface> {
+        std::mem::take(&mut *self.surfaces.borrow_mut())
+    }
+
+    /// Send one message of `surface`'s stream on the topic of the room it is
+    /// shared in, to `viewers` alone: over the authenticated route to each
+    /// of them, never fanned out to the room.
+    pub(crate) fn publish_surface(
+        &self,
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+        viewers: &[neighbour_wire::PeerId],
+    ) {
+        let _ = self.outgoing.send(Outgoing::PublishSurfaceTo {
+            ws,
+            msg: Box::new(msg),
+            viewers: viewers.to_vec(),
+        });
+    }
+
+    /// Say `msg` to `target` alone, as a workspace-control message on the
+    /// topic of the room `ws`.
+    pub(crate) fn publish_control(&self, ws: WorkspaceId, msg: NeighbourMsg, target: EndpointId) {
+        let _ = self.outgoing.send(Outgoing::SendControl {
+            ws,
+            msg: Box::new(msg),
+            target,
+        });
+    }
+
+    /// The topic of the room `room`, while this session takes part in it.
+    #[must_use]
+    pub(crate) fn room_topic(&self, room: &str) -> Option<WorkspaceId> {
+        self.plane
+            .borrow()
+            .rooms
+            .iter()
+            .find(|held| held.id == room)
+            .map(|held| held.ws)
     }
 
     /// Keep what the person's other devices said of their workspaces: a
@@ -1158,6 +1262,12 @@ impl Client {
         tilo_network_actor::behaviour::peer_liveness_handle(&self.plane.borrow().publisher)
     }
 
+    /// This device's handle in a room, as a window's stream names it.
+    #[must_use]
+    pub(crate) fn peer(&self) -> neighbour_wire::PeerId {
+        self.peer_hash()
+    }
+
     /// Tell the room in front that this person's pointer is over `(x, y)` of
     /// the tile showing `tab`, in that tile's logical pixels.
     #[allow(
@@ -1359,8 +1469,9 @@ impl Client {
     }
 
     /// A client of a plane with no transport: what both the real client and
-    /// [`Self::untethered`] are, at their middle.
-    fn planeless(
+    /// [`Self::untethered`] are, at their middle. A test that reads what
+    /// one plane would have sent to another takes the receiver.
+    pub(crate) fn planeless(
         publisher: EndpointId,
         own: OwnPresence,
         hosts: Vec<EndpointAddr>,
@@ -1386,6 +1497,7 @@ impl Client {
                 notice: RefCell::new(None),
                 outgoing,
                 arrived,
+                surfaces: RefCell::new(Vec::new()),
                 enrolled: {
                     let (_landed, enrolled) = std::sync::mpsc::channel();
                     enrolled
@@ -1799,6 +1911,22 @@ async fn carry_out(
         Outgoing::Publish { ws, msg } => {
             plane.send(NetCmd::Publish { ws, msg: *msg }).await.is_ok()
         }
+        Outgoing::PublishSurfaceTo { ws, msg, viewers } => plane
+            .send(NetCmd::PublishSurfaceTo {
+                ws,
+                msg: *msg,
+                viewers,
+            })
+            .await
+            .is_ok(),
+        Outgoing::SendControl { ws, msg, target } => plane
+            .send(NetCmd::PublishWorkspaceControl {
+                ws,
+                msg: *msg,
+                route: WorkspaceControlRoute::Direct { target },
+            })
+            .await
+            .is_ok(),
         Outgoing::Connect(addr) => plane
             .send(NetCmd::ConnectHost {
                 addr,

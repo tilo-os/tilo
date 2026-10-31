@@ -1355,6 +1355,19 @@ session-param-displays-mode = How the displays are used together: extend, mirror
 session-clipboard = Clipboard
 session-clipboard-paste-files = Paste files here
 session-param-paste-destination = The folder the copied files are pasted into
+
+session-window-share = Shared windows
+session-window-share-share = Share a window with the room
+session-window-share-param-window = The window, by the identifier its app may capture
+session-window-share-param-tab = The tab the window is shown in on this device
+session-window-share-param-app = The app the window belongs to
+session-window-share-param-room = The room to share it in
+session-window-share-stop = Stop sharing the window
+session-window-share-allow-input = Let the room control the window
+session-window-share-param-on = Whether they may control it; leave out to switch it
+session-window-share-watch = Show a window another member shares
+session-window-share-unwatch = Stop showing it
+session-window-share-room-left = This session is no longer in the room
 desktop-action-show-overview = Show the overview
 desktop-action-hide-overview = Hide the overview
 

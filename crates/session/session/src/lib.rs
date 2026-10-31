@@ -97,6 +97,7 @@ mod system_sounds;
 pub mod unlock;
 mod wallpapers;
 mod window_motion;
+mod window_share;
 mod window_warmth;
 mod workspace_settings;
 mod workspaces;
@@ -234,6 +235,9 @@ struct Shared {
     /// The system services, reached for their readings; their actions go
     /// through the door like every other.
     services: Rc<RefCell<Services>>,
+    /// The windows this session shares with its rooms, and the streams it
+    /// receives from them.
+    window_shares: Rc<RefCell<window_share::WindowShares>>,
     /// The runs of what people ask this session's agents to do, fed every
     /// pass who sits here and what the room in front admits.
     agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
@@ -1135,6 +1139,9 @@ impl Session {
         // The displays a fullscreen window owns, which the loop takes from
         // the compositor every pass: the bar there steps aside for it.
         let fullscreen: Rc<RefCell<Vec<String>>> = Rc::default();
+        // The windows this session shares with its rooms: a share's encoder
+        // wakes the loop when it has a frame, and the bar reads them.
+        let window_shares = window_share::WindowShares::new(options.wake.handle());
         // The emoji picker is the chrome's; the session holds its picks,
         // writes them into the focused field and keeps its recents.
         let emoji = emoji::Emoji::mount();
@@ -1150,6 +1157,7 @@ impl Session {
                 notices: notices.clone(),
                 tray: tray.clone(),
                 fullscreen: Rc::clone(&fullscreen),
+                shares: Rc::clone(&window_shares),
             },
             sync.clone(),
             &overview,
@@ -1402,6 +1410,12 @@ impl Session {
         services
             .borrow_mut()
             .add(Box::new(lock_service::LockService::new(lock.clone())));
+        // A window shared with a room, and the windows its members share.
+        services
+            .borrow_mut()
+            .add(Box::new(window_share::WindowShareService::new(Rc::clone(
+                &window_shares,
+            ))));
         // Dictation joins the services: its recognizer, microphone and
         // consent are only the session's, and the sheet asks about them.
         let dictation =
@@ -1439,6 +1453,7 @@ impl Session {
             commands,
             readings,
             services,
+            window_shares,
             agent_runs,
             hosted: !options.machine.is_owned(),
             device,
@@ -2505,6 +2520,18 @@ impl Session {
         // their devices did, so a panel is sent the reading of this pass.
         self.surfaces.poll();
         self.surfaces.serve(&mut self.shared.doors);
+        // The windows shared with the rooms: what the person asked, what the
+        // plane brought, and the frames of the ones on screen.
+        {
+            let sync = self.shared.sync.clone();
+            let tree = self.shared.handle.read(Clone::clone);
+            self.shared.window_shares.borrow_mut().step(
+                &mut self.compositor,
+                &tree,
+                sync.as_deref(),
+                std::time::Instant::now(),
+            );
+        }
         // Dictation writes into the field the person is typing in, so it runs
         // before the frame rather than with the sheets.
         let locked = self.compositor.locked();

@@ -179,12 +179,24 @@ pub(crate) struct BarFeeds {
     /// The monitors of the displays a fullscreen window owns, as the loop
     /// found them this pass.
     pub(crate) fullscreen: Rc<RefCell<Vec<String>>>,
+    /// The windows this session shares with its rooms, which the bar says
+    /// are being shared while anyone views one.
+    pub(crate) shares: Rc<RefCell<crate::window_share::WindowShares>>,
 }
 
 /// What the snapshot revision was last bumped for: the tree's revision, the
 /// minute, the last wave heard, the ask on the person's avatar, the tray's
-/// revision and the displays a fullscreen window owns.
-type Seen = (u64, i64, Option<String>, u64, u64, Vec<String>);
+/// revision, the displays a fullscreen window owns, and who views the
+/// windows this session shares.
+type Seen = (
+    u64,
+    i64,
+    Option<String>,
+    u64,
+    u64,
+    Vec<String>,
+    Vec<(u64, u64, bool)>,
+);
 
 /// The bar's view of the session: the desktop's tree, the wall clock, and
 /// the person at this device.
@@ -218,6 +230,8 @@ pub(crate) struct SessionChrome {
     /// The monitors of the displays a fullscreen window owns, which the
     /// loop takes from the compositor each pass.
     fullscreen: Rc<RefCell<Vec<String>>>,
+    /// The windows this session shares, which the bar's sharing chip names.
+    shares: Rc<RefCell<crate::window_share::WindowShares>>,
     /// The [`Seen`] the snapshot revision was last bumped for.
     seen: RefCell<Seen>,
     revision: Cell<u64>,
@@ -239,6 +253,7 @@ impl SessionChrome {
             notices,
             tray,
             fullscreen,
+            shares,
         } = feeds;
         Self {
             handle,
@@ -253,7 +268,16 @@ impl SessionChrome {
             tray,
             notified: RefCell::new(None),
             fullscreen,
-            seen: RefCell::new((u64::MAX, 0, None, u64::MAX, u64::MAX, Vec::new())),
+            shares,
+            seen: RefCell::new((
+                u64::MAX,
+                0,
+                None,
+                u64::MAX,
+                u64::MAX,
+                Vec::new(),
+                Vec::new(),
+            )),
             revision: Cell::new(0),
         }
     }
@@ -316,6 +340,7 @@ impl DesktopChromeSource for SessionChrome {
         // The bar's pixels for an ask that comes, opens, folds, is answered
         // or is put off change with it, so the revision moves for those as
         // it does for the tree.
+        let exposures = self.shares.borrow().exposures();
         let seen = (
             self.handle.revision(),
             clock.unix_seconds.div_euclid(60),
@@ -323,6 +348,10 @@ impl DesktopChromeSource for SessionChrome {
             self.handle.personal_ask_revision(),
             self.app_tray_revision(),
             self.fullscreen.borrow().clone(),
+            exposures
+                .iter()
+                .map(|exposure| (exposure.surface, exposure.peer, exposure.can_control))
+                .collect(),
         );
         if *self.seen.borrow() != seen {
             self.seen.replace(seen);
@@ -353,6 +382,9 @@ impl DesktopChromeSource for SessionChrome {
             notification_badge: self.signals.unread(),
             notifications_quiet: self.signals.quiet(),
             notifications_only: self.notifications_only,
+            // Who views the windows this session shares: the bar says the
+            // share is live while anyone does.
+            active_exposures: exposures,
             ..DesktopChromeSnapshot::default()
         }
     }
