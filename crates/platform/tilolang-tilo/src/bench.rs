@@ -263,6 +263,10 @@ pub(crate) struct List {
     /// The item's flags (its Bool fields): every third item has them set, so a filter on one
     /// holds of some items and not of others.
     flags: Vec<String>,
+    /// The item's sets of text (its `Set<Text>` fields): every item holds "inbox" in each, as
+    /// a conversation is in the inbox, so a filter on a member holds of every item and its run
+    /// is the collection's.
+    sets: Vec<String>,
     /// The item's own collection, when it has one: a conversation's messages.
     nested: Option<Nested>,
     /// The items are places of a sidebar of several kinds of thing (a chat's channels among
@@ -430,6 +434,15 @@ fn list_in(field: &str, item_ty: String, holders: Vec<Holder>) -> Option<List> {
         .filter(|f| f.kind == MergeKind::Register && f.default.is_boolean())
         .map(|f| f.id.clone())
         .collect::<Vec<_>>();
+    // A set of text's members are runs of its column, as a conversation's boxes are: each
+    // item holding "inbox" makes a filter on it the collection's run, read page by page. Only
+    // where the app declares no default for it: a field with one is left as the app made it.
+    let sets = schema
+        .fields
+        .iter()
+        .filter(|f| f.kind == MergeKind::Set && f.default.is_null())
+        .map(|f| f.id.clone())
+        .collect::<Vec<_>>();
     let nested = schema
         .fields
         .iter()
@@ -446,6 +459,7 @@ fn list_in(field: &str, item_ty: String, holders: Vec<Holder>) -> Option<List> {
         holders,
         texts,
         flags,
+        sets,
         nested,
         places: false,
     })
@@ -553,6 +567,11 @@ fn seeded_collection(list: &List, n: usize, meta: &Meta) -> Result<Collection<Dy
         for field in &list.flags {
             if let Some(DynValue::Register(flag)) = item.get_mut(field) {
                 *flag = json!(i % 3 == 0);
+            }
+        }
+        for field in &list.sets {
+            if let Some(DynValue::Set(slot)) = item.get_mut(field) {
+                slot.insert(json!("inbox"));
             }
         }
         // A register of a type with no default (a time, a date, an identifier) reads as an

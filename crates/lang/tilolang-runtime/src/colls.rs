@@ -71,14 +71,26 @@ impl CollSeen {
     /// Whether everything seen is still so in `listing`.
     pub fn holds(&self, listing: &Listing) -> bool {
         // Read whole, it depends on the collection's field instead.
-        self.whole
-            || self.len.is_none_or(|len| len == listing.len())
-                && self.first.holds_in(|| listing.first())
-                && self.last.holds_in(|| listing.last())
-                && self
-                    .at
-                    .iter()
-                    .all(|(i, id)| listing.get(*i).as_ref() == Some(id))
+        if self.whole {
+            return true;
+        }
+        if self.len.is_some_and(|len| len != listing.len()) {
+            return false;
+        }
+        // This listing is another state of the store, and reads its run again. Where it holds
+        // as many items as were seen but is not sure it has them all (a filter that checks
+        // them one by one as it reads, [`Listing::len_is_exact`]), where its end is would cost
+        // reading the run: the view runs again and keeps the rows it has, as a list of any
+        // length does.
+        if !listing.len_is_exact() && (!self.at.is_empty() || matches!(self.last, End::Read(_))) {
+            return false;
+        }
+        self.first.holds_in(|| listing.first())
+            && self.last.holds_in(|| listing.last())
+            && self
+                .at
+                .iter()
+                .all(|(i, id)| listing.get(*i).as_ref() == Some(id))
     }
 
     /// Whether everything seen is still so in the store.
@@ -367,7 +379,9 @@ impl Core {
         }))
     }
 
-    /// How many items `coll` has.
+    /// How many items `coll` has: what the listing knows of its length without reading it, the
+    /// most it can have while it still checks items one by one as it reads them
+    /// ([`crate::store::Listing::len_is_exact`]).
     pub(crate) fn coll_len(&self, coll: &Rc<CollRef>) -> HResult<usize> {
         let len = self.coll_listing(coll)?.len();
         self.saw(coll, Read::Len(len), len);

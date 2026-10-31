@@ -213,7 +213,11 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
                 parse_ty(&field.ty, &meta.app),
                 Ok(Ty::List(_) | Ty::Tuple(_) | Ty::Map(_) | Ty::Result(..) | Ty::Principal)
             ),
-            MergeKind::Counter => true,
+            // A counter is a column of its value. A set's members are one run per member
+            // (`columns::values`), so membership and presence are runs of its column without
+            // any `filter` naming it: `boxes.contains("inbox")` finds the conversations in one
+            // box by one run, not one by one.
+            MergeKind::Counter | MergeKind::Set => true,
             _ => false,
         };
         // optional-decode: a loaded package's field types all parse (`unreadable_types`).
@@ -228,7 +232,7 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
             name: schema.id.clone(),
             field: Some(schema.id.clone()),
             kind,
-            many: false,
+            many: schema.kind == MergeKind::Set,
             pred: None,
             filter: false,
             cases,
