@@ -1,4 +1,6 @@
 [workspace]
+# Vendored crates stay out: cargo makes a package under this directory a workspace member when a
+# member names it by path, and a member's dev-dependencies then build with every workspace build.
 exclude = [
     "vendor/leveldb-sys",
     "vendor/buffa-build",
@@ -41,6 +43,8 @@ exclude = [
     "vendor/atspi-proxies",
     "vendor/rustypipe",
     "vendor/miracast",
+    "vendor/smithay",
+    "vendor/web-transport-proto",
     "vendor/davey",
     "vendor/zbus",
 ]

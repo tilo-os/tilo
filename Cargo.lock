@@ -5104,12 +5104,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fixedbitset"
-version = "0.5.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
-
-[[package]]
 name = "flagset"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5495,19 +5489,6 @@ checksum = "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
 dependencies = [
  "futures-core",
  "futures-sink",
-]
-
-[[package]]
-name = "futures-concurrency"
-version = "7.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "175cd8cca9e1d45b87f18ffa75088f2099e3c4fe5e2f83e42de112560bea8ea6"
-dependencies = [
- "fixedbitset",
- "futures-core",
- "futures-lite",
- "pin-project",
- "smallvec",
 ]
 
 [[package]]
@@ -10109,7 +10090,6 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c37e81176a83a77d2514528b91bdafc70ef88aab428f0e1b91aebb8d99888895"
 dependencies = [
- "anyhow",
  "n0-error-macros",
  "spez",
 ]
@@ -26897,6 +26877,7 @@ dependencies = [
  "ahash",
  "aho-corasick",
  "alacritty_terminal",
+ "aliasable",
  "alloc-no-stdlib",
  "alloc-stdlib",
  "allocator-api2",
@@ -27242,7 +27223,6 @@ dependencies = [
  "filetime",
  "find-msvc-tools",
  "firewall",
- "fixedbitset",
  "flagset",
  "flatbuffers",
  "flate2",
@@ -27274,7 +27254,6 @@ dependencies = [
  "futures",
  "futures-buffered",
  "futures-channel",
- "futures-concurrency",
  "futures-core",
  "futures-executor",
  "futures-intrusive",
@@ -27709,6 +27688,8 @@ dependencies = [
  "pipewire-sys",
  "piston-float",
  "pixglyph",
+ "pixman",
+ "pixman-sys",
  "pkcs1 0.7.5",
  "pkcs1 0.8.0-rc.4",
  "pkcs5",
@@ -28073,6 +28054,7 @@ dependencies = [
  "tilo-ai-bench",
  "tilo-app",
  "tilo-app-cli",
+ "tilo-app-launch",
  "tilo-app-package",
  "tilo-app-state",
  "tilo-app-template-smoke",
@@ -28085,6 +28067,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-bluetooth-agent",
  "tilo-bluez",
  "tilo-board-successor",
  "tilo-boot-order",
@@ -28098,12 +28081,15 @@ dependencies = [
  "tilo-canvas",
  "tilo-caps",
  "tilo-capture",
+ "tilo-capture-studio",
  "tilo-chromium-blocker",
  "tilo-cli-kit",
  "tilo-clipboard",
  "tilo-clock",
  "tilo-cloud-files",
  "tilo-color-pipeline",
+ "tilo-compositor",
+ "tilo-connectivity-service",
  "tilo-connector",
  "tilo-contact-directory",
  "tilo-content",
@@ -28113,6 +28099,7 @@ dependencies = [
  "tilo-control",
  "tilo-copy-lint",
  "tilo-cpu-raster",
+ "tilo-crash-records",
  "tilo-crypto",
  "tilo-dav",
  "tilo-delivery-protocol",
@@ -28123,6 +28110,7 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-device-admin",
+ "tilo-device-fabric",
  "tilo-device-vpn",
  "tilo-dialogs",
  "tilo-doc",
@@ -28130,6 +28118,7 @@ dependencies = [
  "tilo-doc-pdf",
  "tilo-document",
  "tilo-documents",
+ "tilo-durable-writer",
  "tilo-egress",
  "tilo-emoji-catalogue",
  "tilo-endpoint-reachability",
@@ -28182,6 +28171,7 @@ dependencies = [
  "tilo-model-gateway",
  "tilo-moderation",
  "tilo-moq",
+ "tilo-nearby-service",
  "tilo-net",
  "tilo-net-answers",
  "tilo-net-p2p",
@@ -28189,6 +28179,7 @@ dependencies = [
  "tilo-network-secret-agent",
  "tilo-nm",
  "tilo-notification-banners",
+ "tilo-notifications-service",
  "tilo-notify",
  "tilo-ntfs-helper",
  "tilo-ntfs-mount",
@@ -28196,6 +28187,8 @@ dependencies = [
  "tilo-oauth",
  "tilo-oci-images",
  "tilo-ocr",
+ "tilo-onboarding",
+ "tilo-onboarding-host",
  "tilo-os-search",
  "tilo-output-passes",
  "tilo-overview",
@@ -28208,6 +28201,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-platform-caps",
  "tilo-polkit-agent",
+ "tilo-portal",
  "tilo-power-mgmt",
  "tilo-presentation",
  "tilo-process",
@@ -28241,17 +28235,24 @@ dependencies = [
  "tilo-secrets",
  "tilo-segment",
  "tilo-selector",
+ "tilo-service",
+ "tilo-session",
+ "tilo-session-power",
  "tilo-session-record",
  "tilo-settings-records",
+ "tilo-settings-service",
  "tilo-sheets",
  "tilo-sibling-unlock",
  "tilo-sort",
+ "tilo-speaker-service",
  "tilo-spellcheck",
  "tilo-spotify",
  "tilo-staging-reclaim",
  "tilo-startup-metrics",
  "tilo-subject",
+ "tilo-surface-host",
  "tilo-system-info",
+ "tilo-system-service",
  "tilo-system-stats",
  "tilo-test-env",
  "tilo-thumbnail",
@@ -28292,6 +28293,7 @@ dependencies = [
  "tilolang-app",
  "tilolang-cli",
  "tilolang-host",
+ "tilolang-mail",
  "tilolang-runtime",
  "tilolang-tilo",
  "time",
@@ -28444,6 +28446,7 @@ dependencies = [
  "wayland-client",
  "wayland-csd-frame",
  "wayland-cursor",
+ "wayland-egl",
  "wayland-protocols",
  "wayland-protocols-experimental",
  "wayland-protocols-misc",

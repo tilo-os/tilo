@@ -253,6 +253,24 @@ def manifest(root: Path, current: str) -> str:
     return text
 
 
+def members(root: Path, text: str) -> set[str]:
+    """The workspace's members with workspace-unify's manifest at `root` being `text`: a package it
+    names by a path inside the workspace's directory is one, by cargo's rule for path dependencies,
+    unless the workspace excludes that directory, and a member resolves its dev-dependencies in
+    every build of the workspace. Leaves `root` as it found it."""
+    anchor = root / DIR.relative_to(ROOT) / "Cargo.toml"
+    before = anchor.read_text() if anchor.exists() else None
+    try:
+        anchor.write_text(text)
+        meta = json.loads(subprocess.run(
+            ["cargo", "metadata", "--offline", "--no-deps", "--format-version", "1"],
+            cwd=root, check=True, capture_output=True, text=True).stdout)
+    finally:
+        if before is not None:
+            anchor.write_text(before)
+    return {p["name"] for p in meta["packages"] if p["id"] in set(meta["workspace_members"])}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode = ap.add_mutually_exclusive_group(required=True)
@@ -268,6 +286,15 @@ def main() -> int:
         copy = Path(scratch) / "tree"
         shutil.copytree(ROOT, copy, symlinks=True, ignore=shutil.ignore_patterns(".git", "target"))
         want = manifest(copy, have)
+        # The tables name libraries the workspace builds, never new members: a member's own
+        # dev-dependencies resolve in every build of the workspace, so a member added here would
+        # build crates no member asked for.
+        added = members(copy, want) - members(copy, EMPTY)
+        if added:
+            print(f"workspace-unify would make {', '.join(sorted(added))} a workspace member by "
+                  "naming it by path: add its directory to [workspace] exclude in Cargo.toml.",
+                  file=sys.stderr)
+            return 1
     if args.write:
         (DIR / "Cargo.toml").write_text(want)
         (DIR / "main.rs").write_text(MAIN)
