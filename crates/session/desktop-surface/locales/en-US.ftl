@@ -1386,3 +1386,15 @@ window-menu-narrowest = As narrow as a window goes
 window-menu-close = Close
 window-menu-someone-elses = { $name } opened this window
 
+# The desk's widgets: what each is called, and what its controls do.
+desk-widget-music = Music
+desk-widget-team = People here
+desk-widget-calendar = Calendar
+desk-widget-system-monitor = System monitor
+desk-widget-pin = Always show this widget on this workspace
+desk-widget-unpin = Stop always showing this widget
+desk-widget-collapse = Fold { $widget } back
+desk-widget-remove = Remove { $widget } from the desk
+desk-team-title = In this workspace
+desk-team-place = { $strip } · { $window }
+desk-team-more = +{ $count } more

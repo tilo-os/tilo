@@ -1400,3 +1400,15 @@ window-menu-widest = So breit wie der Streifen
 window-menu-narrowest = So schmal wie ein Fenster sein kann
 window-menu-close = Schließen
 window-menu-someone-elses = { $name } hat dieses Fenster geöffnet
+# The desk's widgets: what each is called, and what its controls do.
+desk-widget-music = Musik
+desk-widget-team = Menschen hier
+desk-widget-calendar = Kalender
+desk-widget-system-monitor = Systemmonitor
+desk-widget-pin = Dieses Widget immer in diesem Arbeitsbereich anzeigen
+desk-widget-unpin = Dieses Widget nicht mehr immer anzeigen
+desk-widget-collapse = { $widget } einklappen
+desk-widget-remove = { $widget } vom Schreibtisch entfernen
+desk-team-title = In diesem Arbeitsbereich
+desk-team-place = { $strip } · { $window }
+desk-team-more = +{ $count } weitere

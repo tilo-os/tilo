@@ -33,6 +33,7 @@ mod capture_studio;
 mod chrome;
 mod config;
 mod controls;
+mod desk;
 mod desk_layout;
 pub mod desktop_services;
 mod dictation;
@@ -80,18 +81,16 @@ use tilo_compositor::{Compositor, DisplayConfig, Error, NestedConfig, OutputConf
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_actions::{CHROME_RESOURCE, DESK_RESOURCE};
 use tilo_desktop::desktop_host::{
-    DeskLayer, DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, WORKSPACE_SETTINGS,
+    DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, WORKSPACE_SETTINGS,
 };
-use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
+use tilo_desktop::launchpad::LaunchpadAction;
 use tilo_desktop::osd::{OSD_RESOURCE, Osd, OsdKind};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::Command;
 use tilo_lock::MutexRecover as _;
 use tilo_quick_settings::QsEffect;
 use tilo_service::Started;
-use tilo_surface_host::{
-    DeskGesture, DesktopHost, Doors, Published, StripPolicy, WidgetHost, desktop_with,
-};
+use tilo_surface_host::{DeskGesture, DesktopHost, Doors, Published, WidgetHost};
 use ui::application::ComponentRunnerInputs;
 use ui::host_operation::ResourceOperationStart;
 use ui::shortcut_table::ShortcutAction;
@@ -1366,31 +1365,6 @@ struct Unlocking {
     wake: std::task::Waker,
 }
 
-/// The desk of this session's workspace and the policy placing its windows,
-/// with what its tree asks of the session. The chrome above it asks through
-/// the same list.
-fn desk(
-    options: &Options,
-    notices: tilo_desktop_surface::DesktopNotifications,
-    pictures: std::sync::Arc<wallpapers::Wallpapers>,
-) -> (DesktopHost, StripPolicy, Rc<RefCell<Vec<DesktopAsk>>>) {
-    let asks = Rc::new(RefCell::new(Vec::new()));
-    let (desktop, policy) = desktop_with(options.salt, options.scale, |mut surface, handle| {
-        surface.set_notifications(notices);
-        Box::new(
-            DeskLayer::new(
-                Box::new(surface),
-                handle.clone(),
-                CollaborationLaunchpad::new(),
-                Vec::new(),
-            )
-            .with_asks(Rc::clone(&asks))
-            .with_wallpaper(move |workspace| pictures.picture(workspace)),
-        )
-    });
-    (desktop, policy, asks)
-}
-
 impl Session {
     /// A session on the compositor `start` makes with the desktop's window
     /// policy.
@@ -1434,6 +1408,9 @@ impl Session {
             std::sync::Arc::clone(&woken),
         ));
         let watched_wallpapers = std::sync::Arc::clone(&wallpapers);
+        // The desk widgets' choices, kept current by the same watch.
+        let widget_prefs = desk::prefs();
+        let watched_widgets = std::sync::Arc::clone(&widget_prefs);
         // Artwork the session resolves off the loop wakes it when it is
         // ready, so the frame that painted the letter repaints with it; the
         // apps installed here are the lists' to resolve, on their worker.
@@ -1444,14 +1421,16 @@ impl Session {
             *watched.lock_recover() =
                 settings_store::notification_policy::NotificationPolicy::from_document(&document);
             watched_wallpapers.follow(&document);
+            desk::follow_prefs(&watched_widgets, &document);
             woken();
         })
         .map_err(|error| tracing::debug!(%error, "settings are not watched"))
         .ok();
-        let (desktop, mut policy, asks) = desk(
+        let (desktop, mut policy, asks) = desk::desk(
             &options,
             notices.clone(),
             std::sync::Arc::clone(&wallpapers),
+            widget_prefs,
         );
         desktop.set_gestures(options.config.gestures);
         desktop.set_theme((options.presentation)().theme);
