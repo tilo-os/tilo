@@ -21831,6 +21831,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-theme-bauhaus"
+version = "0.1.0"
+dependencies = [
+ "tilo-theme-sdk",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-theme-sdk"
 version = "0.1.0"
 dependencies = [
@@ -22039,6 +22047,7 @@ dependencies = [
  "tilo-spellcheck",
  "tilo-startup-metrics",
  "tilo-test-env",
+ "tilo-theme-bauhaus",
  "tilo-theme-sdk",
  "tilo-tts",
  "tilo-ui",
