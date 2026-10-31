@@ -62,7 +62,7 @@ impl<A: serde::Serialize + 'static> ControlVerb<A> {
     )]
     pub(crate) fn new(
         id: &str,
-        label: &'static str,
+        label: &str,
         verb: &'static str,
         type_id: &'static str,
         argument: VerbArgument,

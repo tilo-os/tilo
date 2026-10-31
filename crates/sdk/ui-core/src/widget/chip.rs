@@ -48,6 +48,10 @@ const TINT_FILL: f32 = 0.15;
 /// shape on a dark and a light ground, quieter than the label.
 const TINT_EDGE: f32 = 0.38;
 
+/// The chip's own flips, as the view actions it publishes.
+const TOGGLE_CHIP: &str = "tilo.ui.chip.toggle";
+const REMOVE_CHIP: &str = "tilo.ui.chip.remove";
+
 /// What a chip or badge is. The style is the whole appearance; there is no
 /// colour, size or radius to set.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -611,6 +615,9 @@ pub struct Chip {
     on_toggle: Option<Box<dyn FnMut(bool)>>,
     /// Told each time a person presses the "×".
     on_remove: Option<Box<dyn FnMut()>>,
+    /// The chip's own flips, published as its view actions.
+    toggle_verb: Option<super::control_verb::ControlVerb<bool>>,
+    remove_verb: Option<super::control_verb::ControlVerb<bool>>,
     rect: Rect,
     x_rect: Rect,
     last_cursor: Point,
@@ -678,6 +685,8 @@ impl Chip {
             removed: false,
             on_toggle: None,
             on_remove: None,
+            toggle_verb: None,
+            remove_verb: None,
             rect: Rect::ZERO,
             x_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
@@ -867,11 +876,54 @@ impl Chip {
         self
     }
 
+    /// Flip the chip's selection as the chip's published view action
+    /// `toggle` (implies [`selectable`](Self::selectable)): a person's press,
+    /// a screen reader, a script and an agent flip it through the same
+    /// action, and `f` hears the selection it reports.
+    #[must_use]
+    pub fn on_toggle_view(mut self, f: impl FnMut(bool) + 'static) -> Self {
+        self.selectable = true;
+        let id = self.activation.id().to_owned();
+        let label = self.label.clone();
+        self.toggle_verb = Some(super::control_verb::ControlVerb::new(
+            &id,
+            &label,
+            "toggle",
+            TOGGLE_CHIP,
+            super::control_verb::VerbArgument::Flag,
+        ));
+        self.on_toggle = Some(Box::new(f));
+        self
+    }
+
+    /// Remove the chip as its published view action `remove` (implies
+    /// [`removable`](Self::removable)), so the × a person presses, a screen
+    /// reader, a script and an agent all remove it the same way.
+    #[must_use]
+    pub fn on_remove_view(mut self, f: impl FnMut() + 'static) -> Self {
+        self.removable = true;
+        let id = self.activation.id().to_owned();
+        let label = self.label.clone();
+        self.remove_verb = Some(super::control_verb::ControlVerb::new(
+            &id,
+            &label,
+            "remove",
+            REMOVE_CHIP,
+            super::control_verb::VerbArgument::Flag,
+        ));
+        self.on_remove = Some(Box::new(f));
+        self
+    }
+
     /// The selection was flipped by a person.
     fn flipped(&mut self) {
-        self.selected = !self.selected;
+        let selected = !self.selected;
+        if let Some(verb) = &mut self.toggle_verb {
+            verb.emit(selected);
+            return;
+        }
+        self.selected = selected;
         self.toggled = true;
-        let selected = self.selected;
         if let Some(on_toggle) = self.on_toggle.as_mut() {
             on_toggle(selected);
         }
@@ -879,6 +931,10 @@ impl Chip {
 
     /// The "×" was pressed.
     fn remove_pressed(&mut self) {
+        if let Some(verb) = &mut self.remove_verb {
+            verb.emit(true);
+            return;
+        }
         self.removed = true;
         if let Some(on_remove) = self.on_remove.as_mut() {
             on_remove();
@@ -1234,9 +1290,80 @@ impl Widget for Chip {
     }
 }
 
-crate::widget::activation::activation_controls!(Chip, activation);
+impl crate::widget::controls::ActionControls for Chip {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        self.activation.install_custody(domain, attachment);
+        for verb in [self.toggle_verb.as_mut(), self.remove_verb.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            verb.install_custody(domain, attachment);
+        }
+        for child in crate::widget::Widget::children_mut(self) {
+            crate::widget::controls::install_control_custody(child, domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.activation
+            .take_invocation()
+            .or_else(|| self.toggle_verb.as_mut().and_then(super::control_verb::ControlVerb::take))
+            .or_else(|| self.remove_verb.as_mut().and_then(super::control_verb::ControlVerb::take))
+            .or_else(|| {
+                crate::widget::Widget::children_mut(self)
+                    .into_iter()
+                    .find_map(crate::widget::controls::take_control_invocation)
+            })
+    }
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = self.activation.bindings();
+        let control_id = self.activation.id();
+        if let Some(verb) = &self.toggle_verb {
+            bindings.push(verb.metadata(control_id));
+        }
+        if let Some(verb) = &self.remove_verb {
+            bindings.push(verb.metadata(control_id));
+        }
+        for child in crate::widget::Widget::children(self) {
+            bindings.extend(crate::widget::controls::control_action_bindings(child));
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        self.activation.refresh_availability(allowed);
+        for verb in [self.toggle_verb.as_mut(), self.remove_verb.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            verb.refresh_availability(allowed);
+        }
+        for child in crate::widget::Widget::children_mut(self) {
+            crate::widget::controls::refresh_control_action_availability(child, allowed);
+        }
+    }
+}
 
 impl crate::widget::ResourceOperations for Chip {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        let mut mask = 0;
+        if !self.activation.native_handler().is_empty() {
+            mask |= 1;
+        }
+        if self.toggle_verb.is_some() {
+            mask |= 2;
+        }
+        if self.remove_verb.is_some() {
+            mask |= 4;
+        }
+        CHIP_OPERATIONS[mask]
+    }
+
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         self.activation.native_handlers()
     }
@@ -1247,13 +1374,63 @@ impl crate::widget::ResourceOperations for Chip {
         _doc: &mut crate::widget::Edits<'_>,
         _path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let toggled = self
+            .toggle_verb
+            .as_ref()
+            .map(|verb| verb.start(op))
+            .transpose()?
+            .flatten();
+        if let Some(selected) = toggled {
+            self.selected = selected;
+            self.toggled = true;
+            if let Some(on_toggle) = self.on_toggle.as_mut() {
+                on_toggle(selected);
+            }
+            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
+        let removed = self
+            .remove_verb
+            .as_ref()
+            .map(|verb| verb.start(op))
+            .transpose()?
+            .flatten();
+        if removed.is_some() {
+            self.removed = true;
+            if let Some(on_remove) = self.on_remove.as_mut() {
+                on_remove();
+            }
+            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
         self.activation.start_native(op)
     }
 }
 
+/// The chip's own operations, indexed by the mask of those it publishes.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "the mask is built from the same bits"
+)]
+const CHIP_OPERATIONS: [&[&str]; 8] = {
+    const A: &str = crate::widget::activation::NATIVE_INVOKE;
+    const T: &str = TOGGLE_CHIP;
+    const R: &str = REMOVE_CHIP;
+    [&[], &[A], &[T], &[A, T], &[R], &[A, R], &[T, R], &[A, T, R]]
+};
+
 impl crate::resources::PublishesResources for Chip {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        self.activation.native_resources()
+        let mut resources = self.activation.native_resources();
+        resources.extend(
+            [self.toggle_verb.as_ref(), self.remove_verb.as_ref()]
+                .into_iter()
+                .flatten()
+                .map(super::control_verb::ControlVerb::resource),
+        );
+        resources
     }
 }
 #[cfg(test)]

@@ -160,7 +160,7 @@ impl ResourceApp for TallyApp {
             Column::new()
                 .push(Box::new(
                     Button::new("step-up", "Step up")
-                        .on_click(move || step.set(step.get().saturating_add(1))),
+                        .on_view(move || step.set(step.get().saturating_add(1))),
                 ))
                 .push(cx.surface(Jobs::default())),
         )
@@ -521,7 +521,7 @@ impl ResourceApp for ViewJobsApp {
                 .live_row(|id| Some(job(id.strip_prefix("job:")?.parse().ok()?))),
             Box::new(
                 Column::new()
-                    .push(Box::new(Button::new("start-job", "Start a job").on_click(
+                    .push(Box::new(Button::new("start-job", "Start a job").on_view(
                         move || running.set(running.get().saturating_add(1)),
                     )))
                     .push(Box::new(Jobs::default())),
