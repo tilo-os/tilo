@@ -31,23 +31,30 @@ use ui::widget::{
 };
 
 use crate::presentation::Presentation;
-use crate::t;
+use crate::{t, words as words_with};
 
 /// The app the session mounts the dictation sheet as.
 pub const APP_ID: &str = "so.tilo.dictation";
 
-/// The stage a dictation is in, as the sheet shows it.
+/// The stage a dictation is in, as the sheet shows it: one for each step
+/// between the person's key and the words in their field.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Stage {
     /// Waiting for the person to allow the microphone for this dictation.
     #[default]
     Asking,
-    /// Preparing the recognizer and the field.
+    /// Waiting for the field to ask for typing.
     Preparing,
+    /// Starting the local recognizer; the microphone is off.
+    Loading,
     /// Recording: what is heard follows in `Prompt::draft`.
     Listening,
-    /// Stopping the microphone and finishing the text.
+    /// Stopping the microphone.
+    StoppingMicrophone,
+    /// The text is being finished.
     Finishing,
+    /// Stopping what was left of the dictation.
+    Stopping,
     /// Nothing was inserted; the transcript can be copied.
     Recovery,
     /// The dictation could not run, or what it heard could not be inserted.
@@ -61,10 +68,54 @@ pub enum RecoveryReason {
     VocabularyChanged,
     /// The transcript was longer than a field takes at once.
     TooLong,
-    /// The field refused it.
-    Rejected,
-    /// Nothing confirmed the field took it.
-    UnknownDelivery,
+}
+
+/// Why a dictation stopped, as the card says it. The session names the
+/// reason; the words are the sheet's, in the person's language.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// No field had the focus, or the field takes a secret.
+    Field,
+    /// The field is a terminal's, where spoken words would be commands.
+    UnsupportedField,
+    /// The dictation before this one still stopped.
+    Busy,
+    /// The field the person typed into is no longer the one it was asked
+    /// about.
+    TargetChanged,
+    /// The dictation ran past its window.
+    TimedOut,
+    /// No local speech model is set up.
+    ModelRequired,
+    /// The model does not recognise the person's language.
+    LanguageUnavailable,
+    /// The microphone could not be opened.
+    MicrophoneUnavailable,
+    /// The person's dictionary changed or went away.
+    VocabularyUnavailable,
+    /// The microphone's audio broke off.
+    AudioInterrupted,
+    /// Anything else: local dictation is unavailable.
+    Unavailable,
+}
+
+impl Failure {
+    /// The card's words for it.
+    fn key(self) -> &'static str {
+        match self {
+            Self::Field => "dictation-editable-required",
+            Self::UnsupportedField => "dictation-unsupported-field",
+            Self::Busy => "dictation-busy",
+            Self::TargetChanged => "dictation-target-changed",
+            Self::TimedOut => "dictation-timeout",
+            Self::ModelRequired => "dictation-model-required",
+            Self::LanguageUnavailable => "dictation-language-unavailable",
+            Self::MicrophoneUnavailable => "dictation-microphone-unavailable",
+            Self::VocabularyUnavailable => "dictation-vocabulary-unavailable",
+            Self::AudioInterrupted => "dictation-audio-interrupted",
+            Self::Unavailable => "dictation-unavailable",
+        }
+    }
 }
 
 /// What the session shows about the dictation it runs.
@@ -74,12 +125,17 @@ pub struct Prompt {
     /// cannot answer its successor.
     pub id: u64,
     pub stage: Stage,
-    /// The live hypothesis while recording; empty otherwise.
+    /// The live hypothesis while recording, already cut to what the card
+    /// shows; empty otherwise.
     pub draft: String,
     /// What went wrong, when the dictation could not run or was not inserted.
-    pub failure: Option<String>,
+    pub failure: Option<Failure>,
     /// Why the transcript is kept, while `stage` is `Recovery`.
     pub recovery: Option<RecoveryReason>,
+    /// The kept transcript reached the clipboard.
+    pub copied: bool,
+    /// The clipboard could not take the kept transcript.
+    pub copy_failed: bool,
 }
 
 /// What the person answered, once.
@@ -107,13 +163,10 @@ pub struct Dictation {}
 #[resource(kind = "dictation.session", label = "Dictation")]
 impl Dictation {}
 
-/// What the card shows: the prompt, and whether the kept transcript was
-/// copied from here.
+/// What the card shows: the prompt, as the session last said it stands.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Shown {
     prompt: Option<Prompt>,
-    /// The person copied the kept transcript: the card says so.
-    copied: bool,
 }
 
 /// What the session lends the sheet: what to show, and where the answer goes.
@@ -147,10 +200,7 @@ impl DictationSeat {
             return;
         }
         if let Some(shown) = self.shown.borrow().as_ref() {
-            shown.update(|shown| {
-                shown.copied = false;
-                shown.prompt.clone_from(&prompt);
-            });
+            shown.update(|shown| shown.prompt.clone_from(&prompt));
         }
         *self.prompt.borrow_mut() = prompt;
         // The card is up already and was woken by its own state; a card not
@@ -205,24 +255,12 @@ impl ResourceApp for DictationApp {
                 .map(|prompt| Some((*prompt).clone()))
                 .unwrap_or_default(),
         };
-        let shown = cx.local(Shown {
-            prompt: initial,
-            copied: false,
-        });
+        let shown = cx.local(Shown { prompt: initial });
         if let Some(seat) = &seat {
             *seat.shown.borrow_mut() = Some(shown.clone());
         }
-        // The copy is the card's own word about itself; a capture stages it
-        // as the person's press would.
-        let staged = shown.clone();
-        cx.on_stage(move |scenario| {
-            if scenario == Some("recovery-copied") {
-                staged.update(|shown| shown.copied = true);
-            }
-        });
         let lent = seat.clone();
-        let state = shown.clone();
-        let cards = cx.switch(&shown, move |_cx, shown| card(shown, lent.as_ref(), &state));
+        let cards = cx.switch(&shown, move |_cx, shown| card(shown, lent.as_ref()));
         Box::new(Answering {
             content: cards,
             shown,
@@ -233,50 +271,85 @@ impl ResourceApp for DictationApp {
     fn scenarios() -> &'static [&'static str] {
         &[
             "asking",
+            "preparing",
+            "loading",
             "listening",
+            "stopping-microphone",
             "finishing",
             "recovery-too-long",
+            "recovery-vocabulary",
             "recovery-copied",
+            "recovery-copy-failed",
             "unavailable",
+            "model-required",
         ]
     }
 
     fn fixture(fixture: &mut ui::framework::Fixture<Dictation>) {
+        let heard = || "Meet me at the café by the market on Thursday at four".to_owned();
         let prompt = match fixture.scenario() {
             Some("listening") => Prompt {
                 id: 2,
                 stage: Stage::Listening,
-                draft: "Meet me at the café by the market on Thursday at four".to_owned(),
-                failure: None,
-                recovery: None,
+                draft: heard(),
+                ..Prompt::default()
+            },
+            Some("preparing") => Prompt {
+                id: 2,
+                stage: Stage::Preparing,
+                ..Prompt::default()
+            },
+            Some("loading") => Prompt {
+                id: 2,
+                stage: Stage::Loading,
+                ..Prompt::default()
+            },
+            Some("stopping-microphone") => Prompt {
+                id: 2,
+                stage: Stage::StoppingMicrophone,
+                ..Prompt::default()
             },
             Some("finishing") => Prompt {
                 id: 2,
                 stage: Stage::Finishing,
-                draft: String::new(),
-                failure: None,
-                recovery: None,
+                ..Prompt::default()
             },
             Some("recovery-too-long" | "recovery-copied") => Prompt {
                 id: 2,
                 stage: Stage::Recovery,
-                draft: String::new(),
-                failure: None,
                 recovery: Some(RecoveryReason::TooLong),
+                copied: fixture.scenario() == Some("recovery-copied"),
+                ..Prompt::default()
+            },
+            Some("recovery-vocabulary") => Prompt {
+                id: 2,
+                stage: Stage::Recovery,
+                recovery: Some(RecoveryReason::VocabularyChanged),
+                ..Prompt::default()
+            },
+            Some("recovery-copy-failed") => Prompt {
+                id: 2,
+                stage: Stage::Recovery,
+                recovery: Some(RecoveryReason::TooLong),
+                copy_failed: true,
+                ..Prompt::default()
+            },
+            Some("model-required") => Prompt {
+                id: 1,
+                stage: Stage::Unavailable,
+                failure: Some(Failure::ModelRequired),
+                ..Prompt::default()
             },
             Some("unavailable") => Prompt {
                 id: 1,
                 stage: Stage::Unavailable,
-                draft: String::new(),
-                failure: Some(crate::word("dictation-unavailable-microphone")),
-                recovery: None,
+                failure: Some(Failure::MicrophoneUnavailable),
+                ..Prompt::default()
             },
             _ => Prompt {
                 id: 1,
                 stage: Stage::Asking,
-                draft: String::new(),
-                failure: None,
-                recovery: None,
+                ..Prompt::default()
             },
         };
         fixture.provide(prompt);
@@ -300,36 +373,38 @@ fn words(shown: &Shown) -> Option<Words> {
             (t("dictation-ask-title"), t("dictation-ask-body"))
         }
         Stage::Preparing => (t("dictation-title"), t("dictation-preparing")),
+        Stage::Loading => (t("dictation-title"), t("dictation-loading")),
+        Stage::StoppingMicrophone => (t("dictation-title"), t("dictation-stopping-microphone")),
+        Stage::Stopping => (t("dictation-title"), t("dictation-stopping")),
         Stage::Listening => {
             let body = if prompt.draft.trim().is_empty() {
                 t("dictation-listening")
             } else {
-                prompt.draft.clone()
+                words_with("dictation-live-preview", &[("text", prompt.draft.as_str())])
             };
             (t("dictation-title"), body)
         }
         Stage::Finishing => (t("dictation-title"), t("dictation-finishing")),
         Stage::Recovery => {
-            if shown.copied {
-                caption = Some(t("dictation-copied"));
-            }
+            caption = Some(if prompt.copy_failed {
+                t("dictation-copy-failed")
+            } else if prompt.copied {
+                t("dictation-copied")
+            } else {
+                t("dictation-recovery-kept")
+            });
             let body = match prompt.recovery {
-                Some(RecoveryReason::TooLong) => t("dictation-recovery-too-long"),
                 Some(RecoveryReason::VocabularyChanged) => t("dictation-recovery-vocabulary"),
-                Some(RecoveryReason::Rejected | RecoveryReason::UnknownDelivery) | None => {
-                    t("dictation-recovery-refused")
-                }
+                Some(RecoveryReason::TooLong) | None => t("dictation-recovery-too-long"),
             };
             (t("dictation-recovery-title"), body)
         }
         Stage::Unavailable => {
             let said = prompt
                 .failure
-                .as_ref()
-                .filter(|failure| !failure.trim().is_empty())
-                .cloned()
-                .unwrap_or_else(|| t("dictation-unavailable-body"));
-            (t("dictation-unavailable-title"), said)
+                .unwrap_or(Failure::Unavailable)
+                .key();
+            (t("dictation-unavailable-title"), t(said))
         }
     };
     Some(Words {
@@ -345,14 +420,18 @@ fn escape(prompt: &Prompt) -> Answer {
     match prompt.stage {
         Stage::Asking => Answer::Deny(prompt.id),
         Stage::Recovery => Answer::Discard(prompt.id),
-        Stage::Preparing | Stage::Listening | Stage::Finishing | Stage::Unavailable => {
-            Answer::Cancel(prompt.id)
-        }
+        Stage::Preparing
+        | Stage::Loading
+        | Stage::Listening
+        | Stage::StoppingMicrophone
+        | Stage::Finishing
+        | Stage::Stopping
+        | Stage::Unavailable => Answer::Cancel(prompt.id),
     }
 }
 
 /// The card the stage draws: the words, and the answers it allows.
-fn card(shown: &Shown, seat: Option<&DictationSeat>, state: &LocalState<Shown>) -> Element {
+fn card(shown: &Shown, seat: Option<&DictationSeat>) -> Element {
     let Some(prompt) = shown.prompt.as_ref() else {
         // Nothing to show: the session has taken the dictation away.
         return Box::new(Column::new());
@@ -361,11 +440,13 @@ fn card(shown: &Shown, seat: Option<&DictationSeat>, state: &LocalState<Shown>) 
         return Box::new(Column::new());
     };
     let id = prompt.id;
-    // The answers are the person's press on this card, never an effect: the
-    // sheet publishes no vocabulary for them, because an effect is
-    // reachable through the session's action door, and a remote action is
-    // not consent to listen through the microphone. Whoever drives the
-    // session can read what was answered; nobody can answer for them.
+    // These buttons answer the seat with a plain local handler
+    // (`Button::on_click`), never through `cx.effects(..)` or `cx.actions()`,
+    // and the sheet publishes no vocabulary for their answers: an effect is
+    // reachable through the session's action door, and a remote action is not
+    // consent to listen through the microphone. The session can read what the
+    // person answered ([`DictationSeat::take_answers`]); nothing but a press
+    // on this card can answer for them.
     let answering = |answer: Answer, button: Button| match seat {
         Some(seat) => {
             let seat = seat.clone();
@@ -393,10 +474,13 @@ fn card(shown: &Shown, seat: Option<&DictationSeat>, state: &LocalState<Shown>) 
                     .push(Box::new(deny)),
             )
         }
-        Stage::Preparing | Stage::Finishing => Box::new(answering(
+        // What is warming up or finishing can be given up; what is already
+        // stopping cannot, and closes itself.
+        Stage::Preparing | Stage::Loading | Stage::Finishing => Box::new(answering(
             Answer::Cancel(id),
             Button::new("dictation-cancel", &t("dictation-cancel")),
         )),
+        Stage::StoppingMicrophone | Stage::Stopping => Box::new(Column::new()),
         Stage::Listening => {
             let finish = answering(
                 Answer::Finish(id),
@@ -414,17 +498,10 @@ fn card(shown: &Shown, seat: Option<&DictationSeat>, state: &LocalState<Shown>) 
             )
         }
         Stage::Recovery => {
-            let copy = match seat {
-                Some(seat) => {
-                    let seat = seat.clone();
-                    let state = state.clone();
-                    primary("dictation-copy", &t("dictation-copy")).on_click(move || {
-                        state.update(|shown| shown.copied = true);
-                        seat.answer(Answer::Copy(id));
-                    })
-                }
-                None => primary("dictation-copy", &t("dictation-copy")),
-            };
+            let copy = answering(
+                Answer::Copy(id),
+                primary("dictation-copy", &t("dictation-copy")),
+            );
             let discard = answering(
                 Answer::Discard(id),
                 Button::new("dictation-discard", &t("dictation-discard")),
@@ -468,9 +545,8 @@ fn centred(card: Element) -> Element {
             );
             let metrics = ui::tokens::Metrics::BASE;
             let edge = f64::from(ui::tokens::Spacing::BASE.s4);
-            let width = f64::from(metrics.panel_width_sheet)
-                .min(area.width() - edge * 2.0)
-                .max(f64::from(metrics.panel_width_utility));
+            let widest = (area.width() - edge * 2.0).max(f64::from(metrics.panel_width_utility));
+            let width = f64::from(metrics.panel_width_sheet).min(widest);
             let measured = layout.measure(
                 0,
                 ui::taffy::Size {
@@ -478,10 +554,8 @@ fn centred(card: Element) -> Element {
                     height: MeasureConstraint::Intrinsic,
                 },
             )?;
-            let card = Rect::from_center_size(
-                area.center(),
-                (width, f64::from(measured.size.height)),
-            );
+            let card =
+                Rect::from_center_size(area.center(), (width, f64::from(measured.size.height)));
             layout.place(0, card)?;
             Ok(available)
         })

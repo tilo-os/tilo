@@ -683,21 +683,21 @@ mod tests {
         );
         // No recognizer exists, so no worker and no microphone is open.
         assert!(dictation.recognition.is_none());
-        // The typed text, the stop and the insert all refuse an unconsented
-        // dictation: nothing of it can reach the field.
+        // No recognizer can speak before the person allows it, and the stop
+        // refuses a dictation that is not listening.
         assert_eq!(
-            dictation.update(id, "hello".into(), &mut target, now),
+            dictation.stop_recording(id),
             Err(DictationError::StaleSession)
         );
         assert_eq!(
             dictation.stop_recording(id),
             Err(DictationError::StaleSession)
         );
-        assert_eq!(
-            dictation.finish(id, &mut target, now),
-            Err(DictationError::StaleSession)
-        );
+        // Nothing was heard, so finishing ends the dictation and writes
+        // nothing.
+        assert_eq!(dictation.finish(id, &mut target, now), Ok(()));
         assert!(target.inserted.is_empty());
+        assert_eq!(dictation.status(), DictationStatus::Idle);
     }
 
     #[test]

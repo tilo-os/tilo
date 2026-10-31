@@ -257,8 +257,19 @@ impl TestClient {
         self.connection.flush().expect("flush");
     }
 
-    /// Move the field's caret: a commit that changes what the field
-    /// committed, as any edit does.
+    /// Move to another field of the same window: the client enables the
+    /// text-input object again for it, as it does when the person tabs on.
+    fn focus_another_field(&self, hint: ContentHint, purpose: ContentPurpose) {
+        if let Some(field) = self.seen.text_input.as_ref() {
+            field.set_content_type(hint, purpose);
+            field.enable();
+            field.commit();
+        }
+        self.connection.flush().expect("flush");
+    }
+
+    /// Move the field's caret: a commit that changes nothing about which
+    /// field this is, as any edit does.
     fn move_caret(&self, x: i32) {
         if let Some(field) = self.seen.text_input.as_ref() {
             field.set_cursor_rectangle(x, 0, 1, 20);
@@ -2595,8 +2606,8 @@ fn a_field_that_commits_again_is_no_longer_the_one_dictation_bound() {
     let field = compositor.dictation_field().expect("a field to dictate into");
     assert!(!field.multiline, "an ordinary text box takes one line");
 
-    // The caret moves: the same field, another revision of what it
-    // committed.
+    // The caret moves: still the same field, but another revision of what
+    // its client committed.
     let done = keyboard.seen.ime_done;
     client.move_caret(3);
     committed(&mut compositor, &mut client, &mut keyboard, done);
@@ -2610,11 +2621,35 @@ fn a_field_that_commits_again_is_no_longer_the_one_dictation_bound() {
         compositor.insert_dictation(field, "spoken words"),
         TextInsertion::Changed
     );
-
     settle(&mut compositor, &mut client, &mut keyboard);
     assert!(
         client.seen.committed.is_empty(),
         "a field that moved takes nothing"
+    );
+
+    // Another field of the same window enables the object again: the same
+    // object on the same surface, so the same identity, and a new revision.
+    let field = compositor.dictation_field().expect("a field to dictate into");
+    client.focus_another_field(ContentHint::empty(), ContentPurpose::Normal);
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, _| compositor.dictation_field().is_ok_and(|now| now != field),
+    );
+    assert_eq!(
+        compositor.dictation_field().map(|now| now.id),
+        Ok(field.id),
+        "one text-input object on one surface names one field"
+    );
+    assert_eq!(
+        compositor.insert_dictation(field, "spoken words"),
+        TextInsertion::Changed
+    );
+
+    settle(&mut compositor, &mut client, &mut keyboard);
+    assert!(
+        client.seen.committed.is_empty(),
+        "neither field took anything dictation bound before it"
     );
 }
 

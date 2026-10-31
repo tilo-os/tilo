@@ -352,7 +352,9 @@ where
                 }
 
                 // Keep what this client committed, which smithay would
-                // otherwise only hand to the input method and lose. A commit
+                // otherwise only hand to the input method and lose. Every
+                // accepted commit is a new revision of what the field
+                // committed: typing, a caret moved, a layout change. A commit
                 // that does not restate the content type keeps the type
                 // committed before it: clients send it only when it changes.
                 if let Some(instance) = tracked(&mut guard.instances, resource) {

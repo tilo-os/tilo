@@ -11,7 +11,7 @@
 )]
 
 use tilo_sheets::dictation::{
-    Answer, Dictation, DictationApp, DictationSeat, Prompt, RecoveryReason, Stage,
+    Answer, Dictation, DictationApp, DictationSeat, Failure, Prompt, RecoveryReason, Stage,
 };
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
@@ -64,6 +64,8 @@ fn asking(id: u64) -> Prompt {
         draft: String::new(),
         failure: None,
         recovery: None,
+            copied: false,
+        copy_failed: false,
     }
 }
 
@@ -74,6 +76,8 @@ fn recovery(id: u64) -> Prompt {
         draft: String::new(),
         failure: None,
         recovery: Some(RecoveryReason::TooLong),
+            copied: false,
+        copy_failed: false,
     }
 }
 
@@ -92,41 +96,76 @@ fn every_stage_says_what_happens() {
     let mut app = staged("asking");
     let said = told(&mut app);
     assert!(said.contains("Dictate into this field?"), "{said}");
-    assert!(said.contains("Nothing is recorded before you allow it"), "{said}");
+    assert!(
+        said.contains("Nothing is recorded before you allow it"),
+        "{said}"
+    );
     assert!(said.contains("the field you were in"), "{said}");
-    let labels: Vec<String> = buttons(&mut app).into_iter().map(|(label, _)| label).collect();
+    let labels: Vec<String> = buttons(&mut app)
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
     assert_eq!(labels, ["Allow", "Not now"]);
 
     let mut app = staged("listening");
     let said = told(&mut app);
     assert!(said.contains("Dictation"), "{said}");
     assert!(said.contains("café by the market"), "{said}");
-    let labels: Vec<String> = buttons(&mut app).into_iter().map(|(label, _)| label).collect();
+    let labels: Vec<String> = buttons(&mut app)
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
     assert_eq!(labels, ["Insert", "Cancel"]);
 
     let mut app = staged("finishing");
     let said = told(&mut app);
-    assert!(said.contains("Finishing the text"), "{said}");
-    let labels: Vec<String> = buttons(&mut app).into_iter().map(|(label, _)| label).collect();
+    assert!(said.contains("Finishing your text"), "{said}");
+    let labels: Vec<String> = buttons(&mut app)
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
     assert_eq!(labels, ["Cancel"]);
 
     let mut app = staged("recovery-too-long");
     let said = told(&mut app);
-    assert!(said.contains("Couldn't insert what you heard"), "{said}");
-    assert!(said.contains("longer than the field takes at once"), "{said}");
+    assert!(said.contains("The field took no words"), "{said}");
+    assert!(
+        said.contains("too long to insert in one step"),
+        "{said}"
+    );
+    assert!(
+        said.contains("Kept privately for 10 minutes"),
+        "the card says where the words are: {said}"
+    );
     assert!(!said.contains("Copied"), "nothing was copied yet: {said}");
-    let labels: Vec<String> = buttons(&mut app).into_iter().map(|(label, _)| label).collect();
+    let labels: Vec<String> = buttons(&mut app)
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
     assert_eq!(labels, ["Copy", "Discard"]);
 
     let mut app = staged("recovery-copied");
     let said = told(&mut app);
     assert!(said.contains("Copied."), "{said}");
 
+    let mut app = staged("model-required");
+    let said = told(&mut app);
+    assert!(
+        said.contains("Install an approved local speech model"),
+        "{said}"
+    );
+
     let mut app = staged("unavailable");
     let said = told(&mut app);
     assert!(said.contains("Dictation isn't available"), "{said}");
-    assert!(said.contains("Another app is using the microphone"), "{said}");
-    let labels: Vec<String> = buttons(&mut app).into_iter().map(|(label, _)| label).collect();
+    assert!(
+        said.contains("Microphone access is unavailable"),
+        "{said}"
+    );
+    let labels: Vec<String> = buttons(&mut app)
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
     assert_eq!(labels, ["Close"]);
 }
 
@@ -171,6 +210,55 @@ fn escape_says_no_and_keeps_nothing_of_a_transcript() {
 }
 
 #[test]
+fn escape_cancels_while_the_dictation_runs_or_cannot_run() {
+    let stages = [
+        (20, Stage::Preparing),
+        (21, Stage::Loading),
+        (22, Stage::Listening),
+        (23, Stage::StoppingMicrophone),
+        (24, Stage::Finishing),
+        (25, Stage::Stopping),
+    ];
+    for (id, stage) in stages {
+        let (mut app, seat) = seated(Prompt {
+            id,
+            stage,
+            draft: String::new(),
+            failure: None,
+            recovery: None,
+            copied: false,
+            copy_failed: false,
+        });
+        app.harness().key("Escape");
+        app.settle();
+        assert_eq!(seat.take_answers(), [Answer::Cancel(id)], "{stage:?}");
+    }
+    let (mut app, seat) = seated(Prompt {
+        id: 30,
+        stage: Stage::Unavailable,
+        draft: String::new(),
+        failure: Some(Failure::MicrophoneUnavailable),
+        recovery: None,
+        copied: false,
+        copy_failed: false,
+    });
+    assert!(
+        told(&mut app).contains("Microphone access is unavailable"),
+        "the card says why the microphone is not heard"
+    );
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(
+        seat.take_answers(),
+        [Answer::Cancel(30)],
+        "Close is the primary"
+    );
+    app.harness().key("Escape");
+    app.settle();
+    assert_eq!(seat.take_answers(), [Answer::Cancel(30)]);
+}
+
+#[test]
 fn while_listening_enter_inserts_and_copy_is_the_cards_own_word() {
     let (mut app, seat) = seated(Prompt {
         id: 4,
@@ -178,6 +266,8 @@ fn while_listening_enter_inserts_and_copy_is_the_cards_own_word() {
         draft: "Hello".to_owned(),
         failure: None,
         recovery: None,
+        copied: false,
+        copy_failed: false,
     });
     app.harness().key("Enter");
     app.settle();
@@ -194,8 +284,17 @@ fn while_listening_enter_inserts_and_copy_is_the_cards_own_word() {
     app.settle();
     assert_eq!(seat.take_answers(), [Answer::Copy(5)]);
     assert!(
+        !told(&mut app).contains("Copied."),
+        "the card does not claim a copy the session has not made"
+    );
+    seat.show(Some(Prompt {
+        copied: true,
+        ..recovery(5)
+    }));
+    app.settle();
+    assert!(
         told(&mut app).contains("Copied."),
-        "the card says the transcript is on the clipboard"
+        "the card says the transcript is on the clipboard once it is"
     );
 }
 
@@ -207,14 +306,21 @@ fn the_draft_follows_the_session_without_reopening_the_sheet() {
         draft: String::new(),
         failure: None,
         recovery: None,
+        copied: false,
+        copy_failed: false,
     });
-    assert!(told(&mut app).contains("Listening"), "nothing heard yet");
+    assert!(
+        told(&mut app).contains("Microphone on. Speak, then finish to insert."),
+        "nothing heard yet"
+    );
     seat.show(Some(Prompt {
         id: 3,
         stage: Stage::Listening,
         draft: "the first few words".to_owned(),
         failure: None,
         recovery: None,
+        copied: false,
+        copy_failed: false,
     }));
     app.settle();
     assert!(told(&mut app).contains("the first few words"));
@@ -325,4 +431,3 @@ fn the_sheet_publishes_no_action_that_could_answer_it() {
         "no verb is one of the card's answers: {named:?}"
     );
 }
-
