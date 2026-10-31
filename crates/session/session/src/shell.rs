@@ -124,12 +124,14 @@ impl Shell {
         let windows: Vec<tilo_surface_host::shell_part::WindowRect> = compositor
             .windows()
             .into_iter()
-            .map(|(_, (x, y, w, h))| tilo_surface_host::shell_part::WindowRect {
-                x: f64::from(x),
-                y: f64::from(y),
-                width: f64::from(w),
-                height: f64::from(h),
-            })
+            .map(
+                |(_, (x, y, w, h))| tilo_surface_host::shell_part::WindowRect {
+                    x: f64::from(x),
+                    y: f64::from(y),
+                    width: f64::from(w),
+                    height: f64::from(h),
+                },
+            )
             .collect();
         let edges = tilo_surface_host::shell_part::screen_edges(
             outputs,
@@ -199,10 +201,7 @@ impl Shell {
         let record = part.shell_record()?;
         let package = part.package()?;
         let meta = &package.meta;
-        let ty = meta
-            .types
-            .iter()
-            .find(|ty| ty.name == "Shell")?;
+        let ty = meta.types.iter().find(|ty| ty.name == "Shell")?;
         let read = |name: &str| {
             ty.fields
                 .iter()
@@ -212,7 +211,9 @@ impl Shell {
         let flag = |name: &str| {
             matches!(
                 read(name),
-                Some(tilolang_tilo::record::DynValue::Register(serde_json::Value::Bool(true)))
+                Some(tilolang_tilo::record::DynValue::Register(
+                    serde_json::Value::Bool(true)
+                ))
             )
         };
         // A case of an enum is its variant's id in the record; `Edge.top` and friends are the
