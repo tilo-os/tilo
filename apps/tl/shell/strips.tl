@@ -141,41 +141,43 @@ view tab_chip(p: ArrangementPlace, current: Bool) {
     ui.Chip(if p.title == "" { p.shows } else { p.title }, selected: .some(current))
 }
 
-/// A place's window: the shell's frame around the resource, at the width its strip stands at.
+/// A place's window: the shell's frame around it, and the well the app's own window shows in
+/// (shell.md §8). The frame's bar is the shell's — the title, the pin and the controls that
+/// close or move the place — and the window is composited under it, in the well's rectangle.
 view place_window(a: Arrangement, p: ArrangementPlace, in_front: Bool) {
     ui.Card(title: if p.title == "" { p.shows } else { p.title }) {
         place_content(a, p)
     }
 }
 
-/// A place's content: its resource, drawn as the place's view shows it. A place of an app this
-/// shell has no view for says so and stands as it is, never dropped or changed (§2).
+/// A place's content: the well the app's window shows in. The shell never draws a place's
+/// content (shell.md §8); the pin, close and move controls are the frame's chrome, outside it.
 view place_content(a: Arrangement, p: ArrangementPlace) {
     stack(gap: .related) {
+        place_controls(a, p)
+        ui.WindowWell(place: p.key, min: 12rem)
+    }
+}
+
+/// A place's frame chrome: its pinned mark, and its pin, close and move controls. Outside the
+/// well, so a press there is the shell's and one on the well is the window's.
+view place_controls(a: Arrangement, p: ArrangementPlace) {
+    row(gap: .tight, align: .center, wrap: true) {
         if p.pinned {
             ui.Badge("Pinned", dot: true)
         }
-        if p.shows == "so.tilo.lang.notes" {
-            note_in_place(p.record)
-        } else if p.shows == "so.tilo.lang.tasks" {
-            task_in_place(p.record)
-        } else {
-            ui.EmptyState("A place of another app", message: "Its own view draws it here.", icon: .app_window, inline: true)
+        ui.Button("Pin", icon: .pin, icon_only: true, role: .plain) {
+            on press: pin_place(p.key, not p.pinned)
         }
-        row(gap: .tight, align: .center, wrap: true) {
-            ui.Button("Pin", icon: .pin, icon_only: true, role: .plain) {
-                on press: pin_place(p.key, not p.pinned)
-            }
-            ui.Button("Close place", icon: .x, icon_only: true, role: .plain) {
-                on press: close_place(p.key)
-            }
-            if a.rows.len() > 1 {
-                ui.MenuButton("Move to row", icon: .navigation, icon_only: true, role: .plain) {
-                    for r in a.rows {
-                        if r.key != strip_row(a, p.strip) {
-                            ui.MenuItem(r.name) {
-                                on choose: move_place(p.key, r.key)
-                            }
+        ui.Button("Close place", icon: .x, icon_only: true, role: .plain) {
+            on press: close_place(p.key)
+        }
+        if a.rows.len() > 1 {
+            ui.MenuButton("Move to row", icon: .navigation, icon_only: true, role: .plain) {
+                for r in a.rows {
+                    if r.key != strip_row(a, p.strip) {
+                        ui.MenuItem(r.name) {
+                            on choose: move_place(p.key, r.key)
                         }
                     }
                 }
@@ -189,36 +191,5 @@ fn strip_row(a: Arrangement, strip: Text) -> Text {
     match a.strips.find(s -> s.key == strip) {
         .some(s) => s.row,
         .none => "",
-    }
-}
-
-/// A note standing as content in a place: what it says, without a window's own header.
-view note_in_place(record: Text) {
-    if let n = notes.notes.find(n -> n.id() == record) {
-        if n.title != "" {
-            ui.Text(n.title, role: .title)
-        }
-        if n.body != "" {
-            ui.Text(n.body)
-        }
-        if not n.tags.is_empty() {
-            row(gap: .related, wrap: true) {
-                for t in n.tags {
-                    ui.Chip(t)
-                }
-            }
-        }
-    } else {
-        ui.EmptyState("Not in your notes", inline: true)
-    }
-}
-
-/// A task standing as content in a place: what it is and whether it is done.
-view task_in_place(record: Text) {
-    if let t = tasks.tasks.items.find(t -> t.id() == record) {
-        ui.Text(if t.title == "" { "Untitled task" } else { t.title }, role: .title)
-        ui.StatusLine(if t.done { "Done" } else { "Open" }, status: if t.done { .idle } else { .active })
-    } else {
-        ui.EmptyState("Not in your tasks", inline: true)
     }
 }

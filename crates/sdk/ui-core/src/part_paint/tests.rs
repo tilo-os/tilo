@@ -349,6 +349,71 @@ fn a_registered_set_is_found_by_name_and_replaced_by_a_newer_one() {
 }
 
 #[test]
+fn the_glass_sheen_and_rim_take_the_themes_light() {
+    // Glass draws its specular sheen and its lit rim in `tokens.light`: the
+    // colour the theme names for the light a surface catches, never a
+    // literal white in the painter.
+    let theme = Theme::named("glass").expect("the Glass preset");
+    let color = Color::from_rgb8(0x40, 0x60, 0x80);
+    let tokens = part_tokens(&theme, SurfaceRole::Bar, (color, color, color), color);
+    assert_eq!(
+        tokens.light, theme.tokens.colors.light,
+        "the theme's light reaches the painter"
+    );
+    let painted = builtin::glass_set()
+        .painter()
+        .paint(
+            Part::BarBody,
+            Size::new(320.0, 32.0),
+            PartState::settled(States::REST),
+            1.0,
+            &tokens,
+        )
+        .expect("glass draws a bar body");
+    // Every stop of the sheen and of the rim is the tokens' light at some
+    // opacity; a literal white would not be. The fade's last stop is the
+    // light at zero, which is transparent whatever the light's channels.
+    let lit = |stop: &Stop| {
+        stop.color.components[3] == 0.0
+            || stop.color.components[..3] == tokens.light.components[..3]
+    };
+    let stops: Vec<Stop> = painted
+        .scene
+        .ops
+        .iter()
+        .flat_map(|op| match op {
+            Op::Fill {
+                brush: Brush::Linear { stops, .. },
+                ..
+            }
+            | Op::Stroke {
+                brush: Brush::Linear { stops, .. },
+                ..
+            } => stops.clone(),
+            _ => Vec::new(),
+        })
+        .collect();
+    assert!(!stops.is_empty(), "a glass bar catches light");
+    assert!(stops.iter().all(lit), "every lit stop is the theme's light");
+    // And it moves with the theme: another light is another drawing.
+    let other = PartTokens {
+        light: Color::from_rgb8(0xff, 0xe0, 0xb0),
+        ..tokens.clone()
+    };
+    assert_ne!(
+        builtin::glass_set().painter().paint(
+            Part::BarBody,
+            Size::new(320.0, 32.0),
+            PartState::settled(States::REST),
+            1.0,
+            &other,
+        ),
+        Some(painted),
+        "the painter reads the light it is handed"
+    );
+}
+
+#[test]
 fn forced_colours_draw_with_the_toolkits_own_painters() {
     let (set, _) = Triangles::set();
     let theme = Theme::high_contrast()

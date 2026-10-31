@@ -184,6 +184,7 @@ fn tokens_hash(tokens: &PartTokens) -> u64 {
         tokens.raised,
         tokens.accent,
         tokens.border,
+        tokens.light,
     ] {
         for channel in color.components {
             channel.to_bits().hash(&mut hasher);

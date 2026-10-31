@@ -68,6 +68,10 @@ pub struct PartTokens {
     pub raised: Color,
     /// The person's accent.
     pub accent: Color,
+    /// The light a surface catches: the theme's daylight, at no chroma, for
+    /// a sheen across a body or a rim lit along its edge. How strongly a
+    /// part catches it is the part's own (`specular`, `edge_highlight`).
+    pub light: Color,
     /// Corner radius, logical pixels.
     pub radius: f32,
     /// The theme's border, logical pixels wide; `0` for none.
@@ -114,6 +118,7 @@ impl Default for PartTokens {
             ground: Color::WHITE,
             raised: Color::WHITE,
             accent: Color::from_rgb8(0x2a, 0x3f, 0xd1),
+            light: Color::WHITE,
             radius: 0.0,
             border_width: 0.0,
             border: Color::BLACK,
