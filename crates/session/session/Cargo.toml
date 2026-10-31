@@ -10,6 +10,14 @@ license.workspace = true
 name = "tilo-session"
 path = "src/main.rs"
 
+# A surface app the tests start the way the session starts a panel: it reads
+# what the session publishes and changes it, and reports both in a file. Never
+# installed — the image names the binaries it carries.
+[[bin]]
+name = "tilo-surface-probe"
+path = "tests/bin/surface_probe.rs"
+test = false
+
 # The session's loop walks no path after startup. The audit watches the
 # process's main thread, and `libtest` runs every test on a thread of its own,
 # so this target is the process's `main` driving the session itself.

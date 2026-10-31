@@ -184,6 +184,8 @@ pub use surface_publication::SurfacePublication;
 pub mod record_content;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
+#[cfg(all(feature = "broker-transport", unix))]
+pub use broker::SessionServices;
 #[cfg(feature = "broker-transport")]
 pub use broker::{
     CertifiedEndpointIdentity, EndpointChannelKeys, HostSessionConnector, SessionResource,

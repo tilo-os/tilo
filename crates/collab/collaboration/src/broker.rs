@@ -154,9 +154,11 @@ const SDK_DOCUMENT_EVENT_BYTES: usize =
 const SDK_DOCUMENT_EVENT_RETRY: Duration = Duration::from_millis(250);
 const WIFI_CONTINUITY_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// The connected transport's outbound queue, used by the Settings-only
-/// commands ([`wifi_continuity_command`], [`speaker_command`]).
-static SETTINGS_COMMAND_BRIDGE: std::sync::OnceLock<
+/// The connected transport's outbound queue, as the process reaches it from
+/// outside the transport: the session's published resources
+/// ([`SessionResource`]) and the device commands
+/// ([`wifi_continuity_command`], [`speaker_command`]).
+static PUBLISHED_COMMAND_BRIDGE: std::sync::OnceLock<
     std::sync::Mutex<Option<tokio_mpsc::WeakSender<QueuedSdkCommand>>>,
 > = std::sync::OnceLock::new();
 
@@ -171,7 +173,7 @@ static SETTINGS_COMMAND_BRIDGE: std::sync::OnceLock<
 pub fn wifi_continuity_command(
     command: runtime_collab::WifiContinuityCommand,
 ) -> Result<runtime_collab::WifiContinuityReply, String> {
-    let sender = SETTINGS_COMMAND_BRIDGE
+    let sender = PUBLISHED_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .map_err(|_| "Wi-Fi continuity bridge is unavailable".to_string())?
@@ -211,7 +213,7 @@ const SPEAKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 pub fn speaker_command(
     command: runtime_collab::SpeakerCommand,
 ) -> Result<runtime_collab::SpeakerReply, String> {
-    let sender = SETTINGS_COMMAND_BRIDGE
+    let sender = PUBLISHED_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .map_err(|_| "speaker service is unavailable".to_string())?
@@ -244,7 +246,7 @@ pub fn subscribe_person_chat(
     token: uuid::Uuid,
     cancel: tokio::sync::watch::Receiver<()>,
 ) -> Result<(), String> {
-    let sender = SETTINGS_COMMAND_BRIDGE
+    let sender = PUBLISHED_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .map_err(|_| "private person bridge unavailable")?
@@ -270,7 +272,7 @@ pub fn person_chat_command(command: Vec<u8>, original: Vec<u8>) -> Result<Vec<u8
     if command.len() > 24 * 1024 || !matches!(original.len(), 0 | 16) {
         return Err("invalid private conversation request".into());
     }
-    let sender = SETTINGS_COMMAND_BRIDGE
+    let sender = PUBLISHED_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .map_err(|_| "private person bridge unavailable")?
@@ -306,7 +308,7 @@ pub fn display_control(
     if command.len() > 64 * 1024 {
         return Err("The display request exceeds its wire bound.".into());
     }
-    let sender = SETTINGS_COMMAND_BRIDGE
+    let sender = PUBLISHED_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .map_err(|_| "The display service is unavailable.")?
@@ -432,7 +434,7 @@ fn published_error(error: &runtime_portal::NotAvailable) -> String {
 /// writes ([`super::channel_settings`]). Without a connected transport they
 /// wait for the primary route, whose join sends them.
 pub(super) fn flush_settings() {
-    let Some(sender) = SETTINGS_COMMAND_BRIDGE
+    let Some(sender) = PUBLISHED_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .ok()
@@ -447,7 +449,7 @@ pub(super) fn flush_settings() {
 /// ([`super::channel_live_activity`]). Without a connected transport it waits
 /// for the primary route, whose join sends it.
 pub(super) fn flush_live_activity() {
-    let Some(sender) = SETTINGS_COMMAND_BRIDGE
+    let Some(sender) = PUBLISHED_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .ok()
@@ -490,7 +492,7 @@ pub(super) struct BrokerTransport {
     worker_stopped: bool,
     /// Whether [`wifi_continuity_command`] has been pointed at this
     /// transport; done once it has connected.
-    wifi_bridge_registered: bool,
+    command_bridge_registered: bool,
     /// Durable commands the bounded queue had no room for, in submission
     /// order. They wait here for the shovel to catch up instead of
     /// disabling collaboration; see [`Self::enqueue`].
@@ -686,15 +688,16 @@ impl BrokerTransport {
         Ok(())
     }
 
-    /// Route [`wifi_continuity_command`] through this transport.
-    fn register_wifi_bridge(&mut self) {
-        if let Ok(mut bridge) = SETTINGS_COMMAND_BRIDGE
+    /// Route the process's published commands and device commands through
+    /// this transport.
+    fn register_command_bridge(&mut self) {
+        if let Ok(mut bridge) = PUBLISHED_COMMAND_BRIDGE
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
         {
             crate::person_chat::invalidate();
             *bridge = Some(self.outbound_tx.downgrade());
-            self.wifi_bridge_registered = true;
+            self.command_bridge_registered = true;
         }
     }
 }
@@ -785,10 +788,10 @@ impl CollabTransport for BrokerTransport {
         self.invocation_owners.clear();
         self.state.begin_poll();
         self.flush_spill();
-        if !self.wifi_bridge_registered
+        if !self.command_bridge_registered
             && matches!(self.state.connect_phase(), ConnectPhase::Connected)
         {
-            self.register_wifi_bridge();
+            self.register_command_bridge();
         }
         while let Ok(mut evt) = self.inbound_rx.try_recv() {
             match evt._turn.take() {
@@ -3552,7 +3555,7 @@ impl CollaborationManager {
             action_directory_tx,
             pending_primary: None,
             worker_stopped: false,
-            wifi_bridge_registered: false,
+            command_bridge_registered: false,
             spill: std::collections::VecDeque::new(),
             barrier_slot: None,
             queued_barrier: std::sync::Weak::new(),
@@ -3585,7 +3588,7 @@ impl CollaborationManager {
 
         match status {
             InitStatus::Ready => {
-                transport.register_wifi_bridge();
+                transport.register_command_bridge();
                 Ok(transport)
             }
             InitStatus::Failed(e) => {
@@ -3596,6 +3599,56 @@ impl CollaborationManager {
                 Err(e)
             }
         }
+    }
+}
+
+/// A surface app's connection to its session's services: the same
+/// connection every app reaches its session through, held by a process that
+/// shows a window placed by the session and joins no room of its own.
+///
+/// The session records the launch and names its socket on the app's
+/// environment; the app connects that socket itself and writes the handoff
+/// naming the launch, so the broker attests the process the way it attests
+/// any app's. What it reads through it is what every app reads: the
+/// session's published resources ([`SessionResource`]) and the actions on
+/// them. Held for the process's life — dropping it ends the connection and
+/// every watch on it.
+pub struct SessionServices {
+    /// The transport, kept for its worker: dropping it ends the connection
+    /// the process's published resources are reached over.
+    _transport: BrokerTransport,
+}
+
+impl SessionServices {
+    /// Connect to the session's services at `socket`, as the launch of
+    /// `app_id` in `workspace` the session recorded for this process.
+    ///
+    /// # Errors
+    ///
+    /// The socket cannot be reached, the handoff cannot be written, or the
+    /// broker does not answer the connection.
+    #[cfg(unix)]
+    pub fn connect(
+        socket: &std::path::Path,
+        app_id: &str,
+        workspace: &str,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
+        runtime_portal::launch_handoff::write(&mut stream, app_id, workspace)?;
+        let fd = std::os::fd::IntoRawFd::into_raw_fd(stream);
+        let transport = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                // A surface joins no room: it presents no identity, and the
+                // broker admits it for the launch alone.
+                presentation: Vec::new(),
+                participant_kind: "person",
+                signer: harness_document_signer(),
+            }),
+        )?;
+        Ok(Self {
+            _transport: transport,
+        })
     }
 }
 
@@ -9425,7 +9478,7 @@ mod tests {
             action_directory_tx,
             pending_primary: None,
             worker_stopped: false,
-            wifi_bridge_registered: false,
+            command_bridge_registered: false,
             spill: std::collections::VecDeque::new(),
             barrier_slot: None,
             queued_barrier: std::sync::Weak::new(),
@@ -10487,7 +10540,7 @@ mod tests {
             action_directory_tx,
             pending_primary: None,
             worker_stopped: false,
-            wifi_bridge_registered: false,
+            command_bridge_registered: false,
             spill: std::collections::VecDeque::new(),
             barrier_slot: None,
             queued_barrier: std::sync::Weak::new(),

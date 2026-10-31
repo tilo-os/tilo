@@ -36,6 +36,7 @@ use tilo_compositor::Compositor;
 use ui::collaboration::ExportedAction;
 use ui::host_operation::ResourceOperationStart;
 use ui::surface_peer::{ACTIONS_FD_ENV, FRAMING};
+use ui::surface_services::{APP_ID_ENV, SOCKET_ENV, WORKSPACE_ENV};
 
 /// Where on an output a surface app's window stands, lowest first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,6 +142,10 @@ pub struct Surface {
     /// What the session calls it: its name in logs and its key when it
     /// stops.
     pub name: String,
+    /// The app it is started as: what the broker admits its connection to
+    /// the session's services by, and what its own actions are published
+    /// under.
+    pub app_id: String,
     /// The program to start.
     pub program: PathBuf,
     /// Where its window stands on the output.
@@ -174,6 +179,7 @@ impl Surface {
     pub fn new(name: impl Into<String>, program: impl Into<PathBuf>) -> Self {
         let name = name.into();
         Self {
+            app_id: format!("{}.{name}", tilo_desktop_model::APP_ID_PREFIX),
             program: program.into(),
             namespace: format!("tilo-{name}"),
             name,
@@ -229,6 +235,14 @@ impl Surface {
     #[must_use]
     pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = namespace.into();
+        self
+    }
+
+    /// Start it as the app `app_id` instead of [`Self::new`]'s first-party
+    /// id for its name.
+    #[must_use]
+    pub fn app_id(mut self, app_id: impl Into<String>) -> Self {
+        self.app_id = app_id.into();
         self
     }
 
@@ -320,19 +334,6 @@ pub const SESSION_PROVIDER: &str = "so.tilo.session";
 pub trait ActionDoor {
     /// What the desktop publishes now: its resources, each with its actions.
     fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec>;
-
-    /// The reading of `resource` now, as its state's JSON; `None` when
-    /// nothing publishes it.
-    fn read(&mut self, _resource: &str) -> Option<serde_json::Value> {
-        None
-    }
-
-    /// Where what the desktop publishes stands: equal revisions publish the
-    /// same readings and actions, so a surface watching a reading is only
-    /// read again once it moved. `None` when it cannot tell.
-    fn revision(&mut self) -> Option<u64> {
-        None
-    }
 
     /// Run the published action `address` with `arguments`.
     ///
@@ -448,14 +449,6 @@ struct Connection {
     /// How the last invocations its app run ended, newest last, so one the
     /// session answered as accepted can be asked after.
     answered: VecDeque<(InvocationId, InvocationUpdate)>,
-    /// The resources the surface follows, by name: it is sent each reading
-    /// that moves.
-    watched: Vec<String>,
-    /// The reading each watched resource was last sent, so one that did not
-    /// change is not sent again.
-    readings: HashMap<String, Option<String>>,
-    /// The door's revision the readings above were read at.
-    read_at: Option<u64>,
 }
 
 impl Connection {
@@ -484,9 +477,6 @@ impl Connection {
             listed_at: None,
             published: Vec::new(),
             answered: VecDeque::new(),
-            watched: Vec::new(),
-            readings: HashMap::new(),
-            read_at: None,
         }
     }
 
@@ -571,11 +561,29 @@ pub struct Surfaces {
     running: Vec<Running>,
     /// The id the next invocation asked of a surface app is named by.
     asked: u64,
+    /// The session's launch records, once it has lent them: each surface it
+    /// starts is written into them, so its connection to the session's
+    /// services is admitted for the launch that made it. `None` before the
+    /// session lends them, and in a session that serves no services.
+    launches: Option<std::sync::Arc<crate::Launches>>,
+    /// The socket the session serves its services on, once it has lent it:
+    /// what a surface app connects to read and change what the session
+    /// publishes, as any app of the session does.
+    services: Option<PathBuf>,
 }
 
 impl Surfaces {
+    /// The session's launch records and the socket it serves its services
+    /// on, which every surface app started from here on is told of. Without
+    /// a socket, a surface reads nothing of the session: it is a window
+    /// only.
+    pub fn lend(&mut self, launches: std::sync::Arc<crate::Launches>, services: Option<PathBuf>) {
+        self.launches = Some(launches);
+        self.services = services;
+    }
+
     /// Start `surface` as a trusted client of `compositor`, on the layer
-    /// surface it names.
+    /// surface it names, as the app it runs for in `room`.
     ///
     /// # Errors
     /// The socket or the process could not be made.
@@ -583,6 +591,7 @@ impl Surfaces {
         &mut self,
         compositor: &mut Compositor,
         surface: &Surface,
+        room: &str,
     ) -> Result<(), StartError> {
         let socket = compositor
             .connect_trusted_client()
@@ -596,6 +605,16 @@ impl Surfaces {
         let mut command = Command::new(&surface.program);
         command
             .envs(surface.environment())
+            // What the app is of this session: the launch the session
+            // records for the process it starts here, and the connection to
+            // the session's services it makes for itself, as any app of the
+            // session does.
+            .env(APP_ID_ENV, &surface.app_id)
+            .env(WORKSPACE_ENV, room);
+        if let Some(services) = &self.services {
+            command.env(SOCKET_ENV, services);
+        }
+        command
             // The app's end of the socket becomes a fixed descriptor in its
             // process; the compositor answers on the other end here.
             .env("WAYLAND_SOCKET", SOCKET_DESCRIPTOR.to_string())
@@ -630,6 +649,14 @@ impl Surfaces {
             program: surface.program.clone(),
             source,
         })?;
+        // The process that will connect the session's services is the one
+        // started here: its launch is written before the app has anything to
+        // say, as it is for any app the session starts.
+        if let Some(launches) = &self.launches {
+            // A surface app is the session's own program, run in its own
+            // place: no package sandbox has the documents store bound in.
+            launches.started(child.id(), &surface.app_id, room, false);
+        }
         // The child has its own copies: these would only keep the
         // connections' other ends open after the app is gone.
         drop(socket);
@@ -654,8 +681,8 @@ impl Surfaces {
 
     /// Start `surface` if the session can, and say so in the log if not: a
     /// missing surface app loses its surface, never the session.
-    pub fn start_or_log(&mut self, compositor: &mut Compositor, surface: &Surface) {
-        if let Err(error) = self.start(compositor, surface) {
+    pub fn start_or_log(&mut self, compositor: &mut Compositor, surface: &Surface, room: &str) {
+        if let Err(error) = self.start(compositor, surface, room) {
             tracing::warn!(surface = %surface.name, %error, "a surface app did not start");
         }
     }
@@ -703,25 +730,15 @@ impl Surfaces {
         exited
     }
 
-    /// Answer what the surface apps asked since the last turn, take in how
-    /// the invocations they were asked to run stand, and send each reading a
-    /// surface follows that moved.
+    /// Answer what the surface apps asked since the last turn, and take in
+    /// how the invocations they were asked to run stand.
     pub fn serve(&mut self, door: &mut dyn ActionDoor) {
-        let revision = door.revision();
         for app in &mut self.running {
             // A surface publishes its actions once it has mounted: until it
             // has listed them, the session asks again.
             app.actions.list_if_silent();
             while let Ok(message) = app.actions.incoming.try_recv() {
                 match message {
-                    // A resource the surface shows: it is sent the reading
-                    // now, and each later one that moves.
-                    RemoteActionMessage::ResourceWatch { resource } => {
-                        if !app.actions.watched.contains(&resource) {
-                            app.actions.watched.push(resource);
-                            app.actions.read_at = None;
-                        }
-                    }
                     // What the surface offers: the session asked for it, and
                     // asks again whenever it changed.
                     RemoteActionMessage::CatalogueResponse { result, .. } => {
@@ -756,7 +773,6 @@ impl Surfaces {
                     }
                 }
             }
-            publish_readings(&mut app.actions, door, revision);
         }
     }
 
@@ -843,37 +859,6 @@ impl Surfaces {
 impl Drop for Surfaces {
     fn drop(&mut self) {
         self.stop_all();
-    }
-}
-
-/// Send `connection`'s surface each reading of what it follows that moved:
-/// its first reading once, and later ones as the desktop's revision moves
-/// and the reading with it.
-fn publish_readings(connection: &mut Connection, door: &mut dyn ActionDoor, revision: Option<u64>) {
-    if connection.watched.is_empty() {
-        return;
-    }
-    let read_at = std::mem::replace(&mut connection.read_at, revision);
-    // A door that cannot tell where it stands is read every pass; one that
-    // can is read only once it moved.
-    let moved = revision.is_none() || read_at != revision;
-    for resource in connection.watched.clone() {
-        if !moved && connection.readings.contains_key(&resource) {
-            continue;
-        }
-        let reading = door.read(&resource).map(|value| {
-            serde_json::to_string(&value).unwrap_or_else(|error| {
-                tracing::warn!(%resource, %error, "a reading did not encode");
-                String::from("null")
-            })
-        });
-        if connection.readings.get(&resource) == Some(&reading) {
-            continue;
-        }
-        connection
-            .readings
-            .insert(resource.clone(), reading.clone());
-        connection.send(RemoteActionMessage::ResourceReading { resource, reading });
     }
 }
 
@@ -1070,109 +1055,5 @@ mod tests {
         assert_eq!(Anchor::default().names(), "none");
         assert!(Anchor::default().is_empty());
         assert!(!(Anchor::TOP | Anchor::BOTTOM).is_empty());
-    }
-    /// A door that serves one reading, and how often it was asked for it.
-    struct Stand {
-        revision: u64,
-        reading: serde_json::Value,
-        reads: std::rc::Rc<std::cell::Cell<usize>>,
-    }
-
-    impl ActionDoor for Stand {
-        fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
-            Vec::new()
-        }
-
-        fn read(&mut self, resource: &str) -> Option<serde_json::Value> {
-            self.reads.set(self.reads.get().saturating_add(1));
-            (resource == "sound").then(|| self.reading.clone())
-        }
-
-        fn revision(&mut self) -> Option<u64> {
-            Some(self.revision)
-        }
-
-        fn invoke(
-            &mut self,
-            address: &tilo_actions::ActionAddress,
-            _arguments: &serde_json::Map<String, serde_json::Value>,
-        ) -> Result<ResourceOperationStart, tilo_actions::DoorError> {
-            Err(tilo_actions::DoorError::Unknown(address.clone()))
-        }
-    }
-
-    fn following(resource: &str) -> Connection {
-        let (ours, _theirs) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
-        let mut connection = Connection::of(ours);
-        connection.watched.push(resource.to_owned());
-        connection
-    }
-
-    #[test]
-    fn a_reading_is_sent_when_it_moves_and_not_before() {
-        let reads = std::rc::Rc::new(std::cell::Cell::new(0_usize));
-        let mut door = Stand {
-            revision: 1,
-            reading: serde_json::json!({ "volume": 0.5 }),
-            reads: std::rc::Rc::clone(&reads),
-        };
-        let mut connection = following("sound");
-
-        // The first turn sends the reading it stands at.
-        publish_readings(&mut connection, &mut door, Some(1));
-        assert_eq!(
-            connection.readings.get("sound"),
-            Some(&Some(String::from(r#"{"volume":0.5}"#))),
-            "the reading is sent as the state's JSON"
-        );
-        assert_eq!(
-            door.revision, 1,
-            "the door's revision is left as the session read it"
-        );
-
-        // A door that did not move is not read again, so a still desktop
-        // costs nothing per frame.
-        publish_readings(&mut connection, &mut door, Some(1));
-        assert_eq!(reads.get(), 1, "an unmoved door is read once");
-
-        // One that moved is read, and the reading that changed is sent.
-        door.reading = serde_json::json!({ "volume": 0.25 });
-        publish_readings(&mut connection, &mut door, Some(2));
-        assert_eq!(reads.get(), 2, "a moved door is read again");
-        assert_eq!(
-            connection.readings.get("sound"),
-            Some(&Some(String::from(r#"{"volume":0.25}"#)))
-        );
-    }
-
-    #[test]
-    fn a_resource_nothing_publishes_is_sent_as_no_reading() {
-        let reads = std::rc::Rc::new(std::cell::Cell::new(0_usize));
-        let mut door = Stand {
-            revision: 7,
-            reading: serde_json::Value::Null,
-            reads: std::rc::Rc::clone(&reads),
-        };
-        let mut connection = following("nothing");
-        publish_readings(&mut connection, &mut door, Some(7));
-        assert_eq!(
-            connection.readings.get("nothing"),
-            Some(&None),
-            "a surface is told the resource is not served rather than left waiting"
-        );
-    }
-
-    #[test]
-    fn a_surface_that_follows_nothing_is_never_read_for() {
-        let reads = std::rc::Rc::new(std::cell::Cell::new(0_usize));
-        let mut door = Stand {
-            revision: 1,
-            reading: serde_json::Value::Null,
-            reads: std::rc::Rc::clone(&reads),
-        };
-        let mut connection = following("sound");
-        connection.watched.clear();
-        publish_readings(&mut connection, &mut door, Some(1));
-        assert_eq!(reads.get(), 0);
     }
 }

@@ -208,20 +208,15 @@ const COMPAT_PROTOCOL_VERSION: u16 = 1;
 pub const COMPAT_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024).reject_empty();
 /// The model gateway's handoff: a little-endian `u32` length, then JSON.
 const MODEL_GATEWAY_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024);
-/// Length-prefixed launcher handoff consumed before the wire starts on a
-/// collaboration descriptor. The broker binds it to `SO_PEERCRED` and a
-/// compositor-created one-shot launch record.
-pub const COLLAB_LAUNCH_PROTOCOL_VERSION: u16 = 1;
-/// Prefix that separates a launcher-authenticated connection from a raw
-/// diagnostic client. It is deliberately not an authority: the
-/// broker still verifies the peer process against the compositor's one-shot
-/// record before it accepts the following frame.
-pub const COLLAB_LAUNCH_MAGIC: [u8; 4] = *b"QCL1";
-/// After [`COLLAB_LAUNCH_MAGIC`]: a little-endian `u32` length, then the JSON
-/// handoff. It is deliberately tiny: it only binds a socket to the shell's
-/// already-created process record, while the certificate the app presents
-/// still decides workspace membership and delegated-agent authority.
-pub const COLLAB_LAUNCH_FRAMING: Framing = Framing::little_endian(1024).reject_empty();
+/// The collaboration handoff: what an app says first on the connection to
+/// its session's services, before the wire starts. The broker binds it to
+/// `SO_PEERCRED` and a launch record the session made for that process, and
+/// any app that connects its session's socket itself — a launcher-started
+/// app and a surface app alike — writes the same one.
+pub use runtime_portal::launch_handoff::{
+    FRAMING as COLLAB_LAUNCH_FRAMING, MAGIC as COLLAB_LAUNCH_MAGIC,
+    PROTOCOL_VERSION as COLLAB_LAUNCH_PROTOCOL_VERSION,
+};
 
 /// One resolved service handoff: the launcher's own end of the
 /// connection, plus the in-sandbox fd number the app should find it at.
@@ -970,83 +965,11 @@ fn resolve_service_binds_inner(
 }
 
 /// Name the app and room a collaboration connection is for, as the first
-/// thing on it: what the broker attests against the shell's launch record.
-///
-/// # Errors
-/// The stream refuses the write.
-pub fn write_collab_handoff(
-    stream: &mut UnixStream,
-    app_id: &str,
-    workspace_id: &str,
-) -> std::io::Result<()> {
-    write_collab_launch(
-        stream,
-        &serde_json::json!({
-            "protocol": COLLAB_LAUNCH_PROTOCOL_VERSION,
-            "app_id": app_id,
-            "workspace_id": workspace_id,
-        }),
-    )
-}
-
-/// Name the app, room and window instance a collaboration connection the
-/// session makes for one of its windows is for: the broker attests it
-/// against the launch record of exactly that window, so two windows of one
-/// app in one room never take each other's.
-///
-/// # Errors
-/// The stream refuses the write.
-pub fn write_collab_window_handoff(
-    stream: &mut UnixStream,
-    app_id: &str,
-    workspace_id: &str,
-    window_instance: u64,
-) -> std::io::Result<()> {
-    write_collab_launch(
-        stream,
-        &serde_json::json!({
-            "protocol": COLLAB_LAUNCH_PROTOCOL_VERSION,
-            "app_id": app_id,
-            "workspace_id": workspace_id,
-            "window_instance": window_instance,
-        }),
-    )
-}
-
-fn write_collab_launch(stream: &mut UnixStream, value: &serde_json::Value) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec(value)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let frame = COLLAB_LAUNCH_FRAMING.encode(&bytes)?;
-    stream.write_all(&COLLAB_LAUNCH_MAGIC)?;
-    stream.write_all(&frame)?;
-    stream.flush()
-}
-
-/// Request exact executing-task custody on the existing collaboration socket.
-/// The original launcher handoff remains the sole application/room admission.
-/// # Errors
-/// The stream refuses the write.
-pub fn write_collab_executing_handoff(
-    stream: &mut UnixStream,
-    app_id: &str,
-    workspace_id: &str,
-) -> std::io::Result<()> {
-    #[cfg(not(target_os = "linux"))]
-    return write_collab_handoff(stream, app_id, workspace_id);
-    #[cfg(target_os = "linux")]
-    {
-        let bytes = serde_json::to_vec(&serde_json::json!({
-            "protocol": COLLAB_LAUNCH_PROTOCOL_VERSION,
-            "app_id": app_id,
-            "workspace_id": workspace_id,
-            "executing_peer": true,
-        }))
-        .map_err(std::io::Error::other)?;
-        stream.write_all(&COLLAB_LAUNCH_MAGIC)?;
-        COLLAB_LAUNCH_FRAMING.write(stream, &bytes)?;
-        stream.flush()
-    }
-}
+/// thing on it: what the broker attests against the session's launch record.
+pub use runtime_portal::launch_handoff::{
+    write as write_collab_handoff, write_executing as write_collab_executing_handoff,
+    write_window as write_collab_window_handoff,
+};
 
 fn write_compat_handoff(
     stream: &mut UnixStream,

@@ -16,6 +16,10 @@
 //!
 //! A surface process finds the socket in [`ACTIONS_FD_ENV`]; without it the
 //! app is an ordinary app with no host in reach, as before.
+//!
+//! What a surface reads of the session is no action: it reads what the
+//! session publishes through the session's own services, as any app does
+//! ([`crate::surface_services`]).
 
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::FromRawFd;
@@ -54,217 +58,6 @@ pub fn publish(resources: &[tilo_actions::ResourceSpec]) {
 /// The environment variable naming the descriptor on which a surface app
 /// talks to the session that places it.
 pub const ACTIONS_FD_ENV: &str = "TILO_SURFACE_ACTIONS_FD";
-
-/// The readings of the resources this surface follows, shared with the
-/// connection that answers the session: opened on the app's own thread, kept
-/// by the reader thread as they arrive, and looked at when the app draws.
-static READINGS: std::sync::LazyLock<std::sync::Mutex<Option<Arc<Readings>>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
-
-/// How long opening a followed resource waits for the reading its watch
-/// begins at, and how long an action waits for the session's answer: both
-/// bound a lost connection, not slow work.
-const SESSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
-
-/// One of the session's published resources as a surface app reaches it: the
-/// reading it stands at, each later reading, and the actions that change it.
-///
-/// This is the session's own side of the action protocol
-/// ([`SURFACE_PROVIDER`]) as the connection to the session hands it over: the
-/// surface asks to follow a resource, the session sends the reading it stands
-/// at and each one that moves, and an action is invoked on the session the
-/// way any app invokes one. The readings arrive on the reader thread and only
-/// the newest is kept, so a frame that was slow shows the state now, never
-/// one that has passed.
-///
-/// [`Self::open`] blocks for the first reading: call it off the frame thread,
-/// as [`Self::invoke`].
-#[derive(Clone)]
-pub struct SessionResource {
-    resource: Arc<str>,
-    readings: Arc<Readings>,
-}
-
-impl SessionResource {
-    /// Follow `resource`, waiting for the reading it stands at now.
-    ///
-    /// # Errors
-    ///
-    /// This process is no surface, the session does not answer in time, or no
-    /// service publishes `resource`.
-    pub fn open(resource: &str) -> Result<Self, String> {
-        let readings = READINGS
-            .lock_recover()
-            .clone()
-            .ok_or("This window is no surface of a session.")?;
-        let (first, answer) = mpsc::sync_channel(1);
-        readings
-            .opening
-            .lock_recover()
-            .insert(resource.to_owned(), first);
-        if readings
-            .outgoing
-            .lock_recover()
-            .send(RemoteActionMessage::ResourceWatch {
-                resource: resource.to_owned(),
-            })
-            .is_err()
-        {
-            readings.opening.lock_recover().remove(resource);
-            return Err("The session closed the actions socket.".into());
-        }
-        match answer.recv_timeout(SESSION_TIMEOUT) {
-            Ok(Ok(_reading)) => Ok(Self {
-                resource: Arc::from(resource),
-                readings,
-            }),
-            Ok(Err(error)) => Err(error),
-            Err(_) => {
-                readings.opening.lock_recover().remove(resource);
-                Err("The session did not answer.".to_string())
-            }
-        }
-    }
-
-    /// The newest reading since the last call; `None` when nothing changed.
-    #[must_use]
-    pub fn latest(&self) -> Option<Result<String, String>> {
-        self.readings
-            .newest
-            .lock_recover()
-            .remove(self.resource.as_ref())
-    }
-
-    /// Wake `wake`'s owner at each reading that arrives, so the view showing
-    /// the resource draws the new one instead of looking for it.
-    pub fn attach(&self, wake: crate::wake::WakeHandle) {
-        *self.readings.wake.lock_recover() = Some(wake);
-    }
-
-    /// Invoke `action` of the resource with `arguments` (none for an action
-    /// that takes nothing). Blocking, bounded: call it off the frame thread.
-    ///
-    /// # Errors
-    ///
-    /// The session does not answer in time, or the door refused the action,
-    /// with what it said.
-    pub fn invoke(
-        &self,
-        action: &str,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), String> {
-        let invocation = tilo_actions::outcome::InvocationId::new();
-        let (reply, answer) = mpsc::sync_channel(1);
-        self.readings
-            .answers
-            .lock_recover()
-            .insert(invocation, reply);
-        let sent = self
-            .readings
-            .outgoing
-            .lock_recover()
-            .send(RemoteActionMessage::Invoke(
-                tilo_actions::remote::InvokeRequest {
-                    invocation,
-                    target: tilo_actions::remote::RemoteActionTarget {
-                        provider: SURFACE_PROVIDER.to_string(),
-                        address: tilo_actions::ActionAddress::new(self.resource.as_ref(), action),
-                    },
-                    argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
-                    context: None,
-                    confirmation: None,
-                    revision: None,
-                    on_behalf_of: None,
-                    wait_ms: None,
-                    appearance: None,
-                },
-            ));
-        if sent.is_err() {
-            self.readings.answers.lock_recover().remove(&invocation);
-            return Err("The session closed the actions socket.".into());
-        }
-        answer
-            .recv_timeout(SESSION_TIMEOUT)
-            .map_err(|_| "The session did not answer the change.".to_string())?
-    }
-}
-
-/// What the session answers its surfaces' actions under.
-const SURFACE_PROVIDER: &str = "so.tilo.session";
-
-/// The followed resources and the actions in flight, as the reader thread
-/// keeps them.
-struct Readings {
-    /// The connection's writing end, to ask for a resource or take an action.
-    outgoing: std::sync::Mutex<mpsc::Sender<RemoteActionMessage>>,
-    /// The newest reading of each followed resource not yet taken.
-    newest: std::sync::Mutex<HashMap<String, Result<String, String>>>,
-    /// What waits for the first reading of a resource, by resource.
-    opening: std::sync::Mutex<HashMap<String, mpsc::SyncSender<Result<String, String>>>>,
-    /// What waits for the verdict on an action taken from here, by invocation.
-    answers: std::sync::Mutex<
-        HashMap<tilo_actions::outcome::InvocationId, mpsc::SyncSender<Result<(), String>>>,
-    >,
-    /// The app's wake, once its window handed one over.
-    wake: std::sync::Mutex<Option<crate::wake::WakeHandle>>,
-}
-
-impl Readings {
-    /// The readings this surface follows, taken from the connection it asks
-    /// the session over.
-    fn new(outgoing: mpsc::Sender<RemoteActionMessage>) -> Self {
-        Self {
-            outgoing: std::sync::Mutex::new(outgoing),
-            newest: std::sync::Mutex::default(),
-            opening: std::sync::Mutex::default(),
-            answers: std::sync::Mutex::default(),
-            wake: std::sync::Mutex::default(),
-        }
-    }
-
-    /// Take in what the session said of a followed resource or a taken
-    /// action. Whether it was one of those.
-    fn take(&self, message: &RemoteActionMessage) -> bool {
-        match message {
-            RemoteActionMessage::ResourceReading { resource, reading } => {
-                let delivery: Result<String, String> = match reading {
-                    Some(reading) => Ok(reading.clone()),
-                    None => Err(format!("No service publishes {resource}.")),
-                };
-                self.newest
-                    .lock_recover()
-                    .insert(resource.clone(), delivery.clone());
-                // The opener is told the resource is served; the reading
-                // itself waits in `newest` for the caller to take.
-                if let Some(waiting) = self.opening.lock_recover().remove(resource) {
-                    let _ = waiting.send(delivery);
-                }
-                self.wake();
-                true
-            }
-            RemoteActionMessage::Receipt(receipt) => {
-                let waiting = self.answers.lock_recover().remove(&receipt.invocation);
-                let Some(waiting) = waiting else {
-                    return false;
-                };
-                let _ = waiting.send(match &receipt.status {
-                    tilo_actions::remote::ReceiptStatus::Rejected { error } => {
-                        Err(error.to_string())
-                    }
-                    _ => Ok(()),
-                });
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn wake(&self) {
-        if let Some(wake) = self.wake.lock_recover().as_ref() {
-            wake.wake();
-        }
-    }
-}
 
 /// Both directions' framing: one length-prefixed frame per message, as the
 /// collaboration wire frames the same protocol's frames.
@@ -316,18 +109,13 @@ impl SurfacePeer {
         let (outgoing, writes) = mpsc::channel();
         let (incoming_sender, incoming) = mpsc::channel();
         let wake: Arc<std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>> = Arc::default();
-        // The resources this surface follows are kept here, and ask the
-        // session over this same connection.
-        let readings = Arc::new(Readings::new(outgoing.clone()));
-        *READINGS.lock_recover() = Some(Arc::clone(&readings));
         // A long-lived protocol client of its own, on threads of its own:
         // it reads whenever the session speaks, and a message waiting must
         // wake the app even when nothing else asks it for a frame.
         if let Ok(reader) = stream.try_clone() {
             let reading = Arc::clone(&wake);
-            let followed = Arc::clone(&readings);
             let _ = tilo_rt::spawn_thread("surface-actions", move || {
-                read_messages(reader, &incoming_sender, &reading, &followed);
+                read_messages(reader, &incoming_sender, &reading);
             });
             let _ = tilo_rt::spawn_thread("surface-actions-writes", move || {
                 write_messages(stream, &writes);
@@ -498,7 +286,6 @@ fn read_messages(
     mut stream: UnixStream,
     incoming: &mpsc::Sender<RemoteActionMessage>,
     wake: &Arc<std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
-    readings: &Arc<Readings>,
 ) {
     loop {
         let Some(body) = FRAMING.read(&mut stream).ok().flatten() else {
@@ -508,11 +295,6 @@ fn read_messages(
             tracing::warn!("the session sent a message that is not one");
             return;
         };
-        // What this surface follows, and how what it asked stands, is the
-        // app's own business: it never waits for a frame to be taken.
-        if readings.take(&frame.message) {
-            continue;
-        }
         if incoming.send(frame.message).is_err() {
             return;
         }

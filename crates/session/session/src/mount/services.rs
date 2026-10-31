@@ -24,10 +24,6 @@ pub(crate) fn answered(started: Started) -> ResourceOperationStart {
 /// every hosted surface: one action host for all of them.
 struct ServiceDoor {
     services: Rc<RefCell<Services>>,
-    /// The last reading asked for, and the services' revision it was read
-    /// at: a panel following a resource is answered from here until the
-    /// services move, so a frame never reads the device again.
-    last: (u64, Option<(String, serde_json::Value)>),
 }
 
 /// A surface app reaches the desktop's actions exactly as a person's
@@ -35,14 +31,6 @@ struct ServiceDoor {
 impl surfaces::ActionDoor for tilo_surface_host::Doors {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         tilo_surface_host::Doors::resources(self)
-    }
-
-    fn read(&mut self, resource: &str) -> Option<serde_json::Value> {
-        tilo_surface_host::Doors::read(self, resource)
-    }
-
-    fn revision(&mut self) -> Option<u64> {
-        tilo_surface_host::Doors::moved(self)
     }
 
     fn invoke(
@@ -57,19 +45,6 @@ impl surfaces::ActionDoor for tilo_surface_host::Doors {
 impl Published for ServiceDoor {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         self.services.borrow().resources()
-    }
-
-    fn read(&mut self, resource: &str) -> Option<serde_json::Value> {
-        let revision = self.services.borrow().revision();
-        if self.last.0 == revision
-            && let Some((read, value)) = &self.last.1
-            && read == resource
-        {
-            return Some(value.clone());
-        }
-        let value = self.services.borrow().read(resource)?;
-        self.last = (revision, Some((resource.to_owned(), value.clone())));
-        Some(value)
     }
 
     fn revision(&self) -> Option<u64> {
@@ -117,7 +92,7 @@ pub(crate) fn start_action_plane(
     };
     let link = plane::Link::new(options.wake.handle());
     let broker = plane::serve(
-        path,
+        path.clone(),
         std::sync::Arc::clone(&link),
         std::sync::Arc::clone(&options.launches),
         options.fabric.clone(),
@@ -128,6 +103,7 @@ pub(crate) fn start_action_plane(
     )?;
     Ok(Some(Plane {
         link,
+        path,
         _broker: broker,
     }))
 }
@@ -144,7 +120,6 @@ pub(crate) fn mount_services(
     let services = Rc::new(RefCell::new(services));
     doors.add(Rc::new(RefCell::new(ServiceDoor {
         services: Rc::clone(&services),
-        last: (0, None),
     })));
     services
 }

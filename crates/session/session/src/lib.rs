@@ -292,6 +292,9 @@ pub enum ActionPlane {
 /// and the broker that answers them on the socket.
 struct Plane {
     link: std::sync::Arc<plane::Link>,
+    /// The socket the broker answers on: what the launcher hands an app, and
+    /// what a surface app connects for itself.
+    path: std::path::PathBuf,
     /// Held so the broker's thread ends and its socket is unlinked with the
     /// session.
     _broker: tilo_action_broker::collab_broker::BrokerHandle,
@@ -731,7 +734,8 @@ impl Shared {
         // The downloaded programs, as their registry publishes them: search
         // lists them from the one registry the app sheets read too.
         let downloaded = self
-            .doors
+            .services
+            .borrow()
             .read(tilo_app_launch::downloaded::RESOURCE)
             .and_then(|reading| serde_json::from_value(reading).ok());
         self.search
@@ -1592,6 +1596,14 @@ impl Session {
         )
         .map_err(|error| tracing::warn!(%error, "the shell-ui service does not run"))
         .ok();
+        // What the surface apps this session starts are of it: the launch
+        // the broker admits each connection by, and the socket it answers
+        // them on.
+        let mut surfaces = surfaces::Surfaces::default();
+        surfaces.lend(
+            std::sync::Arc::clone(&options.launches),
+            action_plane.as_ref().map(|plane| plane.path.clone()),
+        );
         let services = mount_services(&mut doors, std::mem::take(&mut options.services));
         // Dictation joins the services: its recognizer, microphone and
         // consent are only the session's, and the sheet asks about them.
@@ -1724,7 +1736,7 @@ impl Session {
             pids: std::collections::BTreeMap::new(),
             window_artwork: std::collections::BTreeMap::new(),
             _settings_watch: settings_watch,
-            surfaces: surfaces::Surfaces::default(),
+            surfaces,
             surface_apps,
             displays: display_settings::Displays::default(),
             confirmation: display_confirm::Confirmation::default(),
@@ -1794,7 +1806,9 @@ impl Session {
         self.follow_displays()?;
         self.follow_fullscreen();
         for surface in &self.surface_apps {
-            self.surfaces.start_or_log(&mut self.compositor, surface);
+            let room = self.shared.active_room();
+            self.surfaces
+                .start_or_log(&mut self.compositor, surface, &room);
         }
         Ok(())
     }
@@ -1843,7 +1857,8 @@ impl Session {
         &self.surfaces
     }
 
-    /// Start `surface` now, as a client of the running compositor.
+    /// Start `surface` now, as a client of the running compositor, as the app
+    /// it runs for in the workspace in front.
     ///
     /// # Errors
     /// Its socket or process could not be made.
@@ -1851,7 +1866,8 @@ impl Session {
         &mut self,
         surface: &surfaces::Surface,
     ) -> Result<(), surfaces::StartError> {
-        self.surfaces.start(&mut self.compositor, surface)
+        let room = self.shared.active_room();
+        self.surfaces.start(&mut self.compositor, surface, &room)
     }
 
     /// Stop the surface app `name`, if it runs.
