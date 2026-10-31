@@ -180,6 +180,8 @@ fn app_row(
         (subtitle.clone().unwrap_or_default(), FieldWeight::SUBTITLE),
     ];
     let hit = Hit {
+        faces: Vec::new(),
+        outcome: None,
         kind: ResourceKind::Application,
         provider: DOWNLOADED_SOURCE.into(),
         id: app.desktop_id.clone(),
@@ -264,6 +266,8 @@ fn action_row(
         (kind.clone(), FieldWeight::KEYWORD),
     ];
     let hit = Hit {
+        faces: Vec::new(),
+        outcome: None,
         kind: ResourceKind::Action,
         provider: DOWNLOADED_SOURCE.into(),
         id: format!("{id}{}", app.desktop_id),
@@ -297,6 +301,8 @@ fn offer_row(room: &str, offer: &wire::DownloadedOffer) -> (Vec<(String, FieldWe
         (kind.clone(), FieldWeight::KEYWORD),
     ];
     let hit = Hit {
+        faces: Vec::new(),
+        outcome: None,
         kind: ResourceKind::Action,
         provider: DOWNLOADED_SOURCE.into(),
         id: format!("add:{}", offer.file),

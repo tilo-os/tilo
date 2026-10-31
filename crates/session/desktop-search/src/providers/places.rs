@@ -195,6 +195,8 @@ impl Continue {
             ));
         }
         Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind: continue_kind(),
             provider: self.id().into(),
             id: place.row_id(),

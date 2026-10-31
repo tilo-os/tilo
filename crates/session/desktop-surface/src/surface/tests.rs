@@ -285,6 +285,68 @@ fn a_windows_search_control_opens_search() {
     assert!(handle.search_open());
 }
 
+/// A desk with apps installed, whose windows are notices.
+struct Installed;
+
+impl TileSource for Installed {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        TileHost::new(TileContent::Notice {
+            title: tab.title.clone(),
+            detail: String::new(),
+        })
+    }
+
+    fn search_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
+        vec![tilo_desktop_search::providers::AppEntry {
+            id: "so.tilo.chat".into(),
+            title: "Chat".into(),
+            category: Some("Talk".into()),
+            description: None,
+        }]
+    }
+}
+
+/// "All apps" under the apps of the empty palette opens the catalogue:
+/// every installed app, by its name, with nothing typed.
+#[test]
+fn the_all_apps_row_opens_the_catalogue() {
+    let (surface, handle) = desk_with(1, Box::new(Installed));
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1280, 800),
+        Theme::dark(),
+    );
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    handle.open_search(None);
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    let all_apps = crate::i18n::t("search-launcher-all-apps");
+    // The row under the apps: one step down from the best app, then Enter.
+    frame.key("Down");
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    frame.key("Enter");
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    assert!(handle.search_open(), "the catalogue replaces the search");
+    let (query, rows) = handle.search_rows();
+    assert_eq!(query, "", "the catalogue opens with nothing typed");
+    assert!(
+        rows.iter().any(|row| row.title == "Chat"),
+        "every app is listed: {rows:?}"
+    );
+    assert!(
+        rows.iter().all(|row| row.title != all_apps),
+        "and the catalogue does not offer itself again: {rows:?}"
+    );
+}
+
 /// Search over one window stands over that window, as an app's own
 /// palette does, not centred on the screen over another window.
 #[test]
@@ -359,6 +421,8 @@ impl tilo_desktop_search::Source for Elsewhere {
             return Vec::new();
         }
         vec![tilo_desktop_search::Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind: tilo_desktop_search::ResourceKind::Note,
             provider: self.id().into(),
             id: "quarterly-plan".into(),

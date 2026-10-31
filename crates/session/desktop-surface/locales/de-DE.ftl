@@ -1335,6 +1335,7 @@ desktop-action-param-delta = Wie viele Arbeitsbereiche weiter, negativ zurück
 desktop-action-param-steps = Wie viele Leisten weiter, negativ zurück
 desktop-actions-search = Suche
 desktop-action-show-person = Eine Person zeigen
+desktop-action-toggle-collaborators = Anzeigen oder ausblenden, wer hier ist
 desktop-action-search-for = Suchen nach
 desktop-action-choose-search-row = Auswählen
 desktop-action-param-person = Wer, nach der Kennung

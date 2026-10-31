@@ -36,9 +36,7 @@ use iroh::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop::chrome::WaveNotice;
 use tilo_desktop::here::{Here, LiveMember, Wave};
-use tilo_desktop_model::{
-    DesktopTree, RoomId as DeskRoom, TabId, WorkspaceId as DeskWorkspace,
-};
+use tilo_desktop_model::{DesktopTree, RoomId as DeskRoom, TabId, WorkspaceId as DeskWorkspace};
 use tilo_device_fabric::DeviceId;
 use tilo_device_fabric::runtime::FabricRuntime;
 use tilo_endpoint_reachability::{Need, Reachability};
@@ -77,6 +75,47 @@ pub struct OwnPresence {
     pub following: Option<String>,
 }
 
+/// A call in progress in a room, as the people in it say.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveCall {
+    /// The room the channel is in, as its id travels.
+    pub room: String,
+    /// Chat's id of the voice channel.
+    pub channel: String,
+    /// What the channel is called, as the people in it say; empty when
+    /// nobody named it.
+    pub name: String,
+    /// Who is in it, in the order they arrived.
+    pub people: Vec<LiveCaller>,
+}
+
+/// Someone in a call, as their device's presence names them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveCaller {
+    /// Their device's publisher.
+    pub id: String,
+    /// What to call the device.
+    pub label: String,
+    /// The person behind the device (user root, hex), once its certificate
+    /// was heard.
+    pub user: Option<String>,
+}
+
+impl LiveCall {
+    /// `peer` is in this call, as their presence says: one more in it, and
+    /// the name they give it when nobody named it first.
+    fn join(&mut self, peer: &Peer, presence: &ui::CallPresence) {
+        if self.name.trim().is_empty() {
+            self.name.clone_from(&presence.name);
+        }
+        self.people.push(LiveCaller {
+            id: peer.publisher.to_string(),
+            label: peer.label.clone(),
+            user: peer.user.clone(),
+        });
+    }
+}
+
 /// Someone else here, as their presence and their certificate tell it.
 #[derive(Clone, Debug, PartialEq)]
 struct Peer {
@@ -96,6 +135,9 @@ struct Peer {
     following: Option<String>,
     /// The last wave they sent at someone here.
     wave: Option<Wave>,
+    /// The call they are in, as their presence says: the channel's id and
+    /// what it is called.
+    call: Option<ui::CallPresence>,
     /// Where their pointer is: the tab of this room its tile shows, and the
     /// position on that tile in logical pixels from its corner.
     pointer: Option<(u64, f64, f64)>,
@@ -113,6 +155,7 @@ impl Peer {
             availability: Availability::default(),
             following: None,
             wave: None,
+            call: None,
             pointer: None,
             here: false,
         }
@@ -177,9 +220,10 @@ impl Room {
                     PeerPresencePayload::Status { text, .. } => {
                         peer.status = Some(text.trim().to_owned()).filter(|text| !text.is_empty());
                     }
-                    PeerPresencePayload::Availability { state, .. } => {
+                    PeerPresencePayload::Availability { state, call } => {
                         peer.availability =
                             Availability::from_id(state).unwrap_or(Availability::Available);
+                        peer.call = call.as_deref().and_then(ui::CallPresence::decode);
                     }
                     PeerPresencePayload::Following { target } => {
                         peer.following.clone_from(target);
@@ -244,6 +288,35 @@ impl Room {
     /// They left the room.
     fn depart(&mut self, publisher: EndpointId) {
         self.peers.retain(|peer| peer.publisher != publisher);
+    }
+
+    /// The calls in progress here, as those in them say: the people of one
+    /// channel under its id and name, in the order they arrived.
+    fn calls(&self) -> Vec<LiveCall> {
+        let mut calls: Vec<LiveCall> = Vec::new();
+        for peer in self.peers.iter().filter(|peer| peer.here) {
+            let Some(presence) = &peer.call else {
+                continue;
+            };
+            let at = calls
+                .iter()
+                .position(|known| known.channel == presence.channel);
+            if let Some(at) = at {
+                if let Some(call) = calls.get_mut(at) {
+                    call.join(peer, presence);
+                }
+            } else {
+                let mut call = LiveCall {
+                    room: self.id.clone(),
+                    channel: presence.channel.clone(),
+                    name: presence.name.clone(),
+                    people: Vec::new(),
+                };
+                call.join(peer, presence);
+                calls.push(call);
+            }
+        }
+        calls
     }
 
     /// Who is here, as the desktop lists them.
@@ -1083,6 +1156,18 @@ impl Client {
         self.plane.borrow().pointers(room, tab)
     }
 
+    /// The calls in progress in every room this session takes part in, as
+    /// those in them say: who to join, where.
+    #[must_use]
+    pub fn calls(&self) -> Vec<LiveCall> {
+        self.plane
+            .borrow()
+            .rooms
+            .iter()
+            .flat_map(Room::calls)
+            .collect()
+    }
+
     /// This session's own person, as everyone here reads them.
     fn own_member(&self) -> LiveMember {
         let own = self.own.borrow().clone();
@@ -1884,6 +1969,49 @@ mod tests {
             people[0].status.as_ref().map(|line| line.text.as_str()),
             Some("Shipping the roster")
         );
+    }
+
+    #[test]
+    fn a_peer_in_a_call_says_which_channel_to_join() {
+        let (sync, _said) = session("Quinten", Some(0x04));
+        sync.hear(hello(1, 0xaa, "Framework 16"));
+        sync.hear(here(1));
+        assert!(sync.calls().is_empty());
+
+        let voice = ui::CallPresence {
+            channel: "c_voice".to_owned(),
+            name: "Voice".to_owned(),
+        };
+        let in_voice = |call: Option<String>| PeerPresencePayload::Availability {
+            state: "available".to_owned(),
+            call,
+        };
+        sync.hear(presence(1, ROOM, in_voice(Some(voice.encode()))));
+
+        let calls = sync.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].room, ROOM);
+        assert_eq!(calls[0].channel, "c_voice");
+        assert_eq!(calls[0].name, "Voice");
+        let who: Vec<&str> = calls[0]
+            .people
+            .iter()
+            .map(|person| person.label.as_str())
+            .collect();
+        assert_eq!(who, ["Framework 16"]);
+
+        // Someone else in the same channel is in the same call, not another.
+        sync.hear(hello(2, 0xbb, "Phone"));
+        sync.hear(here(2));
+        sync.hear(presence(2, ROOM, in_voice(Some(voice.encode()))));
+        let calls = sync.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].people.len(), 2);
+
+        // Out of the call, the channel is no one's.
+        sync.hear(presence(1, ROOM, in_voice(None)));
+        sync.hear(presence(2, ROOM, in_voice(None)));
+        assert!(sync.calls().is_empty());
     }
 
     #[test]

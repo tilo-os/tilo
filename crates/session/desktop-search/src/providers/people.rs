@@ -66,6 +66,8 @@ impl Source for People {
             .filter_map(|person| {
                 let score = rank_fields(needle, &[(&person.name, FieldWeight::TITLE)])?;
                 Some(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: people_kind(),
                     provider: self.id().into(),
                     id: person.id.clone(),

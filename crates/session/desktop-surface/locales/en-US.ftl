@@ -1320,6 +1320,7 @@ desktop-action-param-delta = How many workspaces on, back when negative
 desktop-action-param-steps = How many strips on, back when negative
 desktop-actions-search = Search
 desktop-action-show-person = Show a person
+desktop-action-toggle-collaborators = Show or hide who is here
 desktop-action-search-for = Search for
 desktop-action-choose-search-row = Choose
 desktop-action-param-person = Who, by their id

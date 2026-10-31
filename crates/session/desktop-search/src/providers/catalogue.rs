@@ -181,6 +181,8 @@ impl StoreCatalogue {
             }
         };
         Some(Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind,
             provider: self.id().into(),
             id,

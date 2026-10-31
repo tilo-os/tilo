@@ -2163,6 +2163,7 @@ impl DesktopChrome {
                 ChromeIntent::SwitchWorkspace(i32::try_from(*delta).unwrap_or_default())
             }
             DesktopAction::ShowPerson { person } => ChromeIntent::ShowPerson(person.clone()),
+            DesktopAction::ToggleCollaborators => ChromeIntent::ToggleCollaborators,
             DesktopAction::StepStrip { steps } => {
                 self.step_strip(isize::try_from(*steps).unwrap_or_default());
                 return true;

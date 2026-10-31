@@ -45,7 +45,8 @@ pub use lazy::{
     DESKTOP_SEARCH, DesktopSearchApi, LazyDesktopSearch, MakeDesktopSearch, builtin_desktop_search,
 };
 pub use model::{
-    ActionTarget, DESKTOP_APP, Hit, InvokeTarget, OPEN_ACTION, OPEN_ANCHOR, Source, Target, search,
+    ALL_APPS_COMMAND, ActionTarget, CHROME_RESOURCE, DESKTOP_APP, Hit, InvokeTarget, OPEN_ACTION,
+    OPEN_ANCHOR, SHOW_COLLABORATORS, Source, Target, WORKSPACE_COMMAND_PREFIX, search,
 };
 pub use palette::{DesktopSearch, Reach, SearchData};
 pub use preferences::SearchPreferences;

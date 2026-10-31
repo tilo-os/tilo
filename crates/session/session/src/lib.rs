@@ -51,6 +51,7 @@ mod engine;
 mod env;
 pub mod fabric;
 mod held;
+mod here;
 mod i18n;
 pub mod identity;
 mod keys;
@@ -704,6 +705,10 @@ impl Shared {
     /// Hand search what the session publishes when it changed: read after
     /// a frame, as the desk cannot read its own tree while it opens search.
     fn observe(&self) {
+        // Who is here changes faster than what is published: people and
+        // calls come and go between two door revisions, so the empty
+        // palette's first group is read every pass.
+        self.search.set_here(self.here_now());
         // The workspaces as this frame shows them, before the door revision
         // decides whether the rest is worth reading again: a record held by
         // another workspace is offered under that workspace's name.

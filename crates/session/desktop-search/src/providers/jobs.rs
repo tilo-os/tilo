@@ -136,6 +136,8 @@ impl Source for Jobs {
             };
             let id = format!("{}{ID_SEPARATOR}{}", job.app, job.invocation);
             hits.push(Hit {
+                faces: Vec::new(),
+                outcome: None,
                 kind: jobs_kind(),
                 provider: self.id().into(),
                 id: format!("job{ID_SEPARATOR}{id}"),
@@ -151,6 +153,8 @@ impl Source for Jobs {
             });
             if job.cancellable && running(&job.update) {
                 hits.push(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: jobs_kind(),
                     provider: self.id().into(),
                     id: format!("cancel{ID_SEPARATOR}{id}"),

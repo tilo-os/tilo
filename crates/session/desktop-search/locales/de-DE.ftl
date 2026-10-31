@@ -14,6 +14,24 @@ search-unlock-app = { $app } entsperren, um nach „{ $query }“ zu suchen
 search-unlock-app-detail = { $app } ist gesperrt
 search-kind-settings = Einstellungen
 search-kind-people = Personen
+search-kind-happening = Gerade los
+search-launcher-all-apps = Alle Apps
+search-launcher-here-one = { $name } ist hier
+search-launcher-here-two = { $name } und { $other } sind hier
+search-launcher-here-many = { $count ->
+    [one] { $name } und 1 weiterer ist hier
+   *[other] { $name } und { $count } weitere sind hier
+}
+search-launcher-with-one = Mit { $name }
+search-launcher-with-two = Mit { $name } und { $other }
+search-launcher-with-many = { $count ->
+    [one] Mit { $name } und 1 weiterem
+   *[other] Mit { $name } und { $count } weiteren
+}
+search-launcher-call = Anruf
+search-launcher-call-in = Anruf in { $channel }
+search-launcher-outcome-open = Öffnen
+search-launcher-outcome-join = Beitreten
 search-kind-jobs = Läuft
 search-kind-continue = Weitermachen
 search-kind-waiting = Wartet auf dich

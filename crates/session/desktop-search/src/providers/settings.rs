@@ -198,6 +198,8 @@ impl Settings {
 
     fn hit(&self, row: &Row, score: i32) -> Hit {
         Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind: settings_kind(),
             provider: self.id().into(),
             id: row.id.clone(),
