@@ -334,7 +334,11 @@ impl Arrangement {
     ) -> Result<(), String> {
         let before: Vec<ChangeHash> = self.doc.get_heads();
         let mut strips = own_arrangement::read(&self.doc);
-        if !change(&mut strips, action)? {
+        // An agent arranges the person's desk like the person does, except
+        // where they pinned something: a pinned place is theirs to move
+        // (shell.md §5's default, "not what they pinned").
+        let by_the_person = asked == self.person;
+        if !change(&mut strips, action, by_the_person)? {
             return Ok(());
         }
         own_arrangement::write(&mut self.doc, &strips).map_err(|error| error.to_string())?;
@@ -407,7 +411,7 @@ impl Arrangement {
         let mut strips = own_arrangement::read(&self.doc);
         let mut changed = adopt_structure(&mut strips, &became);
         for action in actions_between(&was, &became) {
-            match change(&mut strips, &action) {
+            match change(&mut strips, &action, true) {
                 Ok(made) => changed |= made,
                 Err(why) => tracing::warn!(why, "the desk's own change could not be kept"),
             }
@@ -489,8 +493,14 @@ impl Arrangement {
     }
 }
 
-/// One change of `strips`, as `action` names it. Whether anything changed.
-fn change(strips: &mut Strips, action: &ArrangementAction) -> Result<bool, String> {
+/// One change of `strips`, as `action` names it. `by_the_person` is whether
+/// the person's own input asked for it: an agent's move leaves a place the
+/// person pinned where it is. Whether anything changed.
+fn change(
+    strips: &mut Strips,
+    action: &ArrangementAction,
+    by_the_person: bool,
+) -> Result<bool, String> {
     match action {
         ArrangementAction::OpenInto {
             strip,
@@ -521,6 +531,9 @@ fn change(strips: &mut Strips, action: &ArrangementAction) -> Result<bool, Strin
             }
         }
         ArrangementAction::Move { place, row, before } => {
+            if !by_the_person && strips.place(*place).is_some_and(|held| held.pinned) {
+                return Err("the person pinned that place: it stays where it is".into());
+            }
             // A strip the row has none of yet is minted from the place, so
             // two devices making one at once agree.
             let minted: GroupId = row.wrapping_mul(31).wrapping_add(1) & PEER_MASK;

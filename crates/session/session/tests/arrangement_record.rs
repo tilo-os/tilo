@@ -418,3 +418,44 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
         .expect("it is a step of the record's history");
     assert_eq!(who, "agent-task:reading", "still attributed to the agent");
 }
+
+// An agent's arrangement leaves a place the person pinned where it is
+// (shell.md §5's default).
+#[test]
+fn a_pinned_place_stays_where_the_person_put_it() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    let window = open_window(&mut session, "org.example.Notes");
+    let second = add_strip(&session, "Second");
+    step(&mut session);
+    let from = strip_of(&session, window).expect("it has a strip");
+    // The person pins it, through the published action.
+    invoke_as(
+        &mut session,
+        "shell:arrangement",
+        "pin-place",
+        &serde_json::json!({"place": window, "pinned": true}),
+    );
+    assert!(arrangement(&session).place(window).unwrap().pinned);
+
+    // The agent's move is refused, and the place stands.
+    let refused = session.invoke_with_actor(
+        "agent-task:reading",
+        "shell:arrangement",
+        "move-place",
+        &serde_json::json!({"place": window, "row": second}),
+    );
+    assert!(refused.is_err(), "the agent may not move a pinned place");
+    assert_eq!(strip_of(&session, window), Some(from));
+}
+
+/// Invoke `action` of `resource` with `arguments` as the person.
+fn invoke_as(session: &mut Session, resource: &str, action: &str, arguments: &serde_json::Value) {
+    let empty = serde_json::Map::new();
+    let arguments = arguments.as_object().unwrap_or(&empty);
+    session
+        .invoke(resource, action, arguments)
+        .unwrap_or_else(|error| panic!("{resource} {action}: {error:?}"));
+    step(session);
+}
