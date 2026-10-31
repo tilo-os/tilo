@@ -67,6 +67,7 @@ impl Shell {
             band(),
             scale,
             std::sync::Arc::new(move || wake.wake_by_ref()),
+            None,
         );
         let part = Rc::new(RefCell::new(part));
         compositor.add_host(Box::new(Held(Rc::clone(&part))));
@@ -84,9 +85,10 @@ impl Shell {
     /// Hand the shell the desk when what it is made from changed. Whether it did.
     pub(crate) fn publish(&mut self) -> bool {
         let key = self.desk.key();
-        if self.seen.replace(key) == Some(key) {
+        if self.seen.as_ref() == Some(&key) {
             return false;
         }
+        self.seen = Some(key);
         self.link.publish(self.desk.reading())
     }
 
@@ -95,14 +97,26 @@ impl Shell {
         self.link.publish_arrangement(reading);
     }
 
+    /// The link the session publishes the desk on and the shell asks through: what a test
+    /// stages a reading on.
+    pub(crate) fn link(&self) -> Rc<SessionLink> {
+        Rc::clone(&self.link)
+    }
+
     /// Whether the shell asked something of the door the session has not run yet.
     pub(crate) fn has_asks(&self) -> bool {
         self.link.has_asks()
     }
 
     /// Run what the shell asked through `invoke` (the session's door).
+    ///
+    /// The shell's effects carry every argument as text (`outside("session.run", ("…", k))`),
+    /// so each is typed here by the type the action itself declares for it: a workspace's key
+    /// is text even when it reads as digits, and a count is a number. `types` answers with the
+    /// declared type of `(resource, action)`'s argument `name`, when the door publishes it.
     pub(crate) fn serve(
         &self,
+        types: impl Fn(&str, &str, &str) -> Option<tilo_actions::params::ParamType>,
         invoke: impl FnMut(&str, &str, &Map<String, Value>) -> Result<(), String>,
     ) {
         let mut invoke = invoke;
@@ -110,7 +124,10 @@ impl Shell {
             let arguments: Map<String, Value> = ask
                 .arguments
                 .iter()
-                .map(|(name, value)| (name.clone(), Value::String(value.clone())))
+                .map(|(name, value)| {
+                    let ty = types(&ask.resource, &ask.action, name);
+                    (name.clone(), typed(value, ty))
+                })
                 .collect();
             invoke(&ask.resource, &ask.action, &arguments)
         });
@@ -129,6 +146,37 @@ impl Shell {
     /// Where the bar's control named `name` stands, logical `(x, y, w, h)`.
     pub(crate) fn control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
         self.part.borrow_mut().control_bounds(name)
+    }
+}
+
+/// `value` (the text the shell's effect wrote) as the door's arguments take it, in the type
+/// the action declares for that argument. Text stays text however it reads: a workspace's
+/// key is `"281474976710657"`, not a number. An undeclared argument keeps the text it came as,
+/// and the door refuses it by name.
+fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
+    use tilo_actions::params::ParamType;
+    match ty {
+        Some(ParamType::Integer) => value
+            .trim()
+            .parse::<i64>()
+            .map_or_else(|_| Value::String(value.to_owned()), Value::from),
+        Some(ParamType::Number) => value
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map_or_else(|| Value::String(value.to_owned()), Value::Number),
+        Some(ParamType::Boolean) => match value.trim() {
+            "true" | "yes" | "on" => Value::Bool(true),
+            "false" | "no" | "off" => Value::Bool(false),
+            _ => Value::String(value.to_owned()),
+        },
+        Some(ParamType::Object) => serde_json::from_str::<Map<String, Value>>(value)
+            .map_or_else(|_| Value::String(value.to_owned()), Value::Object),
+        Some(ParamType::Array) => serde_json::from_str::<Vec<Value>>(value)
+            .map_or_else(|_| Value::String(value.to_owned()), Value::Array),
+        Some(ParamType::Text | ParamType::Resource | ParamType::DateTime | ParamType::Secret)
+        | None => Value::String(value.to_owned()),
     }
 }
 

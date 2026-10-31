@@ -761,6 +761,107 @@ fn a_channels_new_messages_are_unseen_in_the_sidebar_until_the_person_opens_it()
     );
 }
 
+/// Every text the window of the Chat before channels shows, in order: that Chat's messages were
+/// plain text parts, not rich text, so its rows carry them among the row's other texts.
+fn sent(view: &mut ViewInstance) -> Vec<String> {
+    view.poll_patches().unwrap();
+    let mut out = Vec::new();
+    texts(view.tree(), &mut out);
+    for row in rows(view) {
+        let mut row_texts = Vec::new();
+        texts(&row, &mut row_texts);
+        out.extend(row_texts);
+    }
+    out
+}
+
+/// Whether one of the window's texts has `said` in it.
+fn says(view: &mut ViewInstance, said: &str) -> bool {
+    sent(view).iter().any(|text| text.contains(said))
+}
+
+/// Two packages loaded here at once, of the two versions of Chat this repository keeps: the
+/// current one and the one before channels, as a workspace upgraded from the old build has
+/// them — and as every test of this suite has them, since it loads both in one process. A
+/// record of one version is read and changed by its own types, never by the other's; the type
+/// `Message` both declare is the same id with different fields, which is what takes the wrong
+/// schema.
+#[test]
+fn a_room_held_by_one_version_of_chat_is_read_and_changed_by_that_version_with_the_other_loaded() {
+    // The current Chat loaded first, then the Chat before channels: each a package with its
+    // own ids lock, as an upgraded workspace has them.
+    let (mut current, _) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let channels = Value::resource(&current.host.root_of(APP).unwrap());
+    current.commit();
+    let channel = call(
+        &current,
+        "new_channel",
+        vec![channels, Value::text("design")],
+    );
+    current.commit();
+    call(
+        &current,
+        "send",
+        vec![channel.clone(), rich("Shipped."), Value::Opt(None)],
+    );
+    current.commit();
+    let mut seen = current.host.open_resource(&target(&channel), None).unwrap();
+    assert_eq!(said(&mut seen), ["Shipped."]);
+
+    // The other version of the app, over the same app id, in this process: the Chat before
+    // channels, which shares the ids of `Message` and its pieces.
+    let (mut older, _) = Replica::new("ada", AutoCommit::new(), &[(BEFORE, BEFORE_IDS)]);
+    let conversations = Value::resource(&older.host.root_of(APP).unwrap());
+    older.commit();
+    let plans = call(&older, "start", vec![conversations, Value::text("Plans")]);
+    older.commit();
+    call(
+        &older,
+        "post",
+        vec![
+            plans.clone(),
+            Value::text("Walk on Saturday?"),
+            Value::text(""),
+        ],
+    );
+    older.commit();
+    let mut thread = older.host.open_resource(&target(&plans), None).unwrap();
+    assert!(
+        says(&mut thread, "Walk on Saturday?"),
+        "{:?}",
+        sent(&mut thread)
+    );
+
+    // The current Chat's channel still reads its message, and still takes one written by the
+    // current version's action: the older version's schema, loaded second, never takes over how
+    // the current version's records read.
+    let mut seen_again = current.host.open_resource(&target(&channel), None).unwrap();
+    assert_eq!(
+        said(&mut seen_again),
+        ["Shipped."],
+        "the channel still reads its message with the older Chat loaded too"
+    );
+    post(&mut current, &seen_again, "Yes.");
+    assert_eq!(said(&mut seen_again), ["Shipped.", "Yes."]);
+
+    // The older version's conversation reads and takes a message by that version's types, with
+    // the current Chat loaded first: its own `send` writes the plain-text `Part` its schema has.
+    let conversation = Value::resource(&target(&plans));
+    call(
+        &older,
+        "send",
+        vec![conversation, Value::text("Count me in.")],
+    );
+    older.commit();
+    thread = older.host.open_resource(&target(&plans), None).unwrap();
+    assert!(says(&mut thread, "Count me in."), "{:?}", sent(&mut thread));
+    assert!(
+        says(&mut thread, "Walk on Saturday?"),
+        "{:?}",
+        sent(&mut thread)
+    );
+}
+
 /// A conversation's first unread message is where its "New messages" divider stands: the
 /// transcript reads `first_unseen(c)`, a fact of the channel's messages and the person's seen
 /// state, and the list places the divider over that message's row. Once the person reads to the

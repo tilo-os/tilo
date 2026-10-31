@@ -24,6 +24,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use serde_json::{Value as Json, json};
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
@@ -133,29 +134,48 @@ impl TaskSession {
         bundles: &[Bundle],
     ) -> Result<Self, String> {
         let reads = Rc::new(RefCell::new(Reads::default()));
+        let packages = Rc::new(RefCell::new(HashMap::new()));
+        let schemas = Arc::new(crate::schema::Schemas::new());
         let store = TaskStore {
             door: Rc::clone(door),
             reads: Rc::clone(&reads),
+            packages: Rc::clone(&packages),
+            schemas: Arc::clone(&schemas),
             journals: HashMap::new(),
             fresh: 0,
         };
         let runtime = Runtime::new(store, DecidesNothing).map_err(|error| error.to_string())?;
         let mut apps: HashMap<String, Meta> = HashMap::new();
+        // Each app's loaded module, by the app: the id an action records as its authorship.
+        let mut modules: HashMap<String, ModuleHash> = HashMap::new();
+        let _installed = schemas.enter();
         for bundle in bundles {
             for import in &bundle.imports {
-                runtime
+                let module = runtime
                     .reload_package(&import.wasm, import.meta.clone())
                     .map_err(|error| error.to_string())?;
+                modules.insert(import.meta.app.clone(), module);
                 import.meta.register_schemas();
+                if let Some(module) = modules.get(&import.meta.app) {
+                    crate::schema::register_package(&import.meta, module);
+                }
                 apps.insert(import.meta.app.clone(), import.meta.clone());
             }
-            runtime
+            let module = runtime
                 .reload_package(&bundle.wasm, bundle.meta.clone())
                 .map_err(|error| error.to_string())?;
+            modules.insert(bundle.meta.app.clone(), module);
             bundle.meta.register_schemas();
+            if let Some(module) = modules.get(&bundle.meta.app) {
+                crate::schema::register_package(&bundle.meta, module);
+            }
             apps.insert(bundle.meta.app.clone(), bundle.meta.clone());
         }
         reads.borrow_mut().apps = apps.keys().cloned().collect();
+        *packages.borrow_mut() = modules
+            .iter()
+            .map(|(app, module)| (app.clone(), module.0.clone()))
+            .collect();
         let steps = Rc::new(RefCell::new(Steps::default()));
         runtime.set_invoker(DoorInvoker {
             door: Rc::clone(door),
@@ -493,6 +513,13 @@ struct Read {
 struct TaskStore {
     door: Rc<dyn TaskDoor>,
     reads: Rc<RefCell<Reads>>,
+    /// The module hash of each app's package, by the app: which package version's schemas a
+    /// record of it resolves by. Filled as the packages load, after the store is in the runtime.
+    packages: Rc<RefCell<HashMap<String, String>>>,
+    /// Every installed app's package schemas, as the runtime loaded them: what a read of a
+    /// record resolves its type by when the app the record's type names is not the one being
+    /// read (a field holding another app's record).
+    schemas: Arc<crate::schema::Schemas>,
     /// The journals of the task's program runs: the task's own, kept in memory.
     journals: HashMap<RunId, Journal>,
     fresh: u64,
@@ -509,6 +536,16 @@ impl TaskStore {
             return Ok(Rc::clone(known));
         }
         let app = self.app_of(at)?;
+        // The app's package table installed: what the record's type id names is that package
+        // version's schema ([`crate::schema::for_module`]), and not another version of the same
+        // app that loaded here for another task or host.
+        let _installed = self.schemas.enter();
+        let _package = self
+            .packages
+            .borrow()
+            .get(&app)
+            .and_then(|module| crate::schema::for_module(&app, module))
+            .map(|package| package.enter());
         // A read that did not reach the app fails the program; one the app answered that it
         // holds no such resource is a resource that is not there.
         let answer = self.door.read(&app, &id).map_err(StoreError::Backend)?;

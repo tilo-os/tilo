@@ -22,7 +22,7 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
-use tilo_compositor::{CursorIcon, HostKey, HostLayer, SurfaceHost};
+use tilo_compositor::{CursorIcon, HostKey, HostLayer, KeyClaim, SurfaceHost};
 use tilo_render_protocol::patch::local::pair;
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::background::Waker;
@@ -45,6 +45,9 @@ pub const DESK_RESOURCE: &str = "session:desk";
 pub const SWITCH_WORKSPACE: &str = "switch-workspace";
 /// The argument of [`SWITCH_WORKSPACE`] naming the workspace.
 pub const WORKSPACE_ARG: &str = "workspace";
+/// The resource the notification centre's actions are published on.
+pub const NOTIFICATIONS_RESOURCE: &str = "quick-settings.panel";
+
 /// The resource whose argument-less actions `session.act` names.
 pub const CHROME_RESOURCE: &str = "desktop:chrome";
 
@@ -52,6 +55,11 @@ pub const CHROME_RESOURCE: &str = "desktop:chrome";
 const CAP_SWITCH: &str = "session.switch_workspace";
 /// The capability that runs one of the desktop's own argument-less actions, by id.
 const CAP_ACT: &str = "session.act";
+/// The capability that runs one of the desktop's own actions that take arguments.
+const CAP_RUN: &str = "session.run";
+/// The capability that runs one of the notification centre's actions: the same ask as
+/// [`CAP_RUN`], on the panel's resource.
+const CAP_NOTIFY: &str = "session.notify";
 /// The capability that arranges the person's desk: its payload is the published action id and
 /// its arguments, as one line of JSON (`move-place {"place":3,"row":7}`). One capability keeps
 /// the seam small while the arranging actions are a closed set the session publishes.
@@ -59,9 +67,9 @@ const CAP_ARRANGE: &str = "session.arrange";
 /// The resource the person's arrangement is published on, whose actions `session.arrange` names.
 pub const ARRANGEMENT_RESOURCE: &str = "shell:arrangement";
 
-/// The shell package's files: every `.tl` file of `apps/tl/shell` is part of its one module, in
-/// path order (the package's compiler reads them so). Listed here so the session and its tests
-/// compile exactly what ships.
+/// Every file of the shell's package (`apps/tl/shell`), by the name the package knows it by: a
+/// package is a directory of `.tl` files, in path order (the package's compiler reads them so),
+/// and each new one is listed here to ship.
 const SHELL_FILES: &[(&str, &str)] = &[
     ("app.tl", include_str!("../../../../apps/tl/shell/app.tl")),
     (
@@ -77,12 +85,49 @@ const SHELL_FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/canvas.tl"),
     ),
     (
+        "composer.tl",
+        include_str!("../../../../apps/tl/shell/composer.tl"),
+    ),
+    ("desk.tl", include_str!("../../../../apps/tl/shell/desk.tl")),
+    (
+        "launcher.tl",
+        include_str!("../../../../apps/tl/shell/launcher.tl"),
+    ),
+    (
+        "notices.tl",
+        include_str!("../../../../apps/tl/shell/notices.tl"),
+    ),
+    (
+        "overview.tl",
+        include_str!("../../../../apps/tl/shell/overview.tl"),
+    ),
+    (
+        "parts.tl",
+        include_str!("../../../../apps/tl/shell/parts.tl"),
+    ),
+    (
+        "people.tl",
+        include_str!("../../../../apps/tl/shell/people.tl"),
+    ),
+    (
+        "rooms.tl",
+        include_str!("../../../../apps/tl/shell/rooms.tl"),
+    ),
+    (
         "scenarios.tl",
         include_str!("../../../../apps/tl/shell/scenarios.tl"),
     ),
     (
+        "session.tl",
+        include_str!("../../../../apps/tl/shell/session.tl"),
+    ),
+    (
         "strips.tl",
         include_str!("../../../../apps/tl/shell/strips.tl"),
+    ),
+    (
+        "switcher.tl",
+        include_str!("../../../../apps/tl/shell/switcher.tl"),
     ),
 ];
 /// The shell package's ids lock.
@@ -114,14 +159,18 @@ pub const fn shell_ids() -> &'static str {
     SHELL_IDS
 }
 
-/// The shell's bar layer: the `bar` view over the `Desk` root. The shell package has two
-/// roots (`Desk` and its `Arrangement`), so each layer names its own; the bar is never "the
-/// first root's default view".
+/// The shell's layer over the desk: the `desk` view over the `Desk` root, the bar and the
+/// surface under it. The shell package has two roots (`Desk` and its `Arrangement`), so each
+/// layer names its own; the part is never "the first root's default view".
+///
+/// The part lays the whole desk view out at its band, so at rest only the bar's band shows and
+/// a closed surface lays nothing out below it; while a surface or a menu of the bar's is up the
+/// part covers the outputs and the same view has the room to show it.
 #[must_use]
 pub fn bar_layer() -> RootView {
     RootView {
         root: Some("Desk".to_owned()),
-        view: Some("bar".to_owned()),
+        view: Some("desk".to_owned()),
     }
 }
 
@@ -196,6 +245,69 @@ pub struct PersonReading {
     pub name: String,
 }
 
+/// A window of the desk: a tab of a strip in the workspace in front, as the desk's reading
+/// names it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowReading {
+    pub key: String,
+    pub title: String,
+    pub origin_app: String,
+    pub icon: String,
+    pub strip: String,
+    pub workspace: String,
+    /// How recently it was in front: lower is more recent.
+    pub recency: i64,
+    pub focused: bool,
+    /// Whether it may be pictured: `live`, `withheld` (it holds secrets) or `none`.
+    pub preview: String,
+}
+
+/// An agent here for the person, or that acted for them, as the desk's reading names it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentReading {
+    pub key: String,
+    pub name: String,
+    /// `running`, `waiting` (for the person) or `done`.
+    pub state: String,
+    pub doing: String,
+    pub mark: String,
+    pub unseen: i64,
+}
+
+/// A workspace the person is in, as the workspace overview names it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomReading {
+    pub key: String,
+    pub name: String,
+    pub current: bool,
+    pub members: String,
+    pub present: i64,
+    pub activity: String,
+}
+
+/// A notification in the centre, as its sender or its task named it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoticeReading {
+    pub key: String,
+    pub title: String,
+    pub body: String,
+    pub origin_app: String,
+    pub icon: String,
+    /// `info`, `success`, `warning` or `error`.
+    pub kind: String,
+    pub read: bool,
+    pub group: String,
+    pub wants_reply: bool,
+}
+
+/// One action a notification offers, as its sender named it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoticeActionReading {
+    pub notice: String,
+    pub key: String,
+    pub label: String,
+}
+
 /// The reading of [`DESK_RESOURCE`]: the fields of the `session.desk` kind
 /// (`tilolang::origin::KINDS`), as JSON on the door.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,6 +323,34 @@ pub struct DeskReading {
     pub strip: String,
     pub workspaces: Vec<WorkspaceReading>,
     pub tasks: Vec<TaskReading>,
+    /// What the bar names the desk: the workspace in front, and the strip after it.
+    #[serde(default)]
+    pub title: String,
+    /// The surface the desk shows over its windows: `none`, `desk`, `overview`, `switcher`,
+    /// `launcher`, `centre`, `workspaces` or `composer`.
+    #[serde(default)]
+    pub here: String,
+    /// What the person last typed in the shell's search.
+    #[serde(default)]
+    pub spotlight: String,
+    /// The notice shown as a banner over the desk now, by its id; empty for none.
+    #[serde(default)]
+    pub banner: String,
+    /// The windows of every strip of the workspace in front, most recently used first.
+    #[serde(default)]
+    pub windows: Vec<WindowReading>,
+    /// The person's agents here, and what each is on and did.
+    #[serde(default)]
+    pub agents: Vec<AgentReading>,
+    /// The workspaces the person is in, with who is in each and what it holds.
+    #[serde(default)]
+    pub rooms: Vec<RoomReading>,
+    /// The notifications in the centre, newest first.
+    #[serde(default)]
+    pub notices: Vec<NoticeReading>,
+    /// Each action a notice offers, naming the notice it is on, in its sender's order.
+    #[serde(default)]
+    pub notice_actions: Vec<NoticeActionReading>,
     /// Each app's unread count as its badge shows it, by app id: read on the door (a dock, an
     /// agent); no `session.desk` field holds it yet.
     #[serde(default)]
@@ -348,6 +488,16 @@ impl SessionLink {
     pub fn has_asks(&self) -> bool {
         !self.asked.borrow().is_empty()
     }
+
+    /// The surface the desk shows now (`none` at rest): what the part covers the outputs for.
+    #[must_use]
+    pub fn surface(&self) -> String {
+        self.reading
+            .borrow()
+            .as_ref()
+            .map(|reading| reading.here.clone())
+            .unwrap_or_default()
+    }
 }
 
 /// The ask an outside effect of `capability` with `payload` is, or why it is none.
@@ -366,6 +516,7 @@ fn ask_of(capability: &str, payload: &Json) -> Result<Ask, String> {
             action: word.clone(),
             arguments: BTreeMap::new(),
         }),
+        CAP_RUN | CAP_NOTIFY => run_ask(payload, capability),
         CAP_ARRANGE => {
             // `<action id> {json arguments}`, or just the id for an action that takes none.
             let (action, rest) = word
@@ -399,6 +550,41 @@ fn ask_of(capability: &str, payload: &Json) -> Result<Ask, String> {
     }
 }
 
+/// The ask `session.run` carries: `(resource, action, (argument, value)…)`. The shell names the
+/// session's own resource and action, as the door publishes them (a window's `focus` on
+/// `desktop:tab:7`, the chrome's `move-tab-to-strip`), and each argument by the name the
+/// action's own fields have. `session.notify` is the same, on the notification centre.
+fn run_ask(payload: &Json, capability: &str) -> Result<Ask, String> {
+    let Json::Array(items) = payload else {
+        return Err(format!(
+            "{capability} takes (resource, action, (argument, value)…), not {payload}"
+        ));
+    };
+    let (Some(Json::String(resource)), Some(Json::String(action))) = (items.first(), items.get(1))
+    else {
+        return Err(format!("{capability} names its resource and action first"));
+    };
+    let mut arguments = BTreeMap::new();
+    for argument in items.iter().skip(2) {
+        let Json::Array(pair) = argument else {
+            return Err(format!(
+                "{capability} takes each argument as (name, value), not {argument}"
+            ));
+        };
+        let (Some(Json::String(name)), Some(value)) = (pair.first(), pair.get(1)) else {
+            return Err(format!(
+                "{capability} takes each argument as (name, value), not {argument}"
+            ));
+        };
+        arguments.insert(name.clone(), value_as_text(value));
+    }
+    Ok(Ask {
+        resource: resource.clone(),
+        action: action.clone(),
+        arguments,
+    })
+}
+
 /// What the origin last wrote of an item kept by key (a workspace, a task).
 struct Kept<T> {
     at: ResourceRef,
@@ -412,6 +598,11 @@ pub struct SessionOrigin {
     workspaces: BTreeMap<String, Kept<WorkspaceReading>>,
     tasks: BTreeMap<String, Kept<TaskReading>>,
     people: BTreeMap<String, Kept<PersonReading>>,
+    windows: BTreeMap<String, Kept<WindowReading>>,
+    agents: BTreeMap<String, Kept<AgentReading>>,
+    rooms: BTreeMap<String, Kept<RoomReading>>,
+    notices: BTreeMap<String, Kept<NoticeReading>>,
+    notice_actions: BTreeMap<String, Kept<NoticeActionReading>>,
     arrangement_workspaces: BTreeMap<String, Kept<ArrangementWorkspaceReading>>,
     arrangement_rows: BTreeMap<String, Kept<ArrangementRowReading>>,
     arrangement_strips: BTreeMap<String, Kept<ArrangementStripReading>>,
@@ -429,6 +620,11 @@ impl SessionOrigin {
             workspaces: BTreeMap::new(),
             tasks: BTreeMap::new(),
             people: BTreeMap::new(),
+            windows: BTreeMap::new(),
+            agents: BTreeMap::new(),
+            rooms: BTreeMap::new(),
+            notices: BTreeMap::new(),
+            notice_actions: BTreeMap::new(),
             arrangement_workspaces: BTreeMap::new(),
             arrangement_rows: BTreeMap::new(),
             arrangement_strips: BTreeMap::new(),
@@ -503,6 +699,18 @@ impl SessionOrigin {
             reading.workspace != was.workspace,
         );
         set("strip", text(&reading.strip), reading.strip != was.strip);
+        set("title", text(&reading.title), reading.title != was.title);
+        set("here", text(&reading.here), reading.here != was.here);
+        set(
+            "spotlight",
+            text(&reading.spotlight),
+            reading.spotlight != was.spotlight,
+        );
+        set(
+            "banner",
+            text(&reading.banner),
+            reading.banner != was.banner,
+        );
         let mut writes = Vec::new();
         if !fields.is_empty() {
             writes.push(OriginWrite::Set {
@@ -553,6 +761,109 @@ impl SessionOrigin {
                 ty,
                 |p| p.key.clone(),
                 |p| vec![("key", text(&p.key)), ("name", text(&p.name))],
+            ));
+        }
+        if let (Ok(ty), Some(collection)) = (kind("window"), field(desk, "windows")) {
+            writes.extend(sync_items(
+                &mut self.windows,
+                &reading.windows,
+                root,
+                &collection,
+                ty,
+                |w| w.key.clone(),
+                |w| {
+                    vec![
+                        ("key", text(&w.key)),
+                        ("title", text(&w.title)),
+                        ("origin_app", text(&w.origin_app)),
+                        ("icon", text(&w.icon)),
+                        ("strip", text(&w.strip)),
+                        ("workspace", text(&w.workspace)),
+                        ("recency", Value::Int(w.recency)),
+                        ("focused", Value::Bool(w.focused)),
+                        ("preview", text(&w.preview)),
+                    ]
+                },
+            ));
+        }
+        if let (Ok(ty), Some(collection)) = (kind("agent"), field(desk, "agents")) {
+            writes.extend(sync_items(
+                &mut self.agents,
+                &reading.agents,
+                root,
+                &collection,
+                ty,
+                |a| a.key.clone(),
+                |a| {
+                    vec![
+                        ("key", text(&a.key)),
+                        ("name", text(&a.name)),
+                        ("state", text(&a.state)),
+                        ("doing", text(&a.doing)),
+                        ("mark", text(&a.mark)),
+                        ("unseen", Value::Int(a.unseen)),
+                    ]
+                },
+            ));
+        }
+        if let (Ok(ty), Some(collection)) = (kind("room"), field(desk, "rooms")) {
+            writes.extend(sync_items(
+                &mut self.rooms,
+                &reading.rooms,
+                root,
+                &collection,
+                ty,
+                |r| r.key.clone(),
+                |r| {
+                    vec![
+                        ("key", text(&r.key)),
+                        ("name", text(&r.name)),
+                        ("current", Value::Bool(r.current)),
+                        ("members", text(&r.members)),
+                        ("present", Value::Int(r.present)),
+                        ("activity", text(&r.activity)),
+                    ]
+                },
+            ));
+        }
+        if let (Ok(ty), Some(collection)) = (kind("notice"), field(desk, "notices")) {
+            writes.extend(sync_items(
+                &mut self.notices,
+                &reading.notices,
+                root,
+                &collection,
+                ty,
+                |n| n.key.clone(),
+                |n| {
+                    vec![
+                        ("key", text(&n.key)),
+                        ("title", text(&n.title)),
+                        ("body", text(&n.body)),
+                        ("origin_app", text(&n.origin_app)),
+                        ("icon", text(&n.icon)),
+                        ("kind", text(&n.kind)),
+                        ("read", Value::Bool(n.read)),
+                        ("group", text(&n.group)),
+                        ("wants_reply", Value::Bool(n.wants_reply)),
+                    ]
+                },
+            ));
+        }
+        if let (Ok(ty), Some(collection)) = (kind("notice_action"), field(desk, "notice_actions")) {
+            writes.extend(sync_items(
+                &mut self.notice_actions,
+                &reading.notice_actions,
+                root,
+                &collection,
+                ty,
+                |a| format!("{}:{}", a.notice, a.key),
+                |a| {
+                    vec![
+                        ("notice", text(&a.notice)),
+                        ("key", text(&a.key)),
+                        ("label", text(&a.label)),
+                    ]
+                },
             ));
         }
         Ok(writes)
@@ -909,8 +1220,69 @@ impl SessionOrigin {
                         was: was.clone(),
                     },
                 );
+            } else if is("window")
+                && let Some(was) = reading.windows.iter().find(|w| w.key == key)
+            {
+                self.windows.insert(
+                    key,
+                    Kept {
+                        at,
+                        was: was.clone(),
+                    },
+                );
+            } else if is("agent")
+                && let Some(was) = reading.agents.iter().find(|a| a.key == key)
+            {
+                self.agents.insert(
+                    key,
+                    Kept {
+                        at,
+                        was: was.clone(),
+                    },
+                );
+            } else if is("room")
+                && let Some(was) = reading.rooms.iter().find(|r| r.key == key)
+            {
+                self.rooms.insert(
+                    key,
+                    Kept {
+                        at,
+                        was: was.clone(),
+                    },
+                );
+            } else if is("notice")
+                && let Some(was) = reading.notices.iter().find(|n| n.key == key)
+            {
+                self.notices.insert(
+                    key,
+                    Kept {
+                        at,
+                        was: was.clone(),
+                    },
+                );
+            } else if is("notice_action")
+                && let Some(was) = reading
+                    .notice_actions
+                    .iter()
+                    .find(|a| format!("{}:{}", a.notice, a.key) == key)
+            {
+                self.notice_actions.insert(
+                    key,
+                    Kept {
+                        at,
+                        was: was.clone(),
+                    },
+                );
             }
         }
+    }
+}
+
+/// `value` as the door's arguments take it: text as text, a number or a flag as its text.
+fn value_as_text(value: &Json) -> String {
+    match value {
+        Json::String(text) => text.clone(),
+        other => other.to_string(),
     }
 }
 
@@ -1139,9 +1511,10 @@ pub struct ShellPart {
     band: u32,
     /// The outputs' bounding box `(x, y, w, h)` the part spans.
     outputs: Option<(i32, i32, u32, u32)>,
-    /// A menu the part opened is up: the part covers the outputs so it has room. At rest it
-    /// covers only its band, so a change draws only that.
-    menu: bool,
+    /// A menu the part opened, or a surface of the desk's (its overview, the switcher, the
+    /// launcher, the notifications), is up: the part covers the outputs so it has room. At
+    /// rest it covers only its band, so a change draws only that.
+    cover: bool,
 }
 
 impl ShellPart {
@@ -1149,6 +1522,10 @@ impl ShellPart {
     /// across the top `band` logical pixels of the outputs at `scale`, kept in step with the
     /// session through `link`; `waker` wakes the session's loop when work the instance waits
     /// for is ready.
+    ///
+    /// The views' wells ([`ui::widget::Wells`]) report to `wells`, the handle the window policy
+    /// placing the windows they stand for shares (`crate::WellPolicy`); `None` for a part with
+    /// no windows of its own (the bar).
     #[must_use]
     pub fn new(
         app: &str,
@@ -1158,6 +1535,7 @@ impl ShellPart {
         band: u32,
         scale: f64,
         waker: Waker,
+        wells: Option<ui::widget::Wells>,
     ) -> Self {
         let placement = Placement {
             origin: (0, 0),
@@ -1191,7 +1569,8 @@ impl ShellPart {
         let record = tilo_resource::Doc::new();
         instance.sync(Some(&record));
         let window = AppWindow::part(Box::new(window_end));
-        let widgets = WidgetHost::new(Box::new(window), placement, false);
+        let mut widgets = WidgetHost::new(Box::new(window), placement, false);
+        widgets.install_wells(wells);
         let mut part = Self {
             widgets,
             instance,
@@ -1203,7 +1582,7 @@ impl ShellPart {
             refusals: Vec::new(),
             band: band.max(1),
             outputs: None,
-            menu: false,
+            cover: false,
         };
         part.turn();
         part
@@ -1216,7 +1595,7 @@ impl ShellPart {
             return;
         };
         let scale = self.widgets.placement().scale;
-        let height = if self.menu {
+        let height = if self.cover {
             height
         } else {
             self.band.min(height)
@@ -1226,19 +1605,29 @@ impl ShellPart {
             size: (width.max(1), height.max(1)),
             scale,
         });
+        // A view laid out at the band keeps its old height until it is laid out again: the
+        // menus and overlays it only holds room for when it covers the outputs need that.
+        self.widgets.relayout();
     }
 
-    /// Follow whether a menu the part opened is up, growing over the outputs for it and back
-    /// to the band once it closed.
-    fn follow_menu(&mut self) {
+    /// Follow whether the part stands over the whole outputs: while a menu it opened is up,
+    /// or while a surface of the desk's is (the overview, the switcher, the launcher, the
+    /// notifications, the workspaces, the composer). At rest it goes back to the band, so a
+    /// change draws only that.
+    fn follow_cover(&mut self) {
         let menu = self
             .widgets
             .host_mut()
             .a11y_nodes()
             .iter()
             .any(|(_, node)| node.role() == ui::accesskit::Role::Menu);
-        if menu != self.menu {
-            self.menu = menu;
+        let surface = !matches!(
+            self.origin.borrow().link.surface().as_str(),
+            "" | "none" | "desk"
+        );
+        let cover = menu || surface;
+        if cover != self.cover {
+            self.cover = cover;
             self.place();
         }
     }
@@ -1428,15 +1817,64 @@ impl crate::Published for ShellPart {
     }
 }
 
+/// The keysym of Tab, as the layout reports it: Alt+Tab and Alt+Shift+Tab walk the switcher.
+const XKB_TAB: u32 = 0xff09;
+/// The keysym of `Alt_L`.
+const XKB_ALT_L: u32 = 0xffe9;
+
+/// What a press means to the shell's surfaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SurfaceKey {
+    /// Alt+Tab: open the switcher on the window before the one in front, walking on from
+    /// there (back with Shift).
+    Walk(bool),
+    /// Enter, or letting Alt go while the switcher is up: go to the window it reached.
+    Commit,
+    /// Esc: close the surface that is up.
+    Close,
+}
+
+impl ShellPart {
+    /// What `key` means to the shell while a surface of the desk's is up, or as a press that
+    /// opens one. `None` when it belongs to whatever has the keyboard.
+    fn surface_key(&self, key: &HostKey) -> Option<SurfaceKey> {
+        if key.keysym == XKB_TAB && key.modifiers.alt && key.pressed {
+            return Some(SurfaceKey::Walk(key.modifiers.shift));
+        }
+        let up = self.origin.borrow().link.surface();
+        if matches!(up.as_str(), "" | "none" | "desk") {
+            return None;
+        }
+        if up == "switcher" && matches!(key.keysym, XKB_ALT_L | 0xffea) && !key.pressed {
+            return Some(SurfaceKey::Commit);
+        }
+        match key.keysym {
+            0xff0d if key.pressed && up == "switcher" => Some(SurfaceKey::Commit),
+            0xff1b if key.pressed => Some(SurfaceKey::Close),
+            _ => None,
+        }
+    }
+}
+
 impl SurfaceHost for ShellPart {
     fn layers(&self) -> Vec<HostLayer> {
         self.widgets.layers()
     }
 
+    fn claim_key(&mut self, key: &HostKey, locked: bool) -> KeyClaim {
+        // A shell's overlays answer the keyboard: Alt+Tab walks the switcher, Enter goes there,
+        // and Esc closes whatever surface is up. A locked session is not the shell's to answer.
+        if locked || self.surface_key(key).is_none() {
+            return KeyClaim::Pass;
+        }
+        self.input = true;
+        KeyClaim::Take
+    }
+
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
         // While a menu of the part's is up, a press anywhere over it is the part's: outside
         // the menu it closes it, as a press outside any menu does.
-        if self.menu
+        if self.cover
             && let Some((ox, oy, width, height)) = self.outputs
         {
             let (x, y) = (x - f64::from(ox), y - f64::from(oy));
@@ -1484,12 +1922,30 @@ impl SurfaceHost for ShellPart {
     }
 
     fn wants_keyboard(&self) -> bool {
-        self.widgets.wants_keyboard()
+        // While a surface of the desk's is up it answers the keyboard: the switcher walks,
+        // every surface closes on Esc, and a field in one takes what is typed. A modifier's
+        // release reaches it this way too, since its press came before the surface was up.
+        self.cover || self.widgets.wants_keyboard()
     }
 
     fn key(&mut self, key: &HostKey) {
         self.input = true;
-        self.widgets.key(key);
+        let Some(action) = self.surface_key(key) else {
+            self.widgets.key(key);
+            return;
+        };
+        match action {
+            SurfaceKey::Walk(back) => {
+                // Holding Alt opens it; a further Tab walks it on (and back with Shift).
+                let steps = if back { "-1" } else { "1" };
+                self.ask("walk-switcher", &[("steps", steps)]);
+            }
+            SurfaceKey::Commit => self.ask("commit-switcher", &[]),
+            SurfaceKey::Close => {
+                let up = self.origin.borrow().link.surface();
+                self.ask("close-surface", &[("surface", &up)]);
+            }
+        }
     }
 
     fn cursor(&self) -> CursorIcon {
@@ -1498,6 +1954,9 @@ impl SurfaceHost for ShellPart {
 
     fn prepare_frame(&mut self) {
         let input = std::mem::take(&mut self.input);
+        // A surface the desk shows, or a menu it opened, makes the part cover the outputs:
+        // standing over them is what lets a press outside it close it.
+        self.follow_cover();
         if input || self.due() {
             self.turn();
         }
@@ -1508,18 +1967,29 @@ impl SurfaceHost for ShellPart {
             if self.turn() {
                 self.draw();
             }
-            // Only input opens or closes a menu.
-            let menu = self.menu;
-            self.follow_menu();
-            if self.menu != menu {
-                self.draw();
-            }
+            self.follow_cover();
+            self.draw();
         }
     }
 }
 
 impl ShellPart {
+    /// Ask the session for the desk action `action` with `arguments`: what a key of the part's
+    /// own asks, as a press of the views asks through an outside effect.
+    fn ask(&self, action: &str, arguments: &[(&str, &str)]) {
+        let arguments = arguments
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        self.origin.borrow().link.asked.borrow_mut().push_back(Ask {
+            resource: DESK_RESOURCE.to_owned(),
+            action: action.to_owned(),
+            arguments,
+        });
+    }
+
     /// Draw a frame of the part's widget tree when it owes one.
+    #[allow(dead_code, reason = "a test draws a frame between presses")]
     fn draw(&mut self) {
         let before = crate::Published::revision(&self.widgets);
         let started = std::time::Instant::now();
@@ -1527,6 +1997,107 @@ impl ShellPart {
         if crate::Published::revision(&self.widgets) != before {
             self.work.drawn = self.work.drawn.wrapping_add(1);
             self.work.drawing = self.work.drawing.saturating_add(started.elapsed());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_support {
+    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
+
+    use super::*;
+    use tilo_compositor::KeyModifiers;
+
+    /// A desk at rest with two windows and two workspaces.
+    pub(super) fn reading_with_windows() -> DeskReading {
+        DeskReading {
+            person: "Pat".to_owned(),
+            clock: "4:28 PM".to_owned(),
+            workspace: "Desk".to_owned(),
+            strip: "Main".to_owned(),
+            windows: vec![
+                WindowReading {
+                    key: "11".to_owned(),
+                    title: "Release planning".to_owned(),
+                    origin_app: "Notes".to_owned(),
+                    strip: "Main".to_owned(),
+                    workspace: "Desk".to_owned(),
+                    focused: true,
+                    ..WindowReading::default()
+                },
+                WindowReading {
+                    key: "12".to_owned(),
+                    title: "Inbox".to_owned(),
+                    origin_app: "Mail".to_owned(),
+                    strip: "Main".to_owned(),
+                    workspace: "Desk".to_owned(),
+                    ..WindowReading::default()
+                },
+            ],
+            ..DeskReading::default()
+        }
+    }
+
+    /// A part over `reading`, its outputs set.
+    pub(super) fn part_with(reading: DeskReading) -> (ShellPart, Rc<SessionLink>) {
+        let packages = crate::shell_part::compile_shell().unwrap_or_else(|why| panic!("{why}"));
+        let app = packages
+            .last()
+            .expect("the shell compiles last")
+            .meta
+            .app
+            .clone();
+        let link = Rc::new(SessionLink::default());
+        link.publish(reading);
+        let mut part = ShellPart::new(
+            &app,
+            packages,
+            "Pat",
+            Rc::clone(&link),
+            32,
+            1.0,
+            std::sync::Arc::new(|| {}),
+            None,
+        );
+        part.outputs_changed(&[(0, 0, 1280, 800)]);
+        for _ in 0..4 {
+            part.prepare_frame();
+        }
+        (part, link)
+    }
+
+    pub(super) fn key(keysym: u32, pressed: bool) -> HostKey {
+        HostKey {
+            keycode: 0,
+            pressed,
+            repeat: false,
+            keysym,
+            unmodified_keysym: keysym,
+            text: None,
+            modifiers: KeyModifiers::default(),
+        }
+    }
+
+    /// Tab, held with Alt (`pressed` is Alt's, not Tab's); Shift walks the other way.
+    pub(super) fn tab(alt: bool, shift: bool) -> HostKey {
+        HostKey {
+            modifiers: KeyModifiers {
+                alt,
+                shift,
+                ..KeyModifiers::default()
+            },
+            ..key(0xff09, true)
+        }
+    }
+
+    /// `Alt_L`, held (`true`) or let go.
+    pub(super) fn alt(pressed: bool) -> HostKey {
+        HostKey {
+            modifiers: KeyModifiers {
+                alt: pressed,
+                ..KeyModifiers::default()
+            },
+            ..key(0xffe9, pressed)
         }
     }
 }
@@ -1564,30 +2135,10 @@ mod tests {
         }
     }
 
+    use crate::shell_part::tests_support::part_with;
+
     fn part() -> (ShellPart, Rc<SessionLink>) {
-        let packages = compile_shell().unwrap_or_else(|why| panic!("{why}"));
-        let app = packages
-            .last()
-            .expect("the shell compiles last")
-            .meta
-            .app
-            .clone();
-        let link = Rc::new(SessionLink::default());
-        link.publish(reading());
-        let mut part = ShellPart::new(
-            &app,
-            packages,
-            "Pat",
-            Rc::clone(&link),
-            32,
-            1.0,
-            std::sync::Arc::new(|| {}),
-        );
-        part.outputs_changed(&[(0, 0, 1280, 800)]);
-        for _ in 0..4 {
-            part.prepare_frame();
-        }
-        (part, link)
+        part_with(reading())
     }
 
     fn click(part: &mut ShellPart, name: &str) {
@@ -1710,6 +2261,10 @@ mod tests {
     fn choosing_a_workspace_in_the_menu_asks_the_session_to_switch() {
         let (mut part, link) = part();
         click(&mut part, "Desk");
+        for _ in 0..6 {
+            part.prepare_frame();
+            part.draw();
+        }
         click(&mut part, "Studio");
         let asked = link.asked.borrow().front().cloned();
         assert_eq!(
@@ -1732,5 +2287,94 @@ mod tests {
             part.origin.borrow().in_flight.is_empty(),
             "the effect was answered"
         );
+    }
+}
+
+#[cfg(test)]
+mod surface_keys {
+    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
+
+    use super::tests_support::{alt, key, part_with, reading_with_windows, tab};
+    use tilo_compositor::{KeyClaim, SurfaceHost as _};
+
+    #[test]
+    fn alt_tab_asks_for_the_switcher_from_rest() {
+        let (mut part, link) = part_with(reading_with_windows());
+        assert_ne!(part.claim_key(&tab(true, true), false), KeyClaim::Pass);
+        part.key(&tab(true, true));
+        assert_eq!(
+            link.asked.borrow().front().map(|ask| ask.action.clone()),
+            Some("walk-switcher".to_owned()),
+            "Alt+Tab asks the desk for its switcher"
+        );
+        // Holding Alt and pressing Tab again walks the switcher on.
+        link.asked.borrow_mut().clear();
+        part.key(&tab(true, false));
+        assert_eq!(
+            link.asked.borrow().front().map(|ask| ask.action.clone()),
+            Some("walk-switcher".to_owned())
+        );
+        assert_eq!(
+            link.asked.borrow().front().map(|ask| ask.arguments.clone()),
+            Some(std::collections::BTreeMap::from([(
+                "steps".to_owned(),
+                "1".to_owned()
+            )]))
+        );
+    }
+
+    #[test]
+    fn letting_alt_go_commits_the_switcher() {
+        let mut reading = reading_with_windows();
+        reading.here = "switcher".to_owned();
+        let (mut part, link) = part_with(reading);
+        link.asked.borrow_mut().clear();
+        assert_ne!(part.claim_key(&alt(false), false), KeyClaim::Pass);
+        part.key(&alt(false));
+        assert_eq!(
+            link.asked.borrow().front().map(|ask| ask.action.clone()),
+            Some("commit-switcher".to_owned()),
+            "letting Alt go goes to the window the walk reached"
+        );
+    }
+
+    #[test]
+    fn escape_closes_the_surface_that_is_up() {
+        let mut reading = super::tests_support::reading_with_windows();
+        reading.here = "overview".to_owned();
+        let (mut part, link) = part_with(reading);
+        assert_ne!(part.claim_key(&escape(), false), KeyClaim::Pass);
+        part.key(&escape());
+        assert_eq!(
+            link.asked.borrow().front().map(|ask| ask.action.clone()),
+            Some("close-surface".to_owned())
+        );
+        assert_eq!(
+            link.asked.borrow().front().map(|ask| ask.arguments.clone()),
+            Some(std::collections::BTreeMap::from([(
+                "surface".to_owned(),
+                "overview".to_owned()
+            )]))
+        );
+    }
+
+    #[test]
+    fn a_surface_up_makes_the_part_cover_the_outputs() {
+        let mut reading = super::tests_support::reading_with_windows();
+        reading.here = "launcher".to_owned();
+        let (part, _link) = part_with(reading);
+        assert_eq!(
+            part.widgets.placement().size,
+            (1280, 800),
+            "the launcher has the desk's room"
+        );
+        assert!(
+            part.accepts_pointer(640.0, 400.0),
+            "the launcher takes presses"
+        );
+    }
+
+    fn escape() -> tilo_compositor::HostKey {
+        key(0xff1b, true)
     }
 }

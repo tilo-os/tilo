@@ -102,6 +102,15 @@ pub enum PeerPresencePayload {
         seq: u32,
         target: String,
     },
+    /// The sender is composing a message under the presence key (a channel, a direct
+    /// conversation): a draft under way, never what it says. `false` says they stopped.
+    /// Ephemeral like every other presence frame.
+    ///
+    /// Appended so new decoders continue to read every older postcard frame;
+    /// older peers reject only this cue.
+    Composing {
+        composing: bool,
+    },
 }
 
 #[cfg(test)]
@@ -147,6 +156,8 @@ mod tests {
                 seq: 4,
                 target: "peer@8".into(),
             },
+            PeerPresencePayload::Composing { composing: true },
+            PeerPresencePayload::Composing { composing: false },
         ]
     }
 
