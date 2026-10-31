@@ -249,6 +249,7 @@ pub mod permissions;
 pub mod person_card;
 pub mod pick;
 pub mod pick_wire;
+pub mod pictures;
 pub mod platform;
 pub mod pointer_replay;
 pub use ::collaboration::portable_storage;
@@ -424,6 +425,7 @@ pub use local_state::{
 };
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
+pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
 pub use platform::{DialogActionOrder, Platform, PlatformConventions, Shortcut, spell_shortcut};
 pub use portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 pub use profiling::{

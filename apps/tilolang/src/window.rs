@@ -215,6 +215,7 @@ impl Window {
                 index_dir: None,
                 record_loader: None,
                 sink: None,
+                root: tilolang_tilo::host::RootView::default(),
             },
             Rc::new(InProcess),
             Rc::new(RoomNames(names.clone())),
@@ -490,6 +491,21 @@ impl ui::presence::capability::PublishesPresence for Window {
             ui::collaboration::PresencePayload::Selection { start: 0, end: 0 },
         ))
     }
+
+    /// Whether the window's composer holds a draft in the resource it shows: a conversation's
+    /// "… is typing". The draft itself stays here; only that it is under way travels.
+    fn composing_payload(
+        &self,
+    ) -> Option<(
+        ui::presence::PresenceKey,
+        ui::collaboration::PresencePayload,
+    )> {
+        let target = self.instance.composing_in()?;
+        Some((
+            presence_key(&self.app, target),
+            ui::collaboration::PresencePayload::Composing { composing: true },
+        ))
+    }
 }
 
 impl ui::widget::controls::ActionControls for Window {
@@ -704,8 +720,18 @@ impl Widget for Window {
         if self.names.follow(presence) {
             self.instance.names_changed();
         }
+        // A conversation's "… is typing": who presence says is composing a message in the
+        // resource this window shows, by their person.
+        let composing: Vec<String> = match self.instance.detail_target() {
+            Some(target) => presence
+                .composing_at(&presence_key(&self.app, target), ui::time::now())
+                .into_iter()
+                .map(|user| user.0)
+                .collect(),
+            None => Vec::new(),
+        };
         self.instance
-            .set_peers(peers_of(presence, &self.app, &self.me));
+            .set_peers_and_composers(peers_of(presence, &self.app, &self.me), &composing);
         // The room's policy names people; presence pairs each participant with theirs.
         self.instance
             .set_persons(presence.roster().into_iter().filter_map(|user| {

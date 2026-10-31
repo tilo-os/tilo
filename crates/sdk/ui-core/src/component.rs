@@ -74,7 +74,8 @@ use crate::widget::Element;
 
 pub use tilo_ui_graph::component::{
     Accepts, Binding as BindingDescription, Catalogue, Description, Event as EventDescription,
-    FORMAT_VERSION, Merge, Offered, Prop, Semantics, Slot, State as StateDescription, Type, Value,
+    FORMAT_VERSION, Merge, Offered, Picture, Prop, Semantics, Slot, State as StateDescription,
+    Type, Value,
 };
 pub use tilo_ui_macros::{Component, not_a_component};
 
@@ -1191,3 +1192,6 @@ mod data_tests;
 
 #[cfg(test)]
 mod controls_tests;
+
+#[cfg(test)]
+mod media_tests;

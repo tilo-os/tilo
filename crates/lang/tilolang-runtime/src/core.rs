@@ -311,8 +311,9 @@ impl Core {
             SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat, StrEq,
             StrFind, StrLen, StrLit, StrReplace, StrSlice, TimeShift, TryInvoke, TupleGetF,
             TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions, UiAnchor,
-            UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, Unseen, UnwrapF,
-            UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Withdraw, WorkspaceMembers,
+            UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic,
+            Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Withdraw,
+            WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp | StrFind
@@ -357,9 +358,9 @@ impl Core {
             ActRef | Invoke | TryInvoke | IsError | Outside | OutsideAt | Withdraw | ModelCall
             | Invoker | PrincipalEq | PrincipalName | QueueBlock | Now | TimeShift
             | PrincipalNamed | InvokerPush | InvokerPop => self.effect_import(imp, a),
-            UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
-            | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet | ActThen | ActOpen
-            | ActUndo | ChangeView | UiActions => self.ui_import(imp, a),
+            UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
+            | UiAnchor | SpaceI | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet
+            | ActThen | ActOpen | ActUndo | ChangeView | UiActions => self.ui_import(imp, a),
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions
             | RunChanges | Unseen | FirstUnseen | Mentions | Steps | VersionEnd | Phrase
             | Dated => self.platform_import(imp, a),

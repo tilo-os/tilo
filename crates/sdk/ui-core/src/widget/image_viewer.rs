@@ -116,6 +116,10 @@ impl ImageViewport {
 
 /// Interactive viewer for a pre-decoded [`peniko::ImageData`]. See module
 /// docs for the contract.
+#[crate::component::not_a_component(
+    part,
+    "the pan-and-zoom surface `ui.ImageViewer` shows its picture in"
+)]
 pub struct ImageViewer {
     image: peniko::ImageData,
     zoom: f32,

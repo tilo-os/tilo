@@ -86,7 +86,9 @@ fn walk(e: &Expr, out: &mut Vec<String>) {
                     "node {}",
                     args.first().and_then(text).unwrap_or("?")
                 )),
-                Imp::UiPropH | Imp::UiPropI | Imp::UiPropF => out.push(format!("prop {name}")),
+                Imp::UiPropH | Imp::UiPropI | Imp::UiPropF | Imp::UiPropPic => {
+                    out.push(format!("prop {name}"));
+                }
                 Imp::UiOn => out.push(format!("on {name}")),
                 Imp::UiBind => out.push("bind".into()),
                 Imp::UiBindState => out.push("bind_state".into()),

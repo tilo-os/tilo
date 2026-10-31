@@ -367,6 +367,9 @@ pub enum Value {
     /// An action offered in a component's prop (`ui.MenuButton(actions: actions(r))`): how
     /// its control shows it, and the event of the node that runs it (host-internal).
     Offered(Rc<tilolang::toolkit::Offered>),
+    /// A picture in a component's prop (`ui.Image(photo)`): where its bytes are read from
+    /// (host-internal).
+    Picture(String),
     /// An argument of an action reference computed from view state (`set(open, not open)`,
     /// `send(c, "{draft}!")`): the function `e_<id>` of `module` over `args`, run when the
     /// event fires, after the view state among `args` is read. A `scalar` result is boxed
@@ -439,6 +442,7 @@ impl Value {
             Self::State { .. } => "view state",
             Self::Map(_) => "map",
             Self::Offered(_) => "offered action",
+            Self::Picture(_) => "picture",
             Self::AtEvent { .. } => "argument computed at the event",
         }
     }
@@ -497,6 +501,7 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         }
         Value::Principal(p) => tagged("principal", Json::String(p.0.clone())),
         Value::Error(msg) => tagged("error", Json::String(msg.clone())),
+        Value::Picture(src) => tagged("picture", Json::String(src.clone())),
         Value::Node(_)
         | Value::Rec(_)
         | Value::Coll(_)

@@ -99,6 +99,14 @@ impl SongFace {
         true
     }
 
+    /// Take `art` as the shown song's art, in place: a cover's bytes arrived and the song it
+    /// belongs to shows them at once, never cross-fading a cover into itself.
+    pub fn stand_art(&mut self, art: TransportArt) {
+        let mut song = self.fade.shown().clone();
+        song.art = art;
+        self.fade = CrossFade::new(song);
+    }
+
     /// The song shown (the newest one, while the old still fades).
     #[must_use]
     pub fn song(&self) -> &Song {
@@ -173,7 +181,7 @@ impl SongFace {
 fn paint_cover(ctx: &mut PaintCtx<'_>, art: Rect, song: &Song, radius: f64) {
     let kind = match &song.art {
         TransportArt::None => return,
-        TransportArt::Placeholder => MediaArt::Placeholder,
+        TransportArt::Placeholder | TransportArt::Picture(_) => MediaArt::Placeholder,
         TransportArt::Image(image) => MediaArt::Image(image),
     };
     paint_art_tile(ctx, art, kind, &song.art_name, radius);

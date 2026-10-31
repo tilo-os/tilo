@@ -323,6 +323,8 @@ pub enum Type {
     Time,
     /// One of the platform's icons, by its kebab-case name.
     Icon,
+    /// A picture: where its bytes are read from, and what it shows the person.
+    Picture,
     /// Rich text, with how its references read for the person reading it.
     RichText,
     /// One of a closed set of cases: the design system's roles and tokens.
@@ -357,6 +359,7 @@ impl Type {
             Self::Resource => "a resource".into(),
             Self::Time => "Time".into(),
             Self::Icon => "Icon".into(),
+            Self::Picture => "Picture".into(),
             Self::RichText => "RichText".into(),
             Self::Choice { name, .. } => name.clone(),
             Self::Option(inner) => format!("Option<{}>", inner.show()),
@@ -385,6 +388,9 @@ pub enum Value {
     Resource(String),
     /// An icon's kebab-case name.
     Icon(String),
+    /// A picture: its address (where a host reads its bytes) and what it says to assistive
+    /// technology.
+    Picture(Picture),
     /// A case of a choice, by name.
     Choice(String),
     /// Rich text, with how its references read for the person reading it.
@@ -397,6 +403,16 @@ pub enum Value {
     Map(Vec<(Value, Value)>),
     /// An action offered to the person.
     Action(Offered),
+}
+
+/// A picture a component shows, by where its bytes are. The address is opaque to the toolkit: a
+/// window whose host holds a content store reads `tilo-blob://<hash>` from it, and any other
+/// address is fetched by the store the picture loads through.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Picture {
+    /// Where its bytes are read from: a content address (`tilo-blob://<hash>`) or a URL.
+    pub src: String,
 }
 
 /// An action offered to the person, as a component holds one: how a control shows it, and the
@@ -436,6 +452,7 @@ impl Value {
             Self::Principal { .. } => "Principal",
             Self::Resource(_) => "a resource",
             Self::Icon(_) => "Icon",
+            Self::Picture(_) => "a picture",
             Self::Choice(_) => "a case",
             Self::Rich(_) => "RichText",
             Self::None => "nothing",

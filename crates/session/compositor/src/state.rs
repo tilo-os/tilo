@@ -561,12 +561,24 @@ impl State {
                     },
                 };
                 if !pressed {
-                    return state
-                        .host_keys
-                        .release(keycode)
-                        .map_or(FilterResult::Forward, |host| {
-                            FilterResult::Intercept((host, key))
-                        });
+                    if let Some(host) = state.host_keys.release(keycode) {
+                        return FilterResult::Intercept((host, key));
+                    }
+                    // A key no surface took the press of, let go: a surface that takes it now
+                    // (a shell's switcher, which opened after Alt went down) hears it, so a
+                    // held modifier's release reaches what it opened. Otherwise it goes on to
+                    // the client as any release does.
+                    let locked = state.locked();
+                    for index in (0..state.hosts.len()).rev() {
+                        let claim = state
+                            .hosts
+                            .get_mut(index)
+                            .map_or(KeyClaim::Pass, |host| host.claim_key(&key, locked));
+                        if claim != KeyClaim::Pass {
+                            return FilterResult::Intercept((index, key));
+                        }
+                    }
+                    return FilterResult::Forward;
                 }
                 // Typing is what arms the rule that nothing moves under it:
                 // a key that types something, modifiers and chords aside.

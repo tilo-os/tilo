@@ -55,6 +55,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::ImageData;
 
+use crate::component::Event;
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
@@ -84,6 +85,8 @@ pub enum TransportArt {
     Placeholder,
     /// The cover.
     Image(ImageData),
+    /// A cover by its address, loaded as it arrives: the placeholder shows until it does.
+    Picture(crate::widget::PictureSource),
 }
 
 /// What a repeat control repeats.
@@ -94,6 +97,13 @@ pub enum TransportRepeat {
     All,
     One,
 }
+
+// What a repeat control repeats, as a component's prop.
+crate::component::choice!(TransportRepeat, "TransportRepeat", {
+    Off => "off",
+    All => "all",
+    One => "one",
+});
 
 /// What plays, as the app's player has it: everything the transport shows.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -293,6 +303,22 @@ impl Shared {
         self.song.borrow().is_moving(crate::time::now())
     }
 
+    /// Take the cover's bytes once they are here, from the window's pictures: `true` when that
+    /// changed what the band shows, so a frame paints it.
+    fn follow_art(&self) -> bool {
+        let picture = match &self.state.borrow().art {
+            TransportArt::Picture(picture) => picture.clone(),
+            _ => return false,
+        };
+        let Some(image) = crate::pictures::Pictures::window().get(&picture) else {
+            return false;
+        };
+        self.state.borrow_mut().art = TransportArt::Image(image.clone());
+        self.song.borrow_mut().stand_art(TransportArt::Image(image));
+        self.revision.set(self.revision.get().wrapping_add(1));
+        true
+    }
+
     /// The time a caption shows: the knob's while it is held.
     fn caption(&self, side: Caption) -> String {
         let state = self.state.borrow();
@@ -460,6 +486,8 @@ impl<W: Widget + 'static> crate::widget::Decorator for Follow<W> {
 /// says what it opens, a press (or Enter on it) asks for that.
 struct Art {
     shared: Rc<Shared>,
+    /// What the view reports when the art is pressed, beside the band's own `OpenPlaying`.
+    report: Option<Rc<dyn Fn()>>,
     seen: Option<u64>,
     rect: Rect,
     dirty: bool,
@@ -474,6 +502,9 @@ impl Art {
     }
 
     fn open(&self) {
+        if let Some(report) = &self.report {
+            report();
+        }
         if self.opens().is_some() {
             self.shared.push(TransportEvent::OpenPlaying);
         }
@@ -497,9 +528,10 @@ impl Widget for Art {
     }
 
     fn update(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) -> bool {
+        let followed = self.shared.follow_art();
         let revision = self.shared.revision.get();
         if self.seen == Some(revision) {
-            return false;
+            return followed;
         }
         self.seen = Some(revision);
         self.dirty = true;
@@ -676,6 +708,10 @@ impl Widget for SongLines {
         true
     }
 
+    fn needs_redraw(&self) -> bool {
+        self.dirty || self.shared.song_moving()
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -694,10 +730,6 @@ impl Widget for SongLines {
             .song
             .borrow()
             .paint_lines(ctx, self.rect, None, now);
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.dirty || self.shared.song_moving()
     }
 
     fn mark_drawn(&mut self) {
@@ -729,6 +761,237 @@ impl Widget for SongLines {
             .spoken();
         Some(AccessNode::new(Role::StaticText).with_name(spoken))
     }
+}
+
+/// The band's controls, each running the view's own `trigger` instead of an app action: what
+/// the person pressed reaches the view's action, and the app's player does the rest.
+fn triggered_children(
+    shared: &Rc<Shared>,
+    triggers: &TransportTriggers,
+    open: Option<Event>,
+) -> Vec<Element> {
+    let mut parts: Vec<Element> = children(shared, &TransportActions::default());
+    // Each control that changed what it does is built again, running the view's event.
+    parts[ART] = Box::new(Art {
+        shared: shared.clone(),
+        report: open.map(event_report),
+        seen: None,
+        rect: Rect::ZERO,
+        dirty: true,
+        pressed: false,
+        focused: false,
+        cursor: Point::ZERO,
+    });
+    if let Some(event) = &triggers.like {
+        parts[LIKE] = Box::new(Follow::new(
+            event_button("transport.like", Icon::Heart, "Like", Some(event)),
+            shared,
+            |b, state| {
+                b.set_accessible_name(if state.liked == Some(true) {
+                    "Unlike"
+                } else {
+                    "Like"
+                });
+                toggle(b, state.liked, false)
+            },
+        ));
+    }
+    if let Some(event) = &triggers.lyrics {
+        parts[LYRICS] = Box::new(Follow::new(
+            event_button("transport.lyrics", Icon::Mic, "Lyrics", Some(event)),
+            shared,
+            |b, state| toggle(b, state.lyrics, false),
+        ));
+    }
+    if let Some(event) = &triggers.shuffle {
+        parts[SHUFFLE] = Box::new(Follow::new(
+            event_button("transport.shuffle", Icon::Shuffle, "Shuffle", Some(event)),
+            shared,
+            |b, state| toggle(b, state.shuffle, state.idle),
+        ));
+    }
+    if let Some(event) = &triggers.previous {
+        parts[PREVIOUS] = Box::new(Follow::new(
+            event_transport(
+                "transport.previous",
+                TransportControl::Previous,
+                Some(event),
+            ),
+            shared,
+            |b, state| {
+                b.set_enabled(!state.idle);
+                false
+            },
+        ));
+    }
+    if let Some(event) = &triggers.play_pause {
+        parts[PLAY] = Box::new(Follow::new(
+            event_transport(
+                "transport.play",
+                TransportControl::PlayPause { playing: false },
+                Some(event),
+            ),
+            shared,
+            |b, state| {
+                b.set_transport(TransportControl::PlayPause {
+                    playing: state.playing,
+                });
+                b.set_enabled(!state.idle);
+                false
+            },
+        ));
+    }
+    if let Some(event) = &triggers.next {
+        parts[NEXT] = Box::new(Follow::new(
+            event_transport("transport.next", TransportControl::Next, Some(event)),
+            shared,
+            |b, state| {
+                b.set_enabled(!state.idle);
+                false
+            },
+        ));
+    }
+    if let Some(event) = &triggers.repeat {
+        parts[REPEAT] = Box::new(Follow::new(
+            event_button("transport.repeat", Icon::Repeat, "Repeat", Some(event)),
+            shared,
+            |b, state| {
+                let repeat = state.repeat.unwrap_or_default();
+                let (icon, name) = match repeat {
+                    TransportRepeat::One => (Icon::Repeat1, "Repeat one"),
+                    TransportRepeat::All => (Icon::Repeat, "Repeat all"),
+                    TransportRepeat::Off => (Icon::Repeat, "Repeat"),
+                };
+                b.set_icon(icon);
+                b.set_accessible_name(name);
+                b.set_tooltip(Some(name.to_owned()));
+                toggle(b, Some(repeat != TransportRepeat::Off), state.idle)
+            },
+        ));
+    }
+    let seek = triggers.seek.clone();
+    parts[SCRUBBER] = Box::new(Scrubber {
+        slider: Follow::new(
+            event_slider(
+                Slider::from_state(&crate::LocalState::new(0.0))
+                    .with_id("transport.position")
+                    .with_accessible_name("Position")
+                    .value_text({
+                        let shared = shared.clone();
+                        move |fraction| time(fraction * shared.state.borrow().duration_ms)
+                    })
+                    .reads_out_while_held()
+                    .commits_on_release(),
+                seek.as_ref(),
+            ),
+            shared,
+            |slider, state| {
+                let before = (slider.value(), slider.is_enabled());
+                slider.set_enabled(!state.idle);
+                if !slider.is_held() {
+                    let fraction = if state.duration_ms > 0.0 {
+                        (state.position_ms / state.duration_ms).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    slider.set_value(fraction);
+                }
+                (before.0 - slider.value()).abs() > f64::EPSILON || before.1 != slider.is_enabled()
+            },
+        ),
+    });
+    if let Some(event) = &triggers.queue {
+        parts[QUEUE] = Box::new(Follow::new(
+            event_button("transport.queue", Icon::ListMusic, "Queue", Some(event)),
+            shared,
+            |b, state| toggle(b, state.queue, false),
+        ));
+    }
+    if let Some(event) = &triggers.mute {
+        parts[MUTE] = Box::new(Follow::new(
+            event_button("transport.mute", Icon::Volume2, "Mute", Some(event)),
+            shared,
+            |b, state| {
+                let muted = state.volume <= 0.0;
+                b.set_icon(speaker(state.volume));
+                let name = if muted { "Unmute" } else { "Mute" };
+                b.set_accessible_name(name);
+                b.set_tooltip(Some(name.to_owned()));
+                false
+            },
+        ));
+    }
+    let volume = triggers.volume.clone();
+    parts[VOLUME] = Box::new(Follow::new(
+        event_slider(
+            Slider::from_state(&crate::LocalState::new(1.0))
+                .with_id("transport.volume")
+                .with_accessible_name("Volume"),
+            volume.as_ref(),
+        ),
+        shared,
+        follow_volume,
+    ));
+    parts[VOLUME_MENU] = Box::new(Follow::new(
+        Button::icon_only("transport.volume-menu", Icon::Volume2, "Volume")
+            .control_size(ControlSize::Regular)
+            .with_popover(VolumePanel {
+                slider: event_slider(
+                    Slider::from_state(&crate::LocalState::new(1.0))
+                        .with_id("transport.volume-menu.slider")
+                        .with_accessible_name("Volume"),
+                    volume.as_ref(),
+                ),
+            })
+            .side(PopoverSide::Above)
+            .aligned(PanelAlign::Trailing),
+        shared,
+        |menu, state| {
+            menu.button_mut().set_icon(speaker(state.volume));
+            follow_volume(&mut menu.popover_mut().content_mut().slider, state)
+        },
+    ));
+    let shared_for_presence = shared.clone();
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(index, part)| {
+            let shared = shared_for_presence.clone();
+            Box::new(When::new(part, move || {
+                present(
+                    index,
+                    &shared.state.borrow(),
+                    shared.form.get(),
+                    &shared.handed.get(),
+                )
+            })) as Element
+        })
+        .collect()
+}
+
+/// An event as the report of a press: run it. The runner is interior-mutable so a button's
+/// handler (an `Fn`) can run what is a `FnMut` at its heart.
+fn event_report(event: Event) -> Rc<dyn Fn()> {
+    let run: std::cell::RefCell<Box<dyn FnMut()>> = std::cell::RefCell::new(match event {
+        Event::Action(binding) => {
+            let mut emitter = crate::widget::ActionEmitter::new(binding);
+            Box::new(move || {
+                if let Err(error) = emitter.emit(()) {
+                    tracing::warn!(%error, "a transport control's action refused its arguments");
+                }
+            })
+        }
+        Event::View(intent) => {
+            let sender = intent.sender();
+            Box::new(sender)
+        }
+        Event::None => Box::new(|| {}),
+    });
+    Rc::new(move || {
+        if let Ok(mut run) = run.try_borrow_mut() {
+            (*run)();
+        }
+    })
 }
 
 /// One of the scrubber's times: the elapsed one follows the knob while it
@@ -936,6 +1199,43 @@ fn view_button(
         .on_view(move || shared.push(event))
 }
 
+/// A button running the view's `event`, beside the app action one: what the person pressed
+/// reaches the view's action, as an `UiOn` event of its node would.
+fn event_button(id: &str, icon: Icon, name: &str, event: Option<&Event>) -> Button {
+    let button = Button::icon_only(id, icon, name).control_size(ControlSize::Regular);
+    match event {
+        Some(event) => {
+            let event = event.clone();
+            button.on_view(move || event.fire(None))
+        }
+        None => button,
+    }
+}
+
+/// A transport-glyph button running the view's `event`.
+fn event_transport(id: &str, control: TransportControl, event: Option<&Event>) -> Button {
+    match event {
+        Some(event) => {
+            let event = event.clone();
+            Button::transport(id, control).on_view(move || event.fire(None))
+        }
+        None => Button::transport(id, control),
+    }
+}
+
+/// A slider reporting its value to the view's `event`, once the person lets it go.
+fn event_slider(slider: Slider, event: Option<&Event>) -> Slider {
+    match event {
+        Some(event) => {
+            let event = event.clone();
+            slider.on_change(move |value| {
+                event.fire(Some(crate::component::Value::Float(value)));
+            })
+        }
+        None => slider,
+    }
+}
+
 /// A slider that invokes the app's `action` with its value.
 fn bound_slider(slider: Slider, action: Option<&ActionBinding<f64>>) -> Slider {
     match action {
@@ -1002,10 +1302,34 @@ fn speaker(volume: f64) -> Icon {
     }
 }
 
+/// What each of a band's controls does, as a view gives them: the band reports what the person
+/// pressed, and the view's action does the rest. A control the view gives `None` is left out.
+#[derive(Clone, Default)]
+pub struct TransportTriggers {
+    pub play_pause: Option<Event>,
+    pub previous: Option<Event>,
+    pub next: Option<Event>,
+    pub shuffle: Option<Event>,
+    pub repeat: Option<Event>,
+    pub like: Option<Event>,
+    pub mute: Option<Event>,
+    /// Carries the place in the song, `0..=1`.
+    pub seek: Option<Event>,
+    /// Carries the volume, `0..=1`.
+    pub volume: Option<Event>,
+    /// The lyrics were asked for.
+    pub lyrics: Option<Event>,
+    /// The queue was asked for.
+    pub queue: Option<Event>,
+    /// The art was pressed.
+    pub open: Option<Event>,
+}
+
 fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
     let parts: [Element; CHILDREN] = [
         Box::new(Art {
             shared: shared.clone(),
+            report: None,
             seen: None,
             rect: Rect::ZERO,
             dirty: true,
@@ -1424,6 +1748,10 @@ fn policy(shared: &Shared, ctx: &mut ManualContext<'_>) -> Result<Size<f32>, Wid
 }
 
 /// The media transport: see the [module docs](self).
+#[crate::component::not_a_component(
+    part,
+    "the band `ui.MediaTransport` is built from, its controls reporting the view's events"
+)]
 pub struct MediaTransport {
     content: Manual,
     shared: Rc<Shared>,
@@ -1479,6 +1807,44 @@ impl MediaTransport {
         let placing = shared.clone();
         let mut content = Manual::new(move |ctx| policy(&placing, ctx));
         for child in children(&shared, &actions) {
+            content = content.child(child);
+        }
+        Self {
+            content,
+            built_form: shared.form.get(),
+            shared,
+            theme: None,
+            structure_dirty: false,
+            swipe: None,
+            cursor: Point::ZERO,
+        }
+    }
+
+    /// The transport showing what `feed` declares, its controls reporting the view's
+    /// `triggers`: what the person pressed reaches the view's action, which changes what
+    /// plays or what the window shows. A control the view gives `None` is left out.
+    #[must_use]
+    pub fn triggered(feed: &TransportFeed, triggers: TransportTriggers) -> Self {
+        let shared = feed.0.clone();
+        let handed: [bool; CHILDREN] = std::array::from_fn(|index| match index {
+            PLAY => triggers.play_pause.is_some(),
+            PREVIOUS => triggers.previous.is_some(),
+            NEXT => triggers.next.is_some(),
+            SHUFFLE => triggers.shuffle.is_some(),
+            REPEAT => triggers.repeat.is_some(),
+            LIKE => triggers.like.is_some(),
+            MUTE => triggers.mute.is_some(),
+            SCRUBBER => triggers.seek.is_some(),
+            VOLUME | VOLUME_MENU => triggers.volume.is_some(),
+            LYRICS => triggers.lyrics.is_some(),
+            QUEUE => triggers.queue.is_some(),
+            _ => true,
+        });
+        shared.handed.set(handed);
+        let placing = shared.clone();
+        let mut content = Manual::new(move |ctx| policy(&placing, ctx));
+        let open = triggers.open.clone();
+        for child in triggered_children(&shared, &triggers, open) {
             content = content.child(child);
         }
         Self {

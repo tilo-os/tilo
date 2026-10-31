@@ -14,8 +14,8 @@ bindings_sha256 = "efda1d119557ae5c80d17a7b45c879606d0e5b20cb58878b4ec729cd9a6da
 path = "crates/runtime/runtime-collab"
 src_prefix = "schema"
 schemas = ["schema/collab.capnp"]
-schema_sha256 = "75748971e3e7dac6c3548d066c4ec283d7f54e7a9ca8e8c99a078816138e129e"
-bindings_sha256 = "099c9dd472a73ee5b67c58464bdd527e00527a9836ad07b8eeee881475277c83"
+schema_sha256 = "9fb2948acb759c9fd8aa22f6fa2091866ad93dff472adc04251483fc7ed4b1a6"
+bindings_sha256 = "fc1da9f16ebb0622908251842fb0b6ecae1df0e2f31111330cd8c576c810e9d6"
 
 [[crate]]
 path = "crates/runtime/tilo-fs-client"

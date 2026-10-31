@@ -489,6 +489,9 @@ pub struct TabBar {
     /// derived from its glyph rect at hit-test time (see
     /// [`Self::action_hit_rect`]).
     min_pointer_target: f64,
+    /// The pointer the bar is used with: a coarse one (a finger) takes a pill
+    /// by a taller row's whole height ([`Self::tab_hit_rect`]).
+    interaction: crate::interaction::InteractionEnvironment,
     /// Last theme fast-duration, for animation scheduling outside `draw`.
     drag_lift_duration: Duration,
     /// Window groups paint the lifted handle together with the attached app
@@ -677,6 +680,7 @@ impl TabBar {
             drag_lift_duration: crate::tokens::motion::Durations::default().fast(),
             drag_overlay_owned_by_parent: false,
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
+            interaction: crate::interaction::InteractionEnvironment::default(),
             window_controls: false,
             search_control: None,
             controls: super::window_controls::WindowControls::default(),
@@ -973,10 +977,17 @@ impl TabBar {
     /// tab's slots under them where they have a row of their own.
     fn rows_height(&self) -> f64 {
         if self.two_rows() {
-            TAB_BAR_HEIGHT + TOOLBAR_ROW_HEIGHT
+            self.tab_row_height() + TOOLBAR_ROW_HEIGHT
         } else {
-            TAB_BAR_HEIGHT
+            self.tab_row_height()
         }
+    }
+
+    /// The height of the tabs' row: [`TAB_BAR_HEIGHT`], or a coarse pointer's
+    /// target where that is taller, so a finger takes a pill by the row's
+    /// whole height. The pills keep their height, centred in it.
+    fn tab_row_height(&self) -> f64 {
+        TAB_BAR_HEIGHT.max(f64::from(self.interaction.minimum_target()))
     }
 
     /// The row the tabs (or the title) and the window's controls stand in.
@@ -985,8 +996,27 @@ impl TabBar {
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y0 + TAB_BAR_HEIGHT.min(self.rect.height()),
+            self.rect.y0 + self.tab_row_height().min(self.rect.height()),
         )
+    }
+
+    /// Where a pointer takes the pill drawn in `pill`: the pill itself while
+    /// it is as tall as the pointer's target; for a coarse pointer the row's
+    /// whole height and half the gap on either side, grown to the target
+    /// where the pill is narrower than it.
+    fn tab_hit_rect(&self, pill: Rect) -> Rect {
+        let target = f64::from(self.interaction.minimum_target());
+        if pill.area() <= 0.0 || pill.height() >= target {
+            return pill;
+        }
+        let row = self.tab_row();
+        let band = Rect::new(
+            pill.x0 - PILL_GAP / 2.0,
+            row.y0.min(pill.y0),
+            pill.x1 + PILL_GAP / 2.0,
+            row.y1.max(pill.y1),
+        );
+        self.interaction.minimum_target_rect(band)
     }
 
     /// Where the active tab's slots stand: after the icon in the title's
@@ -1141,10 +1171,10 @@ impl TabBar {
     /// Offer tabs' close controls, or take them away, on a strip already
     /// built (`closable`). `true` when that changed what the strip offers.
     pub fn set_closable(&mut self, closable: bool) -> bool {
+        self.touch();
         if self.closable == closable {
             return false;
         }
-        self.touch();
         self.closable = closable;
         true
     }
@@ -3155,7 +3185,7 @@ impl TabBar {
         if let Some(idx) = self
             .tab_rects
             .iter()
-            .position(|r| r.area() > 0.0 && r.contains(p))
+            .position(|r| r.area() > 0.0 && self.tab_hit_rect(*r).contains(p))
             && let Some(t) = self.tabs.get(idx)
         {
             return Some((t.id, p));
@@ -3982,8 +4012,12 @@ impl Widget for TabBar {
         let max_w = ACTION_W;
         let search_w = ACTION_W;
         let close_inset = CLOSE_INSET;
-        let pill_y0 = self.tab_row().y0 + TAB_PILL_INSET_Y;
-        let pill_y1 = self.tab_row().y1 - TAB_PILL_INSET_Y;
+        // The pill keeps its height, centred in the row however tall a
+        // coarse pointer makes it.
+        let pill_inset =
+            TAB_PILL_INSET_Y + (self.tab_row().height() - TAB_BAR_HEIGHT).max(0.0) / 2.0;
+        let pill_y0 = self.tab_row().y0 + pill_inset;
+        let pill_y1 = self.tab_row().y1 - pill_inset;
 
         // Absorbs float drift only — `fit_pill_widths` already sized the row to
         // fit. Disabled with no width yet, where clamping would collapse to the origin.
@@ -4332,6 +4366,13 @@ impl Widget for TabBar {
             node = node.with_position(i.saturating_add(1), self.tabs.len());
         }
         let count = self.tabs.len();
+        // A tab reports where a pointer takes it: under a finger, more than
+        // the pill drawn.
+        let hits: Vec<Rect> = self
+            .tab_rects
+            .iter()
+            .map(|r| self.tab_hit_rect(*r))
+            .collect();
         let mut tab_children: Vec<AccessNode> = self
             .tabs
             .iter()
@@ -4344,7 +4385,7 @@ impl Widget for TabBar {
                     Some(rect) if rect.area() > 0.0 => node.with_bounds(*rect),
                     _ => node,
                 };
-                let node = drawn(&self.tab_rects, AccessNode::new(Role::Tab))
+                let node = drawn(&hits, AccessNode::new(Role::Tab))
                     .with_action_target(format!("tab:{}", t.id))
                     .with_name(t.title.clone())
                     .with_state(AccessState {
@@ -4624,6 +4665,17 @@ impl Widget for TabBar {
     }
     fn wants_pointer_capture(&self) -> bool {
         self.press_origin.is_some() || self.pending_drag.is_some()
+    }
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.touch();
+        // A finger's row is taller: the host lays the bar out again at its height.
+        self.interaction = environment;
+        for child in self.children_mut() {
+            child.set_interaction_environment(environment);
+        }
     }
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.touch();
@@ -5223,7 +5275,10 @@ impl TabBar {
         self.hover_history_idx = action
             .filter(|&(_, chip)| chip == ActionChip::History)
             .map(|(i, _)| i);
-        self.hover_idx = self.tab_rects.iter().position(|r| r.contains(p));
+        self.hover_idx = self
+            .tab_rects
+            .iter()
+            .position(|r| self.tab_hit_rect(*r).contains(p));
         // Opening a pill grows it rightward, carrying its × and everything
         // after it along; the intent keeps that from happening under a
         // pointer that is on, or heading for, any of those controls.
@@ -5544,6 +5599,10 @@ fn draw_app_icon(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tabs_intent_frames_tests.rs"]
+mod intent_frames_tests;
 
 #[cfg(test)]
 mod tests {
@@ -8214,6 +8273,48 @@ mod tests {
         }
     }
 
+    /// On touch every tab is a finger's target: the row grows to it, the
+    /// pill keeps its height centred in it, and each tab reports (and takes)
+    /// the row's height and the gap around its pill. A mouse keeps the pill.
+    #[test]
+    fn a_tab_is_a_fingers_target_on_touch_and_the_pill_with_a_mouse() {
+        use crate::a11y::Role;
+        use crate::interaction::InteractionEnvironment;
+        for input in [
+            InteractionEnvironment::POINTER,
+            InteractionEnvironment::TOUCH,
+        ] {
+            let mut harness = crate::headless::FrameHarness::new(
+                crate::State::new(),
+                Box::new(bar()),
+                (480, 120),
+            );
+            harness.set_interaction_environment(input);
+            let root = harness.inspection().root;
+            let semantics = root.semantics.expect("the bar is in the tree");
+            let target = f64::from(input.minimum_target());
+            let tabs: Vec<Rect> = semantics
+                .children
+                .iter()
+                .filter(|node| node.role == Role::Tab)
+                .filter_map(|node| node.bounds.map(crate::a11y::AccessBounds::to_rect))
+                .collect();
+            assert_eq!(tabs.len(), 3, "{input:?}: every tab reports where it is");
+            for tab in &tabs {
+                assert!(
+                    tab.width() >= target - 0.5 && tab.height() >= target - 0.5,
+                    "{input:?}: a tab is at least {target} on a side, not {tab:?}"
+                );
+            }
+            let pill = (root.rect[3] - TAB_BAR_HEIGHT.max(target)).abs() < 0.5;
+            assert!(
+                pill,
+                "{input:?}: the bar is its row's height, {}",
+                root.rect[3]
+            );
+        }
+    }
+
     #[test]
     fn tab_bar_accessibility_names_role_value_and_tab_controls() {
         {
@@ -9300,7 +9401,7 @@ mod tests {
         assert!(!tabbed.toolbar_hit(location.center()));
     }
 
-    fn four_tab_bar() -> TabBar {
+    pub(super) fn four_tab_bar() -> TabBar {
         TabBar::new(
             "g1",
             vec![
@@ -9315,13 +9416,13 @@ mod tests {
 
     /// Runs `f` with the toolkit clock reading `at`, so pointer samples and
     /// layout passes see one synthetic timeline.
-    fn at_time<T>(at: Instant, f: impl FnOnce() -> T) -> T {
+    pub(super) fn at_time<T>(at: Instant, f: impl FnOnce() -> T) -> T {
         crate::time::testing::with_monotonic_time(at, f)
     }
 
     /// A pointer sample at `p`, `ms` after `t0`, followed by the layout pass
     /// of the frame it lands in.
-    fn sample_at(b: &mut TabBar, t0: Instant, ms: u64, p: Point, theme: &Theme) {
+    pub(super) fn sample_at(b: &mut TabBar, t0: Instant, ms: u64, p: Point, theme: &Theme) {
         let at = t0 + Duration::from_millis(ms);
         at_time(at, || {
             let mut handled = false;
@@ -9330,7 +9431,7 @@ mod tests {
         });
     }
 
-    fn layout_at(b: &mut TabBar, t0: Instant, ms: u64, theme: &Theme) {
+    pub(super) fn layout_at(b: &mut TabBar, t0: Instant, ms: u64, theme: &Theme) {
         at_time(t0 + Duration::from_millis(ms), || {
             lay_out_at_width_with(b, 900.0, theme);
         });
@@ -9341,7 +9442,7 @@ mod tests {
     }
 
     /// Points along a straight line from `a` to `b`, `n` steps, excluding `a`.
-    fn path(a: Point, b: Point, n: u32) -> Vec<Point> {
+    pub(super) fn path(a: Point, b: Point, n: u32) -> Vec<Point> {
         (1..=n)
             .map(|k| a.lerp(b, f64::from(k) / f64::from(n)))
             .collect()
@@ -9858,243 +9959,6 @@ mod tests {
         assert_eq!(b.hover_close_idx, Some(2));
     }
 
-    /// Before/after frames for review: the pointer resting on the ×, the
-    /// pointer travelling from the × to a revealed chip, and the pointer
-    /// leaving for the window. Each frame is the bar at 2× with the pointer
-    /// marked; every scenario also lands as one stacked sheet.
-    #[test]
-    #[ignore = "a review tool: needs a GPU adapter; writes PNGs to TILO_UI_SCREENSHOT_DIR"]
-    fn render_window_controls_intent_frames() {
-        let dir = std::path::PathBuf::from(
-            std::env::var("TILO_UI_SCREENSHOT_DIR").expect("TILO_UI_SCREENSHOT_DIR"),
-        );
-        std::fs::create_dir_all(&dir).expect("shot dir");
-        let theme = Theme::dark().with_reduce_motion(true);
-        let (w, h, scale) = (480.0, TAB_BAR_HEIGHT, 2.0);
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "small fixed canvas"
-        )]
-        let (pw, ph) = ((w * scale) as u32, (h * scale) as u32);
-        let mut renderer =
-            crate::offscreen::OffscreenRenderer::try_new(pw, ph).expect("a GPU adapter");
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut shoot = |b: &mut TabBar, p: Point| -> Vec<u8> {
-            let mut scene = Scene::new();
-            let t = Affine::scale(scale);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                t,
-                theme.tokens.colors.surfaces.base,
-                None,
-                &Rect::new(0.0, 0.0, w, h),
-            );
-            b.draw(&mut scene, t, &mut tr, &theme, &presence);
-            let dot = vello::kurbo::Circle::new(p, 3.0);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                t,
-                vello::peniko::Color::from_rgb8(255, 210, 0),
-                None,
-                &dot,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                t,
-                vello::peniko::Color::BLACK,
-                None,
-                &dot,
-            );
-            renderer.render(&scene, vello::peniko::Color::BLACK)
-        };
-        let sheet = |name: &str, frames: Vec<(String, Vec<u8>)>| {
-            let mut all = Vec::new();
-            for (label, rgba) in &frames {
-                let path = dir.join(format!("{name}-{label}.png"));
-                crate::png::write_rgba8(&path, pw, ph, rgba).expect("write frame");
-                all.extend_from_slice(rgba);
-            }
-            let rows = u32::try_from(frames.len()).unwrap();
-            crate::png::write_rgba8(dir.join(format!("{name}.png")), pw, ph * rows, &all)
-                .expect("write sheet");
-        };
-
-        // 1. Across the title onto the active pill's ×, then rest there.
-        {
-            let mut b = four_tab_bar();
-            lay_out_at_width_with(&mut b, 900.0, &theme);
-            // The first draw records the real title advances; lay out again
-            // so every position below is the one the reviewer sees.
-            shoot(&mut b, Point::ZERO);
-            lay_out_at_width_with(&mut b, 900.0, &theme);
-            let r = b.tab_rects()[0];
-            let x = b.close_hit_rect(0).expect("×").center();
-            let start = Point::new(r.x0 + 12.0, r.center().y);
-            let t0 = crate::time::now();
-            let mut frames = Vec::new();
-            sample_at(&mut b, t0, 0, start, &theme);
-            frames.push(("00-enter".to_owned(), shoot(&mut b, start)));
-            let mut ms = 0;
-            for p in path(start, x, 10) {
-                ms += 12;
-                sample_at(&mut b, t0, ms, p, &theme);
-            }
-            frames.push(("01-on-x".to_owned(), shoot(&mut b, x)));
-            for later in [100, 200, 400, 1_000] {
-                layout_at(&mut b, t0, ms + later, &theme);
-                let at = t0 + Duration::from_millis(ms + later);
-                frames.push((
-                    format!("02-rest-{later:04}ms"),
-                    at_time(at, || shoot(&mut b, x)),
-                ));
-            }
-            sheet("rest-on-x", frames);
-        }
-
-        // 2. Pill 1 opened from its body; from its × up over the bar and
-        //    onto search.
-        {
-            let mut b = four_tab_bar();
-            lay_out_at_width_with(&mut b, 900.0, &theme);
-            // The first draw records the real title advances; lay out again
-            // so every position below is the one the reviewer sees.
-            shoot(&mut b, Point::ZERO);
-            lay_out_at_width_with(&mut b, 900.0, &theme);
-            let r = b.tab_rects()[1];
-            let t0 = crate::time::now();
-            let start = Point::new(r.x0 + 12.0, r.center().y);
-            let mut frames = Vec::new();
-            sample_at(&mut b, t0, 0, start, &theme);
-            frames.push(("00-enter-body".to_owned(), shoot(&mut b, start)));
-            layout_at(&mut b, t0, 400, &theme);
-            frames.push(("01-rest-400ms".to_owned(), shoot(&mut b, start)));
-            let x = if b.close_rects[1].area() > 0.0 {
-                b.close_rects[1].center()
-            } else {
-                b.tab_rects()[1].center()
-            };
-            let mut ms = 400;
-            for p in path(start, x, 6) {
-                ms += 12;
-                sample_at(&mut b, t0, ms, p, &theme);
-            }
-            frames.push(("02-on-x".to_owned(), shoot(&mut b, x)));
-            let chip = if b.search_rects()[1].area() > 0.0 {
-                b.search_rects()[1].center()
-            } else {
-                Point::new(x.x - 48.0, x.y)
-            };
-            let lift = Point::new((x.x + chip.x) / 2.0, b.rect.y0 + 2.0);
-            for (k, p) in path(x, lift, 3)
-                .into_iter()
-                .chain(path(lift, chip, 3))
-                .enumerate()
-            {
-                ms += 12;
-                sample_at(&mut b, t0, ms, p, &theme);
-                frames.push((format!("03-aim-{k}"), shoot(&mut b, p)));
-            }
-            // 3. Off toward the window.
-            let away = Point::new(chip.x, 300.0);
-            ms += 12;
-            sample_at(&mut b, t0, ms, Point::new(chip.x, h - 1.0), &theme);
-            ms += 12;
-            sample_at(&mut b, t0, ms, away, &theme);
-            frames.push((
-                "04-leave".to_owned(),
-                shoot(&mut b, Point::new(chip.x, h - 1.0)),
-            ));
-            sheet("aim-from-x", frames);
-        }
-
-        // 3. Onto the edge of the ×'s 32 px target (a press there closes the
-        //    tab), outside the painted glyph, and rest.
-        {
-            let mut b = four_tab_bar();
-            lay_out_at_width_with(&mut b, 900.0, &theme);
-            shoot(&mut b, Point::ZERO);
-            lay_out_at_width_with(&mut b, 900.0, &theme);
-            let r = b.tab_rects()[0];
-            let target = b.close_hit_rect(0).expect("×");
-            let edge = Point::new(target.x0 + 3.0, target.y0 + 4.0);
-            let t0 = crate::time::now();
-            let mut frames = Vec::new();
-            sample_at(&mut b, t0, 0, Point::new(edge.x, r.y0 - 20.0), &theme);
-            sample_at(&mut b, t0, 12, edge, &theme);
-            frames.push(("00-on-target".to_owned(), shoot(&mut b, edge)));
-            for later in [100, 200, 400, 1_000] {
-                layout_at(&mut b, t0, 12 + later, &theme);
-                let at = t0 + Duration::from_millis(12 + later);
-                frames.push((
-                    format!("01-rest-{later:04}ms"),
-                    at_time(at, || shoot(&mut b, edge)),
-                ));
-            }
-            sheet("rest-on-x-target-edge", frames);
-        }
-
-        // 4. Pill 1 open, pill 2 active: the pointer leaves pill 1 for pill
-        //    2's ×.
-        {
-            let mut b = four_tab_bar();
-            b.set_active(3);
-            lay_out_at_width_with(&mut b, 900.0, &theme);
-            shoot(&mut b, Point::ZERO);
-            lay_out_at_width_with(&mut b, 900.0, &theme);
-            let r = b.tab_rects()[1];
-            let t0 = crate::time::now();
-            let start = Point::new(r.x0 + 12.0, r.center().y);
-            let mut frames = Vec::new();
-            sample_at(&mut b, t0, 0, start, &theme);
-            layout_at(&mut b, t0, 400, &theme);
-            frames.push(("00-pill-1-open".to_owned(), shoot(&mut b, start)));
-            let to = b.close_hit_rect(2).expect("×").center();
-            let mut ms = 400;
-            for (k, p) in path(start, to, 8).into_iter().enumerate() {
-                ms += 12;
-                sample_at(&mut b, t0, ms, p, &theme);
-                if k % 2 == 1 {
-                    frames.push((format!("01-toward-x-{k}"), shoot(&mut b, p)));
-                }
-            }
-            layout_at(&mut b, t0, ms + 1_000, &theme);
-            let at = t0 + Duration::from_millis(ms + 1_000);
-            frames.push((
-                "02-rest-1000ms".to_owned(),
-                at_time(at, || shoot(&mut b, to)),
-            ));
-            sheet("toward-neighbour-x", frames);
-        }
-
-        // 5. From the pill on the right, across the active pill's × at speed,
-        //    onto where its chips will be: transit, so it opens.
-        {
-            let mut b = four_tab_bar();
-            lay_out_at_width_with(&mut b, 900.0, &theme);
-            shoot(&mut b, Point::ZERO);
-            lay_out_at_width_with(&mut b, 900.0, &theme);
-            let y = b.tab_rects()[0].center().y;
-            let close = b.close_hit_rect(0).expect("×");
-            let from = Point::new(b.tab_rects()[1].x0 + 10.0, y);
-            let to = Point::new(close.x0 - 30.0, y);
-            let t0 = crate::time::now();
-            let mut frames = Vec::new();
-            sample_at(&mut b, t0, 0, from, &theme);
-            frames.push(("00-start".to_owned(), shoot(&mut b, from)));
-            let mut ms = 0;
-            for (k, p) in path(from, to, 5).into_iter().enumerate() {
-                ms += 8;
-                sample_at(&mut b, t0, ms, p, &theme);
-                frames.push((format!("01-cross-{k}"), shoot(&mut b, p)));
-            }
-            layout_at(&mut b, t0, ms + 120, &theme);
-            frames.push(("02-rest-120ms".to_owned(), shoot(&mut b, to)));
-            sheet("cross-x-to-chips", frames);
-        }
-    }
-
     #[test]
     fn revealed_chip_cluster_widens_only_its_pill_and_eases_open() {
         {
@@ -10483,3 +10347,9 @@ mod tests {
         }
     }
 }
+
+#[path = "tab_strip_component.rs"]
+mod component;
+pub use component::{
+    PresenceFaceProps, TabItemProps, TabStrip, TabStripProps, pack_point, unpack_point,
+};
