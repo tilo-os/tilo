@@ -70,6 +70,9 @@ tilo-durable-writer = { path = "../../platform/tilo-durable-writer" }
 # reads them from, as the apps that write them keep them, and the document
 # store the reference bringing one here is written into.
 tilo-app-state = { path = "../../system/app-state" }
+# The records' framework as an app window opens one: the workspace's emoji is
+# Chat's record, and the settings tab reads and changes it the same way.
+tilo-app = { path = "../../sdk/tilo-app" }
 durable-store = { path = "../../system/durable-store" }
 automerge.workspace = true
 # Where this device keeps its state: the root the record indexes are under.

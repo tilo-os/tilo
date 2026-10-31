@@ -21,199 +21,216 @@ use tilo_desktop_model::{DesktopTree, UserId, Workspace, role_from_id, role_id};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::i18n::{t, t_args};
 use tilo_sheets::Seat as _;
+use tilo_sheets::file_picker::FilePickerSeat;
 use tilo_sheets::workspace_settings as sheet;
 
 use crate::keys::{Invocation, Invocations};
 use crate::lists::AppLists;
 use crate::workspaces::{DeviceChoice, Personal};
 
+mod emoji;
+
+pub(crate) use emoji::Emoji as EmojiTab;
+
+/// What the sheet is fed from: the desk in front, the lists its tabs offer,
+/// and the workspace's own emoji.
+pub(crate) struct Feeding<'a> {
+    handle: &'a DesktopHandle,
+    person: &'a UserId,
+    /// The machine's application lists, as its every search pass reads them.
+    lists: std::sync::Arc<AppLists>,
+    /// The desk revision the panes were last fed at.
+    fed: &'a Cell<Option<u64>>,
+    /// The workspace's emoji, read and changed through Chat's record.
+    emoji: &'a EmojiTab,
+    /// The session's file chooser, where a picture to add is chosen.
+    picker: Option<&'a FilePickerSeat>,
+    personal: Option<&'a RefCell<Personal>>,
+}
+
+impl<'a> Feeding<'a> {
+    pub(crate) fn new(
+        handle: &'a DesktopHandle,
+        person: &'a UserId,
+        lists: std::sync::Arc<AppLists>,
+        fed: &'a Cell<Option<u64>>,
+        emoji: &'a EmojiTab,
+        picker: Option<&'a FilePickerSeat>,
+        personal: Option<&'a RefCell<Personal>>,
+    ) -> Self {
+        Self {
+            handle,
+            person,
+            lists,
+            fed,
+            emoji,
+            picker,
+            personal,
+        }
+    }
+}
+
 /// Open the sheet on the workspace in front: its panes as the workspace
 /// stands, and its name field ready for a new name.
-pub(crate) fn open(
-    seat: Option<&sheet::WorkspaceSettingsSeat>,
-    handle: &DesktopHandle,
-    person: &UserId,
-    lists: &AppLists,
-    fed: &Cell<Option<u64>>,
-    personal: Option<&RefCell<Personal>>,
-) {
+pub(crate) fn open(seat: Option<&sheet::WorkspaceSettingsSeat>, fed: &Feeding<'_>) {
     let Some(seat) = seat else {
         return;
     };
-    show(
-        seat,
-        handle,
-        person,
-        lists,
-        fed,
-        sheet::Tab::General,
-        None,
-        personal,
-    );
+    show(seat, fed, sheet::Tab::General, None);
     seat.reset();
     seat.presentation().open(false);
 }
 
 /// Keep the sheet's panes current while it is up: the workspace changes
 /// while the sheet is open (a role set, a grant given), and so does what
-/// other people do in it.
-pub(crate) fn refresh(
-    seat: Option<&sheet::WorkspaceSettingsSeat>,
-    handle: &DesktopHandle,
-    person: &UserId,
-    lists: &AppLists,
-    fed: &Cell<Option<u64>>,
-    personal: Option<&RefCell<Personal>>,
-) {
+/// other people do in it — the workspace's emoji among them.
+pub(crate) fn refresh(seat: Option<&sheet::WorkspaceSettingsSeat>, fed: &Feeding<'_>) {
     let Some(seat) = seat else {
         return;
     };
-    if !seat.presentation().is_open() || fed.get() == Some(handle.revision()) {
+    if !seat.presentation().is_open() {
         return;
     }
     let shown = seat.settings();
+    let emoji_moved =
+        shown.tab == sheet::Tab::Emoji && fed.handle.read(|tree| fed.emoji.moved(tree, fed.person));
+    if !emoji_moved && fed.fed.get() == Some(fed.handle.revision()) {
+        return;
+    }
     let review = shown
         .agents
         .review
         .as_ref()
         .map(|review| review.agent.clone());
-    show(
-        seat,
-        handle,
-        person,
-        lists,
-        fed,
-        shown.tab,
-        review.as_deref(),
-        personal,
-    );
+    show(seat, fed, shown.tab, review.as_deref());
 }
 
-/// Show the sheet's panes as `tree` stands for `person`, keeping the tab it
-/// shows.
+/// Show the sheet's panes as the desk stands for the person, on `tab`.
 fn show(
     seat: &sheet::WorkspaceSettingsSeat,
-    handle: &DesktopHandle,
-    person: &UserId,
-    lists: &AppLists,
-    fed: &Cell<Option<u64>>,
+    fed: &Feeding<'_>,
     tab: sheet::Tab,
     review: Option<&str>,
-    personal: Option<&RefCell<Personal>>,
 ) {
     let shown = settings(
-        &handle.read(Clone::clone),
-        person,
-        lists,
+        &fed.handle.read(Clone::clone),
+        fed.person,
+        &fed.lists,
         tab,
         review,
-        personal,
+        fed.personal,
+        fed.emoji,
     );
     seat.show(shown);
-    fed.set(Some(handle.revision()));
+    fed.fed.set(Some(fed.handle.revision()));
 }
 
 /// Show the workspace in front on one of the person's devices, or keep it
 /// off there: the row says the choice at once, since a workspace kept off this
 /// device leaves the desk under the sheet.
-fn toggle_workspace_device(
-    seat: &sheet::WorkspaceSettingsSeat,
-    handle: &DesktopHandle,
-    person: &UserId,
-    lists: &AppLists,
-    fed: &Cell<Option<u64>>,
-    personal: Option<&RefCell<Personal>>,
-    device: &str,
-) {
-    if !toggle_device(handle, personal, device) {
+fn toggle_workspace_device(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, device: &str) {
+    if !toggle_device(fed.handle, fed.personal, device) {
         return;
     }
     let shown = seat.settings();
     let review = shown.agents.review.as_ref().map(|row| row.agent.clone());
-    show(
-        seat,
-        handle,
-        person,
-        lists,
-        fed,
-        shown.tab,
-        review.as_deref(),
-        personal,
-    );
+    show(seat, fed, shown.tab, review.as_deref());
 }
 
 /// Show one agent's review, or the roster again for `None`, on the tab the
 /// sheet was on.
-fn show_review(
-    seat: &sheet::WorkspaceSettingsSeat,
-    handle: &DesktopHandle,
-    person: &UserId,
-    lists: &AppLists,
-    fed: &Cell<Option<u64>>,
-    agent: Option<&str>,
-    personal: Option<&RefCell<Personal>>,
-) {
-    show(
-        seat,
-        handle,
-        person,
-        lists,
-        fed,
-        seat.settings().tab,
-        agent,
-        personal,
-    );
+fn show_review(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, agent: Option<&str>) {
+    show(seat, fed, seat.settings().tab, agent);
 }
 
 /// Show the tab the person picked, and keep it for the next opening.
-fn show_picked_tab(
-    seat: &sheet::WorkspaceSettingsSeat,
-    handle: &DesktopHandle,
-    person: &UserId,
-    lists: &AppLists,
-    fed: &Cell<Option<u64>>,
-    tab: &str,
-    personal: Option<&RefCell<Personal>>,
-) {
+fn show_picked_tab(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, tab: &str) {
     let Some(tab) = sheet::Tab::from_key(tab) else {
         return;
     };
     let shown = seat.settings();
     let review = shown.agents.review.as_ref().map(|row| row.agent.clone());
-    show(
-        seat,
-        handle,
-        person,
-        lists,
-        fed,
-        tab,
-        review.as_deref(),
-        personal,
-    );
+    show(seat, fed, tab, review.as_deref());
+}
+
+/// The Emoji tab's own effects: the picture to add, an emoji to remove, the
+/// notice dismissed. Whether `effect` was one of them.
+fn follow_emoji(effect: &sheet::WorkspaceSettingsEffect, fed: &Feeding<'_>) -> bool {
+    if !matches!(
+        effect,
+        sheet::WorkspaceSettingsEffect::AddEmoji
+            | sheet::WorkspaceSettingsEffect::RemoveEmoji { .. }
+            | sheet::WorkspaceSettingsEffect::DismissEmojiNotice
+    ) {
+        return false;
+    }
+    fed.handle
+        .read(|tree| fed.emoji.asked(effect, tree, fed.person, fed.picker));
+    true
+}
+
+/// The agents tab's asks: a review shown or ended, an agent answered, given
+/// another app or model, or removed. Whether `effect` was one of them.
+fn follow_agent(
+    seat: &sheet::WorkspaceSettingsSeat,
+    effect: &sheet::WorkspaceSettingsEffect,
+    fed: &Feeding<'_>,
+) -> bool {
+    let handle = fed.handle;
+    let person = fed.person;
+    match effect {
+        sheet::WorkspaceSettingsEffect::ReviewAgent { agent } => {
+            show_review(seat, fed, Some(agent));
+        }
+        sheet::WorkspaceSettingsEffect::EndReview => show_review(seat, fed, None),
+        sheet::WorkspaceSettingsEffect::SetAgentAnswer {
+            agent,
+            scope,
+            kind,
+            answer,
+        } => answer_agent(handle, person, agent, scope, kind, answer),
+        sheet::WorkspaceSettingsEffect::ResetAgentApp { agent, scope } => {
+            reset_agent_app(handle, person, agent, scope);
+        }
+        sheet::WorkspaceSettingsEffect::RemoveAgent { agent } => {
+            edit(handle, person, |ws, actor| {
+                domain::remove_agent(ws, actor, agent)
+            });
+        }
+        sheet::WorkspaceSettingsEffect::SetAgentModel { agent, model } => {
+            set_agent_model(seat, fed, agent, model);
+        }
+        _ => return false,
+    }
+    true
 }
 
 /// Carry out what the person asked for in the sheet.
 pub(crate) fn follow(
     seat: Option<&sheet::WorkspaceSettingsSeat>,
-    handle: &DesktopHandle,
-    person: &UserId,
-    lists: &AppLists,
-    fed: &Cell<Option<u64>>,
+    fed: &Feeding<'_>,
     intents: &RefCell<Vec<ChromeIntent>>,
     invocations: &Invocations,
-    personal: Option<&RefCell<Personal>>,
 ) {
     let Some(seat) = seat else {
         return;
     };
+    let handle = fed.handle;
+    let person = fed.person;
+    // What came of the chooser and of the pictures waiting for the image
+    // tools, before what the person asks now.
+    handle.read(|tree| fed.emoji.settle(tree, person, fed.picker));
     for effect in seat.take_asked() {
+        if follow_emoji(&effect, fed) || follow_agent(seat, &effect, fed) {
+            continue;
+        }
         match effect {
             sheet::WorkspaceSettingsEffect::ShowTab { tab } => {
-                show_picked_tab(seat, handle, person, lists, fed, &tab, personal);
+                show_picked_tab(seat, fed, &tab);
             }
             sheet::WorkspaceSettingsEffect::Close => {}
             sheet::WorkspaceSettingsEffect::ToggleDevice { device } => {
-                toggle_workspace_device(seat, handle, person, lists, fed, personal, &device);
+                toggle_workspace_device(seat, fed, &device);
             }
             sheet::WorkspaceSettingsEffect::Rename { name } => {
                 intents
@@ -266,33 +283,10 @@ pub(crate) fn follow(
                 open_search(invocations, t("workspace-settings-query-saved-roles"));
             }
             sheet::WorkspaceSettingsEffect::NextWorkspaceDefault { resource } => {
-                next_workspace_default(handle, person, lists, &resource);
+                next_workspace_default(handle, person, &fed.lists, &resource);
             }
             sheet::WorkspaceSettingsEffect::NextPersonalDefault { resource } => {
-                next_personal_default(handle, person, lists, &resource);
-            }
-            sheet::WorkspaceSettingsEffect::ReviewAgent { agent } => {
-                show_review(seat, handle, person, lists, fed, Some(&agent), personal);
-            }
-            sheet::WorkspaceSettingsEffect::EndReview => {
-                show_review(seat, handle, person, lists, fed, None, personal);
-            }
-            sheet::WorkspaceSettingsEffect::SetAgentAnswer {
-                agent,
-                scope,
-                kind,
-                answer,
-            } => answer_agent(handle, person, &agent, &scope, &kind, &answer),
-            sheet::WorkspaceSettingsEffect::ResetAgentApp { agent, scope } => {
-                reset_agent_app(handle, person, &agent, &scope);
-            }
-            sheet::WorkspaceSettingsEffect::RemoveAgent { agent } => {
-                edit(handle, person, |ws, actor| {
-                    domain::remove_agent(ws, actor, &agent)
-                });
-            }
-            sheet::WorkspaceSettingsEffect::SetAgentModel { agent, model } => {
-                set_agent_model(seat, handle, person, lists, fed, &agent, &model, personal);
+                next_personal_default(handle, person, &fed.lists, &resource);
             }
             other => tracing::debug!(
                 ?other,
@@ -469,13 +463,9 @@ fn reset_agent_app(handle: &DesktopHandle, person: &UserId, agent: &str, scope: 
 /// person's own Settings.
 fn set_agent_model(
     seat: &sheet::WorkspaceSettingsSeat,
-    handle: &DesktopHandle,
-    person: &UserId,
-    lists: &AppLists,
-    fed: &Cell<Option<u64>>,
+    fed: &Feeding<'_>,
     agent: &str,
     model: &str,
-    personal: Option<&RefCell<Personal>>,
 ) {
     let Some(models) =
         agent_access::agent_models(&agent_provider_config::ProviderConfig::load(), agent)
@@ -500,16 +490,7 @@ fn set_agent_model(
         Ok(_) => {
             let shown = seat.settings();
             let review = shown.agents.review.as_ref().map(|row| row.agent.clone());
-            show(
-                seat,
-                handle,
-                person,
-                lists,
-                fed,
-                shown.tab,
-                review.as_deref(),
-                personal,
-            );
+            show(seat, fed, shown.tab, review.as_deref());
         }
         Err(error) => tracing::warn!(%error, "agent model not saved"),
     }
@@ -547,6 +528,7 @@ fn settings(
     tab: sheet::Tab,
     review: Option<&str>,
     personal: Option<&RefCell<Personal>>,
+    emoji: &EmojiTab,
 ) -> sheet::Settings {
     let workspace = tree.active_workspace();
     let names = PeopleNames::of(tree, person, own_name().as_deref());
@@ -572,7 +554,13 @@ fn settings(
             agents_pane(ws, person, &apps, review)
         }),
         apps: workspace.map_or_else(sheet::Apps::default, |ws| apps_pane(ws, person, lists)),
-        ..sheet::Settings::default()
+        // The workspace's emoji are Chat's record, opened when the tab is
+        // first shown and nowhere else: no other tab reads it.
+        emoji: if tab == sheet::Tab::Emoji {
+            emoji.pane(tree, person, &names)
+        } else {
+            sheet::EmojiPane::default()
+        },
     }
 }
 

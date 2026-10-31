@@ -482,6 +482,9 @@ struct Shared {
     /// The desk revision workspace settings was last fed at: its panes are
     /// rebuilt when the desk changed under it.
     ws_settings_fed: Cell<Option<u64>>,
+    /// The workspace's emoji, which workspace settings shows and changes
+    /// through Chat's record of the room.
+    workspace_emoji: workspace_settings::EmojiTab,
     portal: Option<PortalSeat>,
     file_picker: Option<FilePickerSeat>,
     /// The question about a display change, which stands on every display
@@ -857,18 +860,21 @@ impl Shared {
     fn open_workspace_settings(&self) {
         workspace_settings::open(
             self.workspace_settings.as_ref(),
-            &self.handle,
-            &self.person(),
-            &self.app_lists(),
-            &self.ws_settings_fed,
-            self.personal.as_ref(),
+            &self.workspace_settings_feed(),
         );
     }
 
-    /// Who sits here, as the session acts for them: the identity the desk's
-    /// rules answer for and the workspace's governance is asked of.
-    fn person(&self) -> String {
-        self.person.clone()
+    /// What workspace settings feeds its panes from.
+    fn workspace_settings_feed(&self) -> workspace_settings::Feeding<'_> {
+        workspace_settings::Feeding::new(
+            &self.handle,
+            &self.person,
+            self.app_lists(),
+            &self.ws_settings_fed,
+            &self.workspace_emoji,
+            self.file_picker.as_ref(),
+            self.personal.as_ref(),
+        )
     }
 
     /// This machine's applications, as the session's own lists read them.
@@ -998,21 +1004,13 @@ impl Shared {
         );
         workspace_settings::follow(
             self.workspace_settings.as_ref(),
-            &self.handle,
-            &self.person(),
-            &self.app_lists(),
-            &self.ws_settings_fed,
+            &self.workspace_settings_feed(),
             &self.intents,
             &self.invocations,
-            self.personal.as_ref(),
         );
         workspace_settings::refresh(
             self.workspace_settings.as_ref(),
-            &self.handle,
-            &self.person(),
-            &self.app_lists(),
-            &self.ws_settings_fed,
-            self.personal.as_ref(),
+            &self.workspace_settings_feed(),
         );
         self.asker.follow();
         self.shortcut_guide.follow();
@@ -1704,6 +1702,8 @@ impl Session {
             file_picker.clone(),
             Rc::clone(&services),
         );
+        let workspace_emoji =
+            workspace_settings::EmojiTab::new(cli::data_home(), options.wake.handle());
         let shared = Shared {
             handle,
             desktop,
@@ -1727,6 +1727,7 @@ impl Session {
             power,
             workspace_settings,
             ws_settings_fed: Cell::new(None),
+            workspace_emoji,
             directory,
             directory_store: directory::Store::default(),
             portal,
