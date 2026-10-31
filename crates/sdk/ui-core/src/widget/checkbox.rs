@@ -7,6 +7,10 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+
+#[path = "checkbox_component.rs"]
+mod component;
+pub use component::CheckboxProps;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 
@@ -420,6 +424,30 @@ impl Checkbox {
         self.label = Some(label);
         self.label_layout_revision = None;
         self
+    }
+
+    /// Whether it carries a visible label of its own.
+    #[must_use]
+    pub fn has_label(&self) -> bool {
+        self.label.is_some()
+    }
+
+    /// Change the visible label in place; `None` leaves only the box.
+    pub fn set_label(&mut self, label: &str) {
+        self.control.accessible_name = Some(label.to_owned());
+        self.label = Some(label.to_owned());
+        self.label_layout_revision = None;
+    }
+
+    /// Whether it shows a mixed mark: some of what it stands for is chosen.
+    #[must_use]
+    pub fn is_indeterminate(&self) -> bool {
+        self.indeterminate
+    }
+
+    /// Show a mixed mark, or stop; the value does not change.
+    pub fn set_indeterminate(&mut self, indeterminate: bool) {
+        self.indeterminate = indeterminate;
     }
 
     /// Paint a checkbox without taking ownership of its state or events.

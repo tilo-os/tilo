@@ -459,6 +459,24 @@ impl Room {
             other => panic!("not a list: {other:?}"),
         }
     }
+
+    /// The keys in `at`'s set field `field`, as the runtime reads them.
+    fn set_of(&self, at: &ResourceRef, field: &str) -> Vec<String> {
+        let host = self.window.current_host().unwrap();
+        match host.runtime().read(at, field).unwrap() {
+            RtValue::List(items) => items.into_iter().filter_map(rt_text_opt).collect(),
+            other => panic!("{field} is not a set: {other:?}"),
+        }
+    }
+}
+
+/// The text a value of the runtime holds, as an item of a list of texts.
+fn rt_text_opt(value: RtValue) -> Option<String> {
+    match value {
+        RtValue::Text(text) => Some(text),
+        RtValue::Opt(Some(held)) => rt_text_opt(*held),
+        _ => None,
+    }
 }
 
 /// The first node of the tree with `kind` whose prop `name` is `value` (any, when `name` is
@@ -1275,6 +1293,32 @@ fn search_finds_chat_messages_and_a_hit_opens_their_channel() {
     assert!(
         format!("{channel:?}").contains("Coffee machine on the third floor is fixed."),
         "the channel shows the message: {channel:#?}"
+    );
+}
+
+#[test]
+fn a_plain_key_in_a_focused_mail_window_archives_the_conversation_it_shows() {
+    let mut room = Room::staged("mail", "a busy inbox");
+    // The first conversation's row, opened: its window shows the thread's actions, the archive
+    // among them, each carrying the key the package declared (`key: "e"`).
+    let (key, _) = room.rows().remove(0);
+    let thread = room.item_of(&key);
+    assert!(
+        room.set_of(&thread, "boxes").iter().any(|b| b == "inbox"),
+        "the conversation starts in the inbox"
+    );
+    room.activate(&key);
+    room.settle();
+    // A plain `e` reaches the archive the open conversation's window offers, and runs it.
+    assert!(
+        room.window.run_shortcut("e"),
+        "the open conversation's window offers `e`"
+    );
+    room.settle();
+    let boxes = room.set_of(&thread, "boxes");
+    assert!(
+        boxes.iter().any(|b| b == "archive") && !boxes.iter().any(|b| b == "inbox"),
+        "the key archived the conversation: {boxes:?}"
     );
 }
 

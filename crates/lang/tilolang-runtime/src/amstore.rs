@@ -460,7 +460,7 @@ fn field_of(m: &Mutation) -> Option<&FieldId> {
         | Mutation::SetRemove { field, .. }
         | Mutation::MapPut { field, .. }
         | Mutation::MapRemove { field, .. } => Some(field),
-        Mutation::OutboxPush { .. } => None,
+        Mutation::OutboxPush { .. } | Mutation::OutboxWithdraw => None,
     }
 }
 
@@ -641,10 +641,15 @@ impl Inner {
             Mutation::OutboxPush {
                 capability,
                 payload,
+                held_until,
                 ..
             } => {
                 let id = outbox_id.unwrap_or_default();
                 let outbox = require_child(doc, &ROOT, OUTBOX_KEY)?;
+                // The same entry queued again is the same entry: it keeps what became of it.
+                if let Ok(Some(_)) = doc.get(&outbox, id.as_str()) {
+                    return Ok(Applied::Done);
+                }
                 let entry = doc
                     .put_object(&outbox, id.as_str(), ObjType::Map)
                     .map_err(backend)?;
@@ -653,11 +658,16 @@ impl Inner {
                 let bytes = serde_json::to_vec(payload).map_err(backend)?;
                 doc.put(&entry, "payload", ScalarValue::Bytes(bytes))
                     .map_err(backend)?;
+                if let Some(at) = held_until {
+                    doc.put(&entry, "held_until", at.as_str())
+                        .map_err(backend)?;
+                }
                 doc.put(&entry, "settled", false).map_err(backend)?;
             }
             Mutation::CollInsert { .. }
             | Mutation::CollRemove { .. }
-            | Mutation::CollMove { .. } => {}
+            | Mutation::CollMove { .. }
+            | Mutation::OutboxWithdraw => {}
         }
         Ok(Applied::Done)
     }
@@ -1029,6 +1039,61 @@ impl Store for AmStore {
         out
     }
 
+    fn outbox_next_held(&self) -> Option<String> {
+        let inner = self.inner.borrow();
+        let mut earliest: Option<String> = None;
+        for (doc_id, doc) in &inner.docs {
+            let Ok(Some(outbox)) = child_obj(doc, &ROOT, OUTBOX_KEY) else {
+                continue;
+            };
+            for id in doc.keys(&outbox) {
+                if let Some((entry, None)) = read_outbox_entry(doc, &outbox, doc_id, &id)
+                    && let Some(at) = &entry.held_until
+                    && earliest.as_ref().is_none_or(|soonest| at < soonest)
+                {
+                    earliest = Some(at.clone());
+                }
+            }
+        }
+        earliest
+    }
+
+    fn outbox_withdraw(
+        &mut self,
+        doc_id: &DocId,
+        reason: &str,
+        note: &ChangeNote,
+    ) -> Result<usize, StoreError> {
+        let pending: Vec<String> = {
+            let inner = self.inner.borrow();
+            let doc = inner
+                .docs
+                .get(doc_id)
+                .ok_or_else(|| not_found(format!("document {doc_id}")))?;
+            let Ok(Some(outbox)) = child_obj(doc, &ROOT, OUTBOX_KEY) else {
+                return Ok(0);
+            };
+            doc.keys(&outbox)
+                .filter(|id| {
+                    read_outbox_entry(doc, &outbox, doc_id, id)
+                        .is_some_and(|(_, settled)| settled.is_none())
+                })
+                .collect()
+        };
+        for id in &pending {
+            let entry = OutboxEntry {
+                doc: doc_id.clone(),
+                id: id.clone(),
+                capability: String::new(),
+                payload: Json::Null,
+                held_until: None,
+                state: OutboxState::Queued,
+            };
+            self.outbox_settle(&entry, &Settled::Withdrawn(reason.to_owned()), note)?;
+        }
+        Ok(pending.len())
+    }
+
     fn outbox_mark(
         &mut self,
         entry: &OutboxEntry,
@@ -1093,7 +1158,11 @@ impl Store for AmStore {
                 let settled = settled.as_ref().map(|(w, r)| (w.as_str(), r.as_str()));
                 out.push((
                     doc_id.clone(),
-                    crate::store::DeliveryState::of(&entry.state, settled),
+                    crate::store::DeliveryState::of_entry(
+                        &entry.state,
+                        settled,
+                        entry.held_until.as_deref(),
+                    ),
                 ));
             }
         }
@@ -1150,6 +1219,7 @@ fn read_outbox_entry(
             id: id.to_owned(),
             capability,
             payload,
+            held_until: str_at(doc, &obj, "held_until").filter(|at| !at.is_empty()),
             state,
         },
         settled,

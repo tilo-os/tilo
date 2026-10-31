@@ -4,11 +4,15 @@
 //! [`tilo_resource::history::held_at`]), at the cost of the values and never of the record. A
 //! change never changes, so each is read once.
 //!
-//! Rich text is left out: its value is a document of its own the toolkit reads only as it is
-//! now, and reading it as of a version would cost the whole record.
+//! A rich text field's two sides are the paragraphs the change typed into, read in place at
+//! the change's dependencies and at the change ([`tilo_resource::history::spliced_texts`]),
+//! with the runs it inserted marked and the runs it deleted struck ([`RichValue::sides`]).
+//! Each paragraph is a text object of its own, so the cost is the paragraph's, never the
+//! note's: a keystroke in one paragraph of a long note reads that paragraph twice.
 
 use automerge::{ChangeHash, ReadDoc as _};
 use tilolang_runtime::ids::FieldId;
+use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::store::{FieldSpec, FieldValue, StoreError};
 use tilolang_runtime::value::ResourceRef;
 
@@ -65,10 +69,13 @@ impl TiloStore {
             let Some(spec) = located.schema.field(&prop) else {
                 continue;
             };
-            if matches!(
-                spec.kind,
-                MergeKind::RichText | MergeKind::Collection | MergeKind::Record
-            ) {
+            if matches!(spec.kind, MergeKind::Collection | MergeKind::Record) {
+                continue;
+            }
+            if spec.kind == MergeKind::RichText {
+                if let Some((before, after)) = Self::rich_sides(committed, obj, &prop, &hash)? {
+                    held.push((spec.id.clone(), before, after));
+                }
                 continue;
             }
             let side = |heads: &[ChangeHash]| {
@@ -86,4 +93,87 @@ impl TiloStore {
         inner.written.borrow_mut().insert(key, held);
         Ok(out)
     }
+
+    /// What the change `hash` did to the rich text the key `prop` of `obj` holds, as its two
+    /// sides show it: each paragraph it typed into, with the runs it inserted marked and the
+    /// runs it deleted struck, cut to the change and a few words of context; `None` when it
+    /// typed into none of them (it only marked a run, or wrote what was there).
+    ///
+    /// Which paragraphs, from the change's own splices; each read in place at the change's
+    /// dependency and at the change ([`tilo_resource::history::spliced_texts`]), never the
+    /// whole rich text, so the cost is the paragraph's.
+    fn rich_sides(
+        committed: &automerge::Automerge,
+        obj: &automerge::ObjId,
+        prop: &str,
+        hash: &ChangeHash,
+    ) -> Result<Option<(FieldValue, FieldValue)>, StoreError> {
+        let Some(field) =
+            tilo_resource::history::object_at(committed, obj, prop, &[*hash]).map_err(backend)?
+        else {
+            return Ok(None);
+        };
+        let edits =
+            tilo_resource::history::spliced_texts(committed, hash, &field).map_err(backend)?;
+        if edits.iter().all(tilo_resource::history::TextEdit::is_empty) {
+            return Ok(None);
+        }
+        let (mut was, mut now) = (RichValue::default(), RichValue::default());
+        for edit in edits {
+            // The paragraph this text sits in, by the block its path names: its kind and
+            // marks read in place, its text from the edit, which read it at both sides
+            // already. A text no block of the rich text holds (one the change made) reads as
+            // a paragraph of its own.
+            let block =
+                tilo_resource::history::object_at(committed, &field, edit.block(), &[*hash])
+                    .map_err(backend)?
+                    .and_then(|paragraph| read_block_heads(committed, &paragraph, &[*hash]))
+                    .unwrap_or_else(|| plain_paragraph(&edit.before));
+            // A text the change wrote into: what it wrote is marked, what it took away is
+            // struck. A text it only spliced (a structure of paragraphs, the mark of a
+            // paragraph) has neither, and is no part of what the reader sees.
+            if edit.inserted.is_empty() && edit.deleted.is_empty() {
+                continue;
+            }
+            let (b, a) = RichValue::sides(
+                &block,
+                &edit.before,
+                &edit.after,
+                &edit.inserted,
+                &edit.deleted,
+            );
+            was.blocks.extend(b.related(CONTEXT_WORDS).blocks);
+            now.blocks.extend(a.related(CONTEXT_WORDS).blocks);
+        }
+        Ok(Some((FieldValue::Rich(was), FieldValue::Rich(now))))
+    }
+}
+
+/// How many words of a paragraph stand around a change on either side: a few, so a change
+/// reads in its sentence and not with the whole paragraph.
+const CONTEXT_WORDS: usize = 6;
+
+/// A paragraph of plain text: its text, no marks, no attributes.
+fn plain_paragraph(text: &str) -> tilo_doc::snapshot::BlockView {
+    tilo_doc::snapshot::BlockView {
+        id: String::new(),
+        kind: "paragraph".to_owned(),
+        text: text.to_owned(),
+        marks: Vec::new(),
+        attrs: std::collections::BTreeMap::new(),
+        children: Vec::new(),
+    }
+}
+
+/// The paragraph a block's map holds as of `heads`: its kind and the marks of its text,
+/// read in place, with `text` empty (the caller has the text at both sides already); `None`
+/// when the object is no block of a rich text.
+fn read_block_heads(
+    committed: &automerge::Automerge,
+    block: &automerge::ObjId,
+    heads: &[ChangeHash],
+) -> Option<tilo_doc::snapshot::BlockView> {
+    tilo_doc::model::block_at(committed, block, heads)
+        .ok()
+        .flatten()
 }

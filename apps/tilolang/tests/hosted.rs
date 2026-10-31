@@ -422,6 +422,17 @@ impl Session {
         session
     }
 
+    /// Run the package's scenario `scenario` in the instance, then settle: a room filled with
+    /// the package's own data, as a capture stages it.
+    fn stage(&mut self, scenario: &str) {
+        self.host
+            .instances_mut()
+            .next()
+            .expect("the instance runs")
+            .stage(scenario);
+        self.settle();
+    }
+
     /// The host's frames and the window's, until neither has anything left to do.
     fn settle(&mut self) {
         let mut quiet = 0_u32;

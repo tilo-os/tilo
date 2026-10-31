@@ -5,6 +5,7 @@
 
 use automerge::AutoCommit;
 use tilolang_runtime::rich::RichValue;
+use tilolang_runtime::store::{Store as _, VersionKind};
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::{InvokeOutcome, Principal, UiNode, Value, ViewInstance};
 
@@ -109,6 +110,18 @@ fn button(node: &UiNode, label: &str) -> Option<String> {
     all.iter()
         .find(|b| b.props.get("label") == Some(&Value::text(label)))
         .map(|b| b.key.clone())
+}
+
+/// The key of the menu item in `node` labelled `label`.
+fn menu_item(node: &UiNode, label: &str) -> String {
+    let mut all = Vec::new();
+    find_all(node, "ui.MenuItem", &mut all);
+    all.iter()
+        .find(|item| item.props.get("label") == Some(&Value::text(label)))
+        .map_or_else(
+            || panic!("no menu item {label}: {:?}", all.len()),
+            |item| item.key.clone(),
+        )
 }
 
 /// Type `text` into the composer of `view` and press its send button, as a person does.
@@ -530,5 +543,301 @@ fn the_conversations_of_chat_before_channels_open_as_channels_saying_what_they_s
     assert_eq!(
         said(&mut channel).last().map(String::as_str),
         Some("Count me in.")
+    );
+}
+
+/// A message is deleted from its channel by one of the destructive actions offered on it: the
+/// person who wrote it removes their own, and it is gone for everyone, its removal a version
+/// the record keeps (so undo brings it back). The thread it started goes with it, and no
+/// message of another channel is touched.
+#[test]
+fn a_deleted_message_is_gone_for_everyone_and_leaves_a_version_of_the_removal() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(
+        &ada,
+        "new_channel",
+        vec![all.clone(), Value::text("design")],
+    );
+    let other = call(&ada, "new_channel", vec![all, Value::text("random")]);
+    ada.commit();
+    let kept = call(
+        &ada,
+        "send",
+        vec![design.clone(), rich("This stays."), Value::none()],
+    );
+    let doomed = call(
+        &ada,
+        "send",
+        vec![design.clone(), rich("This goes."), Value::none()],
+    );
+    call(&ada, "send", vec![other, rich("Not here."), Value::none()]);
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+
+    // A holder's action on a message is in the message's menu (`std.transcript` puts every
+    // action offered on an item there), as a destructive one.
+    let mut ada_design = ada.host.open_resource(&target(&design), None).unwrap();
+    let rows = rows(&mut ada_design);
+    let labels: Vec<_> = {
+        let mut all = Vec::new();
+        find_all(&rows[1], "ui.MenuItem", &mut all);
+        all.iter()
+            .map(|i| {
+                (
+                    i.props.get("label").cloned(),
+                    i.props.get("destructive").cloned(),
+                )
+            })
+            .collect()
+    };
+    assert!(
+        labels
+            .iter()
+            .any(|(label, destructive)| label == &Some(Value::text("Delete"))
+                && destructive == &Some(Value::Int(1))),
+        "Delete is a destructive item of the message's menu: {labels:?}"
+    );
+    let offered = ada
+        .host
+        .package(APP)
+        .unwrap()
+        .meta
+        .actions
+        .iter()
+        .any(|a| a.name == "delete" && a.role.as_deref() == Some("destructive"));
+    assert!(offered, "delete is an action of the app, destructive");
+    let delete = ada_design
+        .event_action(&menu_item(&rows[1], "Delete"), "choose")
+        .expect("Delete runs on the message");
+    let outcome = ada.host.runtime().invoke_action(
+        &Principal::new("ada"),
+        (delete.action.as_str(), delete.args.clone()),
+    );
+    assert!(
+        matches!(outcome, Ok(InvokeOutcome::Done(_))),
+        "deleted: {outcome:?}"
+    );
+    ada.commit();
+
+    // Gone here, and for the other person once they sync; the message beside it stays.
+    assert_eq!(said(&mut ada_design), ["This stays."]);
+    ben.commit();
+    ben.host.sync_from(&ada.doc);
+    let mut ben_design = ben.host.open_resource(&target(&design), None).unwrap();
+    assert_eq!(said(&mut ben_design), ["This stays."]);
+    assert_eq!(
+        ada.host
+            .store()
+            .versions(&target(&doomed))
+            .unwrap()
+            .last()
+            .map(|v| v.kind),
+        Some(VersionKind::Removed),
+        "the removal is a version of the message"
+    );
+    assert!(
+        !ada.host
+            .store()
+            .versions(&target(&kept))
+            .unwrap()
+            .is_empty(),
+        "the kept message keeps its history"
+    );
+}
+
+/// What someone else says in a channel is unseen to you until you open it: the sidebar's place
+/// for the channel carries how many of its messages you have not seen and stands out, the
+/// messages themselves carry a change mark, and opening the channel takes the marks away. A
+/// message of your own is never unseen to you, and nothing outside the channel is counted.
+#[test]
+fn a_channels_new_messages_are_unseen_in_the_sidebar_until_the_person_opens_it() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(
+        &ada,
+        "new_channel",
+        vec![all.clone(), Value::text("design")],
+    );
+    let random = call(&ada, "new_channel", vec![all, Value::text("random")]);
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("The build is up."), Value::none()],
+    );
+    call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("On all three."), Value::none()],
+    );
+    call(
+        &ben,
+        "send",
+        vec![random, rich("Coffee is fixed."), Value::none()],
+    );
+    ben.commit();
+    ben.host.sync_from(&ben.doc);
+    ada.sync_with(&mut ben);
+
+    // Ada's sidebar says two are new in design, one in random, and the places stand out.
+    let sidebar = ada.view(APP);
+    let place = |key: &str| {
+        let mut all = Vec::new();
+        find_all(sidebar.tree(), "ui.NavItem", &mut all);
+        all.into_iter()
+            .find(|item| item.props.get("key") == Some(&Value::text(key)))
+            .unwrap_or_else(|| panic!("no place {key}"))
+    };
+    assert_eq!(
+        place("/design").props.get("live"),
+        Some(&Value::Int(2)),
+        "two new in design"
+    );
+    assert_eq!(
+        place("/design").props.get("unread"),
+        Some(&Value::Bool(true))
+    );
+    assert_eq!(place("/random").props.get("live"), Some(&Value::Int(1)));
+
+    // In the channel each of Ben's messages carries a change mark; Ada's own does not.
+    let mut channel = ada.host.open_resource(&target(&design), None).unwrap();
+    let marked = |view: &mut ViewInstance| -> Vec<bool> {
+        rows(view)
+            .iter()
+            .map(|row| find(row, "ui.ChangeMark").is_some())
+            .collect()
+    };
+    assert_eq!(marked(&mut channel), [true, true]);
+    post(&mut ada, &channel, "Thanks.");
+    assert_eq!(
+        marked(&mut channel),
+        [true, true, false],
+        "one's own message is not unseen to oneself"
+    );
+
+    // Opening the channel marks what it showed seen, as the window does on the way out: the
+    // marks go, and so does the badge; random's is its own.
+    ada.host
+        .runtime()
+        .mark_seen("ada", &target(&design))
+        .unwrap();
+    ada.commit();
+    let mut reopened = ada.host.open_resource(&target(&design), None).unwrap();
+    assert_eq!(
+        marked(&mut reopened),
+        [false, false, false],
+        "opening the channel saw it"
+    );
+    let sidebar = ada.view(APP);
+    let mut all = Vec::new();
+    find_all(sidebar.tree(), "ui.NavItem", &mut all);
+    let place = |all: &mut Vec<&UiNode>, key: &str| {
+        all.iter()
+            .find(|item| item.props.get("key") == Some(&Value::text(key)))
+            .map(|item| {
+                (
+                    item.props.get("live").cloned(),
+                    item.props.get("unread").cloned(),
+                )
+            })
+            .expect("the place")
+    };
+    assert_ne!(
+        place(&mut all, "/design").0,
+        Some(Value::Int(2)),
+        "design's badge cleared"
+    );
+    assert_ne!(place(&mut all, "/design").1, Some(Value::Bool(true)));
+    assert_eq!(
+        place(&mut all, "/random").0,
+        Some(Value::Int(1)),
+        "random's is its own"
+    );
+}
+
+/// A conversation's first unread message is where its "New messages" divider stands: the
+/// transcript reads `first_unseen(c)`, a fact of the channel's messages and the person's seen
+/// state, and the list places the divider over that message's row. Once the person reads to the
+/// end nothing is marked, and a message that arrives afterwards is marked alone.
+#[test]
+fn the_transcript_marks_the_first_message_the_person_had_not_seen() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("One."), Value::none()],
+    );
+    call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("Two."), Value::none()],
+    );
+    ben.commit();
+    ben.host.sync_from(&ben.doc);
+    ada.sync_with(&mut ben);
+
+    // The rows the list shows, as the runtime holds them, each with whether the divider stands
+    // over it (a row's first child is the list's divider when it is).
+    let marked = |view: &mut ViewInstance| -> Vec<bool> {
+        view.poll_patches().unwrap();
+        let list = find(view.tree(), "ui.VirtualList")
+            .expect("a transcript")
+            .key
+            .clone();
+        let len = view.list_len(&list).unwrap_or(0);
+        for i in 0..len {
+            let _ = view.row(&list, i).unwrap();
+        }
+        let tree = view.tree().clone();
+        let list = find(&tree, "ui.VirtualList").expect("a transcript");
+        list.children
+            .iter()
+            .map(|row| {
+                row.children
+                    .first()
+                    .is_some_and(|first| first.kind == "ui.UnreadDivider")
+            })
+            .collect()
+    };
+
+    // Ada's view stands the divider over the first of the two, and not over the second.
+    let mut view = ada.host.open_resource(&target(&design), None).unwrap();
+    assert_eq!(marked(&mut view), [true, false], "over the first");
+
+    // She reads: opening the channel marks what it showed seen, and nothing is left unread.
+    ada.host
+        .runtime()
+        .mark_seen("ada", &target(&design))
+        .unwrap();
+    ada.commit();
+    let mut reopened = ada.host.open_resource(&target(&design), None).unwrap();
+    assert_eq!(marked(&mut reopened), [false, false], "nothing unseen");
+
+    // A message from Ben afterwards is what is new, alone.
+    ben.host.sync_from(&ada.doc);
+    call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("Any time."), Value::none()],
+    );
+    ben.commit();
+    ben.host.sync_from(&ben.doc);
+    ada.sync_with(&mut ben);
+    assert_eq!(
+        marked(&mut reopened),
+        [false, false, true],
+        "his answer is what is new"
     );
 }

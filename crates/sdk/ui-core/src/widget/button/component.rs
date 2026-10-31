@@ -27,6 +27,11 @@ pub struct ButtonProps {
     pub size: ControlSize,
     /// Whether it can be pressed now. A button with nothing to do never can.
     pub enabled: bool,
+    /// The plain key that presses it while its window has the keyboard (and, on a row's action,
+    /// while that row is selected), as the app declared it (`key: "e"`): the host answers it
+    /// beside the pressed control's own event. Never drawn here; the header shows it at the
+    /// action's menu row.
+    pub key: Option<String>,
     /// It was pressed (a click, Enter or Space, an assistive technology).
     #[component(event)]
     pub press: Event,
@@ -42,6 +47,7 @@ impl Default for ButtonProps {
             toggled: None,
             size: ControlSize::default(),
             enabled: true,
+            key: None,
             press: Event::None,
         }
     }
@@ -59,6 +65,7 @@ impl Described for Button {
             toggled,
             size,
             enabled,
+            key: _,
             press,
         } = props;
         let enabled = enabled && !press.is_none();

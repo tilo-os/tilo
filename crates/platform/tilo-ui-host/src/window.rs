@@ -1158,6 +1158,82 @@ impl AppWindow {
         true
     }
 
+    /// Run the offered action an app declared `key: "x"` for, when the person presses `x` on its
+    /// own (no command, alt or shift) in this window: the row's action first (the content the
+    /// window after the list shows), else one the window's own header or content offers. The key
+    /// is the character the person's keymap puts on the key, so it is layout-correct on any
+    /// keyboard. Whether it ran one, so the press is the action's and typing does not take it.
+    fn plain_key_shortcut(
+        &mut self,
+        event: &ui::winit::event::WindowEvent,
+        modifiers: ui::winit::keyboard::ModifiersState,
+    ) -> bool {
+        // A plain key: a chord belongs to the shell and to typing, and while a text field has
+        // the keyboard every key is typing.
+        if modifiers.shift_key()
+            || modifiers.control_key()
+            || modifiers.alt_key()
+            || modifiers.super_key()
+            || self.focused_text_field().is_some()
+        {
+            return false;
+        }
+        self.shortcut_ran(event)
+    }
+
+    /// Run the offered action an app declared `key: "x"` for, when the person presses `x` on its
+    /// own in this window. Whether it ran one, so the press is the action's.
+    fn shortcut_ran(&mut self, event: &ui::winit::event::WindowEvent) -> bool {
+        use ui::winit::event::WindowEvent;
+        use ui::winit::keyboard::Key;
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        if key.state != ui::winit::event::ElementState::Pressed || self.composing {
+            return false;
+        }
+        let Key::Character(typed) = &key.logical_key else {
+            return false;
+        };
+        // A plain key: a chord (a modifier held) belongs to the shell and to typing, and a paste
+        // is not a key.
+        if typed.chars().count() != 1
+            || key
+                .text
+                .as_ref()
+                .is_some_and(|text| text.chars().count() > 1)
+        {
+            return false;
+        }
+        let Some((node_key, event)) = self
+            .built
+            .as_ref()
+            .and_then(|built| shortcut_action(built, typed))
+        else {
+            return false;
+        };
+        self.act(UiEvent::Fire(node_key, event, None));
+        self.take_events();
+        true
+    }
+
+    /// Run the action the app declared the plain key `key` for, as pressing it does: the event
+    /// it runs reaches the app at once. Whether the window offers it. A test's way in, and the
+    /// person's key.
+    pub fn run_shortcut(&mut self, key: &str) -> bool {
+        let Some((node_key, event)) = self
+            .built
+            .as_ref()
+            .and_then(|built| shortcut_action(built, key))
+        else {
+            return false;
+        };
+        self.act(UiEvent::Fire(node_key, event, None));
+        self.take_events();
+        self.flush();
+        true
+    }
+
     /// Send what the person typed after each press the app ran since, into the view a press
     /// opened for them when `opened` (its first field takes the keyboard).
     fn send_typed_into(&mut self, opened: bool) {
@@ -1557,6 +1633,8 @@ pub fn show_bound<S: std::hash::BuildHasher>(
             match value {
                 Value::Bool(checked) => reconciler.set_flag(&key, *checked),
                 Value::Int(number) if flag => reconciler.set_flag(&key, *number != 0),
+                Value::Int(number) => reconciler.set_count(&key, *number),
+                Value::Float(number) => reconciler.set_number(&key, *number),
                 Value::Rich(rich) => reconciler.set_rich(&key, rich),
                 other => reconciler.set_text(&key, &crate::reconcile::display(other)),
             }
@@ -1583,6 +1661,43 @@ fn keyed<'a>(widget: &'a dyn Widget, key: &str) -> Option<&'a dyn Widget> {
         .children()
         .into_iter()
         .find_map(|child| keyed(child, key))
+}
+
+/// The node key and event to fire for the control in `node`'s tree whose plain `key` prop is
+/// `typed` (a `Button`'s `press`, a `MenuItem`'s `choose`, as the app's `key: "e"` reaches it
+/// through `std.header`). The content after the list (the row the person selected) leads, so a
+/// row's `e` beats the window's; then the whole shell. `None` when no control declares it.
+fn shortcut_action(node: &UiNode, typed: &str) -> Option<(String, String)> {
+    fn walk(node: &UiNode, typed: &str, found: &mut Option<(String, String)>) {
+        let declared = matches!(node.props.get("key"), Some(Value::Text(key)) if key == typed);
+        if declared {
+            // The event the control runs its action on, by its kind: a button's `press`, a menu
+            // item's `choose`.
+            for event in ["press", "choose"] {
+                if node.events.contains_key(event) {
+                    *found = Some((node.key.clone(), event.to_owned()));
+                    return;
+                }
+            }
+        }
+        for child in &node.children {
+            walk(child, typed, found);
+            if found.is_some() {
+                return;
+            }
+        }
+    }
+    // The row's action leads: the tree after the overview's list is the resource the person
+    // selected, whose header and content offer its actions.
+    let mut found = None;
+    for child in crate::shell::slot_children(node, "content") {
+        walk(child, typed, &mut found);
+        if found.is_some() {
+            return found;
+        }
+    }
+    walk(node, typed, &mut found);
+    found
 }
 
 impl AppWindow {
@@ -1697,7 +1812,10 @@ impl ui::widget::Decorator for AppWindow {
         {
             self.pointed_after = Some(self.fired);
         }
-        if self.hold_typing(event) || self.enter_moves_on(event, ctx.modifiers.state()) {
+        if self.hold_typing(event)
+            || self.enter_moves_on(event, ctx.modifiers.state())
+            || self.plain_key_shortcut(event, ctx.modifiers.state())
+        {
             *ctx.handled = true;
             return;
         }
@@ -2128,5 +2246,91 @@ mod tests {
         assert!(window.composed().is_none(), "nothing of it was built");
         app.send(b"scribbles".to_vec()).expect("sends");
         assert!(window.receive(), "a scribble is refused, not a panic");
+    }
+
+    /// A view whose header offers `Archive` as an icon button with `key: "e"`, as `std.header`
+    /// builds it for an action declaring that key: the `key` prop and the button's `press`.
+    fn keyed_menu() -> Vec<ToUi> {
+        use wire::Event;
+        let mut button = UiNode::empty("ui.Button", "archive");
+        button
+            .props
+            .insert("label".to_owned(), Value::text("Archive"));
+        button.props.insert("key".to_owned(), Value::text("e"));
+        button.events.insert("press".to_owned(), Event::default());
+        let mut shell = UiNode::empty("ui.NavShell", "shell");
+        let mut actions = UiNode::empty("slot", "actions");
+        actions
+            .props
+            .insert("name".to_owned(), Value::text("actions"));
+        actions.children.push(button);
+        shell.children.push(actions);
+        vec![ToUi::Open {
+            lane: Lane::Root,
+            target: doc(),
+            tree: shell,
+            front: None,
+        }]
+    }
+
+    #[test]
+    fn a_plain_key_runs_the_action_an_app_declared_it_for() {
+        let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+        let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+        send(&mut app, &keyed_menu());
+        window.receive();
+        assert!(
+            window.failed().is_none(),
+            "the view was taken: {:?}",
+            window.failed()
+        );
+        assert!(
+            window
+                .composed()
+                .is_some_and(|tree| shortcut_action(tree, "e").is_some()),
+            "the composed shell carries the declared key: {:#?}",
+            window.composed()
+        );
+        let mut harness =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (900, 700));
+        // The offered action's own `key:` names it: a plain `e`, no modifier, fires it.
+        harness.key("e");
+        {
+            let window = harness
+                .root_widget_mut()
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<AppWindow>())
+                .expect("the window");
+            window.flush();
+        }
+        let fired: Vec<ToApp> = sent(&mut app)
+            .into_iter()
+            .filter(|message| matches!(message, ToApp::Fire { .. }))
+            .collect();
+        assert_eq!(
+            fired,
+            [ToApp::Fire {
+                lane: Lane::Root,
+                key: "archive".to_owned(),
+                event: "press".to_owned(),
+                value: None,
+            }],
+            "the press ran the declared action, through its button"
+        );
+        // A key no offered action declares is not the window's: typing and chords pass through.
+        harness.key("q");
+        {
+            let window = harness
+                .root_widget_mut()
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<AppWindow>())
+                .expect("the window");
+            window.flush();
+        }
+        let fired: Vec<ToApp> = sent(&mut app)
+            .into_iter()
+            .filter(|message| matches!(message, ToApp::Fire { .. }))
+            .collect();
+        assert!(fired.is_empty(), "`q` declares nothing: {fired:?}");
     }
 }

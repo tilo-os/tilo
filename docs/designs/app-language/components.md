@@ -42,8 +42,10 @@ view contact_row(c: Contact) {
 
 Some components *attach*: `ui.ContextMenu`, `ui.HoverToolbar` and `ui.Swipe` draw nothing where
 a view puts them and give the view they stand in a menu, a toolbar shown on hover and focus, or
-a swipe. A list item holds those of its row, and its menu ends with each of the item's actions the
-row's menu did not place, so every action stays reachable. They all run in the UI host.
+a swipe. A list item holds those of its row wherever the row's layout puts them — through its
+stacks, rows, grids and calls — while what a component of its own meaning holds (a card, a
+section) stays that component's. Its menu ends with each of the item's actions the row's menu
+did not place, so every action stays reachable. They all run in the UI host.
 
 ## 2. Views are components
 

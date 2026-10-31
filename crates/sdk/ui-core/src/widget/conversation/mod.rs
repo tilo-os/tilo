@@ -27,6 +27,7 @@
 //! | [`composer`] | Enter sends, Shift+Enter breaks the line, Escape lets go — the same rule in both |
 //! | [`list`] | [`ConversationList`]: the message list itself, for a widget-tree app |
 //! | [`unread`] | Where the reader's unread lines start: the "New messages" divider |
+//! | [`jump`] | The pill that takes the reader back to what is unread or to what is now |
 //!
 //! A host that adopts a piece keeps its own identity: a channel still shows
 //! authors and avatars, a private thread still shows one person and their
@@ -40,7 +41,12 @@ pub mod day;
 pub mod delivery;
 pub mod draft;
 pub mod earlier;
+pub mod jump;
 pub mod list;
+mod list_component;
+pub use list_component::{
+    ConversationEntryProps, ConversationListProps, DescribedConversationList,
+};
 pub mod unread;
 
 pub use attachment::{
@@ -54,11 +60,12 @@ pub use day::{
 pub use delivery::{DeliveryFace, DeliveryState, DeliveryStep};
 pub use draft::{DRAFT_PREVIEW_CHARS, DraftBook, line as draft_line, preview as draft_preview};
 pub use earlier::EarlierUnavailableFace;
+pub use jump::{Jump, JumpFace, pill_reserve};
 pub use list::{
     ConversationLine, ConversationList, ConversationRole, ListCache, ListFace, ListWork,
     bubble_colors, run_breaks,
 };
-pub use unread::UnreadDividerFace;
+pub use unread::{UnreadDivider, UnreadDividerFace};
 
 /// Resolve one of the conversation's labels in the desktop's language.
 ///

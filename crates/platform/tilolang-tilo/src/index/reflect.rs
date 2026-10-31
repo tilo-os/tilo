@@ -25,7 +25,7 @@ use serde_json::{Value as Json, json};
 use tilolang::pred::Lit;
 use tilolang_runtime::store::{FieldValue, Reflected, Scalar, TaskRun, Version};
 
-use crate::action::{ACTION_TYPE, DynAction};
+use crate::action::{ACTION_TYPE, DynAction, DynEdit};
 use crate::schema::{FieldSchema, MergeKind};
 
 /// The pseudo-field holding the first version of a resource: who made it, when, how.
@@ -154,6 +154,19 @@ pub fn versions_of(change: &automerge::Change) -> Vec<Version> {
     let Some((stamp, action, task)) = read(change) else {
         return Vec::new();
     };
+    // The items it put into a collection (`DynEdit::Insert`), in the order of the edits: an
+    // action that posts two messages is a version of the channel that names both, so where a
+    // run of new items begins is known without reading the collection.
+    let mut inserted: Vec<(String, String)> = Vec::new();
+    for edit in &action.edits {
+        let mut edit = edit;
+        while let DynEdit::In { edit: inner, .. } = edit {
+            edit = inner;
+        }
+        if let DynEdit::Insert { id, item, .. } = edit {
+            inserted.push((id.clone(), item.clone()));
+        }
+    }
     action
         .made()
         .into_iter()
@@ -161,9 +174,20 @@ pub fn versions_of(change: &automerge::Change) -> Vec<Version> {
             task: task.clone(),
             kind: made.kind,
             fields: made.fields,
+            placed: items_inserted_into(&inserted, &made.resource),
             resource: made.resource,
             ..stamp.version.clone()
         })
+        .collect()
+}
+
+/// The ids of the items `inserted` put into the collection of `holder`, in the order they were
+/// put in.
+fn items_inserted_into(inserted: &[(String, String)], holder: &str) -> Vec<String> {
+    inserted
+        .iter()
+        .filter(|(of, _)| of == holder)
+        .map(|(_, item)| item.clone())
         .collect()
 }
 

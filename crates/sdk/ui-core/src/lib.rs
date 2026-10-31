@@ -128,6 +128,9 @@ pub mod capability_door;
 pub mod content_zoom;
 pub mod control_hints;
 pub mod control_notice;
+/// The actions the host publishes itself, named for apps to call through
+/// `ui`.
+pub mod desktop;
 /// What is running: one cancellable job with a body, which the whole system
 /// can see and which outlives the window that started it.
 pub mod jobs;
@@ -341,6 +344,7 @@ pub mod text_position;
 pub mod text_render;
 pub mod text_selection;
 pub mod theme;
+pub mod theme_bundle;
 mod theme_document;
 mod theme_layers;
 pub mod tokens;

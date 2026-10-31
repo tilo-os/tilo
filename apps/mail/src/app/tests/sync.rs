@@ -119,7 +119,7 @@ fn already_open_mail_adopts_settings_google_consent_on_sync() {
         .with_browser_opener(std::sync::Arc::new(Browser));
     pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
     pane.command(AccountViewCommand::SubmitGoogleMail);
-    assert!(pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()));
+    assert!(pane.finish_sign_in_step_for_test(ui::testing::hang_bound()));
     assert!(
         !pane.sign_in_open(),
         "{:?}",
@@ -266,7 +266,7 @@ fn folder_syncs_apply_new_mail_remote_flags_and_removals_and_are_kept() {
     assert!(read, "read on another client reads as read here");
 
     // What was fetched is kept: a new window opens on it.
-    let deadline = tilo_test_env::hang_deadline();
+    let deadline = ui::testing::hang_deadline();
     let kept_uids = loop {
         let mut uids: Vec<u32> = app
             .state()

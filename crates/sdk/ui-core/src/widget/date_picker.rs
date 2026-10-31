@@ -28,8 +28,11 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
+#[path = "date_picker_component.rs"]
+mod component;
 use crate::widget::Widget;
 use crate::widget::text::centered_text_top;
+pub use component::DatePickerProps;
 
 /// Six rows covers every possible month layout — a 31-day month starting
 /// on Sunday is the worst case, needing 6 rows to fit the spill-in/out
@@ -153,6 +156,12 @@ impl DatePicker {
     /// Replace the host's today; see [`Self::with_today`].
     pub fn set_today(&mut self, today: NaiveDate) {
         self.today = Some(today);
+    }
+
+    /// Whether it marks any day.
+    #[must_use]
+    pub fn has_marked(&self) -> bool {
+        !self.marked.is_empty()
     }
 
     /// Replace the marked days; see [`Self::marked`].

@@ -3098,7 +3098,9 @@ mod bool_control;
 mod checkbox;
 #[cfg(test)]
 mod control_hand_on_tests;
-pub use checkbox::{CheckGlyph, CheckMotion, CheckPose, Checkbox, CheckboxFace, CheckboxInteract};
+pub use checkbox::{
+    CheckGlyph, CheckMotion, CheckPose, Checkbox, CheckboxFace, CheckboxInteract, CheckboxProps,
+};
 mod column;
 pub use column::Column;
 mod composition;
@@ -3125,7 +3127,7 @@ mod face_motions;
 pub use face_motions::FaceMotions;
 mod toggle;
 pub use toggle::{
-    SwitchMotion, SwitchPose, Toggle, ToggleColors, ToggleFace, ToggleInteract,
+    SwitchMotion, SwitchPose, Toggle, ToggleColors, ToggleFace, ToggleInteract, ToggleProps,
     toggle_accessibility, toggle_face_colors,
 };
 mod stack;
@@ -3139,7 +3141,9 @@ pub use document_view::ModelView;
 mod divider;
 pub use divider::{Divider, DividerAxis, RuleEdge, paint_rule};
 mod link;
-pub use link::{Link, os_open as open_external_url, try_os_open as try_open_external_url};
+pub use link::{
+    Link, LinkProps, os_open as open_external_url, try_os_open as try_open_external_url,
+};
 mod flap;
 pub use flap::{FlapState, SplitLayout};
 mod bottom_sheet;
@@ -3218,7 +3222,9 @@ pub use image::{Image, ImageDecodeError, ImageFit};
 mod image_crop;
 pub use image_crop::{CropSelection, ImageCropEditor};
 mod slider;
-pub use slider::{Slider, SliderFace, SliderTouch, SliderTouchStep, paint_held_readout};
+pub use slider::{
+    Slider, SliderFace, SliderProps, SliderTouch, SliderTouchStep, paint_held_readout,
+};
 mod text_input;
 pub use text_input::{
     AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextActionResult, TextInput,
@@ -3227,11 +3233,12 @@ pub use text_input::{
 pub mod code_editor;
 pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};
 mod editable_label;
-pub use editable_label::{EditOutcome, EditableLabel};
+pub use editable_label::{EditOutcome, EditableLabel, EditableLabelProps};
 pub mod acknowledgement;
 pub mod autocomplete;
 pub use autocomplete::{
-    Autocomplete, AutocompleteOutcome, Suggester, Suggestion, SuggestionList, SuggestionPerson,
+    Autocomplete, AutocompleteOutcome, AutocompleteProps, Suggester, Suggestion, SuggestionList,
+    SuggestionPerson, SuggestionProps,
 };
 pub mod mention_picker;
 pub use mention_picker::{MentionCandidate, MentionQuery};
@@ -3240,7 +3247,7 @@ pub(crate) mod completion_card;
 pub mod text_completion;
 pub use text_completion::{EmojiQuery, TextCompletion};
 mod number_input;
-pub use number_input::{NumberInput, NumberStepperFace, StepperPart};
+pub use number_input::{NumberInput, NumberInputProps, NumberStepperFace, StepperPart};
 pub mod marks;
 pub use marks::{Mark, MarkSpan};
 pub mod markdown_input;
@@ -3264,7 +3271,7 @@ pub use link_popover::{LinkPopover, PageEntry};
 pub mod page_sidebar;
 pub use page_sidebar::{PageSidebar, PageSidebarEvent};
 mod dropdown;
-pub use dropdown::{Dropdown, DropdownFace, FILTER_MIN_OPTIONS};
+pub use dropdown::{Dropdown, DropdownFace, DropdownProps, FILTER_MIN_OPTIONS};
 pub mod aim;
 pub use aim::Trajectory;
 mod hover_intent;
@@ -3317,7 +3324,7 @@ pub mod shortcut_recorder;
 pub use input_hint::{InputDeviceGlyph, InputHint, InputHintProps, LegendConventions};
 pub mod canvas_navigation_hint;
 pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
-pub use shortcut_recorder::ShortcutRecorder;
+pub use shortcut_recorder::{ShortcutRecorder, ShortcutRecorderProps};
 pub mod context_menu;
 pub mod floating_surface;
 pub mod primitives;
@@ -3353,6 +3360,10 @@ mod pacer;
 pub use pacer::Pacer;
 pub(crate) mod block_editor_table;
 pub mod data_table;
+mod data_table_component;
+pub use data_table_component::{
+    DataTableCellProps, DataTableColumnProps, DataTableProps, DataTableRowProps, DescribedTable,
+};
 pub mod table {
     pub use super::block_editor_table::*;
 }
@@ -3404,19 +3415,24 @@ pub mod program_step;
 pub use program_step::{ProgramStepView, StepAnswer};
 pub mod date_field;
 pub mod date_picker;
-pub use date_field::DateField;
-pub use date_picker::{DateFeed, DatePicker, DateShown, ExternalDatePickerHit};
+pub use date_field::{DateField, DateFieldProps};
+pub use date_picker::{DateFeed, DatePicker, DatePickerProps, DateShown, ExternalDatePickerHit};
 pub mod time_picker;
 pub mod timeline_density;
-pub use time_picker::{TimePicker, TimeValue};
+pub use time_picker::{TimePicker, TimePickerProps, TimeValue};
 pub use timeline_density::TimelineDensity;
 pub mod color_picker;
 pub mod color_swatch;
-pub use color_picker::{ColorPicker, ColorPickerOutcome};
-pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker, SwatchPainter};
+pub use color_picker::{ColorPicker, ColorPickerOutcome, ColorPickerProps};
+pub use color_swatch::{
+    ColorSwatch, ColorSwatchFace, ColorSwatchPicker, ColorSwatchPickerProps, SwatchPainter,
+};
 pub mod picture;
 pub mod picture_choice;
-pub use picture_choice::{ColourFilter, Picture, PictureChoice, PictureOption, TouchpadGesture};
+pub use picture_choice::{
+    ColourFilter, Picture, PictureChoice, PictureChoiceProps, PictureKind, PictureOption,
+    PictureOptionProps, TouchpadGesture,
+};
 pub mod popover;
 pub use popover::{PanelAlign, Popover, PopoverButton, PopoverPrompt, PopoverSide};
 pub mod emoji_picker;
@@ -3527,10 +3543,14 @@ pub use webview::WebView;
 pub mod image_viewer;
 pub use image_viewer::ImageViewer;
 pub mod tree_view;
+mod tree_view_component;
 pub use tree_view::{
     TreeChildState, TreeClickActivation, TreeHeadingAction, TreeLoadReason, TreeLoadRequest,
     TreeModel, TreeModelChange, TreeMove, TreeNode, TreeRowAction, TreeRowDecoration, TreeRowIcon,
     TreeRowInfo, TreeRowKey, TreeRowTone, TreeSlot, TreeView,
+};
+pub use tree_view_component::{
+    DescribedTreeView, TreeTone, TreeViewNodeProps, TreeViewProps, TreeViewRowProps,
 };
 mod rows;
 pub mod virtual_list;
@@ -3574,7 +3594,7 @@ pub mod arriving_view;
 pub use arriving_rows::{ArrivingRows, RowFade};
 pub use arriving_view::{ArrivalFace, ArrivingView, NamedOnce, ReservedShape, Showing};
 pub mod stepper;
-pub use stepper::{Stepper, StepperFace};
+pub use stepper::{Stepper, StepperFace, StepperProps};
 pub mod property_list;
 pub use property_list::{
     Property, PropertyColumn, PropertyList, PropertyListFace, PropertyListProps, PropertyProps,
@@ -3582,13 +3602,14 @@ pub use property_list::{
 };
 pub mod list_row;
 pub use list_row::{
-    ControlRow, ListRow, ListRowFace, ListRowProps, RowAction, RowLeading, RowLeadingShape,
-    RowShape, RowStatus, RowValue, SwipeAction, SwipeActionProps, badge_column_width,
+    ControlRow, ControlRowProps, ListRow, ListRowFace, ListRowProps, RowAction, RowLeading,
+    RowLeadingShape, RowShape, RowStatus, RowValue, SwipeAction, SwipeActionProps,
+    badge_column_width,
 };
 pub mod toggle_group;
 pub use toggle_group::{
-    Segment, SegmentedFace, SegmentedStyle, SegmentedTouch, SegmentedTouchGroup,
-    SegmentedTouchResult, ToggleGroup, segment_colors,
+    Segment, SegmentProps, SegmentedFace, SegmentedStyle, SegmentedTouch, SegmentedTouchGroup,
+    SegmentedTouchResult, ToggleGroup, ToggleGroupProps, ViewTabsProps, segment_colors,
 };
 pub mod view_tabs;
 pub use view_tabs::ViewTabs;
@@ -3633,14 +3654,16 @@ pub use change_mark::ChangeMarkProps;
 pub mod conversation;
 pub use conversation::{
     AttachmentAction, AttachmentFace, AttachmentKind, AttachmentSummary, ComposerIntent,
-    ComposerRule, ConversationClock, ConversationDay, ConversationLine, ConversationList,
-    ConversationRole, DayBreaks, DayDividerFace, DeliveryFace, DeliveryState, DeliveryStep,
-    DraftBook, ListCache, ListFace, ListWork, SavedCopy, UploadProgress,
+    ComposerRule, ConversationClock, ConversationDay, ConversationEntryProps, ConversationLine,
+    ConversationList, ConversationListProps, ConversationRole, DayBreaks, DayDividerFace,
+    DeliveryFace, DeliveryState, DeliveryStep, DescribedConversationList, DraftBook, ListCache,
+    ListFace, ListWork, SavedCopy, UploadProgress,
 };
 pub mod card;
 mod tone;
 pub use card::{
-    Actions, Card, CardFace, CardGrid, CardProps, CardWidth, card_column_width, card_columns,
+    Actions, Card, CardFace, CardGrid, CardGridCardProps, CardGridProps, CardProps, CardWidth,
+    DescribedCardGrid, card_column_width, card_columns,
 };
 pub use tone::Tone;
 mod section;
@@ -3663,11 +3686,15 @@ pub use screenshot_markup::{
 pub use selection_handles::{Handle as SelectionHandle, SelectionHandles, TextGrip, TextGrips};
 
 pub mod activity_timeline;
+mod activity_timeline_component;
 pub mod history;
 pub mod history_face;
 pub mod history_group;
 pub mod name_field;
 pub use activity_timeline::ActivityTimeline;
+pub use activity_timeline_component::{
+    ActivityArtifact, ActivityEntryProps, ActivityTimelineProps, DescribedActivityTimeline,
+};
 pub use history::{
     AuthorRelation, EntryKind, HistoryAttribution, HistoryAuthor, HistoryClassification,
     HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay, format_relative_time,
@@ -3688,6 +3715,10 @@ mod a11y_tree_tests;
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "control_touch_tests.rs"]
+mod control_touch_tests;
 
 #[cfg(test)]
 pub(crate) mod control_result_probe {

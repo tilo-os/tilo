@@ -171,11 +171,19 @@ pub struct SearchMeta {
     /// Whether the type declares these (a `search` block) rather than having the defaults.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub declared: bool,
+    /// `mark others`: other people's changes to the type are marked unseen for a reader, as
+    /// an agent's are (task-legibility.md §4).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mark_others: bool,
 }
 
 impl SearchMeta {
     pub fn is_empty(&self) -> bool {
-        self.filters.is_empty() && self.sort.is_none() && self.hidden.is_empty() && !self.declared
+        self.filters.is_empty()
+            && self.sort.is_none()
+            && self.hidden.is_empty()
+            && !self.declared
+            && !self.mark_others
     }
 
     /// The filter a query names `key`.
@@ -383,6 +391,11 @@ pub struct ActionMeta {
     /// both would show.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toggles: Option<String>,
+    /// `key: "e"`: the plain key that runs the action while its window has the keyboard, and (on
+    /// a row's action) while that row is selected. It is the key's own character read through the
+    /// person's keymap, never a key code, so it is layout-correct on any keyboard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 impl ActionMeta {

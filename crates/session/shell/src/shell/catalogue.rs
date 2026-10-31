@@ -272,8 +272,6 @@ fn load_disk_cache_once() -> bool {
 /// Returns immediately: a cold or stale cache schedules a refresh and
 /// answers with whatever it currently holds.
 pub fn available_apps() -> Vec<CatalogueApp> {
-    #[cfg(test)]
-    crate::shell::test_support::ambient_start("catalogue available apps");
     let loaded_from_disk = load_disk_cache_once();
     let (apps, needs_refresh) = {
         let cache = lock_catalogue();
@@ -522,11 +520,17 @@ fn schedule_refresh() {
     if REFRESHING.swap(true, Ordering::SeqCst) {
         return;
     }
+    // Answering a read from the cache starts nothing. With no registry
+    // binary there is nothing to run, so a machine or fixture without one
+    // starts no service either; a real refresh runs the binary on a thread,
+    // which a fixture must not start.
     let Some(bin) = resolve_catalogue_bin() else {
         *lock_catalogue() = Some((Vec::new(), Instant::now()));
         REFRESHING.store(false, Ordering::SeqCst);
         return;
     };
+    #[cfg(test)]
+    crate::shell::test_support::ambient_start("catalogue available apps");
     let spawned = std::thread::Builder::new()
         .name("app-refresh".to_string())
         .spawn(move || {
