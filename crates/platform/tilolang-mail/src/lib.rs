@@ -20,6 +20,7 @@ pub mod wire;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+#[cfg(feature = "engine")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(feature = "engine")]
