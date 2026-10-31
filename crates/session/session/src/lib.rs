@@ -27,6 +27,7 @@
 
 mod a11y_settings;
 mod app_icons;
+mod bars;
 pub mod capture;
 mod capture_studio;
 mod chrome;
@@ -95,6 +96,7 @@ use ui::application::ComponentRunnerInputs;
 use ui::host_operation::ResourceOperationStart;
 use ui::shortcut_table::ShortcutAction;
 
+pub use bars::BarShown;
 pub use config::SessionConfig;
 pub use controls::{
     CLIPBOARD_RESOURCE, DISPLAYS_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify,
@@ -491,6 +493,12 @@ struct Shared {
     /// The shortcut guide: the sheet naming every key the desktop answers,
     /// and the table it explains.
     shortcut_guide: shortcut_guide::ShortcutGuide,
+    /// The chrome above the windows as the session hosts it: where its
+    /// bars stand on the displays, read back for the tests that drive them.
+    chrome: Rc<RefCell<WidgetHost>>,
+    /// The monitors of the displays a fullscreen window owns, which the
+    /// bars read.
+    fullscreen: Rc<RefCell<Vec<String>>>,
 }
 
 /// The app a window shows, by its id.
@@ -1533,6 +1541,9 @@ impl Session {
         if let Some(tray) = &tray {
             tray.set_host_wake(options.wake.handle());
         }
+        // The displays a fullscreen window owns, which the loop takes from
+        // the compositor every pass: the bar there steps aside for it.
+        let fullscreen: Rc<RefCell<Vec<String>>> = Rc::default();
         let chrome = Rc::new(RefCell::new(chrome::host(
             &handle,
             &options,
@@ -1544,12 +1555,13 @@ impl Session {
                 clock: Rc::clone(&clock),
                 notices: notices.clone(),
                 tray: tray.clone(),
+                fullscreen: Rc::clone(&fullscreen),
             },
             sync.clone(),
             &overview,
         )));
         compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
-        doors.add(chrome);
+        doors.add(Rc::clone(&chrome) as tilo_surface_host::Shared);
 
         let banners = mount_banners(&mut compositor, &mut doors, &notices, &options);
 
@@ -1701,6 +1713,8 @@ impl Session {
             overview,
             dictation,
             shortcut_guide,
+            chrome,
+            fullscreen,
         };
         shared.start_search();
         // What the portal brings comes from any thread, and wakes the loop
@@ -1801,6 +1815,7 @@ impl Session {
             self.compositor.set_night_light(Some(NIGHT_LIGHT_WARMTH))?;
         }
         self.follow_displays()?;
+        self.follow_fullscreen();
         for surface in &self.surface_apps {
             self.surfaces.start_or_log(&mut self.compositor, surface);
         }
@@ -1814,6 +1829,18 @@ impl Session {
         let turned = self.rotation.follow(&self.compositor.outputs());
         self.displays
             .follow(&mut self.compositor, night_light, turned)
+    }
+
+    /// Take the displays a fullscreen window owns from the compositor, so
+    /// the bar on such a display steps aside this pass. The chrome reads
+    /// them when it next builds its snapshot, which is what places the
+    /// bars.
+    fn follow_fullscreen(&self) {
+        let monitors = self.compositor.fullscreen_monitors();
+        let shell = &self.shared.fullscreen;
+        if *shell.borrow() != monitors {
+            shell.replace(monitors);
+        }
     }
 
     /// The keyboard input sources, in the person's order.
@@ -2586,6 +2613,7 @@ impl Session {
     pub fn step(&mut self, timeout: Duration) -> Result<(), Error> {
         self.compositor.dispatch(timeout)?;
         self.follow_displays()?;
+        self.follow_fullscreen();
         {
             let mut services = self.shared.services.borrow_mut();
             services.poll();

@@ -47,7 +47,7 @@ use crate::overview_panel::{OverviewPanel, OverviewPick};
 use crate::shortcuts::{page_chord, page_shortcut_action};
 use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
 use crate::strip_switcher::Command as StripCommand;
-use crate::topbar::{TOPBAR_HEIGHT_PX, TopBarChrome};
+use crate::topbar::{Placement, TOPBAR_HEIGHT_PX, TopBarChrome};
 use crate::window_flight::WindowFlight;
 use crate::window_switcher::{
     NoThumbnails, SwitcherOutcome, SwitcherScope, WindowSource, WindowSwitcher,
@@ -55,6 +55,11 @@ use crate::window_switcher::{
 use crate::workspace_menu::{
     WorkspaceAction, WorkspaceChoice, WorkspaceMenu, WorkspaceMenuChoice, WorkspaceMenuModel,
 };
+
+/// The next deadline a child widget reports, for the earliest of them.
+fn wake_deadline(child: &dyn Widget) -> Option<ui::time::Instant> {
+    child.next_wake_deadline()
+}
 
 /// Workspace menu keys: a workspace of this desktop, by id, and one of the
 /// person's others the host opens, by its host action.
@@ -624,6 +629,13 @@ impl OverviewHost for PlainOverview {
 /// chords.
 pub struct DesktopChrome {
     bar: TopBarChrome,
+    /// The bars of the other displays, each on its own: a display besides
+    /// the one in use carries the compact bar.
+    compact: Vec<TopBarChrome>,
+    /// Where the bars stood at the bar's source last reading, and the
+    /// snapshot revision it was read at.
+    placement: Placement,
+    bars_revision: u64,
     overview: OverviewPanel,
     tilo_menu: TiloMenu,
     workspace_menu: WorkspaceMenu,
@@ -682,6 +694,9 @@ impl DesktopChrome {
     ) -> Self {
         Self {
             bar,
+            compact: Vec::new(),
+            placement: Placement::default(),
+            bars_revision: u64::MAX,
             overview: OverviewPanel::new(),
             tilo_menu,
             workspace_menu: WorkspaceMenu::new(),
@@ -727,6 +742,22 @@ impl DesktopChrome {
     /// The top bar, to open what it anchors.
     pub fn bar_mut(&mut self) -> &mut TopBarChrome {
         &mut self.bar
+    }
+
+    /// Where every display's bar stands, as the bar's source last said.
+    #[must_use]
+    pub const fn placement(&self) -> &Placement {
+        &self.placement
+    }
+
+    /// Every bar the chrome shows: the full one on the display in use,
+    /// then the compact one of each other display in the placement's
+    /// order, with the display each stands on (`None` for the full bar).
+    #[must_use]
+    pub fn bars(&self) -> Vec<(Option<u32>, &TopBarChrome)> {
+        std::iter::once((self.bar.display(), &self.bar))
+            .chain(self.compact.iter().map(|bar| (bar.display(), bar)))
+            .collect()
     }
 
     /// The Tilo menu behind the bar's mark.
@@ -1745,18 +1776,69 @@ impl DesktopChrome {
     fn chrome_needs_redraw(&self) -> bool {
         self.switcher.is_active()
             || self.navigator.needs_animation_frame(ui::time::now())
-            || [
-                &self.bar as &dyn Widget,
-                &self.overview,
-                &self.tilo_menu,
-                &self.workspace_menu,
-            ]
-            .iter()
-            .any(|child| child.needs_redraw())
+            || self.children().iter().any(|child| child.needs_redraw())
     }
 }
 
 impl DesktopChrome {
+    /// Put every display's bar where the desk's source says, when what it
+    /// says moved: a display arriving or going, the person moving to
+    /// another display, or a window going fullscreen there. Returns
+    /// whether anything moved.
+    ///
+    /// A desk of one display carries no places: the full bar then stands
+    /// where layout puts it, across the whole desk.
+    fn follow_bars(&mut self) -> bool {
+        let Some(chrome) = self.bar.chrome().cloned() else {
+            return false;
+        };
+        let revision = chrome.snapshot().revision;
+        if revision == self.bars_revision {
+            return false;
+        }
+        self.bars_revision = revision;
+        let placement = chrome.bars();
+        if placement == self.placement {
+            return false;
+        }
+        // The full bar stands on the display in use, where the person is
+        // working; each of the others carries the compact bar on its own
+        // display, so each follows its own display's rectangle.
+        let full = placement.bars.iter().find(|place| place.full).copied();
+        self.bar.set_placement(full.map(|place| place.rect));
+        let tree = placement
+            .bars
+            .iter()
+            .any(|place| !place.full)
+            .then(|| chrome.tree());
+        let mut kept = std::mem::take(&mut self.compact);
+        let mut bars = Vec::with_capacity(placement.bars.len().saturating_sub(1));
+        for place in placement.bars.iter().filter(|place| !place.full) {
+            let reused = kept
+                .iter()
+                .position(|bar| bar.display() == Some(place.display))
+                .map(|at| kept.remove(at));
+            let mut bar = if let Some(bar) = reused {
+                bar
+            } else {
+                let Some(tree) = tree.as_ref() else {
+                    continue;
+                };
+                TopBarChrome::from_tree(tree)
+                    .compact()
+                    .on_display(place.display)
+                    .with_chrome(Rc::clone(&chrome))
+            };
+            bar.set_placement(Some(place.rect));
+            // A fullscreen window on this display has the room by itself.
+            bar.set_aside(placement.fullscreen.contains(&place.display));
+            bars.push(bar);
+        }
+        self.compact = bars;
+        self.placement = placement;
+        true
+    }
+
     /// Carry out a chrome action; false for one of the desk's.
     fn perform(&mut self, action: &DesktopAction) -> bool {
         if let Some(done) = self.perform_workspace_action(action) {
@@ -1919,6 +2001,13 @@ impl Widget for DesktopChrome {
         dyn ui::host_operation::ResourceOperations
     );
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let intents = std::mem::take(&mut *self.intents.borrow_mut());
         let mut changed = !intents.is_empty();
@@ -1946,6 +2035,12 @@ impl Widget for DesktopChrome {
             changed = true;
         }
         changed |= self.bar.update(state, path);
+        changed |= self.follow_bars();
+        // Each display's bar keeps its own copy of the desk's tree, and
+        // its own clock under it.
+        for bar in &mut self.compact {
+            changed |= bar.update(state, path);
+        }
         self.observe_navigation();
         self.keyboard.set(self.wants_keyboard());
         if let Some(open) = &self.overview_open {
@@ -1984,12 +2079,24 @@ impl Widget for DesktopChrome {
         let _ = taffy.set_style(overview, style);
         let tilo_menu = self.tilo_menu.build_layout(taffy, theme, map);
         let workspace_menu = self.workspace_menu.build_layout(taffy, theme, map);
-        let node = taffy.widget_node(
-            column(),
-            &[bar, content, overview, tilo_menu, workspace_menu],
-            map,
-            self,
-        );
+        let mut kids = vec![bar, content, overview, tilo_menu, workspace_menu];
+        // Every other display's bar stands over its own display's top
+        // edge, laid out across the desk: it takes no room in the column,
+        // its place carrying it where its display is.
+        for compact in &mut self.compact {
+            let node = compact.build_layout(taffy, theme, map);
+            let mut style = taffy.style(node).cloned().unwrap_or_default();
+            style.position = Position::Absolute;
+            style.inset = taffy::Rect {
+                left: LengthPercentageAuto::length(0.0),
+                right: LengthPercentageAuto::auto(),
+                top: LengthPercentageAuto::length(0.0),
+                bottom: LengthPercentageAuto::auto(),
+            };
+            let _ = taffy.set_style(node, style);
+            kids.push(node);
+        }
+        let node = taffy.widget_node(column(), &kids, map, self);
         fill(taffy, node);
         node
     }
@@ -1997,15 +2104,26 @@ impl Widget for DesktopChrome {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
-        if let [bar, content, overview, tilo_menu, workspace_menu] =
-            taffy.children(node).unwrap_or_default()[..]
-        {
-            self.bar.apply_layout(taffy, bar, inner);
-            self.content = ui::widget::layout_rect(taffy, content, inner);
-            self.overview.apply_layout(taffy, overview, inner);
-            self.tilo_menu.apply_layout(taffy, tilo_menu, inner);
-            self.workspace_menu
-                .apply_layout(taffy, workspace_menu, inner);
+        let kids = taffy.children(node).unwrap_or_default();
+        let [
+            bar,
+            content,
+            overview,
+            tilo_menu,
+            workspace_menu,
+            compact @ ..,
+        ] = &kids[..]
+        else {
+            return;
+        };
+        self.bar.apply_layout(taffy, *bar, inner);
+        self.content = ui::widget::layout_rect(taffy, *content, inner);
+        self.overview.apply_layout(taffy, *overview, inner);
+        self.tilo_menu.apply_layout(taffy, *tilo_menu, inner);
+        self.workspace_menu
+            .apply_layout(taffy, *workspace_menu, inner);
+        for (bar, node) in self.compact.iter_mut().zip(compact) {
+            bar.apply_layout(taffy, *node, inner);
         }
     }
 
@@ -2026,6 +2144,11 @@ impl Widget for DesktopChrome {
             ui::time::now(),
         );
         self.overview.draw(scene, transform, text, theme, presence);
+        for bar in &mut self.compact {
+            if !bar.steps_aside() {
+                bar.draw(scene, transform, text, theme, presence);
+            }
+        }
         // Last, so what the bar opens below its band stays above the rest.
         self.bar.draw(scene, transform, text, theme, presence);
         // Above even that: while Alt is held, the switcher is what the
@@ -2042,9 +2165,8 @@ impl Widget for DesktopChrome {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        let [bar, _, overview, tilo_menu, workspace_menu] =
-            ctx.taffy.children(ctx.node_id).unwrap_or_default()[..]
-        else {
+        let kids = ctx.taffy.children(ctx.node_id).unwrap_or_default();
+        let [bar, _, overview, tilo_menu, workspace_menu, compact @ ..] = &kids[..] else {
             return;
         };
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -2059,14 +2181,14 @@ impl Widget for DesktopChrome {
         // dismisses them.
         if self.workspace_menu.is_open() {
             self.workspace_menu
-                .handle_event(event, &mut ctx.reborrow(ctx.path, workspace_menu));
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *workspace_menu));
             if *ctx.handled {
                 return;
             }
         }
         if self.tilo_menu.is_open() {
             self.tilo_menu
-                .handle_event(event, &mut ctx.reborrow(ctx.path, tilo_menu));
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *tilo_menu));
             if *ctx.handled {
                 return;
             }
@@ -2102,31 +2224,49 @@ impl Widget for DesktopChrome {
         // above it stays usable.
         if self.overview.is_open() {
             self.overview
-                .handle_event(event, &mut ctx.reborrow(ctx.path, overview));
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *overview));
         }
         if !*ctx.handled {
             self.bar
-                .handle_event(event, &mut ctx.reborrow(ctx.path, bar));
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *bar));
+        }
+        // The other displays' bars take what is theirs on their own
+        // display; one stepped aside for a fullscreen window takes
+        // nothing.
+        if !*ctx.handled {
+            for (bar, node) in self.compact.iter_mut().zip(compact) {
+                if bar.steps_aside() {
+                    continue;
+                }
+                bar.handle_event(event, &mut ctx.reborrow(ctx.path, *node));
+                if *ctx.handled {
+                    break;
+                }
+            }
         }
         self.keyboard.set(self.wants_keyboard());
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![
+        let mut children: Vec<&dyn Widget> = vec![
             &self.bar,
             &self.overview,
             &self.tilo_menu,
             &self.workspace_menu,
-        ]
+        ];
+        children.extend(self.compact.iter().map(|bar| bar as &dyn Widget));
+        children
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![
+        let mut children: Vec<&mut (dyn Widget + '_)> = vec![
             &mut self.bar,
             &mut self.overview,
             &mut self.tilo_menu,
             &mut self.workspace_menu,
-        ]
+        ];
+        children.extend(self.compact.iter_mut().map(|bar| bar as &mut dyn Widget));
+        children
     }
 
     fn visit_retained_components(
@@ -2162,21 +2302,19 @@ impl Widget for DesktopChrome {
     fn needs_animation_frame(&self) -> bool {
         self.switcher.needs_frame(ui::time::now())
             || self.navigator.needs_animation_frame(ui::time::now())
-            || [
-                &self.bar as &dyn Widget,
-                &self.overview,
-                &self.tilo_menu,
-                &self.workspace_menu,
-            ]
-            .iter()
-            .any(|child| child.needs_animation_frame())
+            || self
+                .children()
+                .iter()
+                .any(|child| child.needs_animation_frame())
     }
 
-    /// The bar's own deadline turns its clock over on the minute.
+    /// The bar's own deadline turns its clock over on the minute, on every
+    /// display that shows one.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         [&self.bar as &dyn Widget, &self.overview, &self.tilo_menu]
-            .iter()
-            .filter_map(|child| child.next_wake_deadline())
+            .into_iter()
+            .chain(self.compact.iter().map(|bar| bar as &dyn Widget))
+            .filter_map(wake_deadline)
             .chain(
                 self.navigator
                     .next_wake_deadline(&self.navigator_frame, ui::time::now()),

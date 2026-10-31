@@ -423,6 +423,11 @@ pub struct AvatarAsk {
 pub trait DesktopChromeSource {
     fn snapshot(&self) -> DesktopChromeSnapshot;
     fn tree(&self) -> DesktopTree;
+    /// Where each display's bar goes. A host that cannot tell its displays
+    /// apart answers none, and the desk carries one full bar across it.
+    fn bars(&self) -> crate::topbar::Placement {
+        crate::topbar::Placement::default()
+    }
     /// Returns whether the host accepted the request, never proof of a shared mutation.
     fn intent(&self, intent: ChromeIntent) -> bool;
     fn settings_anchor(&self, _rect: Rect) {}

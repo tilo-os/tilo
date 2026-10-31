@@ -24,6 +24,7 @@ use smithay::input::pointer::{
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Serial};
 
+use crate::output::monitor_of;
 use crate::policy::{ResizeEdges, WindowRequest};
 use crate::state::State;
 
@@ -71,27 +72,70 @@ enum Cover {
 /// Where a window was before it was maximized or made fullscreen.
 struct Restore(std::cell::Cell<Option<Rectangle<i32, Logical>>>);
 
+/// The compositor gave the window its display to fill.
+///
+/// The policy answers a fullscreen ask by filling the display's strip, so
+/// the window never covers the output's whole rectangle and the state the
+/// client acknowledges cannot tell whether the compositor granted it. What
+/// the compositor itself answered is what its layout, its refresh rate and
+/// the bars read.
+#[derive(Default)]
+struct Fullscreen(std::cell::Cell<bool>);
+
+/// Whether the compositor gave `window` its display to fill.
+fn fullscreen_granted(window: &Window) -> bool {
+    window
+        .user_data()
+        .get::<Fullscreen>()
+        .is_some_and(|fullscreen| fullscreen.0.get())
+}
+
 impl State {
-    /// Whether a fullscreen window covers `output`.
+    /// Whether a fullscreen window covers `output`: its content fills the
+    /// display, which may then run at a variable refresh rate.
     pub(crate) fn fullscreen_on(&self, output: &smithay::output::Output) -> bool {
         let Some(area) = self.space.output_geometry(output) else {
             return false;
         };
         self.space.elements().any(|window| {
-            let fullscreen = window.toplevel().is_some_and(|toplevel| {
-                toplevel
-                    .current_state()
-                    .states
-                    .contains(xdg_toplevel::State::Fullscreen)
-            }) || window
-                .x11_surface()
-                .is_some_and(smithay::xwayland::X11Surface::is_fullscreen);
-            fullscreen
+            fullscreen_granted(window)
                 && self
                     .space
                     .element_geometry(window)
                     .is_some_and(|geometry| geometry.contains_rect(area))
         })
+    }
+
+    /// The monitors of the displays a fullscreen window owns: the display
+    /// holding its middle, or its corner for a window taken off them.
+    pub(crate) fn fullscreen_monitors(&self) -> Vec<String> {
+        let mut monitors: Vec<String> = Vec::new();
+        for window in self.space.elements() {
+            if !fullscreen_granted(window) {
+                continue;
+            }
+            let Some(geometry) = self.space.element_geometry(window) else {
+                continue;
+            };
+            let middle = geometry.loc + Point::from((geometry.size.w / 2, geometry.size.h / 2));
+            let owner = |point: Point<i32, Logical>| {
+                self.space
+                    .outputs()
+                    .find(|output| {
+                        self.space
+                            .output_geometry(output)
+                            .is_some_and(|area| area.contains(point))
+                    })
+                    .map(monitor_of)
+                    .map(|(monitor, _)| monitor)
+            };
+            if let Some(monitor) = owner(middle).or_else(|| owner(geometry.loc))
+                && !monitors.contains(&monitor)
+            {
+                monitors.push(monitor);
+            }
+        }
+        monitors
     }
 
     /// A window asked for `request` (`serial`: the press it starts from,
@@ -102,6 +146,12 @@ impl State {
         request: &WindowRequest,
         serial: Option<Serial>,
     ) {
+        if let WindowRequest::Fullscreen { on, .. } = request {
+            window.user_data().insert_if_missing(Fullscreen::default);
+            if let Some(fullscreen) = window.user_data().get::<Fullscreen>() {
+                fullscreen.0.set(*on);
+            }
+        }
         let Some(info) = crate::state::describe(&self.display, window) else {
             return;
         };

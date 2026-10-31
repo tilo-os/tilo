@@ -1957,6 +1957,8 @@ fn pixel_at(picture: &image::RgbaImage, x: i32, y: i32) -> [u8; 4] {
         .0
 }
 
+#[path = "session/bars.rs"]
+mod bars;
 #[path = "session/chrome.rs"]
 mod chrome;
 #[path = "session/lock.rs"]

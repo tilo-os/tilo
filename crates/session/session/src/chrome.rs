@@ -15,13 +15,13 @@ use tilo_desktop::chrome::{
 };
 use tilo_desktop::desktop_host::DesktopRules;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome};
-use tilo_desktop::topbar::TopBarChrome;
+use tilo_desktop::topbar::{Placement, TopBarChrome};
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_model::commands::{DesktopCommand, Standing, may_command, may_create_workspace};
 use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_surface::notifications::Notification;
 use tilo_desktop_surface::{DesktopHandle, DesktopNotifications};
-use tilo_surface_host::{Placement, WidgetHost};
+use tilo_surface_host::{Placement as SurfacePlacement, WidgetHost};
 
 use crate::notifications::NoticeSignals;
 
@@ -167,7 +167,15 @@ pub(crate) struct BarFeeds {
     pub(crate) notices: DesktopNotifications,
     /// The applications' tray items, when their watcher serves.
     pub(crate) tray: Option<Arc<tilo_tray_host::Tray>>,
+    /// The monitors of the displays a fullscreen window owns, as the loop
+    /// found them this pass.
+    pub(crate) fullscreen: Rc<RefCell<Vec<String>>>,
 }
+
+/// What the snapshot revision was last bumped for: the tree's revision, the
+/// minute, the last wave heard, the ask on the person's avatar, the tray's
+/// revision and the displays a fullscreen window owns.
+type Seen = (u64, i64, Option<String>, u64, u64, Vec<String>);
 
 /// The bar's view of the session: the desktop's tree, the wall clock, and
 /// the person at this device.
@@ -198,10 +206,11 @@ pub(crate) struct SessionChrome {
     pub(crate) tray: Option<Arc<tilo_tray_host::Tray>>,
     /// The due timer announced last, so an unchanged one is announced once.
     notified: RefCell<Option<String>>,
-    /// `(tree revision, minute, the last wave heard, the ask on the
-    /// person's avatar, the tray's revision)` the snapshot revision was last
-    /// bumped for.
-    seen: Cell<(u64, i64, Option<String>, u64, u64)>,
+    /// The monitors of the displays a fullscreen window owns, which the
+    /// loop takes from the compositor each pass.
+    fullscreen: Rc<RefCell<Vec<String>>>,
+    /// The [`Seen`] the snapshot revision was last bumped for.
+    seen: RefCell<Seen>,
     revision: Cell<u64>,
 }
 
@@ -220,6 +229,7 @@ impl SessionChrome {
             clock,
             notices,
             tray,
+            fullscreen,
         } = feeds;
         Self {
             handle,
@@ -233,7 +243,8 @@ impl SessionChrome {
             notices,
             tray,
             notified: RefCell::new(None),
-            seen: Cell::new((u64::MAX, 0, None, u64::MAX, u64::MAX)),
+            fullscreen,
+            seen: RefCell::new((u64::MAX, 0, None, u64::MAX, u64::MAX, Vec::new())),
             revision: Cell::new(0),
         }
     }
@@ -302,8 +313,10 @@ impl DesktopChromeSource for SessionChrome {
             waved.as_ref().map(|notice| notice.from.clone()),
             self.handle.personal_ask_revision(),
             self.app_tray_revision(),
+            self.fullscreen.borrow().clone(),
         );
-        if self.seen.replace(seen.clone()) != seen {
+        if *self.seen.borrow() != seen {
+            self.seen.replace(seen);
             self.revision.set(self.revision.get().wrapping_add(1));
         }
         DesktopChromeSnapshot {
@@ -336,6 +349,15 @@ impl DesktopChromeSource for SessionChrome {
             sync.show(&mut tree, &|_: &str| None);
         }
         tree
+    }
+
+    /// One bar per display: the one in use full, the others compact, each
+    /// on its own display's rectangle. A fullscreen window on a display
+    /// names it, so that display's bar steps aside.
+    fn bars(&self) -> Placement {
+        let fullscreen = self.fullscreen.borrow();
+        self.handle
+            .read(|tree| Placement::of(tree, fullscreen.as_slice()))
     }
 
     fn app_notification_badge(&self, app_id: &str) -> u32 {
@@ -503,7 +525,7 @@ pub(crate) fn host(
     .with_overview(overview.flight(), overview.open_flag());
     chrome.set_shortcuts(options.config.shortcuts.clone());
     let keyboard = chrome.keyboard();
-    let placement = Placement {
+    let placement = SurfacePlacement {
         origin: (0, 0),
         size: (1, 1),
         scale: options.scale,

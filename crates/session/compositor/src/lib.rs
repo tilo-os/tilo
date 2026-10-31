@@ -909,6 +909,12 @@ impl Compositor {
         self.data.state.output_infos()
     }
 
+    /// The monitors of the displays a fullscreen window owns: the bar there
+    /// steps aside and leaves the display to the window.
+    pub fn fullscreen_monitors(&self) -> Vec<String> {
+        self.data.state.fullscreen_monitors()
+    }
+
     /// The outputs as Settings reads them: each one's connector, modes,
     /// scale, place and what its sink and the pipeline driving it can do.
     /// Updated by [`Compositor::publish_displays`], which the loop runs on
