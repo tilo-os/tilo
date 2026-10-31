@@ -40,12 +40,16 @@ type Thread (origin: imap.thread) {
     /// Snoozed until this moment: out of the inbox until then, and back once it has come, with
     /// no window open. The epoch when it is not snoozed.
     snoozed_until: Time = Time("1970-01-01T00:00:00Z")
+    /// Muted: the conversation stays out of the inbox while new messages keep coming, as a
+    /// busy conversation is silenced, and it is still found under Muted and All mail.
+    muted: Bool = false
 
     search {
-        filter "Inbox" = boxes.contains("inbox") and snoozed_until <= now (icon: .inbox)
+        filter "Inbox" = boxes.contains("inbox") and snoozed_until <= now and not muted (icon: .inbox)
         filter "Snoozed" = snoozed_until > now (icon: .clock)
         filter labels (icon: .tag)
         filter flagged "Flagged" (icon: .flag)
+        filter muted "Muted" (icon: .bell_off)
         filter "Sent" = boxes.contains("sent") (icon: .send)
         filter "Archive" = boxes.contains("archive") (icon: .archive)
         filter "Junk" = boxes.contains("junk") (icon: .shield)
@@ -177,14 +181,14 @@ fn quoted(m: Message) -> Text {
 
 /// Answers the conversation's newest message, to whoever wrote it, quoting it under what is
 /// written.
-primary action reply(t: Thread) -> Draft (icon: .reply) {
+primary action reply(t: Thread) -> Draft (icon: .reply, key: "r") {
     let m = root Mail
     let last = t.messages.last()
     m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), body: if let l = last { quoted(l) } else { "" }, in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
 }
 
 /// Answers the conversation's newest message, to everyone it went to, quoting it.
-action reply_all(t: Thread) -> Draft (icon: .reply_all, label: "Reply all") {
+action reply_all(t: Thread) -> Draft (icon: .reply_all, label: "Reply all", key: "a") {
     let m = root Mail
     let last = t.messages.last()
     m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", cc: if let l = last {
@@ -212,7 +216,7 @@ action forward_message(m: Message) -> Draft (icon: .forward) {
 }
 
 /// Sends the conversation's newest message on, with its sender and what it says.
-action forward(t: Thread) -> Draft (icon: .forward) {
+action forward(t: Thread) -> Draft (icon: .forward, key: "f") {
     let m = root Mail
     let last = t.messages.last()
     let said = if let l = last {
@@ -222,7 +226,7 @@ action forward(t: Thread) -> Draft (icon: .forward) {
 }
 
 /// Archives the conversation: its messages leave the inbox.
-action archive(t: Thread) (icon: .archive) {
+action archive(t: Thread) (icon: .archive, key: "e") {
     require t.boxes.any(b -> b == "inbox") "It is not in the inbox"
     for m in t.messages {
         if m.mailbox == "inbox" {
@@ -233,9 +237,10 @@ action archive(t: Thread) (icon: .archive) {
     t.boxes.add("archive")
 }
 
-/// Moves the conversation back to the inbox.
-action to_inbox(t: Thread) (icon: .inbox, label: "Move to inbox") {
-    require not t.boxes.any(b -> b == "inbox") "It is in the inbox"
+/// Moves the conversation back to the inbox, and unmutes it: what a person brings back is what
+/// they want to see again.
+action to_inbox(t: Thread) (icon: .inbox, label: "Move to inbox", key: "i") {
+    require not t.boxes.any(b -> b == "inbox") or t.muted "It is in the inbox"
     for m in t.messages {
         if m.mailbox != "sent" {
             m.mailbox = "inbox"
@@ -245,6 +250,7 @@ action to_inbox(t: Thread) (icon: .inbox, label: "Move to inbox") {
     t.boxes.remove("trash")
     t.boxes.remove("junk")
     t.boxes.add("inbox")
+    t.muted = false
 }
 
 /// Moves the conversation to another mailbox of its account.
@@ -263,7 +269,7 @@ action move_to(t: Thread, to: Mailbox) (label: "Move to…", icon: .folder) {
 }
 
 /// Deletes the conversation: its messages go to the trash.
-destructive action delete(t: Thread) (icon: .trash) {
+destructive action delete(t: Thread) (icon: .trash, key: "#") {
     require not t.boxes.any(b -> b == "trash") "It is in the trash"
     for m in t.messages {
         m.mailbox = "trash"
@@ -276,7 +282,7 @@ destructive action delete(t: Thread) (icon: .trash) {
 }
 
 /// Flags or unflags the conversation.
-action flag(t: Thread, flagged: Bool = not t.flagged) (label: if t.flagged { "Unflag" } else { "Flag" }, icon: .flag, on: t.flagged) {
+action flag(t: Thread, flagged: Bool = not t.flagged) (label: if t.flagged { "Unflag" } else { "Flag" }, icon: .flag, on: t.flagged, key: "s") {
     if let last = t.messages.last() {
         last.flagged = flagged
     }
@@ -345,8 +351,50 @@ destructive action delete_label(m: Mail, l: Label) (icon: .trash) {
     m.labels.remove(l)
 }
 
+/// Brings a message back to the outbox: it was sent to go at a moment still to come, and it is
+/// a draft again, whatever the moment.
+action cancel_later(d: Draft) (icon: .undo_2, label: "Cancel scheduled send") {
+    require d.sent and not d.recalled "It is not waiting to go"
+    require delivery(d)?.state != "sent" "It went already"
+    withdraw(d, "Scheduled send cancelled")
+    d.sent = false
+    d.recalled = true
+}
+
+/// Sends the message at a moment instead of now: it waits in the outbox until then, as the
+/// person's hold makes a message wait, and goes with no window open. Until it goes it can be
+/// taken back, and bringing it back leaves it a draft.
+action send_later(d: Draft, at: Time) (icon: .clock, label: "Send later") {
+    require not d.sent or d.recalled "This message went already"
+    require d.to != "" "It goes to nobody yet"
+    require at > now "Pick a moment still to come"
+    outside("smtp.send", (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references), at: at)
+    d.send_at = at
+    d.sent = true
+    d.recalled = false
+}
+
+/// Sends the message at nine tomorrow, the moment people reach for most when they write in the
+/// evening and do not want it to arrive then.
+action send_in_the_morning(d: Draft) (icon: .clock, label: "Send tomorrow morning") {
+    send_later(d, dated("tomorrow 9am", now).at ?? now + 18h)
+}
+
+/// Marks every conversation of the account read.
+action mark_all_read(a: Account) (icon: .mail_open, label: "Mark all read") {
+    for t in a.threads {
+        mark_read(t, false)
+    }
+}
+
+/// Mutes the conversation, or unmutes it: a muted one stays out of the inbox until it is
+/// brought back, whatever its new messages do.
+action mute(t: Thread, muted: Bool = not t.muted) (label: if t.muted { "Unmute" } else { "Mute" }, icon: .bell_off, on: t.muted) {
+    t.muted = muted
+}
+
 /// Marks the conversation read, or unread again.
-action mark_read(t: Thread, unread: Bool = not t.unread) (label: if t.unread { "Mark as read" } else { "Mark as unread" }, icon: .mail_open, on: not t.unread) {
+action mark_read(t: Thread, unread: Bool = not t.unread) (label: if t.unread { "Mark as read" } else { "Mark as unread" }, icon: .mail_open, on: not t.unread, key: "u") {
     if t.unread != unread {
         if unread {
             if let last = t.messages.last() {

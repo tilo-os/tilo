@@ -438,6 +438,13 @@
           "name": "enabled",
           "doc": "Whether it can be pressed now. A button with nothing to do never can.",
           "type": "bool"
+        },
+        {
+          "name": "key",
+          "doc": "The plain key that presses it while its window has the keyboard (and, on a row's action, while that row is selected), as the app declared it (`key: \"e\"`): the host answers it beside the pressed control's own event. Never drawn here; the header shows it at the action's menu row.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "events": [
@@ -3923,6 +3930,13 @@
           "doc": "Whether it is the one chosen now, in a menu of choices (a sort order).",
           "type": {
             "option": "bool"
+          }
+        },
+        {
+          "name": "key",
+          "doc": "The plain key that runs it while the window it belongs to has the keyboard, as the app's action declared it (`key: \"e\"`), shown at the row's trailing edge as the keyboard in use spells it.",
+          "type": {
+            "option": "text"
           }
         }
       ],

@@ -205,6 +205,11 @@ pub fn action_type(
     if is_destructive(action) {
         spec = spec.destructive();
     }
+    // `key: "e"`: the plain key that runs it while its window has the keyboard, shown at the
+    // action's row as the keyboard in use spells it.
+    if let Some(key) = &action.key {
+        spec.type_mut().state.shortcut = Some(key.clone());
+    }
     spec.type_mut().contract.settle_confirmation();
     Arc::clone(spec.action_type())
 }

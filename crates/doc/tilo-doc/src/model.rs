@@ -1550,6 +1550,55 @@ fn create_block_text(doc: &mut AutoCommit, block_obj: &ObjId) {
     let _ = doc.put_object(block_obj, BLOCK_TEXT, ObjType::Text);
 }
 
+/// The paragraph the block map `block` holds as of `heads`, read in place: its kind and the
+/// marks over its text, with the text left empty (a caller reading a change has the text of
+/// both sides already, and reading it here again would cost the paragraph twice). `None`
+/// when the block holds no text object: a divider, an image.
+///
+/// One block, never the region: a change that typed into one paragraph of a long note reads
+/// that paragraph's block, and nothing of the others.
+///
+/// # Errors
+/// The document cannot be read at `heads`.
+pub fn block_at(
+    doc: &automerge::Automerge,
+    block: &ObjId,
+    heads: &[automerge::ChangeHash],
+) -> Result<Option<BlockView>, automerge::AutomergeError> {
+    use automerge::ReadDoc as _;
+    let Some((automerge::Value::Object(ObjType::Text), text)) =
+        doc.get_at(block, BLOCK_TEXT, heads)?
+    else {
+        return Ok(None);
+    };
+    let kind = match doc.get_at(block, BLOCK_KIND, heads)? {
+        Some((automerge::Value::Scalar(value), _)) => match value.as_ref() {
+            automerge::ScalarValue::Str(kind) => kind.to_string(),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    };
+    let marks = doc
+        .marks_at(&text, heads)?
+        .into_iter()
+        .filter(|mark| mark.start < mark.end)
+        .map(|mark| MarkSpan {
+            start: mark.start,
+            end: mark.end,
+            name: mark.name.to_string(),
+            value: (&mark.value).into(),
+        })
+        .collect();
+    Ok(Some(BlockView {
+        id: String::new(),
+        kind,
+        text: String::new(),
+        marks,
+        attrs: BTreeMap::new(),
+        children: Vec::new(),
+    }))
+}
+
 fn marks_on(doc: &AutoCommit, block_obj: &ObjId) -> Vec<MarkSpan> {
     let Some(tid) = canonical_text(doc, block_obj) else {
         return vec![];

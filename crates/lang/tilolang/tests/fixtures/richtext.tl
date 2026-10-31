@@ -118,3 +118,11 @@ view post_row(p: Post) {
 view task_row(t: Task) {
     row(t.title)
 }
+
+/// A post's window with its body to type into, and what happened to it.
+view post_edit(p: Post) {
+    stack {
+        rich_input(bind: p.body, placeholder: "Say something")
+        std.history(p)
+    }
+}

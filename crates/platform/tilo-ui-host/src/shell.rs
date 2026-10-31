@@ -62,7 +62,7 @@ fn slot(name: &str, owner: &str, children: Vec<UiNode>) -> UiNode {
 }
 
 /// The children of the named slot `name` of a shell node.
-fn slot_children<'a>(shell: &'a UiNode, name: &str) -> &'a [UiNode] {
+pub(crate) fn slot_children<'a>(shell: &'a UiNode, name: &str) -> &'a [UiNode] {
     shell
         .children
         .iter()

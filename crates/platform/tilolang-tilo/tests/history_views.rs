@@ -387,6 +387,211 @@ fn consecutive_changes_by_one_person_or_one_run_fold_into_one_entry() {
     );
 }
 
+/// The runs of a change side drawn marked `name` (an insertion) or struck (a deletion), by
+/// the text they cover: the rich text one side of a change holds, with what it marks.
+fn marked(side: &UiNode, name: &str) -> Vec<String> {
+    let Some(Value::Rich(rich)) = side.props.get("value") else {
+        panic!("a rich text side: {side:#?}");
+    };
+    let mut out = Vec::new();
+    for block in &rich.blocks {
+        for mark in block.marks.iter().filter(|mark| mark.name == name) {
+            out.push(
+                block
+                    .text
+                    .chars()
+                    .skip(mark.start)
+                    .take(mark.end.saturating_sub(mark.start))
+                    .collect(),
+            );
+        }
+    }
+    out
+}
+
+#[test]
+fn two_people_typing_one_rich_body_each_entry_shows_its_authors_change() {
+    // A board of posts whose body is rich text, and whose window shows the post's history
+    // under it (`tests/richtext.tl`).
+    const RICHTEXT: &str = include_str!("../../../lang/tilolang/tests/fixtures/richtext.tl");
+    const RICHTEXT_APP: &str = "so.tilo.lang.richtext";
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(RICHTEXT, "")]);
+    let ids = packages[0].ids.clone();
+    ada.commit();
+    let board = target(&Value::resource(&ada.host.root_of(RICHTEXT_APP).unwrap()));
+    let post = call(
+        &ada,
+        "ada",
+        RICHTEXT_APP,
+        "say",
+        vec![Value::resource(&board), Value::text("Oat milk and bread")],
+    );
+    ada.commit();
+    let at = target(&post);
+    let mut bo = ada.fork("bo", &[(RICHTEXT, &ids)]);
+    // Bo replaces a word of what Ada wrote, in her own replica of the room.
+    let body = |text: &str| Value::Rich(tilolang_runtime::rich::RichValue::from_text(text));
+    let page = view_id(&bo);
+    let mut editors = bo.host.open_resource(&at, Some(&page)).unwrap();
+    let input = rich_input(&mut editors);
+    editors
+        .edit(&input, &body("Oat milk and sourdough"))
+        .unwrap();
+    bo.commit();
+    drop(editors);
+    ada.sync_with(&mut bo);
+
+    // Each entry says what its own author typed and what they took away, and nothing of the
+    // other's change.
+    let page = view_id(&ada);
+    let mut editor = ada.host.open_resource(&at, Some(&page)).unwrap();
+    let section = history(&mut editor);
+    assert_eq!(
+        entries(&section),
+        ["bo", "ada"],
+        "newest first, one per person"
+    );
+    let bodies: Vec<(UiNode, UiNode)> = changes(&section)
+        .into_iter()
+        .filter(|(label, ..)| label == "Body")
+        .map(|(_, before, after)| (before, after))
+        .collect();
+    // Ada's step made the post, which the entry says in words rather than field by field;
+    // Bo's step is the one body change there is to show.
+    assert_eq!(bodies.len(), 1, "Bo's change of the body: {bodies:?}");
+    let (showed, holds) = &bodies[0];
+    assert_eq!(marked(holds, "strong"), ["sourdough"]);
+    assert_eq!(marked(showed, "strike"), ["bread"]);
+}
+
+/// The id of the `richtext` package's view `name`, as it declares it.
+fn view_id(r: &Replica) -> String {
+    r.host
+        .package("so.tilo.lang.richtext")
+        .unwrap()
+        .meta
+        .views
+        .iter()
+        .find(|v| v.name == "post_edit")
+        .map(|v| v.id.clone())
+        .expect("the richtext package has a post_edit view")
+}
+
+/// The key of the window's rich input.
+fn rich_input(view: &mut ViewInstance) -> String {
+    nodes(view.tree())
+        .into_iter()
+        .find(|n| n.kind == "ui.RichInput")
+        .map(|n| n.key.clone())
+        .expect("the window has a rich input")
+}
+
+/// The work reading one entry's body diff does in a post of `paragraphs` paragraphs: the
+/// store's reads of the record and the document's operations Automerge searches, counted.
+///
+/// The body is written before any window shows it: a window draws the whole body, which is
+/// the post's length, and that is not the entry's read.
+fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
+    const RICHTEXT: &str = include_str!("../../../lang/tilolang/tests/fixtures/richtext.tl");
+    const RICHTEXT_APP: &str = "so.tilo.lang.richtext";
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(RICHTEXT, "")]);
+    let ids = packages[0].ids.clone();
+    ada.commit();
+    let board = target(&Value::resource(&ada.host.root_of(RICHTEXT_APP).unwrap()));
+    let paragraph = "The quick brown fox jumps over the lazy dog and keeps on going. ";
+    let chars = paragraph.chars().count() * paragraphs;
+    let spec = tilolang_runtime::store::FieldSpec {
+        id: crate::fixtures::field_id(
+            &ada.host.package(RICHTEXT_APP).unwrap().meta,
+            "Post",
+            "body",
+        ),
+        kind: tilolang_runtime::meta::FieldKind::RichText,
+    };
+    let post = call(
+        &ada,
+        "ada",
+        RICHTEXT_APP,
+        "say",
+        vec![
+            Value::resource(&board),
+            Value::text(&vec![paragraph; paragraphs].join("\n")),
+        ],
+    );
+    ada.commit();
+    let at = target(&post);
+    // Bo types one word in the first paragraph, in her own replica, and it reaches Ada's.
+    let body = |text: &str| Value::Rich(tilolang_runtime::rich::RichValue::from_text(text));
+    let mut bo = ada.fork("bo", &[(RICHTEXT, &ids)]);
+    let swift = paragraph.replacen("quick", "swift", 1);
+    let mut typed = vec![paragraph; paragraphs];
+    if let Some(first) = typed.first_mut() {
+        *first = &swift;
+    }
+    let page = view_id(&bo);
+    let mut editors = bo.host.open_resource(&at, Some(&page)).unwrap();
+    let input = rich_input(&mut editors);
+    editors.edit(&input, &body(&typed.join("\n"))).unwrap();
+    bo.commit();
+    drop(editors);
+    ada.sync_with(&mut bo);
+    // Reading the entry's diff: the change Bo made, as the history reads it.
+    use tilolang_runtime::store::Store as _;
+    let change = bo
+        .doc
+        .get_changes(&[])
+        .last()
+        .map(|change| change.hash().to_string())
+        .expect("Bo's change");
+    let before = ada.host.store().read_stats().doc;
+    let work = automerge::work();
+    let written = ada
+        .host
+        .store()
+        .written(&at, std::slice::from_ref(&spec), &change)
+        .unwrap();
+    let after = ada.host.store().read_stats().doc;
+    let done = automerge::work();
+    assert_eq!(written.len(), 1, "the entry shows the body's change");
+    let reads = (after.fields - before.fields)
+        + (after.entries - before.entries)
+        + (after.listings - before.listings);
+    // The change graph is walked for nothing either: no ancestor is visited.
+    assert_eq!(
+        done.visited_changes.saturating_sub(work.visited_changes),
+        0,
+        "reading one entry walks no history"
+    );
+    (
+        reads,
+        done.searched_slabs.saturating_sub(work.searched_slabs),
+        chars,
+    )
+}
+
+#[test]
+fn reading_one_entrys_body_diff_stays_within_a_fixed_budget_however_long_the_note() {
+    let (small_reads, small_searches, small_chars) = entry_work(40);
+    // A note past a hundred thousand characters.
+    let (large_reads, large_searches, large_chars) = entry_work(1_571);
+    assert!(
+        small_chars >= 2_000 && large_chars >= 100_000,
+        "a small note and one past a hundred thousand characters: {small_chars}, {large_chars}"
+    );
+    // The same work in a note forty times the length, to within the places of a handful of
+    // objects: what reading the entry costs is the paragraph it changed, never the note.
+    assert_eq!(
+        large_reads, small_reads,
+        "the store reads nothing of the record either way: {small_reads} reads in {small_chars} \
+         characters, {large_reads} in {large_chars}"
+    );
+    assert!(
+        large_searches <= small_searches,
+        "the document searched: {small_searches} times in {small_chars} characters, \
+         {large_searches} in {large_chars}"
+    );
+}
+
 /// The room calls Ada "Ada Lovelace"; an agent has no name but its kind. The history row shows
 /// the name the avatar beside it shows, never the id the record holds, and the agent reads as
 /// its kind and that it is one.
