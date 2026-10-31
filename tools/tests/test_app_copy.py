@@ -149,6 +149,26 @@ class AppCopyTests(unittest.TestCase):
                 "crates/session/host/src/view.rs:1: en-US lacks setup-gone (crates/session/setup)",
             ])
 
+    def test_a_resolver_imported_from_another_crate_opens_its_catalogue(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
+            catalogue = "settings-title = Settings\n"
+            self.crate(root, "crates/session/desktop-surface",
+                       {"en-US": catalogue, "de-DE": catalogue}, "")
+            (root / "crates/session/desktop-surface/Cargo.toml").write_text(
+                '[package]\nname = "tilo-desktop-surface"\n')
+            own = "session-x = X\n"
+            self.crate(root, "crates/session/session", {"en-US": own, "de-DE": own},
+                       'use tilo_desktop_surface::i18n::{t, t_args};\n'
+                       'fn pane() { t("settings-title"); t_args("settings-gone", &[]); }\n')
+            self.assertEqual(copy.missing_copy(root), [
+                "crates/session/session/src/view.rs:2: de-DE lacks settings-gone "
+                "(crates/session/desktop-surface)",
+                "crates/session/session/src/view.rs:2: en-US lacks settings-gone "
+                "(crates/session/desktop-surface)",
+            ])
+
     def test_every_actual_source_key_is_in_its_catalogues(self):
         self.assertEqual(copy.missing_copy(copy.ROOT), [])
 
