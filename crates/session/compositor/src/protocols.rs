@@ -1,7 +1,8 @@
 //! The protocols beyond the core shell that ordinary clients expect:
 //! buffers (dma-buf, viewports), scaling, presentation timing, decorations,
 //! activation, the primary selection, pointer shape, constraints and
-//! gestures, tablets, and the inhibitors (idle, shortcuts).
+//! gestures, tablets, colour management, and the inhibitors (idle,
+//! shortcuts).
 
 use std::collections::HashSet;
 
@@ -43,6 +44,7 @@ use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
+use tilo_wayland_ext::color_management::ColorManagerState;
 
 use crate::state::State;
 
@@ -74,6 +76,9 @@ pub(crate) struct Protocols {
     _idle_inhibit: IdleInhibitManagerState,
     _content_type: ContentTypeState,
     _dialog: XdgDialogState,
+    /// `wp_color_manager_v1`: what the outputs display and what a client's
+    /// content is in (see [`crate::color_management`]).
+    pub(crate) color_manager: ColorManagerState,
 }
 
 impl Protocols {
@@ -101,6 +106,7 @@ impl Protocols {
             _idle_inhibit: IdleInhibitManagerState::new::<State>(display),
             _content_type: ContentTypeState::new::<State>(display),
             _dialog: XdgDialogState::new::<State>(display),
+            color_manager: ColorManagerState::new::<State>(display),
         }
     }
 }

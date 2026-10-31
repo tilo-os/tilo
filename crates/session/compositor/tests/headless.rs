@@ -263,6 +263,7 @@ fn clients_find_the_protocols_they_expect() {
         "zwp_keyboard_shortcuts_inhibit_manager_v1",
         "wp_content_type_manager_v1",
         "zwp_text_input_manager_v3",
+        "wp_color_manager_v1",
     ] {
         assert!(
             client.seen.globals.iter().any(|global| global == interface),

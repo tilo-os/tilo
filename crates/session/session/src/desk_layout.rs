@@ -12,39 +12,173 @@
 //! launches into the tab it was in; a tab whose content already opens again —
 //! a local app, a placeholder, a stub, a window hosted on another device — is
 //! written as it is.
+//!
+//! A desk this build cannot read is never written over: the session starts on
+//! an empty one, keeps nothing, and the person is told where their own desk
+//! still is ([`StateNotice`]).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use tilo_desktop_model::{DesktopTree, STATE_SCHEMA_VERSION};
+use tilo_desktop_model::{DesktopTree, STATE_SCHEMA_VERSION, TileContent};
+
+use crate::i18n::{t, t_args};
 
 /// The file beside the rest of this device's state.
 const FILE: &str = "desk.json";
 
 /// Where the desk lives under `state`, this device's state directory.
-fn path(state: &Path) -> std::path::PathBuf {
+fn path(state: &Path) -> PathBuf {
     state.join("tilo").join(FILE)
 }
 
-/// The desk as it was saved under `state`, if there is one this build
-/// understands.
-pub(crate) fn load_at(state: &Path) -> Option<DesktopTree> {
-    let text = std::fs::read_to_string(path(state)).ok()?;
-    let tree: DesktopTree = serde_json::from_str(&text)
-        .map_err(|error| tracing::debug!(%error, "the saved desk is not this build's"))
-        .ok()?;
-    // A file a newer build wrote describes a desk this one cannot place.
-    if tree.schema_version != STATE_SCHEMA_VERSION {
-        tracing::debug!(
-            saved = tree.schema_version,
-            this = STATE_SCHEMA_VERSION,
-            "the saved desk is another build's"
-        );
-        return None;
+/// What became of the desk this device saved.
+pub(crate) enum Kept {
+    /// The desk as it was left, ready to be put back. Boxed: the whole desk
+    /// is many times the size of the other two answers, and every call that
+    /// returns one pays for the largest.
+    Desk(Box<DesktopTree>),
+    /// This device kept no desk, or one with nothing on it: a first start.
+    None,
+    /// The desk is on disk and this build will not open it, with what the
+    /// person is told about it.
+    Refused(StateNotice),
+}
+
+/// Why the desk on disk was left closed. It is still there and untouched:
+/// this session starts on an empty desk instead, and the person has to be
+/// told, because a desk that is not theirs looks exactly like theirs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum StateNotice {
+    /// The file was written by a newer Tilo than this build understands.
+    NewerSchema {
+        path: PathBuf,
+        found: u32,
+        understood: u32,
+    },
+    /// The file exists and could not be read at all.
+    Unreadable { path: PathBuf, error: String },
+}
+
+impl StateNotice {
+    /// What happened, in one line.
+    pub(crate) fn title(&self) -> String {
+        match self {
+            Self::NewerSchema { .. } => t("desk-not-opened-newer-title"),
+            Self::Unreadable { .. } => t("desk-not-opened-unreadable-title"),
+        }
     }
+
+    /// Where the person's desk is and that nothing was written over it.
+    ///
+    /// The layout versions go in as text: they are names of on-disk shapes,
+    /// not quantities, and a group separator in the middle of one reads as a
+    /// different number.
+    pub(crate) fn explains(&self) -> String {
+        match self {
+            Self::NewerSchema {
+                path,
+                found,
+                understood,
+            } => t_args(
+                "desk-not-opened-newer-detail",
+                &[
+                    ("path", path.display().to_string().into()),
+                    ("found", found.to_string().into()),
+                    ("understood", understood.to_string().into()),
+                ],
+            ),
+            Self::Unreadable { path, error } => t_args(
+                "desk-not-opened-unreadable-detail",
+                &[
+                    ("path", path.display().to_string().into()),
+                    ("error", error.clone().into()),
+                ],
+            ),
+        }
+    }
+
+    /// Both lines of it, as the person reads them.
+    fn whole(&self) -> String {
+        format!("{}\n\n{}", self.title(), self.explains())
+    }
+}
+
+/// The desk as it was saved under `state`.
+pub(crate) fn load_at(state: &Path) -> Kept {
+    let path = path(state);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Kept::None,
+        Err(error) => {
+            return refuse(StateNotice::Unreadable {
+                path,
+                error: error.to_string(),
+            });
+        }
+    };
+    let tree: DesktopTree = match serde_json::from_str(&text) {
+        Ok(tree) => tree,
+        Err(error) => {
+            // A newer layout means the desk is intact and this build is the
+            // wrong one; a file that does not parse at all may be damage.
+            return refuse(match version_in(&text) {
+                Some(found) if found > STATE_SCHEMA_VERSION => StateNotice::NewerSchema {
+                    path,
+                    found,
+                    understood: STATE_SCHEMA_VERSION,
+                },
+                _ => StateNotice::Unreadable {
+                    path,
+                    error: error.to_string(),
+                },
+            });
+        }
+    };
+    if tree.schema_version > STATE_SCHEMA_VERSION {
+        return refuse(StateNotice::NewerSchema {
+            path,
+            found: tree.schema_version,
+            understood: STATE_SCHEMA_VERSION,
+        });
+    }
+    // A desk an older build wrote has the shape this one reads, and the next
+    // save brings it up to date. One with no workspace in it holds nothing to
+    // come back to.
     if tree.workspaces.is_empty() {
-        return None;
+        return Kept::None;
     }
-    Some(shape(tree))
+    Kept::Desk(Box::new(shape(tree)))
+}
+
+/// The version `text` says it was written by, read without the desk having to
+/// be deserialized: what tells a newer build's desk from a damaged one.
+fn version_in(text: &str) -> Option<u32> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    u32::try_from(value.get("schema_version")?.as_u64()?).ok()
+}
+
+/// Leave `notice` with the desk file it is about, for anyone not looking at
+/// the screen when it happened: repair mode, support, the next login.
+fn refuse(notice: StateNotice) -> Kept {
+    let path = match &notice {
+        StateNotice::NewerSchema { path, .. } | StateNotice::Unreadable { path, .. } => path,
+    };
+    tracing::error!(path = %path.display(), "{}", notice.explains());
+    let beside = PathBuf::from(format!("{}.not-opened", path.display()));
+    let body = format!(
+        "{}\n\nWritten by Tilo when it declined to open the file next to this \
+         one. Delete this file once the situation is resolved; nothing reads \
+         it.\n",
+        notice.whole()
+    );
+    if let Err(error) = std::fs::write(&beside, body) {
+        tracing::warn!(
+            path = %beside.display(),
+            %error,
+            "could not leave the explanation beside the desk file"
+        );
+    }
+    Kept::Refused(notice)
 }
 
 /// The desk `tree` describes, as it is kept: what a save writes, what a
@@ -81,6 +215,24 @@ fn shape(mut tree: DesktopTree) -> DesktopTree {
                 for tab in &mut group.tabs {
                     *tab = tab.relaunchable();
                 }
+                // A window whose app could not be told apart from any other —
+                // the compositor named none — is kept as a tab with no app to
+                // open it: nothing would ever come back into it, and the tab
+                // would wait on the desk for good. What cannot open again is
+                // not kept.
+                group.tabs.retain(|tab| {
+                    !matches!(&tab.tile, TileContent::LocalApp { app_id, .. }
+                        if app_id.trim().is_empty())
+                });
+                if !group.tabs.iter().any(|tab| tab.id == group.active_tab)
+                    && let Some(first) = group.tabs.first()
+                {
+                    group.active_tab = first.id;
+                }
+                let open = &group.tabs;
+                group
+                    .focus_history
+                    .retain(|tab| open.iter().any(|candidate| candidate.id == *tab));
             }
         }
     }
@@ -232,7 +384,11 @@ mod tests {
             "a live surface id names nothing after a restart: {text}"
         );
 
-        let back = load_at(state.path()).expect("the desk is read");
+        let back = match load_at(state.path()) {
+            Kept::Desk(back) => *back,
+            Kept::None => panic!("the desk is read"),
+            Kept::Refused(notice) => panic!("the desk is refused: {}", notice.explains()),
+        };
         assert_eq!(back.schema_version, STATE_SCHEMA_VERSION);
         assert_eq!(back.active, saved.active);
         assert_eq!(back.active_strip, saved.active_strip);
@@ -298,6 +454,135 @@ mod tests {
                 host_label: "Desk".into(),
             },
             "a window hosted on another device names nothing local and is kept"
+        );
+    }
+
+    /// A window whose app the compositor named none of opens again in no
+    /// way, so the tab standing for it is not kept, and the group falls back
+    /// to the tab in front of the ones that are.
+    #[test]
+    fn a_window_with_no_app_to_open_it_is_not_kept() {
+        let mut windows = group(
+            10,
+            vec![
+                tab(
+                    300,
+                    "Untitled",
+                    TileContent::Foreign {
+                        app_id: String::new(),
+                        surface_id: 7,
+                    },
+                ),
+                tab(
+                    301,
+                    "Editor",
+                    TileContent::Foreign {
+                        app_id: "org.example.Editor".into(),
+                        surface_id: 8,
+                    },
+                ),
+            ],
+            300,
+            WindowWidth::Normal,
+        );
+        windows.focus_history = vec![301];
+        let mut strip = Strip::new(StripId(1), "Windows");
+        strip.window_groups = vec![windows];
+        let mut tree = DesktopTree {
+            active: WorkspaceId(1),
+            workspaces: vec![Workspace::new(WorkspaceId(1), "Home")],
+            ..DesktopTree::default()
+        };
+        tree.workspaces[0].strips = vec![strip];
+
+        let written = serde_json::to_string(&value(&tree).expect("the desk is written"))
+            .expect("the desk is written");
+        let kept: DesktopTree = serde_json::from_str(&written).expect("a desk");
+        let windows = &kept.workspaces[0].strips[0].window_groups[0];
+        let ids: Vec<TabId> = windows.tabs.iter().map(|tab| tab.id).collect();
+        assert_eq!(ids, [301], "only the window that can open again is kept");
+        assert_eq!(
+            windows.active_tab, 301,
+            "the group shows the one that is left"
+        );
+        assert!(windows.focus_history.is_empty(), "with nothing behind it");
+    }
+
+    /// A desk from a newer build is intact, and this one is the wrong build
+    /// to open it: it stays exactly as it is, and an explanation is left
+    /// beside it.
+    #[test]
+    fn a_desk_this_build_does_not_understand_is_left_alone_and_explained() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let newer = serde_json::to_string(&value(&desk()).expect("the desk is written"))
+            .expect("the desk is written")
+            .replace(
+                &format!("\"schema_version\":{STATE_SCHEMA_VERSION}"),
+                "\"schema_version\":9999",
+            );
+        let path = state.path().join("tilo").join(FILE);
+        std::fs::create_dir_all(path.parent().expect("a tilo directory")).expect("the directory");
+        std::fs::write(&path, &newer).expect("the desk is saved");
+
+        let Kept::Refused(notice) = load_at(state.path()) else {
+            panic!("a desk from a newer build is not opened");
+        };
+        assert_eq!(
+            notice,
+            StateNotice::NewerSchema {
+                path: path.clone(),
+                found: 9999,
+                understood: STATE_SCHEMA_VERSION,
+            }
+        );
+        assert!(
+            notice.explains().contains("9999"),
+            "the person is told which build wrote it: {}",
+            notice.explains()
+        );
+        let beside = PathBuf::from(format!("{}.not-opened", path.display()));
+        let left = std::fs::read_to_string(&beside).expect("the explanation is beside the desk");
+        assert!(left.contains(&notice.title()), "{left}");
+        assert!(
+            left.contains(&path.display().to_string()),
+            "it names the file it is about: {left}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the desk is still there"),
+            newer,
+            "nothing was written over it"
+        );
+    }
+
+    /// A file that is not a desk at all is damage rather than another
+    /// build's, and is explained the same way.
+    #[test]
+    fn a_desk_that_cannot_be_read_is_damage_and_says_so() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let path = state.path().join("tilo").join(FILE);
+        std::fs::create_dir_all(path.parent().expect("a tilo directory")).expect("the directory");
+        std::fs::write(&path, "{ not a desk").expect("the file is there");
+
+        match load_at(state.path()) {
+            Kept::Refused(StateNotice::Unreadable { path: named, error }) => {
+                assert_eq!(named, path);
+                assert!(!error.is_empty());
+            }
+            Kept::Refused(other) => panic!("a damaged file is not another build's: {other:?}"),
+            Kept::Desk(_) | Kept::None => panic!("a damaged file is not opened and not ignored"),
+        }
+        assert!(
+            state
+                .path()
+                .join("tilo")
+                .join("desk.json.not-opened")
+                .exists(),
+            "the explanation is left beside the desk"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the file is still there"),
+            "{ not a desk",
+            "nothing was written over it"
         );
     }
 }

@@ -35,6 +35,7 @@ pub use window_actions::{
     activation_requested,
 };
 
+pub mod agent_runs;
 mod application;
 mod catalogue;
 mod confirmation;

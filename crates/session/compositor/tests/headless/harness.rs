@@ -20,6 +20,13 @@ use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_manager_v1::ExtSessionLockManagerV1, ext_session_lock_v1,
     ext_session_lock_v1::ExtSessionLockV1,
 };
+use wayland_protocols::wp::color_management::v1::client::{
+    wp_color_management_surface_v1::WpColorManagementSurfaceV1,
+    wp_color_manager_v1::{self, WpColorManagerV1},
+    wp_image_description_creator_icc_v1::WpImageDescriptionCreatorIccV1,
+    wp_image_description_creator_params_v1::WpImageDescriptionCreatorParamsV1,
+    wp_image_description_v1::{self, WpImageDescriptionV1},
+};
 use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::{
     zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1,
     zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1},
@@ -138,6 +145,14 @@ pub struct Seen {
     pub pad: Vec<String>,
     /// The surface the pad entered.
     pub pad_surface: Option<WlSurface>,
+    /// The colour manager, and what it says it can build.
+    pub color_manager: Option<WpColorManagerV1>,
+    pub color_features: Vec<u32>,
+    pub color_primaries: Vec<u32>,
+    pub color_transfers: Vec<u32>,
+    pub color_manager_done: bool,
+    /// Whether an image description the client asked for is ready.
+    pub color_description_ready: bool,
 }
 
 /// One client with one toplevel of a solid colour.
@@ -523,6 +538,9 @@ impl Dispatch<WlRegistry, ()> for Seen {
                 }
                 "zwp_keyboard_shortcuts_inhibit_manager_v1" => {
                     seen.inhibit_manager = Some(registry.bind(name, 1, qh, ()));
+                }
+                "wp_color_manager_v1" => {
+                    seen.color_manager = Some(registry.bind(name, version.min(1), qh, ()));
                 }
                 _ => {}
             }
@@ -933,6 +951,59 @@ impl Dispatch<ZwpKeyboardShortcutsInhibitorV1, ()> for Seen {
     }
 }
 
+impl Dispatch<WpColorManagerV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &WpColorManagerV1,
+        event: wp_color_manager_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wp_color_manager_v1::Event::SupportedFeature { feature } => {
+                if let Ok(feature) = feature.into_result() {
+                    seen.color_features.push(feature as u32);
+                }
+            }
+            wp_color_manager_v1::Event::SupportedPrimariesNamed { primaries } => {
+                if let Ok(primaries) = primaries.into_result() {
+                    seen.color_primaries.push(primaries as u32);
+                }
+            }
+            wp_color_manager_v1::Event::SupportedTfNamed { tf } => {
+                if let Ok(tf) = tf.into_result() {
+                    seen.color_transfers.push(tf as u32);
+                }
+            }
+            wp_color_manager_v1::Event::Done => seen.color_manager_done = true,
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<WpImageDescriptionV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &WpImageDescriptionV1,
+        event: wp_image_description_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if matches!(
+            event,
+            wp_image_description_v1::Event::Ready { .. }
+                | wp_image_description_v1::Event::Ready2 { .. }
+        ) {
+            seen.color_description_ready = true;
+        }
+    }
+}
+
+delegate_noop!(Seen: ignore WpImageDescriptionCreatorParamsV1);
+delegate_noop!(Seen: ignore WpImageDescriptionCreatorIccV1);
+delegate_noop!(Seen: ignore WpColorManagementSurfaceV1);
 delegate_noop!(Seen: ignore ZwpPointerConstraintsV1);
 delegate_noop!(Seen: ignore ZwpRelativePointerManagerV1);
 delegate_noop!(Seen: ignore ZwpKeyboardShortcutsInhibitManagerV1);

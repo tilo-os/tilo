@@ -33,6 +33,19 @@ system-update-restart-title = Restart to finish updating
 system-update-restart-body = Your windows come back after the restart.
 power-restart = Restart
 
+## The desk this device saved could not be opened: the person's own desk is
+## still on disk and this session starts empty, so it is never written over.
+desk-not-opened-app-name = Desktop
+desk-not-opened-newer-title = Your desk was not opened
+desk-not-opened-newer-detail = { $path } was saved by a newer version of Tilo (layout { $found }; this one understands { $understood }). It has not been changed: this session starts on an empty desk and keeps nothing, so it cannot be written over.
+desk-not-opened-unreadable-title = Your desk could not be read
+desk-not-opened-unreadable-detail = { $path } is there but could not be read ({ $error }). It has not been changed: this session starts on an empty desk and keeps nothing, so it cannot be written over.
+
+## A window this device left open whose app did not come back.
+desk-window-not-installed = { $app } is not installed on this machine
+desk-window-would-not-start = { $app } could not be started: { $why }
+desk-window-did-not-open = { $app } started but did not open a window
+
 ## A display tool tried to put back a layout the person had just reverted.
 display-tool-reapply-refused = { $tool } tried to reapply a display layout you reverted
 display-tool-reapply-refused-unknown = A display tool tried to reapply a display layout you reverted

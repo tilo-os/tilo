@@ -400,6 +400,9 @@ impl AppBrokerState {
         run: &PendingTaskRun,
         update: &runtime_collab::TaskRunUpdate,
     ) -> Result<(), String> {
+        if let Some(service) = self.tracker_runs(&run.cluster_id) {
+            service.reported(&run.cluster_id, &run.task_id, run.native.epoch, update);
+        }
         let outcome = match update {
             runtime_collab::TaskRunUpdate::Succeeded { .. } => "completed",
             runtime_collab::TaskRunUpdate::Failed { .. } => "stopped",
