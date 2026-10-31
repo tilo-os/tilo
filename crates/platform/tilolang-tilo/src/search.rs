@@ -136,6 +136,7 @@ pub fn group_of(meta: &Meta) -> String {
 #[must_use]
 pub fn every_hit(host: &Host) -> Vec<Hit> {
     let snapshot = host.store().snapshot();
+    let _schemas = snapshot.scoped();
     let reader: &crate::store::Snapshot = &snapshot;
     let mut out = Vec::new();
     for package in host.packages() {

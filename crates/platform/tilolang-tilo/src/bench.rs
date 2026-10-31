@@ -338,10 +338,11 @@ fn shape_of(meta: &Meta, others: &[&Meta]) -> Result<Shape, String> {
             Some(list)
         });
     // A root whose collection holds a few records of its own kind (the workspace's mail
-    // accounts, which open in no window) has what people read one level down: the collection
-    // inside them, whose items open in a window of their own (a conversation).
+    // accounts) has what people read one level down: the collection inside them, whose items
+    // open in a window of their own (a conversation). The holder may have a window too (Mail's
+    // Account opens its mailboxes), so what decides it is where people work: a collection
+    // inside it wins over the holder's own, which a workspace has a few of.
     let list = match list {
-        Some(list) if meta.default_view(&list.item_ty).is_some() => Some(list),
         Some(list) => inside(meta, &list).or(Some(list)),
         None => None,
     };
