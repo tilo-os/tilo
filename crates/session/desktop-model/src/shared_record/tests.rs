@@ -109,6 +109,71 @@ fn concurrent_opens_and_moves_of_different_windows_all_land() {
 }
 
 #[test]
+fn two_edits_of_one_workspace_made_at_once_both_land() {
+    let base = desktop(&[(1, 100, "ada")]);
+    let mut room = AutoCommit::new();
+    write(&mut room, &base).unwrap();
+    room.commit();
+    let mut ada = fork(&room, 1);
+    let mut ben = fork(&room, 2);
+    // Ada renames the workspace while Ben, who cannot see that, gives it a
+    // shortcut: both are fields of the same workspace.
+    let mut renamed = base.clone();
+    renamed.tree.workspaces[0].name = "Ada's lounge".into();
+    write(&mut ada, &renamed).unwrap();
+    ada.commit();
+    let mut furnished = base;
+    furnished.tree.workspaces[0]
+        .shortcuts
+        .push(tilo_automation::SavedShortcut::parse(r#"{"id":"morning"}"#).expect("a shortcut"));
+    write(&mut ben, &furnished).unwrap();
+    ben.commit();
+    merge(&mut room, &mut ada);
+    merge(&mut room, &mut ben);
+    let back = read(&room, None).unwrap();
+    let workspace = &back.tree.workspaces[0];
+    assert_eq!(workspace.name, "Ada's lounge");
+    let shortcuts: Vec<&str> = workspace
+        .shortcuts
+        .iter()
+        .map(tilo_automation::SavedShortcut::id)
+        .collect();
+    assert_eq!(shortcuts, vec!["morning"]);
+}
+
+/// `doc` as saved before a workspace and a window were maps: each of those
+/// fields held its value as JSON text.
+fn as_saved_with_text_fields(doc: &mut AutoCommit) {
+    for (level, field) in [(WORKSPACES, WORKSPACE), (WINDOWS, TAB)] {
+        let (_, container) = doc.get(ROOT, level).unwrap().expect("level");
+        for id in doc.keys(&container).collect::<Vec<_>>() {
+            let (_, entry) = doc.get(&container, &id).unwrap().expect("entry");
+            let (value, at) = doc.get(&entry, field).unwrap().expect("field");
+            let value = tilo_automerge::json::read_value(&*doc, &value, &at).unwrap();
+            doc.put(&entry, field, value.to_string()).unwrap();
+        }
+    }
+    doc.commit();
+}
+
+#[test]
+fn a_desktop_saved_with_text_fields_reads_whole() {
+    let saved = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
+    let mut room = AutoCommit::new();
+    write(&mut room, &saved).unwrap();
+    room.commit();
+    let as_maps = read(&room, None).unwrap();
+    as_saved_with_text_fields(&mut room);
+    let back = read(&room, None).unwrap();
+    assert_eq!(
+        serde_json::to_value(&back.tree).unwrap(),
+        serde_json::to_value(&as_maps.tree).unwrap()
+    );
+    assert_eq!(back.authors, as_maps.authors);
+    assert_eq!(as_maps.tree.workspaces[0].strips[0].window_groups.len(), 2);
+}
+
+#[test]
 fn a_page_coming_back_with_an_old_desktop_wipes_nothing() {
     let mut room = AutoCommit::new();
     write(&mut room, &desktop(&[(1, 100, "ada")])).unwrap();
