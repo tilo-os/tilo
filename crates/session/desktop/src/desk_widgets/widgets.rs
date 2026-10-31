@@ -7,6 +7,11 @@
 //! person's choices ([`DeskWidgetPrefs`]) arrive from the settings document
 //! the session watches.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "widget geometry is finite logical-pixel kurbo arithmetic"
+)]
+
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -22,21 +27,22 @@ use ui::time::{Duration, Instant};
 use ui::tokens::{EffectiveMotion, MotionSource};
 use ui::widget::{AppModel, EventCtx, ModelPath, TaffyTreeExt as _, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Size};
+use vello::kurbo::{Affine, Point, Rect, Size, Vec2};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::calendar::Month;
 use super::paint::{self, BAND};
 use super::placement::{self, MARGIN};
 use super::sizing;
+use super::system_monitor::{self, Monitor, Reading, Service, Source};
 use super::team::{self, TeamMember};
 use super::{Context, DeskBoard, Form, Slot};
 use crate::chrome::ChromeIntent;
 use crate::desktop_host::DesktopAsk;
 
-/// The widgets this layer shows. What is playing and how busy the machine
-/// is join them with the readings they show.
-const SHOWN: [WidgetId; 2] = [WidgetId::Team, WidgetId::Calendar];
+/// The widgets this layer lays out. What is playing joins them with the
+/// player it shows; the system monitor with the readings it is given.
+const SHOWN: [WidgetId; 3] = [WidgetId::Team, WidgetId::Calendar, WidgetId::SystemMonitor];
 
 /// Which part of a widget a press landed on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,17 +52,30 @@ enum Part {
     Collapse,
     Pin,
     Remove,
+    /// The card's resize handle, which follows the hand from the press.
+    Resize,
     /// The row of the person with this roster id.
     Person(String),
 }
 
-/// A press being held on a widget.
+/// A press being held on a widget: which part it took, where, and what the
+/// pointer did since. A press that moves past [`DRAG_SLOP`] is a drag, and
+/// only a press let go where it was pressed is a tap.
 #[derive(Clone, Debug)]
-struct Press {
+struct Grab {
     id: WidgetId,
     part: Part,
     at: Point,
+    started: Instant,
+    dragging: bool,
+    /// The card's width at the press, for a resize.
+    width: f64,
+    /// The pointer's recent places, for a throw's velocity.
+    samples: Vec<(f64, Point)>,
 }
+
+/// A press that moves this far is a drag, never a tap.
+const DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.icon_label_gap as f64;
 
 /// The desk's widgets, drawn over the desk and under the windows.
 pub struct DeskWidgets {
@@ -80,7 +99,15 @@ pub struct DeskWidgets {
     shown: BTreeMap<WidgetId, Presence>,
     opened: BTreeMap<WidgetId, Presence>,
     pointer: Option<Point>,
-    press: Option<Press>,
+    grab: Option<Grab>,
+    /// The width a resize under way gives its card.
+    resizing: Option<(WidgetId, f64)>,
+    /// Each widget's travel from its laid-out place into the one it was
+    /// just dropped on: a set-down settles the last pixels, a throw coasts.
+    offsets: BTreeMap<WidgetId, ui::motion::MotionValue<Vec2>>,
+    /// The system monitor's readings, and where they come from.
+    monitor: Monitor,
+    source: Box<dyn Source>,
     /// The people the team card lists, top row first: what a press on a row
     /// opens is the row as laid out.
     team_ids: Vec<String>,
@@ -93,11 +120,21 @@ pub struct DeskWidgets {
     rect: Rect,
 }
 
+/// One widget as laid out: where it is, and which display that is.
+#[derive(Clone, Debug, PartialEq)]
+struct Laid {
+    slot: Slot,
+    display: usize,
+    monitor: String,
+    area: Rect,
+}
+
 /// What the widgets fill themselves with in a frame: the day the calendar
 /// shows, the people the team card lists, and where the pointer is.
 struct Content<'a> {
     month: &'a Month,
     members: &'a [TeamMember],
+    reading: Reading,
     cursor: Option<Point>,
 }
 
@@ -107,6 +144,7 @@ struct Painted {
     forms: Vec<(WidgetId, Form)>,
     day: chrono::NaiveDate,
     people: Vec<String>,
+    reading: Reading,
     prefs: DeskWidgetPrefs,
 }
 
@@ -133,7 +171,11 @@ impl DeskWidgets {
             shown: BTreeMap::new(),
             opened: BTreeMap::new(),
             pointer: None,
-            press: None,
+            grab: None,
+            resizing: None,
+            offsets: BTreeMap::new(),
+            monitor: Monitor::default(),
+            source: Box::new(Service::default()),
             team_ids: Vec::new(),
             motion: EffectiveMotion::default(),
             painted: None,
@@ -150,6 +192,15 @@ impl DeskWidgets {
         self.laid_from = prefs.clone();
         self.prefs = prefs;
         self.persist = false;
+        self
+    }
+
+    /// The same layer reading the machine through `source`: for a desk
+    /// whose readings are known.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_source(mut self, source: Box<dyn Source>) -> Self {
+        self.source = source;
         self
     }
 
@@ -188,15 +239,79 @@ impl DeskWidgets {
             .read(|tree| team::members(tree, user, user, presence, std::time::SystemTime::now()))
     }
 
-    /// Where `id`'s resting form and open card are, and whether it has
-    /// anything to show.
-    fn lay(&self, id: WidgetId, people: usize) -> (Slot, f64) {
-        let prefs = self.prefs.get(id).clone();
-        let at = prefs
+    /// The displays the desk covers, each by its monitor's stable identity
+    /// and its rect in the desk's own coordinates.
+    fn displays(&self) -> Vec<(String, Rect)> {
+        let displays = self.handle.read(|tree| tree.outputs.displays.clone());
+        let Some(x0) = displays.iter().map(|display| display.x).reduce(f64::min) else {
+            return vec![(String::new(), self.rect)];
+        };
+        let y0 = displays
+            .iter()
+            .map(|display| display.y)
+            .fold(f64::INFINITY, f64::min);
+        displays
+            .into_iter()
+            .map(|display| {
+                let x = self.rect.x0 + display.x - x0;
+                let y = self.rect.y0 + display.y - y0;
+                (
+                    display.monitor,
+                    Rect::new(x, y, x + display.width, y + display.height),
+                )
+            })
+            .collect()
+    }
+
+    /// The display `id` lives on and the place it rests there: the first
+    /// connected display it has a place on, else the primary at the
+    /// widget's own default place.
+    fn home(&self, displays: &[(String, Rect)], id: WidgetId) -> (usize, (f64, f64)) {
+        let prefs = self.prefs.get(id);
+        prefs
             .places
-            .first()
-            .map_or_else(|| id.default_place(), |place| (place.x, place.y));
-        let area = self.rect;
+            .iter()
+            .find_map(|place| {
+                displays
+                    .iter()
+                    .position(|(monitor, _)| *monitor == place.display)
+                    .map(|index| (index, (place.x, place.y)))
+            })
+            .unwrap_or_else(|| (0, id.default_place()))
+    }
+
+    /// The width `id`'s card is drawn at: the resize under way, else the
+    /// person's, else the widget's own.
+    fn card_width(&self, id: WidgetId, area: Rect) -> f64 {
+        let sizing = sizing::sizing(id);
+        let room = (area.width() - 2.0 * MARGIN).max(1.0);
+        let width = match self.resizing {
+            Some((resized, width)) if resized == id => width,
+            _ => self.prefs.get(id).width.unwrap_or(sizing.default),
+        };
+        sizing.clamp(width).min(room)
+    }
+
+    /// Whether `id` has anything to show right now.
+    fn has_content(id: WidgetId, people: usize) -> bool {
+        match id {
+            WidgetId::Team => people > 0,
+            // The date is always there to show; the machine always offers
+            // memory.
+            WidgetId::Calendar | WidgetId::SystemMonitor => true,
+            WidgetId::Music => false,
+        }
+    }
+
+    /// Where `id`'s resting form and open card are on the display it lives
+    /// on, and whether it has anything to show.
+    fn lay(&self, id: WidgetId, people: usize) -> Laid {
+        let displays = self.displays();
+        let (display, at) = self.home(&displays, id);
+        let (monitor, area) = displays
+            .get(display)
+            .cloned()
+            .unwrap_or_else(|| (String::new(), self.rect));
         let glance = match id {
             WidgetId::Team => {
                 // Against a side edge (not in a bottom corner) the faces
@@ -205,55 +320,75 @@ impl DeskWidgets {
                 placement::rect_at(area, paint::team_glance_size(vertical, people), at)
             }
             WidgetId::Calendar => placement::rect_at(area, paint::CALENDAR_GLANCE, at),
-            WidgetId::Music | WidgetId::SystemMonitor => Rect::ZERO,
+            WidgetId::SystemMonitor => placement::rect_at(area, paint::MONITOR_GLANCE, at),
+            WidgetId::Music => Rect::ZERO,
         };
-        let room = (area.width() - 2.0 * MARGIN).max(1.0);
-        let sizing = sizing::sizing(id);
-        let width = sizing
-            .clamp(prefs.width.unwrap_or(sizing.default))
-            .min(room);
+        let width = self.card_width(id, area);
         let height = sizing::height(id, width, |stage, width| match id {
             WidgetId::Team => paint::team_card_height(stage, people),
             WidgetId::Calendar => paint::calendar_card_height(stage, width),
-            WidgetId::Music | WidgetId::SystemMonitor => 0.0,
+            WidgetId::SystemMonitor => paint::monitor_card_height(stage),
+            WidgetId::Music => 0.0,
         });
         let open = Size::new(width, height + BAND);
-        let has_content = match id {
-            WidgetId::Team => people > 0,
-            WidgetId::Calendar => true,
-            WidgetId::Music | WidgetId::SystemMonitor => false,
-        };
         let slot = Slot {
             id,
             glance,
             open: placement::open_rect(area, glance, open),
             reach: placement::reach_zone(area, glance),
-            has_content,
+            has_content: Self::has_content(id, people),
         };
-        (slot, width)
+        Laid {
+            slot,
+            display,
+            monitor,
+            area,
+        }
     }
 
-    /// Lay every widget out where the person put it. Returns whether
-    /// anything moved.
+    /// Lay every widget out where the person put it, each on its own
+    /// display, with neighbours there stepping out of each other's way.
+    /// Returns whether anything moved.
     fn relayout(&mut self) -> bool {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return false;
         }
         let people = self.team_rows();
-        let mut slots: Vec<Slot> = SHOWN
+        let laid: Vec<Laid> = SHOWN
             .into_iter()
-            .map(|id| self.lay(id, people.len()).0)
+            .map(|id| self.lay(id, people.len()))
             .collect();
-        // Two widgets resting on each other step apart from the display's
-        // middle.
-        let mut rects: Vec<Rect> = slots.iter().map(|slot| slot.glance).collect();
-        placement::resolve(self.rect, &mut rects, &[]);
-        for (slot, rect) in slots.iter_mut().zip(rects) {
-            if slot.has_content {
+        let mut slots: Vec<Slot> = laid.iter().map(|laid| laid.slot).collect();
+        // On each display, widgets resting on each other step apart from
+        // that display's middle.
+        let displays = laid.iter().map(|laid| (laid.display, laid.area)).fold(
+            Vec::new(),
+            |mut seen: Vec<(usize, Rect)>, one| {
+                if !seen.contains(&one) {
+                    seen.push(one);
+                }
+                seen
+            },
+        );
+        for (display, area) in displays {
+            let on: Vec<usize> = (0..slots.len())
+                .filter(|k| laid.get(*k).is_some_and(|one| one.display == display))
+                .collect();
+            let mut rects: Vec<Rect> = on
+                .iter()
+                .filter_map(|k| slots.get(*k).map(|slot| slot.glance))
+                .collect();
+            placement::resolve(area, &mut rects, &[]);
+            for (k, rect) in on.into_iter().zip(rects) {
+                let Some(slot) = slots.get_mut(k) else {
+                    continue;
+                };
+                if !slot.has_content {
+                    continue;
+                }
                 slot.glance = rect;
-                slot.reach = placement::reach_zone(self.rect, rect);
-                let open = slot.open.size();
-                slot.open = placement::open_rect(self.rect, rect, open);
+                slot.reach = placement::reach_zone(area, rect);
+                slot.open = placement::open_rect(area, rect, slot.open.size());
             }
         }
         let changed = slots != self.slots;
@@ -266,7 +401,8 @@ impl DeskWidgets {
     /// The widget form under `p`, if one is showing there: the topmost, as
     /// painted. A glance's remove badge is part of it.
     fn hit_at(&self, p: Point) -> Option<(WidgetId, Form, Rect)> {
-        self.slots.iter().rev().find_map(|slot| {
+        let drawn: Vec<Slot> = self.slots.iter().map(|slot| self.drawn(slot)).collect();
+        drawn.iter().rev().find_map(|slot| {
             let form = self.board.form(slot.id);
             match form {
                 Form::Away => None,
@@ -308,6 +444,12 @@ impl DeskWidgets {
                     return Part::Collapse;
                 }
                 let card = paint::card_rect(rect);
+                let anchor = self.anchor(id);
+                if paint::grip_rect(card, anchor).contains(p)
+                    || paint::grip_edge(card, anchor).contains(p)
+                {
+                    return Part::Resize;
+                }
                 if !card.contains(p) {
                     return Part::Body;
                 }
@@ -325,6 +467,151 @@ impl DeskWidgets {
                 Part::Body
             }
         }
+    }
+
+    /// How far `id` is drawn from its laid-out place: with the hand while
+    /// one carries it.
+    fn offset(&self, id: WidgetId) -> Vec2 {
+        match &self.grab {
+            Some(grab) if grab.id == id && grab.dragging && grab.part != Part::Resize => {
+                self.pointer.map_or(Vec2::ZERO, |pointer| pointer - grab.at)
+            }
+            _ => Vec2::ZERO,
+        }
+    }
+
+    /// `slot` where it is drawn now.
+    fn drawn(&self, slot: &Slot) -> Slot {
+        let offset = self.offset(slot.id);
+        if offset == Vec2::ZERO {
+            return *slot;
+        }
+        Slot {
+            glance: slot.glance + offset,
+            open: slot.open + offset,
+            ..*slot
+        }
+    }
+
+    /// The pointer moved to `p` with a press held on a widget: carry it or
+    /// resize it, as the press began.
+    fn grab_moved(&mut self, p: Point, now: Instant) {
+        let Some(mut grab) = self.grab.take() else {
+            return;
+        };
+        let elapsed = now.saturating_duration_since(grab.started).as_secs_f64();
+        grab.samples.push((elapsed, p));
+        if grab.samples.len() > 24 {
+            grab.samples.remove(0);
+        }
+        if grab.part == Part::Resize {
+            // The card grows from the corner it is anchored by: dragging
+            // the handle away from that corner widens it.
+            let (right, _) = self.anchor(grab.id);
+            let toward = if right { -1.0 } else { 1.0 };
+            let displays = self.displays();
+            let area = displays
+                .get(self.home(&displays, grab.id).0)
+                .map_or(self.rect, |(_, area)| *area);
+            let room = (area.width() - 2.0 * MARGIN).max(1.0);
+            let width = sizing::sizing(grab.id)
+                .clamp(grab.width + toward * (p.x - grab.at.x))
+                .min(room);
+            self.resizing = Some((grab.id, width));
+            self.dirty = true;
+            self.relayout();
+        } else if !grab.dragging && (p - grab.at).hypot() > DRAG_SLOP {
+            grab.dragging = true;
+            self.dirty = true;
+        }
+        self.grab = Some(grab);
+    }
+
+    /// The press `grab` let go at `p`: a resize keeps its width, a drag
+    /// lands the widget, anything else is a tap.
+    fn release(&mut self, grab: Grab, p: Point) {
+        if grab.part == Part::Resize {
+            if let Some((id, width)) = self.resizing.take() {
+                let mut prefs = self.prefs.get(id).clone();
+                prefs.width = Some(width.round());
+                self.store(id, prefs);
+            }
+            return;
+        }
+        if grab.dragging {
+            self.drop(&grab, p);
+            return;
+        }
+        let form = self.board.form(grab.id);
+        self.tap(grab.id, form, grab.part);
+    }
+
+    /// `grab`'s widget let go at `p`: thrown off the screen it is removed;
+    /// otherwise it coasts on with the hand's momentum to where the throw
+    /// projects, is drawn onto a nearby edge, corner or neighbour on the
+    /// display under it, and keeps that place there.
+    fn drop(&mut self, grab: &Grab, p: Point) {
+        let id = grab.id;
+        let Some(slot) = self.slot(id) else {
+            return;
+        };
+        let motion = self.motion;
+        let velocity = placement::release_velocity(&grab.samples);
+        let travel = p - grab.at;
+        let open = self.board.form(id) == Form::Open;
+        let before = self.drawn(&slot);
+        let drawn = if open { before.open } else { before.glance } + travel;
+        let displays = self.displays();
+        let areas: Vec<Rect> = displays.iter().map(|(_, area)| *area).collect();
+        if placement::thrown_off(&areas, drawn, velocity, motion) {
+            let mut prefs = self.prefs.get(id).clone();
+            prefs.enabled = false;
+            self.store(id, prefs);
+            return;
+        }
+        let landed = placement::landing(drawn, velocity, motion);
+        let Some(index) = placement::display_at(&areas, landed.center()) else {
+            return;
+        };
+        let Some((monitor, area)) = displays.get(index).cloned() else {
+            return;
+        };
+        let neighbours: Vec<Rect> = self
+            .slots
+            .iter()
+            .filter(|other| other.id != id)
+            .filter(|other| self.home(&displays, other.id).0 == index)
+            .filter_map(|other| match self.board.form(other.id) {
+                Form::Away => None,
+                Form::Glance => Some(other.glance),
+                Form::Open => Some(other.open),
+            })
+            .collect();
+        let snapped = placement::magnet(area, landed, &neighbours);
+        let glance = if open {
+            placement::glance_in(area, snapped, slot.glance.size())
+        } else {
+            snapped
+        };
+        let at = placement::fractions(area, glance);
+        let mut prefs = self.prefs.get(id).clone();
+        prefs.drop_on(&monitor, at.0, at.1);
+        self.store(id, prefs);
+        self.relayout();
+        // From where the hand let go to its new place, carrying the hand's
+        // velocity: a throw coasts on and slows into its place, a set-down
+        // settles the last pixels.
+        let rest = self
+            .slot(id)
+            .map_or(snapped, |slot| if open { slot.open } else { slot.glance });
+        let timing = ui::motion::Snap::COAST.timing(
+            ui::motion::Direction::Enter,
+            motion,
+            MotionSource::Gesture,
+        );
+        let offset = self.offsets.entry(id).or_default();
+        offset.snap(drawn.origin() - rest.origin());
+        offset.release(Vec2::ZERO, velocity, timing, ui::time::now());
     }
 
     /// Whether the pointer is on `id` as it is drawn.
@@ -358,7 +645,9 @@ impl DeskWidgets {
                 .borrow_mut()
                 .push(DesktopAsk::Intent(ChromeIntent::ShowPerson(person))),
             Part::Body if form == Form::Glance => self.board.open(id),
-            Part::Body => {}
+            // A resize ends where the hand lets go; a click on the handle
+            // does nothing, as does a tap on an open card.
+            Part::Resize | Part::Body => {}
         }
         self.dirty = true;
     }
@@ -405,9 +694,9 @@ impl DeskWidgets {
         changed |= self.relayout();
         let covered = false;
         let engaged = self
-            .press
+            .grab
             .as_ref()
-            .map(|press| press.id)
+            .map(|grab| grab.id)
             .or_else(|| self.pointer.and_then(|p| self.hit_at(p)).map(|(id, ..)| id));
         let ctx = Context {
             now,
@@ -420,6 +709,15 @@ impl DeskWidgets {
             slots: &self.slots,
         };
         changed |= self.board.update(&ctx);
+        // The system monitor reads the machine only while it shows: away,
+        // it holds no subscription, so nothing is read and nothing wakes
+        // for it.
+        if self.board.form(WidgetId::SystemMonitor) == Form::Away {
+            self.monitor.pause(&mut *self.source);
+        } else if self.monitor.show(&mut *self.source) {
+            changed = true;
+            changed |= self.relayout();
+        }
         let asked =
             |id: WidgetId| self.board.reached() == Some(id) || self.board.opened() == Some(id);
         for slot in &self.slots {
@@ -456,10 +754,14 @@ impl DeskWidgets {
 
     /// Whether a widget is still coming, going, or changing shape.
     fn animating(&self, now: Instant) -> bool {
-        self.shown
+        self.offsets
             .values()
-            .chain(self.opened.values())
-            .any(|presence| presence.is_moving(now))
+            .any(|offset| offset.settles_at().is_some_and(|at| at > now))
+            || self
+                .shown
+                .values()
+                .chain(self.opened.values())
+                .any(|presence| presence.is_moving(now))
     }
 
     fn paint_glance(
@@ -470,7 +772,12 @@ impl DeskWidgets {
         slot: &Slot,
         content: &Content<'_>,
     ) {
-        let Content { month, members, .. } = *content;
+        let Content {
+            month,
+            members,
+            reading,
+            ..
+        } = *content;
         paint::paint_glance_ground(scene, transform, theme, slot.id, slot.glance);
         match slot.id {
             WidgetId::Team => paint::paint_team_glance(
@@ -485,7 +792,10 @@ impl DeskWidgets {
             WidgetId::Calendar => {
                 paint::paint_calendar_glance(scene, transform, text, theme, slot.glance, month);
             }
-            WidgetId::Music | WidgetId::SystemMonitor => {}
+            WidgetId::SystemMonitor => {
+                paint::paint_monitor_glance(scene, transform, text, theme, slot.glance, reading);
+            }
+            WidgetId::Music => {}
         }
     }
 
@@ -505,6 +815,7 @@ impl DeskWidgets {
         let Content {
             month,
             members,
+            reading,
             cursor,
         } = *content;
         let open = slot.open;
@@ -522,7 +833,7 @@ impl DeskWidgets {
             "desk-widget-pin"
         });
         let cursor_on =
-            |rect: Rect| cursor.is_some_and(|p| rect.contains(p)) && self.press.is_none();
+            |rect: Rect| cursor.is_some_and(|p| rect.contains(p)) && self.grab.is_none();
         for (rect, icon, label, toggled) in [
             (
                 paint::collapse_rect(open),
@@ -577,19 +888,37 @@ impl DeskWidgets {
                         card,
                         members,
                         stage,
-                        cursor.filter(|_| self.press.is_none()),
+                        cursor.filter(|_| self.grab.is_none()),
                     ),
                     WidgetId::Calendar => {
                         paint::paint_calendar_card(
                             scene, transform, text, theme, card, month, stage,
                         );
                     }
-                    WidgetId::Music | WidgetId::SystemMonitor => {}
+                    WidgetId::SystemMonitor => {
+                        paint::paint_monitor_card(
+                            scene, transform, text, theme, card, reading, stage,
+                        );
+                    }
+                    WidgetId::Music => {}
                 }
                 // The content stays inside the card's shape.
                 let _ = radius;
             });
         }
+        // The resize handle sits in the card's free corner, brighter under
+        // the pointer or while a resize follows it.
+        let anchor = self.anchor(slot.id);
+        let grip = paint::grip_rect(card, anchor);
+        let resizing = self.resizing.is_some_and(|(resized, _)| resized == slot.id);
+        paint::paint_grip(
+            scene,
+            transform,
+            theme,
+            grip,
+            anchor,
+            resizing || cursor_on(grip),
+        );
     }
 }
 
@@ -600,8 +929,8 @@ impl Widget for DeskWidgets {
         let people = self.team_rows();
         let team = self.slot(WidgetId::Team);
         let changed = team.is_some_and(|slot| {
-            let (laid, _) = self.lay(WidgetId::Team, people.len());
-            laid.has_content != slot.has_content
+            let laid = self.lay(WidgetId::Team, people.len());
+            laid.slot.has_content != slot.has_content
         });
         changed | self.relayout()
     }
@@ -644,6 +973,7 @@ impl Widget for DeskWidgets {
                 .collect(),
             day: today,
             people: self.team_ids.clone(),
+            reading: self.monitor.reading(),
             prefs: self.prefs.clone(),
         };
         self.dirty = self.painted.as_ref() != Some(&painted);
@@ -657,9 +987,11 @@ impl Widget for DeskWidgets {
         let content = Content {
             month: &month,
             members: &members,
+            reading: self.monitor.reading(),
             cursor: self.pointer,
         };
-        for slot in self.slots.clone() {
+        let drawn: Vec<Slot> = self.slots.iter().map(|slot| self.drawn(slot)).collect();
+        for slot in drawn {
             let shown = self
                 .shown
                 .get(&slot.id)
@@ -725,7 +1057,15 @@ impl Widget for DeskWidgets {
         if let WindowEvent::CursorMoved { position, .. } = event {
             let p = ctx.logical(position);
             self.pointer = Some(p);
-            self.board.on_pointer(p, now, &self.slots);
+            if self.grab.is_some() {
+                self.grab_moved(p, now);
+                self.tick(now);
+                self.dirty = true;
+                *ctx.handled = true;
+                return;
+            }
+            let drawn: Vec<Slot> = self.slots.iter().map(|slot| self.drawn(slot)).collect();
+            self.board.on_pointer(p, now, &drawn);
             self.tick(now);
             if self.hit_at(p).is_some() {
                 *ctx.handled = true;
@@ -736,6 +1076,10 @@ impl Widget for DeskWidgets {
         if matches!(event, WindowEvent::CursorLeft { .. }) {
             self.pointer = None;
             self.board.pointer_left();
+            // A press whose release will never come: what it carried goes
+            // back where it was.
+            self.grab = None;
+            self.resizing = None;
             self.dirty = true;
             self.tick(now);
             return;
@@ -763,20 +1107,37 @@ impl Widget for DeskWidgets {
                     return;
                 };
                 let part = self.part_at(id, form, rect, p);
-                self.press = Some(Press { id, part, at: p });
+                // A throw still settling is caught where it is drawn.
+                let drawn_offset = self.offset(id);
+                if let Some(settling) = self.offsets.get_mut(&id) {
+                    settling.snap(drawn_offset);
+                }
+                self.grab = Some(Grab {
+                    id,
+                    part,
+                    at: p,
+                    started: now,
+                    dragging: false,
+                    width: self
+                        .slot(id)
+                        .map_or_else(|| rect.width(), |slot| paint::card_rect(slot.open).width()),
+                    samples: vec![(0.0, p)],
+                });
                 self.dirty = true;
                 self.tick(now);
                 *ctx.handled = true;
             }
             ElementState::Released => {
-                let Some(press) = self.press.take() else {
+                let Some(mut grab) = self.grab.take() else {
                     return;
                 };
-                let form = self.board.form(press.id);
-                self.tap(press.id, form, press.part);
+                if grab.samples.last().is_none_or(|(_, last)| *last != p) {
+                    let elapsed = now.saturating_duration_since(grab.started).as_secs_f64();
+                    grab.samples.push((elapsed, p));
+                }
+                self.release(grab, p);
                 self.tick(now);
                 *ctx.handled = true;
-                let _ = press.at;
             }
         }
     }
@@ -824,10 +1185,23 @@ impl Widget for DeskWidgets {
             let left = u64::from(86_400_u32.saturating_sub(secs).max(1));
             now.checked_add(Duration::from_secs(left)).unwrap_or(now)
         });
+        // A showing system monitor is sent a reading every
+        // [`system_monitor::SAMPLE_EVERY`]: the loop wakes for it.
+        let sample = self
+            .monitor
+            .is_showing()
+            .then(|| now.checked_add(system_monitor::SAMPLE_EVERY))
+            .flatten();
+        let settling = self
+            .offsets
+            .values()
+            .filter_map(ui::motion::MotionValue::settles_at);
         self.board
             .deadline(now)
             .into_iter()
+            .chain(settling)
             .chain(day)
+            .chain(sample)
             .chain(fades)
             .filter(|at| *at > now)
             .min()
@@ -871,8 +1245,11 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use tilo_desktop_model::{Collaborator, IdMinter, Tab, Workspace};
     use tilo_desktop_surface::{DesktopSurface, TileSource, seed_tree};
+    use tilo_system_stats::protocol::{CpuStats, MemoryStats, SystemStats, ThermalZone};
     use ui::synthetic_input::{cursor_moved, mouse_press, mouse_release};
     use ui::widget::{TileContent, TileHost};
 
@@ -902,6 +1279,14 @@ mod tests {
     /// A desk with `people` in its workspace, the calendar added, and the
     /// layer laid out over a 1600×900 display.
     fn rig(people: &[(&str, &str)]) -> Rig {
+        let mut prefs = DeskWidgetPrefs::default();
+        prefs.get_mut(WidgetId::Calendar).enabled = true;
+        rig_with(people, prefs, Box::new(Service::default()))
+    }
+
+    /// A desk as `rig` with the choices `prefs` hold, the monitor's readings
+    /// coming from `source`.
+    fn rig_with(people: &[(&str, &str)], prefs: DeskWidgetPrefs, source: Box<dyn Source>) -> Rig {
         let mut minter = IdMinter::new(7);
         let mut tree = seed_tree(&mut minter, "Desk", Vec::new());
         tree.collaborators = people
@@ -910,11 +1295,9 @@ mod tests {
             .collect();
         let handle = DesktopSurface::new(tree, 7, Box::new(Tiles)).1;
         let asks = Rc::new(RefCell::new(Vec::new()));
-        let mut prefs = DeskWidgetPrefs::default();
-        prefs.get_mut(WidgetId::Calendar).enabled = true;
         let changes = std::sync::Arc::new(std::sync::Mutex::new(prefs.clone()));
         let mut widgets = DeskWidgets::new(handle, "me".into(), Rc::clone(&asks), changes.clone());
-        widgets = widgets.with_prefs(prefs);
+        widgets = widgets.with_source(source).with_prefs(prefs);
         lay_out(&mut widgets, AREA);
         Rig {
             widgets,
@@ -1132,8 +1515,193 @@ mod tests {
         assert!(rig.send(&mouse_release()));
     }
 
-    /// A desk surface that shows no window: what stands between the
-    /// widgets and the person in these tests.
+    /// The machine's readings as the tests give them, and how often the
+    /// monitor asked for one.
+    #[derive(Default, Clone)]
+    struct Fake {
+        queued: std::sync::Arc<std::sync::Mutex<Option<SystemStats>>>,
+        started: std::sync::Arc<AtomicUsize>,
+        stopped: std::sync::Arc<AtomicUsize>,
+    }
+
+    impl Fake {
+        fn send(&self, stats: SystemStats) {
+            *self.queued.lock().expect("a reading slot") = Some(stats);
+        }
+
+        fn started(&self) -> usize {
+            self.started.load(Ordering::SeqCst)
+        }
+
+        fn stopped(&self) -> usize {
+            self.stopped.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Source for Fake {
+        fn start(&mut self) {
+            self.started.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn stop(&mut self) {
+            self.stopped.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn latest(&mut self) -> Option<SystemStats> {
+            self.queued.lock().expect("a reading slot").take()
+        }
+    }
+
+    /// The machine's answer: `cpu` (none until a second reading), memory
+    /// three quarters full, and two sensors of which one is nonsense.
+    fn stats(cpu: Option<f32>) -> SystemStats {
+        SystemStats {
+            cpu: cpu.map(|total| CpuStats {
+                total,
+                per_core: vec![total],
+            }),
+            memory: MemoryStats {
+                total: 16_000,
+                available: 4_000,
+                ..MemoryStats::default()
+            },
+            thermal: vec![
+                ThermalZone {
+                    name: "cpu".into(),
+                    celsius: 47.25,
+                },
+                ThermalZone {
+                    name: "gone".into(),
+                    celsius: -273.0,
+                },
+            ],
+            ..SystemStats::default()
+        }
+    }
+
+    #[test]
+    fn the_monitor_shows_the_machines_readings_only_while_it_is_up() {
+        let source = Fake::default();
+        let probes = source.clone();
+        let mut prefs = DeskWidgetPrefs::default();
+        prefs.get_mut(WidgetId::Calendar).enabled = true;
+        let mut monitor = prefs.get_mut(WidgetId::SystemMonitor).clone();
+        monitor.enabled = true;
+        monitor.show = ShowMode::Always;
+        *prefs.get_mut(WidgetId::SystemMonitor) = monitor;
+        let mut rig = rig_with(&[("ada", "Ada")], prefs, Box::new(source));
+
+        assert_eq!(
+            rig.form(WidgetId::SystemMonitor),
+            Form::Glance,
+            "pinned: it is on the desk"
+        );
+        assert_eq!(probes.started(), 1, "showing asks the machine");
+        probes.send(stats(None));
+        rig.widgets.tick(Instant::now());
+        assert_eq!(
+            rig.widgets.monitor.reading(),
+            Reading {
+                cpu_percent: None,
+                memory_percent: Some(75),
+                temperature_celsius: Some(47),
+            },
+            "one reading: memory and the warmest sensor"
+        );
+        probes.send(stats(Some(41.4)));
+        rig.widgets.tick(Instant::now());
+        assert_eq!(
+            rig.widgets.monitor.reading().cpu_percent,
+            Some(41),
+            "and load once there are two"
+        );
+        assert_eq!(probes.started(), 1, "one subscription while it shows");
+
+        // Taken off the desk, it stops reading the machine.
+        let mut prefs = rig.widgets.prefs();
+        prefs.get_mut(WidgetId::SystemMonitor).enabled = false;
+        *shared(&rig.changes) = prefs;
+        rig.widgets.tick(Instant::now());
+        assert_eq!(rig.form(WidgetId::SystemMonitor), Form::Away);
+        assert_eq!(probes.stopped(), 1, "away: no subscription");
+    }
+
+    #[test]
+    fn a_widget_dropped_where_the_hand_let_go_keeps_that_place_there() {
+        let mut rig = rig(&[("ada", "Ada")]);
+        rig.point_at(BARE);
+        let glance = rig.slot(WidgetId::Calendar).glance;
+        let from = centre(glance);
+        let to = Point::new(500.0, 300.0);
+
+        rig.send(&cursor_moved(from.x, from.y));
+        assert!(rig.send(&mouse_press()));
+        rig.send(&cursor_moved(to.x, to.y));
+        // Let go where the hand stopped: a still hand throws nothing.
+        rig.send(&cursor_moved(to.x, to.y));
+        rig.send(&mouse_release());
+
+        let places = rig.prefs(WidgetId::Calendar).places;
+        assert_eq!(places.len(), 1, "it remembers one place: {places:?}");
+        let dropped = rig.slot(WidgetId::Calendar).glance;
+        let let_go = glance + (to - from);
+        assert!(
+            (dropped.x0 - let_go.x0).abs() < 1.0 && (dropped.y0 - let_go.y0).abs() < 1.0,
+            "it rests where it was let go: {dropped:?} from {let_go:?}"
+        );
+
+        // The place is the person's, not this desk's: the next desk with
+        // the same choices puts it there.
+        let prefs = rig.widgets.prefs();
+        let mut again = rig_with(&[("ada", "Ada")], prefs, Box::new(Service::default()));
+        again.point_at(BARE);
+        let back = again.slot(WidgetId::Calendar).glance;
+        assert!(
+            (back.x0 - dropped.x0).abs() < 1.0 && (back.y0 - dropped.y0).abs() < 1.0,
+            "and is there again next time: {back:?} against {dropped:?}"
+        );
+    }
+
+    #[test]
+    fn a_card_resized_from_its_handle_keeps_the_width_it_was_given() {
+        let mut rig = rig(&[("ada", "Ada")]);
+        rig.point_at(BARE);
+        assert!(rig.click(centre(rig.slot(WidgetId::Calendar).glance)));
+        let open = rig.slot(WidgetId::Calendar).open;
+        assert_eq!(rig.form(WidgetId::Calendar), Form::Open);
+        let anchor = rig.widgets.anchor(WidgetId::Calendar);
+        let handle = paint::grip_rect(paint::card_rect(open), anchor);
+        let grip = centre(handle);
+
+        // The handle at the card's free corner follows the hand: away from
+        // that corner widens the card.
+        let toward = if anchor.0 { -1.0 } else { 1.0 };
+        rig.send(&cursor_moved(grip.x, grip.y));
+        assert!(rig.send(&mouse_press()), "the handle takes the press");
+        rig.send(&cursor_moved(grip.x + toward * 60.0, grip.y));
+        rig.send(&mouse_release());
+
+        let width = rig.prefs(WidgetId::Calendar).width.expect("a chosen width");
+        assert!(
+            (width - (open.width() + 60.0)).abs() < 1.0,
+            "the card is 60 wider: {width} from {}",
+            open.width()
+        );
+
+        // The width is the person's: the next desk with the same choices
+        // opens the card just as wide.
+        let prefs = rig.widgets.prefs();
+        let mut again = rig_with(&[("ada", "Ada")], prefs, Box::new(Service::default()));
+        again.point_at(BARE);
+        assert!(again.click(centre(again.slot(WidgetId::Calendar).glance)));
+        let reopened = again.slot(WidgetId::Calendar).open;
+        assert!(
+            (reopened.width() - width).abs() < 1.0,
+            "as wide as it was left: {} against {width}",
+            reopened.width()
+        );
+    }
+
     struct StubSurface;
 
     impl Widget for StubSurface {

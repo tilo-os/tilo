@@ -41,6 +41,8 @@ durable-store = { path = "../../system/durable-store" }
 emoji = { path = "../../text/emoji" }
 # The bar's clock reads the weekday of the local time.
 chrono.workspace = true
+# The system monitor widget shows the session's own readings of the machine.
+tilo-system-stats = { path = "../../system/system-stats" }
 # The same catalogue for the toolkit's shared picker, which the window bars'
 # reaction pickers open.
 tilo-emoji-catalogue = { path = "../../text/emoji-catalogue" }

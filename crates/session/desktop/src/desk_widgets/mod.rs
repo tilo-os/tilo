@@ -37,6 +37,7 @@ pub mod calendar;
 pub mod paint;
 pub mod placement;
 pub mod sizing;
+pub mod system_monitor;
 pub mod team;
 mod widgets;
 

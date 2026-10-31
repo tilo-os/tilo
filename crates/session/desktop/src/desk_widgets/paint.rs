@@ -19,6 +19,7 @@ use vello::peniko::{BlendMode, Fill};
 
 use super::calendar::{self, Month};
 use super::sizing::Stage;
+use super::system_monitor::Reading;
 use super::team::{self, TeamMember};
 use crate::i18n::{t, t_args};
 
@@ -41,6 +42,14 @@ pub(super) const BAND: f64 = ui::tokens::Spacing::BASE.s8 as f64;
 pub(super) const CONTROL: f64 = ui::tokens::Layout::BASE.pin as f64;
 /// The remove badge on a hovered glance.
 pub(super) const BADGE: f64 = ui::tokens::Layout::BASE.desk_badge as f64;
+/// The system monitor's glance form: its two short readouts.
+pub(super) const MONITOR_GLANCE: Size = Size::new(176.0, 40.0);
+const MONITOR_HEADER: f64 = ui::tokens::Layout::BASE.row_header as f64;
+const MONITOR_ROW: f64 = ui::tokens::Metrics::BASE.bar_height as f64;
+/// The resize handle in a card's free corner, and the band along its free
+/// side that resizes too.
+pub(super) const GRIP: f64 = ui::tokens::Layout::BASE.desk_grip as f64;
+const GRIP_EDGE: f64 = ui::tokens::Layout::BASE.resize_grip as f64;
 /// Inset of a card's content from its edge.
 const PAD: f64 = ui::tokens::Spacing::BASE.s4 as f64;
 
@@ -151,6 +160,48 @@ pub(super) fn calendar_card_height(stage: Stage, width: f64) -> f64 {
         + CALENDAR_WEEKDAYS
         + calendar_row(stage, width) * ui::num::f64_of_usize(rows)
         + 8.0
+}
+
+fn monitor_row(stage: Stage) -> f64 {
+    match stage {
+        Stage::Compact | Stage::Regular => MONITOR_ROW,
+        Stage::Large => MONITOR_ROW * 1.35,
+    }
+}
+
+pub(super) fn monitor_card_height(stage: Stage) -> f64 {
+    match stage {
+        Stage::Compact => MONITOR_HEADER + 52.0,
+        Stage::Regular | Stage::Large => MONITOR_HEADER + monitor_row(stage) * 3.0 + 8.0,
+    }
+}
+
+/// The resize handle of the card at `card`, in its corner toward the
+/// display's middle (`right`/`bottom`: the corner the card is anchored by,
+/// opposite the handle).
+pub(super) fn grip_rect(card: Rect, (right, bottom): (bool, bool)) -> Rect {
+    let x0 = if right { card.x0 } else { card.x1 - GRIP };
+    let y0 = if bottom { card.y0 } else { card.y1 - GRIP };
+    Rect::from_origin_size(Point::new(x0, y0), Size::new(GRIP, GRIP))
+}
+
+/// The band along the card's free side that resizes it too.
+pub(super) fn grip_edge(card: Rect, (right, _): (bool, bool)) -> Rect {
+    if right {
+        Rect::new(
+            card.x0 - GRIP_EDGE / 2.0,
+            card.y0,
+            card.x0 + GRIP_EDGE / 2.0,
+            card.y1,
+        )
+    } else {
+        Rect::new(
+            card.x1 - GRIP_EDGE / 2.0,
+            card.y0,
+            card.x1 + GRIP_EDGE / 2.0,
+            card.y1,
+        )
+    }
 }
 
 /// The ground every desk card stands on: the one floating card
@@ -624,6 +675,237 @@ pub(super) fn paint_badge(
         },
         1.6,
     );
+}
+
+/// The system monitor's glance: load and memory, labels in quiet ink.
+pub(super) fn paint_monitor_glance(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    reading: Reading,
+) {
+    let colors = &theme.tokens.colors;
+    let label_style = theme
+        .text(TextRole::Caption)
+        .with_weight(TextWeight::Semibold);
+    let value_style = theme.text(TextRole::Caption).with_weight(TextWeight::Bold);
+    if reading.is_empty() {
+        // The widget is up and the first reading is on its way: its name,
+        // dim, until there is a number.
+        let title = t("desk-monitor-title");
+        let (_, h) = text.measure_style(&title, None, &value_style);
+        text.draw_style(
+            scene,
+            &title,
+            colors.text_dim,
+            transform.pre_translate((rect.x0 + PAD, rect.center().y - f64::from(h) / 2.0).into()),
+            None,
+            &value_style,
+        );
+        return;
+    }
+    let pairs = [
+        ("desk-monitor-cpu-short", reading.cpu_percent),
+        ("desk-monitor-memory-short", reading.memory_percent),
+    ];
+    let mut x = rect.x0 + PAD;
+    for (key, value) in pairs {
+        let Some(value) = value else {
+            continue;
+        };
+        let label = t(key);
+        let value = format!("{value}%");
+        for (run, style, color) in [
+            (&label, &label_style, colors.text_dim),
+            (&value, &value_style, colors.text_primary),
+        ] {
+            let (w, h) = text.measure_style(run, None, style);
+            text.draw_style(
+                scene,
+                run,
+                color,
+                transform.pre_translate((x, rect.center().y - f64::from(h) / 2.0).into()),
+                None,
+                style,
+            );
+            x += f64::from(w) + 4.0;
+        }
+        x += 10.0;
+    }
+}
+
+/// The system monitor's open card: compact, load and memory as two large
+/// readouts; otherwise one row per reading the machine offers, each with a
+/// quiet meter, roomier when large.
+#[allow(clippy::too_many_lines, reason = "one card's readouts at each stage")]
+pub(super) fn paint_monitor_card(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    card: Rect,
+    reading: Reading,
+    stage: Stage,
+) {
+    let colors = &theme.tokens.colors;
+    draw_header(
+        text,
+        scene,
+        transform,
+        theme,
+        card,
+        "desk-monitor-title",
+        MONITOR_HEADER,
+    );
+    if stage == Stage::Compact {
+        let label_style = theme.text(TextRole::Caption);
+        let value_style = theme
+            .text(TextRole::Title)
+            .with_weight(TextWeight::Semibold);
+        let half = (card.width() - 2.0 * PAD) / 2.0;
+        for (k, (key, value)) in [
+            ("desk-monitor-cpu", reading.cpu_percent),
+            ("desk-monitor-memory", reading.memory_percent),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let Some(value) = value else {
+                continue;
+            };
+            let x = card.x0 + PAD + half * ui::num::f64_of_usize(k);
+            let y = card.y0 + MONITOR_HEADER;
+            let value = format!("{value}%");
+            let (_, vh) = text.measure_style(&value, None, &value_style);
+            text.draw_style(
+                scene,
+                &value,
+                colors.text_primary,
+                transform.pre_translate((x, y).into()),
+                None,
+                &value_style,
+            );
+            text.draw_style(
+                scene,
+                &t(key),
+                colors.text_dim,
+                transform.pre_translate((x, y + f64::from(vh)).into()),
+                None,
+                &label_style,
+            );
+        }
+        return;
+    }
+    let rows = [
+        (
+            "desk-monitor-cpu",
+            reading
+                .cpu_percent
+                .map(|v| (format!("{v}%"), f64::from(v) / 100.0)),
+        ),
+        (
+            "desk-monitor-memory",
+            reading
+                .memory_percent
+                .map(|v| (format!("{v}%"), f64::from(v) / 100.0)),
+        ),
+        (
+            "desk-monitor-temperature",
+            reading
+                .temperature_celsius
+                .map(|c| (format!("{c}\u{b0}"), (f64::from(c) / 100.0).clamp(0.0, 1.0))),
+        ),
+    ];
+    let label_style = theme.text(TextRole::Body);
+    let value_style = if stage == Stage::Large {
+        theme
+            .text(TextRole::Title)
+            .with_weight(TextWeight::Semibold)
+    } else {
+        theme.text(TextRole::Body).with_weight(TextWeight::Semibold)
+    };
+    let meter = if stage == Stage::Large { 6.0 } else { 4.0 };
+    let mut y = card.y0 + MONITOR_HEADER;
+    for (key, value) in rows {
+        let Some((value, share)) = value else {
+            continue;
+        };
+        let label = t(key);
+        let (_, h) = text.measure_style(&label, None, &label_style);
+        let (vw, vh) = text.measure_style(&value, None, &value_style);
+        let line_y = y + 4.0;
+        text.draw_style(
+            scene,
+            &label,
+            colors.text_primary,
+            transform.pre_translate(
+                (
+                    card.x0 + PAD,
+                    line_y + (f64::from(vh) - f64::from(h)).max(0.0) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+            &label_style,
+        );
+        text.draw_style(
+            scene,
+            &value,
+            colors.text_primary,
+            transform.pre_translate((card.x1 - PAD - f64::from(vw), line_y).into()),
+            None,
+            &value_style,
+        );
+        // Secondary ink, never a status hue: a resting readout is not news.
+        let track_y = line_y + f64::from(h.max(vh)) + 6.0;
+        let track = Rect::new(card.x0 + PAD, track_y, card.x1 - PAD, track_y + meter);
+        ui::surface::card(
+            scene,
+            transform,
+            track,
+            meter / 2.0,
+            ui::paint::with_alpha_scaled(colors.text_dim, 0.25),
+        );
+        let fill = Rect::new(
+            track.x0,
+            track.y0,
+            track.x0 + track.width() * share.clamp(0.0, 1.0),
+            track.y1,
+        );
+        if fill.width() > 0.0 {
+            ui::surface::card(scene, transform, fill, meter / 2.0, colors.text_dim);
+        }
+        y += monitor_row(stage);
+    }
+}
+
+/// The resize handle: the corner grip in the card's free corner, pointing
+/// the way a drag grows the card, brighter under the pointer.
+pub(super) fn paint_grip(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    grip: Rect,
+    (right, bottom): (bool, bool),
+    hovered: bool,
+) {
+    let color = if hovered {
+        theme.tokens.colors.text_primary
+    } else {
+        ui::paint::with_alpha_scaled(theme.tokens.colors.text_dim, 0.7)
+    };
+    // The handle stands on the side the card is free on (the display's
+    // middle is behind it), so its arrow points out of the card: the way a
+    // drag grows it.
+    let icon = match (right, bottom) {
+        (true, true) => ui::icons::Icon::ArrowUpLeft,
+        (true, false) => ui::icons::Icon::ArrowDownLeft,
+        (false, true) => ui::icons::Icon::ArrowUpRight,
+        (false, false) => ui::icons::Icon::ArrowDownRight,
+    };
+    ui::icons::draw_icon(scene, transform, grip, icon, color, 1.4);
 }
 
 /// A widget's name, for the controls that open, fold, pin or remove it.

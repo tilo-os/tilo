@@ -18558,6 +18558,7 @@ dependencies = [
  "tilo-desktop-surface",
  "tilo-emoji-catalogue",
  "tilo-sort",
+ "tilo-system-stats",
  "tilo-ui",
  "tilo-vello",
  "tilo-winit",
