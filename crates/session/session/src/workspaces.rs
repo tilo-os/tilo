@@ -283,6 +283,20 @@ pub(crate) struct Listed {
     pub(crate) host: Option<[u8; 32]>,
 }
 
+/// One of the person's devices as a workspace's settings offer it: whether
+/// the workspace shows there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DeviceChoice {
+    /// The device, by its key.
+    pub(crate) device: [u8; 32],
+    /// What the person named it, as their devices know it.
+    pub(crate) label: String,
+    /// Whether the workspace shows on it.
+    pub(crate) shown: bool,
+    /// This device.
+    pub(crate) here: bool,
+}
+
 /// A room the person's list names that this device does not hold, and the
 /// device hosting it, which serves it to the person's other devices.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -328,6 +342,10 @@ pub(crate) struct Personal {
     /// door: the person's other devices join them each on their own, so the
     /// list never names them.
     borrowed: BTreeSet<RoomId>,
+    /// Set when the list changed without a pass over this desk writing it —
+    /// a device shown or kept off — so the person's other devices are owed
+    /// the list even though this desk wrote nothing.
+    untold: bool,
     /// Where the list and `agreed` survive a restart; `None` keeps them in
     /// memory only.
     store: Option<PathBuf>,
@@ -445,6 +463,7 @@ impl Personal {
             agreed_order: Vec::new(),
             entering: BTreeSet::new(),
             borrowed: BTreeSet::new(),
+            untold: false,
             store,
             published: None,
         };
@@ -730,6 +749,68 @@ impl Personal {
         true
     }
 
+    /// The person's devices as the workspace of `room` offers them, this
+    /// device always among them: whether the workspace shows on each, and
+    /// which one is this device.
+    ///
+    /// Empty for a room the person's list does not name: a workspace joined
+    /// through someone else's door is not theirs to show or keep off.
+    pub(crate) fn device_choices(&self, room: RoomId) -> Vec<DeviceChoice> {
+        let Some(entry) = entries_of(&self.directory)
+            .into_iter()
+            .find(|(candidate, _)| *candidate == room)
+            .map(|(_, entry)| entry)
+        else {
+            return Vec::new();
+        };
+        let mut devices = self.directory.devices();
+        if !devices.iter().any(|(device, _)| *device == self.device) {
+            let label = self.identity.device_cert.device_label.trim().to_owned();
+            devices.push((self.device, label));
+        }
+        devices
+            .into_iter()
+            .map(|(device, label)| DeviceChoice {
+                device,
+                label,
+                shown: shows_on(&entry, &device),
+                here: device == self.device,
+            })
+            .collect()
+    }
+
+    /// Whether the workspace of `room` shows on `device`.
+    pub(crate) fn shown_on(&self, room: RoomId, device: &[u8; 32]) -> Option<bool> {
+        let entry = entries_of(&self.directory)
+            .into_iter()
+            .find(|(candidate, _)| *candidate == room)
+            .map(|(_, entry)| entry)?;
+        Some(shows_on(&entry, device))
+    }
+
+    /// Show the workspace of `room` on `device`, or keep it off there. Only
+    /// the devices that opted out are named, so a device linked later shows
+    /// it. Returns whether the list changed.
+    pub(crate) fn set_shown(&mut self, room: RoomId, device: [u8; 32], shown: bool) -> bool {
+        // A room the list does not name has no entry to keep anything off.
+        if !matches!(self.shown_on(room, &device), Some(current) if current != shown) {
+            return false;
+        }
+        if self
+            .directory
+            .set_kept_off(entry_id(room), device, !shown)
+            .is_err()
+        {
+            return false;
+        }
+        // Writing the choice is not a pass over the desk, which is what
+        // tells the person's other devices: this device says so itself.
+        self.published = None;
+        self.untold = true;
+        self.persist();
+        true
+    }
+
     /// Merge another device's signed update. `author` is that device's
     /// certificate, as the transport authenticated it; the list checks that
     /// it belongs to this person and signed the update.
@@ -884,6 +965,9 @@ impl crate::Shared {
         };
         let mut personal = personal.borrow_mut();
         let mut news = personal.publish_local(&self.handle);
+        // A device shown or kept off is a change this desk's pass did not
+        // write.
+        news |= personal.untold;
         let mut behind = false;
         if let Some(sync) = &self.sync {
             let (taken, missing) = take_personal(&mut personal, sync);
@@ -905,6 +989,7 @@ impl crate::Shared {
             && let Some(update) = personal.snapshot()
         {
             sync.tell_personal(&update);
+            personal.untold = false;
         }
         if adoption.changed {
             self.keep_desk_now();
@@ -1199,6 +1284,103 @@ mod tests {
             adoption.release,
             vec![other],
             "a workspace gone from their other device is taken off this desk"
+        );
+    }
+
+    #[test]
+    fn a_workspace_kept_off_a_device_is_taken_off_its_desk() {
+        let a_state = tempfile::tempdir().expect("a state directory");
+        let b_state = tempfile::tempdir().expect("a state directory");
+        let a = desk();
+        let a_identity = identity(0x11, 0x21, "The laptop");
+        let mut a_list = Personal::open(a_identity.clone(), Some(a_state.path()));
+        a_list.publish_local(&a);
+        let a_workspaces = on_desk(&a);
+        let [(a_room, _)] = a_workspaces.as_slice() else {
+            panic!("the other device holds one workspace");
+        };
+        let a_room = *a_room;
+
+        let b = desk();
+        let b_identity = identity(0x11, 0x22, "The desktop");
+        let b_device = b_identity.device_cert.device_public_key;
+        let mut b_list = Personal::open(b_identity.clone(), Some(b_state.path()));
+        b_list.publish_local(&b);
+        // Each device tells the other what it holds, as the sessions they
+        // keep between them do.
+        b_list
+            .merge(
+                &a_list.snapshot().expect("the list is signed"),
+                &a_identity.device_cert,
+                tilo_clock::unix_now_ns(),
+            )
+            .expect("the person's list");
+        a_list
+            .merge(
+                &b_list.snapshot().expect("the list is signed"),
+                &b_identity.device_cert,
+                tilo_clock::unix_now_ns(),
+            )
+            .expect("the person's list");
+        for opened in b_list.adopt_into(&b).enter {
+            open_here(&b, opened.room, &opened.name);
+        }
+        b_list.publish_local(&b);
+        assert!(
+            on_desk(&b).iter().any(|(room, _)| *room == a_room),
+            "both devices hold the workspace"
+        );
+
+        // On the laptop, the person keeps the workspace off the desktop.
+        assert!(
+            a_list.set_shown(a_room, b_device, false),
+            "the choice is a change to their list"
+        );
+        let choices = a_list.device_choices(a_room);
+        let here = choices.iter().find(|choice| choice.here).expect("its row");
+        assert!(here.shown, "the workspace still shows here");
+        let elsewhere = choices
+            .iter()
+            .find(|choice| !choice.here)
+            .expect("the other device's row");
+        assert_eq!(
+            (elsewhere.device, elsewhere.shown, elsewhere.label.as_str()),
+            (b_device, false, "The desktop"),
+            "the control shows the workspace kept off the desktop"
+        );
+        let reopened = Personal::open(a_identity.clone(), Some(a_state.path()));
+        assert_eq!(
+            reopened.device_choices(a_room),
+            choices,
+            "and keeps showing it: the choice is in their list, kept beside the desk"
+        );
+
+        // The desktop learns of it and honours it: the workspace leaves its
+        // desk and is not opened there again.
+        b_list
+            .merge(
+                &a_list.snapshot().expect("the list is signed"),
+                &a_identity.device_cert,
+                tilo_clock::unix_now_ns(),
+            )
+            .expect("the person's list");
+        let adoption = b_list.adopt_into(&b);
+        assert_eq!(
+            adoption.release,
+            vec![a_room],
+            "a workspace kept off this device is taken off its desk"
+        );
+        let mut tree = b.read(Clone::clone);
+        tree.workspaces
+            .retain(|workspace| workspace.room() != a_room);
+        b.replace_tree(tree);
+        assert!(
+            b_list.adopt_into(&b).enter.is_empty(),
+            "and a desk without it does not open it again"
+        );
+        assert!(
+            on_desk(&a).iter().any(|(room, _)| *room == a_room),
+            "the device it shows on still has it"
         );
     }
 }

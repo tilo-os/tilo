@@ -941,6 +941,7 @@ impl Shared {
             &self.person(),
             &self.app_lists(),
             &self.ws_settings_fed,
+            self.personal.as_ref(),
         );
     }
 
@@ -1079,8 +1080,11 @@ impl Shared {
             self.workspace_settings.as_ref(),
             &self.handle,
             &self.person(),
+            &self.app_lists(),
+            &self.ws_settings_fed,
             &self.intents,
             &self.invocations,
+            self.personal.as_ref(),
         );
         workspace_settings::refresh(
             self.workspace_settings.as_ref(),
@@ -1088,6 +1092,7 @@ impl Shared {
             &self.person(),
             &self.app_lists(),
             &self.ws_settings_fed,
+            self.personal.as_ref(),
         );
         self.asker.follow();
         self.shortcut_guide.follow();

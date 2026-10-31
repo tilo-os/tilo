@@ -20,9 +20,11 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::OutputConfig;
 use tilo_desktop::desktop_actions::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
+use tilo_sheets::workspace_settings::WorkspaceSettingsApp;
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
@@ -163,5 +165,114 @@ fn a_workspace_the_person_makes_here_is_listed_for_their_other_devices() {
         held(&again),
         made,
         "both of the person's workspaces came back as they were"
+    );
+}
+
+/// The control the person uses: the sheet they open from the workspace menu,
+/// lent the seat the session lends its own, so a press arrives as theirs.
+fn sheet(session: &Session) -> HeadlessApp<WorkspaceSettingsApp> {
+    let seat = session
+        .workspace_settings()
+        .expect("the session hosts workspace settings")
+        .clone();
+    let mut app = HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", seat)
+        .expect("the sheet");
+    app.harness().resize((1280, 900)).expect("a screen");
+    app.settle();
+    app
+}
+
+/// Press the control `id` of `app`, as the person's own gesture.
+fn press(app: &mut HeadlessApp<WorkspaceSettingsApp>, id: &str) {
+    app.harness()
+        .perform_named(id, &ui::a11y::Action::Activate)
+        .unwrap_or_else(|error| panic!("press {id}: {error}"));
+    app.settle();
+}
+
+/// Workspace settings offers the person's devices for the workspace, and
+/// keeping this one off it takes the workspace off this desk, where it stays:
+/// the choice is theirs and their other devices keep it in step.
+#[test]
+fn keeping_a_workspace_off_this_device_takes_it_off_this_desks() {
+    let _settled = ui::motion::testing::settled();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    let _identity = this_computer(&mut env);
+    let state = tempfile::tempdir().expect("a state directory");
+    let mut session = session_keeping(state.path());
+    session.step(Duration::from_millis(1)).expect("a frame");
+    // Two workspaces, so the desk may let one go without leaving the person
+    // with none.
+    session
+        .invoke(CHROME_RESOURCE, "new-workspace", &serde_json::Map::new())
+        .expect("the desk makes a workspace");
+    session.step(Duration::from_millis(1)).expect("a frame");
+    assert_eq!(held(&session).len(), 2, "two workspaces to choose between");
+    let front = session
+        .handle()
+        .read(|tree| {
+            tree.active_workspace()
+                .map(tilo_desktop_model::Workspace::room)
+        })
+        .map(|room| room.to_string())
+        .expect("a workspace in front");
+    session
+        .invoke(
+            CHROME_RESOURCE,
+            "workspace-settings",
+            &serde_json::Map::new(),
+        )
+        .expect("settings opens on the workspace in front");
+    session.step(Duration::from_millis(1)).expect("a frame");
+    let mut app = sheet(&session);
+    let general = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .settings()
+        .general;
+    assert_eq!(general.devices.title, "Your devices");
+    let [device] = general.device_rows.as_slice() else {
+        panic!(
+            "the person's one device is offered: {:?}",
+            general.device_rows
+        );
+    };
+    assert!(
+        device.label.ends_with("(this device)"),
+        "the device this desk runs on says so: {device:?}"
+    );
+    assert!(device.shown && device.toggle == "Shown", "{device:?}");
+    let key = device.key.clone();
+
+    // A press on the device's row keeps the workspace off it.
+    press(&mut app, &format!("ws-general-device-{key}"));
+    session.step(Duration::from_millis(1)).expect("a frame");
+    let after = held(&session);
+    assert_eq!(
+        after.len(),
+        1,
+        "the workspace kept off this device is off its desk: {after:?}"
+    );
+    assert!(
+        !after.iter().any(|(_, _, room)| *room == front),
+        "the workspace in front is the one kept off"
+    );
+    // It stays off: the choice is in the person's own list, not only on the
+    // desk it was made at.
+    for _ in 0..3 {
+        session.step(Duration::from_millis(1)).expect("a frame");
+    }
+    assert_eq!(
+        held(&session),
+        after,
+        "the workspace kept off here is not brought back"
+    );
+
+    let mut again = session_keeping(state.path());
+    again.step(Duration::from_millis(1)).expect("a frame");
+    assert_eq!(
+        held(&again),
+        after,
+        "and comes back off the desk in the next session"
     );
 }

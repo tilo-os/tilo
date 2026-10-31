@@ -24,6 +24,7 @@ use tilo_sheets::workspace_settings as sheet;
 
 use crate::keys::{Invocation, Invocations};
 use crate::lists::AppLists;
+use crate::workspaces::{DeviceChoice, Personal};
 
 /// Open the sheet on the workspace in front: its panes as the workspace
 /// stands, and its name field ready for a new name.
@@ -33,11 +34,12 @@ pub(crate) fn open(
     person: &UserId,
     lists: &AppLists,
     fed: &Cell<Option<u64>>,
+    personal: Option<&RefCell<Personal>>,
 ) {
     let Some(seat) = seat else {
         return;
     };
-    show(seat, handle, person, lists, fed);
+    show(seat, handle, person, lists, fed, personal);
     seat.reset();
     seat.presentation().open(false);
 }
@@ -51,6 +53,7 @@ pub(crate) fn refresh(
     person: &UserId,
     lists: &AppLists,
     fed: &Cell<Option<u64>>,
+    personal: Option<&RefCell<Personal>>,
 ) {
     let Some(seat) = seat else {
         return;
@@ -58,7 +61,7 @@ pub(crate) fn refresh(
     if !seat.presentation().is_open() || fed.get() == Some(handle.revision()) {
         return;
     }
-    show(seat, handle, person, lists, fed);
+    show(seat, handle, person, lists, fed, personal);
 }
 
 /// Show the sheet's panes as `tree` stands for `person`, keeping the tab it
@@ -69,12 +72,14 @@ fn show(
     person: &UserId,
     lists: &AppLists,
     fed: &Cell<Option<u64>>,
+    personal: Option<&RefCell<Personal>>,
 ) {
     let shown = settings(
         &handle.read(Clone::clone),
         person,
         lists,
         seat.settings().tab,
+        personal,
     );
     seat.show(shown);
     fed.set(Some(handle.revision()));
@@ -85,8 +90,11 @@ pub(crate) fn follow(
     seat: Option<&sheet::WorkspaceSettingsSeat>,
     handle: &DesktopHandle,
     person: &UserId,
+    lists: &AppLists,
+    fed: &Cell<Option<u64>>,
     intents: &RefCell<Vec<ChromeIntent>>,
     invocations: &Invocations,
+    personal: Option<&RefCell<Personal>>,
 ) {
     let Some(seat) = seat else {
         return;
@@ -103,6 +111,13 @@ pub(crate) fn follow(
                 }
             }
             sheet::WorkspaceSettingsEffect::Close => {}
+            sheet::WorkspaceSettingsEffect::ToggleDevice { device } => {
+                if toggle_device(handle, personal, &device) {
+                    // The row says the choice at once: a workspace kept off
+                    // this device leaves the desk under the sheet.
+                    show(seat, handle, person, lists, fed, personal);
+                }
+            }
             sheet::WorkspaceSettingsEffect::Rename { name } => {
                 intents
                     .borrow_mut()
@@ -225,6 +240,7 @@ fn settings(
     person: &UserId,
     lists: &AppLists,
     tab: sheet::Tab,
+    personal: Option<&RefCell<Personal>>,
 ) -> sheet::Settings {
     let workspace = tree.active_workspace();
     let names = PeopleNames::of(tree, person, own_name().as_deref());
@@ -241,12 +257,95 @@ fn settings(
         close: t("workspace-settings-close"),
         tabs: tabs(),
         tab,
+        general: general(tree, personal),
         people: workspace.map_or_else(sheet::People::default, |ws| people(ws, &names, person)),
         permissions: workspace.map_or_else(sheet::Permissions::default, |ws| {
             permissions(ws, person, &apps)
         }),
         ..sheet::Settings::default()
     }
+}
+
+/// The General tab: which of the person's devices show the workspace, and
+/// its place among theirs. A workspace that is not the person's own has no
+/// devices to show it on: it is theirs only while they are in it.
+fn general(tree: &DesktopTree, personal: Option<&RefCell<Personal>>) -> sheet::General {
+    let devices = match (tree.active_workspace(), personal) {
+        (Some(workspace), Some(personal)) => personal.borrow().device_choices(workspace.room()),
+        _ => Vec::new(),
+    };
+    let at = tree.active_workspace().and_then(|workspace| {
+        tree.workspaces
+            .iter()
+            .position(|one| one.id == workspace.id)
+    });
+    let last = tree.workspaces.len().saturating_sub(1);
+    sheet::General {
+        devices: sheet::Group {
+            title: t("workspace-settings-devices-title"),
+            description: t("workspace-settings-devices-local"),
+        },
+        device_rows: devices.into_iter().map(device_row).collect(),
+        move_labels: [
+            t("workspace-settings-move-earlier"),
+            t("workspace-settings-move-later"),
+        ],
+        move_enabled: [at.is_some_and(|at| at > 0), at.is_some_and(|at| at < last)],
+        ..sheet::General::default()
+    }
+}
+
+/// One of the person's devices as the General tab lists it: named as its
+/// own label names it, the one this session runs on saying so.
+fn device_row(choice: DeviceChoice) -> sheet::Device {
+    sheet::Device {
+        key: hex::encode(choice.device),
+        label: if choice.here {
+            t_args(
+                "workspace-settings-device-here",
+                &[("device", choice.label.into())],
+            )
+        } else {
+            choice.label
+        },
+        toggle: t(if choice.shown {
+            "workspace-settings-device-shown"
+        } else {
+            "workspace-settings-device-hidden"
+        }),
+        shown: choice.shown,
+    }
+}
+
+/// Show the workspace in front on one of the person's devices, or keep it
+/// off there: the choice is written to the person's own list, which their
+/// devices keep in step, and this device honours it at once.
+fn toggle_device(
+    handle: &DesktopHandle,
+    personal: Option<&RefCell<Personal>>,
+    device: &str,
+) -> bool {
+    let Some(personal) = personal else {
+        return false;
+    };
+    let Some(device) = device_key(device) else {
+        tracing::debug!(%device, "not a device key: nothing changed");
+        return false;
+    };
+    let Some(room) = handle.read(|tree| tree.active_workspace().map(Workspace::room)) else {
+        return false;
+    };
+    let mut personal = personal.borrow_mut();
+    let Some(shown) = personal.shown_on(room, &device) else {
+        return false;
+    };
+    personal.set_shown(room, device, !shown)
+}
+
+/// The device `key` names, as the sheet hands it back.
+fn device_key(key: &str) -> Option<[u8; 32]> {
+    let bytes = hex::decode(key).ok()?;
+    <[u8; 32]>::try_from(bytes).ok()
 }
 
 /// The sheet's tabs, each by the name the strip shows and the shorter one a
@@ -461,5 +560,42 @@ impl domain::AppDirectory for Directory<'_> {
                     .find(|app| app.desktop_id == app_id)
                     .map(|app| app.name.clone())
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each device is listed as its own label names it, the one this desk
+    /// runs on saying so, with the toggle naming the choice it holds.
+    #[test]
+    fn a_devices_row_says_whether_the_workspace_shows_there() {
+        let elsewhere = device_row(DeviceChoice {
+            device: [0x21; 32],
+            label: "The laptop".to_owned(),
+            shown: true,
+            here: false,
+        });
+        assert_eq!(elsewhere.key, "21".repeat(32), "asked for by its key");
+        assert_eq!(
+            (
+                elsewhere.label.as_str(),
+                elsewhere.toggle.as_str(),
+                elsewhere.shown
+            ),
+            ("The laptop", "Shown", true)
+        );
+
+        let here = device_row(DeviceChoice {
+            device: [0x22; 32],
+            label: "The desktop".to_owned(),
+            shown: false,
+            here: true,
+        });
+        assert_eq!(
+            (here.label.as_str(), here.toggle.as_str(), here.shown),
+            ("The desktop (this device)", "Kept off", false)
+        );
     }
 }
