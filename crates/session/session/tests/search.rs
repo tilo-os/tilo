@@ -42,6 +42,8 @@ struct Host {
     invoked: RefCell<Vec<(RemoteActionTarget, Arguments)>>,
     /// The uris it was asked to open, by the room it was asked for.
     opened: RefCell<Vec<(String, String)>>,
+    /// The machine's own apps it was asked to start.
+    started: RefCell<Vec<String>>,
 }
 
 impl AppActions for Host {
@@ -69,7 +71,8 @@ impl AppActions for Host {
         Ok(())
     }
 
-    fn start_host_app(&self, _: &str) -> Result<(), DoorError> {
+    fn start_host_app(&self, desktop_id: &str) -> Result<(), DoorError> {
+        self.started.borrow_mut().push(desktop_id.to_owned());
         Ok(())
     }
 }
@@ -805,4 +808,79 @@ fn an_apps_published_entry_is_found_with_the_app_closed_and_after_a_restart() {
     let mut session = session_over(Rc::new(Host::default()), None, Some(reopened));
     session.step(Duration::from_millis(1)).unwrap();
     find_row(&mut session, "groceries", "Groceries for the weekend");
+}
+
+/// A program the person added to their apps: its file at `path`, and the
+/// entry Tilo keeps for it, written the way the registry writes one.
+fn add_downloaded(home: &tilo_test_env::TestHome, key: &str, name: &str, path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    std::fs::create_dir_all(path.parent().expect("a folder")).expect("the folder");
+    std::fs::write(path, b"#!/bin/sh\nexit 0\n").expect("the program");
+    let mut permissions = std::fs::metadata(path).expect("the program").permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).expect("a runnable program");
+    let store = desktop_entry::downloaded::Store::in_data_home(home.data());
+    store
+        .add(
+            &desktop_entry::downloaded::Identity {
+                key: key.to_owned(),
+                name: name.to_owned(),
+                icon: None,
+                comment: Some("What it says of itself".into()),
+                categories: Vec::new(),
+                keywords: Vec::new(),
+                mime_types: Vec::new(),
+                startup_wm_class: None,
+                field_code: None,
+            },
+            &desktop_entry::downloaded::Program {
+                path: path.to_path_buf(),
+                kind: desktop_entry::downloaded::ProgramKind::AppImage,
+            },
+        )
+        .expect("the entry");
+}
+
+#[test]
+fn a_downloaded_program_is_found_and_starts_and_one_whose_file_is_gone_says_so() {
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let dropped = home.home().join("Applications/Dropped.AppImage");
+    add_downloaded(&home, "Dropped", "Dropped Tool", &dropped);
+    let gone = home.home().join("Downloads/Gone.AppImage");
+    add_downloaded(&home, "Gone", "Gone Tool", &gone);
+    // The file went away after the person added it.
+    std::fs::remove_file(&gone).expect("the file went away");
+
+    let host = Rc::new(Host::default());
+    let mut session = session(Rc::clone(&host));
+    session.step(Duration::from_millis(1)).unwrap();
+
+    // The app is found by its name and starts the way every host app starts:
+    // the entry Tilo keeps for it.
+    let row = find_row(&mut session, "dropped", "Dropped Tool");
+    assert_eq!(
+        row.presentation.and_then(|shown| shown.detail),
+        Some("What it says of itself".to_owned())
+    );
+    invoke(
+        &mut session,
+        row.id.as_str(),
+        "choose",
+        serde_json::json!({}),
+    );
+    until(&mut session, |_| !host.started.borrow().is_empty());
+    assert_eq!(
+        host.started.borrow().as_slice(),
+        ["tilo-downloaded-Dropped"]
+    );
+
+    // The one whose file went away is found all the same, and its row says
+    // what happened instead of starting nothing.
+    let row = find_row(&mut session, "gone", "Gone Tool");
+    assert_eq!(
+        row.presentation.and_then(|shown| shown.detail),
+        Some("The file is gone".to_owned())
+    );
 }
