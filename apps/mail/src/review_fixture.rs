@@ -147,7 +147,7 @@ pub fn fetched_into(profile: &Path) -> (FakeImap, FakeSmtp) {
     let mut app = TestApp::<MailShell>::open_data_dir(profile).unwrap();
     app.with_surface(MailApp::reach_test_servers).unwrap();
     let held = CANDIDATES.len() + 1;
-    let deadline = tilo_test_env::hang_deadline();
+    let deadline = ui::testing::hang_deadline();
     // The window may be busy with the server already (connecting, or
     // keeping its drafts there): it is asked again until it takes the ask.
     while app.with_surface(|mail: &mut MailApp| mail.held()).unwrap() < held {
