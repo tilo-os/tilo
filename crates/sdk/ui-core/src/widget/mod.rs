@@ -3281,7 +3281,10 @@ pub use hover_intent::EdgeAim;
 pub mod top_edge_reveal;
 pub use top_edge_reveal::{EdgeGeometry, TopEdgeReveal};
 pub mod tabs;
-pub use tabs::{SharedBy, SharedWith, TabBar, TabDescriptor, TabHolder, TabMark, draw_app_mark};
+pub use tabs::{
+    PresenceFaceProps, SharedBy, SharedWith, TabBar, TabDescriptor, TabHolder, TabItemProps,
+    TabMark, TabStrip, TabStripProps, draw_app_mark, pack_point, unpack_point,
+};
 pub mod scrollbar;
 pub use scrollbar::{
     PressOutcome, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollMetrics,
@@ -3540,7 +3543,6 @@ pub use video_player::{DeclaredVideo, VideoPlayer, VideoPlayerProps};
 pub mod webview;
 pub use webview::{WebView, WebViewProps};
 pub mod image_viewer;
-#[path = "image_viewer_component.rs"]
 mod image_viewer_component;
 pub use image_viewer::ImageViewer;
 pub use image_viewer_component::{ImageViewerProps, ZoomableImage};
@@ -3566,7 +3568,6 @@ pub(crate) mod view_choice;
 pub(crate) use activation::take_presses;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
 pub mod media_card;
-#[path = "media_grid_component.rs"]
 mod media_grid_component;
 pub use media_card::{
     ArtPainter, MediaArt, MediaAspect, MediaBadge, MediaCard, MediaCardFace, MediaGrid, MediaSize,
@@ -3578,7 +3579,6 @@ pub use capture_button::{CaptureButtonFace, CaptureKind};
 pub mod transport;
 pub use transport::{TransportControl, TransportFace};
 pub mod media_transport;
-#[path = "media_transport_component.rs"]
 mod media_transport_component;
 pub use media_transport::{
     MediaTransport, TransportActions, TransportArt, TransportEvent, TransportFeed, TransportRepeat,
@@ -3588,7 +3588,6 @@ pub use media_transport_component::{DeclaredTransport, MediaTransportProps};
 pub mod now_playing;
 pub use now_playing::{Scrub, Song, SongFace};
 pub mod drop_zone;
-#[path = "drop_zone_component.rs"]
 mod drop_zone_component;
 pub use drop_zone::{DropZone, DropZoneFace};
 pub use drop_zone_component::DropZoneProps;
@@ -3719,7 +3718,6 @@ pub use history_face::{EntryBody, EntryFace, HistoryEntryPresenter};
 pub use collab_types::ArtifactKind;
 
 pub mod qr;
-#[path = "qr_component.rs"]
 mod qr_component;
 pub mod resource_actions;
 pub use qr::QrWidget;

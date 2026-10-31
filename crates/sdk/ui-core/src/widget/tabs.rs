@@ -1138,6 +1138,23 @@ impl TabBar {
         self
     }
 
+    /// Offer tabs' close controls, or take them away, on a strip already
+    /// built (`closable`). `true` when that changed what the strip offers.
+    pub fn set_closable(&mut self, closable: bool) -> bool {
+        if self.closable == closable {
+            return false;
+        }
+        self.touch();
+        self.closable = closable;
+        true
+    }
+
+    /// Whether the strip offers its tabs' close controls.
+    #[must_use]
+    pub fn closable_for_tests(&self) -> bool {
+        self.closable
+    }
+
     /// No new-tab control at the end of the strip.
     #[must_use]
     pub fn without_new_tab(mut self) -> Self {
@@ -10466,3 +10483,9 @@ mod tests {
         }
     }
 }
+
+#[path = "tab_strip_component.rs"]
+mod component;
+pub use component::{
+    PresenceFaceProps, TabItemProps, TabStrip, TabStripProps, pack_point, unpack_point,
+};
