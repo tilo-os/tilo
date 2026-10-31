@@ -86,8 +86,10 @@ def audit(root: Path = ROOT) -> tuple[Counter[str], int]:
             text = source.read_text(encoding="utf-8")
             # Only code decides a layout: a comparison inside a string literal is
             # data being passed somewhere else (`yt-dlp`'s `[height<=720]` format
-            # selector), and a commented-out one is not code at all.
-            code, literals = rust_source.lex(text)
+            # selector), a commented-out one is not code at all, and one inside a
+            # `#[cfg(test)]` item asserts what a surface does at a size rather
+            # than deciding its layout.
+            code, literals = rust_source.lex(rust_source.blank_test_items(text))
             masked = list(code)
             for literal in literals:
                 for index in range(literal.start, literal.end):
