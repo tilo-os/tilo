@@ -474,6 +474,9 @@ struct Shared {
     /// Who is here: this session's membership of each workspace's room,
     /// when it takes part in the collaboration plane.
     sync: Option<Rc<sync::Client>>,
+    /// The person's own workspaces, as all their devices hold the list of
+    /// them: `None` when this computer has no identity to keep it for.
+    personal: Option<RefCell<workspaces::Personal>>,
     /// The copies the person can paste again, and what the Clipboard section
     /// was last fed of them.
     clipboard: mount::clipboard::Clipboard,
@@ -960,22 +963,6 @@ impl Shared {
         if let Err(error) = self.ask_of_desk(action, args) {
             self.handle.acknowledge(error);
         }
-    }
-
-    /// Give this computer the workspace a join was granted, through the
-    /// desk's own action for making one, so the desk keeps its workspaces.
-    fn add_joined_workspace(&self, joined: &directory::Joined) -> Result<(), String> {
-        let args = serde_json::Map::from_iter([
-            (
-                "room".to_owned(),
-                serde_json::Value::from(joined.room.clone()),
-            ),
-            (
-                "name".to_owned(),
-                serde_json::Value::from(joined.name.clone()),
-            ),
-        ]);
-        self.ask_of_desk("new-workspace", &args)
     }
 
     /// Keep this device's desk as it stands: its workspaces, the windows in
@@ -1516,6 +1503,10 @@ impl Session {
         // The chrome above the windows: its own tree, beside the desk's.
         let intents = Rc::new(RefCell::new(Vec::new()));
         let sync = start_collaboration(&options);
+        // The person's own workspaces, which their other devices hold with
+        // them: kept beside the desk, and opened when this computer knows
+        // whose they are.
+        let personal = workspaces::personal_for(options.state.as_deref());
         let presentation = (options.presentation)();
         let overview = mount::overview::Overview::new(
             presentation.theme.motion(),
@@ -1704,6 +1695,7 @@ impl Session {
             asker,
             notice_view: RefCell::new(None),
             sync,
+            personal,
             clipboard: mount::clipboard::Clipboard::new(),
             settings: mount::settings_sync::SettingsSync::new(),
             overview,
@@ -2093,6 +2085,7 @@ impl Session {
     /// asked in turn.
     fn settle(&mut self) -> Result<(), Error> {
         self.follow_collaboration();
+        self.shared.follow_personal();
         self.follow_power()?;
         if let Some(comforts) = &mut self.comforts {
             comforts.observe();

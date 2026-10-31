@@ -362,6 +362,10 @@ enum Outgoing {
     /// Dial a workspace host: an always-on peer that keeps what this
     /// person's devices publish while the others are away.
     Connect(EndpointAddr),
+    /// Hear the person's other devices from now on.
+    WatchSiblings,
+    /// Say `msg` to each of the person's devices whose session is up.
+    TellSiblings(Box<NeighbourMsg>),
     /// The session is going: stop the peer actor.
     Stop,
 }
@@ -382,6 +386,20 @@ pub struct Client {
     notice: RefCell<Option<WaveNotice>>,
     outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
     arrived: std::sync::mpsc::Receiver<NetEvent>,
+    /// The person this device belongs to, by their root key, as its
+    /// certificate names them.
+    user: Option<[u8; 32]>,
+    /// The certificates each of the person's other devices was heard with,
+    /// by its publisher.
+    siblings: RefCell<std::collections::BTreeMap<EndpointId, Vec<tilo_user_identity::DeviceCert>>>,
+    /// The workspace lists the person's other devices sent since the last
+    /// call, each with the certificate its device was heard by.
+    personal: RefCell<
+        Vec<(
+            tilo_user_identity::DirectoryUpdate,
+            tilo_user_identity::DeviceCert,
+        )>,
+    >,
     /// This device's relays, held back until a room this session takes part
     /// in has someone else in it.
     reachability: Reachability,
@@ -436,6 +454,9 @@ impl Client {
         let (outgoing, commands) = tokio::sync::mpsc::unbounded_channel();
         let (arrivals, arrived) = std::sync::mpsc::channel();
         let (ready, bound) = std::sync::mpsc::channel();
+        let user = identity
+            .as_ref()
+            .map(|identity| identity.device_cert.user_public_key);
         let thread = std::thread::Builder::new()
             .name("tilo-sync".into())
             .spawn(move || run(identity, commands, arrivals, ready, wake))?;
@@ -457,10 +478,17 @@ impl Client {
             notice: RefCell::new(None),
             outgoing,
             arrived,
+            user,
+            siblings: RefCell::new(std::collections::BTreeMap::new()),
+            personal: RefCell::new(Vec::new()),
             reachability,
             thread: Some(thread),
         };
-        // The hosts first: a room joined before them is replayed to this
+        // The person's other devices are heard from the start, so a list one
+        // of them published is taken even when this session shows none of
+        // their workspaces yet.
+        let _ = sync.outgoing.send(Outgoing::WatchSiblings);
+        // The hosts next: a room joined before them is replayed to this
         // device when its host session comes up, never lost.
         for host in hosts {
             let _ = sync.outgoing.send(Outgoing::Connect(host));
@@ -568,10 +596,76 @@ impl Client {
 
     /// Take one thing the plane heard, and hand the desktop who is here now.
     fn hear(&self, event: NetEvent) {
+        self.keep_personal(&event);
         self.plane.borrow_mut().apply(event);
         self.note_reachability();
         self.show_here();
         self.show_waves();
+    }
+
+    /// Keep what the person's other devices said of their workspaces: a
+    /// device's certificates when its session comes up, and the lists it
+    /// publishes with the certificate that signed them.
+    fn keep_personal(&self, event: &NetEvent) {
+        match event {
+            NetEvent::Sibling { peer, certs, .. } => {
+                self.siblings.borrow_mut().insert(*peer, certs.clone());
+            }
+            NetEvent::SiblingLeft { peer, .. } => {
+                self.siblings.borrow_mut().remove(peer);
+            }
+            NetEvent::SiblingMsg {
+                peer,
+                msg: NeighbourMsg::PersonalWorkspaces { update, .. },
+                ..
+            } => {
+                // The update names its author; the certificate the device was
+                // heard by is the only one that says who it is, and the list
+                // checks it against the person's root before it merges.
+                let author = self
+                    .siblings
+                    .borrow()
+                    .get(peer)
+                    .and_then(|certs| author_of(certs, update));
+                if let Some(author) = author {
+                    self.personal
+                        .borrow_mut()
+                        .push(((**update).clone(), author));
+                } else {
+                    tracing::debug!(
+                        device = %hex::encode(update.author_device_public_key),
+                        "a device's workspaces arrived before its certificate"
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Say this person's workspaces to their other devices: every one of
+    /// them whose session is up hears the list, and the ones this device has
+    /// and its sender does not are opened there.
+    pub fn tell_personal(&self, update: &tilo_user_identity::DirectoryUpdate) {
+        let Some(user) = self.user else {
+            return;
+        };
+        let _ = self.outgoing.send(Outgoing::TellSiblings(Box::new(
+            NeighbourMsg::PersonalWorkspaces {
+                user_public_key: user,
+                update: Box::new(update.clone()),
+            },
+        )));
+    }
+
+    /// Take the workspace lists the person's other devices sent since the
+    /// last call, each with the certificate its device was heard by.
+    pub fn take_personal(
+        &self,
+    ) -> Vec<(
+        tilo_user_identity::DirectoryUpdate,
+        tilo_user_identity::DeviceCert,
+    )> {
+        std::mem::take(&mut *self.personal.borrow_mut())
     }
 
     /// Take the waves at this person heard since the last call: the bar
@@ -895,6 +989,9 @@ impl Client {
                 notice: RefCell::new(None),
                 outgoing,
                 arrived,
+                user: None,
+                siblings: RefCell::new(std::collections::BTreeMap::new()),
+                personal: RefCell::new(Vec::new()),
                 reachability,
                 thread: None,
             },
@@ -1063,26 +1160,8 @@ fn run(
             return;
         }
         while let Some(command) = commands.recv().await {
-            let taken = match command {
-                Outgoing::Join(ws) => actor
-                    .send(NetCmd::JoinWorkspace {
-                        ws,
-                        on_event: events.clone(),
-                    })
-                    .await
-                    .is_ok(),
-                Outgoing::Leave(ws) => actor.send(NetCmd::LeaveWorkspace { ws }).await.is_ok(),
-                Outgoing::Publish { ws, msg } => {
-                    actor.send(NetCmd::Publish { ws, msg: *msg }).await.is_ok()
-                }
-                Outgoing::Connect(addr) => actor
-                    .send(NetCmd::ConnectHost {
-                        addr,
-                        expectation: None,
-                    })
-                    .await
-                    .is_ok(),
-                Outgoing::Stop => break,
+            let Some(taken) = carry_out(&actor, command, &events).await else {
+                break;
             };
             if !taken {
                 tracing::debug!("the collaboration plane stopped taking commands");
@@ -1095,9 +1174,66 @@ fn run(
     });
 }
 
+/// Give one command from the session to the plane: whether it was taken, or
+/// `None` when it is the command that ends it.
+async fn carry_out(
+    plane: &tokio::sync::mpsc::Sender<NetCmd>,
+    command: Outgoing,
+    events: &tokio::sync::mpsc::Sender<NetEvent>,
+) -> Option<bool> {
+    Some(match command {
+        Outgoing::Join(ws) => plane
+            .send(NetCmd::JoinWorkspace {
+                ws,
+                on_event: events.clone(),
+            })
+            .await
+            .is_ok(),
+        Outgoing::Leave(ws) => plane.send(NetCmd::LeaveWorkspace { ws }).await.is_ok(),
+        Outgoing::Publish { ws, msg } => {
+            plane.send(NetCmd::Publish { ws, msg: *msg }).await.is_ok()
+        }
+        Outgoing::Connect(addr) => plane
+            .send(NetCmd::ConnectHost {
+                addr,
+                expectation: None,
+            })
+            .await
+            .is_ok(),
+        Outgoing::WatchSiblings => plane
+            .send(NetCmd::WatchSiblings {
+                on_event: events.clone(),
+            })
+            .await
+            .is_ok(),
+        Outgoing::TellSiblings(msg) => plane
+            .send(NetCmd::PublishToSiblings { msg: *msg })
+            .await
+            .is_ok(),
+        Outgoing::Stop => return None,
+    })
+}
+
+/// The certificate among `certs` that says who authored `update`, if the
+/// device was heard with one.
+///
+/// The update names its author, and a device it arrived from is only that
+/// author if the certificate the device's session came up with is the
+/// author's: a list is worth no more than the device that signed it.
+fn author_of(
+    certs: &[tilo_user_identity::DeviceCert],
+    update: &tilo_user_identity::DirectoryUpdate,
+) -> Option<tilo_user_identity::DeviceCert> {
+    certs
+        .iter()
+        .find(|cert| cert.device_public_key == update.author_device_public_key)
+        .cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::SigningKey;
     use tilo_desktop_model::{RoomId, Workspace};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -1128,6 +1264,45 @@ mod tests {
             active: workspace.id,
             ..DesktopTree::default()
         }
+    }
+
+    /// A device of the person's, certified for their root key, and the key
+    /// it signs with.
+    fn certified(user: u8, device_seed: u8, label: &str) -> (DeviceCert, SigningKey) {
+        let person = SigningKey::from_bytes(&[user; 32]);
+        let this = SigningKey::from_bytes(&[device_seed; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: person.verifying_key().to_bytes(),
+            device_public_key: this.verifying_key().to_bytes(),
+            device_label: label.to_owned(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: tilo_clock::unix_now_ns(),
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
+        (cert, this)
+    }
+
+    /// A device's workspace list for `room`, signed by that device.
+    fn list_of(
+        device: &DeviceCert,
+        signing: &SigningKey,
+        room: &str,
+    ) -> tilo_user_identity::DirectoryUpdate {
+        let mut directory = tilo_user_identity::WorkspaceDirectory::new(
+            device.user_public_key,
+            device.device_public_key,
+        );
+        let room = RoomId::parse(room).expect("a room id");
+        directory
+            .add_room_workspace(room_topic_id(room), &room.to_string(), "Desk")
+            .expect("a listed workspace");
+        let update = directory
+            .signed_snapshot(signing, tilo_clock::unix_now_ns())
+            .expect("a signed list");
+        assert_eq!(update.author_device_public_key, device.device_public_key);
+        update
     }
 
     /// A session in `ROOM`'s room with no transport, and what it would have
@@ -1255,6 +1430,24 @@ mod tests {
                 .expect("a tile pointer key"),
             },
         }
+    }
+
+    #[test]
+    fn a_list_is_kept_only_from_the_device_that_said_it() {
+        let (laptop, laptop_key) = certified(0x04, 0x11, "Laptop");
+        let (phone, _) = certified(0x04, 0x12, "Phone");
+        let by_laptop = list_of(&laptop, &laptop_key, ROOM);
+
+        let kept = author_of(&[phone.clone(), laptop.clone()], &by_laptop)
+            .expect("the laptop's own list is the laptop's");
+        assert_eq!(kept.device_public_key, laptop.device_public_key);
+
+        // Someone else's device, and a list the laptop's session carried but
+        // another device signed: neither says the laptop said it.
+        let (stranger, _) = certified(0x55, 0x13, "Stranger");
+        assert!(author_of(&[stranger], &by_laptop).is_none());
+        assert!(author_of(&[phone], &by_laptop).is_none());
+        assert!(author_of(&[], &by_laptop).is_none());
     }
 
     #[test]
