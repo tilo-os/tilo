@@ -23,7 +23,9 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{DoorError, ResourceSpec};
 use tilo_compositor::OutputConfig;
-use tilo_desktop::desktop_actions::{DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
+use tilo_desktop::desktop_actions::{
+    CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND,
+};
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
@@ -66,6 +68,11 @@ impl AppActions for Host {
 }
 
 fn session(host: Rc<Host>) -> Session {
+    session_over(host, None)
+}
+
+/// A session whose search also lists the records `records` keeps current.
+fn session_over(host: Rc<Host>, records: Option<tilo_session::Records>) -> Session {
     Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -79,6 +86,7 @@ fn session(host: Rc<Host>) -> Session {
                     }],
                     ..AppLists::default()
                 }),
+                records,
                 ..SearchOptions::default()
             },
             apps: Some(host),
@@ -320,4 +328,170 @@ fn a_switch_and_a_choice_are_changed_from_search_and_the_choice_is_kept() {
             .as_str()
             .is_some_and(|chosen| !chosen.is_empty())
     });
+}
+
+/// The app whose record index the record of this test is named in: any app of
+/// the workspace keeps one, and search reads them all the same way.
+const NOTES: &str = "so.tilo.notes";
+
+/// The record a row brings here: a file-backed document, as a workspace that
+/// is not this one names it.
+const QUARTERLY: &str = "file:/work/Quarterly plan.odt";
+
+/// The workspaces the desk shows, by room and by the name it gives it.
+fn workspaces(session: &Session) -> Vec<(String, String)> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .map(|workspace| (workspace.room().to_string(), workspace.name.clone()))
+            .collect()
+    })
+}
+
+/// The room of the workspace in front.
+fn active_room(session: &Session) -> String {
+    session
+        .handle()
+        .read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.room().to_string())
+        })
+        .expect("a workspace")
+}
+
+/// Save `rows` (`(id, kind)`) as `package`'s index of `room` holds them, and
+/// publish it in one rename: the index of a workspace that appears while the
+/// session runs appears as one directory, which is what the worker following
+/// the device's indexes is told about.
+fn write_index(home: &tilo_test_env::TestHome, package: &str, room: &str, rows: &[(&str, &str)]) {
+    let directory =
+        app_state::room_index_directory(home.data(), package, room).expect("an index directory");
+    let staged = directory.with_file_name(format!("staging-{room}"));
+    std::fs::create_dir_all(&staged).expect("the index's directory");
+    let mut index = automerge::AutoCommit::new();
+    for (id, kind) in rows {
+        let id = ui::record::RecordId::parse(id).expect("a record id");
+        assert!(
+            ui::record::room::reference(&mut index, &id, &ui::record::RecordKind::new(*kind)),
+            "the index names {id}"
+        );
+    }
+    std::fs::write(staged.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
+    std::fs::rename(&staged, &directory).expect("the index published");
+}
+
+/// The records `package`'s index of `room` names, read the way the workspace's
+/// apps read them: the record set's own discovery over the index document.
+fn known_in(package: &str, room: &str) -> Vec<String> {
+    let Ok(mut store) = app_state::DocStore::open_room(package, room) else {
+        return Vec::new();
+    };
+    let Some(index) = store.load().ok().flatten() else {
+        return Vec::new();
+    };
+    let mut records = ui::record::RecordSet::in_memory().with_home(room);
+    records.discover_room(&index);
+    records
+        .known_records()
+        .iter()
+        .map(|record| format!("{} {}", record.id.as_str(), record.kind.as_str()))
+        .collect()
+}
+
+/// Wait for `done` as long as a loaded machine takes: the session writes the
+/// reference on a worker of its own.
+fn within(mut done: impl FnMut() -> bool) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_secs(10) {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    done()
+}
+
+/// The row titled `title` for `query`, reopening search until the session has
+/// read the device's indexes again: a record another workspace holds is listed
+/// once the worker following them has read that workspace's index.
+fn find_row(session: &mut Session, query: &str, title: &str) -> ResourceSpec {
+    let started = std::time::Instant::now();
+    loop {
+        invoke(
+            session,
+            DESK_RESOURCE,
+            "open-search",
+            serde_json::json!({ "query": query }),
+        );
+        for _ in 0..10 {
+            session.step(Duration::from_millis(1)).expect("step");
+        }
+        if let Some(row) = row(session, title) {
+            return row;
+        }
+        if started.elapsed() > Duration::from_secs(10) {
+            let labels: Vec<String> = rows(session).into_iter().map(|row| row.label).collect();
+            panic!("no row {title:?} for {query:?} among {labels:?}");
+        }
+    }
+}
+
+#[test]
+fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    // An app of this device already keeps an index, in a room the desk does
+    // not show: the directories the session follows as more appear.
+    write_index(
+        &home,
+        NOTES,
+        "elsewhere",
+        &[("file:/work/Receipts.odt", "document")],
+    );
+    let records = tilo_session::Records::of(home.data().to_path_buf());
+    let mut session = session_over(Rc::new(Host::default()), Some(records));
+    session.step(Duration::from_millis(1)).unwrap();
+
+    // A second workspace, so a record can be held somewhere else than here.
+    invoke(
+        &mut session,
+        CHROME_RESOURCE,
+        "new-workspace",
+        serde_json::json!({}),
+    );
+    until(&mut session, |session| workspaces(session).len() == 2);
+    let here = active_room(&session);
+    let (other_room, other_name) = workspaces(&session)
+        .into_iter()
+        .find(|(room, _)| *room != here)
+        .expect("a workspace that is not the one in front");
+    write_index(&home, NOTES, &other_room, &[(QUARTERLY, "document")]);
+
+    // The row says which workspace holds the record.
+    let row = find_row(&mut session, "quarterly", "Quarterly plan.odt");
+    assert_eq!(
+        row.presentation
+            .and_then(|presentation| presentation.detail),
+        Some(format!("in {other_name}, /work/Quarterly plan.odt")),
+        "the row says the record is held in a workspace that is not this one"
+    );
+
+    // Choosing it names the record in this workspace: one reference, no copy.
+    invoke(
+        &mut session,
+        row.id.as_str(),
+        "choose",
+        serde_json::json!({}),
+    );
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_none()
+    });
+    assert!(
+        within(|| known_in(NOTES, &here).contains(&format!(
+            "{QUARTERLY} {}",
+            ui::record::RecordKind::new("document").as_str()
+        ))),
+        "this workspace holds the record: {:?}",
+        known_in(NOTES, &here)
+    );
 }

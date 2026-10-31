@@ -11,6 +11,7 @@ pub mod host_apps;
 pub mod jobs;
 pub mod people;
 pub mod places;
+pub mod records;
 #[cfg(feature = "settings")]
 pub mod settings;
 pub mod waiting;

@@ -570,8 +570,8 @@ fn audio_helper() -> Option<std::path::PathBuf> {
 
 /// What search reads of this device: the Tilo apps installed here and the
 /// machine's own and the apps the person can get, each followed as it
-/// changes, what apps hold, the person's files, and the search sources they
-/// switched off.
+/// changes, what apps hold, the person's files, the records the workspaces
+/// hold, and the search sources they switched off.
 #[cfg(target_os = "linux")]
 fn search_options() -> tilo_session::SearchOptions {
     use std::sync::Arc;
@@ -601,6 +601,9 @@ fn search_options() -> tilo_session::SearchOptions {
             &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
         ),
         places: tilo_desktop_search::providers::places::RecentPlaces::default(),
+        // The records the workspaces on this device hold, read now and
+        // followed as the apps of those workspaces name more.
+        records: Some(tilo_session::Records::of_device()),
     }
 }
 

@@ -18,6 +18,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::lists::{AppLists, Lists};
+use crate::records::Records;
 
 use tilo_actions::DoorError;
 use tilo_actions::remote::{
@@ -32,10 +33,12 @@ use tilo_desktop_search::providers::files::{FileNames, Files};
 use tilo_desktop_search::providers::host_apps::{self, HostApps};
 use tilo_desktop_search::providers::jobs::{JobEntry, Jobs};
 use tilo_desktop_search::providers::places::{Continue, Place, RecentPlaces};
+use tilo_desktop_search::providers::records as record_rows;
 use tilo_desktop_search::providers::settings::Settings;
 use tilo_desktop_search::providers::waiting::Waiting;
 use tilo_desktop_search::{DESKTOP_APP, InvokeTarget, SearchPreferences, Source, Target, Usage};
 use tilo_desktop_surface::{SearchHost, SearchHostFeed};
+use ui::record::{RecordCheckout, RecordId, RecordKind};
 
 /// The action host as the session's search reaches it: what open apps
 /// publish and run, and running what is chosen by address.
@@ -88,6 +91,9 @@ pub struct SearchOptions {
     pub preferences: SearchPreferences,
     /// Where the person's windows were.
     pub places: RecentPlaces,
+    /// The records the workspaces on this device hold: what search finds by
+    /// name across them, and where a record brought here is named.
+    pub records: Option<Records>,
 }
 
 /// The sources the session keeps between searches, each indexed once per
@@ -116,6 +122,8 @@ pub(crate) struct SessionSearch {
     unkept: Cell<(bool, bool)>,
     kept: RefCell<Kept>,
     apps: Option<Rc<dyn AppActions>>,
+    /// The records the workspaces on this device hold.
+    records: Option<Records>,
     /// What the session itself publishes, as of the last frame: the desk
     /// cannot read its own tree while it opens search.
     own: RefCell<Vec<tilo_actions::ActionDescriptor>>,
@@ -151,6 +159,7 @@ impl SessionSearch {
             files,
             preferences,
             places,
+            records,
         } = options;
         let read = lists.latest();
         let kept = Kept {
@@ -168,6 +177,7 @@ impl SessionSearch {
             unkept: Cell::new((false, false)),
             kept: RefCell::new(kept),
             apps,
+            records,
             own: RefCell::default(),
             open_tabs: RefCell::default(),
             notifications: RefCell::default(),
@@ -197,6 +207,14 @@ impl SessionSearch {
         });
         *self.own.borrow_mut() = published;
         *self.open_tabs.borrow_mut() = open_tabs;
+    }
+
+    /// The workspaces this device shows, by room and the name the desk gives
+    /// it: what a row says of a record the workspace in front does not hold.
+    pub(crate) fn set_workspaces(&self, workspaces: Vec<(String, String)>) {
+        if let Some(records) = &self.records {
+            records.set_workspaces(workspaces);
+        }
     }
 
     /// A window was at `place`.
@@ -313,6 +331,13 @@ impl SessionSearch {
         own: &mut dyn FnMut(&InvokeTarget) -> Result<(), DoorError>,
     ) -> Result<(), DoorError> {
         match target {
+            Target::Invoke(invoke)
+                if invoke.app == DESKTOP_APP
+                    && invoke.address.resource.as_str() == record_rows::RECORDS_RESOURCE
+                    && invoke.address.action.as_str() == record_rows::BRING_HERE =>
+            {
+                self.bring_here(room, &invoke)
+            }
             Target::Invoke(invoke) if invoke.app == DESKTOP_APP => own(&invoke),
             Target::Invoke(invoke) => self.with_apps(|apps| {
                 apps.invoke(
@@ -340,6 +365,46 @@ impl SessionSearch {
                 Ok(())
             }
         }
+    }
+
+    /// Bring the record a row names into the workspace of `room`: the
+    /// reference the workspace holds from then on. The record is named as the
+    /// row carried it — its id and kind — so what arrives is the record, not
+    /// a copy of it.
+    fn bring_here(&self, room: &str, invoke: &InvokeTarget) -> Result<(), DoorError> {
+        let Some(records) = &self.records else {
+            return Err(DoorError::Unavailable {
+                code: "records_unavailable".into(),
+                reason: "The session keeps no record indexes".into(),
+            });
+        };
+        let text = |name: &str| {
+            invoke
+                .arguments
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        let (Some(id), Some(kind), Some(package)) = (
+            text(record_rows::RECORD_PARAM),
+            text(record_rows::KIND_PARAM),
+            text(record_rows::PACKAGE_PARAM),
+        ) else {
+            return Err(DoorError::InvalidArguments(
+                "a record row carries its id, its kind and its index".into(),
+            ));
+        };
+        let Some(id) = RecordId::parse(&id) else {
+            return Err(DoorError::InvalidArguments(format!(
+                "{id} is not a record id"
+            )));
+        };
+        records.bring_here(
+            room,
+            &package,
+            RecordCheckout::new(id, RecordKind::new(kind)),
+        );
+        Ok(())
     }
 
     fn with_apps(
@@ -377,6 +442,12 @@ impl SearchHost for SessionSearch {
         }
         if let Some(files) = &kept.files {
             sources.push(Box::new(Rc::clone(files)));
+        }
+        if let Some(records) = &self.records {
+            sources.push(Box::new(record_rows::Records::new(
+                room,
+                records.held(room),
+            )));
         }
         let mut published = vec![PublishedActions {
             app: DESKTOP_APP.into(),

@@ -52,6 +52,14 @@ tilo-wallpapers = { path = "../../platform/tilo-wallpapers" }
 app-cli = { path = "../../packaging/app-cli" }
 # Following the directories search's lists are read from.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+# The records the workspaces on this device hold: the room indexes search
+# reads them from, as the apps that write them keep them, and the document
+# store the reference bringing one here is written into.
+tilo-app-state = { path = "../../system/app-state" }
+durable-store = { path = "../../system/durable-store" }
+automerge.workspace = true
+# Where this device keeps its state: the root the record indexes are under.
+tilo-cli-kit = { path = "../../runtime/cli" }
 tilo-paths.workspace = true
 # The person's accessibility settings: the assists, the colour filter and
 # the magnifier the compositor applies.

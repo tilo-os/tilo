@@ -50,6 +50,7 @@ mod panels;
 mod plane;
 pub mod portal_link;
 mod questions;
+mod records;
 pub mod run;
 mod search;
 mod setup;
@@ -99,6 +100,7 @@ pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS
 pub use launches::Launches;
 pub use lists::{AppLists, Lists};
 pub use mount::vpn::KillSwitch;
+pub use records::Records;
 pub use run::{Backend, Reach};
 pub use search::{AppActions, SearchOptions};
 pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
@@ -546,6 +548,15 @@ impl Shared {
     /// Hand search what the session publishes when it changed: read after
     /// a frame, as the desk cannot read its own tree while it opens search.
     fn observe(&self) {
+        // The workspaces as this frame shows them, before the door revision
+        // decides whether the rest is worth reading again: a record held by
+        // another workspace is offered under that workspace's name.
+        self.search.set_workspaces(self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .map(|workspace| (workspace.room().to_string(), workspace.name.clone()))
+                .collect()
+        }));
         let now = self.doors.revision();
         if now.is_some() && *self.observed.borrow() == now {
             return;
