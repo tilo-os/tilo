@@ -30,7 +30,10 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+#[path = "stepper_component.rs"]
+mod component;
 use crate::widget::{TaffyTreeExt, Widget};
+pub use component::StepperProps;
 
 /// The resolved geometry of a stepper in `theme`.
 #[derive(Clone, Debug)]
@@ -360,6 +363,8 @@ pub struct Stepper {
     focused: bool,
     focused_station: Option<usize>,
     last_cursor: Point,
+    /// What inputs the host has, from the frame: a station is a finger's target on touch.
+    interaction: crate::interaction::InteractionEnvironment,
 }
 
 impl Stepper {
@@ -377,6 +382,7 @@ impl Stepper {
             focused: false,
             focused_station: None,
             last_cursor: Point::ZERO,
+            interaction: crate::interaction::InteractionEnvironment::default(),
         }
     }
 
@@ -408,6 +414,12 @@ impl Stepper {
     pub fn on_station(mut self, f: impl FnMut(usize) + 'static) -> Self {
         self.on_station = Some(Box::new(f));
         self
+    }
+
+    /// How many steps it shows.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.steps.len()
     }
 
     /// Where each station is (empty in the compact form or before layout).
@@ -444,8 +456,16 @@ impl Stepper {
     fn station_at(&self, point: Point) -> Option<usize> {
         self.stations
             .iter()
-            .position(|rect| rect.contains(point))
+            .position(|rect| self.interaction.minimum_target_rect(*rect).contains(point))
             .filter(|&index| self.is_station_enabled(index))
+    }
+
+    /// Where a station may be pressed: its face grown to the host's minimum target about its
+    /// centre, so a finger lands on it however short the label row.
+    fn station_target(&self, index: usize) -> Option<Rect> {
+        self.stations
+            .get(index)
+            .map(|rect| self.interaction.minimum_target_rect(*rect))
     }
 
     fn with_face<R>(&self, f: impl FnOnce(&StepperFace<'_>) -> R) -> R {
@@ -635,9 +655,16 @@ impl Widget for Stepper {
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         match path {
-            [index] => self.stations.get(*index).copied(),
+            [index] => self.station_target(*index),
             _ => None,
         }
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
     }
 
     crate::redraw_flag!();
@@ -678,14 +705,18 @@ impl Widget for Stepper {
                 self.enabled_stations()
                     .into_iter()
                     .map(|index| {
-                        AccessNode::new(Role::Button)
+                        let mut station = AccessNode::new(Role::Button)
                             .with_name(self.steps.get(index).cloned().unwrap_or_default())
                             .with_state(
                                 AccessState::new()
                                     .focusable(true)
                                     .focused(self.focused && self.focused_station == Some(index)),
                             )
-                            .with_action_target(self.station_id(index))
+                            .with_action_target(self.station_id(index));
+                        if let Some(target) = self.station_target(index) {
+                            station = station.with_bounds(target);
+                        }
+                        station
                     })
                     .collect(),
             );

@@ -71,31 +71,45 @@ pub fn copied_files_list(paths: &[PathBuf], cut: bool) -> String {
     body
 }
 
-/// A path's `file://` URI. `url` has none on a target without a file system
+/// A path's `file://` URI, through [`url`]'s file conversions (see
+/// [`file_paths`]). `url` has none on a target without a file system
 /// (`wasm32-unknown-unknown`), where no path is a local file.
 fn file_uri(path: &Path) -> Option<url::Url> {
-    #[cfg(any(unix, windows, target_os = "wasi"))]
-    {
+    file_paths::uri(path)
+}
+
+/// The path a `file://` URI names, through the same conversions: a URI names
+/// no local file on a target without a file system, so nothing there is one.
+fn file_path(uri: &url::Url) -> Option<PathBuf> {
+    file_paths::path(uri)
+}
+
+/// `url` compiles its file-URI conversions (`from_file_path`,
+/// `to_file_path`) only on a target with a file system; both directions go
+/// through the one place that selects it.
+#[cfg(any(unix, windows, target_os = "wasi"))]
+mod file_paths {
+    use std::path::{Path, PathBuf};
+
+    pub(super) fn uri(path: &Path) -> Option<url::Url> {
         url::Url::from_file_path(path).ok()
     }
-    #[cfg(not(any(unix, windows, target_os = "wasi")))]
-    {
-        let _ = path;
-        None
+
+    pub(super) fn path(uri: &url::Url) -> Option<PathBuf> {
+        uri.to_file_path().ok()
     }
 }
 
-/// The path a `file://` URI names, on a target with a file system. `url` has
-/// no such read (`to_file_path`) on `wasm32-unknown-unknown`, where no URI
-/// names a local file, so nothing there is one.
-fn file_path(uri: &url::Url) -> Option<PathBuf> {
-    #[cfg(any(unix, windows, target_os = "wasi"))]
-    {
-        uri.to_file_path().ok()
+/// The same on a target with no file system: no path is a local file.
+#[cfg(not(any(unix, windows, target_os = "wasi")))]
+mod file_paths {
+    use std::path::{Path, PathBuf};
+
+    pub(super) fn uri(_: &Path) -> Option<url::Url> {
+        None
     }
-    #[cfg(not(any(unix, windows, target_os = "wasi")))]
-    {
-        let _ = uri;
+
+    pub(super) fn path(_: &url::Url) -> Option<PathBuf> {
         None
     }
 }

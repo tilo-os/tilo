@@ -4270,6 +4270,12 @@ impl TextInput {
         self.adopt_field_theme(theme);
     }
 
+    /// What inputs the host has: a coarse one makes the field a finger's target tall.
+    #[must_use]
+    pub fn interaction(&self) -> crate::interaction::InteractionEnvironment {
+        self.interaction
+    }
+
     /// The single-line band at `scale`: the control height, grown with the
     /// line plus `spacing.s1` above and below at large text.
     pub(crate) fn band_in(&self, theme: &Theme) -> f64 {

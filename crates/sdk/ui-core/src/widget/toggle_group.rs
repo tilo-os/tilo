@@ -46,7 +46,10 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
+#[path = "toggle_group_component.rs"]
+mod component;
 use crate::widget::{ActionEmitter, ControlBindingMetadata, ControlSize, TaffyTreeExt, Widget};
+pub use component::{SegmentProps, ToggleGroupProps, ViewTabsProps};
 
 #[path = "toggle_group_fold.rs"]
 mod fold;
@@ -853,6 +856,12 @@ impl ToggleGroup {
 
     fn segment_id(&self, index: usize) -> String {
         format!("{}{index}", self.segment_prefix())
+    }
+
+    /// How many segments it offers.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.segments.len()
     }
 
     /// The chosen index, or [`NONE_CHOSEN`] before anything is chosen.

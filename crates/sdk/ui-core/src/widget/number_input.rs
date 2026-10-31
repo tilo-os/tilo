@@ -28,12 +28,15 @@ use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+#[path = "number_input_component.rs"]
+mod component;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::binding::{BoxedBinding, Pulled};
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{TextInput, TextInputKind};
+pub use component::NumberInputProps;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -404,6 +407,8 @@ pub struct NumberInput {
     /// Process-local state the committed value is kept in.
     binding: Option<BoxedBinding<f64>>,
     action: Option<ActionEmitter<f64>>,
+    /// What a committed value is reported to, as a component's binding path does.
+    edits: Option<crate::component::Bound<f64>>,
     enabled: bool,
     /// The control's height and the role of its value.
     control_size: crate::widget::ControlSize,
@@ -448,6 +453,7 @@ impl NumberInput {
             changed: None,
             binding: None,
             action: None,
+            edits: None,
             enabled: true,
             control_size: crate::widget::ControlSize::Regular,
             compact: false,
@@ -587,6 +593,14 @@ impl NumberInput {
         self
     }
 
+    /// Change whether it can be changed now; see [`Self::with_enabled`].
+    pub fn set_enabled(&mut self, enabled: bool) {
+        if self.enabled != enabled {
+            self.enabled = enabled;
+            self.field.set_disabled(!enabled);
+        }
+    }
+
     /// The current numeric value (always within `[min, max]`).
     pub fn value(&self) -> f64 {
         self.value
@@ -612,10 +626,22 @@ impl NumberInput {
         self.changed.take()
     }
 
-    /// Whether the field currently owns keyboard focus (the embedded text
+    /// Whether the control currently owns keyboard focus (the embedded text
     /// input is being edited).
     pub fn is_editing(&self) -> bool {
         self.field.is_focused()
+    }
+
+    /// The range it keeps its value within.
+    #[must_use]
+    pub fn range(&self) -> (f64, f64) {
+        (self.min, self.max)
+    }
+
+    /// Whether it is the inline toolbar form: bare steppers, no field frame.
+    #[must_use]
+    pub fn is_compact(&self) -> bool {
+        self.compact
     }
 
     /// Format `value` for display: `decimals`-precision number plus the
@@ -782,6 +808,17 @@ impl NumberInput {
             self.changed = Some(value);
             self.publish_local_state();
         }
+        if let Some(edits) = &self.edits {
+            edits.edited(crate::component::Value::Float(value));
+        }
+    }
+
+    /// Report each committed value to the component binding `edits`, as a described component's
+    /// value control does: a person's typing and steppers, never a value the view gave.
+    #[must_use]
+    pub fn on_edit(mut self, edits: crate::component::Bound<f64>) -> Self {
+        self.edits = Some(edits);
+        self
     }
 }
 
