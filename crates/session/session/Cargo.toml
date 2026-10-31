@@ -134,6 +134,8 @@ runtime-identity = { path = "../../runtime/runtime-identity" }
 iroh.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 hex.workspace = true
+# The prefix hash of a transfer that starts at the top of its object.
+blake3.workspace = true
 os-actions = { path = "../../system/os-actions" }
 tilo-service = { path = "../service" }
 # The broker that serves the socket this session's apps speak on, and the
@@ -190,6 +192,9 @@ tilo-network-secret-agent = { path = "../network-secret-agent" }
 # The person's other devices: what was copied here is shared through
 # the same fabric as everything else that follows them.
 tilo-device-fabric = { path = "../device-fabric" }
+# What a screenshot sent to another device is staged into: the same private
+# spool, and the same resumable transfer, Files uses.
+tilo-nearby-service = { path = "../nearby-service" }
 # The speaker groups and remote audio those devices carry: the session pumps
 # them on the fabric's pass and answers Settings from them.
 tilo-speaker-service = { path = "../speaker-service" }

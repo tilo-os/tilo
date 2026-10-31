@@ -27,16 +27,22 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use tilo_capture_studio::{
-    Ask, Frame, Kept, REPLAY_FPS, Recorder, Recording, Scene, Selection, Settings, Studio, Take,
+    Ask, Frame, Kept, REPLAY_FPS, Recorder, Recording, Refusal, Scene, Selection, Sent, Settings,
+    Studio, Take,
 };
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, Screenshot};
+use tilo_device_fabric::link::SharedLink;
 use tilo_portal::CaptureError;
 use tilo_surface_host::Doors;
 use ui::vello::kurbo::Rect;
-use ui::widget::{CaptureDestination, CapturePreview, CaptureTarget, ScreenshotKept, SourceMode};
+use ui::widget::{
+    CaptureDestination, CapturePreview, CaptureTarget, ScreenshotKept, ScreenshotSendDevice,
+    SourceMode,
+};
 
 use crate::Options;
+use crate::capture_send::{self, Sends};
 use crate::panels::Held;
 use crate::sheets::Sheet;
 
@@ -54,6 +60,14 @@ pub(crate) struct CaptureStudio {
     directory: PathBuf,
     /// The last screenshot, for its receipt and for opening it again.
     last: Option<Kept>,
+    /// The person's devices, when this session runs on one: who a screenshot
+    /// may be sent to.
+    fabric: Option<SharedLink>,
+    /// The screenshots on their way to those devices.
+    sends: Sends,
+    /// What became of sending the last screenshot, while its receipt shows
+    /// that.
+    sent: Option<Sent>,
     /// An app's screenshot of what only the person can name, while it waits
     /// for them: the studio is up choosing exactly that.
     asking: Option<Asked>,
@@ -97,6 +111,7 @@ pub(crate) fn mount(
     compositor: &mut Compositor,
     doors: &mut Doors,
     options: &Options,
+    fabric: Option<&SharedLink>,
 ) -> Option<CaptureStudio> {
     let who = (options.device.as_str(), options.person.as_str());
     let seat = Studio::new();
@@ -113,10 +128,18 @@ pub(crate) fn mount(
             let sheet = Rc::new(RefCell::new(sheet));
             compositor.add_host(Box::new(Held(Rc::clone(&sheet))));
             doors.add(sheet);
+            let fabric = fabric.cloned();
             Some(CaptureStudio {
                 seat,
                 directory: options.pictures.clone().unwrap_or_else(screenshots),
                 last: None,
+                sends: Sends::new(
+                    fabric.clone(),
+                    capture_send::spool_root(),
+                    options.wake.handle(),
+                ),
+                fabric,
+                sent: None,
                 asking: None,
                 feeding: None,
                 recording: None,
@@ -146,6 +169,9 @@ impl CaptureStudio {
     /// Answer what the studio asked since the last pass, feed the recorder
     /// and hand back what came of it.
     pub(crate) fn serve(&mut self, compositor: &mut Compositor) {
+        if let Some(sent) = self.sends.take() {
+            self.sent = Some(sent);
+        }
         for ask in self.seat.link().take_asks() {
             self.answer(ask, compositor);
         }
@@ -254,7 +280,21 @@ impl CaptureStudio {
                     tracing::warn!(%error, "a screenshot was not copied again");
                 }
             }
+            Ask::SendLastTo(id) => self.send_last_to(&id),
         }
+    }
+
+    /// Offer the last screenshot to one of the person's other devices, by the
+    /// id the studio listed: the screenshot the studio wrote, never what a
+    /// private window showed.
+    fn send_last_to(&mut self, id: &str) {
+        // A new send: what was said of the last one is not about this one.
+        self.sent = None;
+        let Some(kept) = &self.last else {
+            self.sent = Some(Sent::refused(id.to_owned(), Refusal::NotKept));
+            return;
+        };
+        self.sent = self.sends.send(id, kept.path.clone());
     }
 
     fn start(&mut self, take: Take, compositor: &mut Compositor) {
@@ -422,7 +462,10 @@ impl CaptureStudio {
             return;
         }
         match self.screenshot(take, compositor) {
-            Ok(kept) => self.last = Some(kept),
+            Ok(kept) => {
+                self.last = Some(kept);
+                self.sent = None;
+            }
             Err(error) => tracing::warn!(%error, "a screenshot was not taken"),
         }
     }
@@ -469,12 +512,18 @@ impl CaptureStudio {
 
     /// Hand the studio what it shows now.
     fn publish(&self, compositor: &Compositor) {
+        let devices: Vec<ScreenshotSendDevice> = self
+            .fabric
+            .as_ref()
+            .map_or_else(Vec::new, capture_send::devices);
         let scene = Scene {
             windows: windows(compositor, self.presentation().place()),
             asking: self.asking.as_ref().map(|asked| asked.selection),
             system_audio: false,
             microphone: false,
             kept: self.last.clone(),
+            devices,
+            sent: self.sent.clone(),
             recording: self.recording.clone(),
             replay: self.replay,
             replay_saves: self.replay_saves,

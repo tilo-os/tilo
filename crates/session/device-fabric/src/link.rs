@@ -4,11 +4,24 @@
 
 use std::collections::BTreeSet;
 
+use tilo_network_actor::NearbyTransferCheckpoint;
 use tilo_network_actor::fabric::DeviceId;
 
 use crate::{
     ClipboardEntry, DeviceFabric, OwnerSession, PersonalFabricAction, RoamingSetting, WakeRoute,
 };
+
+/// One of this device's files, staged in its private Nearby spool, on its way
+/// to one of the person's other devices: the checkpoint the stream resumes
+/// from, and the object to stream.
+#[derive(Debug)]
+pub struct NearbySpoolOffer {
+    /// Where the receiving device wants the stream to start, as it confirmed
+    /// it holds the bytes up to there.
+    pub checkpoint: NearbyTransferCheckpoint,
+    /// The staged spool object the checkpoint names.
+    pub file: std::fs::File,
+}
 
 /// Why a personal fabric action did not reach the transport.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,6 +113,25 @@ pub trait FabricLink {
     fn publish_owner_session(&self, session: OwnerSession) {
         let _ = session;
     }
+    /// Stream one of this device's staged spool objects to `target`: the
+    /// bytes of an offer already sent to it, from the checkpoint it confirmed.
+    ///
+    /// A link whose transport does not carry files yet ignores the stream; the
+    /// offer itself (an ordinary personal fabric action) still reaches its
+    /// device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersonalFabricSendError::Backpressure`] while the transport's
+    /// command queue is full, otherwise why it refused the stream.
+    fn share_nearby_spool(
+        &self,
+        target: &DeviceId,
+        offer: NearbySpoolOffer,
+    ) -> Result<(), PersonalFabricSendError> {
+        let _ = (target, offer);
+        Ok(())
+    }
 }
 
 /// A link a service keeps beyond one call, for work it finishes later.
@@ -152,5 +184,13 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
 
     fn publish_owner_session(&self, session: OwnerSession) {
         (**self).publish_owner_session(session);
+    }
+
+    fn share_nearby_spool(
+        &self,
+        target: &DeviceId,
+        offer: NearbySpoolOffer,
+    ) -> Result<(), PersonalFabricSendError> {
+        (**self).share_nearby_spool(target, offer)
     }
 }

@@ -34,6 +34,7 @@ mod app_sheets;
 mod automation;
 mod bars;
 pub mod capture;
+mod capture_send;
 mod capture_studio;
 mod chrome;
 mod config;
@@ -1702,7 +1703,8 @@ impl Session {
         } = mount::sheets::mount_sheets(&mut compositor, &mut doors, &options);
 
         // The capture studio, over everything it captures.
-        let capture_studio = capture_studio::mount(&mut compositor, &mut doors, &options);
+        let capture_studio =
+            capture_studio::mount(&mut compositor, &mut doors, &options, fabric.as_ref());
 
         // One table for the keys the session answers and the guide that
         // explains them: a chord that works is a chord the guide shows.

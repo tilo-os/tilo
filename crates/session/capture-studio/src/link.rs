@@ -13,7 +13,8 @@ use std::rc::Rc;
 use tilo_sheets::{Presentation, Seat};
 use ui::vello::kurbo::Rect;
 use ui::widget::{
-    CaptureDestination, CapturePreview, CaptureTarget, RegionAnchor, ScreenshotKept, SourceMode,
+    CaptureDestination, CapturePreview, CaptureTarget, RegionAnchor, ScreenshotKept,
+    ScreenshotSendDevice, SourceMode,
 };
 
 /// How a capture is made: what of the desktop, and which parts of it.
@@ -70,6 +71,56 @@ pub struct Recording {
     pub paused: bool,
 }
 
+/// What became of sending the last screenshot to one of the person's other
+/// devices.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sent {
+    /// The device it went to, as the person sees it named.
+    pub device: String,
+    /// Why it was not offered, when it was not.
+    pub refused: Option<Refusal>,
+}
+
+impl Sent {
+    /// Offered to `device`: its person accepts it there.
+    #[must_use]
+    pub fn offered(device: String) -> Self {
+        Self {
+            device,
+            refused: None,
+        }
+    }
+
+    /// Nothing was offered to `device`, and why.
+    #[must_use]
+    pub fn refused(device: String, refused: Refusal) -> Self {
+        Self {
+            device,
+            refused: Some(refused),
+        }
+    }
+}
+
+/// Why a screenshot did not go to the device it was sent to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// This session runs on no device fabric, so it reaches none of the
+    /// person's other devices.
+    SyncOff,
+    /// The device stopped being one this session can reach before the send.
+    Offline,
+    /// The screenshot's file is no longer where the studio wrote it.
+    Gone { path: PathBuf },
+    /// Nothing was captured to send.
+    NotKept,
+    /// The file has no folder to be read from.
+    NoFolder { path: PathBuf },
+    /// Larger than one Nearby send carries.
+    TooLarge { bytes: u64, limit: u64 },
+    /// The device's fabric or spool would not take it, in its own words.
+    Refused(String),
+}
+
 /// What an app asked the person to select, when it asked for something only
 /// they can name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +156,12 @@ pub struct Scene {
     pub microphone: bool,
     /// The last screenshot, while its receipt shows.
     pub kept: Option<Kept>,
+    /// The person's other devices that are here now: who a screenshot may be
+    /// sent to, and what became of the last send.
+    pub devices: Vec<ScreenshotSendDevice>,
+    /// What became of sending the last screenshot to a device, while its
+    /// receipt shows that.
+    pub sent: Option<Sent>,
     /// The recording that runs, and whether it is paused.
     pub recording: Option<Recording>,
     /// Seconds of the last half minute kept ready to clip, while that runs.
@@ -150,6 +207,9 @@ pub enum Ask {
     RevealLast,
     /// Copy the last screenshot to the clipboard again.
     CopyLast,
+    /// Offer the last screenshot to one of the person's other devices, by its
+    /// [`Scene::devices`] id.
+    SendLastTo(String),
 }
 
 #[derive(Default)]
