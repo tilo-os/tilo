@@ -37,6 +37,8 @@ tilo-surface-host = { path = "../surface-host" }
 tilo-desktop = { path = "../desktop" }
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-surface = { path = "../desktop-surface" }
+# The desk's window policy, whose tab calls an app's asks are answered with.
+tilo-desktop-policy = { path = "../desktop-policy" }
 tilo-desktop-search = { path = "../desktop-search", features = ["indexes", "settings", "catalogue"] }
 tilo-dictation = { path = "../dictation" }
 app-catalogue = { path = "../../packaging/app-catalogue" }
@@ -154,6 +156,8 @@ bounded-command = { path = "../../system/bounded-command" }
 zeroize.workspace = true
 chrono = { workspace = true, default-features = true }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+# The line framing an app's shell-ui connection speaks.
+wire-frame = { path = "../../system/wire-frame" }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
@@ -163,8 +167,6 @@ zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-# A window the compositor maps, for a test of what a launch does about one.
-tilo-desktop-policy = { path = "../desktop-policy" }
 # The resource effects the tests' own questions are declared with.
 tilo-resource = { path = "../../sdk/tilo-resource" }
 # The stand-in logind and UPower a power test serves over a socket pair.

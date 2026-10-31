@@ -171,6 +171,9 @@ pub struct StripPolicy {
     /// Those of them that have not shown a buffer yet: they wait in their
     /// place, which the compositor does not list among its windows.
     pending: Vec<u64>,
+    /// Told the process of each window the compositor maps, the moment the
+    /// desktop gives it a place.
+    map_observer: Option<Rc<dyn Fn(u32)>>,
 }
 
 /// A desktop of one workspace with one empty strip (`salt` seeds its ids),
@@ -214,6 +217,7 @@ pub fn desktop_with(
             tracker: GestureTracker::default(),
             travel: 0.0,
             pending: Vec::new(),
+            map_observer: None,
         },
     )
 }
@@ -327,6 +331,12 @@ impl SurfaceHost for DesktopHost {
 }
 
 impl StripPolicy {
+    /// Tell `observer` the process of each window the compositor maps, as the
+    /// desktop gives it a place: the app's door opens to it from then on.
+    pub fn set_window_mapped(&mut self, observer: Rc<dyn Fn(u32)>) {
+        self.map_observer = Some(observer);
+    }
+
     /// Give `window` its tab, once, and lay the desktop out so its place
     /// is known.
     fn map(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) {
@@ -349,6 +359,9 @@ impl StripPolicy {
         }
         self.mapped.push(window.id);
         desk.host.relayout();
+        if let (Some(observer), Some(pid)) = (self.map_observer.as_ref(), window.pid) {
+            observer(pid);
+        }
     }
 }
 
@@ -581,5 +594,50 @@ impl WindowPolicy for StripPolicy {
             desk.host.relayout();
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The display the test places windows on.
+    fn output() -> LayoutRect {
+        LayoutRect::new(LayoutPoint::from((0, 0)), (1280, 800).into())
+    }
+
+    /// A window of `app` made by the process `pid`.
+    fn window(id: u64, app: &str, pid: Option<u32>) -> WindowInfo {
+        WindowInfo {
+            id,
+            app_id: Some(app.to_owned()),
+            pid,
+            ..WindowInfo::default()
+        }
+    }
+
+    /// The policy is told the process of each window the compositor maps, as
+    /// the desktop gives it a place, so the app behind it opens its later
+    /// windows there. A window without a process, or one already placed, has
+    /// nothing to tell.
+    #[test]
+    fn a_mapped_window_tells_the_policy_its_process() {
+        let (_desk, mut policy) = desktop(1, 1.0);
+        let told = Rc::new(RefCell::new(Vec::new()));
+        let heard = Rc::clone(&told);
+        policy.set_window_mapped(Rc::new(move |pid| heard.borrow_mut().push(pid)));
+
+        policy.map(&window(1, "so.tilo.notes", Some(4242)), &[output()]);
+        assert_eq!(*told.borrow(), vec![4242], "the mapped window's process");
+
+        policy.map(&window(1, "so.tilo.notes", Some(4242)), &[output()]);
+        assert_eq!(*told.borrow(), vec![4242], "a window is placed once");
+
+        policy.map(&window(2, "so.tilo.notes", None), &[output()]);
+        assert_eq!(
+            *told.borrow(),
+            vec![4242],
+            "a window without a process has none to tell"
+        );
     }
 }

@@ -29,7 +29,7 @@ use std::rc::Rc;
 use tilo_desktop_model::{
     DesktopTree, Display, GroupId, IdMinter, Tab, TabId, TileContent, Workspace,
 };
-use tilo_desktop_surface::navigation::{Command, Route, RouteIds};
+use tilo_desktop_surface::navigation::{Command, Route, RouteIds, active_route};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
 use ui::kurbo::Rect;
 use ui::widget::TileHost;
@@ -42,6 +42,11 @@ const LAUNCH_PREFIX: &str = "window:";
 
 /// The launch id a crashed app's notice tab is opened under.
 const CRASHED_PREFIX: &str = "crashed:";
+
+/// The launch id a tab held for an app's next window is opened under, in
+/// front and behind.
+const HELD_PREFIX: &str = "held:";
+const HELD_BEHIND_PREFIX: &str = "held-behind:";
 
 /// What the policy learns about a window.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -90,6 +95,19 @@ type Crashed = Rc<RefCell<BTreeMap<TabId, String>>>;
 /// A launch id carries the app id alone, so its tab is named from here.
 type Titles = Rc<RefCell<BTreeMap<String, String>>>;
 
+/// A tab held for a window of an app that is on its way: the tab it takes
+/// when it maps (`None` until the desktop makes it), and whether it takes
+/// focus there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HeldTab {
+    tab: Option<TabId>,
+    background: bool,
+}
+
+/// The tabs held for each app's coming windows, oldest first: an app's next
+/// window lands in the one its own open asked for.
+type Held = Rc<RefCell<BTreeMap<String, Vec<HeldTab>>>>;
+
 /// Where a window of an app that asked to open beside one of its own lands:
 /// the tab it lands after, and whether it takes focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +128,8 @@ struct Windows {
     crashed: Crashed,
     /// The name each app is known by, for its notice.
     titles: Titles,
+    /// The tabs held for the apps' coming windows.
+    held: Held,
 }
 
 impl TileSource for Windows {
@@ -135,6 +155,39 @@ impl TileSource for Windows {
     }
 
     fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+        let held = app
+            .strip_prefix(HELD_BEHIND_PREFIX)
+            .map(|app| (app, true))
+            .or_else(|| app.strip_prefix(HELD_PREFIX).map(|app| (app, false)));
+        if let Some((app, background)) = held {
+            // A window of the app is on its way and may take a while: its
+            // tab holds the place it lands in from this frame, showing the
+            // app's name, and the window fills it when it maps.
+            let mut held = self.held.borrow_mut();
+            // The session gave the place up before the desktop made it:
+            // nothing comes to fill it.
+            let record = held
+                .entry(app.to_owned())
+                .or_default()
+                .iter_mut()
+                .find(|record| record.tab.is_none() && record.background == background)?;
+            record.tab = Some(id);
+            let title = self
+                .titles
+                .borrow()
+                .get(app)
+                .cloned()
+                .unwrap_or_else(|| shown_name(app));
+            return Some(Tab {
+                id,
+                title,
+                tile: TileContent::AppPlaceholder {
+                    kind: tilo_desktop_model::AppKind::Other(app.to_owned()),
+                    label: app.to_owned(),
+                },
+                app_title: None,
+            });
+        }
         if let Some(app) = app.strip_prefix(CRASHED_PREFIX) {
             self.crashed.borrow_mut().insert(id, app.to_owned());
             let title = self
@@ -187,6 +240,8 @@ pub struct DesktopPolicy {
     crashed: Crashed,
     /// The name each app is known by, for its notice.
     titles: Titles,
+    /// The tabs held for the apps' coming windows.
+    held: Held,
     /// The places the apps asked for, oldest first, by the app that asked:
     /// its next window lands at the one its open asked for.
     places: BTreeMap<String, Vec<Beside>>,
@@ -215,6 +270,7 @@ impl DesktopPolicy {
         let launches = Launches::default();
         let crashed = Crashed::default();
         let titles = Titles::default();
+        let held = Held::default();
         let (surface, handle) = DesktopSurface::new(
             tree,
             salt,
@@ -223,6 +279,7 @@ impl DesktopPolicy {
                 launches: Rc::clone(&launches),
                 crashed: Rc::clone(&crashed),
                 titles: Rc::clone(&titles),
+                held: Rc::clone(&held),
             }),
         );
         let policy = Self {
@@ -231,6 +288,7 @@ impl DesktopPolicy {
             launches,
             crashed,
             titles,
+            held,
             places: BTreeMap::new(),
             placed: BTreeSet::new(),
             floating: BTreeMap::new(),
@@ -346,6 +404,13 @@ impl DesktopPolicy {
             return Ok(());
         }
         let id = window.id;
+        // A window of an app that asked for another one right after a tab of
+        // its own takes the tab held for it there, from the moment it maps.
+        if let Some(held) = self.take_held(window.app_id.as_deref().unwrap_or_default())
+            && self.bind_held(&window, held)
+        {
+            return Ok(());
+        }
         let launch = format!("{LAUNCH_PREFIX}{id}");
         let beside = self
             .take_place(window.app_id.as_deref().unwrap_or_default())
@@ -388,6 +453,216 @@ impl DesktopPolicy {
     #[must_use]
     pub fn anchor_for(&self, app: &str) -> Option<(TabId, GroupId, usize)> {
         self.handle.read(|tree| anchor_for(tree, app))
+    }
+
+    /// Close the tab of `app` a request from it answers to, as the app's own
+    /// close asks: its window goes with it, and the tab comes back on a
+    /// reopen.
+    pub fn close_tab_of(&mut self, app: &str) -> bool {
+        let Some(tab) = self.anchor_for(app).map(|(tab, ..)| tab) else {
+            return false;
+        };
+        let Some(beside) = self.handle.read(|tree| route_of(tree, tab)) else {
+            return false;
+        };
+        let command = Command::Close {
+            generation: GENERATION.into(),
+            route: Route::from_ids(beside),
+        };
+        self.handle.dispatch(&command, GENERATION).is_ok()
+    }
+
+    /// Put the shown workspace's most recently closed tab back where it was,
+    /// as an app's reopen asks.
+    pub fn reopen_closed(&mut self) -> bool {
+        let command = Command::Reopen {
+            generation: GENERATION.into(),
+        };
+        self.handle.dispatch(&command, GENERATION).is_ok()
+    }
+
+    /// Step the group in front on by one tab, as an app's own tab chord asks
+    /// when its tab is the one in front: no app steps a group it is not
+    /// showing in.
+    pub fn cycle_tab(&mut self, app: &str, forward: bool) -> bool {
+        let Some(anchor) = self.anchor_for(app).map(|(tab, ..)| tab) else {
+            return false;
+        };
+        let target = self.handle.read(|tree| {
+            let ids = active_route(tree)?;
+            if ids.tab != anchor {
+                return None;
+            }
+            let group = tree
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == ids.workspace)?
+                .strips
+                .iter()
+                .find(|strip| strip.id == ids.strip)?
+                .window_groups
+                .iter()
+                .find(|group| group.id == ids.group)?;
+            let count = isize::try_from(group.tabs.len()).ok()?;
+            if count == 0 {
+                return None;
+            }
+            let current = group
+                .tabs
+                .iter()
+                .position(|tab| tab.id == group.active_tab)?;
+            let step = if forward { 1 } else { -1 };
+            let next = (isize::try_from(current).ok()?.saturating_add(step)).rem_euclid(count);
+            Some(RouteIds {
+                tab: group.tabs.get(usize::try_from(next).ok()?)?.id,
+                ..ids
+            })
+        });
+        let Some(target) = target else {
+            return false;
+        };
+        let command = Command::Select {
+            generation: GENERATION.into(),
+            route: Route::from_ids(target),
+        };
+        self.handle.dispatch(&command, GENERATION).is_ok()
+    }
+
+    /// Hold a tab for the next window of `app`, right after `anchor` (the tab
+    /// [`Self::anchor_for`] finds when none is named), taking focus there
+    /// unless `background`: the window takes the tab's place when it maps, so
+    /// the person sees it at once instead of when a launch is through.
+    /// False when the desktop holds no tab of `app` to open beside: the
+    /// window then lands wherever a launch lands.
+    pub fn hold_beside(&mut self, app: &str, anchor: Option<TabId>, background: bool) -> bool {
+        let Some(tab) = anchor.or_else(|| self.anchor_for(app).map(|(tab, ..)| tab)) else {
+            return false;
+        };
+        let Some(beside) = self.handle.read(|tree| route_of(tree, tab)) else {
+            return false;
+        };
+        let launch = format!(
+            "{}{app}",
+            if background {
+                HELD_BEHIND_PREFIX
+            } else {
+                HELD_PREFIX
+            }
+        );
+        let command = Command::TabOpenBeside {
+            generation: GENERATION.into(),
+            app: launch,
+            beside: Route::from_ids(beside),
+            background,
+        };
+        if self.handle.dispatch(&command, GENERATION).is_err() {
+            return false;
+        }
+        // The desktop makes the tab on its next pass: the place is asked for
+        // here, so one that never comes can be given up before then.
+        self.held
+            .borrow_mut()
+            .entry(app.to_owned())
+            .or_default()
+            .push(HeldTab {
+                tab: None,
+                background,
+            });
+        true
+    }
+
+    /// The launch behind the place held for `app`'s next window started
+    /// nothing: the place it held goes, whether the desktop made it yet or
+    /// not.
+    pub fn release_held(&mut self, app: &str) {
+        let released = {
+            let mut held = self.held.borrow_mut();
+            let Some(key) = held.keys().find(|asked| app_ids_match(app, asked)).cloned() else {
+                return;
+            };
+            let Some(queue) = held.get_mut(&key) else {
+                return;
+            };
+            let released = (!queue.is_empty()).then(|| queue.remove(0));
+            if queue.is_empty() {
+                held.remove(&key);
+            }
+            released
+        };
+        let Some(HeldTab { tab: Some(tab), .. }) = released else {
+            return;
+        };
+        let mut tree = self.handle.read(Clone::clone);
+        if tree.close_tab(tab).is_some() {
+            self.handle.replace_tree(tree);
+        }
+    }
+
+    /// The tab held for the next window of the app `app` announces, oldest
+    /// first: taken once, by the one window it was held for.
+    fn take_held(&self, app: &str) -> Option<HeldTab> {
+        let mut held = self.held.borrow_mut();
+        let key = held
+            .keys()
+            .find(|asked| app_ids_match(app, asked))
+            .cloned()?;
+        let queue = held.get_mut(&key)?;
+        let index = queue.iter().position(|record| record.tab.is_some())?;
+        let taken = queue.remove(index);
+        if queue.is_empty() {
+            held.remove(&key);
+        }
+        Some(taken)
+    }
+
+    /// `window` takes the place of the tab held for it. False when the tab is
+    /// gone (the person closed it while the window was on its way), and the
+    /// window lands wherever a launch lands.
+    fn bind_held(&self, window: &Window, held: HeldTab) -> bool {
+        let Some(held_tab) = held.tab else {
+            return false;
+        };
+        let mut tree = self.handle.read(Clone::clone);
+        let Some(ids) = route_of(&tree, held_tab) else {
+            return false;
+        };
+        let app_id = window.app_id.clone().unwrap_or_default();
+        let title = window.title.clone().unwrap_or_else(|| app_id.clone());
+        let Some(tab) = tabs_mut(&mut tree).find(|tab| tab.id == held_tab) else {
+            return false;
+        };
+        tab.tile = TileContent::Foreign {
+            app_id,
+            surface_id: window.id,
+        };
+        tab.title = title;
+        if !held.background {
+            if let Some(group) = tree
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == ids.workspace)
+                .and_then(|workspace| {
+                    workspace
+                        .strips
+                        .iter_mut()
+                        .find(|strip| strip.id == ids.strip)
+                })
+                .and_then(|strip| {
+                    strip
+                        .window_groups
+                        .iter_mut()
+                        .find(|group| group.id == ids.group)
+                })
+            {
+                group.activate_tab(held_tab);
+            }
+            tree.set_active_group(ids.strip, ids.group);
+        }
+        self.handle.replace_tree(tree);
+        if !held.background {
+            self.handle.focus_tab(held_tab);
+        }
+        true
     }
 
     /// The next window `app` maps lands right after `anchor` (`None`: the tab
@@ -636,6 +911,10 @@ impl DesktopPolicy {
         // A notice tab the person closed keeps no app behind it, and the
         // name it showed goes with it.
         let open: BTreeSet<TabId> = tabs(&tree).map(|tab| tab.id).collect();
+        self.held.borrow_mut().retain(|_, held| {
+            held.retain(|candidate| candidate.tab.is_none_or(|tab| open.contains(&tab)));
+            !held.is_empty()
+        });
         let mut crashed = self.crashed.borrow_mut();
         let mut titles = self.titles.borrow_mut();
         crashed.retain(|tab, app| {
@@ -666,6 +945,14 @@ fn tabs(tree: &DesktopTree) -> impl Iterator<Item = &Tab> {
         .flat_map(|workspace| &workspace.strips)
         .flat_map(|strip| &strip.window_groups)
         .flat_map(|group| &group.tabs)
+}
+
+fn tabs_mut(tree: &mut DesktopTree) -> impl Iterator<Item = &mut Tab> {
+    tree.workspaces
+        .iter_mut()
+        .flat_map(|workspace| &mut workspace.strips)
+        .flat_map(|strip| &mut strip.window_groups)
+        .flat_map(|group| &mut group.tabs)
 }
 
 fn foreign(tab: &Tab) -> Option<u64> {

@@ -44,8 +44,15 @@ pub struct WindowConnections {
 /// socket and the shell-ui socket, each of the window's own, so a request the
 /// window makes is answered for it alone.
 pub trait Connects {
-    /// The connections of the window `instance` of `app` in `room`.
-    fn window(&self, app: &str, room: &str, instance: u64) -> WindowConnections;
+    /// The connections of the window `instance` of `app` in `room`, whose
+    /// launch is the process `launcher_pid` while it runs.
+    fn window(
+        &self,
+        app: &str,
+        room: &str,
+        instance: u64,
+        launcher_pid: Option<u32>,
+    ) -> WindowConnections;
 }
 
 /// A reserved or running process's door, by `(app, room)`.
@@ -411,7 +418,9 @@ fn start_alone(queued: Vec<Queued>) {
 /// Ask the process behind `door` for a window of `app` in `room`.
 fn send_window(door: &Doors, entry: &Door, app: &str, room: &str) -> std::io::Result<()> {
     let instance = door.next_instance();
-    let connections = door.connections.window(app, room, instance);
+    let connections = door
+        .connections
+        .window(app, room, instance, entry.launcher_pid);
     let request = ui::window_door::WindowRequest {
         instance,
         collaboration: connections.collaboration.is_some(),
@@ -429,7 +438,8 @@ fn send_window(door: &Doors, entry: &Door, app: &str, room: &str) -> std::io::Re
 
 /// The process `pid` and the ones that started it, up to a few parents: a
 /// window's process is the one the launcher started, or a child of it.
-fn ancestry(pid: u32) -> Vec<u32> {
+#[must_use]
+pub fn ancestry(pid: u32) -> Vec<u32> {
     const DEPTH: usize = 8;
     let mut lineage = vec![pid];
     let mut current = pid;
@@ -469,7 +479,13 @@ mod tests {
     }
 
     impl Connects for Rc<TestConnections> {
-        fn window(&self, app: &str, _room: &str, _instance: u64) -> WindowConnections {
+        fn window(
+            &self,
+            app: &str,
+            _room: &str,
+            _instance: u64,
+            _launcher_pid: Option<u32>,
+        ) -> WindowConnections {
             let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("a socket");
             self.made.borrow_mut().push((app.to_owned(), theirs.into()));
             WindowConnections {

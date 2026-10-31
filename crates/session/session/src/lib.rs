@@ -114,6 +114,7 @@ use panels::{Banners, Held, Popover, Readout};
 use search::SessionSearch;
 use setup::Setup;
 use sheets::Sheet;
+use tilo_app_launch::Doors as WindowDoors;
 use tilo_desktop_search::providers::places::Place;
 use tilo_sheets::Seat as _;
 use tilo_sheets::directory::DirectorySeat;
@@ -1310,6 +1311,9 @@ pub struct Session {
     /// The machine's power: the idle policy, the service over logind and
     /// what holds it awake.
     machine: mount::power::PowerRun,
+    /// The shell-ui socket the apps ask about their own tabs on, while it
+    /// serves.
+    tabs: Option<mount::app_tabs::AppTabs>,
 }
 
 /// The lock screen's passwords being checked, off the loop.
@@ -1406,7 +1410,7 @@ impl Session {
         })
         .map_err(|error| tracing::debug!(%error, "settings are not watched"))
         .ok();
-        let (desktop, policy, asks) = desk(
+        let (desktop, mut policy, asks) = desk(
             &options,
             notices.clone(),
             std::sync::Arc::clone(&wallpapers),
@@ -1432,6 +1436,18 @@ impl Session {
         // leave their notice in it.
         if let Some(launch) = &options.launch {
             launch.attach(desktop.clone());
+        }
+        // One process per app per room: its later windows open in the
+        // process the session started, with connections of their own. A
+        // window mapping settles what its app's door serves, so an app built
+        // before the door keeps a process per window from then on.
+        let window_doors = WindowDoors::new(mount::app_tabs::ServiceLinks::new(
+            std::sync::Arc::clone(&options.launches),
+        ));
+        let settling = Rc::clone(&window_doors);
+        policy.set_window_mapped(Rc::new(move |pid| settling.window_mapped(pid)));
+        if let Some(launch) = &options.launch {
+            launch.lend_doors(Rc::clone(&window_doors));
         }
         let mut compositor = start(Box::new(policy))?;
         // A session in a window of another desktop runs no idle timers: that
@@ -1561,6 +1577,14 @@ impl Session {
             apps.lend_launches(std::sync::Arc::clone(&options.launches));
         }
         let action_plane = start_action_plane(&options, &live_activities)?;
+        // The shell-ui socket this session serves: what an app asks about
+        // its own tabs arrives there and is answered on this loop's pass.
+        let tabs = mount::app_tabs::AppTabs::start(
+            std::sync::Arc::clone(&options.launches),
+            options.wake.handle(),
+        )
+        .map_err(|error| tracing::warn!(%error, "the shell-ui service does not run"))
+        .ok();
         let services = mount_services(&mut doors, std::mem::take(&mut options.services));
         // Dictation joins the services: its recognizer, microphone and
         // consent are only the session's, and the sheet asks about them.
@@ -1683,6 +1707,7 @@ impl Session {
                 settings_store::magnifier::DEFAULT_ZOOM,
             ),
             machine,
+            tabs,
         })
     }
 
@@ -2030,6 +2055,11 @@ impl Session {
             // What the desktop asked to open, and what stopped since.
             if let Some(launch) = &self.shared.launch {
                 launch.follow();
+                // What the apps asked of their own tabs, as the desk
+                // commands they are.
+                if let Some(tabs) = &self.tabs {
+                    tabs.follow(&self.shared.desktop, launch);
+                }
             }
             self.shared.follow_gestures();
             let ran = self.shared.run_invocations(self.compositor.locked());

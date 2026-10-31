@@ -2,6 +2,7 @@
 //! file of its own, installed in one place, so a part can be written and
 //! read without reading the whole host.
 
+pub mod app_tabs;
 pub mod apps;
 pub mod audio;
 pub(crate) mod clipboard;

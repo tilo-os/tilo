@@ -223,7 +223,7 @@ mod tests {
         let text = text(&saved).expect("the desk is written");
         save_at(state.path(), &text).expect("the desk is saved");
         assert!(
-            !text.contains(&SURFACE.to_string()),
+            !text.contains("surface_id"),
             "a live surface id names nothing after a restart: {text}"
         );
 

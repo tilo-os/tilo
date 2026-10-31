@@ -35,7 +35,7 @@ pub mod room;
 pub mod routing;
 pub mod spawner;
 
-pub use doors::{Connects, Doors, HeldDoor, Routed, WindowConnections};
+pub use doors::{Connects, Doors, HeldDoor, Routed, StartAlone, WindowConnections};
 pub use env::SessionEnvironment;
 pub use instance::{Answer, Instance, Shown, Windows};
 pub use launch::{Launch, Open};
