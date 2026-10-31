@@ -163,6 +163,11 @@ impl ChannelLink {
         Arc::clone(&self.park)
     }
 
+    /// Whether the plane this device says its rooms' rosters on is running.
+    fn attached(&self) -> bool {
+        self.outgoing.lock_recover().is_some()
+    }
+
     /// Take in one message the plane heard. Anything but the channels'
     /// governance is left to the plane.
     pub(crate) fn heard(&self, message: &NeighbourMsg) {
@@ -296,6 +301,12 @@ impl Rosters {
     /// device the room removed, or whose certificate ran out, is not on it,
     /// and what it sends or would be sent is refused from then on.
     fn sweep(&mut self, link: &ChannelLink, engine: &Engine) {
+        // A session with no plane says its rosters to no one: the rooms stay
+        // marked, and the pass after the plane starts tells them all
+        // ([`ChannelLink::attach`]).
+        if !link.attached() {
+            return;
+        }
         for room in link.take_changed() {
             if !engine.holds(room) {
                 // The room is gone here, and what the plane held of it went
@@ -445,7 +456,7 @@ impl Park {
     /// poked.
     fn wait(&self, timeout: Option<Duration>) {
         let pending = self.pending.lock_recover();
-        let pending = match timeout {
+        let mut woken = match timeout {
             Some(timeout) => {
                 self.ready
                     .wait_timeout_while(pending, timeout, |pending| !*pending)
@@ -457,7 +468,11 @@ impl Park {
                 .wait_while(pending, |pending| !*pending)
                 .unwrap_or_else(PoisonError::into_inner),
         };
-        drop(pending);
+        // The poke is spent: the pass this one waits for does what it asked
+        // for, and the next wait sleeps again. A poke that came before this
+        // line woke the wait it was for, and one that lands while the pass
+        // works is still pending for the wait after it.
+        *woken = false;
     }
 }
 
@@ -646,6 +661,40 @@ mod tests {
             matches!(sent.try_recv(), Ok(Outgoing::Roster { .. })),
             "and the plane was told it"
         );
+    }
+
+    /// A poke wakes the pump once: the pass it woke for does its work, and
+    /// the pump sleeps again rather than running flat out from then on.
+    #[test]
+    fn a_poke_is_spent_by_the_pass_it_wakes() {
+        let park = std::sync::Arc::new(Park::default());
+        park.poke();
+        let started = std::time::Instant::now();
+        park.wait(Some(Duration::from_secs(30)));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a poke waiting before the sleep returns at once"
+        );
+        // The poke was spent: the next sleep lasts as long as it was told.
+        let started = std::time::Instant::now();
+        park.wait(Some(Duration::from_millis(60)));
+        assert!(
+            started.elapsed() >= Duration::from_millis(60),
+            "a spent poke does not wake the next pass"
+        );
+        // A poke from elsewhere wakes a pump that is asleep.
+        let woken = std::sync::Arc::clone(&park);
+        let poker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            woken.poke();
+        });
+        let started = std::time::Instant::now();
+        park.wait(Some(Duration::from_secs(30)));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a poke wakes the pass that was asleep"
+        );
+        poker.join().expect("the poker finishes");
     }
 
     fn device_cert() -> tilo_user_identity::DeviceCert {
