@@ -6,7 +6,6 @@
 /// Each preset's card draws the shell **with the real views**: the bar's parts and the dock's
 /// items in miniature, on the edge and in the fit and material the preset names, so what a
 /// person picks is what they get.
-
 /// The layout picker: a card per preset, the one in use marked, and the sentence saying where
 /// the settings stand.
 view layouts(s: Shell) {
@@ -29,28 +28,8 @@ view layouts(s: Shell) {
 /// What the person's settings stand as: the preset's name, or "Custom, based on" it.
 fn standing(s: Shell) -> Text {
     if s.tuned {
-        if s.based_on == .tilo {
-            "Custom, based on Tilo"
-        } else if s.based_on == .macos {
-            "Custom, based on macOS"
-        } else if s.based_on == .windows {
-            "Custom, based on Windows"
-        } else if s.based_on == .gnome {
-            "Custom, based on GNOME"
-        } else {
-            "Custom, based on Minimal"
-        }
-    } else if s.preset == .tilo {
-        "Tilo"
-    } else if s.preset == .macos {
-        "Like macOS"
-    } else if s.preset == .windows {
-        "Like Windows"
-    } else if s.preset == .gnome {
-        "Like GNOME"
-    } else {
-        "Minimal"
-    }
+        if s.based_on == .tilo { "Custom, based on Tilo" } else if s.based_on == .macos { "Custom, based on macOS" } else if s.based_on == .windows { "Custom, based on Windows" } else if s.based_on == .gnome { "Custom, based on GNOME" } else { "Custom, based on Minimal" }
+    } else if s.preset == .tilo { "Tilo" } else if s.preset == .macos { "Like macOS" } else if s.preset == .windows { "Like Windows" } else if s.preset == .gnome { "Like GNOME" } else { "Minimal" }
 }
 
 /// One preset's card: its name, what it is, and a miniature of the shell it makes, drawn
@@ -142,69 +121,69 @@ view preview_dock(preset: Preset) {
 view shell_settings(s: Shell) {
     std.page(s) {
         stack(gap: .section) {
-        layouts(s)
-        section("Top bar") {
-            form {
-                toggle("Show the top bar", bind: s.bar_shown)
-                field("Edge") {
-                    for edge in cases(Edge) {
-                        button(edge.label(), on: bar_on(s, edge))
+            layouts(s)
+            section("Top bar") {
+                form {
+                    toggle("Show the top bar", bind: s.bar_shown)
+                    field("Edge") {
+                        for edge in cases(Edge) {
+                            button(edge.label(), on: bar_on(s, edge))
+                        }
+                    }
+                    field("Fit") {
+                        for fit in cases(Fit) {
+                            button(fit.label(), on: set_bar_fit(s, fit))
+                        }
+                    }
+                    field("Material") {
+                        for finish in cases(Finish) {
+                            button(finish.label(), on: set_bar_finish(s, finish))
+                        }
+                    }
+                    field("When it shows") {
+                        for showing in cases(Showing) {
+                            button(showing.label(), on: set_bar_showing(s, showing))
+                        }
+                    }
+                    field("Size") {
+                        for size in cases(Size) {
+                            button(size.label(), on: set_bar_size(s, size))
+                        }
                     }
                 }
-                field("Fit") {
-                    for fit in cases(Fit) {
-                        button(fit.label(), on: set_bar_fit(s, fit))
-                    }
-                }
-                field("Material") {
-                    for finish in cases(Finish) {
-                        button(finish.label(), on: set_bar_finish(s, finish))
-                    }
-                }
-                field("When it shows") {
-                    for showing in cases(Showing) {
-                        button(showing.label(), on: set_bar_showing(s, showing))
-                    }
-                }
-                field("Size") {
-                    for size in cases(Size) {
-                        button(size.label(), on: set_bar_size(s, size))
-                    }
-                }
+                bar_parts(s)
             }
-            bar_parts(s)
-        }
-        section("Dock") {
-            form {
-                toggle("Show the dock", bind: s.dock_shown)
-                field("Edge") {
-                    for edge in cases(Edge) {
-                        button(edge.label(), on: dock_on(s, edge))
+            section("Dock") {
+                form {
+                    toggle("Show the dock", bind: s.dock_shown)
+                    field("Edge") {
+                        for edge in cases(Edge) {
+                            button(edge.label(), on: dock_on(s, edge))
+                        }
+                    }
+                    field("Fit") {
+                        for fit in cases(Fit) {
+                            button(fit.label(), on: set_dock_fit(s, fit))
+                        }
+                    }
+                    field("Material") {
+                        for finish in cases(Finish) {
+                            button(finish.label(), on: set_dock_finish(s, finish))
+                        }
+                    }
+                    field("When it shows") {
+                        for showing in cases(Showing) {
+                            button(showing.label(), on: set_dock_showing(s, showing))
+                        }
+                    }
+                    field("Size") {
+                        for size in cases(Size) {
+                            button(size.label(), on: set_dock_size(s, size))
+                        }
                     }
                 }
-                field("Fit") {
-                    for fit in cases(Fit) {
-                        button(fit.label(), on: set_dock_fit(s, fit))
-                    }
-                }
-                field("Material") {
-                    for finish in cases(Finish) {
-                        button(finish.label(), on: set_dock_finish(s, finish))
-                    }
-                }
-                field("When it shows") {
-                    for showing in cases(Showing) {
-                        button(showing.label(), on: set_dock_showing(s, showing))
-                    }
-                }
-                field("Size") {
-                    for size in cases(Size) {
-                        button(size.label(), on: set_dock_size(s, size))
-                    }
-                }
+                dock_settings(s)
             }
-            dock_settings(s)
-        }
         }
     }
 }

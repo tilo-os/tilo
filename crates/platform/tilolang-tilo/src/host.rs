@@ -980,12 +980,28 @@ impl Host {
         let (_, ty) = main.ok_or_else(|| {
             HostError::NotFound(format!("a root type with a default view in {app}"))
         })?;
+        self.root_record(app, &ty)
+    }
+
+    /// The package's root resource of the root type `ty` (a type id): what a named root
+    /// (`root notes: Notes`) is, by the id the checker gives it. Created the first time it is
+    /// wanted, as [`Self::root_of`] does.
+    ///
+    /// # Errors
+    /// The package is not loaded, or the resource cannot be created.
+    pub fn root_record(&self, app: &str, ty: &str) -> Result<ResourceRef, HostError> {
+        let app_is_loaded = self
+            .find_in_packages(|package| (package.meta.app == app).then_some(()))
+            .is_some();
+        if !app_is_loaded {
+            return Err(HostError::NotFound(format!("package {app}")));
+        }
         let id = format!("root-{ty}");
         if self.inner.store.contains(&id) {
-            return Ok(ResourceRef::root(id, ty));
+            return Ok(ResourceRef::root(id, ty.to_owned()));
         }
         let record = NewRecord {
-            ty,
+            ty: ty.to_owned(),
             app: app.to_owned(),
             fields: Vec::new(),
         };

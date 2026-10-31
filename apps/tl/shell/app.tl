@@ -41,9 +41,8 @@ type Person (origin: session.person) {
 
 root Desk
 
-default view desktop for Desk
+default view chrome for Desk
 
-/// A shell, opened, shows its settings: the layouts and the bar's and dock's own.
 default view shell_settings for Shell
 
 /// Brings the workspace to the front.
@@ -87,34 +86,17 @@ action overview(d: Desk) (icon: .layout_grid, label: "Overview") {
     outside("session.act", "toggle-overview")
 }
 
-/// The desktop as the person arranged it: the bar and the dock on the edges their settings
-/// name, and the desk between them. Which parts the bar has and what the dock holds come from
-/// their `Shell` record, so this view is the whole of what a preset changes.
-view desktop(d: Desk) {
+/// The shell on this device: the bar and the dock on the edges the person's settings name.
+/// Which parts the bar has, what the dock holds and when each shows come from their `Shell`
+/// record, so this view is the whole of what a preset changes. Nothing is drawn between the
+/// two: the windows stand there, the compositor's under this view.
+view chrome(d: Desk) {
     let s = shell
     layers {
-        // The desk between the chrome: the windows and their strips, which the
-        // compositor draws under this view.
-        row(fill, align: .center) {
-            stack(gap: .section, align: .center) {
-                ui.Text(d.workspace, role: .caption, secondary: true)
-                ui.Text(d.clock, role: .display)
-                ui.Text(d.date, role: .caption, secondary: true)
-            }
-            presence(d)
+        if bar_shows(s) {
+            bar_on_edge(s, d)
         }
-        if s.bar_shown {
-            if s.bar_edge == .top {
-                row(at: .top, fill, align: .center, padding: .tight) {
-                    top_bar(d)
-                }
-            } else {
-                row(at: .bottom, fill, align: .center, padding: .tight) {
-                    top_bar(d)
-                }
-            }
-        }
-        if s.dock_shown {
+        if dock_shows(s) {
             if s.dock_edge == .bottom {
                 row(at: .bottom, fill, align: .center, padding: .related) {
                     dock(s, d)
@@ -132,6 +114,50 @@ view desktop(d: Desk) {
                     dock(s, d)
                 }
             }
+        }
+    }
+}
+
+/// The shell's whole desktop, as a person sees it when they open the shell: the chrome, and
+/// between it the place the windows stand in — the workspace and strip in front, the time, and
+/// who is here, the desk's own reading of where the person is.
+view desktop(d: Desk) {
+    layers {
+        row(fill, align: .center) {
+            stack(gap: .section, align: .center) {
+                ui.Text(d.workspace, role: .caption, secondary: true)
+                ui.Text(d.clock, role: .display)
+                ui.Text(d.date, role: .caption, secondary: true)
+            }
+            presence(d)
+        }
+        chrome(d)
+    }
+}
+
+/// The top bar on the edge it rides: the whole width with its parts spread along it at the
+/// `full` fit, an inset run centred on the edge at the `floating` one — where it covers less of
+/// what is under it. Its ground is the theme's bar material either way; how much of the output
+/// it spans is what its fit says.
+view bar_on_edge(s: Shell, d: Desk) {
+    let on_top = s.bar_edge == .top
+    if s.bar_fit == .full {
+        if on_top {
+            row(at: .top, fill, align: .center, padding: .tight) {
+                top_bar(d)
+            }
+        } else {
+            row(at: .bottom, fill, align: .center, padding: .tight) {
+                top_bar(d)
+            }
+        }
+    } else if on_top {
+        row(at: .top, align: .center, padding: .related) {
+            top_bar(d)
+        }
+    } else {
+        row(at: .bottom, align: .center, padding: .related) {
+            top_bar(d)
         }
     }
 }
@@ -154,7 +180,9 @@ view top_bar(d: Desk) {
     }
 }
 
-/// One part of the bar, drawn from what it is.
+/// One part of the bar, drawn from what it is. A narrow output keeps the menu, the
+/// workspace and the status; the strip, the tasks and who is here give way, because the bar's
+/// parts must never press into each other (the overview shows them).
 view bar_part(d: Desk, part: BarPart) {
     if part.slot == .space {
         spacer
@@ -172,20 +200,24 @@ view bar_part(d: Desk, part: BarPart) {
             ui.MenuItem("Save", icon: .download)
         }
     } else if part.slot == .strip {
-        if d.strip != "" {
+        if d.strip != "" and not space.compact {
             ui.Button(d.strip, icon: .chevron_right, role: .bar) {
                 on press: strips(d)
             }
         }
     } else if part.slot == .tasks {
-        for t in d.tasks {
-            ui.Button(t.title, icon: .bot, role: .bar)
+        if not space.compact {
+            for t in d.tasks {
+                ui.Button(t.title, icon: .bot, role: .bar)
+            }
         }
     } else if part.slot == .people {
-        for p in d.people {
-            ui.Avatar(name: .some(p.name))
+        if not space.compact {
+            for p in d.people {
+                ui.Avatar(name: .some(p.name))
+            }
+            ui.Avatar(name: .some(d.person))
         }
-        ui.Avatar(name: .some(d.person))
     } else if part.slot == .power {
         ui.Button("Power", icon: .battery, icon_only: true, role: .bar)
     } else if part.slot == .agent {
@@ -193,9 +225,7 @@ view bar_part(d: Desk, part: BarPart) {
             ui.Icon(.sparkles, size: .small, tone: .info)
         }
     } else if part.slot == .status {
-        ui.Button(if d.unread > 0 { "{d.unread}" } else { "Notifications" }, icon: if d.quiet { .bell_off } else { .bell }, icon_only: d.unread == 0, role: .bar) {
-            on press: status(d)
-        }
+        bell(d)
     }
 }
 
@@ -293,8 +323,22 @@ view presence(d: Desk) {
             }
             ui.Avatar(name: .some(d.person))
         }
-        ui.Button(if d.unread > 0 { "{d.unread}" } else { "Notifications" }, icon: if d.quiet { .bell_off } else { .bell }, icon_only: d.unread == 0, role: .bar) {
+        bell(d)
+    }
+}
+
+/// The device's status: an icon button named with what it shows — "Notifications", how many
+/// are unread, or that they are silenced — with the count above it as a badge, so the name
+/// assistive technology reads is the whole fact and the number is for the eye.
+view bell(d: Desk) {
+    let name = if d.quiet { "Notifications silenced" } else { "Notifications" }
+    let label = if d.unread == 0 { name } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }
+    stack(gap: .tight, align: .center) {
+        ui.Button(label, icon: if d.quiet { .bell_off } else { .bell }, icon_only: true, role: .bar) {
             on press: status(d)
+        }
+        if d.unread > 0 {
+            ui.Badge(count: .some(d.unread))
         }
     }
 }
@@ -379,19 +423,19 @@ scenario "a full dock" {
     s.dock_items.insert(DockItem(key: "a13", title: "Camera", icon: "camera"))
     s.dock_items.insert(DockItem(key: "a14", title: "Contacts", icon: "users"))
     s.dock_items.insert(DockItem(key: "a15", title: "Clocks", icon: "clock"))
-    s.dock_items.insert(DockItem(key: "a16", title: "Calculator", icon: "calculator"))
+    s.dock_items.insert(DockItem(key: "a16", title: "Calculator", icon: "hash"))
     s.dock_items.insert(DockItem(key: "a17", title: "Canvas", icon: "pen-tool"))
     s.dock_items.insert(DockItem(key: "a18", title: "Sheets", icon: "table"))
-    s.dock_items.insert(DockItem(key: "a19", title: "Slides", icon: "presentation"))
+    s.dock_items.insert(DockItem(key: "a19", title: "Slides", icon: "monitor"))
     s.dock_items.insert(DockItem(key: "a20", title: "Docs", icon: "file-text"))
-    s.dock_items.insert(DockItem(key: "a21", title: "Reader", icon: "book-open"))
+    s.dock_items.insert(DockItem(key: "a21", title: "Reader", icon: "bookmark"))
     s.dock_items.insert(DockItem(key: "a22", title: "Feeds", icon: "rss"))
-    s.dock_items.insert(DockItem(key: "a23", title: "Passwords", icon: "key"))
+    s.dock_items.insert(DockItem(key: "a23", title: "Passwords", icon: "fingerprint"))
     s.dock_items.insert(DockItem(key: "a24", title: "Shortcuts", icon: "command"))
     s.dock_items.insert(DockItem(key: "a25", title: "Store", icon: "shopping-bag"))
     s.dock_items.insert(DockItem(key: "a26", title: "Print", icon: "printer"))
     s.dock_items.insert(DockItem(key: "a27", title: "Disks", icon: "hard-drive"))
-    s.dock_items.insert(DockItem(key: "a28", title: "Monitor", icon: "activity"))
+    s.dock_items.insert(DockItem(key: "a28", title: "Monitor", icon: "screen-share"))
     s.dock_items.insert(DockItem(key: "a29", title: "Speed test", icon: "gauge"))
     s.dock_items.insert(DockItem(key: "a30", title: "Video", icon: "play"))
 }
@@ -484,12 +528,111 @@ scenario "a rearranged bar" {
     d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
     seed(shell)
     let s = shell
-    if let clock = s.bar_parts.find(p -> p.slot == Slot.clock) {
-        s.bar_parts.move(clock, to: 0)
-    }
-    if let tasks = s.bar_parts.find(p -> p.slot == Slot.tasks), status = s.bar_parts.find(p -> p.slot == Slot.status) {
-        s.bar_parts.move(tasks, after: status)
-    }
+    if let clock = s.bar_parts.find(p -> p.slot == Slot.clock) { s.bar_parts.move(clock, to: 0) }
+    if let tasks = s.bar_parts.find(p -> p.slot == Slot.tasks), status = s.bar_parts.find(p -> p.slot == Slot.status) { s.bar_parts.move(tasks, after: status) }
     s.tuned = true
     s.based_on = .tilo
+}
+
+/// The desktop as each preset lays the person's shell out: the bar and the dock on the edges
+/// the preset gives them, shown the way it says. A person who picks one sees this, and a shot
+/// of it is what the layout check keeps per theme.
+scenario "the Tilo preset" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "4:28 PM"
+    d.weekday = "Thursday"
+    d.date = "October 30"
+    d.unread = 2
+    d.workspace = "Studio"
+    d.strip = "Drafts"
+    d.workspaces.insert(Workspace(key: "home", name: "Home"))
+    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
+    seed(shell)
+    let s = shell
+    s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
+    s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
+    s.dock_items.insert(DockItem(key: "chat", title: "Chat", icon: "message-square", running: true))
+    s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
+    apply(s, .tilo)
+}
+
+scenario "the macos preset" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "4:28 PM"
+    d.weekday = "Thursday"
+    d.date = "October 30"
+    d.unread = 2
+    d.workspace = "Studio"
+    d.strip = "Drafts"
+    d.workspaces.insert(Workspace(key: "home", name: "Home"))
+    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
+    seed(shell)
+    let s = shell
+    s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
+    s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
+    s.dock_items.insert(DockItem(key: "chat", title: "Chat", icon: "message-square", running: true))
+    s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
+    apply(s, .macos)
+}
+
+scenario "the windows preset" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "4:28 PM"
+    d.weekday = "Thursday"
+    d.date = "October 30"
+    d.unread = 2
+    d.workspace = "Studio"
+    d.strip = "Drafts"
+    d.workspaces.insert(Workspace(key: "home", name: "Home"))
+    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
+    seed(shell)
+    let s = shell
+    s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
+    s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
+    s.dock_items.insert(DockItem(key: "chat", title: "Chat", icon: "message-square", running: true))
+    s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
+    apply(s, .windows)
+}
+
+scenario "the gnome preset" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "4:28 PM"
+    d.weekday = "Thursday"
+    d.date = "October 30"
+    d.unread = 2
+    d.workspace = "Studio"
+    d.strip = "Drafts"
+    d.workspaces.insert(Workspace(key: "home", name: "Home"))
+    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
+    seed(shell)
+    apply(shell, .gnome)
+}
+
+scenario "the minimal preset" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "4:28 PM"
+    d.weekday = "Thursday"
+    d.date = "October 30"
+    d.unread = 2
+    d.workspace = "Studio"
+    d.strip = "Drafts"
+    d.workspaces.insert(Workspace(key: "home", name: "Home"))
+    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
+    seed(shell)
+    apply(shell, .minimal)
 }

@@ -102,6 +102,21 @@ pub struct DeskReading {
     /// The others here in the workspace in front: its collaborators.
     #[serde(default)]
     pub people: Vec<PersonReading>,
+    /// Whether the pointer is at, or resting against, the top edge of the output: a shell's bar
+    /// that hides until it is reached for shows while this holds.
+    #[serde(default)]
+    pub bar_reached: bool,
+    /// Whether a window stands where a top bar rides: a bar that hides while a window overlaps
+    /// it hides while this holds.
+    #[serde(default)]
+    pub bar_covered: bool,
+    /// Whether the pointer is at the bottom edge of the output: a dock there shows while this
+    /// holds.
+    #[serde(default)]
+    pub dock_reached: bool,
+    /// Whether a window stands where a dock rides.
+    #[serde(default)]
+    pub dock_covered: bool,
 }
 
 /// What a shell asked of the session: an invocation on the door.
@@ -110,6 +125,111 @@ pub struct Ask {
     pub resource: String,
     pub action: String,
     pub arguments: BTreeMap<String, String>,
+}
+
+/// How far from an output's edge the pointer resting there counts as at it: a bar or dock
+/// pinned to a hiding edge is reached for by coming within this of that edge. The reach pad
+/// the desk's own widgets use, so a glove and a mouse reach the same distance.
+#[must_use]
+pub fn reach_pad() -> f64 {
+    f64::from(ui::tokens::Spacing::BASE.s2)
+}
+
+/// A window as the compositor shows it, for what the chrome needs of it: where it stands.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl WindowRect {
+    fn covers(&self, edge_top: bool, band: f64, outputs: (i32, i32, u32, u32)) -> bool {
+        let (x0, _, width, height) = outputs;
+        let (left, right) = (f64::from(x0), f64::from(x0) + f64::from(width));
+        let horizontal = self.x < right && self.x + self.width > left;
+        if !horizontal {
+            return false;
+        }
+        if edge_top {
+            // A window reaching into the top band covers a bar there.
+            let top = f64::from(outputs.1);
+            self.y < top + band && self.y + self.height > top
+        } else {
+            // A window reaching into the bottom band covers a dock there.
+            let bottom = f64::from(outputs.1) + f64::from(height);
+            self.y < bottom && self.y + self.height > bottom - band
+        }
+    }
+}
+
+/// What the screen says of the edges a bar or dock that shows only sometimes rides: whether
+/// the pointer is at each edge, and whether a window stands where a bar or dock there would.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScreenEdges {
+    pub bar_reached: bool,
+    pub bar_covered: bool,
+    pub dock_reached: bool,
+    pub dock_covered: bool,
+}
+
+/// Which edges the shell's chrome stands on: what the part covers of the outputs. The session
+/// reads it from the shell's record — a bar on the top or bottom, a dock on the bottom or the
+/// top — and the part covers each band it names.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HostEdges {
+    /// The bar rides an edge (whether it shows now or not): the part covers its band.
+    pub bar: bool,
+    /// The bar rides the top rather than the bottom.
+    pub bar_top: bool,
+    /// The dock rides an edge.
+    pub dock: bool,
+    /// The dock rides the bottom rather than the top.
+    pub dock_bottom: bool,
+}
+
+impl HostEdges {
+    /// Whether the bar's band is at the top.
+    #[must_use]
+    pub const fn bar_at_top(&self) -> bool {
+        self.bar && self.bar_top
+    }
+
+    /// Whether the dock's band is at the bottom.
+    #[must_use]
+    pub const fn dock_at_bottom(&self) -> bool {
+        self.dock && self.dock_bottom
+    }
+}
+
+/// What a screen says of its edges: the pointer at `pointer` and the windows `windows`, over
+/// `outputs` (their bounding box, `(x, y, w, h)`), for a bar and a dock of `band` logical
+/// pixels. The pointer is at an edge when it rests within [`reach_pad`] of the top or bottom
+/// output edge there, or over the band a shown bar or dock would take.
+#[must_use]
+pub fn screen_edges(
+    outputs: (i32, i32, u32, u32),
+    band: f64,
+    pointer: (f64, f64),
+    windows: &[WindowRect],
+) -> ScreenEdges {
+    let (x0, y0, width, height) = outputs;
+    let (x, y) = pointer;
+    let (left, right) = (f64::from(x0), f64::from(x0) + f64::from(width));
+    let (top, bottom) = (f64::from(y0), f64::from(y0) + f64::from(height));
+    let over = x >= left && x < right;
+    let pad = reach_pad();
+    let at_top = over && y >= top - pad && y <= top + pad;
+    let at_bottom = over && y <= bottom + pad && y >= bottom - pad;
+    ScreenEdges {
+        // A bar reached for is reached at its own edge, or by the pointer coming to rest on
+        // the band it shows in.
+        bar_reached: at_top || (over && y >= top - pad && y <= top + band),
+        dock_reached: at_bottom || (over && y <= bottom + pad && y >= bottom - band),
+        bar_covered: windows.iter().any(|w| w.covers(true, band, outputs)),
+        dock_covered: windows.iter().any(|w| w.covers(false, band, outputs)),
+    }
 }
 
 /// Between the session and the shell's origin: the desk's reading the session last published,
@@ -131,6 +251,16 @@ impl SessionLink {
     /// The session published `reading`: the shell writes it on its next frame when it differs
     /// from the last. Whether it did.
     pub fn publish(&self, reading: DeskReading) -> bool {
+        // What the desk reading names is the desk; what the screen says of its edges comes
+        // with it, published by [`Self::publish_edges`], so the reading keeps the last word on
+        // it: a desk change does not put the edges back to rest.
+        let mut reading = reading;
+        if let Some(was) = self.reading.borrow().as_ref() {
+            reading.bar_reached = was.bar_reached;
+            reading.bar_covered = was.bar_covered;
+            reading.dock_reached = was.dock_reached;
+            reading.dock_covered = was.dock_covered;
+        }
         if self.reading.borrow().as_ref() == Some(&reading) {
             return false;
         }
@@ -159,6 +289,27 @@ impl SessionLink {
     #[must_use]
     pub fn has_asks(&self) -> bool {
         !self.asked.borrow().is_empty()
+    }
+
+    /// Publish what the screen says of its edges (`edges`), folded into the desk reading the
+    /// session publishes: the pointer at an edge and a window standing where a bar or a dock
+    /// there would. Published before the desk so a frame that moves both writes them once.
+    pub fn publish_edges(&self, edges: ScreenEdges) {
+        let Some(mut reading) = self.reading.borrow().clone() else {
+            return;
+        };
+        if reading.bar_reached == edges.bar_reached
+            && reading.bar_covered == edges.bar_covered
+            && reading.dock_reached == edges.dock_reached
+            && reading.dock_covered == edges.dock_covered
+        {
+            return;
+        }
+        reading.bar_reached = edges.bar_reached;
+        reading.bar_covered = edges.bar_covered;
+        reading.dock_reached = edges.dock_reached;
+        reading.dock_covered = edges.dock_covered;
+        let _ = self.publish(reading);
     }
 }
 
@@ -227,6 +378,8 @@ impl SessionOrigin {
         reading: &DeskReading,
         root: &ResourceRef,
         types: &[OriginType],
+        shell_root: Option<&ResourceRef>,
+        shell_ty: Option<&OriginType>,
     ) -> Result<Vec<OriginWrite>, String> {
         let kind = |name: &str| {
             types
@@ -273,13 +426,41 @@ impl SessionOrigin {
             Value::Bool(reading.status_panel),
             reading.status_panel != was.status_panel,
         );
+        let mut writes = Vec::new();
+        // What the screen says, in the shell's own record: the four facts a bar or dock that
+        // shows only sometimes follows (see `chrome.tl`'s `Shell`). They are the shell record's
+        // own fields, not the desk's, so the part writes them in the shell's root; each goes
+        // only when it moved, so a still screen writes nothing.
+        if let Some(root) = shell_root
+            && let Some(ty) = shell_ty
+        {
+            let first = self.written.is_none();
+            let mut screen = Vec::new();
+            for (name, now, before) in [
+                ("bar_reached", reading.bar_reached, was.bar_reached),
+                ("bar_covered", reading.bar_covered, was.bar_covered),
+                ("dock_reached", reading.dock_reached, was.dock_reached),
+                ("dock_covered", reading.dock_covered, was.dock_covered),
+            ] {
+                if (first || now != before)
+                    && let Some(id) = ty.field(name)
+                {
+                    screen.push((id.to_owned(), Value::Bool(now)));
+                }
+            }
+            if !screen.is_empty() {
+                writes.push(OriginWrite::Set {
+                    target: root.clone(),
+                    fields: screen,
+                });
+            }
+        }
         set(
             "workspace",
             text(&reading.workspace),
             reading.workspace != was.workspace,
         );
         set("strip", text(&reading.strip), reading.strip != was.strip);
-        let mut writes = Vec::new();
         if !fields.is_empty() {
             writes.push(OriginWrite::Set {
                 target: root.clone(),
@@ -472,6 +653,33 @@ impl Origin for SessionOrigin {
             tracing::error!(app = cx.app, "the shell's package is not loaded");
             return polled;
         };
+        // The shell's own record (`root shell: Shell`), reached as `shell` in its views: a
+        // named root of the package, made the first time it is wanted. A shell without one
+        // (the bar alone, as it first shipped) writes the desk only.
+        let shell_name = cx.host.find_in_packages(|package| {
+            (package.meta.app == cx.app)
+                .then(|| package.meta.named_roots.first().map(|root| root.name.clone()))
+                .flatten()
+        });
+        let shell_ty = shell_name.as_ref().and_then(|name| {
+            cx.host.find_in_packages(|package| {
+                (package.meta.app == cx.app)
+                    .then(|| {
+                        let root = package
+                            .meta
+                            .named_roots
+                            .iter()
+                            .find(|root| &root.name == name)?;
+                        origin_types(&package.meta, ORIGIN)
+                            .into_iter()
+                            .find(|ty| ty.ty == root.ty)
+                    })
+                    .flatten()
+            })
+        });
+        let shell_root = shell_ty
+            .as_ref()
+            .and_then(|ty| cx.host.root_record(cx.app, &ty.ty).ok());
         let root = match cx.host.root_of(cx.app) {
             Ok(root) => root,
             Err(error) => {
@@ -479,7 +687,7 @@ impl Origin for SessionOrigin {
                 return polled;
             }
         };
-        let writes = match self.writes(&reading, &root, &types) {
+        let writes = match self.writes(&reading, &root, &types, shell_root.as_ref(), shell_ty.as_ref()) {
             Ok(writes) => writes,
             Err(why) => {
                 tracing::error!(why, "the session's desk does not fit the shell");
@@ -664,8 +872,10 @@ pub struct ShellPart {
     /// The outputs' bounding box `(x, y, w, h)` the part spans.
     outputs: Option<(i32, i32, u32, u32)>,
     /// A menu the part opened is up: the part covers the outputs so it has room. At rest it
-    /// covers only its band, so a change draws only that.
+    /// covers only its bands, so a change draws only that.
     menu: bool,
+    /// The edges the shell's chrome stands on: what the part covers of the outputs.
+    edges: HostEdges,
 }
 
 impl ShellPart {
@@ -726,25 +936,88 @@ impl ShellPart {
             band: band.max(1),
             outputs: None,
             menu: false,
+            edges: HostEdges {
+                bar: true,
+                bar_top: true,
+                dock: false,
+                dock_bottom: false,
+            },
         };
+        part.seed();
         part.turn();
         part
     }
 
-    /// Stand over the outputs: the whole of them while a menu of the part's is up, else the
-    /// band.
-    fn place(&mut self) {
-        let Some((x, y, width, height)) = self.outputs else {
+    /// Make the shell's own record (`root shell: Shell`) and let the package's migration seed
+    /// it — the bar's parts and the dock's items, on a shell never arranged — as the package
+    /// version's change, as an app's migration is. Both go through the part's own turns: the
+    /// record is created as a queued change, the migration runs once the record is had, and
+    /// [`Self::commit`] writes each into the part's record.
+    fn seed(&mut self) {
+        let Some(host) = self.instance.host() else {
+            return;
+        };
+        let roots = host
+            .package(self.instance.app())
+            .map(|package| package.meta.named_roots.clone())
+            .unwrap_or_default();
+        for root in &roots {
+            if let Err(error) = host.root_record(self.instance.app(), &root.ty) {
+                tracing::warn!(%error, "the shell's record could not be made");
+                return;
+            }
+        }
+        if roots.is_empty() {
+            return;
+        }
+        // The package's migrations run for the room's origin alone, as an app's do. Each
+        // committed action is written into the part's record, as the door writes an app's: the
+        // record's making first, then the seed that runs once the record is had.
+        self.instance.set_origin(true);
+        for _ in 0..3 {
+            self.instance.sync(Some(&self.record));
+            self.instance.commit_planned();
+            if !self.commit() {
+                break;
+            }
+        }
+    }
+
+    /// Stand over the outputs: the whole of them while a menu of the part's is up, and else
+    /// over each edge the shell's bar and dock ride — a bar at the top takes the top band, a
+    /// dock at the bottom the bottom one — through `edges`. A shell whose chrome is off at an
+    /// edge, or is a bar at the top alone (the first shell), takes that band only.
+    fn place(&mut self, edges: HostEdges) {
+        let Some((x, y, width, output_height)) = self.outputs else {
             return;
         };
         let scale = self.widgets.placement().scale;
-        let height = if self.menu {
-            height
+        let band = self.band.min(output_height);
+        if self.menu {
+            self.widgets.set_placement(Placement {
+                origin: (x, y),
+                size: (width.max(1), output_height.max(1)),
+                scale,
+            });
+            return;
+        }
+        let at_top = edges.bar_at_top();
+        let at_bottom = edges.dock_at_bottom();
+        // The chrome at one edge alone stands in a band there. Both, or neither, and the part
+        // covers the outputs, so each band is where it is.
+        let height = match (at_top, at_bottom) {
+            (true, false) | (false, true) => band,
+            _ => output_height.max(band),
+        };
+        let origin_y = if at_bottom && !at_top {
+            y.saturating_add(
+                i32::try_from(output_height.saturating_sub(height)).unwrap_or(i32::MAX),
+            )
         } else {
-            self.band.min(height)
+            y
         };
         self.widgets.set_placement(Placement {
-            origin: (x, y),
+            origin: (x, origin_y),
             size: (width.max(1), height.max(1)),
             scale,
         });
@@ -761,7 +1034,7 @@ impl ShellPart {
             .any(|(_, node)| node.role() == ui::accesskit::Role::Menu);
         if menu != self.menu {
             self.menu = menu;
-            self.place();
+            self.place(self.edges);
         }
     }
 
@@ -794,6 +1067,33 @@ impl ShellPart {
                     rect.height(),
                 )
             })
+    }
+
+    /// The edges the shell's chrome stands on, as the session read them from the shell's
+    /// record: where the part covers the outputs. A change moves the part to the edges it
+    /// now names.
+    pub fn set_edges(&mut self, edges: HostEdges) {
+        if edges == self.edges {
+            return;
+        }
+        self.edges = edges;
+        self.place(edges);
+    }
+
+    /// The shell's own record (`root shell: Shell`) as it holds it now, when the package has
+    /// one and the record is made: what its edge settings are read from.
+    #[must_use]
+    pub fn shell_record(&self) -> Option<tilolang_tilo::record::DynRecord> {
+        let host = self.instance.host()?;
+        let package = host.package(self.instance.app())?;
+        let root = package.meta.named_roots.first()?;
+        host.store().record(&format!("root-{}", root.ty)).ok()
+    }
+
+    /// The package the part shows, as it was compiled: its types and their fields.
+    #[must_use]
+    pub fn package(&self) -> Option<tilolang_tilo::host::Package> {
+        self.instance.host()?.package(self.instance.app())
     }
 
     /// The toolkit's host of the part's widget tree, to drive it directly.
@@ -1002,7 +1302,7 @@ impl SurfaceHost for ShellPart {
             return;
         };
         self.outputs = Some((x0, y0, width, height));
-        self.place();
+        self.place(self.edges);
     }
 
     fn wants_keyboard(&self) -> bool {
@@ -1064,7 +1364,18 @@ mod tests {
 
     use super::*;
 
-    const SOURCE: &str = include_str!("../../../../apps/tl/shell/app.tl");
+    /// The shell package's files, as the session compiles them: every `.tl` of the package is
+    /// part of its one module.
+    const FILES: [(&str, &str); 5] = [
+        ("app.tl", include_str!("../../../../apps/tl/shell/app.tl")),
+        ("chrome.tl", include_str!("../../../../apps/tl/shell/chrome.tl")),
+        ("docks.tl", include_str!("../../../../apps/tl/shell/docks.tl")),
+        ("layout.tl", include_str!("../../../../apps/tl/shell/layout.tl")),
+        (
+            "system.tl",
+            include_str!("../../../../apps/tl/shell/system.tl"),
+        ),
+    ];
     const IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
 
     fn reading() -> DeskReading {
@@ -1091,7 +1402,13 @@ mod tests {
 
     fn part() -> (ShellPart, Rc<SessionLink>) {
         let lock = tilolang_tilo::tilolang::IdsLock::parse(IDS).unwrap();
-        let compiled = tilolang_tilo::tilolang::compile_package(SOURCE, &lock, &[]).unwrap();
+        let source = tilolang_tilo::tilolang::PackageSource::new(
+            FILES
+                .into_iter()
+                .map(|(path, text)| (format!("apps/tl/shell/{path}"), text.to_owned())),
+        );
+        let compiled =
+            tilolang_tilo::tilolang::compile_package_source(&source, &lock, &[]).unwrap();
         let app = compiled.meta.app.clone();
         let link = Rc::new(SessionLink::default());
         link.publish(reading());
@@ -1253,5 +1570,252 @@ mod tests {
             part.origin.borrow().in_flight.is_empty(),
             "the effect was answered"
         );
+    }
+
+    /// Whether the bar's bell says `words` among the part's accessible labels: what a person
+    /// hears of the bar's status part.
+    fn says(part: &mut ShellPart, words: &str) -> bool {
+        crate::Published::accessible_labels(&mut part.widgets)
+            .iter()
+            .any(|label| label == words)
+    }
+
+    /// The root of the person's shell record (`root shell: Shell`), made now.
+    fn shell_root(part: &ShellPart) -> ResourceRef {
+        let ty = part
+            .instance
+            .host()
+            .and_then(|host| {
+                host.package(part.instance.app())?
+                    .meta
+                    .named_roots
+                    .first()
+                    .map(|root| root.ty.clone())
+            })
+            .expect("the shell declares its record as a named root");
+        part.instance
+            .host()
+            .expect("the part runs a host")
+            .root_record(part.instance.app(), &ty)
+            .expect("the shell record is made")
+    }
+
+    /// Set one of the shell record's facts as the session's screen reading does: a register on
+    /// the record, through the origin write the session's origin applies.
+    fn screen(part: &mut ShellPart, field: &str, on: bool) {
+        let id = part
+            .package()
+            .into_iter()
+            .flat_map(|package| package.meta.types)
+            .find(|ty| ty.name == "Shell")
+            .and_then(|ty| ty.fields.into_iter().find(|f| f.name == field))
+            .map_or_else(|| panic!("the record has no {field}"), |f| f.id);
+        let writes = vec![OriginWrite::Set {
+            target: shell_root(part),
+            fields: vec![(id, Value::Bool(on))],
+        }];
+        part.instance
+            .host()
+            .expect("the part runs a host")
+            .runtime()
+            .apply_origin("session", writes, None)
+            .expect("the screen's facts are the session's to write");
+        // The write is a change of the record, as the session's origin's write is: the part
+        // commits it and runs its views again.
+        part.instance.commit_planned();
+        assert!(part.commit(), "the screen's fact is committed to the record");
+        part.instance.moved();
+        part.turn();
+    }
+
+    /// The person chooses the preset `preset`, as their settings' card does: the action runs
+    /// in the part's runtime, and the part commits it to its record.
+    fn choose_preset(part: &mut ShellPart, preset: &str) {
+        let shell = shell_root(part);
+        let meta = part
+            .instance
+            .host()
+            .unwrap()
+            .package(part.instance.app())
+            .unwrap()
+            .meta;
+        let apply = meta
+            .actions
+            .iter()
+            .find(|a| a.name == "apply")
+            .expect("the shell's apply action")
+            .id
+            .clone();
+        let preset_enum = meta
+            .enums
+            .iter()
+            .find(|en| en.name == "Preset")
+            .expect("the shell declares its Preset");
+        let preset_ty = preset_enum.id.clone();
+        let variant = preset_enum
+            .variants
+            .iter()
+            .find(|v| v.name == preset)
+            .unwrap_or_else(|| panic!("no preset {preset}"))
+            .id
+            .clone();
+        part.instance
+            .host()
+            .unwrap()
+            .runtime()
+            .invoke_action(
+                &tilolang_tilo::runtime::Principal::new("Pat"),
+                (
+                    apply.as_str(),
+                    vec![
+                        Value::resource(&shell),
+                        Value::Enum(tilolang_tilo::runtime::value::EnumValue {
+                            ty: preset_ty,
+                            variant,
+                            fields: std::collections::BTreeMap::new(),
+                        }),
+                    ],
+                ),
+            )
+            .expect("the preset applies");
+        part.instance.commit_planned();
+        assert!(part.commit(), "the preset is committed to the record");
+        // The record moved: the views run again on the part's next turns.
+        part.instance.moved();
+        part.turn();
+    }
+
+    /// The person sets one of the shell's enum settings (`set_bar_showing` and the like) to
+    /// `case`, as a button in the settings does: the action runs and the part commits it.
+    fn showing(part: &mut ShellPart, action: &str, case: &str) {
+        let shell = shell_root(part);
+        let meta = part
+            .instance
+            .host()
+            .unwrap()
+            .package(part.instance.app())
+            .unwrap()
+            .meta;
+        let id = meta
+            .actions
+            .iter()
+            .find(|a| a.name == action)
+            .unwrap_or_else(|| panic!("no action {action}"))
+            .id
+            .clone();
+        let param_ty = &meta
+            .actions
+            .iter()
+            .find(|a| a.name == action)
+            .unwrap()
+            .params[1]
+            .ty;
+        let enum_name = param_ty.trim_start_matches("enum ");
+        let en = meta
+            .enums
+            .iter()
+            .find(|en| en.name == enum_name)
+            .unwrap_or_else(|| panic!("no enum {enum_name}"));
+        let variant = en
+            .variants
+            .iter()
+            .find(|v| v.name == case)
+            .unwrap_or_else(|| panic!("no {enum_name}.{case}"))
+            .id
+            .clone();
+        let ty = en.id.clone();
+        part.instance
+            .host()
+            .unwrap()
+            .runtime()
+            .invoke_action(
+                &tilolang_tilo::runtime::Principal::new("Pat"),
+                (
+                    id.as_str(),
+                    vec![
+                        Value::resource(&shell),
+                        Value::Enum(tilolang_tilo::runtime::value::EnumValue {
+                            ty,
+                            variant,
+                            fields: std::collections::BTreeMap::new(),
+                        }),
+                    ],
+                ),
+            )
+            .expect("the setting applies");
+        part.instance.commit_planned();
+        assert!(part.commit(), "the setting is committed to the record");
+        part.instance.moved();
+        part.turn();
+
+    }
+
+    #[test]
+    fn a_bar_that_hides_until_reached_for_shows_when_the_screen_says_it_is_reached() {
+        let (mut part, _link) = part();
+        for _ in 0..4 {
+            part.prepare_frame();
+        }
+        // The default shell shows its bar always: the bell is there.
+        assert!(says(&mut part, "Notifications"), "the bar shows at rest");
+        // The person chooses the minimal layout: a bar that hides until reached for.
+        choose_preset(&mut part, "minimal");
+        assert!(
+            !says(&mut part, "Notifications"),
+            "a minimal shell has no bar at rest"
+        );
+        // The pointer comes to the top edge: the session says it is reached.
+        screen(&mut part, "bar_reached", true);
+        assert!(
+            says(&mut part, "Notifications"),
+            "the bar shows when the pointer bumps its edge"
+        );
+        // It leaves: the bar hides again.
+        screen(&mut part, "bar_reached", false);
+        assert!(
+            !says(&mut part, "Notifications"),
+            "and hides when the pointer leaves"
+        );
+    }
+
+    #[test]
+    fn a_bar_that_hides_while_a_window_overlaps_it_hides_only_while_one_does() {
+        let (mut part, _link) = part();
+        for _ in 0..4 {
+            part.prepare_frame();
+        }
+        // The person's bar shows only while no window overlaps it.
+        showing(&mut part, "set_bar_showing", "no_overlap");
+        assert!(says(&mut part, "Notifications"), "the bar shows at rest");
+        // A window stands where the bar rides: the session says the top edge is covered.
+        screen(&mut part, "bar_covered", true);
+        assert!(
+            !says(&mut part, "Notifications"),
+            "the bar hides while a window covers it"
+        );
+        screen(&mut part, "bar_covered", false);
+        assert!(says(&mut part, "Notifications"), "and shows once it is clear");
+    }
+
+    #[test]
+    fn the_part_stands_in_the_band_the_shell_records_dock_names() {
+        let (mut part, _link) = part();
+        assert_eq!(
+            part.widgets.placement().origin,
+            (0, 0),
+            "the first shell: a bar at the top"
+        );
+        part.set_edges(HostEdges {
+            bar: false,
+            bar_top: true,
+            dock: true,
+            dock_bottom: true,
+        });
+        assert_eq!(
+            part.widgets.placement().origin.1,
+            800 - 32,
+            "a dock at the bottom alone stands in the bottom band"
+        );
+        assert_eq!(part.widgets.placement().size, (1280, 32));
     }
 }

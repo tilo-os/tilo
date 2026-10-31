@@ -6,7 +6,6 @@
 /// shell.md's model: a shell is a view of the person's arrangement. This record is the
 /// arrangement's chrome — the bar and the dock — and the rest of the person's arrangement
 /// (windows, strips, canvas places) is the shell's own arrangement beside it.
-
 /// The edge of the screen a part rides.
 enum Edge {
     top
@@ -99,7 +98,6 @@ type Shell {
     based_on: Preset = .tilo
     /// Whether the person has changed a setting since choosing a preset.
     tuned: Bool = false
-
     /// The top bar.
     bar_shown: Bool = true
     bar_edge: Edge = .top
@@ -108,7 +106,6 @@ type Shell {
     bar_showing: Showing = .always
     bar_size: Size = .regular
     bar_parts: Collection<BarPart>
-
     /// The dock.
     dock_shown: Bool = true
     dock_edge: Edge = .bottom
@@ -124,6 +121,18 @@ type Shell {
     /// A click on the dock's icons magnifies the item under the pointer, as macOS's Dock
     /// does.
     dock_zoom: Bool = false
+    /// The pointer is at, or resting against, the edge the bar rides: a bar that hides until
+    /// it is reached for shows. The session writes the four below; no action changes them and
+    /// no preset names them — they are what the bar and the dock follow when they show only
+    /// sometimes, so the views run again when one moves and at no other time.
+    bar_reached: Bool = false
+    /// A window stands where the bar rides, so a bar that hides while a window overlaps it
+    /// hides.
+    bar_covered: Bool = false
+    /// The pointer is at the edge the dock rides: the dock pinned there shows.
+    dock_reached: Bool = false
+    /// A window stands where the dock rides.
+    dock_covered: Bool = false
 }
 
 /// One part of the top bar, in the person's order.
@@ -178,8 +187,6 @@ migration action seed(s: Shell) {
         s.dock_items.insert(DockItem(key: "launcher", title: "Launcher", icon: "layout-grid"))
     }
 }
-
-// ----- Presets -----------------------------------------------------------------------------
 
 /// Uses the preset `to`: every setting it names at once. The result is exactly that preset,
 /// so the picker shows it chosen and "custom" is off.
@@ -256,13 +263,10 @@ primary action apply(s: Shell, to: Preset) (icon: .layout_grid, label: "Use this
         s.dock_running = true
         s.dock_launcher = true
     }
-    // macOS's bar carries the focused app's menus after the system's.
     if to == .macos and not s.bar_parts.any(p -> p.slot == Slot.app_menu) {
         s.bar_parts.insert(BarPart(slot: .app_menu, title: "App menus"))
         if let first = s.bar_parts.first() {
-            if let brand = s.bar_parts.find(p -> p.slot == Slot.app_menu), after = s.bar_parts.find(p -> p.slot == Slot.menu) {
-                s.bar_parts.move(brand, after: after)
-            }
+            if let brand = s.bar_parts.find(p -> p.slot == Slot.app_menu), after = s.bar_parts.find(p -> p.slot == Slot.menu) { s.bar_parts.move(brand, after: after) }
         }
     }
 }
@@ -272,9 +276,7 @@ primary action apply(s: Shell, to: Preset) (icon: .layout_grid, label: "Use this
 action show_app_menus(s: Shell) (icon: .menu, label: "Show the app's menus") {
     require not s.bar_parts.any(p -> p.slot == Slot.app_menu) "The app's menus are on the bar already"
     s.bar_parts.insert(BarPart(slot: .app_menu, title: "App menus"))
-    if let menus = s.bar_parts.find(p -> p.slot == Slot.app_menu), brand = s.bar_parts.find(p -> p.slot == Slot.menu) {
-        s.bar_parts.move(menus, after: brand)
-    }
+    if let menus = s.bar_parts.find(p -> p.slot == Slot.app_menu), brand = s.bar_parts.find(p -> p.slot == Slot.menu) { s.bar_parts.move(menus, after: brand) }
     s.tuned = true
 }
 
@@ -289,8 +291,6 @@ action reset(s: Shell) (icon: .rotate_ccw, label: "Back to the preset") {
     require s.tuned "Nothing was changed from the preset"
     apply(s, s.based_on)
 }
-
-// ----- The bar's settings ------------------------------------------------------------------
 
 /// Puts the bar on `edge`.
 action bar_on(s: Shell, edge: Edge) (icon: .panel_right, label: "Move the bar to the {edge}") {
@@ -323,8 +323,6 @@ action show_bar(s: Shell, on: Bool) (icon: .eye, label: "Show the top bar") {
     s.bar_shown = on
     s.tuned = true
 }
-
-// ----- The dock's settings -----------------------------------------------------------------
 
 /// Moves the dock to `edge`, keeping how it is built.
 action dock_on(s: Shell, edge: Edge) (icon: .panel_right, label: "Move the dock to the {edge}") {
@@ -382,8 +380,6 @@ action set_dock_zoom(s: Shell, on: Bool) (label: "Magnify the dock") {
     s.tuned = true
 }
 
-// ----- Arranging the bar and the dock ------------------------------------------------------
-
 /// Puts a bar part with the one it comes before, wherever the part stands now: the one action
 /// a drag commits, and the same change from the settings, a shortcut or an agent.
 action move_part(s: Shell, part: BarPart, before: BarPart) (icon: .arrow_up_down, label: "Move") {
@@ -424,9 +420,7 @@ action pin(s: Shell, key: Text, title: Text, icon: Text, next: Text = "") (icon:
     require not s.dock_items.any(i -> i.key == key) "{title} is on the dock already"
     let item = DockItem(key: key, title: title, icon: icon, pinned: true)
     s.dock_items.insert(item)
-    if let before = s.dock_items.find(i -> i.key == next) {
-        s.dock_items.move(item, before: before)
-    }
+    if let before = s.dock_items.find(i -> i.key == next) { s.dock_items.move(item, before: before) }
     s.tuned = true
 }
 
@@ -434,4 +428,27 @@ action pin(s: Shell, key: Text, title: Text, icon: Text, next: Text = "") (icon:
 action unpin(s: Shell, item: DockItem) (icon: .pin, label: "Remove from the dock") {
     s.dock_items.remove(item)
     s.tuned = true
+}
+
+/// Whether a bar or dock of `when` shows now, given whether the pointer is at its edge
+/// (`reached`) and whether a window stands where it rides (`covered`). The view draws it only
+/// while this holds; the four settings read as a person reads them: always; while no window
+/// stands where it rides; when the pointer comes to its edge; and, hiding after the pointer
+/// leaves, back when it comes to the edge or to the bar itself.
+///
+/// `auto_hide` and `edge_reveal` both show on a reach, so one gesture — the pointer bumping the
+/// screen edge — reveals either, and neither shows while a window covers it and the pointer is
+/// elsewhere.
+fn shows(when: Showing, reached: Bool, covered: Bool) -> Bool {
+    if when == .always { true } else if when == .no_overlap { not covered } else { reached }
+}
+
+/// Whether the top bar shows now.
+fn bar_shows(s: Shell) -> Bool {
+    s.bar_shown and shows(s.bar_showing, s.bar_reached, s.bar_covered)
+}
+
+/// Whether the dock shows now.
+fn dock_shows(s: Shell) -> Bool {
+    s.dock_shown and shows(s.dock_showing, s.dock_reached, s.dock_covered)
 }

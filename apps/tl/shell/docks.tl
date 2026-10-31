@@ -6,47 +6,68 @@
 /// The gesture is Rust (`ui.DragRun`, the toolkit's run): the person picks an item up, the
 /// run shows where it will land, and letting go runs one action — `place_item` — which is
 /// what an agent or a shortcut runs too, attributed and undone like any change.
-
-/// The dock, nothing at all while it is off.
+///
+/// Nothing at all while it is off or hidden for now (`dock_shows`: the person's `dock_shown`,
+/// and when its `Showing` says). The ground sits in the view that places it on the output's
+/// edge: edge to edge and square on the `full` fit, a rounded body inset from the edges on the
+/// floating one, over what is under it. A dock on the top or bottom edge runs along that edge;
+/// one on the leading or trailing edge stands up it.
 view dock(s: Shell, d: Desk) {
-    if s.dock_shown {
-        // The ground: edge to edge and square, or inset and rounded, floating over what is
-        // under it. A dock on the top or bottom edge runs along it; one on the leading or
-        // trailing edge stands up it.
-        if s.dock_edge == .top or s.dock_edge == .bottom {
-            if s.dock_fit == .full {
-                row(gap: .related, align: .center, padding: .tight) {
-                    dock_run(s, d)
-                }
-            } else {
-                row(gap: .related, align: .center, padding: .related) {
-                    dock_run(s, d)
-                }
-            }
-        } else {
-            if s.dock_fit == .full {
-                stack(gap: .related, align: .center) {
-                    dock_run(s, d)
-                }
-            } else {
-                stack(gap: .related, align: .center) {
-                    dock_run(s, d)
-                }
-            }
-        }
+    if dock_shows(s) {
+        dock_run(s, d)
     }
 }
 
 /// The dock's items in a run the person rearranges by dragging one onto another place.
 /// Letting go runs `place_item`, the one action the gesture commits; a press on an item opens
-/// what it stands for.
+/// what it stands for. A dock standing up a leading or trailing edge runs top to bottom.
 view dock_run(s: Shell, d: Desk) {
-    ui.DragRun(axis: if s.dock_edge == .top or s.dock_edge == .bottom { .horizontal } else { .vertical }) {
-        on drop(moved: DockItem, at: Int): place_item(s, moved, at)
-        for item in s.dock_items {
-            ui.DragItem(item, title: item.title) {
-                on activate: dock_open(s, item)
-                dock_tile(s, d, item)
+    let standing = s.dock_edge == .left or s.dock_edge == .right
+    let across = s.dock_fit == .full
+    if standing and across {
+        stack(gap: .related, align: .center, fill) {
+            dock_items(s, d, vertical: true)
+        }
+    } else if standing {
+        stack(gap: .related, align: .center) {
+            dock_items(s, d, vertical: true)
+        }
+    } else if across {
+        row(gap: .related, align: .center, fill) {
+            dock_items(s, d, vertical: false)
+        }
+    } else {
+        row(gap: .related, align: .center) {
+            dock_items(s, d, vertical: false)
+        }
+    }
+}
+
+/// The items themselves: the launcher, what the person pinned, then the apps running that
+/// nobody pinned (when the record says the dock shows them).
+view dock_items(s: Shell, d: Desk, vertical: Bool) {
+    if vertical {
+        ui.DragRun(axis: .vertical) {
+            on drop(moved: DockItem, at: Int): place_item(s, moved, at)
+            for item in s.dock_items {
+                if item.pinned or s.dock_running {
+                    ui.DragItem(item, title: item.title) {
+                        on activate: dock_open(s, item)
+                        dock_tile(s, d, item)
+                    }
+                }
+            }
+        }
+    } else {
+        ui.DragRun(axis: .horizontal) {
+            on drop(moved: DockItem, at: Int): place_item(s, moved, at)
+            for item in s.dock_items {
+                if item.pinned or s.dock_running {
+                    ui.DragItem(item, title: item.title) {
+                        on activate: dock_open(s, item)
+                        dock_tile(s, d, item)
+                    }
+                }
             }
         }
     }

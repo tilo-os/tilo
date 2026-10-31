@@ -120,7 +120,6 @@ impl Described for DragRun {
         // A drop reports the item moved and its place, as a board's lane reports
         // a card and its place: the event carries `[value, at]`.
         let items = std::rc::Rc::new(run.item_ids().into_iter().collect::<Vec<_>>());
-        let mut drop = drop;
         run = run.on_drop(move |dropped: &DragDrop| {
             let value = items
                 .iter()

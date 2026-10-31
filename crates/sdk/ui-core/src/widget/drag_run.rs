@@ -315,9 +315,17 @@ impl DragRun {
     fn build_items(&self, views: Vec<Element>) -> Box<dyn Widget> {
         match self.axis {
             RunAxis::Horizontal => {
-                let mut row = Row::new().no_wrap().align_start();
+                // A run takes a second line rather than pressing its items into each other:
+                // a bar too narrow for its parts wraps, as the bar itself does, and a dock
+                // whose icons do not fit wraps in place. The run still reports places in the
+                // model's order, so a wrapped run's places stay the ones the owner's action
+                // takes.
+                let mut row = Row::new().align_start();
                 for view in views {
-                    row = row.push(view);
+                    // Each item is its own no-wrap row: a row's `flex_shrink` is 0, so an
+                    // item keeps the width its view takes and the run wraps whole items onto
+                    // the next line rather than squeezing one below its hit target.
+                    row = row.push(Box::new(Row::new().no_wrap().align_start().push(view)));
                 }
                 Box::new(row)
             }
@@ -496,15 +504,18 @@ impl DragRun {
         self.dirty = true;
     }
 
-    /// Let go of a lifted item: report the one move it makes, if it makes one.
-    fn release(&mut self) -> Option<DragDrop> {
-        let lift = self.lift.take()?;
+    /// Let go of a lifted item: report the one move it makes, if it makes one, and whether the
+    /// press was only a click — the item's own view took it, so nothing moves.
+    fn release(&mut self) -> (Option<DragDrop>, bool) {
+        let Some(lift) = self.lift.take() else {
+            return (None, false);
+        };
         let landing = self.landing.take();
         self.dirty = true;
         if !lift.active {
-            // A press that never moved is a click: the item's own view took
-            // it, and nothing moves.
-            return None;
+            // A press that never moved is a click: the item's own view takes the release, and
+            // nothing moves.
+            return (None, true);
         }
         // Let go: another run whose extent holds the pointer takes it, or
         // nothing does.
@@ -513,31 +524,38 @@ impl DragRun {
             payload: self.payload_of(&lift.key),
             pointer: self.cursor,
         };
-        if landing.is_some() {
-            crate::widget::drag_bus::end(None);
-            let _ = landed;
-        } else {
+        let Some(landing) = landing else {
             // Let go outside this run: another run whose extent holds the
             // pointer takes it, or nothing does.
             crate::widget::drag_bus::end(Some(landed));
-            return None;
-        }
-        let landing = landing?;
-        let at = self.keys.iter().position(|keys| keys.key == lift.key)?;
+            return (None, false);
+        };
+        crate::widget::drag_bus::end(None);
+        let Some(at) = self.keys.iter().position(|keys| keys.key == lift.key) else {
+            return (None, false);
+        };
         let next = match &landing.before {
-            Some(before) => self.keys.iter().position(|keys| &keys.key == before)?,
+            Some(before) => {
+                let Some(next) = self.keys.iter().position(|keys| &keys.key == before) else {
+                    return (None, false);
+                };
+                next
+            }
             None => self.keys.len(),
         };
         // A place it already holds moves nothing.
         if next == at || next == at.saturating_add(1) {
-            return None;
+            return (None, false);
         }
-        Some(DragDrop {
-            run: self.id.clone(),
-            moved: lift.key,
-            at: landing.at,
-            before: landing.before,
-        })
+        (
+            Some(DragDrop {
+                run: self.id.clone(),
+                moved: lift.key,
+                at: landing.at,
+                before: landing.before,
+            }),
+            false,
+        )
     }
 
     fn paint(&self, scene: &mut Scene, transform: Affine, _text: &mut TextRenderer, theme: &Theme) {
@@ -641,7 +659,17 @@ impl Widget for DragRun {
         let Some(items) = self.items.as_mut() else {
             return taffy.widget_leaf(Style::default(), node_map, self);
         };
-        Widget::build_layout(&mut **items, taffy, theme, node_map)
+        let node = Widget::build_layout(&mut **items, taffy, theme, node_map);
+        // The run takes the width it is given, never more: a dock or a bar in a container
+        // narrower than its items wraps them (whatever a row's auto width would say) instead
+        // of reaching past the container.
+        if let Ok(style) = taffy.style(node) {
+            let mut style = style.clone();
+            style.min_size.width = taffy::Dimension::length(0.0_f32);
+            style.flex_shrink = 1.0;
+            let _ = taffy.set_style(node, style);
+        }
+        node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -714,6 +742,11 @@ impl Widget for DragRun {
                 button: MouseButton::Left,
                 ..
             } => {
+                // The press is the item's first: a button in it takes the press as any button
+                // does, so letting go without moving presses it.
+                if let Some(items) = &mut self.items {
+                    Widget::handle_event(&mut **items, event, ctx);
+                }
                 if self.press(self.cursor) {
                     *ctx.focus_target = Some(ctx.node_id);
                 }
@@ -723,11 +756,16 @@ impl Widget for DragRun {
                 button: MouseButton::Left,
                 ..
             } if self.lift.is_some() => {
-                if let Some(drop) = self.release() {
+                let (drop, click) = self.release();
+                if let Some(drop) = drop {
                     self.drops.push(drop);
                 }
-                *ctx.handled = true;
-                return;
+                // A press that travelled nowhere is the item's own press: its view takes the
+                // release too, so a button on a run's item works like any button.
+                if !click {
+                    *ctx.handled = true;
+                    return;
+                }
             }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
@@ -742,18 +780,6 @@ impl Widget for DragRun {
         }
         if let Some(items) = &mut self.items {
             Widget::handle_event(&mut **items, event, ctx);
-        }
-        // A press that travelled nowhere is the item's own press, which its
-        // view already took; nothing is left to do.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Released,
-            button: MouseButton::Left,
-            ..
-        } = event
-            && self.lift.is_some()
-        {
-            self.lift = None;
-            self.dirty = true;
         }
     }
 
@@ -799,7 +825,7 @@ mod tests {
     use super::*;
     use crate::widget::{Container, Spacer};
 
-    fn item(key: &str, width: f64) -> RunItem {
+    fn item(key: &str, width: f32) -> RunItem {
         RunItem {
             key: key.to_owned(),
             label: key.to_owned(),
@@ -837,6 +863,7 @@ mod tests {
             [DragDrop {
                 run: "dock".to_owned(),
                 moved: "a".to_owned(),
+                at: 1,
                 before: Some("c".to_owned()),
             }]
         );
