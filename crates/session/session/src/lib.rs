@@ -1218,6 +1218,11 @@ pub struct Session {
     screen_locked: bool,
     /// The app a process runs, for the windows it shows.
     pids: std::collections::BTreeMap<u32, String>,
+    /// The serial of the icon the desk was last handed each window's own
+    /// artwork at, and which windows it was told of at all, so a window that
+    /// sets another icon is handed the new one and a window that closed lets
+    /// go of its own.
+    window_artwork: std::collections::BTreeMap<u64, u64>,
     /// The watch that keeps the notification policy current; dropping it
     /// stops the news.
     _settings_watch: Option<settings_store::watch::SettingsWatch>,
@@ -1683,6 +1688,7 @@ impl Session {
             desktop: options.desktop,
             running: Vec::new(),
             pids: std::collections::BTreeMap::new(),
+            window_artwork: std::collections::BTreeMap::new(),
             _settings_watch: settings_watch,
             surfaces: surfaces::Surfaces::default(),
             surface_apps,
@@ -2101,6 +2107,7 @@ impl Session {
             );
         }
         self.feed_portal();
+        self.feed_window_artwork();
         // What the apps copied since the last pass joins the history; a copy
         // chosen in it is pasted once the panel let the keyboard go.
         self.shared.clipboard.follow(&mut self.compositor);
@@ -2298,6 +2305,32 @@ impl Session {
                 desktop.app_exited(&app_id);
             }
         }
+    }
+
+    /// Hand the desk each window's own icon, which it paints wherever the
+    /// window's program brings no artwork of its own, and let go of the icons
+    /// of windows that closed.
+    fn feed_window_artwork(&mut self) {
+        let mut shown = std::collections::BTreeMap::new();
+        for (window, _) in self.compositor.windows() {
+            if let Some(serial) = window.icon.as_ref().map(|icon| icon.serial()) {
+                shown.insert(window.id, serial);
+                if self.window_artwork.get(&window.id) == Some(&serial) {
+                    continue;
+                }
+            }
+            let icon = window
+                .icon
+                .as_ref()
+                .and_then(|icon| app_icons::window(window.id, icon));
+            self.shared.handle.set_window_artwork(window.id, icon);
+        }
+        for (gone, _) in std::mem::take(&mut self.window_artwork) {
+            if !shown.contains_key(&gone) {
+                self.shared.handle.set_window_artwork(gone, None);
+            }
+        }
+        self.window_artwork = shown;
     }
 
     /// Follow the session's lock: put the lock screen up when it locks

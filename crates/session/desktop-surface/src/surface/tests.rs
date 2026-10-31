@@ -1957,3 +1957,61 @@ fn a_tab_dragged_along_its_bar_keeps_the_order_it_lands_in() {
     assert_eq!(bar_order(&frame, group), landed, "the bar shows that order");
     assert_eq!(on, tabs[0], "and the person is still on that window");
 }
+
+/// A window's own icon — the one its program set for that window — is on its
+/// tab, where its app's artwork stands, and goes when the window lets go of
+/// it.
+#[test]
+fn a_windows_own_icon_is_on_its_tab() {
+    struct Own;
+    impl ui::icons::AppImageSource for Own {
+        fn key(&self) -> &str {
+            "window:91:1"
+        }
+
+        fn pixels(&self, _device_px: u32) -> Option<ui::peniko::ImageData> {
+            Some(ui::raster::rgba8_premultiplied(
+                [255u8, 0, 255, 255].repeat(16 * 16),
+                16,
+                16,
+            ))
+        }
+    }
+
+    /// How many pixels of the window's own magenta `frame` shows.
+    fn magenta(frame: &ui::headless::FrameHarness) -> usize {
+        frame
+            .render_rgba()
+            .chunks_exact(4)
+            .filter(|px| matches!(px, [r, g, b, _] if *r > 200 && *g < 60 && *b > 200))
+            .count()
+    }
+
+    let mut minter = IdMinter::new(11);
+    let tab = Tab {
+        id: minter.mint(),
+        title: "Tool".to_owned(),
+        tile: tilo_desktop_model::TileContent::Foreign {
+            app_id: "org.example.Tool".to_owned(),
+            surface_id: 91,
+        },
+        app_title: None,
+    };
+    let tree = seed_tree(&mut minter, "Desk", vec![tab]);
+    let (surface, handle) = DesktopSurface::new(tree, 11, Box::new(Notices));
+    let mut frame =
+        ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    frame.relayout();
+    assert_eq!(magenta(&frame), 0, "the window brings no artwork yet");
+
+    assert!(handle.set_window_artwork(91, Some(ui::icons::AppImage::new(Own))));
+    frame.relayout();
+    assert!(
+        magenta(&frame) > 0,
+        "the icon the program set is on the window's tab"
+    );
+
+    assert!(handle.set_window_artwork(91, None));
+    frame.relayout();
+    assert_eq!(magenta(&frame), 0, "and gone when the window's icon is");
+}

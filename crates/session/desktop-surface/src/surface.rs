@@ -46,6 +46,7 @@ use crate::session::{ActivityAsk, ActivityReads, ActivityRequests};
 use paging::{can_pan, pan_row, panned_to, sideways, vertical};
 
 mod arrivals;
+mod artwork;
 #[cfg(test)]
 mod close_motion_tests;
 mod displays;
@@ -220,6 +221,9 @@ struct Shared {
     /// Bumped whenever `presentation` changes. Unlike `revision` it never
     /// asks a host to save or share the tree.
     presented: u64,
+    /// The artwork each window brought of its own, by the compositor's id
+    /// for it ([`DesktopHandle::set_window_artwork`]).
+    artwork: std::collections::BTreeMap<u64, ui::icons::AppImage>,
     /// Where the host confirms in passing what left nothing to see.
     acknowledger: ui::widget::acknowledgement::Acknowledger,
 }
@@ -811,6 +815,7 @@ impl DesktopSurface {
             arrivals: Vec::new(),
             presentation: Presentation::default(),
             presented: 0,
+            artwork: std::collections::BTreeMap::new(),
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
         }));
         let acknowledger = shared.borrow().acknowledger.clone();
@@ -2363,11 +2368,15 @@ impl Widget for DesktopSurface {
             self.present();
             self.refresh_presentation();
         }
+        // Last, so a row this pass rebuilt shows its windows' own artwork in
+        // the same frame it appeared in.
+        let artwork = self.sync_window_artwork();
         changed
             || row_changed
             || bars_changed
             || share_asked
             || embeds_changed
+            || artwork
             || self.structure_dirty
     }
 

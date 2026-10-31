@@ -70,6 +70,23 @@ pub struct ObservedWindow {
     pub app_id: String,
     /// The process that opened it, when the compositor knows it.
     pub pid: Option<u32>,
+    /// The icon the window set for itself, when it set one.
+    pub artwork: Option<WindowArtwork>,
+}
+
+/// A window's own icon, as it came from the compositor: the program's fallback
+/// artwork for the entry it would get.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WindowArtwork {
+    /// A theme icon name, or an absolute icon path, the window named.
+    Named(String),
+    /// The pixels the window handed over, premultiplied RGBA (`width *
+    /// height * 4` bytes), one offer of the sizes it made.
+    Pixels {
+        width: u32,
+        height: u32,
+        rgba: Arc<Vec<u8>>,
+    },
 }
 
 impl ObservedWindow {
@@ -80,6 +97,49 @@ impl ObservedWindow {
         let app_id = self.app_id.trim();
         !app_id.is_empty() && !app_id.starts_with("anon-")
     }
+}
+
+/// The window's own icon as an entry names it: the theme's file for a name,
+/// the pixels as a PNG. The fallback artwork of the entry its program would
+/// get, so a program that brings no image of its own is still not a blank
+/// square. Reads the disk for a name, so it runs on the worker.
+fn window_icon(artwork: Option<&WindowArtwork>) -> Option<downloaded::Icon> {
+    match artwork? {
+        WindowArtwork::Named(name) => {
+            let file = desktop_entry::icon_theme::lookup(name, 256, 1)?;
+            downloaded::Icon::sniff(std::fs::read(file.path).ok()?)
+        }
+        WindowArtwork::Pixels {
+            width,
+            height,
+            rgba,
+        } => {
+            let straight = straight_alpha(rgba);
+            downloaded::Icon::sniff(ui::png::encode_rgba8(*width, *height, &straight).ok()?)
+        }
+    }
+}
+
+/// `rgba` with each pixel's colour no longer multiplied by its alpha, which is
+/// how a PNG holds it.
+fn straight_alpha(rgba: &[u8]) -> Vec<u8> {
+    let mut straight = rgba.to_vec();
+    for pixel in straight.chunks_exact_mut(4) {
+        let Some(alpha) = pixel.get(3).copied().map(u16::from) else {
+            continue;
+        };
+        if alpha == 0 {
+            continue;
+        }
+        for channel in pixel.iter_mut().take(3) {
+            let colour = u16::from(*channel)
+                .saturating_mul(255)
+                .checked_div(alpha)
+                .unwrap_or(0);
+            *channel = u8::try_from(colour.min(255)).unwrap_or(u8::MAX);
+        }
+    }
+    straight
 }
 
 /// A program running now that has no entry: what adding it would add.
@@ -329,7 +389,7 @@ impl Core {
             &program,
             &WindowFacts {
                 app_id: window.app_id.clone(),
-                icon: None,
+                icon: window_icon(window.artwork.as_ref()),
             },
         );
         match store.update_location(&identity, &program) {

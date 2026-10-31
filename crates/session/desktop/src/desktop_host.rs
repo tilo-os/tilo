@@ -25,9 +25,12 @@ use tilo_desktop_model::commands::{
     DesktopCommand, TabLocation, TabPlacement, apply_command, apply_to_active_workspace,
     move_tab_to_workspace,
 };
-use tilo_desktop_model::{DesktopTree, RoomId, Strip, StripId, TabId, Workspace, WorkspaceId};
+use tilo_desktop_model::{
+    DesktopTree, RoomId, Strip, StripId, TabId, TileContent, Workspace, WorkspaceId,
+};
 use tilo_desktop_surface::navigation::{ActivityView, Command, Route, RouteIds};
 use tilo_desktop_surface::{DesktopHandle, HostActionSource};
+use ui::icons::AppImage;
 use ui::presence::PresenceCtx;
 use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
 use ui::widget::{AppModel, EventCtx, ModelPath, Stack, TaffyTreeExt as _, Widget};
@@ -610,11 +613,21 @@ struct PlainOverview {
     user: String,
 }
 
-/// The switcher's view of a host: every window carries its app's mark, and
-/// none is pictured ([`NoThumbnails`]).
-struct SwitcherWindows;
+/// The switcher's view of a host: every window carries its app's mark or, when
+/// its program brings no artwork, the icon the window set for itself; none is
+/// pictured ([`NoThumbnails`]).
+struct SwitcherWindows<'a> {
+    handle: &'a DesktopHandle,
+}
 
-impl WindowSource for SwitcherWindows {}
+impl WindowSource for SwitcherWindows<'_> {
+    fn app_icon(&self, tile: &TileContent) -> Option<AppImage> {
+        let TileContent::Foreign { surface_id, .. } = tile else {
+            return None;
+        };
+        self.handle.window_artwork(*surface_id)
+    }
+}
 
 impl WindowSource for PlainOverview {}
 
@@ -1804,7 +1817,9 @@ impl DesktopChrome {
                 let tree = self.rules.tree();
                 let opened = self.switcher.begin(
                     &tree,
-                    &SwitcherWindows,
+                    &SwitcherWindows {
+                        handle: &self.handle,
+                    },
                     scope,
                     modifiers.state().shift_key(),
                     ui::time::now(),
