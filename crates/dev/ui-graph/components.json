@@ -1052,6 +1052,23 @@
       }
     },
     {
+      "name": "UnreadDivider",
+      "doc": "The divider as a widget, for a list built of widgets: a band across its column with its label at the trailing end, over the first line the reader had not read.\nA described component, so a host that validates what an app sends builds it: the tilolang runtime places one per transcript over the row of the item the app named, and the host knows it from the toolkit's catalogue as it knows every other component.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What it is called, for assistive technology; empty for the toolkit's own word.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
       "name": "DataTable",
       "doc": "A table of resources as columns and rows: the attributes of a device, the songs in a library, the rules of a firewall. Each row is the resource it stands for and says what its columns read in it; pressing a header sorts by that column, and selecting or activating a row reports the row's resource.",
       "props": [

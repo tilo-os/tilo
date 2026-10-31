@@ -65,7 +65,7 @@ pub use list::{
     ConversationLine, ConversationList, ConversationRole, ListCache, ListFace, ListWork,
     bubble_colors, run_breaks,
 };
-pub use unread::{UnreadDivider, UnreadDividerFace};
+pub use unread::{UnreadDivider, UnreadDividerFace, UnreadDividerProps};
 
 /// Resolve one of the conversation's labels in the desktop's language.
 ///
