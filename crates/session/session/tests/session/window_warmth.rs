@@ -114,7 +114,7 @@ fn told(
 
 /// What an appearance message says.
 #[track_caller]
-fn appearance(message: FloatingSurfaceHostMessage) -> WindowAppearance {
+fn appearance(message: &FloatingSurfaceHostMessage) -> WindowAppearance {
     message
         .window_appearance()
         .unwrap_or_else(|| panic!("an appearance, not {message:?}"))
@@ -158,7 +158,7 @@ fn a_window_takes_the_temperature_of_its_room_and_the_person_s_colour() {
     let mut window = Window::open(&launches, app, "private", app_process.id());
     window.hello();
     let opened = appearance(
-        told(&mut window, &mut session, 200).expect("the window opens to its appearance"),
+        &told(&mut window, &mut session, 200).expect("the window opens to its appearance"),
     );
     let warm = opened
         .workspace_hue
@@ -188,7 +188,7 @@ fn a_window_takes_the_temperature_of_its_room_and_the_person_s_colour() {
         &serde_json::json!({"delta": -1}),
     );
     let changed = appearance(
-        told(&mut window, &mut session, 200).expect("the window hears the room's new temperature"),
+        &told(&mut window, &mut session, 200).expect("the window hears the room's new temperature"),
     );
     let cool = changed
         .workspace_hue
