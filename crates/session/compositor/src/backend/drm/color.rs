@@ -4,13 +4,14 @@
 //! the scene renders into an offscreen texture, and one element draws that
 //! texture onto the output through a shader that applies the profile (a 3D
 //! lookup table sampled from the qcms transform sRGB to the panel) and, for
-//! HDR, encodes it as a PQ BT.2020 signal with SDR white at the person's
-//! chosen brightness. HDR also tells the display: the connector's
-//! `HDR_OUTPUT_METADATA`, `Colorspace` and `max bpc`, and the output's
-//! swapchain moves to 10 bits a channel where the GPU draws into such a
-//! buffer and the primary plane shows it ([`depth_formats`]), so the PQ
-//! signal does not band. Outputs without either keep the plain path, planes
-//! and direct scanout included.
+//! HDR, composites the per-surface layers the scene recorded at their own
+//! precision and encodes the result as a PQ BT.2020 signal with SDR white at
+//! the person's chosen brightness ([`hdr_layers`]). HDR also tells the
+//! display: the connector's `HDR_OUTPUT_METADATA`, `Colorspace` and
+//! `max bpc`, and the output's swapchain moves to 10 bits a channel where the
+//! GPU draws into such a buffer and the primary plane shows it
+//! ([`depth_formats`]), so the PQ signal does not band. Outputs without
+//! either keep the plain path, planes and direct scanout included.
 
 use std::path::{Path, PathBuf};
 
@@ -30,10 +31,12 @@ use smithay::reexports::drm::control::{Device as _, connector, property};
 use smithay::utils::{Buffer, Physical, Point, Rectangle, Scale, Size, Transform};
 
 use super::Renderer;
+use super::hdr_layers::{self, Light, Lights};
 use crate::color_filter::ColorFilter;
 use crate::config::Hdr;
 use crate::render::OutputRenderElement;
 use settings_store::hardware::HdrUnavailable;
+use tilo_color_pipeline::hdr_surface::HdrLayer;
 
 /// Grid points a side of the calibration lookup table.
 pub(crate) const GRID: u32 = 33;
@@ -329,6 +332,24 @@ uniform vec3 filter_row_g;
 uniform vec3 filter_row_b;
 uniform vec3 filter_offset;
 uniform float use_filter;
+// The scene as the layers' weight channels show it, and each layer's plane at
+// the buffer's precision. A frame carries at most three layers, as many as
+// the recorder hands a frame.
+uniform sampler2D lit_tex;
+uniform sampler2D plane0;
+uniform sampler2D plane1;
+uniform sampler2D plane2;
+uniform float layer_count;
+uniform vec2 scene_size;
+uniform vec4 layer_row_x[3];
+uniform vec4 layer_row_y[3];
+uniform vec4 layer_bounds[3];
+uniform vec2 layer_size[3];
+uniform float layer_channel[3];
+uniform float layer_transfer[3];
+uniform vec3 layer_row_r[3];
+uniform vec3 layer_row_g[3];
+uniform vec3 layer_row_b[3];
 const float N = 33.0;
 
 vec3 calibrate(vec3 c) {
@@ -346,19 +367,51 @@ float srgb_eotf(float v) {
     return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
 }
 
+float pq_eotf(float e) {
+    float ep = pow(clamp(e, 0.0, 1.0), 1.0 / 78.84375);
+    float num = max(ep - 0.8359375, 0.0);
+    float den = 18.851563 - 18.6875 * ep;
+    return pow(num / den, 1.0 / 0.15930176) * 10000.0;
+}
+
 float pq_inverse_eotf(float nits) {
     float y = pow(clamp(nits / 10000.0, 0.0, 1.0), 0.1593017578125);
     return pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), 78.84375);
 }
 
-vec3 encode_pq(vec3 c) {
-    vec3 linear = vec3(srgb_eotf(c.r), srgb_eotf(c.g), srgb_eotf(c.b));
-    vec3 bt2020 = vec3(
-        dot(vec3(0.627404, 0.329283, 0.043313), linear),
-        dot(vec3(0.069097, 0.919540, 0.011362), linear),
-        dot(vec3(0.016391, 0.088013, 0.895595), linear));
-    vec3 nits = bt2020 * sdr_white;
-    return vec3(pq_inverse_eotf(nits.r), pq_inverse_eotf(nits.g), pq_inverse_eotf(nits.b));
+float hlg_inverse_oetf(float e) {
+    float v = clamp(e, 0.0, 1.0);
+    return v <= 0.5 ? v * v / 3.0 : (exp((v - 0.5599107) / 0.17883277) + 0.28466892) / 12.0;
+}
+
+// A layer's texel decoded from its own transfer into linear BT.2020 cd/m²:
+// the same light the headless output builds on the CPU.
+vec3 layer_light(vec3 signal, float transfer, vec3 row_r, vec3 row_g, vec3 row_b) {
+    vec3 light;
+    if (transfer < 0.5) {
+        light = vec3(pq_eotf(signal.r), pq_eotf(signal.g), pq_eotf(signal.b));
+    } else if (transfer < 1.5) {
+        vec3 scene = vec3(hlg_inverse_oetf(signal.r),
+                          hlg_inverse_oetf(signal.g),
+                          hlg_inverse_oetf(signal.b));
+        float luma = max(dot(vec3(0.2627, 0.6780, 0.0593), scene), 0.000001);
+        light = scene * (1000.0 * pow(luma, 0.2) * sdr_white / 203.0);
+    } else {
+        light = signal * sdr_white;
+    }
+    return max(vec3(dot(row_r, light), dot(row_g, light), dot(row_b, light)), vec3(0.0));
+}
+
+float channel_value(vec3 colour, float channel) {
+    if (channel < 0.5) return colour.r;
+    if (channel < 1.5) return colour.g;
+    return colour.b;
+}
+
+vec3 plane_texel(int slot, vec2 uv) {
+    if (slot == 0) return texture2D(plane0, uv).rgb;
+    if (slot == 1) return texture2D(plane1, uv).rgb;
+    return texture2D(plane2, uv).rgb;
 }
 
 // The whole-desktop colour filter: a matrix and an offset, so turning
@@ -378,7 +431,49 @@ void main() {
         rgb = colour_filter(rgb);
     }
     if (pq > 0.5) {
-        rgb = encode_pq(rgb);
+        // How much of each layer reaches this pixel: its channel's difference
+        // between the scene with the layers black and this one, where each was
+        // drawn in its channel colour.
+        vec2 pixel = v_coords * scene_size;
+        vec3 lit = layer_count > 0.5 ? texture2D(lit_tex, v_coords).rgb : rgb;
+        float covered = 0.0;
+        vec3 light = vec3(0.0);
+        for (int slot = 0; slot < 3; slot++) {
+            if (float(slot) < layer_count) {
+                vec4 bounds = layer_bounds[slot];
+                if (pixel.x >= bounds.x && pixel.y >= bounds.y
+                    && pixel.x < bounds.z && pixel.y < bounds.w) {
+                    float weight = channel_value(lit, layer_channel[slot])
+                        - channel_value(rgb, layer_channel[slot]);
+                    weight = clamp(weight, 0.0, 1.0);
+                    if (weight > 0.0) {
+                        vec4 row_x = layer_row_x[slot];
+                        vec4 row_y = layer_row_y[slot];
+                        vec3 at = vec3(pixel, 1.0);
+                        vec2 uv = vec2(dot(row_x.xyz, at), dot(row_y.xyz, at)) / layer_size[slot];
+                        if (uv.x >= 0.0 && uv.y >= 0.0 && uv.x < 1.0 && uv.y < 1.0) {
+                            light = light + weight * layer_light(plane_texel(slot, uv),
+                                                                 layer_transfer[slot],
+                                                                 layer_row_r[slot],
+                                                                 layer_row_g[slot],
+                                                                 layer_row_b[slot]);
+                            covered = covered + weight;
+                        }
+                    }
+                }
+            }
+        }
+        // What the layers leave is SDR content at SDR white; their own light is
+        // added on top of it.
+        float coverage = clamp(1.0 - covered, 0.0, 1.0);
+        vec3 colour = min(rgb / max(coverage, 0.000001), vec3(1.0));
+        vec3 linear = vec3(srgb_eotf(colour.r), srgb_eotf(colour.g), srgb_eotf(colour.b));
+        vec3 bt2020 = vec3(
+            dot(vec3(0.627404, 0.329283, 0.043313), linear),
+            dot(vec3(0.069097, 0.919540, 0.011362), linear),
+            dot(vec3(0.016391, 0.088013, 0.895595), linear));
+        vec3 nits = bt2020 * (sdr_white * coverage) + light;
+        rgb = vec3(pq_inverse_eotf(nits.r), pq_inverse_eotf(nits.g), pq_inverse_eotf(nits.b));
     }
     gl_FragColor = vec4(rgb, 1.0) * alpha;
 #if defined(DEBUG_FLAGS)
@@ -413,6 +508,15 @@ pub(crate) struct ColorPass {
     age: usize,
     program: GlesTexProgram,
     lut: Option<GlesTexture>,
+    /// The scene drawn again with each described surface in its weight channel
+    /// colour: how much of each layer reaches a pixel.
+    lit: Option<GlesTexture>,
+    lit_damage: OutputDamageTracker,
+    /// The HDR layers the scene drew this frame and the planes they sample.
+    layers: Vec<Light>,
+    planes: Lights,
+    /// The uniforms that stay the same for every frame.
+    uniforms: Vec<Uniform<'static>>,
     id: Id,
     commit: CommitCounter,
 }
@@ -423,6 +527,10 @@ impl ColorPass {
     }
 
     /// The pass for `output` as `wanted`, on the renderer drawing it.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "an output's size in pixels is below 2^24, exactly representable as f32"
+    )]
     pub(crate) fn new(
         renderer: &mut Renderer<'_>,
         output: &Output,
@@ -431,21 +539,22 @@ impl ColorPass {
         let mode = output.current_mode().ok_or("no mode")?;
         let size = output.current_transform().transform_size(mode.size);
         let gles: &mut GlesRenderer = renderer.as_mut();
+        let mut names = vec![
+            UniformName::new("lut", UniformType::_1i),
+            UniformName::new("use_lut", UniformType::_1f),
+            UniformName::new("pq", UniformType::_1f),
+            UniformName::new("sdr_white", UniformType::_1f),
+            UniformName::new("filter_row_r", UniformType::_3f),
+            UniformName::new("filter_row_g", UniformType::_3f),
+            UniformName::new("filter_row_b", UniformType::_3f),
+            UniformName::new("filter_offset", UniformType::_3f),
+            UniformName::new("use_filter", UniformType::_1f),
+            UniformName::new("scene_size", UniformType::_2f),
+            UniformName::new("layer_count", UniformType::_1f),
+        ];
+        names.extend(hdr_layers::uniform_names());
         let program = gles
-            .compile_custom_texture_shader(
-                SHADER,
-                &[
-                    UniformName::new("lut", UniformType::_1i),
-                    UniformName::new("use_lut", UniformType::_1f),
-                    UniformName::new("pq", UniformType::_1f),
-                    UniformName::new("sdr_white", UniformType::_1f),
-                    UniformName::new("filter_row_r", UniformType::_3f),
-                    UniformName::new("filter_row_g", UniformType::_3f),
-                    UniformName::new("filter_row_b", UniformType::_3f),
-                    UniformName::new("filter_offset", UniformType::_3f),
-                    UniformName::new("use_filter", UniformType::_1f),
-                ],
-            )
+            .compile_custom_texture_shader(SHADER, &names)
             .map_err(|error| format!("colour shader: {error:?}"))?;
         let lut = match &wanted.profile {
             Some(path) => {
@@ -464,6 +573,32 @@ impl ColorPass {
             }
             None => None,
         };
+        // Unit 0 draws the scene; the calibration table, the weight pass's
+        // scene and the three layer planes take the units after it.
+        let flag = |on: bool| if on { 1.0_f32 } else { 0.0 };
+        let matrix = wanted.filter.matrix();
+        let mut uniforms = vec![
+            Uniform::new("lut", 1_i32),
+            Uniform::new("use_lut", flag(lut.is_some())),
+            Uniform::new("pq", flag(wanted.hdr.is_some())),
+            Uniform::new(
+                "sdr_white",
+                wanted.hdr.as_ref().map_or(0.0, |hdr| hdr.sdr_white_nits),
+            ),
+            Uniform::new("filter_row_r", matrix.rows[0]),
+            Uniform::new("filter_row_g", matrix.rows[1]),
+            Uniform::new("filter_row_b", matrix.rows[2]),
+            Uniform::new("filter_offset", matrix.offset),
+            Uniform::new("use_filter", flag(!wanted.filter.is_off())),
+            Uniform::new("scene_size", [size.w as f32, size.h as f32]),
+            Uniform::new("lit_tex", 2_i32),
+        ];
+        for slot in 0..hdr_layers::LAYERS {
+            uniforms.push(Uniform::new(
+                format!("plane{slot}"),
+                hdr_layers::PLANE_UNIT.saturating_add(i32::try_from(slot).unwrap_or(0)),
+            ));
+        }
         let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
         let texture = renderer
             .create_buffer(Fourcc::Abgr8888, buffer_size)
@@ -477,36 +612,100 @@ impl ColorPass {
             age: 0,
             program,
             lut,
+            lit: None,
+            lit_damage: OutputDamageTracker::new(size, scale, Transform::Normal),
+            layers: Vec::new(),
+            planes: Lights::default(),
+            uniforms,
             id: Id::new(),
             commit: CommitCounter::default(),
         })
     }
 
-    /// Render the scene offscreen; the pass's element then draws it.
+    /// Render the scene offscreen; the pass's element then draws it. `hdr` are
+    /// the layers the scene recorded, and `weights` the same scene drawn with
+    /// each of them in its weight channel colour: an HDR output composites
+    /// their own light on top of what they leave.
     pub(crate) fn render<'r>(
         &mut self,
         renderer: &mut Renderer<'r>,
-        elements: &[OutputRenderElement<Renderer<'r>>],
+        scene: &[OutputRenderElement<Renderer<'r>>],
+        weights: &[OutputRenderElement<Renderer<'r>>],
+        hdr: &[HdrLayer],
     ) -> Result<RenderElementStates, String> {
+        self.layers.clear();
+        if !weights.is_empty() && !hdr.is_empty() {
+            match self.planes.prepare(renderer, hdr) {
+                Ok(lights) => self.layers = lights,
+                Err(error) => {
+                    tracing::warn!(%error, "HDR layers shown as their tone-mapped renditions");
+                }
+            }
+        }
+        let states = {
+            let mut framebuffer = renderer
+                .bind(&mut self.texture)
+                .map_err(|error| format!("bind offscreen scene: {error:?}"))?;
+            let result = self
+                .damage
+                .render_output(
+                    renderer,
+                    &mut framebuffer,
+                    self.age,
+                    scene,
+                    crate::render::BACKGROUND,
+                )
+                .map_err(|error| format!("offscreen scene: {error:?}"))?;
+            drop(framebuffer);
+            self.age = 1;
+            if result.damage.is_some_and(|damage| !damage.is_empty()) {
+                self.commit.increment();
+            }
+            result.states
+        };
+        if !self.layers.is_empty() {
+            self.render_weights(renderer, weights)?;
+        }
+        Ok(states)
+    }
+
+    /// The scene drawn again with each described surface in its layer's weight
+    /// channel colour, into the texture the shader reads the weights from.
+    fn render_weights<'r>(
+        &mut self,
+        renderer: &mut Renderer<'r>,
+        weights: &[OutputRenderElement<Renderer<'r>>],
+    ) -> Result<(), String> {
+        if self.lit.is_none() {
+            let buffer_size = self.size.to_logical(1).to_buffer(1, Transform::Normal);
+            let texture = renderer
+                .create_buffer(Fourcc::Abgr8888, buffer_size)
+                .map_err(|error| format!("offscreen layer weights: {error:?}"))?;
+            self.lit = Some(texture);
+        }
+        // Every weight can have changed wherever a layer is, so the pass is
+        // drawn whole.
+        let Some(texture) = self.lit.as_mut() else {
+            return Ok(());
+        };
         let mut framebuffer = renderer
-            .bind(&mut self.texture)
-            .map_err(|error| format!("bind offscreen scene: {error:?}"))?;
+            .bind(texture)
+            .map_err(|error| format!("bind layer weights: {error:?}"))?;
         let result = self
-            .damage
+            .lit_damage
             .render_output(
                 renderer,
                 &mut framebuffer,
-                self.age,
-                elements,
+                0,
+                weights,
                 crate::render::BACKGROUND,
             )
-            .map_err(|error| format!("offscreen scene: {error:?}"))?;
+            .map_err(|error| format!("offscreen layer weights: {error:?}"))?;
         drop(framebuffer);
-        self.age = 1;
         if result.damage.is_some_and(|damage| !damage.is_empty()) {
             self.commit.increment();
         }
-        Ok(result.states)
+        Ok(())
     }
 
     fn draw_gles(
@@ -517,32 +716,57 @@ impl ColorPass {
         damage: &[Rectangle<i32, Physical>],
         opaque: &[Rectangle<i32, Physical>],
     ) -> Result<(), GlesError> {
-        let lut = self.lut.as_ref().map(GlesTexture::tex_id);
-        if let Some(lut) = lut {
+        // The units the shader reads: the weights texture and the planes,
+        // after the calibration table's.
+        let mut samplers: Vec<(u32, u32)> = Vec::with_capacity(self.layers.len().saturating_add(2));
+        if let Some(lut) = self.lut.as_ref().map(GlesTexture::tex_id) {
+            samplers.push((1, lut));
+        }
+        if !self.layers.is_empty()
+            && let Some(lit) = self.lit.as_ref().map(GlesTexture::tex_id)
+        {
+            samplers.push((2, lit));
+            for (slot, light) in self.layers.iter().enumerate() {
+                let unit = u32::try_from(slot)
+                    .unwrap_or(0)
+                    .saturating_add(u32::try_from(hdr_layers::PLANE_UNIT).unwrap_or(0));
+                samplers.push((unit, light.texture.tex_id()));
+            }
+        }
+        if !samplers.is_empty() {
             frame.with_context(|gl| {
-                // SAFETY: the renderer's context is current inside a frame;
-                // unit 1 is restored after the draw.
-                unsafe {
-                    gl.ActiveTexture(ffi::TEXTURE1);
-                    gl.BindTexture(ffi::TEXTURE_2D, lut);
-                    for (parameter, value) in [
-                        (ffi::TEXTURE_MIN_FILTER, ffi::LINEAR),
-                        (ffi::TEXTURE_MAG_FILTER, ffi::LINEAR),
-                        (ffi::TEXTURE_WRAP_S, ffi::CLAMP_TO_EDGE),
-                        (ffi::TEXTURE_WRAP_T, ffi::CLAMP_TO_EDGE),
-                    ] {
-                        gl.TexParameteri(
-                            ffi::TEXTURE_2D,
-                            parameter,
-                            i32::try_from(value).unwrap_or(0),
-                        );
+                for (unit, texture) in &samplers {
+                    // SAFETY: the renderer's context is current inside a frame;
+                    // every unit is released again after the draw.
+                    unsafe {
+                        gl.ActiveTexture(ffi::TEXTURE0.saturating_add(*unit));
+                        gl.BindTexture(ffi::TEXTURE_2D, *texture);
+                        for (parameter, value) in [
+                            (ffi::TEXTURE_MIN_FILTER, ffi::LINEAR),
+                            (ffi::TEXTURE_MAG_FILTER, ffi::LINEAR),
+                            (ffi::TEXTURE_WRAP_S, ffi::CLAMP_TO_EDGE),
+                            (ffi::TEXTURE_WRAP_T, ffi::CLAMP_TO_EDGE),
+                        ] {
+                            gl.TexParameteri(
+                                ffi::TEXTURE_2D,
+                                parameter,
+                                i32::try_from(value).unwrap_or(0),
+                            );
+                        }
                     }
-                    gl.ActiveTexture(ffi::TEXTURE0);
                 }
+                // SAFETY: as above.
+                unsafe { gl.ActiveTexture(ffi::TEXTURE0) };
             })?;
         }
-        let flag = |on: bool| if on { 1.0_f32 } else { 0.0 };
-        let filter = self.wanted.filter.matrix();
+        let mut uniforms = self.uniforms.clone();
+        uniforms.push(Uniform::new(
+            "layer_count",
+            u8::try_from(self.layers.len()).map_or(0.0, f32::from),
+        ));
+        for light in &self.layers {
+            uniforms.extend(light.uniforms.iter().cloned());
+        }
         let drawn = frame.render_texture_from_to(
             &self.texture,
             src,
@@ -552,32 +776,19 @@ impl ColorPass {
             Transform::Normal,
             1.0,
             Some(&self.program),
-            &[
-                Uniform::new("lut", 1_i32),
-                Uniform::new("use_lut", flag(lut.is_some())),
-                Uniform::new("pq", flag(self.wanted.hdr.is_some())),
-                Uniform::new(
-                    "sdr_white",
-                    self.wanted
-                        .hdr
-                        .as_ref()
-                        .map_or(0.0, |hdr| hdr.sdr_white_nits),
-                ),
-                Uniform::new("filter_row_r", filter.rows[0]),
-                Uniform::new("filter_row_g", filter.rows[1]),
-                Uniform::new("filter_row_b", filter.rows[2]),
-                Uniform::new("filter_offset", filter.offset),
-                Uniform::new("use_filter", flag(!self.wanted.filter.is_off())),
-            ],
+            &uniforms,
         );
-        if lut.is_some() {
+        if !samplers.is_empty() {
             frame.with_context(|gl| {
-                // SAFETY: as above.
-                unsafe {
-                    gl.ActiveTexture(ffi::TEXTURE1);
-                    gl.BindTexture(ffi::TEXTURE_2D, 0);
-                    gl.ActiveTexture(ffi::TEXTURE0);
+                for (unit, _) in &samplers {
+                    // SAFETY: as above.
+                    unsafe {
+                        gl.ActiveTexture(ffi::TEXTURE0.saturating_add(*unit));
+                        gl.BindTexture(ffi::TEXTURE_2D, 0);
+                    }
                 }
+                // SAFETY: as above.
+                unsafe { gl.ActiveTexture(ffi::TEXTURE0) };
             })?;
         }
         drawn

@@ -1015,4 +1015,59 @@ mod tests {
             assert!(close(sdr, reference, 5e-3), "{sdr:?} vs {reference:?}");
         }
     }
+
+    #[test]
+    fn two_layers_mastered_at_different_volumes_tone_map_differently() {
+        use neighbour_wire::hdr_metadata::{
+            ContentLightLevel, Hdr10Metadata, MasteringDisplayColorVolume,
+        };
+
+        let signal = |max_nits: u32| {
+            let metadata = Hdr10Metadata {
+                mastering: MasteringDisplayColorVolume {
+                    max_display_mastering_luminance: max_nits.saturating_mul(10_000),
+                    ..MasteringDisplayColorVolume::hdr10_reference()
+                },
+                light: ContentLightLevel::unknown(),
+            };
+            SurfaceSignal::for_colorimetry(
+                Colorimetry::hdr10(),
+                HdrTonemapConfig::from_metadata(Some(metadata)),
+            )
+            .expect("PQ is HDR")
+        };
+        // The same 1000 cd/m² of PQ light, mastered for a bright cinema and
+        // for the HDR10 baseline display.
+        let code = pq_inverse_eotf(1000.0);
+        let surface = |signal: SurfaceSignal| {
+            HdrSurface::from_signal_rgb(1, 1, [[code; 3]], signal).expect("a described surface")
+        };
+        let cinema = surface(signal(4000));
+        let baseline = surface(signal(1000));
+        assert_eq!(
+            cinema.plane().signal().tonemap.source_peak_nits,
+            4000.0,
+            "the volume the client named is the one its content is compressed from"
+        );
+        assert_ne!(
+            cinema.sdr(),
+            baseline.sdr(),
+            "a film made for a 4000 cd/m² master looks different from one made for 1000"
+        );
+        // Compressing from a higher peak leaves the same light dimmer on an
+        // SDR desktop.
+        assert!(
+            cinema.sdr()[0] < baseline.sdr()[0],
+            "{} should be below {}",
+            cinema.sdr()[0],
+            baseline.sdr()[0]
+        );
+        // On an HDR output the same light is the light the client sent,
+        // whatever volume it was mastered in.
+        let white = 203.0;
+        for signal in [cinema.plane().signal(), baseline.plane().signal()] {
+            let nits = signal_to_output_nits([code; 3], signal, white);
+            assert!(close(nits, [1000.0; 3], 0.01), "{nits:?}");
+        }
+    }
 }

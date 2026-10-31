@@ -357,22 +357,30 @@ impl ParametricBuilder {
         };
 
         // Optional HDR10 metadata from mastering primaries + luminances.
+        // The two are independent requests: a client may describe the
+        // luminance range it was mastered at without naming the
+        // mastering primaries, so each falls back to the reference
+        // volume on its own.
         let hdr = if transfer.is_hdr() {
-            let mastering = mastering_primaries.map_or_else(
-                MasteringDisplayColorVolume::hdr10_reference,
-                |m| MasteringDisplayColorVolume {
-                    display_primaries: [
-                        (chrom_micro_to_st2086(m.r.0), chrom_micro_to_st2086(m.r.1)),
-                        (chrom_micro_to_st2086(m.g.0), chrom_micro_to_st2086(m.g.1)),
-                        (chrom_micro_to_st2086(m.b.0), chrom_micro_to_st2086(m.b.1)),
-                    ],
-                    white_point: (chrom_micro_to_st2086(m.w.0), chrom_micro_to_st2086(m.w.1)),
-                    max_display_mastering_luminance: mastering_luminance
-                        .map_or(10_000_000, |(_, max)| max.saturating_mul(10_000)),
-                    min_display_mastering_luminance: mastering_luminance
-                        .map_or(500, |(min, _)| min),
-                },
-            );
+            let reference = MasteringDisplayColorVolume::hdr10_reference();
+            let volume = mastering_primaries.map_or(reference, |m| MasteringDisplayColorVolume {
+                display_primaries: [
+                    (chrom_micro_to_st2086(m.r.0), chrom_micro_to_st2086(m.r.1)),
+                    (chrom_micro_to_st2086(m.g.0), chrom_micro_to_st2086(m.g.1)),
+                    (chrom_micro_to_st2086(m.b.0), chrom_micro_to_st2086(m.b.1)),
+                ],
+                white_point: (chrom_micro_to_st2086(m.w.0), chrom_micro_to_st2086(m.w.1)),
+                ..reference
+            });
+            let mastering = MasteringDisplayColorVolume {
+                max_display_mastering_luminance: mastering_luminance
+                    .map_or(volume.max_display_mastering_luminance, |(_, max)| {
+                        max.saturating_mul(10_000)
+                    }),
+                min_display_mastering_luminance: mastering_luminance
+                    .map_or(volume.min_display_mastering_luminance, |(min, _)| min),
+                ..volume
+            };
             let light = ContentLightLevel {
                 max_content_light_level: max_cll.map_or(0, clamp_to_u16),
                 max_frame_average_light_level: max_fall.map_or(0, clamp_to_u16),
@@ -1648,6 +1656,25 @@ mod tests {
             }
             assert_eq!(builder.build().unwrap().information_colors(), None);
         }
+    }
+
+    #[test]
+    fn a_mastering_luminance_range_alone_is_kept() {
+        let reference = MasteringDisplayColorVolume::hdr10_reference();
+        let builder = ParametricBuilder::default();
+        {
+            let mut inner = builder.inner.lock().unwrap();
+            inner.primaries_named = Some(ColorPrimaries::Bt2020);
+            inner.tf_named = Some(TransferCharacteristics::SmpteSt2084);
+            inner.mastering_luminance = Some((500, 4_000));
+        }
+        let hdr = builder.build().unwrap().hdr.expect("PQ carries metadata");
+        assert_eq!(hdr.mastering.max_display_mastering_luminance, 40_000_000);
+        assert_eq!(hdr.mastering.min_display_mastering_luminance, 500);
+        assert_eq!(
+            hdr.mastering.display_primaries, reference.display_primaries,
+            "without mastering primaries the reference volume's primaries stand in"
+        );
     }
 
     #[test]

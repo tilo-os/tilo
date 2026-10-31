@@ -22,6 +22,11 @@
 //! A surface whose description is absent or is 8-bit SDR keeps today's way:
 //! it is drawn by its own buffer, untouched.
 //!
+//! An SDR desktop draws the rendition, so the luminance range the content was
+//! mastered in decides how its highlights are compressed; on an HDR output
+//! the layer carries the signal itself, so the same light is shown at its own
+//! precision whatever it was mastered for.
+//!
 //! The plane is read from the surface's committed buffer, so only buffers the
 //! CPU can read reach it: `wl_shm` 10-bit and half-float buffers, and
 //! single-plane linear dma-bufs. A buffer stored in another layout keeps its
@@ -177,6 +182,9 @@ fn channel_of(plane: u64) -> Option<u8> {
 struct Kept {
     commit: CommitCounter,
     colorimetry: Colorimetry,
+    /// The volume the content was mastered for, which its SDR rendition is
+    /// tone-mapped from.
+    tonemap: HdrTonemapConfig,
     /// The signal at the buffer's precision, and the SDR rendition.
     surface: Arc<HdrSurface>,
     /// The rendition as a buffer a renderer draws, built once per commit.
@@ -197,9 +205,13 @@ impl HdrSurfaces {
         window: &Window,
         description: (Colorimetry, Option<Hdr10Metadata>),
     ) -> Option<Arc<HdrSurface>> {
-        let (colorimetry, _) = description;
+        let (colorimetry, metadata) = description;
+        // The luminance range the content was mastered in decides how it is
+        // compressed for an SDR output; a client that named none gets the
+        // HDR10 baseline.
+        let tonemap = HdrTonemapConfig::from_metadata(metadata);
         // An SDR description is what the 8-bit desktop already shows.
-        let signal = SurfaceSignal::for_colorimetry(colorimetry, HdrTonemapConfig::default())?;
+        let signal = SurfaceSignal::for_colorimetry(colorimetry, tonemap)?;
         let id = crate::state::window_id(window)?;
         let surface = window.wl_surface()?;
         let commit = with_states(&surface, |states| {
@@ -211,6 +223,7 @@ impl HdrSurfaces {
         if let Some(kept) = known.get(&id)
             && kept.commit == commit
             && kept.colorimetry == colorimetry
+            && kept.tonemap == tonemap
         {
             return Some(Arc::clone(&kept.surface));
         }
@@ -237,6 +250,7 @@ impl HdrSurfaces {
             Kept {
                 commit,
                 colorimetry,
+                tonemap,
                 surface: Arc::clone(&surface),
                 rendition,
                 logical,

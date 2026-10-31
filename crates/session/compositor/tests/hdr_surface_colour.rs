@@ -99,6 +99,31 @@ fn attach_description(
     color_surface
 }
 
+/// Attach a parametric description to `client`'s surface that also says the
+/// volume the content was mastered in: `min_lum` to `max_lum` cd/m².
+fn attach_mastered(
+    compositor: &mut Compositor,
+    client: &mut TestClient,
+    min_lum: u32,
+    max_lum: u32,
+) -> WpColorManagementSurfaceV1 {
+    let qh = client.queue.handle();
+    let manager = client.seen.color_manager.clone().expect("colour manager");
+    let creator = manager.create_parametric_creator(&qh, ());
+    creator.set_primaries_named(Primaries::Bt2020);
+    creator.set_tf_named(TransferFunction::St2084Pq);
+    creator.set_mastering_luminance(min_lum, max_lum);
+    let image = creator.create(&qh, ());
+    pump(compositor, &mut [client], |_, clients| {
+        clients[0].seen.color_description_ready
+    });
+
+    let surface = client.surface.clone().expect("surface");
+    let color_surface = manager.get_surface(&surface, &qh, ());
+    color_surface.set_image_description(&image, RenderIntent::Perceptual);
+    color_surface
+}
+
 /// Let `client`'s window show its first buffer, and wait until it maps.
 fn map(compositor: &mut Compositor, client: &mut TestClient, app_id: &str) {
     pump(compositor, &mut [client], |compositor, _| {
@@ -216,4 +241,55 @@ fn a_ten_bit_window_that_says_nothing_shows_the_bytes_it_holds() {
             "the buffer is drawn as it is: {shown:?}"
         );
     }
+}
+
+#[test]
+fn a_film_is_tone_mapped_with_the_volume_it_was_mastered_for() {
+    let mut compositor = headless(Box::new(SideBySide::default()));
+    // The same PQ light, mastered two ways: a bright cinema master and the
+    // HDR10 baseline. Each player says which one its content is.
+    let mut cinema = window_client(&mut compositor, "cinema");
+    let _cinema_colour = attach_mastered(&mut compositor, &mut cinema, 500, 4000);
+    cinema.show_words(200, 100, wl_shm::Format::Xrgb2101010, word(768, 768, 768));
+    map(&mut compositor, &mut cinema, "cinema");
+    let mut baseline = window_client(&mut compositor, "baseline");
+    let _baseline_colour = attach_mastered(&mut compositor, &mut baseline, 500, 1000);
+    baseline.show_words(200, 100, wl_shm::Format::Xrgb2101010, word(768, 768, 768));
+    map(&mut compositor, &mut baseline, "baseline");
+
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+
+    // Each window's rendition is the tone map of its own mastering volume.
+    let shown = |app_id: &str, at: (i32, i32)| {
+        let (id, _) = window_of(&compositor, app_id);
+        let (colour, metadata) = compositor.window_color(id).expect("the described colour");
+        let metadata = metadata.expect("the volume the content was mastered in");
+        let expected = tonemap_rgb_signal_to_srgb8(
+            [768.0 / 1023.0; 3],
+            colour,
+            HdrTonemapConfig::from_metadata(Some(metadata)),
+        );
+        let pixel = frame
+            .pixel(u32::try_from(at.0).unwrap(), u32::try_from(at.1).unwrap())
+            .expect("inside the window");
+        assert_eq!(&pixel[..3], &expected, "{app_id} shows its own volume");
+        (pixel[..3] != [0, 0, 0]).then_some(pixel).expect("drawn")
+    };
+    let cinema_shown = shown("cinema", (100, 150));
+    let baseline_shown = shown("baseline", (420, 150));
+    assert_ne!(
+        cinema_shown, baseline_shown,
+        "a master made for 4000 cd/m² compresses differently from one made for 1000"
+    );
+    let (cinema_id, _) = window_of(&compositor, "cinema");
+    let (_, cinema_volume) = compositor.window_color(cinema_id).expect("colour");
+    assert_eq!(
+        cinema_volume
+            .expect("metadata")
+            .mastering
+            .max_display_mastering_luminance,
+        40_000_000,
+        "4000 cd/m² in 1/10000 units"
+    );
 }
