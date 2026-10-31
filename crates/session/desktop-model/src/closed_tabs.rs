@@ -16,7 +16,7 @@
 use std::collections::VecDeque;
 
 use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
-use crate::layout::{Tab, TileContent, WindowGroup};
+use crate::layout::{Tab, WindowGroup};
 use crate::tree::DesktopTree;
 use crate::width::WindowWidth;
 use crate::workspace::Workspace;
@@ -38,7 +38,7 @@ pub struct ClosedTab {
     /// Whether the close took the group with it, so a reopen makes it again.
     pub whole_group: bool,
     /// The window's content, in the form that opens again
-    /// ([`relaunchable`]).
+    /// ([`Tab::relaunchable`]).
     pub tab: Tab,
 }
 
@@ -95,27 +95,6 @@ impl ClosedTabs {
     }
 }
 
-/// A window's content as it opens again. A live window's process and surface
-/// go with the close, so a surface that has one keeps the app that opens it
-/// again instead, as a session restore does; a window whose content already
-/// opens again ([`TileContent::LocalApp`] and the app placeholders) keeps it.
-fn relaunchable(tab: &Tab) -> Tab {
-    let tile = match &tab.tile {
-        TileContent::Foreign { app_id, .. } => TileContent::LocalApp {
-            app_id: app_id.clone(),
-            label: tab.title.clone(),
-            note: String::new(),
-        },
-        other => other.clone(),
-    };
-    Tab {
-        id: tab.id,
-        title: tab.title.clone(),
-        tile,
-        app_title: tab.app_title.clone(),
-    }
-}
-
 impl Workspace {
     /// Remember the window at `strip`, `group` and `tab` (indices) as closed,
     /// so [`Self::reopen_closed`] puts it back. Called by the removal path
@@ -140,7 +119,7 @@ impl Workspace {
             tab_index: tab,
             group_width: holding.width,
             whole_group: holding.tabs.len() == 1,
-            tab: relaunchable(closing),
+            tab: closing.relaunchable(),
         };
         self.closed_tabs.push(entry);
         true

@@ -931,8 +931,8 @@ impl Shared {
         }
     }
 
-    /// Keep this device's desk as it stands: the workspaces, what their
-    /// strips are called and which of them are in front, so the next
+    /// Keep this device's desk as it stands: its workspaces, the windows in
+    /// them and the strips and displays they are laid out on, so the next
     /// session starts here.
     fn keep_desk_now(&self) {
         let Some(state) = &self.state else {
@@ -1406,8 +1406,8 @@ impl Session {
         desktop.set_gestures(options.config.gestures);
         desktop.set_theme((options.presentation)().theme);
         let handle = desktop.with_policy(|policy| policy.handle().clone());
-        // The desk as this device left it: workspaces, their strips, and
-        // which of them are in front.
+        // The desk as this device left it: its workspaces and the windows
+        // they held.
         if let Some(kept) = options.state.as_deref().and_then(desk_layout::load_at) {
             handle.replace_tree(kept);
         }
