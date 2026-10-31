@@ -20,6 +20,8 @@
 //! - `org.freedesktop.impl.portal.GlobalShortcuts` ([`global_shortcuts`])
 //! - `org.freedesktop.impl.portal.Clipboard` ([`clipboard`], the session's
 //!   [`clipboard::Clipboard`] for remote desktops)
+//! - `org.freedesktop.impl.portal.PermissionStore` ([`permission_store`], the
+//!   frontend's own permission and restore-data database)
 //!
 //! The session-based ones live as `org.freedesktop.impl.portal.Session`
 //! objects ([`session`]).
@@ -77,6 +79,7 @@ pub mod input_capture;
 pub mod lifecycle;
 pub mod lockdown;
 pub mod notification;
+pub mod permission_store;
 #[cfg(feature = "pipewire")]
 pub mod pipewire;
 pub mod print;
@@ -235,6 +238,7 @@ pub struct Portal {
     input: Arc<dyn InputInjector>,
     captures: captures::Captures,
     grants: restore::Grants,
+    permissions: permission_store::PermissionStore,
     casts: screencast::Casts,
     remotes: remote_desktop::Remotes,
     input_captures: input_capture::InputCaptures,
@@ -271,6 +275,9 @@ impl Portal {
             captures: captures::Captures::new(&sessions),
             grants: restore::Grants::load(
                 private_state_root().map(|root| root.join("tilo/portal/restore.json")),
+            ),
+            permissions: permission_store::PermissionStore::load(
+                private_state_root().map(|root| root.join("tilo/portal/permissions.json")),
             ),
             casts: screencast::Casts::default(),
             shortcuts: global_shortcuts::Shortcuts::new(&sessions),
@@ -319,6 +326,14 @@ impl Portal {
     #[must_use]
     pub fn with_grants(mut self, grants: restore::Grants) -> Self {
         self.grants = grants;
+        self
+    }
+
+    /// The same, keeping the frontend's permissions and restore data in
+    /// `permissions`.
+    #[must_use]
+    pub fn with_permissions(mut self, permissions: permission_store::PermissionStore) -> Self {
+        self.permissions = permissions;
         self
     }
 
@@ -456,6 +471,12 @@ impl Portal {
             .await?;
         server
             .at(OBJECT_PATH, lockdown::LockdownBackend::for_session())
+            .await?;
+        server
+            .at(
+                OBJECT_PATH,
+                permission_store::PermissionStoreBackend::new(self.clone()),
+            )
             .await?;
         server
             .at(OBJECT_PATH, app_chooser::AppChooser::new(self.clone()))

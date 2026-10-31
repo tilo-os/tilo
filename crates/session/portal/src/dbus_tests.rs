@@ -34,6 +34,8 @@ impl SessionBus {
 /// and a stranger on the same bus.
 struct Bed {
     _bus: SessionBus,
+    /// The person's private state the backend keeps, gone with the bed.
+    _state: tempfile::TempDir,
     questions: Questions,
     portal: Portal,
     frontend: zbus::Connection,
@@ -55,8 +57,12 @@ async fn bed() -> Bed {
     .with_identify(Arc::new(move |pid| {
         (pid == own).then(|| PortalCaller::new("/usr/bin/unsandboxed"))
     }));
+    let state = tempfile::tempdir().expect("a private state directory");
+    let store =
+        crate::permission_store::PermissionStore::load(Some(state.path().join("permissions.json")));
     let portal = Portal::new(questions.clone(), authenticator)
-        .with_consents(crate::consent::Consents::new(questions.clone(), None));
+        .with_consents(crate::consent::Consents::new(questions.clone(), None))
+        .with_permissions(store);
     portal.serve(&backend).await.expect("served");
     let frontend = bus.connect().await;
     frontend
@@ -66,6 +72,7 @@ async fn bed() -> Bed {
     let stranger = bus.connect().await;
     Bed {
         _bus: bus,
+        _state: state,
         questions,
         portal,
         frontend,
@@ -507,4 +514,97 @@ async fn a_monitor_hears_the_session_end_and_answers_it() {
     );
     respond(bed.frontend.clone()).await.expect("answered");
     assert_eq!(bed.portal.awaiting_query_end(), 0);
+}
+
+const PERMISSION_STORE: &str = "org.freedesktop.impl.portal.PermissionStore";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_frontend_may_keep_permissions() {
+    use futures_util::StreamExt as _;
+
+    let bed = bed().await;
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface(PERMISSION_STORE)
+        .expect("interface")
+        .member("Changed")
+        .expect("member")
+        .build();
+    let mut heard = zbus::MessageStream::for_match_rule(rule, &bed.frontend, None)
+        .await
+        .expect("stream");
+
+    let mut permissions = HashMap::new();
+    permissions.insert("org.example.Editor".to_owned(), vec!["yes".to_owned()]);
+    let arguments = (
+        "documents",
+        true,
+        "one",
+        permissions.clone(),
+        OwnedValue::from(zbus::zvariant::Str::from("where")),
+    );
+    let set = |from: zbus::Connection| {
+        let arguments = arguments.clone();
+        async move {
+            from.call_method(
+                Some(BUS_NAME),
+                OBJECT_PATH,
+                Some(PERMISSION_STORE),
+                "Set",
+                &arguments,
+            )
+            .await
+        }
+    };
+    let lookup = |from: zbus::Connection| async move {
+        from.call_method(
+            Some(BUS_NAME),
+            OBJECT_PATH,
+            Some(PERMISSION_STORE),
+            "Lookup",
+            &("documents", "one"),
+        )
+        .await
+    };
+    assert!(set(bed.stranger.clone()).await.is_err(), "not the frontend");
+    assert!(
+        lookup(bed.stranger.clone()).await.is_err(),
+        "nor does a stranger read the store"
+    );
+    assert!(
+        lookup(bed.frontend.clone()).await.is_err(),
+        "the refused call kept nothing"
+    );
+    set(bed.frontend.clone())
+        .await
+        .expect("the frontend kept it");
+    let (kept, data): (HashMap<String, Vec<String>>, OwnedValue) = lookup(bed.frontend.clone())
+        .await
+        .expect("kept")
+        .body()
+        .deserialize()
+        .expect("entry");
+    assert_eq!(kept, permissions);
+    let value: String = data.try_into().expect("value");
+    assert_eq!(value, "where");
+
+    let change = tokio::time::timeout(Duration::from_secs(5), heard.next())
+        .await
+        .expect("heard in time")
+        .expect("a signal")
+        .expect("readable");
+    let (table, id, deleted, data, changed): (
+        String,
+        String,
+        bool,
+        OwnedValue,
+        HashMap<String, Vec<String>>,
+    ) = change.body().deserialize().expect("change");
+    assert_eq!(
+        (table.as_str(), id.as_str(), deleted),
+        ("documents", "one", false)
+    );
+    assert_eq!(changed, permissions);
+    let value: String = data.try_into().expect("value");
+    assert_eq!(value, "where");
 }
