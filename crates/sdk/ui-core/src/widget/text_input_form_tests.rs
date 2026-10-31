@@ -541,3 +541,42 @@ fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
         );
     }
 }
+
+/// A field that reports its edits and is submitted publishes one resource
+/// carrying both verbs; a second spec under the same id would shadow the
+/// first and leave one of them answering nothing.
+#[test]
+fn a_field_with_a_change_and_a_submit_publishes_one_resource_with_both() {
+    let _settled = crate::motion::testing::settled();
+    let changed = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let submitted = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let (change_sink, submit_sink) = (changed.clone(), submitted.clone());
+    let mut ti = TextInput::local()
+        .with_id("pin")
+        .with_initial_value("42")
+        .on_change_view(move |value| change_sink.borrow_mut().push(value.to_owned()))
+        .on_submit_view(move |text| submit_sink.borrow_mut().push(text.to_owned()));
+    let published = crate::resources::resources(&ti, &AutoCommit::new());
+    assert_eq!(published.len(), 1, "the field is one resource");
+    let verbs: Vec<&str> = published[0]
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    assert_eq!(verbs, ["submit", "change"]);
+
+    ti.set_focus(true);
+    let mut doc = AutoCommit::new();
+    assert!(drive(
+        &mut ti,
+        &mut doc,
+        &named_key(NamedKey::Enter),
+        mods(false, false)
+    ));
+    assert_eq!(
+        crate::testing::answer_controls(&mut ti),
+        1,
+        "the submit reaches its handler"
+    );
+    assert_eq!(submitted.borrow().as_slice(), ["42"]);
+}

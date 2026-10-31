@@ -5673,13 +5673,19 @@ impl Drop for TextInput {
 
 impl crate::resources::PublishesResources for TextInput {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        let mut resources: Vec<tilo_actions::ResourceSpec> = self
-            .submit_view
-            .iter()
-            .map(|(_, resource)| resource.clone())
-            .collect();
-        resources.extend(self.change_verb.iter().map(|verb| verb.resource()));
-        resources
+        // The field is one resource however many verbs it publishes: a host
+        // keeps one spec per id, so a second spec under the same id would
+        // shadow the first and its verb would answer nothing.
+        let mut resource = match (&self.submit_view, &self.change_verb) {
+            (None, None) => return Vec::new(),
+            (Some((_, submit)), None) => return vec![submit.clone()],
+            (None, Some(verb)) => return vec![verb.resource()],
+            (Some((_, submit)), Some(_)) => submit.clone(),
+        };
+        if let Some(verb) = &self.change_verb {
+            resource.actions.extend(verb.resource().actions);
+        }
+        vec![resource]
     }
 }
 
