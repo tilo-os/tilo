@@ -7,8 +7,48 @@
 # every library the workspace builds. Pruned from the graph, deny sees the
 # dependency edges members really have, so `workspace` scoped advisories stay
 # about direct dependencies.
+#
+# The apps are pruned for a different reason: each turns its own `samples`
+# feature on for its tests through a renamed dev-dependency on itself, and
+# cargo-deny's graph builder (krates) cannot resolve a dependency whose manifest
+# key is not the package name — it aborts before checking anything. Pruning them
+# costs no coverage: every crate they depend on is also reachable from the rest
+# of the workspace, so license, advisory, ban and source checks still see all of
+# them.
 [graph]
-exclude = ["workspace-hack", "workspace-unify"]
+exclude = [
+    "workspace-hack",
+    "workspace-unify",
+    "activity",
+    "canvas",
+    "chat",
+    "code-editor",
+    "db-client",
+    "diffmerge",
+    "discord",
+    "ebook",
+    "feeds",
+    "file-explorer",
+    "firewall",
+    "git-client",
+    "hex-editor",
+    "mail",
+    "maps",
+    "notes",
+    "pdf-viewer",
+    "photos",
+    "poker",
+    "remote",
+    "sheets",
+    "shortcuts",
+    "slides",
+    "tasks",
+    "terminal",
+    "tube",
+    "typst-editor",
+    "video-editor",
+    "weather",
+]
 
 [advisories]
 # Both remaining quick-xml versions are selected by current upstream releases:
