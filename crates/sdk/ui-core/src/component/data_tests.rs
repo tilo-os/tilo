@@ -384,6 +384,31 @@ fn an_activity_timeline_reads_its_changes_and_reports_the_one_reverted() {
     assert_eq!(widget.timeline().entries().len(), 2);
 }
 
+/// Placed among a page's other content, a timeline is as tall as its rows: it does not grow
+/// past the box the page gives it (it fills its box only where the view says so).
+#[test]
+fn a_timeline_among_a_pages_content_is_as_tall_as_its_rows() {
+    let queue = crate::Intents::default();
+    let entry = |item: &str, summary: &str| {
+        Node::new("ActivityEntry", item, &queue)
+            .prop("item", resource(item))
+            .prop("summary", text(summary))
+            .prop("time", text("2026-06-30T08:42:00Z"))
+    };
+    let mut node = Node::new("ActivityTimeline", "history", &queue)
+        .holding("entries", entry("a", "Rewrote the summary"))
+        .holding("entries", entry("b", "Moved to Done"));
+    let props = crate::widget::ActivityTimelineProps::from_source(&mut node).unwrap();
+    let widget = crate::widget::DescribedActivityTimeline::from_props("history", props);
+    let mut host = harness(widget);
+    host.relayout();
+    let root = host.root::<crate::widget::DescribedActivityTimeline>();
+    assert!(
+        root.timeline().get_rect().height() > 0.0,
+        "a timeline placed in a page has its own height, not zero"
+    );
+}
+
 #[test]
 fn a_data_table_holds_only_table_parts() {
     let queue = crate::Intents::default();

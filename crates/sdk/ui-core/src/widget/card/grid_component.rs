@@ -183,19 +183,16 @@ impl Described for DescribedCardGrid {
         for (at, card) in cards.into_iter().enumerate() {
             let key = card.item.0.clone();
             let (_, widget) = card_of(card);
-            match self.shown.iter().position(|held| held == &key) {
-                Some(had) => {
-                    if had != at {
-                        self.grid.move_card(had, at);
-                        let key = self.shown.remove(had);
-                        self.shown.insert(at, key);
-                    }
-                    self.grid.replace_card(at, widget);
-                }
-                None => {
-                    self.grid.insert_card(at, widget);
+            if let Some(had) = self.shown.iter().position(|held| held == &key) {
+                if had != at {
+                    self.grid.move_card(had, at);
+                    let key = self.shown.remove(had);
                     self.shown.insert(at, key);
                 }
+                self.grid.replace_card(at, widget);
+            } else {
+                self.grid.insert_card(at, widget);
+                self.shown.insert(at, key);
             }
         }
         true

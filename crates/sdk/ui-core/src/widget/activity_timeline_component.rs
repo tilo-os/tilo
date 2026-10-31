@@ -88,6 +88,9 @@ crate::component::part_slot!(ActivityEntryProps);
 #[derive(Component, Default)]
 #[component(name = "ActivityTimeline", role = "List")]
 pub struct ActivityTimelineProps {
+    /// The pane takes the height its parent gives it and scrolls inside, rather than being as
+    /// tall as its rows inside another scroll.
+    pub fill: bool,
     /// Whether it lists changes newest first.
     pub newest_first: bool,
     /// Whether the pane shows the calendar's Today/Yesterday/This week headings.
@@ -116,6 +119,7 @@ pub struct DescribedActivityTimeline {
 /// What decides the timeline, its changes aside: the same again is taken in place.
 #[derive(Clone, Debug, PartialEq)]
 struct Face {
+    fill: bool,
     newest_first: bool,
     day_headings: bool,
     people_filters: bool,
@@ -194,6 +198,7 @@ impl Described for DescribedActivityTimeline {
 
     fn from_props(_key: &str, props: ActivityTimelineProps) -> Self {
         let ActivityTimelineProps {
+            fill,
             newest_first,
             day_headings,
             people_filters,
@@ -205,7 +210,8 @@ impl Described for DescribedActivityTimeline {
             .iter()
             .map(|entry| (entry.item.0.clone(), entry_id(&entry.item.0)))
             .collect();
-        let mut timeline = ActivityTimeline::with_entries(entries.iter().map(entry_of).collect());
+        let mut timeline =
+            ActivityTimeline::with_entries(entries.iter().map(entry_of).collect()).with_fill(fill);
         timeline.set_newest_first(newest_first);
         timeline.set_show_day_headings(day_headings);
         timeline.set_filters_people(people_filters);
@@ -231,6 +237,7 @@ impl Described for DescribedActivityTimeline {
             timeline,
             keys,
             face: Face {
+                fill,
                 newest_first,
                 day_headings,
                 people_filters,
@@ -253,6 +260,7 @@ impl Described for DescribedActivityTimeline {
     /// folded and the selection stay. A change of the callbacks builds it again.
     fn set_props(&mut self, props: ActivityTimelineProps) -> bool {
         let ActivityTimelineProps {
+            fill,
             newest_first,
             day_headings,
             people_filters,
@@ -261,6 +269,7 @@ impl Described for DescribedActivityTimeline {
             open: _,
         } = props;
         let face = Face {
+            fill,
             newest_first,
             day_headings,
             people_filters,

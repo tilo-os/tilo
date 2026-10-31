@@ -14,6 +14,11 @@
       "doc": "The history of a document, grouped: runs of typing fold into one band that opens to its changes, each day's changes sit under the day's heading, and a change's menu offers reverting it.",
       "props": [
         {
+          "name": "fill",
+          "doc": "The pane takes the height its parent gives it and scrolls inside, rather than being as tall as its rows inside another scroll.",
+          "type": "bool"
+        },
+        {
           "name": "newest_first",
           "doc": "Whether it lists changes newest first.",
           "type": "bool"
