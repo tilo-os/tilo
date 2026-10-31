@@ -366,7 +366,7 @@ fn push_message(issue: &mut Issue, cx: &mut ActionCx, message: Message) {
     label = "Tasks",
     params = tracker,
     search = crate::model::search::entries,
-    effects = crate::note::TasksEffect
+    effects = crate::model::TasksEffect
 )]
 impl Tracker {
     /// Create an issue.
@@ -736,7 +736,7 @@ impl Tracker {
         ) else {
             return Err(Refusal::new("That is not a note"));
         };
-        if note.app != crate::NOTES || note.reference.kind != crate::note::NOTE_KIND {
+        if note.app != crate::model::NOTES || note.reference.kind != crate::model::NOTE_KIND {
             return Err(Refusal::new("That is not a note"));
         }
         self.link(
