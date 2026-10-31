@@ -176,7 +176,7 @@ impl Inner {
     }
 
     /// The map of the record of `at`, and the record's type.
-    fn record_root(
+    pub(super) fn record_root(
         &self,
         at: &ResourceRef,
     ) -> Result<(AppId, automerge::ObjId, &'static crate::schema::TypeSchema), StoreError> {
@@ -191,7 +191,7 @@ impl Inner {
     /// The path from the record's map to the map of `at`: none for the record, the item's id
     /// for an item stored by it, the steps it is nested at for one of a record written before
     /// items were flat.
-    fn prefix_of(&self, at: &ResourceRef) -> Result<Vec<Segment>, StoreError> {
+    pub(super) fn prefix_of(&self, at: &ResourceRef) -> Result<Vec<Segment>, StoreError> {
         let Some(item) = &at.item else {
             return Ok(Vec::new());
         };

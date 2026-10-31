@@ -101,7 +101,7 @@ fn fields_obstacle(before: &[FieldMeta], after: &[FieldMeta]) -> Option<String> 
         let Some(now) = after.iter().find(|now| now.id == field.id) else {
             continue;
         };
-        if now.ty != field.ty {
+        if now.ty != field.ty && !(from_text_to_rich_text(field, now)) {
             return Some(format!(
                 "the field `{}` changed from {} to {}",
                 now.name, field.ty, now.ty
@@ -115,6 +115,16 @@ fn fields_obstacle(before: &[FieldMeta], after: &[FieldMeta]) -> Option<String> 
         }
     }
     None
+}
+
+/// Whether `now` is `before` changed from `Text` to `RichText`: the one type change a record
+/// keeps its data through, the text it held becoming rich text with the same words. It is the
+/// store that turns it, when the app's build takes over ([`crate::store`]'s `upgrade_fields`).
+fn from_text_to_rich_text(before: &FieldMeta, now: &FieldMeta) -> bool {
+    let plain = |ty: &str| matches!(ty.trim(), "Text" | "std.Text");
+    let rich = |ty: &str| matches!(ty.trim(), "RichText" | "std.RichText");
+    let became_rich = plain(before.ty.as_str()) && rich(now.ty.as_str());
+    became_rich && before.merge == now.merge
 }
 
 fn enum_obstacle(before: &EnumMeta, after: &EnumMeta) -> Option<String> {

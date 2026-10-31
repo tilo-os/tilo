@@ -81,7 +81,16 @@ impl Rows {
                     coll: b,
                     listing: y,
                 },
-            ) => a == b && (Rc::ptr_eq(x, y) || x == y),
+            ) => {
+                a == b
+                    && (Rc::ptr_eq(x, y)
+                        // A listing that checks its items as it reads them knows only the most
+                        // it can have: as many rows as before, and not sure it has them all,
+                        // keeps the rows built and lets the host ask, rather than read them
+                        // all to say they are the same.
+                        || (!x.len_is_exact() && x.len() == y.len())
+                        || (x.len_is_exact() && y.len_is_exact() && x == y))
+            }
             (Self::List(a), Self::List(b)) => Rc::ptr_eq(a, b) || a == b,
             _ => false,
         }

@@ -457,13 +457,7 @@ impl Schemas {
 
     /// The table this thread resolves through now: the innermost installed, else the fallback.
     fn grabbed() -> Arc<Self> {
-        CURRENT.with(|current| {
-            current
-                .borrow()
-                .last()
-                .cloned()
-                .unwrap_or_else(|| fallback())
-        })
+        CURRENT.with(|current| current.borrow().last().cloned().unwrap_or_else(fallback))
     }
 }
 

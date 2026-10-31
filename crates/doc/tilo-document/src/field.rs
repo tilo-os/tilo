@@ -8,7 +8,7 @@
 //! writes back; only a new value ([`RichText::from_markdown`]) writes its
 //! text when the record is stored.
 
-use automerge::{ObjId, ObjType, Value};
+use automerge::{ObjId, ObjType, ReadDoc as _, Value};
 use tilo_resource::{ActionCx, Delta, Doc, EditOp, Model, ModelError, Operations, Segment, Slot};
 
 use crate::{RichText, RichTextAction, RichTextState};
@@ -80,6 +80,53 @@ fn refused(error: tilo_actions::ActionError) -> ModelError {
         tilo_actions::ActionError::Refused(reason) => ModelError::Refused(reason),
         other => ModelError::invalid(other.to_string()),
     }
+}
+
+fn shape(error: &tilo_doc::document::DocError) -> ModelError {
+    ModelError::invalid(error.to_string())
+}
+
+/// Plain text as the paragraphs rich text reads it as: one paragraph per line, no marks, so
+/// the same characters, line for line. What a field keeps when its type changes from `Text`
+/// to `RichText`.
+#[must_use]
+pub fn blocks_of_plain(plain: &str) -> Vec<tilo_doc::snapshot::BlockView> {
+    plain
+        .split('\n')
+        .map(|line| tilo_doc::snapshot::BlockView {
+            id: String::new(),
+            kind: "paragraph".to_owned(),
+            text: line.to_owned(),
+            marks: Vec::new(),
+            attrs: std::collections::BTreeMap::new(),
+            children: Vec::new(),
+        })
+        .collect()
+}
+
+/// Turn the field `slot` holding plain text into rich text holding the same words, written as
+/// a recorded change of `doc`: a paragraph per line, no marks. Returns the map the rich text
+/// now lives under.
+///
+/// # Errors
+/// Returns the document's write error.
+pub fn convert_field(doc: &mut Doc, slot: Slot<'_>, plain: &str) -> Result<ObjId, ModelError> {
+    let blocks = blocks_of_plain(plain);
+    let obj = slot.object(doc, ObjType::Map)?;
+    let containers = tilo_doc::model::init(doc, &obj);
+    tilo_doc::reconcile_body_under(doc, &obj, &blocks).map_err(|error| shape(&error))?;
+    // An empty text still leaves one paragraph to type in, as a new document does.
+    if tilo_doc::model::blocks_in_order(doc, &containers).is_empty() {
+        let mut ids = tilo_doc::model::try_seeded_id_gen(doc, &containers)
+            .map_err(|error| ModelError::invalid(error.to_string()))?;
+        let mut dm = tilo_doc::DocMut {
+            doc,
+            c: &containers,
+            ids: &mut ids,
+        };
+        dm.insert_block(None, "paragraph");
+    }
+    Ok(obj)
 }
 
 impl Operations for RichText {
@@ -268,11 +315,22 @@ impl Model for RichText {
             },
             other => return Err(ModelError::unsupported(other)),
         };
-        // The record's genesis writes the rich text; an edit never creates it.
-        let Some((Value::Object(ObjType::Map), obj)) = slot.current(doc)? else {
-            return Err(ModelError::Refused(
-                "there is no rich text here to edit".into(),
-            ));
+        // The record's genesis writes the rich text; an edit does not create a field out of
+        // nothing. A field that still holds plain text (the record was written by a version of
+        // the app that kept it a `Text`) is not nothing: the text it holds carries over into
+        // rich text, the same characters in the same paragraphs, with no marks, and the edit
+        // applies to that.
+        let obj = match slot.current(doc)? {
+            Some((Value::Object(ObjType::Map), obj)) => obj,
+            Some((Value::Object(ObjType::Text), text)) => {
+                let plain = doc.text(&text)?;
+                convert_field(doc, slot, &plain)?
+            }
+            _ => {
+                return Err(ModelError::Refused(
+                    "there is no rich text here to edit".into(),
+                ));
+            }
         };
         action.apply_under(doc, &obj).map_err(refused)
     }

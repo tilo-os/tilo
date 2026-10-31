@@ -12,9 +12,20 @@
 //! * transition: `part: u8, from: u16, to: u16`;
 //! * params: nothing more.
 //!
+//! The tokens are seven colours, `radius`, `border_width`, `scale`, the
+//! four frame flags and the parameter list, then — since the light a
+//! surface catches became a token — the tokens' `light` colour. That last
+//! field is read as the stock white when the bytes end before it, so a
+//! request encoded before it existed still reads ([`Reader::tokens`]); a
+//! field added to [`PartTokens`] goes at the end of them the same way. A
+//! module built against an older SDK is handed the longer request and
+//! must be rebuilt, as its own `request` reads no trailing bytes.
+//!
 //! Answer: paint is `0` for "not mine" or `1`, the scene and the hit shape;
 //! transition is one [`crate::Transition`]; params is the set's
 //! [`crate::ParamSpec`]s.
+
+use std::sync::Arc;
 
 use kurbo::{Affine, BezPath, PathEl, Point, Size};
 use peniko::Color;
@@ -457,6 +468,9 @@ impl Writer {
             self.bytes(param.name.as_bytes());
             self.f32(param.value);
         }
+        // Appended after the parameter list so a shorter, older encoding
+        // still reads: see the module note.
+        self.color(tokens.light);
     }
 }
 
@@ -635,6 +649,33 @@ impl Reader<'_> {
             *slot = self.color()?;
         }
         let [fill, ink, edge, ground, raised, accent, border] = colors;
+        let radius = self.f32()?;
+        let border_width = self.f32()?;
+        let scale = self.f32()?;
+        let dark = self.u8()? != 0;
+        let high_contrast = self.u8()? != 0;
+        let reduce_transparency = self.u8()? != 0;
+        let backdrop = self.u8()? != 0;
+        let params: Arc<[Param]> = {
+            let count = self.count(8)?;
+            (0..count)
+                .map(|_| {
+                    Some(Param {
+                        name: String::from_utf8(self.bytes()?.to_vec()).ok()?,
+                        value: self.f32()?,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?
+                .into()
+        };
+        // The light a surface catches came after the parameter list: bytes
+        // that end before it are an encoding from before it, whose only
+        // light was the stock white.
+        let light = if self.0.is_empty() {
+            PartTokens::default().light
+        } else {
+            self.color()?
+        };
         Some(PartTokens {
             fill,
             ink,
@@ -642,26 +683,16 @@ impl Reader<'_> {
             ground,
             raised,
             accent,
+            light,
+            radius,
+            border_width,
             border,
-            radius: self.f32()?,
-            border_width: self.f32()?,
-            scale: self.f32()?,
-            dark: self.u8()? != 0,
-            high_contrast: self.u8()? != 0,
-            reduce_transparency: self.u8()? != 0,
-            backdrop: self.u8()? != 0,
-            params: {
-                let count = self.count(8)?;
-                (0..count)
-                    .map(|_| {
-                        Some(Param {
-                            name: String::from_utf8(self.bytes()?.to_vec()).ok()?,
-                            value: self.f32()?,
-                        })
-                    })
-                    .collect::<Option<Vec<_>>>()?
-                    .into()
-            },
+            scale,
+            dark,
+            high_contrast,
+            reduce_transparency,
+            backdrop,
+            params,
         })
     }
 }
@@ -732,6 +763,46 @@ mod tests {
     }
 
     #[test]
+    fn the_tokens_light_round_trips_and_older_bytes_read_it_as_stock_white() {
+        let light = Color::from_rgb8(0xf7, 0xf9, 0xfd);
+        let tokens = PartTokens {
+            light,
+            ..PartTokens::default()
+        };
+        let request_in = PaintRequest {
+            part: Part::BarBody,
+            size: Size::new(640.0, 32.0),
+            state: PartState::settled(States::REST),
+            progress: 1.0,
+            tokens: tokens.clone(),
+        };
+        let bytes = paint_request(&request_in);
+        let Some(Request::Paint(read)) = request(&bytes) else {
+            panic!("the request does not decode");
+        };
+        assert_eq!(read.tokens.light, light, "the light a surface catches");
+        assert_eq!(read.tokens, tokens);
+        // A theme's light is not the stock one: the round trip would hold
+        // with a constant, so the encoding is checked to carry the value.
+        assert_ne!(light, PartTokens::default().light);
+        // Bytes from before the field existed (here: the same request with
+        // the trailing colour cut) read as the stock white.
+        let older = &bytes[..bytes.len() - 16];
+        let Some(Request::Paint(before)) = request(older) else {
+            panic!("a request without the light does not decode");
+        };
+        assert_eq!(before.tokens.light, PartTokens::default().light);
+        assert_eq!(
+            PartTokens {
+                light: tokens.light,
+                ..before.tokens
+            },
+            tokens,
+            "every other field is read as it was written"
+        );
+    }
+
+    #[test]
     fn requests_and_transitions_round_trip() {
         let request_in = PaintRequest {
             part: Part::ButtonContainer,
@@ -748,6 +819,7 @@ mod tests {
                 }]
                 .into(),
                 backdrop: true,
+                light: Color::from_rgb8(0xf8, 0xfa, 0xff),
                 ..PartTokens::default()
             },
         };

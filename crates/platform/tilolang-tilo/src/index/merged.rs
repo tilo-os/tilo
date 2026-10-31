@@ -1,6 +1,7 @@
 //! A list as the store's open writes leave it: a list of the index with the few entries those
 //! writes added and removed, read page by page as the list it stands for.
 
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use tilolang_runtime::store::PagedItems;
@@ -240,6 +241,15 @@ impl Merged {
             found_in_base || found_added,
         )
     }
+
+    /// The place of the entry `(key, id)` when it is in the list: the same as
+    /// [`Self::rank`], nothing when it is not.
+    pub fn place(&self, key: &str, id: &str) -> Option<usize> {
+        match self.rank(key, id) {
+            (at, true) => Some(at),
+            _ => None,
+        }
+    }
 }
 
 impl PagedItems for Merged {
@@ -253,6 +263,170 @@ impl PagedItems for Merged {
 
     fn position(&self, id: &str) -> Option<Option<usize>> {
         Self::position(self, id)
+    }
+}
+
+/// Whether an entry of a run is kept: read as the listing fills its pages.
+pub type Keep = Box<dyn Fn(&str) -> bool>;
+
+/// One entry of a run as [`Filtered`] holds it, kept or not.
+struct Scanned {
+    id: Rc<str>,
+    kept: bool,
+}
+
+/// A run read page by page and checked as it is read: the entries of the run whose items
+/// `keep` holds of, in the run's order.
+///
+/// One conjunct of a filter chooses the run; the others are checked here, item by item, as the
+/// listing fills its pages. Filling a page reads the run's pages until it holds a page's worth
+/// of kept entries, so a view showing the first rows costs the entries it reads to fill them,
+/// not the run's length.
+///
+/// Its length is the run's own, read from the column's counts: a list that has to size itself
+/// before showing a row costs a directory read, not the room. Until the whole run is checked
+/// the length is the most the listing can have, a kept entry per entry of the run, and
+/// [`PagedItems::len_is_exact`] says so; once every entry is checked it is the count.
+pub struct Filtered {
+    base: Merged,
+    keep: Keep,
+    /// The most the listing can have: the run's length, as the index counts it.
+    most: usize,
+    /// The entries checked so far, from the run's first in order, each kept or not.
+    scanned: RefCell<Vec<Scanned>>,
+    /// How many of the run's entries are checked.
+    at: Cell<usize>,
+    /// How many of `scanned` are kept.
+    kept: Cell<usize>,
+    /// Finds an item's entries in the run, when the run was given the means.
+    locate: Option<Locate>,
+}
+
+impl std::fmt::Debug for Filtered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Filtered")
+            .field("len", &self.len())
+            .field("read", &self.at.get())
+            .field("kept", &self.kept.get())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Filtered {
+    /// The run `base` (as the open writes leave it) of the entries `keep` holds of, `most`
+    /// being the most it can hold (the run's length when the index counts it).
+    pub fn new(base: Merged, keep: Keep, most: usize) -> Self {
+        Self {
+            base,
+            keep,
+            most,
+            scanned: RefCell::new(Vec::new()),
+            at: Cell::new(0),
+            kept: Cell::new(0),
+            locate: None,
+        }
+    }
+
+    /// The listing, finding where an item is by its entries as `locate` reads them.
+    #[must_use]
+    pub fn locating(mut self, locate: Locate) -> Self {
+        self.locate = Some(locate);
+        self
+    }
+
+    /// Check the run's entries from where the last check stopped up to the place `upto`
+    /// (exclusive), keeping those `keep` holds of.
+    fn scan_to(&self, upto: usize) {
+        let base = self.base.len();
+        let upto = upto.min(base);
+        let mut scanned = self.scanned.borrow_mut();
+        while self.at.get() < upto {
+            let at = self.at.get();
+            let Some(id) = self.base.get(at) else {
+                break;
+            };
+            let kept = (self.keep)(&id);
+            if kept {
+                self.kept.set(self.kept.get().saturating_add(1));
+            }
+            scanned.push(Scanned { id, kept });
+            self.at.set(at.saturating_add(1));
+        }
+    }
+
+    /// The kept entry at `index`, reading on until it is found or the run ends.
+    fn kept_at(&self, index: usize) -> Option<Rc<str>> {
+        loop {
+            {
+                let scanned = self.scanned.borrow();
+                if let Some(id) = scanned.iter().filter(|entry| entry.kept).nth(index) {
+                    return Some(Rc::clone(&id.id));
+                }
+            }
+            if self.at.get() >= self.base.len() {
+                return None;
+            }
+            // Read on in pages, so filling a page costs pages, not entries.
+            self.scan_to(self.at.get().saturating_add(PAGE));
+        }
+    }
+
+    /// Where the item `id` is among the kept entries: `Some(None)` when it is not one, or when
+    /// it is not in the run at all.
+    #[expect(
+        clippy::option_option,
+        reason = "Three states are the trait's: an index, not an item of the listing, and a listing that cannot say"
+    )]
+    fn position_of(&self, id: &str) -> Option<Option<usize>> {
+        let locate = self.locate.as_ref()?;
+        let entries = locate(id)?;
+        if entries.is_empty() {
+            return Some(None);
+        }
+        let mut best: Option<usize> = None;
+        for (key, id) in entries {
+            let Some(at) = self.base.place(&key, &id) else {
+                // One of the item's entries is not in the run.
+                continue;
+            };
+            // Check the run up to and with the entry, then count the ones kept before it.
+            self.scan_to(at.saturating_add(1));
+            let scanned = self.scanned.borrow();
+            let Some(entry) = scanned.get(at) else {
+                continue;
+            };
+            if entry.kept {
+                let before = scanned.iter().take(at).filter(|e| e.kept).count();
+                best = Some(best.map_or(before, |held| held.min(before)));
+            }
+        }
+        Some(best)
+    }
+}
+
+/// The entries one read of a [`Filtered`] checks at a time.
+const PAGE: usize = 64;
+
+impl PagedItems for Filtered {
+    fn len(&self) -> usize {
+        // The most it can have while the run is unread, so a list sized before a page is read
+        // costs the run's count; the kept entries once the whole run is checked.
+        if self.at.get() >= self.base.len() {
+            return self.kept.get();
+        }
+        self.most
+    }
+
+    fn len_is_exact(&self) -> bool {
+        self.at.get() >= self.base.len()
+    }
+
+    fn get(&self, index: usize) -> Option<Rc<str>> {
+        self.kept_at(index)
+    }
+
+    fn position(&self, id: &str) -> Option<Option<usize>> {
+        self.position_of(id)
     }
 }
 
@@ -299,5 +473,69 @@ mod tests {
         assert_eq!(merged.rank("f", "3"), (3, true));
         assert_eq!(merged.rank("zz", "0"), (5, false));
         assert_eq!(merged.get(5), None);
+    }
+
+    fn filtered_ids(filtered: &Filtered, n: usize) -> Vec<String> {
+        (0..n)
+            .map_while(|i| filtered.get(i))
+            .map(|id| id.to_string())
+            .collect()
+    }
+
+    /// A run of `n` entries whose items are numbered, kept when their number is even.
+    fn numbered(n: usize) -> Merged {
+        let entries: Vec<(String, String)> = (0..n)
+            .map(|i| (format!("{i:04}"), format!("{i:04}")))
+            .collect();
+        let held: Vec<(String, Rc<str>)> = entries
+            .iter()
+            .map(|(k, i)| (k.clone(), Rc::<str>::from(i.as_str())))
+            .collect();
+        Merged::new(Base::Held(held), Vec::new(), &[])
+    }
+
+    fn even(id: &str) -> bool {
+        id.parse::<usize>().is_ok_and(|n| n % 2 == 0)
+    }
+
+    #[test]
+    fn a_filtered_run_keeps_what_it_checks_and_reads_only_as_far_as_a_page_needs() {
+        // Longer than a page of checks, so reading the first row does not read the run.
+        let filtered = Filtered::new(numbered(200), Box::new(even), 200);
+        assert_eq!(
+            filtered.len(),
+            200,
+            "sized before a page is read: the run's length, the most it can have"
+        );
+        assert_eq!(filtered.get(0).as_deref(), Some("0000"));
+        assert_eq!(filtered.get(1).as_deref(), Some("0002"));
+        assert!(!filtered.len_is_exact(), "the run is not all read yet");
+        assert_eq!(filtered_ids(&filtered, 200).len(), 100);
+        assert!(filtered.len_is_exact(), "the whole run is read now");
+        assert_eq!(filtered.len(), 100);
+    }
+
+    #[test]
+    fn a_filtered_run_finds_where_a_kept_item_is_and_that_a_dropped_one_is_not() {
+        let locate: Locate = Box::new(|id: &str| Some(vec![(id.to_owned(), id.to_owned())]));
+        let filtered = Filtered::new(numbered(200), Box::new(even), 200).locating(locate);
+        assert_eq!(filtered.position("0004"), Some(Some(2)));
+        assert!(
+            !filtered.len_is_exact(),
+            "finding 0004 checked only up to it"
+        );
+        assert_eq!(
+            filtered.position("0001"),
+            Some(None),
+            "odd ones are dropped"
+        );
+        assert_eq!(filtered.position("0009"), Some(None));
+    }
+
+    #[test]
+    fn counting_a_filtered_run_reads_it_to_its_end() {
+        let filtered = Filtered::new(numbered(200), Box::new(even), 200);
+        assert_eq!(filtered_ids(&filtered, 200).len(), 100);
+        assert_eq!(filtered.len(), 100, "the count once every entry is checked");
     }
 }

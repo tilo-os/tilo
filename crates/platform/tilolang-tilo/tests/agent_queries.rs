@@ -284,7 +284,10 @@ fn describe_gives_declarations_of_apps_types_actions_fields_and_resources() {
     let w = world();
     let app = printed(&w.run("describe(notes)"));
     assert!(app.starts_with("app notes \"Notes\""), "{app}");
-    assert!(app.contains("type Note { title: Text, body: Text"), "{app}");
+    assert!(
+        app.contains("type Note { title: Text, body: RichText"),
+        "{app}"
+    );
     assert!(
         app.contains("action notes.pin(n: Note, pinned: Bool = not n.pinned)"),
         "{app}"

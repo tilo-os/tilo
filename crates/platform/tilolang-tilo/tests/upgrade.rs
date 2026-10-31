@@ -66,6 +66,17 @@ fn a_field_whose_type_changed_restarts_and_says_which() {
 }
 
 #[test]
+fn a_body_changing_from_text_to_rich_text_takes_over_in_place() {
+    // The one type change a record keeps its words through: the store turns the text it held
+    // into rich text, so the running app takes the new build with its records.
+    let (old, new) = builds(
+        V1,
+        &V1.replace("  mood: Mood\n", "  mood: Mood\n  body: RichText\n"),
+    );
+    assert_eq!(compare(&old, &new), Upgrade::InPlace);
+}
+
+#[test]
 fn a_removed_case_restarts() {
     let v2 = V1.replace("enum Mood { calm, busy }", "enum Mood { calm }");
     assert_eq!(reason(V1, &v2), "enum Mood: the case `busy` was removed");
