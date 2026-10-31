@@ -40,9 +40,9 @@ impl PersonRecordKinds for InstalledApps {
     }
 
     fn earlier_ids(&self, app_id: &str) -> Vec<String> {
-        crate::shell::launcher::installed_earlier_ids()
-            .of(app_id)
-            .to_vec()
+        // The installed catalogue's table, which the launcher publishes into
+        // the process-wide one every decision reads (`tilo_action_policy::earlier`).
+        tilo_action_policy::earlier::held_of(app_id)
     }
 }
 
