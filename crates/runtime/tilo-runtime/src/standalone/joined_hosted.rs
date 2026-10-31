@@ -6,8 +6,8 @@
 //! invitation its replica redeems ([`RoomHost::place_own_room`]), and from
 //! then on the room is one of the rooms this profile joined, its session
 //! carried in process ([`RoomHost::connect_local`]). The host takes part in
-//! the room's channels with this device's own leaf, so this device takes a
-//! channel's keys there ([`Joined::hosted_channel_keys`]).
+//! the room's channels as this device's one peer, asking this device's own
+//! channel service for their keys.
 //!
 //! An app's write to the room goes to the host as a commit and is
 //! acknowledged once the host keeps it. A write to a record the room does
@@ -153,37 +153,6 @@ impl Joined {
         self.reach()
             .join_client(hosted_here, own)
             .ok_or_else(|| "this device's room host is not running".into())
-    }
-
-    /// `channel`'s content keys from this device's own room host when it
-    /// hosts `room`: the host's leaf is this device's, so the keys are taken
-    /// there. `None` for a room hosted elsewhere.
-    pub(in crate::standalone) fn hosted_channel_keys(
-        &self,
-        room: RoomId,
-        channel: collab_types::ChannelId,
-        route: Option<&collab_types::ChannelRoute>,
-        create: bool,
-    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
-        if !self.hosted_here(room) {
-            return None;
-        }
-        let host = Arc::clone(self.room_host()?);
-        let (room, route) = (room.to_string(), route.cloned());
-        let (answer, answered) = std::sync::mpsc::sync_channel(1);
-        // Answered on the runtime's own tasks, never on the asking thread:
-        // the broker asks from its connections' runtime, where waiting on
-        // another runtime panics.
-        tilo_rt::app().spawn(async move {
-            let keys = host
-                .rooms()
-                .own_channel_keys(&room, channel, route.as_ref(), create)
-                .await;
-            let _ = answer.send(keys);
-        });
-        answered
-            .recv()
-            .unwrap_or_else(|_| Some(Err("the runtime stopped".into())))
     }
 
     /// Commit `request`, an app's write to `room`, a room this device's host
@@ -352,9 +321,7 @@ impl Joined {
             .block_on(async move { host.room_records().retained(ws).await })
             .ok()?;
         let route = collab_types::ChannelRoute::new(app, record);
-        let keys = self
-            .hosted_channel_keys(room, route.channel(&room.to_string()), Some(&route), false)?
-            .ok()?;
+        let keys = self.channel_keys().get()?.record_keys(room, &route)?.ok()?;
         retained.iter().rev().find_map(|kept| {
             let neighbour_wire::NeighbourMsg::AppDocument {
                 app_id,

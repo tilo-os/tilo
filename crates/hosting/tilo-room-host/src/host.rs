@@ -187,6 +187,7 @@ impl HostSessions {
         identity: HostIdentity,
         endpoint: Endpoint,
         governs: bool,
+        keys: Option<crate::rooms::DeviceKeys>,
         wrap: impl FnOnce(
             &WorkspaceRegistry,
             Option<Arc<dyn AppServingPlane>>,
@@ -265,7 +266,7 @@ impl HostSessions {
             return Ok((sessions, None));
         };
         let rooms = crate::rooms::Rooms::open(
-            sessions.room_services(&cfg, &identity, endpoint, revocations),
+            sessions.room_services(&cfg, &identity, endpoint, revocations, keys),
             cfg.state_root.join("rooms"),
         )
         .await
@@ -287,8 +288,10 @@ impl HostSessions {
         identity: &HostIdentity,
         endpoint: Endpoint,
         revocations: Arc<std::sync::RwLock<RevocationList>>,
+        keys: Option<crate::rooms::DeviceKeys>,
     ) -> crate::rooms::RoomServices {
         crate::rooms::RoomServices {
+            keys,
             workspaces: self.workspaces.clone(),
             access: self.access_writer(),
             records: self.room_records(),
@@ -520,6 +523,7 @@ impl RoomHost {
         cfg: HostConfig,
         identity: HostIdentity,
         endpoint: Endpoint,
+        keys: Option<crate::rooms::DeviceKeys>,
     ) -> Result<Self, HostError> {
         if matches!(cfg.trust_policy, TrustPolicy::AllowAny) {
             return Err(HostError::Identity(
@@ -527,7 +531,7 @@ impl RoomHost {
             ));
         }
         let (sessions, governed) =
-            HostSessions::open(cfg, identity, endpoint, true, |_, plane| plane).await?;
+            HostSessions::open(cfg, identity, endpoint, true, keys, |_, plane| plane).await?;
         let Some(Governed { rooms, actions }) = governed else {
             return Err(HostError::Rooms("the host governs no rooms".into()));
         };

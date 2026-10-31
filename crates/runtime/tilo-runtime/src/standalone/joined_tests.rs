@@ -118,6 +118,7 @@ impl Joined {
                 revocations: RevocationList::new(),
             },
             joined.endpoint(),
+            None,
         )
         .await
         .unwrap();

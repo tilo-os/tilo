@@ -1241,7 +1241,7 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
     // A member wrote in the chat's channel.
     let record = "@tilo:package-primary";
     let node = rooms
-        .own_endpoint_keys(
+        .own_route_keys(
             &tilo_peer_state::document_frame::DocumentRoute {
                 app_id: "so.tilo.chat".into(),
                 cluster_id: room.room.clone(),

@@ -63,11 +63,7 @@ impl SealingMember {
             cluster_id: room.into(),
             record: record.into(),
         };
-        let keys = rooms
-            .own_endpoint_keys(&route, true)
-            .await
-            .unwrap()
-            .unwrap();
+        let keys = rooms.own_route_keys(&route, true).await.unwrap().unwrap();
         // The surface a member's write names: the one its replica signs with.
         let surface = rooms
             .room(room)
@@ -98,11 +94,7 @@ impl SealingMember {
             cluster_id: room.into(),
             record: record.into(),
         };
-        let keys = rooms
-            .own_endpoint_keys(&route, true)
-            .await
-            .unwrap()
-            .unwrap();
+        let keys = rooms.own_route_keys(&route, true).await.unwrap().unwrap();
         Self {
             key: self.key.clone(),
             keys,

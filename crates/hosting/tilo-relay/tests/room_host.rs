@@ -51,6 +51,7 @@ async fn host_on(user: &TestUser, device: &TestDevice) -> Hosted {
             revocations: RevocationList::new(),
         },
         endpoint.clone(),
+        None,
     )
     .await
     .unwrap();
@@ -390,6 +391,7 @@ async fn a_router_built_before_any_room_refuses_until_its_host_is_installed() {
             revocations: RevocationList::new(),
         },
         endpoint.clone(),
+        None,
     )
     .await
     .unwrap();

@@ -504,6 +504,7 @@ impl Relay {
             identity.clone(),
             endpoint.clone(),
             governs_rooms,
+            None,
             |workspaces, rest| {
                 Some(Arc::new(crate::compute_actions::ComputePlane {
                     compute: crate::compute_actions::ComputeActions::new(owner, workspaces.clone()),

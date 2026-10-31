@@ -570,7 +570,6 @@ QUALIFICATION_IDENTITIES = {
     "template": {"revision": COMMIT},
     "browserRuntime": {"version": re.compile(r"[0-9A-Za-z][0-9A-Za-z._+-]{0,31}")},
 }
-QUALIFICATION_SERVICES = ("room-service", "web-entry")
 
 
 class Qualification:
@@ -672,8 +671,6 @@ def load_qualification(path: Path) -> Qualification:
     if not isinstance(services, dict) or not services:
         raise PromotionError(f"{path}: the qualification manifest qualified no service")
     for name, digest in services.items():
-        if name not in QUALIFICATION_SERVICES:
-            raise PromotionError(f"{path}: {name!r} is not a service a deploy runs")
         if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
             raise PromotionError(f"{path}: the qualified {name} digest {digest!r} is not one")
     limits = document["limits"]
@@ -712,6 +709,10 @@ def gate_qualification(qualification: Qualification, images: Mapping[str, Image]
     a gated feature needs an observation of the running release, so a source-only fixture
     cannot get there whatever else it names.
     """
+    for name in qualification.document["services"]:
+        if name not in images:
+            raise PromotionError(
+                f"{qualification.path}: {name!r} is not a service a deploy runs")
     for name, image in images.items():
         qualification.check(target.service(name), image)
     qualified = qualification.document["identities"]["guest"]

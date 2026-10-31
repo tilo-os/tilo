@@ -16,11 +16,8 @@ impl ChannelKeyAccess {
         let metadata = envelope.encryption.ok_or("the write is not sealed")?;
         let ciphertext =
             collab_types::sealed_ciphertext(envelope).map_err(|error| error.to_string())?;
-        let answers = self.ask_host([(room, metadata.channel, None, false)]);
         let keys = self
-            .with_answers(answers, |service| {
-                service.existing_keys(room, metadata.channel)
-            })
+            .run(|service| service.existing_keys(room, metadata.channel))
             .ok_or("channel service unavailable")?
             .ok_or("this device holds no existing key for the history's channel")?;
         keys.open_content(envelope.artifact, &metadata, &ciphertext)

@@ -115,25 +115,19 @@ impl Rooms {
         // cannot slip between a prior policy lookup and the first key access.
         room.view_read_policy(caller, &source.app_id, &source.record)
             .ok_or("resource read not permitted")?;
-        let channel =
-            collab_types::document_channel_id(&source.app_id, &source.cluster_id, &source.record);
-        let keys = match room.participation.clone() {
-            Some(participant) => participant
-                .channels
-                .lock()
-                .await
-                .existing_keys(channel)
-                .ok(),
-            None => None,
+        let route = collab_types::ChannelRoute::new(&source.app_id, &source.record);
+        let keys = match room.route_keys(&route).await {
+            Some(Ok(keys)) => Some(keys),
+            _ => None,
         };
         let primary_governor = (source.record.is_empty()
             && room.peer().holds_document(&source.app_id, ""))
         .then_some(room.record.authority.device_public_key);
         if keys.is_none() && primary_governor.is_none() {
-            return Err(if room.participation.is_none() {
-                "this relay takes part in no channel of the source's room".into()
-            } else {
+            return Err(if room.seals() {
                 "source channel keys unavailable".into()
+            } else {
+                "this host takes part in no channel of the source's room".into()
             });
         }
         let retained = self

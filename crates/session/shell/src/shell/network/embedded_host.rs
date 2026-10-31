@@ -91,6 +91,9 @@ struct HostOpening {
     config: HostConfig,
     identity: room_host::HostIdentity,
     endpoint: iroh::Endpoint,
+    /// This device's channel service: the host takes its channels' keys
+    /// from it, as this device's one peer.
+    channel_keys: crate::shell::channel_encryption::ChannelKeyProvider,
 }
 
 /// The opening of this device's host, held by the caller that opened it
@@ -105,9 +108,16 @@ impl HostOpening {
         if let Some(host) = self.handle.get() {
             return Ok((host, None));
         }
-        let host = RoomHost::open(self.config, self.identity, self.endpoint)
-            .await
-            .map_err(|error| format!("this device's room host did not open: {error}"))?;
+        let host = RoomHost::open(
+            self.config,
+            self.identity,
+            self.endpoint,
+            Some(crate::shell::channel_encryption::host_device_keys(
+                &self.channel_keys,
+            )),
+        )
+        .await
+        .map_err(|error| format!("this device's room host did not open: {error}"))?;
         Ok((self.handle.install(Arc::new(host)), Some(held)))
     }
 }
@@ -177,50 +187,6 @@ impl ShellNetwork {
                 })
                 .unwrap_or(false)
         })
-    }
-
-    /// `channel`'s content keys from this device's own room host, which takes
-    /// part in the channel with this device's leaf, when `room` is hosted
-    /// here: what this device's broker seals and
-    /// opens the room's records with. `None` for a room hosted elsewhere, or
-    /// while the host is not open. Blocks on the host: call it off the frame
-    /// loop.
-    ///
-    /// The host answers on this network's runtime, never on the caller's
-    /// thread: the broker asks from its connections' own runtime, where
-    /// entering another runtime to wait panics and takes the asking app's
-    /// connection with it.
-    pub(crate) fn hosted_channel_keys(
-        &self,
-        room: RoomId,
-        channel: collab_types::ChannelId,
-        route: Option<&collab_types::ChannelRoute>,
-        create: bool,
-    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
-        let own = *self.local_peer_id.as_bytes();
-        if !self.tree.read().native_authority.hosted_on(room, &own) {
-            return None;
-        }
-        let Some(host) = self.room_host() else {
-            return Some(Err("this device's room host is not open".into()));
-        };
-        let runtime = match self.runtime_handle() {
-            Ok(runtime) => runtime,
-            Err(error) => return Some(Err(error)),
-        };
-        let (room, route) = (room.to_string(), route.cloned());
-        let (answer, answered) = std::sync::mpsc::sync_channel(1);
-        runtime.spawn(async move {
-            let keys = host
-                .rooms()
-                .own_channel_keys(&room, channel, route.as_ref(), create)
-                .await;
-            let _ = answer.send(keys);
-        });
-        // The task ends without answering only when the runtime shuts down.
-        answered
-            .recv()
-            .unwrap_or_else(|_| Some(Err("this device's network stopped".into())))
     }
 
     /// Whether this device's own host holds `room`, as the native owner,
@@ -303,6 +269,7 @@ impl ShellNetwork {
         Ok(HostOpening {
             handle,
             lock: Arc::clone(&self.embedded_host.opening),
+            channel_keys: self.channel_keys(),
             config,
             identity: room_host::HostIdentity {
                 user_public_key: certificate.user_public_key,

@@ -4,6 +4,7 @@
 //! Started by default in normal sessions; recovery sessions may disable it.
 
 mod boot_join;
+mod channel_keys;
 mod community;
 pub(crate) use community::configured_site as configured_community_site;
 pub use directory::{DirectoryListing, Publication};
@@ -1153,6 +1154,10 @@ pub struct ShellNetwork {
     relay_rooms: relay_rooms::State,
     /// This device's own room host and the workspaces placed on it.
     embedded_host: embedded_host::State,
+    /// This device's channel service, as this network's broker opens it: the
+    /// room host this network runs takes the keys of the channels it takes
+    /// part in from here ([`Self::channel_keys`]).
+    channel_keys: crate::shell::channel_encryption::ChannelKeyProvider,
     /// The rooms held through a site, reached over their host's HTTPS routes.
     hosted_sites: hosted_sites::State,
     /// Pairing links this computer made, and the new devices asking.
@@ -2056,6 +2061,7 @@ impl ShellNetwork {
             room_window_carriers: room_window_carriers::State::default(),
             relay_rooms: relay_rooms::State::default(),
             embedded_host: embedded_host::State::new(local_host),
+            channel_keys: crate::shell::channel_encryption::ChannelKeyProvider::default(),
             hosted_sites: hosted_sites::State::open(state_dir, readiness),
             device_approvals: device_approvals::State::default(),
             record_content: record_content::State::default(),
@@ -7529,6 +7535,7 @@ pub(crate) fn shell_network_for_test(
         room_window_carriers: room_window_carriers::State::default(),
         relay_rooms: relay_rooms::State::default(),
         embedded_host: embedded_host::State::default(),
+        channel_keys: crate::shell::channel_encryption::ChannelKeyProvider::default(),
         hosted_sites: hosted_sites::State::with_readiness(readiness),
         device_approvals: device_approvals::State::default(),
         record_content: record_content::State::default(),

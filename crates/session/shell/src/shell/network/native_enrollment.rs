@@ -141,13 +141,18 @@ impl ShellNetwork {
 
     /// Who governs each room, as the native owner, once open, has the room:
     /// this device's enrolled device and the room's governor. The same
-    /// device when this one governs it.
+    /// device when this one governs it. Holds the network weakly
+    /// ([`Self::room_governors`]'s caller is the channel service it holds).
     pub(crate) fn room_governors(
         network: &std::sync::Arc<Self>,
     ) -> crate::shell::channel_policy::Governors {
-        let network = std::sync::Arc::clone(network);
+        // Reached from the channel service the network holds, which the host
+        // it runs asks for keys: a strong reference here would keep the two
+        // alive in a circle.
+        let network = std::sync::Arc::downgrade(network);
         Box::new(move |room| {
             network
+                .upgrade()?
                 .opened_native_owner()?
                 .with_current(room, |view| {
                     Ok((

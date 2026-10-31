@@ -394,7 +394,7 @@ impl RoomRecordsLink for RelayRecordsLink {
     ) -> Option<Result<tilo_browser_peer::ChannelContentKeys, String>> {
         self.member
             .runtime
-            .block_on(self.rooms.as_ref()?.own_endpoint_keys(route, create))
+            .block_on(self.rooms.as_ref()?.own_route_keys(route, create))
     }
 
     fn view_locator(

@@ -126,7 +126,7 @@ impl Standalone {
         )?;
         if workspace.governs() {
             stage("placing the workspace on this device's room host");
-            place_own_room(root, &room_id, &workspace.name(), &joined, (&apps, dev))?;
+            place_own_room(root, &workspace, &joined, &channel_keys.keys, (&apps, dev))?;
         }
         let rooms = Arc::new(Rooms::new(&workspace, &joined));
         let identity_socket = root.join(IDENTITY_SOCKET);
@@ -781,13 +781,14 @@ fn workspace_files(
 /// names.
 fn place_own_room(
     profile: &Path,
-    room: &str,
-    name: &str,
+    workspace: &ProfileWorkspace,
     joined: &Arc<Joined>,
+    keys: &tilo_action_broker::channel_encryption::ChannelKeyProvider,
     (apps, dev): (&Arc<apps::Apps>, bool),
 ) -> io::Result<()> {
-    let (key, cert) = tilo_identity_host::broker::trusted_current_device(room)?;
-    let room_id = RoomId::parse(room).ok_or_else(|| io::Error::other("invalid runtime room"))?;
+    let room = workspace.room();
+    let (key, cert) = tilo_identity_host::broker::trusted_current_device(&room)?;
+    let room_id = RoomId::parse(&room).ok_or_else(|| io::Error::other("invalid runtime room"))?;
     let host = tilo_rt::app()
         .handle()
         .block_on(tilo_room_host::host::RoomHost::open(
@@ -802,6 +803,7 @@ fn place_own_room(
                 revocations: tilo_user_identity::RevocationList::new(),
             },
             joined.endpoint(),
+            Some(channels::DeviceChannelKeys::handle(keys.clone())),
         ))
         .map_err(io::Error::other)?;
     let apps = Arc::clone(apps);
@@ -816,7 +818,7 @@ fn place_own_room(
         .map_err(io::Error::other)?;
     tilo_rt::app()
         .handle()
-        .block_on(joined.place(room_id, name))
+        .block_on(joined.place(room_id, &workspace.name()))
         .map_err(io::Error::other)?;
     joined.hold_session(room_id);
     Ok(())

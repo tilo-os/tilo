@@ -15,7 +15,7 @@ impl Rooms {
         governed: &mut GovernedRoom,
     ) -> Result<(), String> {
         use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
-        if governed.participation.is_some()
+        if governed.seals()
             || governed.record.authority != self.inner.host.cert
             || governed
                 .peer()

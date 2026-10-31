@@ -1248,28 +1248,37 @@ pub(crate) fn channel_key_access(
     // An endpoint opening a channel queues governance the parked drain
     // must send now (a genesis, an access request): it pokes the drain.
     let drain_wake = net.as_ref().map(|net| Arc::clone(&net.drain_wake));
-    let (authenticated, authenticated_changes, governors, hosted): (
+    let (authenticated, authenticated_changes, governors): (
         crate::shell::channel_policy::AuthenticatedDevices,
         crate::shell::channel_policy::AuthenticatedChanges,
         crate::shell::channel_policy::Governors,
-        Option<crate::shell::channel_policy::HostedChannelKeys>,
-    ) = match net {
+    ) = match net.as_ref() {
         Some(net) => {
-            let changes = Arc::clone(&net);
-            let governors = crate::shell::network::ShellNetwork::room_governors(&net);
-            let hosted = hosted_channel_keys_of(Arc::clone(&net));
+            // The service these follow is the one this network holds, which
+            // reaches its host for the device's keys: held strongly, each
+            // would keep the other alive in a circle.
+            let changes = Arc::downgrade(net);
+            let fleet = Arc::downgrade(net);
+            let governors = crate::shell::network::ShellNetwork::room_governors(net);
             (
-                Box::new(move |user| net.authenticated_devices_of(user)),
-                Box::new(move |after| changes.authenticated_devices_next_change(after)),
+                Box::new(move |user| {
+                    fleet
+                        .upgrade()
+                        .map(|net| net.authenticated_devices_of(user))
+                        .unwrap_or_default()
+                }),
+                Box::new(move |after| {
+                    changes
+                        .upgrade()
+                        .and_then(|net| net.authenticated_devices_next_change(after))
+                }),
                 governors,
-                Some(hosted),
             )
         }
         None => (
             Box::new(|_| Vec::new()),
             Box::new(|_| None),
             Box::new(|_| None),
-            None,
         ),
     };
     let directory = crate::shell::channel_policy::WorkspaceChannelDirectory::new(
@@ -1278,10 +1287,6 @@ pub(crate) fn channel_key_access(
     )
     .with_authenticated_changes(authenticated_changes)
     .with_governors(governors);
-    let directory = match hosted {
-        Some(hosted) => directory.with_hosted_channel_keys(hosted),
-        None => directory,
-    };
     let opened = match store {
         Some(store) => crate::shell::channel_encryption::ChannelEncryption::open(
             store,
@@ -1295,7 +1300,7 @@ pub(crate) fn channel_key_access(
             ),
         ),
     };
-    match opened {
+    let access = match opened {
         Ok(service) => Some(match drain_wake {
             Some(wake) => crate::shell::channel_encryption::ChannelKeyAccess::with_wake(
                 service,
@@ -1307,7 +1312,11 @@ pub(crate) fn channel_key_access(
             tracing::warn!(%error, "channel encryption state could not be opened");
             None
         }
+    };
+    if let Some(net) = net {
+        net.install_channel_keys(access.clone());
     }
+    access
 }
 
 /// Requests kept while the application broker is not attached yet.
@@ -1511,16 +1520,6 @@ fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Opt
         None if now == id => None,
         _ => Some(now.to_string()),
     }
-}
-
-/// The keys of the channels of rooms `net`'s own room host governs, from
-/// that host.
-pub(crate) fn hosted_channel_keys_of(
-    net: Arc<crate::shell::network::ShellNetwork>,
-) -> crate::shell::channel_policy::HostedChannelKeys {
-    std::sync::Arc::new(move |room, channel, route, create| {
-        net.hosted_channel_keys(room, channel, route, create)
-    })
 }
 
 #[cfg(test)]

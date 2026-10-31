@@ -283,7 +283,7 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
             .await
             .err()
             .unwrap(),
-        "this relay takes part in no channel of the source's room",
+        "this host takes part in no channel of the source's room",
         "the authorized reader reaches the existing-key boundary without creating channel state"
     );
     assert_eq!(
@@ -474,10 +474,11 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
 fn a_created_room_restores_with_its_governance_and_publication() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let created = GovernedRoom::create(dir.path(), "Team", &cert, &key, SystemTime::now()).unwrap();
+    let created =
+        GovernedRoom::create(dir.path(), "Team", &cert, &key, None, SystemTime::now()).unwrap();
     assert!(!created.record.outgoing.is_empty());
     assert!(created.record.outgoing.iter().all(|entry| entry.checkpoint));
-    let restored = GovernedRoom::open(created.path.clone(), &cert, &key).unwrap();
+    let restored = GovernedRoom::open(created.path.clone(), &cert, &key, None).unwrap();
     assert_eq!(restored.record.room, created.record.room);
     assert_eq!(restored.record.generation, 1);
     assert_eq!(restored.summary().name, "Team");
@@ -493,7 +494,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let mut room =
-        GovernedRoom::create(dir.path(), "Team", &cert, &key, SystemTime::now()).unwrap();
+        GovernedRoom::create(dir.path(), "Team", &cert, &key, None, SystemTime::now()).unwrap();
     // Incompressible text, so the saved record stays large.
     let mut text = vec![0u8; 48 * 1024];
     blake3::Hasher::new()
@@ -556,7 +557,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     assert_ne!(second, first);
     assert_eq!(room.parts.files(), 1, "the replaced part is removed");
 
-    let restored = GovernedRoom::open(room.path.clone(), &cert, &key).unwrap();
+    let restored = GovernedRoom::open(room.path.clone(), &cert, &key, None).unwrap();
     assert_eq!(
         restored.peer().document("notes", "plan"),
         room.peer().document("notes", "plan")
@@ -571,17 +572,18 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     let mut bytes = std::fs::read(&path).unwrap();
     bytes[0] ^= 1;
     std::fs::write(&path, bytes).unwrap();
-    assert!(GovernedRoom::open(room.path.clone(), &cert, &key).is_err());
+    assert!(GovernedRoom::open(room.path.clone(), &cert, &key, None).is_err());
 }
 
 #[test]
 fn a_room_is_only_restored_by_its_governor() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let created = GovernedRoom::create(dir.path(), "Team", &cert, &key, SystemTime::now()).unwrap();
+    let created =
+        GovernedRoom::create(dir.path(), "Team", &cert, &key, None, SystemTime::now()).unwrap();
     let mut other = cert;
     other.device_label = "someone else".into();
-    assert!(GovernedRoom::open(created.path, &other, &key).is_err());
+    assert!(GovernedRoom::open(created.path, &other, &key, None).is_err());
 }
 
 #[test]
@@ -589,7 +591,9 @@ fn a_workspace_name_must_be_printable_and_short() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     for name in ["", "   ", "a\u{7}b", &"x".repeat(81)] {
-        assert!(GovernedRoom::create(dir.path(), name, &cert, &key, SystemTime::now()).is_err());
+        assert!(
+            GovernedRoom::create(dir.path(), name, &cert, &key, None, SystemTime::now()).is_err()
+        );
     }
 }
 
@@ -598,7 +602,7 @@ fn a_long_tail_compacts_into_a_fresh_checkpoint() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let mut room =
-        GovernedRoom::create(dir.path(), "Team", &cert, &key, SystemTime::now()).unwrap();
+        GovernedRoom::create(dir.path(), "Team", &cert, &key, None, SystemTime::now()).unwrap();
     room.record.published = room.record.outgoing.len();
     for index in 0..=MAX_PUBLICATION_TAIL {
         room.record.outgoing.push(Publication {
@@ -1155,7 +1159,7 @@ async fn a_renamed_room_shows_its_new_name_to_members_and_after_a_restart() {
     };
     drop(rooms);
     relay.shutdown().await;
-    let restored = GovernedRoom::open(path, &cert, &key).unwrap();
+    let restored = GovernedRoom::open(path, &cert, &key, None).unwrap();
     assert_eq!(restored.summary().name, "Plaza");
     assert_eq!(
         restored.peer().governance().room_name().as_deref(),
@@ -1456,6 +1460,7 @@ struct AskedForAChannel {
 /// access request for a fresh record channel, as its runtime sends one.
 async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedForAChannel {
     let dir = tempfile::tempdir().unwrap();
+    let takes_part = capabilities.takes_part_in_room_channels();
     let (key, cert) = governor_with(capabilities);
     let relay = test_host(&dir.path().join("relay"), &key, &cert).await;
     let rooms = relay.rooms().clone();
@@ -1505,11 +1510,21 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
         member: device,
         channel,
     };
-    // Nothing yielded since: the channels pass `absorb` spawned has not run.
-    assert!(
-        asked.waiting(),
-        "the room queued the member's request for its channels"
-    );
+    if takes_part {
+        // Nothing yielded since: the channels pass `absorb` spawned has not run.
+        assert!(
+            asked.waiting(),
+            "the room queued the member's request for its channels"
+        );
+    } else {
+        // A host that is no device's peer keeps the request for whoever takes
+        // part in the room's channels.
+        let retained = asked.retains_the_request().await;
+        assert!(
+            retained,
+            "the room retained the member's request for its channels"
+        );
+    }
     asked
 }
 
@@ -1522,6 +1537,32 @@ impl AskedForAChannel {
             .lock()
             .unwrap()
             .contains_key(&self.room)
+    }
+
+    /// Whether the room kept the member's request among the records it
+    /// retains for the devices that take part in its channels.
+    async fn retains_the_request(&self) -> bool {
+        let workspace_id = crate::room_workspace_id(&self.room).unwrap();
+        self.relay
+            .room_records()
+            .retained(workspace_id)
+            .await
+            .is_ok_and(|retained| {
+                retained.iter().any(|retained| {
+                    postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&retained.body).is_ok_and(
+                        |message| {
+                            matches!(
+                                message,
+                                neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
+                                    room,
+                                    request,
+                                    ..
+                                } if room == self.room && request.channel == self.channel
+                            )
+                        },
+                    )
+                })
+            })
     }
 
     /// The governor's part in the room's channels.
@@ -1563,12 +1604,6 @@ impl AskedForAChannel {
 #[tokio::test]
 async fn a_plain_host_governs_a_room_without_taking_part_in_its_channels() {
     let asked = a_member_asks_for_a_channel(DeviceCapabilities::host()).await;
-    tilo_test_env::within("the room's channels pass takes the request", async {
-        while asked.waiting() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
     assert!(
         asked.participation().await.is_none(),
         "a plain host certificate must never take part in a governed room's channels"

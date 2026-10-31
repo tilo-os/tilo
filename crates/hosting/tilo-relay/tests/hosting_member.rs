@@ -44,6 +44,7 @@ async fn host_on(user: &TestUser, device: &TestDevice, mode: HostMode) -> Hosted
             revocations: RevocationList::new(),
         },
         endpoint.clone(),
+        None,
     )
     .await
     .unwrap();
