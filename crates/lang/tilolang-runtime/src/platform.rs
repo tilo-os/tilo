@@ -248,6 +248,7 @@ impl Core {
         use crate::abi::Imp;
         match imp {
             Imp::EventValue => self.ret_h(Value::Event),
+            Imp::Viewer => self.viewer_import(),
             Imp::EventPart => self.ret_h(Value::EventPart(usize::try_from(a.h(0)?).unwrap_or(0))),
             Imp::Actions => {
                 let target = self.ref_arg(a.h(0)?)?;
@@ -352,6 +353,14 @@ impl Core {
             }
             _ => trap("not a platform import"),
         }
+    }
+
+    /// `workspace.me`: the person the view is shown to, which the frame running carries as the
+    /// runtime was opened for them. An action reads `invoker` instead: it acts for someone,
+    /// where the viewer only looks.
+    fn viewer_import(&self) -> HResult<Option<Wasm>> {
+        let who = self.looking()?;
+        self.ret_h(Value::Principal(crate::ids::Principal(who)))
     }
 
     /// A version of `of` as a `host.Version`: who, when, what, the task run, its kind, the

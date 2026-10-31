@@ -312,7 +312,7 @@ impl Core {
             StrFind, StrLen, StrLit, StrReplace, StrSlice, TimeShift, TryInvoke, TupleGetF,
             TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions, UiAnchor,
             UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic,
-            Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Withdraw,
+            Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, Withdraw,
             WorkspaceMembers,
         };
         match imp {
@@ -363,7 +363,7 @@ impl Core {
             | ActThen | ActOpen | ActUndo | ChangeView | UiActions => self.ui_import(imp, a),
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions
             | RunChanges | Unseen | FirstUnseen | Mentions | Steps | VersionEnd | Phrase
-            | Dated => self.platform_import(imp, a),
+            | Dated | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }

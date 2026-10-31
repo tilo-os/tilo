@@ -257,6 +257,9 @@ impl Checker<'_> {
 
     /// `workspace.members`: everyone in the workspace now, people and agents, read from the
     /// platform's membership, never a copy the app keeps.
+    ///
+    /// `workspace.me`: the person the view is shown to, as the runtime knows them, read where
+    /// the view runs, so it names the viewer of each window and each embedded view alike.
     pub(super) fn workspace_field(&mut self, name: &ast::Ident) -> Ex {
         if name.name == "members" {
             return Ex::host(
@@ -264,6 +267,21 @@ impl Checker<'_> {
                 Vec::new(),
                 Ty::List(Box::new(Ty::Principal)),
             );
+        }
+        if name.name == "me" {
+            // Who is shown a view: an action has an `invoker` instead, it acts for someone.
+            if self.st.ctx != super::Ctx::View {
+                let who = self.st.ctx.word();
+                self.err(
+                    "E064",
+                    name.span,
+                    format!(
+                        "`workspace.me` is the person a view is shown to; {who} cannot read it"
+                    ),
+                );
+                return Ex::error();
+            }
+            return Ex::host(Imp::Viewer, Vec::new(), Ty::Principal);
         }
         self.err(
             "E021",

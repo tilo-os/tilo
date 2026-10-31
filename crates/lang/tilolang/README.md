@@ -202,7 +202,9 @@ of the app's; `ui.ChangeMark(r)` places the mark where the default spot is wrong
 
 **Members.** Who is in the workspace is the platform's membership, read and never copied:
 `workspace.members` is everyone in it, people and agents, a `List<Principal>`, and `members(r)`
-those of them the workspace's grants let read `r`. A principal says what it is: `p.name()`,
+those of them the workspace's grants let read `r`. `workspace.me` is the person the view is
+shown to, the runtime's viewer read where the view runs (an action acts for the `invoker`
+instead). A principal says what it is: `p.name()`,
 `p.kind()` (`.person` or `.agent`, a `PrincipalKind`) and `p.role()` (`Option<Text>`, the
 workspace role, `owner` or `editor`, of a member who holds one); `avatar(p)` shows it. A view
 that reads them runs again when membership or grants change. Every `rich_input`'s `@` drawer

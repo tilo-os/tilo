@@ -225,8 +225,17 @@ view sidebar(all: Channels) {
                             }
                         }
                         d: Direct => {
-                            ui.NavItem("/dm/{d.name}", d.name, icon: .message_circle, item: d, mentions: mentions(d)) {
-                                on select: set(shown, "/dm/{d.name}").then(open(d))
+                            // A direct conversation reads as the person's row: their avatar and
+                            // presence. The conversation with yourself is your notes, and says
+                            // so.
+                            if d.person == workspace.me {
+                                ui.NavItem("/dm/{d.name}", "Notes to self", icon: .bookmark, item: d, mentions: mentions(d)) {
+                                    on select: set(shown, "/dm/{d.name}").then(open(d))
+                                }
+                            } else {
+                                ui.NavItem("/dm/{d.name}", d.name, person: d.person, item: d, mentions: mentions(d)) {
+                                    on select: set(shown, "/dm/{d.name}").then(open(d))
+                                }
                             }
                         }
                     }
@@ -237,8 +246,11 @@ view sidebar(all: Channels) {
                 if not workspace.members.is_empty() {
                     ui.NavSection("Direct messages", collapsible: true) {
                         for p in workspace.members {
-                            ui.NavItem("/person/{p.name()}", p.name(), icon: .message_circle) {
-                                on select: set(shown, "/person/{p.name()}").then(message_person(all, p))
+                            // Your own place is your notes, which the sidebar says above.
+                            if p != workspace.me {
+                                ui.NavItem("/person/{p.name()}", p.name(), person: p) {
+                                    on select: set(shown, "/person/{p.name()}").then(message_person(all, p))
+                                }
                             }
                         }
                     }
@@ -537,6 +549,9 @@ scenario "a team's channels" -> TextChannel {
     as leo at 2026-06-30T09:02Z {
         send(dm, RichText("Are we still on for the walk on Saturday?"))
     }
+    // The conversation with yourself: your notes, which the sidebar labels as yours.
+    let notes = message_person(channels, invoker)
+    send(notes, RichText("Ask Leo about the walk on Saturday."))
     design
 }
 

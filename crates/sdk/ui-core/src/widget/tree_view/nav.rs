@@ -119,8 +119,10 @@ impl NavItemSpec {
             let name = person.name.as_deref().unwrap_or(label);
             let mut avatar = crate::widget::AvatarFace::new(name, &person.identity)
                 .image(person.image.as_ref())
-                .presence(person.colour)
                 .presence_ring();
+            if let Some(colour) = person.colour {
+                avatar = avatar.presence(colour);
+            }
             if person.speaking {
                 avatar = avatar.speaking(1.0);
             }

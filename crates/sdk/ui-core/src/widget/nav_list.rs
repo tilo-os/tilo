@@ -319,8 +319,9 @@ pub struct NavArt {
 pub struct NavPerson {
     /// Who they are; their initials stand in for a picture.
     pub identity: String,
-    /// Their colour in the room, ringing the avatar.
-    pub colour: Color,
+    /// Their colour in the room, ringing the avatar; `None` takes the colour their identity
+    /// carries ([`AvatarFace::new`]), which every window paints the same.
+    pub colour: Option<Color>,
     /// They are speaking now.
     pub speaking: bool,
     /// The name their initials come from, when the label says more than
@@ -533,9 +534,16 @@ impl NavItem {
     }
 
     /// The row stands for a person (someone in a call): their avatar, in
-    /// `colour`, in the icon's place, ringed while `speaking`.
+    /// `colour`, in the icon's place, ringed while `speaking`. With no
+    /// colour, the avatar takes the colour their identity carries, as every
+    /// face of them does.
     #[must_use]
-    pub fn person(mut self, identity: impl Into<String>, colour: Color, speaking: bool) -> Self {
+    pub fn person(
+        mut self,
+        identity: impl Into<String>,
+        colour: Option<Color>,
+        speaking: bool,
+    ) -> Self {
         self.person = Some(NavPerson {
             identity: identity.into(),
             colour,

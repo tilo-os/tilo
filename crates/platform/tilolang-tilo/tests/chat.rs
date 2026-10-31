@@ -1141,3 +1141,95 @@ fn an_empty_workspace_offers_one_new_channel_button() {
         "the header offers New channel once a channel exists"
     );
 }
+
+/// A place that stands for a person reads as them: the sidebar's direct messages carry the
+/// person as `person`, so the list draws their avatar and presence, and the conversation with
+/// yourself says so rather than showing your own name. What a view reads of the viewer
+/// (`workspace.me`) is the person the window is open for, each replica its own.
+#[test]
+fn a_places_person_is_a_row_of_them_and_your_own_conversation_is_your_notes() {
+    let mut policy = tilo_action_policy::RoomPolicy::new("room-dm", "ada");
+    policy
+        .members
+        .insert("ben".to_owned(), tilo_action_policy::Role::Editor);
+    let (mut ada, _loaded) = Replica::standing(
+        "ada",
+        AutoCommit::new(),
+        &[(CHAT, CHAT_IDS)],
+        Some(tilo_action_policy::Standing::person(policy, "ada")),
+    );
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", "owner"),
+            tilolang_runtime::members::Member::person("ben", "editor"),
+        ],
+        None,
+    );
+
+    // Everyone else in the workspace is a place that stands for them.
+    let sidebar = ada.view(APP);
+    let section = {
+        let mut seen = Vec::new();
+        find_all(sidebar.tree(), "ui.NavSection", &mut seen);
+        seen.into_iter()
+            .find(|s| s.props.get("title") == Some(&Value::text("Direct messages")))
+            .expect("the direct messages section")
+            .clone()
+    };
+    let mut places = Vec::new();
+    find_all(&section, "ui.NavItem", &mut places);
+    let ben = places
+        .iter()
+        .find(|item| item.props.get("key") == Some(&Value::text("/person/ben")))
+        .copied()
+        .expect("Ben's place");
+    assert_eq!(
+        ben.props.get("person"),
+        Some(&Value::Principal(Principal::new("ben"))),
+        "the place stands for Ben"
+    );
+    assert_eq!(
+        ben.props.get("icon"),
+        None,
+        "a person's place shows their avatar, in the icon's place"
+    );
+    assert!(
+        places
+            .iter()
+            .all(|item| item.props.get("key") != Some(&Value::text("/person/ada"))),
+        "your own place is your notes, not a message to yourself"
+    );
+
+    // The conversation with yourself is your notes, and says so.
+    let notes = call(
+        &ada,
+        "message_person",
+        vec![all, Value::Principal(Principal::new("ada"))],
+    );
+    ada.commit();
+    let sidebar = ada.view(APP);
+    let notes_place = {
+        let mut items = Vec::new();
+        find_all(sidebar.tree(), "ui.NavItem", &mut items);
+        items
+            .iter()
+            .find(|item| item.props.get("label") == Some(&Value::text("Notes to self")))
+            .copied()
+            .expect("the notes to self place")
+    };
+    assert!(
+        matches!(
+            notes_place.props.get("item"),
+            Some(Value::Ref(reference)) if reference.target.id_string() == target(&notes).id_string()
+        ),
+        "the place opens your notes, which is that conversation: {:?}",
+        notes_place.props.get("item")
+    );
+    assert_eq!(
+        notes_place.props.get("person"),
+        None,
+        "your own place shows the notes glyph, not your avatar"
+    );
+}

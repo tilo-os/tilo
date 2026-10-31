@@ -229,7 +229,7 @@ impl ChatApp {
                     let name = self.call_name(&person);
                     let speaking = self.speaking.level(&person, now) > 0.0;
                     NavItem::new(format!("in-call:{}/{person}", channel.id), name)
-                        .person(&person, self.call_colour(&person), speaking)
+                        .person(&person, Some(self.call_colour(&person)), speaking)
                         .person_face(self.call_face_name(&person), self.call_picture(&person))
                         .without_actions()
                 })
