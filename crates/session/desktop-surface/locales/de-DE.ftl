@@ -1432,6 +1432,7 @@ desk-widget-calendar = Kalender
 desk-widget-system-monitor = Systemmonitor
 desk-widget-pin = Dieses Widget immer in diesem Arbeitsbereich anzeigen
 desk-widget-unpin = Dieses Widget nicht mehr immer anzeigen
+desk-widget-open = { $widget } öffnen
 desk-widget-collapse = { $widget } einklappen
 desk-widget-remove = { $widget } entfernen
 desk-widget-removed = { $widget } vom Schreibtisch entfernt

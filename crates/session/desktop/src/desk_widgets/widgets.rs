@@ -54,6 +54,19 @@ const SHOWN: [WidgetId; 4] = [
     WidgetId::SystemMonitor,
 ];
 
+/// What the desk's controls are named to assistive technology: the widget's
+/// own control, then `.pin` or `.remove` for its card's.
+const DESK_TARGET: &str = "desk.widget:";
+
+/// One of the desk's controls, as a screen reader reads it.
+fn control(target: String, name: String, bounds: Rect) -> ui::a11y::AccessNode {
+    ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+        .with_name(name)
+        .with_bounds(bounds)
+        .with_key(ui::a11y::hash_key(&target))
+        .with_action_target(target)
+}
+
 /// Which part of a widget a press landed on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Part {
@@ -1423,6 +1436,104 @@ impl Widget for DeskWidgets {
         false
     }
 
+    /// The widgets on the desk as a screen reader reads them: each showing
+    /// one is a control that opens or folds it, and its card's own controls
+    /// beside it — the pin, and the remove off the desk. Each keeps its
+    /// identity as the others come and go.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        // The overview is over the desk: the widgets are behind it.
+        if self.overview.get() {
+            return None;
+        }
+        let mut children = Vec::new();
+        for slot in &self.slots {
+            let form = self.board.form(slot.id);
+            if form == Form::Away || !slot.has_content {
+                continue;
+            }
+            let title = paint::desk_widget_title(slot.id);
+            let target = format!("{DESK_TARGET}{}", slot.id.key());
+            let (bounds, name) = if form == Form::Open {
+                (
+                    slot.open,
+                    crate::i18n::t_args(
+                        "desk-widget-collapse",
+                        &[("widget", title.as_str().into())],
+                    ),
+                )
+            } else {
+                (
+                    slot.glance,
+                    crate::i18n::t_args("desk-widget-open", &[("widget", title.as_str().into())]),
+                )
+            };
+            children.push(control(target.clone(), name, bounds));
+            let remove = control(
+                format!("{target}.remove"),
+                crate::i18n::t_args("desk-widget-remove", &[("widget", title.as_str().into())]),
+                if form == Form::Open {
+                    paint::remove_rect(slot.open)
+                } else {
+                    paint::badge_rect(slot.glance, self.anchor(slot.id))
+                },
+            );
+            match form {
+                Form::Open => {
+                    let pinned = self.prefs.get(slot.id).always_on(None);
+                    let pin = crate::i18n::t(if pinned {
+                        "desk-widget-unpin"
+                    } else {
+                        "desk-widget-pin"
+                    });
+                    children.push(control(
+                        format!("{target}.pin"),
+                        pin,
+                        paint::pin_rect(slot.open),
+                    ));
+                    children.push(remove);
+                }
+                _ => children.push(remove),
+            }
+        }
+        (!children.is_empty())
+            .then(|| ui::a11y::AccessNode::new(ui::a11y::Role::Group).with_children(children))
+    }
+
+    /// Carry out what assistive technology asked of a widget's control: the
+    /// same open, fold, pin or remove its press performs.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ModelPath,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let Some(rest) = target.strip_prefix(DESK_TARGET) else {
+            return false;
+        };
+        let (key, control) = match rest.rsplit_once('.') {
+            Some((key, control @ ("pin" | "remove"))) => (key, Some(control)),
+            _ => (rest, None),
+        };
+        let Some(id) = WidgetId::ALL.into_iter().find(|id| id.key() == key) else {
+            return false;
+        };
+        let form = self.board.form(id);
+        let part = match (form, control) {
+            (Form::Open, Some("pin")) => Part::Pin,
+            (_, Some(_)) => Part::Remove,
+            (Form::Open, None) => Part::Collapse,
+            (_, None) => Part::Body,
+        };
+        self.tap(id, form, part);
+        self.tick(ui::time::now());
+        self.dirty = true;
+        true
+    }
+
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         if !self.needs_redraw() {
             return;
@@ -2051,6 +2162,111 @@ mod tests {
         rig.music.set(None);
         rig.widgets.tick(Instant::now());
         assert_eq!(rig.form(WidgetId::Music), Form::Away, "nothing plays again");
+    }
+
+    #[test]
+    fn a_reader_finds_the_widgets_and_can_open_and_pin_one() {
+        // What a screen reader hears on the desk, in order.
+        fn heard(rig: &Rig) -> Vec<(String, String, Rect)> {
+            rig.widgets
+                .accessibility()
+                .map(|node| {
+                    node.children
+                        .into_iter()
+                        .filter_map(|child| {
+                            Some((child.action_target?, child.name?, child.bounds?.to_rect()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        let mut rig = rig(&[("ada", "Ada")]);
+        rig.point_at(BARE);
+        let resting = heard(&rig);
+        let names: Vec<&str> = resting.iter().map(|(_, name, _)| name.as_str()).collect();
+        assert!(
+            names.contains(&"Open People here"),
+            "each showing widget is a control: {names:?}"
+        );
+        assert!(names.contains(&"Open Calendar"));
+        assert!(
+            !resting
+                .iter()
+                .any(|(target, ..)| target.rsplit('.').next() == Some("pin")),
+            "a folded widget has no pin to reach: {resting:?}"
+        );
+
+        // Activating the calendar's control opens it, as a press does.
+        let calendar = resting
+            .iter()
+            .find(|(target, ..)| target == "desk.widget:calendar")
+            .map(|(target, ..)| target.clone())
+            .expect("the calendar is a control");
+        let mut doc = automerge::AutoCommit::new();
+        assert!(rig.widgets.perform_semantic_action(
+            &calendar,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            rig.form(WidgetId::Calendar),
+            Form::Open,
+            "activating it opens the card"
+        );
+
+        // The open card offers folding it back, its pin and its remove, where
+        // they are drawn.
+        let open = rig.slot(WidgetId::Calendar).open;
+        let card = heard(&rig);
+        let where_it_is = |rect: Rect, controls: &[(String, String, Rect)], name: &str| {
+            controls
+                .iter()
+                .any(|(_, heard, bounds)| heard == name && bounds.contains(centre(rect)))
+        };
+        assert!(
+            where_it_is(
+                paint::pin_rect(open),
+                &card,
+                "Always show this widget on this workspace"
+            ),
+            "the pin stands on the card's control: {card:?}"
+        );
+        assert!(where_it_is(
+            paint::remove_rect(open),
+            &card,
+            "Remove Calendar"
+        ));
+        assert!(
+            card.iter()
+                .any(|(_, name, bounds)| name == "Fold Calendar back" && *bounds == open),
+            "folding is the card itself: {card:?}"
+        );
+
+        // Its pin keeps the widget on the desk, as pressing it does.
+        let pin = card
+            .iter()
+            .find(|(target, ..)| target == "desk.widget:calendar.pin")
+            .map(|(target, ..)| target.clone())
+            .expect("the open card offers its pin");
+        assert!(rig.widgets.perform_semantic_action(
+            &pin,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            rig.prefs(WidgetId::Calendar).show,
+            ShowMode::Always,
+            "activating the pin pins it"
+        );
+
+        // With the overview over the desk, the widgets are behind it.
+        rig.overview.set(true);
+        assert!(
+            rig.widgets.accessibility().is_none(),
+            "the reader meets the overview, not the desk behind it"
+        );
     }
 
     #[test]

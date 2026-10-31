@@ -1418,6 +1418,7 @@ desk-widget-calendar = Calendar
 desk-widget-system-monitor = System monitor
 desk-widget-pin = Always show this widget on this workspace
 desk-widget-unpin = Stop always showing this widget
+desk-widget-open = Open { $widget }
 desk-widget-collapse = Fold { $widget } back
 desk-widget-remove = Remove { $widget }
 desk-widget-removed = { $widget } removed from the desk
