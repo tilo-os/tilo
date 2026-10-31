@@ -16,14 +16,14 @@
 //! compile instead of being refused while a run goes.
 
 use anyhow::{Result, anyhow};
-use tasks_tracker::model::{Question, RunOutcome, RunPhase, StepSpend, Tracker, tracker};
+use tasks_model::model::{Question, RunOutcome, RunPhase, StepSpend, Tracker, tracker};
 use ui::tilo_resource::{Id, Invoke, NonBlank};
 
 use super::{Session, TaskAction, TaskActionStop, task_action_from_offer};
 
 /// The tracker's resource kind; an issue's address is
 /// `tasks.tracker/issues/<id>`.
-const TRACKER_KIND: &str = tasks_tracker::model::KIND;
+const TRACKER_KIND: &str = tasks_model::model::KIND;
 const ISSUE_PREFIX: &str = "tasks.tracker/issues/";
 /// The longest text a thread message keeps.
 const MAX_MESSAGE_CHARS: usize = 16 * 1024;
@@ -418,7 +418,7 @@ mod tests {
         let mut person = Replica::<Tracker>::new().as_author("ada");
         person
             .apply(Tracker::ASK_AGENT.with(tracker::AskAgent {
-                ask: tasks_tracker::model::AgentRequest {
+                ask: tasks_model::model::AgentRequest {
                     id: Id::from_raw("one"),
                     title: "What is on today?".into(),
                     agent: "claude".into(),
@@ -516,7 +516,7 @@ mod tests {
         let (_, done) = state.issues.iter().next().unwrap();
         let run = done.run.as_ref().unwrap();
         assert_eq!(run.phase, RunPhase::Done);
-        assert_eq!(done.status, tasks_tracker::model::Status::Done);
+        assert_eq!(done.status, tasks_model::model::Status::Done);
         let spend = run.spend.as_ref().unwrap();
         assert_eq!((spend.input_tokens, spend.output_tokens), (900, 80));
         assert_eq!((spend.held_tokens, spend.held_cost_micros), (0, 0));
