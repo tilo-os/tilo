@@ -122,3 +122,7 @@ device-wake-not-rejoined = { $device } did not wake up
 device-wake-not-rejoined-body = It got a wake-up signal but has not come back. It may be off or out of power.
 device-wake-failed = { $device } could not be woken
 device-wake-failed-body = No wake-up signal could be sent on its network.
+
+## What a screen reader says about a pointer: whose it is, and the
+## window they are over.
+people-pointer-where = { $who } is in { $where }

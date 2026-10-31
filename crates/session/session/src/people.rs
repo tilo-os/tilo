@@ -202,9 +202,9 @@ impl Published for People {
         // Where everyone else is working: their pointer over a window of
         // this desk says so, beside their name.
         for (who, title) in &shown.pointers {
-            labels.push(format!(
-                "{who} — {}",
-                tilo_desktop::collaborators::in_app(title)
+            labels.push(crate::i18n::t_args(
+                "people-pointer-where",
+                &[("who", who.clone().into()), ("where", title.clone().into())],
             ));
         }
         labels.retain(|label| !label.trim().is_empty());
@@ -610,10 +610,10 @@ fn peer_cursors(
     let mut cursors = Vec::new();
     let mut places = Vec::new();
     for (tab, publisher, x, y) in over {
-        let (label, colour) = who.get(publisher.as_str()).copied().unwrap_or_else(|| {
-            let (r, g, b) = ui::presence::user_color(publisher);
-            ("", Color::from_rgb8(r, g, b))
-        });
+        let (label, colour) = who
+            .get(publisher.as_str())
+            .copied()
+            .unwrap_or_else(|| ("", ui::presence::identity_colour(publisher)));
         if let Some(title) = titles.get(tab) {
             places.push((label.to_owned(), title.clone()));
         }

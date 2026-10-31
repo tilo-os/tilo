@@ -125,3 +125,7 @@ device-wake-not-rejoined = { $device } ist nicht aufgewacht
 device-wake-not-rejoined-body = Es hat ein Aufwecksignal bekommen, ist aber nicht zurück. Vielleicht ist es aus oder hat keinen Strom.
 device-wake-failed = { $device } konnte nicht aufgeweckt werden
 device-wake-failed-body = In seinem Netzwerk konnte kein Aufwecksignal gesendet werden.
+
+## Was ein Screenreader über einen Zeiger sagt: wem er gehört und über
+## welchem Fenster er steht.
+people-pointer-where = { $who } ist in { $where }
