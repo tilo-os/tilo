@@ -36,10 +36,13 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+#[path = "picture_choice_component.rs"]
+mod component;
 use crate::widget::{
     ActionEmitter, AppModel, ControlBindingMetadata, ModelPath, TaffyTreeExt, Widget,
     card_column_width, card_columns,
 };
+pub use component::{PictureChoiceProps, PictureKind, PictureOptionProps};
 
 pub use super::picture::{ColourFilter, Picture, TouchpadGesture};
 
@@ -175,6 +178,17 @@ impl PictureChoice {
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
         self
+    }
+
+    /// Change whether it can be chosen from now; see [`Self::with_enabled`].
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
+    /// How many tiles it offers.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.options.len()
     }
 
     /// Whether the choice takes input; a disabled one is dimmed.

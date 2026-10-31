@@ -1046,14 +1046,17 @@ impl Checker<'_> {
             Ty::Unit,
         )));
         // A control bound to the field marked `(title)` or `(body)` edits the resource's title
-        // or its body: a document draws them as its large title and its running text.
-        if let Some(role) = &f.role {
+        // or its body: a document draws them as its large title and its running text. Only a
+        // text field draws it so; any other control is given the value it binds alone.
+        if let Some(role) = &f.role
+            && f.ty == Ty::Text
+        {
             self.emit(Stmt::Eval(Ex::host(
                 Imp::UiPropH,
                 vec![node.clone(), Ex::str("field_role"), Ex::str(role)],
                 Ty::Unit,
             )));
-            if role == "title" && f.ty == Ty::Text {
+            if role == "title" {
                 self.emit(Stmt::Eval(Ex::host(
                     Imp::UiPropI,
                     vec![node.clone(), Ex::str("title"), Ex::int(1)],

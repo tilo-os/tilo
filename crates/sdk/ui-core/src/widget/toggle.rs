@@ -6,6 +6,10 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use taffy::{NodeId, Size, Style, TaffyTree};
+
+#[path = "toggle_component.rs"]
+mod component;
+pub use component::ToggleProps;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};

@@ -21,7 +21,10 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
+#[path = "time_picker_component.rs"]
+mod component;
 use crate::widget::Widget;
+pub use component::TimePickerProps;
 
 /// Maximum hour value (inclusive). 24-hour clock — wraps 23 → 0.
 const HOUR_MAX: u8 = 23;
