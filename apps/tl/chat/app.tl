@@ -22,6 +22,11 @@ type TextChannel {
     /// The threads its messages started, each the one a message's `thread` names.
     /// TODO(language): an owned `Option<Thread>` on the message; a reference needs a home.
     threads: Collection<Thread>
+
+    search {
+        // A post is a change of its channel: the sidebar shows how many are new.
+        mark others
+    }
 }
 
 /// A message. Who wrote it, when, and its edits come from the log.
@@ -44,6 +49,7 @@ type Message {
 
     search {
         filter pinned (icon: .pin)
+        mark others
     }
 }
 
@@ -110,6 +116,16 @@ action edit(m: Message, body: RichText = m.body) (icon: .pencil, label: "Edit") 
     m.body = body
 }
 
+/// Deletes a message from the channel or thread it is in. Its author, or anyone the
+/// channel's permissions allow, may: the platform undoes it rather than asking first, and the
+/// removal is a version of the message, so who removed it stays answerable.
+destructive action delete(to: TextChannel | Thread, m: Message) (icon: .trash, label: "Delete") {
+    match to {
+        c: TextChannel => c.messages.remove(m),
+        t: Thread => t.messages.remove(m),
+    }
+}
+
 /// Pins a message to its channel, or unpins it.
 action pin(m: Message, pinned: Bool = not m.pinned) (label: if pinned { "Pin" } else { "Unpin" }, icon: .pin, on: m.pinned) {
     m.pinned = pinned
@@ -141,14 +157,14 @@ view sidebar(all: Channels) {
                         c: Category => {
                             ui.NavSection(c.name, collapsible: true) {
                                 for ch in c.channels {
-                                    ui.NavItem("{c.name}/{ch.name}", ch.name, icon: .hash) {
+                                    ui.NavItem("{c.name}/{ch.name}", ch.name, icon: .hash, item: ch) {
                                         on select: set(shown, "{c.name}/{ch.name}").then(open(ch))
                                     }
                                 }
                             }
                         }
                         ch: TextChannel => {
-                            ui.NavItem("/{ch.name}", ch.name, icon: .hash) {
+                            ui.NavItem("/{ch.name}", ch.name, icon: .hash, item: ch) {
                                 on select: set(shown, "/{ch.name}").then(open(ch))
                             }
                         }

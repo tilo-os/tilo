@@ -1243,9 +1243,28 @@
         },
         {
           "name": "count",
-          "doc": "How many things it holds.",
+          "doc": "How many things it holds: a quiet count in tertiary ink.",
           "type": {
             "option": "int"
+          }
+        },
+        {
+          "name": "live",
+          "doc": "How many things wait for attention (unread, mentions): the list's one filled badge, in the person's colour; zero shows nothing.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "unread",
+          "doc": "Something new waits behind the place: its label stands out at rest.",
+          "type": "bool"
+        },
+        {
+          "name": "item",
+          "doc": "The resource the place stands for, when it is one (a channel): the host says how much of it the person has not seen, in `live`, and lifts the label while anything is.",
+          "type": {
+            "option": "resource"
           }
         }
       ],
