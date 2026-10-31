@@ -71,8 +71,8 @@ type Message (origin: imap.message) {
     mailbox: Text
 }
 
-/// A message being written: who it goes to, what it says, what it answers, and whether it
-/// went. The account it goes from is named by its key.
+/// A message being written: who it goes to, what it says, what it answers, and how it stands on
+/// its way out. The account it goes from is named by its key.
 type Draft {
     from: Text
     to: Text
@@ -82,12 +82,17 @@ type Draft {
     in_reply_to: Text
     references: Text
     sent: Bool = false
+    /// When it goes, and `Time` is never empty, so a draft not sent yet says the epoch.
+    send_at: Time = Time("1970-01-01T00:00:00Z")
+    /// It was taken back before it went: it never leaves, and it is a draft again.
+    recalled: Bool = false
 
     search {
-        filter "Drafts" = not sent (icon: .pencil)
+        filter "Drafts" = not sent and not recalled (icon: .pencil)
         filter sent (icon: .send)
         hide in_reply_to
         hide references
+        hide send_at
     }
 }
 
@@ -95,6 +100,9 @@ type Draft {
 type Mail {
     accounts: Collection<Account>
     drafts: Collection<Draft>
+    /// How many seconds a sent message waits before it goes, so it can be taken back: the
+    /// person's setting, ten by default, and what rules out holding it not at all.
+    hold: Int = 10
 }
 
 root Mail
@@ -127,28 +135,67 @@ fn re(subject: Text) -> Text {
     "Re: {subject}"
 }
 
-/// Answers the conversation's newest message, to whoever wrote it.
+/// What a message says, its lines ended one way: a server's mail ends them either way, and
+/// what a reader sees should not depend on which.
+fn as_lines(body: Text) -> Text {
+    body.replace("\r\n", "\n")
+}
+
+/// Where the quotation in what a message says begins: the blank line above the line naming who
+/// wrote it and when ("On 30 Jun 2026, Ada wrote:"), as Gmail and Apple Mail read one. -1 when
+/// it quotes nothing.
+fn quote_begins(body: Text) -> Int {
+    body.find("\n\nOn ")
+}
+
+/// `m` quoted as a reply quotes it: a blank line, the line naming who wrote it, then its lines
+/// after `> `, as Gmail answers.
+fn quoted(m: Message) -> Text {
+    "\n\nOn {m.received}, {m.from_name} wrote:\n> {as_lines(m.body).replace("\n", "\n> ")}\n"
+}
+
+/// Answers the conversation's newest message, to whoever wrote it, quoting it under what is
+/// written.
 primary action reply(t: Thread) -> Draft (icon: .reply) {
     let m = root Mail
     let last = t.messages.last()
-    m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
+    m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), body: if let l = last { quoted(l) } else { "" }, in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
 }
 
-/// Answers the conversation's newest message, to everyone it went to.
+/// Answers the conversation's newest message, to everyone it went to, quoting it.
 action reply_all(t: Thread) -> Draft (icon: .reply_all, label: "Reply all") {
     let m = root Mail
     let last = t.messages.last()
     m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", cc: if let l = last {
         if l.cc == "" { l.to } else { "{l.to}, {l.cc}" }
-    } else { "" }, subject: re(t.subject), in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
+    } else { "" }, subject: re(t.subject), body: if let l = last { quoted(l) } else { "" }, in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
 }
 
-/// Sends the conversation's newest message on, quoted.
+/// Answers one message of the conversation, to whoever wrote it, quoting it.
+action reply_to(m: Message) -> Draft (icon: .reply) {
+    let mail = root Mail
+    mail.drafts.insert(Draft(from: m.account, to: m.from, subject: re(m.subject), body: quoted(m), in_reply_to: m.message_id, references: "{m.references} {m.message_id}"))
+}
+
+/// Answers one message of the conversation, to everyone it went to but the person answering.
+action reply_all_to(m: Message) -> Draft (icon: .reply_all, label: "Reply all") {
+    let mail = root Mail
+    let theirs = if m.cc == "" { m.to } else { "{m.to}, {m.cc}" }
+    mail.drafts.insert(Draft(from: m.account, to: m.from, cc: theirs, subject: re(m.subject), body: quoted(m), in_reply_to: m.message_id, references: "{m.references} {m.message_id}"))
+}
+
+/// Sends one message of the conversation on, with its sender, when and what it says.
+action forward_message(m: Message) -> Draft (icon: .forward) {
+    let mail = root Mail
+    mail.drafts.insert(Draft(from: m.account, subject: "Fwd: {m.subject}", body: "\n\nFrom {m.from_name} <{m.from}> ({m.received}):\n\n> {m.body.replace("\n", "\n> ")}\n"))
+}
+
+/// Sends the conversation's newest message on, with its sender and what it says.
 action forward(t: Thread) -> Draft (icon: .forward) {
     let m = root Mail
     let last = t.messages.last()
     let said = if let l = last {
-        "\n\nFrom {l.from_name} <{l.from}>:\n\n{l.body}"
+        "\n\nFrom {l.from_name} <{l.from}> ({l.received}):\n\n> {l.body.replace("\n", "\n> ")}\n"
     } else { "" }
     m.drafts.insert(Draft(from: t.account, subject: "Fwd: {t.subject}", body: said))
 }
@@ -243,13 +290,29 @@ destructive action discard(m: Mail, d: Draft) (icon: .trash) {
     m.drafts.remove(d)
 }
 
-/// Sends the message from its account. It leaves the system, so it goes once, and waits in
-/// the outbox until the server took it.
+/// Sends the message from its account. It leaves the system, so it goes once, and waits in the
+/// outbox until the server took it; it is held back for the person's hold first, so they can
+/// take it back. The effect is an argument the action records, so the wait survives a window
+/// closing and an agent takes it back the same way.
 primary action send(d: Draft) proposal compose(d) (icon: .send) {
-    require not d.sent "This message went already"
+    require not d.sent or d.recalled "This message went already"
     require d.to != "" "It goes to nobody yet"
-    outside("smtp.send", (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references))
+    let m = root Mail
+    let at = now + m.hold
+    outside("smtp.send", (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references), at: at)
+    d.send_at = at
     d.sent = true
+    d.recalled = false
+}
+
+/// Takes back a message that was sent and has not gone yet: it never leaves, and the message is
+/// a draft again, as it was. Once it went it cannot be taken back.
+action undo_send(d: Draft) (icon: .undo_2, label: "Undo send") {
+    require d.sent and not d.recalled "It has not been sent"
+    require delivery(d)?.state != "sent" "It went already"
+    withdraw(d, "Taken back before it went")
+    d.sent = false
+    d.recalled = true
 }
 
 /// Answers the conversation with what was typed: the message goes to whoever wrote its newest,
@@ -258,7 +321,7 @@ action answer(t: Thread, body: Text) -> Draft (icon: .reply) {
     require body.len() > 0 "Say something first"
     let m = root Mail
     let last = t.messages.last()
-    let said = if let l = last { "\n\nOn {l.received}, {l.from_name} wrote:\n\n> {l.body}" } else { "" }
+    let said = if let l = last { quoted(l) } else { "" }
     let d = m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), body: "{body}{said}", in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
     send(d)
     d
@@ -355,13 +418,20 @@ view thread_row(t: Thread) {
 
 /// One message being written in a list: its subject and who it goes to.
 view draft_row(d: Draft) {
-    row(d.subject, secondary: if let s = delivery(d) { delivery_says(s.state, s.reason) } else { d.to }, mark: if d.sent { .send })
+    row(d.subject, secondary: if d.sent or d.recalled { delivery_says(d) } else { d.to }, mark: if d.sent and not d.recalled { .send })
 }
 
-/// How a message on its way out stands, in a sentence: waiting to go online, sending, sent,
-/// not sent and why, or not known.
-fn delivery_says(state: Text, reason: Text) -> Text {
-    if state == "sent" { "Sent" } else if state == "sending" { "Sending" } else if state == "rejected" { "Not sent: {reason}" } else if state == "unknown" { "Not known whether it was sent" } else if reason == "" { "Waiting to send" } else { "Waiting to go online: {reason}" }
+/// How a message stands: sent, sending, waiting to send or to go online (and why), not sent and
+/// why, taken back, or not known.
+fn delivery_says(d: Draft) -> Text {
+    if d.recalled { "Taken back, and a draft again" } else if let s = delivery(d) {
+        if s.state == "sent" { "Sent" } else if s.state == "sending" { "Sending" } else if s.state == "rejected" { "Not sent: {s.reason}" } else if s.state == "unknown" { "Not known whether it was sent" } else if s.state == "held" { "Sending in a moment" } else if s.reason == "" { "Waiting to send" } else { "Waiting to go online: {s.reason}" }
+    } else { "" }
+}
+
+/// Whether a message was sent and can still be taken back: nothing carried it out yet.
+fn can_undo(d: Draft) -> Bool {
+    d.sent and not d.recalled and delivery(d)?.state != "sent"
 }
 
 /// A conversation's window: its subject, then every message in order with who wrote it, to
@@ -396,12 +466,51 @@ view conversation(t: Thread) {
     }
 }
 
-/// One message of a conversation: who wrote it, to whom, what it says, and what came with it.
+/// One message of a conversation: who wrote it, to whom, what it says and, folded under it,
+/// the message it quotes, as Gmail and Apple Mail fold a quotation; and what came with it.
 view message(m: Message) {
+    lens quoting: Bool
+    let body = as_lines(m.body)
+    let at = quote_begins(body)
+    let said = if at >= 0 { body.slice(0, at) } else { body }
+    let quoted_part = if at >= 0 { body.slice(at + 2, body.len()) } else { "" }
     stack(gap: .related) {
-        ui.Text(if m.from_name == "" { m.from } else { m.from_name }, role: .subheading)
+        row(gap: .related, align: .center) {
+            ui.Text(if m.from_name == "" { m.from } else { m.from_name }, role: .subheading)
+            spacer()
+            ui.HoverToolbar {
+                ui.Button("Reply", icon: .reply, icon_only: true) {
+                    on press: reply_to(m)
+                }
+                ui.Button("Reply all", icon: .reply_all, icon_only: true) {
+                    on press: reply_all_to(m)
+                }
+                ui.Button("Forward", icon: .forward, icon_only: true) {
+                    on press: forward_message(m)
+                }
+            }
+        }
+        ui.ContextMenu {
+            ui.MenuItem("Reply", icon: .reply) {
+                on choose: reply_to(m)
+            }
+            ui.MenuItem("Reply all", icon: .reply_all) {
+                on choose: reply_all_to(m)
+            }
+            ui.MenuItem("Forward", icon: .forward) {
+                on choose: forward_message(m)
+            }
+        }
         ui.Text("to {m.to}", role: .caption, secondary: true)
-        ui.Text(m.body, role: .reading)
+        ui.Text(said, role: .reading)
+        if at >= 0 {
+            ui.DisclosureRow(if quoting { "Hide quoted text" } else { "Show quoted text" }, icon: .quote) {
+                on toggle: set(quoting, not quoting)
+                if quoting {
+                    ui.Text(quoted_part, role: .reading, secondary: true)
+                }
+            }
+        }
         if m.attachments != "" {
             stack(gap: .tight) {
                 ui.Text("Attached", role: .caption, secondary: true)
@@ -414,9 +523,14 @@ view message(m: Message) {
 /// A message being written: its window.
 view editor(d: Draft) {
     std.document(d) {
-        if let s = delivery(d) {
+        if d.sent or d.recalled {
             field("Status") {
-                text(delivery_says(s.state, s.reason))
+                text(delivery_says(d))
+            }
+        }
+        if can_undo(d) {
+            ui.Banner("Sending", message: .some("It goes in a moment. Take it back if you need to."), kind: .info, action: .some("Undo send")) {
+                on act: undo_send(d)
             }
         }
         field("To") {

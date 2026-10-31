@@ -288,6 +288,7 @@ impl ListedOnce {
     }
 }
 
+mod outbox;
 mod plan;
 mod versions;
 mod written;
@@ -2390,81 +2391,6 @@ fn sanitize_key(key: &str) -> String {
         .collect()
 }
 
-/// The field a mutation writes.
-fn field_of(m: &Mutation) -> String {
-    match m {
-        Mutation::SetRegister { field, .. }
-        | Mutation::AddCounter { field, .. }
-        | Mutation::SetText { field, .. }
-        | Mutation::SetRich { field, .. }
-        | Mutation::CollInsert { field, .. }
-        | Mutation::CollRemove { field, .. }
-        | Mutation::CollMove { field, .. }
-        | Mutation::SetAdd { field, .. }
-        | Mutation::SetRemove { field, .. }
-        | Mutation::MapPut { field, .. }
-        | Mutation::MapRemove { field, .. } => field.clone(),
-        Mutation::OutboxPush { .. } => String::new(),
-    }
-}
-
-/// The edit a mutation of a field makes below the resource whose map `prefix` reaches.
-fn edit_of(prefix: &[Segment], m: &Mutation) -> Result<Edit<DynRecord>, StoreError> {
-    let (field, op) = match m {
-        Mutation::SetRegister { field, value } => (
-            field,
-            EditOp::Set {
-                value: json_of_scalar(value),
-            },
-        ),
-        Mutation::AddCounter { field, delta } => (field, EditOp::Add { by: *delta }),
-        Mutation::SetText { field, text } => (field, EditOp::Replace { text: text.clone() }),
-        // A rich text is brought to read as the value by splices and marks of the paragraphs
-        // that differ, the edit native rich text takes.
-        Mutation::SetRich { field, value } => {
-            let action = tilo_document::RichTextAction::SyncClips {
-                blocks: value
-                    .blocks
-                    .iter()
-                    .map(tilo_document::ClipBlock::from_view)
-                    .collect(),
-            };
-            let rich = serde_json::to_value(&action).map_err(backend)?;
-            (field, EditOp::Rich { rich })
-        }
-        Mutation::SetAdd { field, key } => (
-            field,
-            EditOp::Insert {
-                value: Json::String(key.clone()),
-            },
-        ),
-        Mutation::SetRemove { field, key } => (
-            field,
-            EditOp::Remove {
-                value: Json::String(key.clone()),
-            },
-        ),
-        Mutation::MapPut { field, key, value } => {
-            let mut path = path_to(prefix, field);
-            path.push(Segment::Key(key.clone()));
-            let op = EditOp::Set {
-                value: json_of_scalar(value),
-            };
-            return Ok(Edit::new(path, op));
-        }
-        Mutation::MapRemove { field, key } => (field, EditOp::RemoveKey { key: key.clone() }),
-        Mutation::CollInsert { .. } | Mutation::CollRemove { .. } | Mutation::CollMove { .. } => {
-            return Err(invalid("a collection's items are placed, not edited"));
-        }
-        Mutation::OutboxPush { .. } => {
-            return Err(invalid(
-                "outside effects are not stored in the room record yet",
-            ));
-        }
-    };
-    Ok(Edit::new(path_to(prefix, field), op))
-}
-
 impl Store for TiloStore {
     /// The store holds only the records its reader was sent: a resource of a package here
     /// reads by what it is called now when the store holds it, as not shared when it does not.
@@ -2872,11 +2798,67 @@ impl Store for TiloStore {
                         id: held.entry,
                         capability: held.capability,
                         payload: held.payload,
+                        held_until: held.held_until,
                     });
                 }
             }
         }
         out
+    }
+
+    fn outbox_next_held(&self) -> Option<String> {
+        let inner = self.inner.borrow();
+        let mirror = inner.mirror.as_deref()?;
+        let mut earliest: Option<String> = None;
+        for (doc, (app, _)) in &inner.index {
+            for held in outbox_entries(mirror, app, doc) {
+                if held.settled.is_none()
+                    && let Some(at) = held.held_until
+                    && earliest.as_ref().is_none_or(|soonest| at < *soonest)
+                {
+                    earliest = Some(at);
+                }
+            }
+        }
+        earliest
+    }
+
+    fn outbox_withdraw(
+        &mut self,
+        doc: &DocId,
+        reason: &str,
+        note: &ChangeNote,
+    ) -> Result<usize, StoreError> {
+        let pending: Vec<String> = {
+            let inner = self.inner.borrow();
+            let Some(mirror) = inner.mirror.as_deref() else {
+                return Ok(0);
+            };
+            let Some((app, _)) = inner.index.get(doc) else {
+                return Ok(0);
+            };
+            outbox_entries(mirror, app, doc)
+                .into_iter()
+                .filter(|held| held.settled.is_none())
+                .map(|held| held.entry)
+                .collect()
+        };
+        for id in &pending {
+            let entry = OutboxEntry {
+                doc: doc.clone(),
+                id: id.clone(),
+                capability: String::new(),
+                payload: Json::Null,
+                held_until: None,
+                state: tilolang_runtime::store::OutboxState::Queued,
+            };
+            self.outbox_settle(
+                &entry,
+                &tilolang_runtime::store::Settled::Withdrawn(reason.to_owned()),
+                note,
+            )?;
+        }
+        Ok(pending.len())
     }
 
     fn outbox_mark(
@@ -2931,7 +2913,16 @@ impl Store for TiloStore {
                 .find(|held| held.settled.is_none())
                 .or_else(|| entries.last());
             if let Some(held) = last {
-                out.push((doc.clone(), held.delivery()));
+                out.push((
+                    doc.clone(),
+                    tilolang_runtime::store::DeliveryState::of_entry(
+                        &held.outbox_state(),
+                        held.settled
+                            .as_deref()
+                            .map(|outcome| (outcome, held.reason.as_str())),
+                        held.held_until.as_deref(),
+                    ),
+                ));
             }
         }
         out
@@ -2944,50 +2935,7 @@ impl Store for TiloStore {
             .insert(run.clone(), journal.clone());
         Ok(())
     }
-
     fn load_journal(&mut self, run: &RunId) -> Result<Option<Journal>, StoreError> {
         Ok(self.inner.borrow().journals.get(run).cloned())
-    }
-}
-
-impl TiloStore {
-    /// Write `edit` of the outbox entry `entry` as a change of its own, noted as `note`.
-    fn write_outbox(
-        &self,
-        entry: &OutboxEntry,
-        edit: DynEdit,
-        seed: Vec<u8>,
-        note: &ChangeNote,
-    ) -> Result<(), StoreError> {
-        self.load_record()?;
-        let mut inner = self.mutate();
-        let (app, ty) = inner
-            .index
-            .get(&entry.doc)
-            .cloned()
-            .ok_or_else(|| not_found(format!("resource {}", entry.doc)))?;
-        inner.write(
-            &app,
-            edit.clone(),
-            seed,
-            Vec::new(),
-            (Vec::new(), Vec::new()),
-        )?;
-        let kind =
-            lookup(&ty).map_or_else(String::new, |schema| format!("tl.{app}.{}", schema.name));
-        inner.enqueue(DynAction {
-            app,
-            kind,
-            action_id: note.action.clone(),
-            args: note.args.clone(),
-            authorship: Authorship {
-                invoker: note.invoker.clone(),
-                chain: note.chain.clone(),
-                module: note.module.clone(),
-                at: note.at.clone(),
-            },
-            edits: vec![edit],
-        });
-        Ok(())
     }
 }

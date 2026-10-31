@@ -34,6 +34,8 @@ pub struct SettleReport {
     pub waiting: usize,
     /// Entries another process was handing over when it stopped: outcome unknown.
     pub unknown: usize,
+    /// Entries held back until a moment that has not come yet: nothing was done with them.
+    pub held: usize,
 }
 
 /// This process's token, which an outbox entry it marks as being handed over carries: an
@@ -747,6 +749,26 @@ impl Runtime {
         self.core.retry_waiting.set(true);
     }
 
+    /// The earliest moment an outside effect waits to be held until, ISO-8601 UTC text
+    /// (`outside(.., at:)`): nothing carries it out before then, and the device sleeps until
+    /// it. `None` when none is held back.
+    #[must_use]
+    pub fn next_held(&self) -> Option<String> {
+        self.core.store.borrow().outbox_next_held()
+    }
+
+    /// How long from the clock now until the earliest moment an outside effect is held until:
+    /// zero once it has come, so the next settle carries it out. `None` when none is held.
+    #[must_use]
+    pub fn held_for(&self) -> Option<std::time::Duration> {
+        let at = self.next_held()?;
+        let at = tilolang::calendar::instant(&at)?;
+        let now = tilolang::calendar::instant(&self.core.clock_now()).unwrap_or(0);
+        Some(std::time::Duration::from_secs(
+            u64::try_from(at.saturating_sub(now)).unwrap_or(0),
+        ))
+    }
+
     /// Carry the queued outside effects out (convergence.md, "What people see"). An entry is
     /// first marked as being handed over, as a change of its own; the next settle, once that
     /// mark is in the record, hands it to the sink, so a process that stops in between leaves
@@ -772,6 +794,7 @@ impl Runtime {
         let mut report = SettleReport::default();
         let retry = self.core.retry_waiting.replace(false);
         let token = process_token();
+        let now = tilolang::calendar::instant(&self.core.clock_now()).unwrap_or(0);
         let pending = self.pending_outbox();
         if !pending.is_empty() && self.core.sink.borrow().is_none() {
             return Err(RuntimeError::Package("no outside sink is set".into()));
@@ -822,6 +845,17 @@ impl Runtime {
                 // Resolved by `retry_waiting`, which the origin calls when its service is
                 // reachable again.
                 OutboxState::Waiting { .. } if !retry => {}
+                // Held back until a moment the person's action named (undo send): the device
+                // carries it out only once the clock reaches it.
+                OutboxState::Queued | OutboxState::Waiting { .. }
+                    if entry
+                        .held_until
+                        .as_deref()
+                        .and_then(tilolang::calendar::instant)
+                        .is_some_and(|at| at > now) =>
+                {
+                    report.held = report.held.saturating_add(1);
+                }
                 OutboxState::Queued | OutboxState::Waiting { .. } => {
                     let sending = OutboxState::Sending {
                         by: token.to_owned(),
