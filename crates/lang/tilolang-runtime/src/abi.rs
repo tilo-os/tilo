@@ -141,6 +141,7 @@ imports! {
     (UiPropH, "ui_prop_h", "iii", ""),
     (UiPropI, "ui_prop_i", "iil", ""),
     (UiPropF, "ui_prop_f", "iif", ""),
+    (UiPropPic, "ui_prop_picture", "iii", ""),
     (UiChild, "ui_child", "ii", ""),
     (UiBind, "ui_bind", "iii", ""),
     (UiOn, "ui_on", "iii", ""),

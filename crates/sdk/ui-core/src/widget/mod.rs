@@ -3212,9 +3212,15 @@ pub use columns::Columns;
 /// The layout primitives: `Stack`, `Row`, `Grid`, `Split`, `Page`, `Layers`.
 pub mod arrange;
 mod image;
-pub use image::{Image, ImageDecodeError, ImageFit};
+#[path = "image_component.rs"]
+mod image_component;
+pub use image::{Image, ImageDecodeError, ImageFit, PictureSource};
+pub use image_component::ImageProps;
 mod image_crop;
+#[path = "image_crop_component.rs"]
+mod image_crop_component;
 pub use image_crop::{CropSelection, ImageCropEditor};
+pub use image_crop_component::{CropEditor, ImageCropEditorProps};
 mod slider;
 pub use slider::{Slider, SliderFace, SliderTouch, SliderTouchStep, paint_held_readout};
 mod text_input;
@@ -3224,6 +3230,9 @@ pub use text_input::{
 };
 pub mod code_editor;
 pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};
+#[path = "code_editor_component.rs"]
+mod code_editor_component;
+pub use code_editor_component::CodeEditorProps;
 mod editable_label;
 pub use editable_label::{EditOutcome, EditableLabel};
 pub mod acknowledgement;
@@ -3244,6 +3253,9 @@ pub use marks::{Mark, MarkSpan};
 pub mod markdown_input;
 pub mod rich_text_line;
 pub use rich_text_line::{LineSignal, RichTextLine};
+#[path = "rich_text_line_component.rs"]
+mod rich_text_line_component;
+pub use rich_text_line_component::{DeclaredLine, RichTextLineProps};
 pub mod block_editor;
 pub mod paint_damage;
 pub mod rich_doc;
@@ -3260,7 +3272,10 @@ pub use slash_menu::{SlashCommand, SlashHostCommand, SlashMenu};
 pub mod link_popover;
 pub use link_popover::{LinkPopover, PageEntry};
 pub mod page_sidebar;
+#[path = "page_sidebar_component.rs"]
+mod page_sidebar_component;
 pub use page_sidebar::{PageSidebar, PageSidebarEvent};
+pub use page_sidebar_component::{DeclaredRail, PageSidebarProps};
 mod dropdown;
 pub use dropdown::{Dropdown, DropdownFace, FILTER_MIN_OPTIONS};
 pub mod aim;
@@ -3323,8 +3338,11 @@ mod row_menu;
 pub use primitives::{
     BarControlFace, DensityRegion, DisclosureGroup, DisclosureRow, DisclosureRowProps,
     DisclosureState, Fact, FactProps, Facts, FactsFace, FactsProps, FloatingPanel,
-    FloatingPanelFace, FloatingPanelLayout, IconButton, KeyHint, KeyHintProps, KeyHints,
-    KeyHintsFace, KeyHintsProps, Surface, SurfaceLevel, TextStack, TextStackFace, TextStackProps,
+    FloatingPanelFace, FloatingPanelLayout, FloatingPanelProps, IconButton, KeyHint, KeyHintProps,
+    DeclaredModal, DeclaredPanel, DeclaredPopover, DeclaredPopoverButton, KeyHints, KeyHintsFace,
+    KeyHintsProps,
+    ModalProps, PopoverButtonProps, PopoverProps, Surface, SurfaceLevel, TextStack, TextStackFace,
+    TextStackProps,
     paint_see_through, paint_surface,
 };
 pub use row_menu::RowMenu;
@@ -3392,6 +3410,9 @@ pub mod progress_bar;
 pub use progress_bar::{ProgressBar, ProgressBarFace, ProgressBarProps};
 pub mod page_preview;
 pub use page_preview::PagePreview;
+#[path = "page_preview_component.rs"]
+mod page_preview_component;
+pub use page_preview_component::PagePreviewProps;
 pub mod spinner;
 pub use spinner::{Spinner, SpinnerProps};
 pub mod program_step;
@@ -3515,11 +3536,20 @@ pub use function_plane::FunctionPlane;
 pub mod resizable_split;
 pub use resizable_split::{ResizableSplit, SplitHandle, SplitOrientation, SplitRatio};
 pub mod video_player;
+#[path = "video_player_component.rs"]
+mod video_player_component;
 pub use video_player::VideoPlayer;
+pub use video_player_component::{DeclaredVideo, VideoPlayerProps};
 pub mod webview;
+#[path = "webview_component.rs"]
+mod webview_component;
 pub use webview::WebView;
+pub use webview_component::WebViewProps;
 pub mod image_viewer;
+#[path = "image_viewer_component.rs"]
+mod image_viewer_component;
 pub use image_viewer::ImageViewer;
+pub use image_viewer_component::{ImageViewerProps, ZoomableImage};
 pub mod tree_view;
 pub use tree_view::{
     TreeChildState, TreeClickActivation, TreeHeadingAction, TreeLoadReason, TreeLoadRequest,
@@ -3538,23 +3568,32 @@ pub(crate) mod view_choice;
 pub(crate) use activation::take_presses;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
 pub mod media_card;
+#[path = "media_grid_component.rs"]
+mod media_grid_component;
 pub use media_card::{
     ArtPainter, MediaArt, MediaAspect, MediaBadge, MediaCard, MediaCardFace, MediaGrid, MediaSize,
     MediaSource, OwnedBadge, justified_rows,
 };
+pub use media_grid_component::{MediaCardProps, MediaGridProps};
 pub mod capture_button;
 pub use capture_button::{CaptureButtonFace, CaptureKind};
 pub mod transport;
 pub use transport::{TransportControl, TransportFace};
 pub mod media_transport;
+#[path = "media_transport_component.rs"]
+mod media_transport_component;
 pub use media_transport::{
     MediaTransport, TransportActions, TransportArt, TransportEvent, TransportFeed, TransportRepeat,
-    TransportState,
+    TransportState, TransportTriggers,
 };
+pub use media_transport_component::{DeclaredTransport, MediaTransportProps};
 pub mod now_playing;
 pub use now_playing::{Scrub, Song, SongFace};
 pub mod drop_zone;
+#[path = "drop_zone_component.rs"]
+mod drop_zone_component;
 pub use drop_zone::{DropZone, DropZoneFace};
+pub use drop_zone_component::DropZoneProps;
 pub mod file_open;
 pub use file_open::{FileOpenEvent, FileOpenSurface};
 pub mod skeleton;
@@ -3674,7 +3713,10 @@ pub use collab_types::ArtifactKind;
 
 pub mod qr;
 pub mod resource_actions;
+#[path = "qr_component.rs"]
+mod qr_component;
 pub use qr::QrWidget;
+pub use qr_component::QrProps;
 
 #[cfg(test)]
 mod a11y_tree_tests;

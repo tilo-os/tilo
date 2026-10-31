@@ -1,0 +1,213 @@
+//! The pictures a window's components show: each [`Picture`] as the toolkit's decoded image.
+//!
+//! A picture is an address ([`Picture::src`]): a content address (`tilo-blob://<hash>`) whose
+//! bytes are read from the window's content store, or any other address an image store fetches.
+//! [`Pictures::window`] is the window's own, which every component showing a picture reads:
+//! the process's content store answers a content address, and a host that serves the window's
+//! image stores ([`crate::ImageStore::serve_window`]) answers for it instead, as it does for
+//! every picture in a web page.
+//!
+//! A picture whose bytes are not here yet keeps its place: the component paints its placeholder
+//! until [`Pictures::get`] answers, and an address that cannot be read fails visibly, as any
+//! other image does.
+
+use vello::peniko::ImageData as PenikoImage;
+
+use crate::ImageStore;
+use crate::image_store::Fetcher;
+use crate::widget::PictureSource;
+
+/// How an app names a picture by its content address.
+pub const BLOB_SCHEME: &str = "tilo-blob://";
+
+/// What a component showing a picture reads: the store its bytes load through, and the last
+/// picture it asked for, so a picture shown on many frames costs one lookup each.
+#[derive(Clone)]
+pub struct Pictures {
+    store: ImageStore,
+    /// The last address asked for, and its decoded picture (or none, while it loads).
+    last: std::rc::Rc<std::cell::RefCell<Option<(String, Option<PenikoImage>)>>>,
+}
+
+impl std::fmt::Debug for Pictures {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pictures").finish_non_exhaustive()
+    }
+}
+
+impl Pictures {
+    /// The pictures this window reads, loaded by `store`.
+    #[must_use]
+    pub fn new(store: ImageStore) -> Self {
+        Self {
+            store,
+            last: std::rc::Rc::default(),
+        }
+    }
+
+    /// The window's pictures: loaded through the store the toolkit builds for the window (the
+    /// one its host serves), with content addresses read from the process's content store.
+    #[must_use]
+    pub fn window() -> Self {
+        thread_local! {
+            static WINDOW: std::cell::OnceCell<Pictures> = const { std::cell::OnceCell::new() };
+        }
+        WINDOW.with(|window| window.get_or_init(Self::own).clone())
+    }
+
+    /// The pictures this window reads, loading their bytes from the content store the process
+    /// holds (`tilo-blob://<hash>`) or a picture carried in its own address
+    /// (`data:image/png;base64,...`), and fetching nothing else.
+    fn own() -> Self {
+        let fetch: Fetcher = std::sync::Arc::new(|url: &str| {
+            if let Some(hash) = url.strip_prefix(BLOB_SCHEME) {
+                return blob_bytes(hash);
+            }
+            data_bytes(url)
+        });
+        Self::new(ImageStore::with_max_dimension(&fetch, PICTURE_MAX_DIMENSION))
+    }
+
+    /// The store it loads through, for a component that shows more than one picture.
+    #[must_use]
+    pub fn store(&self) -> &ImageStore {
+        &self.store
+    }
+
+    /// The decoded picture at `picture`'s address, once its bytes are here: `None` while it
+    /// loads (or when it names nothing, or failed to load). Asking starts the load.
+    #[must_use]
+    pub fn get(&self, picture: &PictureSource) -> Option<PenikoImage> {
+        if picture.is_empty() {
+            return None;
+        }
+        let address = picture.src.clone();
+        let mut last = self.last.borrow_mut();
+        if let Some((kept, image)) = last.as_ref()
+            && *kept == address
+        {
+            return image.clone();
+        }
+        let image = self.store.get(&address);
+        *last = Some((address, image.clone()));
+        image
+    }
+
+    /// Whether the picture at `picture`'s address has failed to load: its bytes are not here,
+    /// or do not decode.
+    #[must_use]
+    pub fn failed(&self, picture: &PictureSource) -> bool {
+        !picture.is_empty() && self.store.failed(&picture.src)
+    }
+}
+
+/// The bytes of the content at `hash`, from the content store this process holds (the
+/// launcher's device store): `None` where the build has none (the web) or it is not here.
+#[cfg(feature = "native")]
+fn blob_bytes(hash: &str) -> Option<Vec<u8>> {
+    crate::content::device()?.read(hash)
+}
+
+/// The bytes of the content at `hash`: a web page reads no content store, so a content address
+/// there resolves to nothing until its host serves it.
+#[cfg(not(feature = "native"))]
+fn blob_bytes(hash: &str) -> Option<Vec<u8>> {
+    let _ = hash;
+    None
+}
+
+/// The bytes a `data:` address carries (`data:image/png;base64,<data>`), when it is one:
+/// a picture that travels in its own address, which a document or a demo can hold.
+#[must_use]
+pub fn data_bytes(url: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    let rest = url.strip_prefix("data:")?;
+    let (meta, data) = rest.split_once(',')?;
+    if !meta.ends_with(";base64") {
+        return None;
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(data.trim().as_bytes())
+        .ok()
+        .filter(|bytes| !bytes.is_empty())
+}
+
+/// The largest a picture is decoded to, in each dimension: a picture shown in a window or a
+/// card is never larger, and a screen-sized cap keeps a huge source from filling the cache.
+const PICTURE_MAX_DIMENSION: u32 = 4096;
+
+/// One picture a widget shows, by its address: loaded through the window's pictures the first
+/// frame it is here, and kept while the address stays. A widget holds one and reads it from
+/// `sync` and `draw`.
+#[derive(Clone, Default)]
+pub struct Shown {
+    pictures: Option<Pictures>,
+    picture: Option<PictureSource>,
+    image: Option<PenikoImage>,
+}
+
+impl std::fmt::Debug for Shown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Shown")
+            .field("picture", &self.picture)
+            .field("loaded", &self.image.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Shown {
+    /// Show `picture` instead, through `pictures`; `true` when that is a picture other than
+    /// the one shown (its bytes load on the next read).
+    pub fn set(&mut self, pictures: Pictures, picture: PictureSource) -> bool {
+        let same = self
+            .picture
+            .as_ref()
+            .is_some_and(|shown| shown.src == picture.src)
+            && self.pictures.is_some();
+        if same {
+            self.picture = Some(picture);
+            return false;
+        }
+        self.pictures = Some(pictures);
+        self.picture = Some(picture);
+        self.image = None;
+        true
+    }
+
+    /// Take the picture's bytes, once they are here; `true` when that changed what it shows.
+    pub fn resolve(&mut self) -> bool {
+        if self.image.is_some() {
+            return false;
+        }
+        let (Some(pictures), Some(picture)) = (&self.pictures, &self.picture) else {
+            return false;
+        };
+        let Some(image) = pictures.get(picture) else {
+            return false;
+        };
+        self.image = Some(image);
+        true
+    }
+
+    /// The decoded picture, once its bytes are here.
+    #[must_use]
+    pub fn image(&self) -> Option<&PenikoImage> {
+        self.image.as_ref()
+    }
+
+    /// Whether it is a picture whose bytes are not here and cannot be: it shows the error mark.
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        match (&self.pictures, &self.picture) {
+            (Some(pictures), Some(picture)) if self.image.is_none() => pictures.failed(picture),
+            _ => false,
+        }
+    }
+
+    /// Whether it waits for its picture: it asks for a frame until the bytes are here or fail.
+    #[must_use]
+    pub fn waiting(&self) -> bool {
+        self.picture.is_some() && self.image.is_none() && !self.failed()
+    }
+
+}

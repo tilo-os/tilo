@@ -32,6 +32,8 @@ mod bar_control;
 mod disclosure_row;
 mod facts;
 mod floating_panel;
+#[path = "surfaces_component.rs"]
+mod surfaces_component;
 mod key_hint;
 mod quick_tile;
 mod surface;
@@ -40,6 +42,11 @@ mod text_stack;
 pub use bar_control::{BarControlFace, IconButton};
 pub use disclosure_row::{DisclosureGroup, DisclosureRow, DisclosureRowProps, DisclosureState};
 pub use facts::{Fact, FactProps, Facts, FactsFace, FactsProps};
+pub use surfaces_component::{
+    DeclaredModal, DeclaredPanel, DeclaredPopover, DeclaredPopoverButton, FloatingPanelProps, ModalProps, PopoverButtonProps,
+    PopoverProps,
+};
+
 pub use floating_panel::{FloatingPanel, FloatingPanelFace, FloatingPanelLayout};
 pub use key_hint::{KeyHint, KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps};
 pub use quick_tile::{QuickTileFace, paint_level_gauge};

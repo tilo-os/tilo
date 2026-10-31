@@ -152,6 +152,13 @@ pub enum MediaSize {
     Large,
 }
 
+// How large the cards of a grid are, as a component's prop.
+crate::component::choice!(MediaSize, "MediaSize", {
+    Small => "small",
+    Regular => "regular",
+    Large => "large",
+});
+
 impl MediaSize {
     /// The minimum column width (or, for justified rows, the target row
     /// height) under `theme`.
@@ -1051,6 +1058,53 @@ impl MediaCard {
         self
     }
 
+    /// The card's art: a picture by its address, loaded through the window's pictures as it
+    /// arrives, so a card built from a view shows its cover.
+    #[must_use]
+    pub fn picture(mut self, pictures: &crate::pictures::Pictures, picture: &crate::widget::PictureSource) -> Self {
+        if picture.is_empty() {
+            self.source = MediaSource::Placeholder;
+        } else {
+            self.source = MediaSource::Url {
+                store: pictures.store().clone(),
+                url: picture.src.clone(),
+            };
+        }
+        self.loaded = None;
+        self
+    }
+
+    /// The card's art is the icon of a kind of thing, on the neutral tile.
+    #[must_use]
+    pub fn kind(mut self, icon: Icon) -> Self {
+        self.source = MediaSource::Kind(icon);
+        self
+    }
+
+    /// The card's art is its generated placeholder, seeded with its title's initials.
+    #[must_use]
+    pub fn without_art(mut self) -> Self {
+        self.source = MediaSource::Placeholder;
+        self.loaded = None;
+        self
+    }
+
+    /// The card's title.
+    pub fn set_title_of(&mut self, title: Option<String>) {
+        if self.title != title {
+            self.title = title;
+            self.dirty = true;
+        }
+    }
+
+    /// The card's two meta lines.
+    pub fn set_meta_of(&mut self, meta: Vec<String>) {
+        if self.meta != meta {
+            self.meta = meta.into_iter().take(2).collect();
+            self.dirty = true;
+        }
+    }
+
     /// Load a creator picture from the same cache used by the retained Avatar.
     #[must_use]
     pub fn creator_image_url(mut self, store: ImageStore, url: impl Into<String>) -> Self {
@@ -1682,6 +1736,15 @@ impl MediaGrid {
     pub fn with_size(mut self, size: MediaSize) -> Self {
         self.size = size;
         self
+    }
+
+    /// The card `index`, out of the grid: for a host that places a card itself.
+    #[must_use]
+    pub fn take_card(&mut self, index: usize) -> Option<MediaCard> {
+        let card = self.cards.get_mut(index)?;
+        card.as_any_mut()
+            .and_then(|any| any.downcast_mut::<MediaCard>())
+            .map(|card| std::mem::replace(card, MediaCard::new(String::new(), MediaSource::Placeholder)))
     }
 
     fn cards_mut(&mut self) -> impl Iterator<Item = &mut MediaCard> {

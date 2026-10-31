@@ -42,6 +42,7 @@ type Gallery {
     backlogs: Collection<Backlog>
     releases: Collection<Release>
     feedback: Collection<Feedback>
+    media: Collection<Media>
 }
 
 root Gallery
@@ -69,6 +70,9 @@ view gallery(g: Gallery) {
             }
             for x in g.feedback {
                 ui.ListRow(x.title, item: x, icon: .eye)
+            }
+            for x in g.media {
+                ui.ListRow(x.title, item: x, icon: .image)
             }
         }
     }

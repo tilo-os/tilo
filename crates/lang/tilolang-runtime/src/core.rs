@@ -310,7 +310,7 @@ impl Core {
             RunChanges, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt,
             StateGet, StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH,
             TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions, UiAnchor, UiBind,
-            UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, Unseen, UnwrapF,
+            UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF,
             UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, WorkspaceMembers,
         };
         match imp {
@@ -358,7 +358,8 @@ impl Core {
             | PrincipalName | QueueBlock | Now | PrincipalNamed | InvokerPush | InvokerPop => {
                 self.effect_import(imp, a)
             }
-            UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
+            UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
+            | UiAnchor | SpaceI
             | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet | ActThen | ActOpen
             | UiActions => self.ui_import(imp, a),
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions

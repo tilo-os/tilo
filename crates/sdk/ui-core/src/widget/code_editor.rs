@@ -88,6 +88,16 @@ pub enum Language {
     Tilolang,
 }
 
+// The languages an editor highlights, as a component's prop.
+crate::component::choice!(Language, "Language", {
+    PlainText => "plain_text",
+    Rust => "rust",
+    Typst => "typst",
+    Sql => "sql",
+    Json => "json",
+    Tilolang => "tilolang",
+});
+
 impl Language {
     /// `None` for [`Language::PlainText`].
     pub fn highlighter(self) -> Option<Box<dyn Highlighter>> {

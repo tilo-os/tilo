@@ -213,6 +213,7 @@ pub mod pipeline_seed;
 pub use native::host_notifications;
 pub mod emoji_catalogue;
 pub mod held_images;
+pub mod pictures;
 #[cfg(not(all(windows, feature = "native")))]
 #[path = "host_notifications_unsupported.rs"]
 pub mod host_notifications;
@@ -405,6 +406,7 @@ pub use content_layout::{FocusedContentLane, ResponsiveControlBar};
 pub use doc::{TextEdit, put_text_diffed, splice_text_diffed};
 pub use i18n::{ArgValue, EmbeddedCatalog, I18nError, I18nManager, PseudoLocale};
 pub use image_store::{Fetcher, HostImageLoader, ImageStore};
+pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
 pub use input::{
     ActionBindings, BindingConflict, BindingSet, ControllerBinding, ControllerButton, InputBinding,
     KeyLegend, KeyboardBinding, KeyboardModifier, TouchGesture,

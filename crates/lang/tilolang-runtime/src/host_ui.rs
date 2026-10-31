@@ -294,6 +294,10 @@ impl Core {
             }
             Imp::UiPropI => self.set_prop(a.h(0)?, a.h(1)?, Value::Int(a.long(2)?)),
             Imp::UiPropF => self.set_prop(a.h(0)?, a.h(1)?, Value::Float(a.float(2)?)),
+            Imp::UiPropPic => {
+                let src = self.text(a.h(2)?)?;
+                self.set_prop(a.h(0)?, a.h(1)?, Value::Picture(src))
+            }
             Imp::UiChild => {
                 let (parent, child) = (self.node_index(a.h(0)?)?, self.node_index(a.h(1)?)?);
                 self.with_view(|vs| {

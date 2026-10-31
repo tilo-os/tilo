@@ -227,6 +227,19 @@ impl RichTextLine {
         }
     }
 
+    /// The line around `inner`, a field its caller built (a state-bound field, its edits
+    /// reported where it was bound).
+    #[must_use]
+    pub fn from_input(inner: TextInput) -> Self {
+        let text = inner.value().to_owned();
+        let mut line = Self::new();
+        line.inner = inner;
+        line.inner.keep_document_inset();
+        line.prev_text = text.clone();
+        line.prev_cursor = text.len();
+        line
+    }
+
     /// Make the line a field of its own (a composer): see the field's docs.
     pub fn set_composer(&mut self, composer: bool) {
         self.composer = composer;

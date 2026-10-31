@@ -139,7 +139,11 @@ impl Adapter {
                     .map(|item| self.value_of(item))
                     .collect::<Option<_>>()?,
             ),
-            Prop::None | Prop::Rich(_) | Prop::Map(_) | Prop::Action(_) => {
+            Prop::None
+            | Prop::Rich(_)
+            | Prop::Map(_)
+            | Prop::Action(_)
+            | Prop::Picture(_) => {
                 return None;
             }
         })
@@ -290,6 +294,9 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
             Prop::Resource(reference.id.clone())
         }
         (Type::Icon, Value::Text(name)) => Prop::Icon(name.replace('_', "-")),
+        (Type::Picture, Value::Picture(picture)) => Prop::Picture(ui::component::Picture {
+            src: picture.src.clone(),
+        }),
         // A moment reaches the component as the instant it is, never as text read the
         // person's way: the component decides how to show it.
         (Type::Time, Value::Text(at)) => Prop::Text(at.clone()),

@@ -263,13 +263,16 @@ impl Checker<'_> {
         };
         match ty {
             Type::Icon => self.icon_value(n, name, value),
+            Type::Picture => self.picture_value(n, name, value),
             Type::Choice {
                 cases,
                 name: choice,
             } => {
                 self.case_value(n, name, value, cases, choice);
             }
-            Type::Option(inner) if matches!(**inner, Type::Icon | Type::Choice { .. }) => {
+            Type::Option(inner)
+                if matches!(**inner, Type::Icon | Type::Choice { .. } | Type::Picture) =>
+            {
                 self.typed_prop(n, d, name, inner, doc, value);
             }
             Type::Option(inner) => {
@@ -361,6 +364,19 @@ impl Checker<'_> {
                 }
             }
         }
+    }
+
+    /// `image: "tilo-blob://<hash>"` or `image: a.photo`: a picture by where its bytes are, as
+    /// the node's prop of that name.
+    fn picture_value(&mut self, n: LocalId, prop: &str, e: &ast::Expr) {
+        let v = self.expr_as(e, &Ty::Text);
+        if v.ty.is_error() {
+            return;
+        }
+        self.emit(host(
+            Imp::UiPropPic,
+            vec![Ex::local(n, Ty::View), Ex::str(prop), v],
+        ));
     }
 
     /// Set the prop `name` to what the Option `v` holds, and leave it unset while it holds
@@ -930,6 +946,8 @@ fn lang_type(ty: &Type) -> Ty {
         Type::List(inner) | Type::Set(inner) => Ty::List(Box::new(lang_type(inner))),
         Type::Map { value, .. } => Ty::Map(Box::new(lang_type(value))),
         Type::Action => super::platform::host_ty("Action"),
+        // A picture is named by where its bytes are, which is text.
+        Type::Picture => Ty::Text,
         Type::Resource | Type::Icon | Type::Choice { .. } => Ty::Error,
     }
 }
@@ -954,6 +972,7 @@ fn fits(ty: &Type, found: &Ty) -> bool {
                 | (Type::Time, Ty::Time)
                 | (Type::RichText, Ty::RichText)
                 | (Type::Float, Ty::Float | Ty::Int)
+                | (Type::Picture, Ty::Text)
                 | (Type::Resource, Ty::Record(_))
         ),
     }

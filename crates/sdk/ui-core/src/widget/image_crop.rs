@@ -95,6 +95,12 @@ impl ImageCropEditor {
 
     /// Paint into an immediate-mode host while retaining the same interaction
     /// geometry as the normal [`Widget`] layout path.
+    /// The crop the person set: each edge a share of the picture, `0..=1`.
+    #[must_use]
+    pub fn selection(&self) -> CropSelection {
+        self.selection.get()
+    }
+
     pub fn paint_at(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
         self.rect = rect;
         self.image.paint_at(scene, transform, rect);
