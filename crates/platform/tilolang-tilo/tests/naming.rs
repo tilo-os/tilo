@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use automerge::AutoCommit;
 use tilolang_runtime::Principal;
-use tilolang_tilo::publish::{ActionTypes, PlanRequest, Planner, Publications};
+use tilolang_tilo::publish::{PlanRequest, Planner, Publications};
 
 use crate::fixtures::Replica;
 

@@ -2,8 +2,6 @@
 // actions read as what each does, never as a second copy of the result's name; and the band
 // under the list shows the result, never an echo of the row under it.
 
-use super::*;
-
 /// A provider whose one hit is `title`, found by any query containing "note": what an app's
 /// own search lists when a person finds a message or a note.
 struct OneHit(&'static str);
