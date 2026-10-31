@@ -59,6 +59,7 @@ mod scroll_to;
 mod source;
 mod spec;
 mod spring;
+mod transition;
 mod value;
 
 #[cfg(test)]
@@ -94,4 +95,5 @@ pub use scroll_to::{ScrollJump, ScrollTo};
 pub use source::{input_source, note_input, note_source, recent_input, source_of};
 pub use spec::{Direction, MotionSpec, Pace, Reduced, Shortcut};
 pub use spring::SpringSpec;
+pub(crate) use transition::progress as transition_progress;
 pub use value::{Animatable, Channels, MotionValue, Timing};

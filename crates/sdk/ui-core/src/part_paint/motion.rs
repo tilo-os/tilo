@@ -98,7 +98,7 @@ impl PartMotion {
             return Moment::settled(self.to);
         };
         let elapsed = now.saturating_duration_since(started).as_secs_f32();
-        match self.transition.at(elapsed) {
+        match crate::motion::transition_progress(self.transition, elapsed) {
             Some((progress, false)) => Moment {
                 state: PartState {
                     now: self.to,
