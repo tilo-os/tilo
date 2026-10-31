@@ -67,6 +67,10 @@ const CAP_ARRANGE: &str = "session.arrange";
 /// The resource the person's arrangement is published on, whose actions `session.arrange` names.
 pub const ARRANGEMENT_RESOURCE: &str = "shell:arrangement";
 
+/// The shell's own record: the package's named root `shell` (`root shell: Shell`), reached in
+/// its views as `shell`.
+pub const SHELL_RECORD: &str = "shell";
+
 /// Every file of the shell's package (`apps/tl/shell`), by the name the package knows it by: a
 /// package is a directory of `.tl` files, in path order (the package's compiler reads them so),
 /// and each new one is listed here to ship.
@@ -85,13 +89,28 @@ const SHELL_FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/canvas.tl"),
     ),
     (
+        "chrome.tl",
+        include_str!("../../../../apps/tl/shell/chrome.tl"),
+    ),
+    (
         "composer.tl",
         include_str!("../../../../apps/tl/shell/composer.tl"),
     ),
-    ("desk.tl", include_str!("../../../../apps/tl/shell/desk.tl")),
+    (
+        "desk.tl",
+        include_str!("../../../../apps/tl/shell/desk.tl"),
+    ),
+    (
+        "docks.tl",
+        include_str!("../../../../apps/tl/shell/docks.tl"),
+    ),
     (
         "launcher.tl",
         include_str!("../../../../apps/tl/shell/launcher.tl"),
+    ),
+    (
+        "layout.tl",
+        include_str!("../../../../apps/tl/shell/layout.tl"),
     ),
     (
         "notices.tl",
@@ -108,6 +127,10 @@ const SHELL_FILES: &[(&str, &str)] = &[
     (
         "people.tl",
         include_str!("../../../../apps/tl/shell/people.tl"),
+    ),
+    (
+        "presets.tl",
+        include_str!("../../../../apps/tl/shell/presets.tl"),
     ),
     (
         "rooms.tl",
@@ -128,6 +151,10 @@ const SHELL_FILES: &[(&str, &str)] = &[
     (
         "switcher.tl",
         include_str!("../../../../apps/tl/shell/switcher.tl"),
+    ),
+    (
+        "system.tl",
+        include_str!("../../../../apps/tl/shell/system.tl"),
     ),
 ];
 /// The shell package's ids lock.
@@ -310,6 +337,10 @@ pub struct NoticeActionReading {
 
 /// The reading of [`DESK_RESOURCE`]: the fields of the `session.desk` kind
 /// (`tilolang::origin::KINDS`), as JSON on the door.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the desk's reading is its fields, each read as the shell needs it"
+)]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeskReading {
     pub person: String,
@@ -358,6 +389,21 @@ pub struct DeskReading {
     /// The others here in the workspace in front: its collaborators.
     #[serde(default)]
     pub people: Vec<PersonReading>,
+    /// Whether the pointer is at, or resting against, the top edge of the output: a shell's bar
+    /// that hides until it is reached for shows while this holds.
+    #[serde(default)]
+    pub bar_reached: bool,
+    /// Whether a window stands where a top bar rides: a bar that hides while a window overlaps
+    /// it hides while this holds.
+    #[serde(default)]
+    pub bar_covered: bool,
+    /// Whether the pointer is at the bottom edge of the output: a dock there shows while this
+    /// holds.
+    #[serde(default)]
+    pub dock_reached: bool,
+    /// Whether a window stands where a dock rides.
+    #[serde(default)]
+    pub dock_covered: bool,
 }
 
 /// A workspace the person's desk shows, as their arrangement names it.
@@ -425,6 +471,119 @@ pub struct Ask {
     pub arguments: BTreeMap<String, String>,
 }
 
+/// How far from an output's edge the pointer resting there counts as at it: a bar or dock
+/// pinned to a hiding edge is reached for by coming within this of that edge. The reach pad
+/// the desk's own widgets use, so a glove and a mouse reach the same distance.
+#[must_use]
+pub fn reach_pad() -> f64 {
+    f64::from(ui::tokens::Spacing::BASE.s2)
+}
+
+/// A window as the compositor shows it, for what the chrome needs of it: where it stands.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl WindowRect {
+    fn covers(&self, edge_top: bool, band: f64, outputs: (i32, i32, u32, u32)) -> bool {
+        let (x0, _, width, height) = outputs;
+        let (left, right) = (f64::from(x0), f64::from(x0) + f64::from(width));
+        let horizontal = self.x < right && self.x + self.width > left;
+        if !horizontal {
+            return false;
+        }
+        if edge_top {
+            // A window reaching into the top band covers a bar there.
+            let top = f64::from(outputs.1);
+            self.y < top + band && self.y + self.height > top
+        } else {
+            // A window reaching into the bottom band covers a dock there.
+            let bottom = f64::from(outputs.1) + f64::from(height);
+            self.y < bottom && self.y + self.height > bottom - band
+        }
+    }
+}
+
+/// What the screen says of the edges a bar or dock that shows only sometimes rides: whether
+/// the pointer is at each edge, and whether a window stands where a bar or dock there would.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each edge's own facts, read one at a time"
+)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScreenEdges {
+    pub bar_reached: bool,
+    pub bar_covered: bool,
+    pub dock_reached: bool,
+    pub dock_covered: bool,
+}
+
+/// Which edges the shell's chrome stands on: what the part covers of the outputs. The session
+/// reads it from the shell's record — a bar on the top or bottom, a dock on the bottom or the
+/// top — and the part covers each band it names.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each edge's own facts, read one at a time"
+)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HostEdges {
+    /// The bar rides an edge (whether it shows now or not): the part covers its band.
+    pub bar: bool,
+    /// The bar rides the top rather than the bottom.
+    pub bar_top: bool,
+    /// The dock rides an edge.
+    pub dock: bool,
+    /// The dock rides the bottom rather than the top.
+    pub dock_bottom: bool,
+}
+
+impl HostEdges {
+    /// Whether the bar's band is at the top.
+    #[must_use]
+    pub const fn bar_at_top(&self) -> bool {
+        self.bar && self.bar_top
+    }
+
+    /// Whether the dock's band is at the bottom.
+    #[must_use]
+    pub const fn dock_at_bottom(&self) -> bool {
+        self.dock && self.dock_bottom
+    }
+}
+
+/// What a screen says of its edges: the pointer at `pointer` and the windows `windows`, over
+/// `outputs` (their bounding box, `(x, y, w, h)`), for a bar and a dock of `band` logical
+/// pixels. The pointer is at an edge when it rests within [`reach_pad`] of the top or bottom
+/// output edge there, or over the band a shown bar or dock would take.
+#[must_use]
+pub fn screen_edges(
+    outputs: (i32, i32, u32, u32),
+    band: f64,
+    pointer: (f64, f64),
+    windows: &[WindowRect],
+) -> ScreenEdges {
+    let (x0, y0, width, height) = outputs;
+    let (x, y) = pointer;
+    let (left, right) = (f64::from(x0), f64::from(x0) + f64::from(width));
+    let (top, bottom) = (f64::from(y0), f64::from(y0) + f64::from(height));
+    let over = x >= left && x < right;
+    let pad = reach_pad();
+    let at_top = over && y >= top - pad && y <= top + pad;
+    let at_bottom = over && y <= bottom + pad && y >= bottom - pad;
+    ScreenEdges {
+        // A bar reached for is reached at its own edge, or by the pointer coming to rest on
+        // the band it shows in.
+        bar_reached: at_top || (over && y >= top - pad && y <= top + band),
+        dock_reached: at_bottom || (over && y <= bottom + pad && y >= bottom - band),
+        bar_covered: windows.iter().any(|w| w.covers(true, band, outputs)),
+        dock_covered: windows.iter().any(|w| w.covers(false, band, outputs)),
+    }
+}
+
 /// Between the session and the shell's origin: the desk's reading the session last published,
 /// what the shell asked of the door, and the door's answers. The session serves it every turn
 /// of its loop ([`SessionLink::serve`]); the origin reads and writes the rest.
@@ -448,6 +607,16 @@ impl SessionLink {
     /// The session published `reading`: the shell writes it on its next frame when it differs
     /// from the last. Whether it did.
     pub fn publish(&self, reading: DeskReading) -> bool {
+        // What the desk reading names is the desk; what the screen says of its edges comes
+        // with it, published by [`Self::publish_edges`], so the reading keeps the last word on
+        // it: a desk change does not put the edges back to rest.
+        let mut reading = reading;
+        if let Some(was) = self.reading.borrow().as_ref() {
+            reading.bar_reached = was.bar_reached;
+            reading.bar_covered = was.bar_covered;
+            reading.dock_reached = was.dock_reached;
+            reading.dock_covered = was.dock_covered;
+        }
         if self.reading.borrow().as_ref() == Some(&reading) {
             return false;
         }
@@ -487,6 +656,31 @@ impl SessionLink {
     #[must_use]
     pub fn has_asks(&self) -> bool {
         !self.asked.borrow().is_empty()
+    }
+
+    /// Publish what the screen says of its edges (`edges`), folded into the desk reading the
+    /// session publishes: the pointer at an edge and a window standing where a bar or a dock
+    /// there would. Published before the desk so a frame that moves both writes them once.
+    pub fn publish_edges(&self, edges: ScreenEdges) {
+        let Some(mut reading) = self.reading.borrow().clone() else {
+            return;
+        };
+        if reading.bar_reached == edges.bar_reached
+            && reading.bar_covered == edges.bar_covered
+            && reading.dock_reached == edges.dock_reached
+            && reading.dock_covered == edges.dock_covered
+        {
+            return;
+        }
+        reading.bar_reached = edges.bar_reached;
+        reading.bar_covered = edges.bar_covered;
+        reading.dock_reached = edges.dock_reached;
+        reading.dock_covered = edges.dock_covered;
+        // Written here, not through [`Self::publish`]: that keeps the edges the reading before
+        // it held, which is what a desk change must not overwrite, and these are the edges
+        // themselves.
+        *self.reading.borrow_mut() = Some(reading);
+        self.fresh.set(true);
     }
 
     /// The surface the desk shows now (`none` at rest): what the part covers the outputs for.
@@ -699,6 +893,29 @@ impl SessionOrigin {
             reading.workspace != was.workspace,
         );
         set("strip", text(&reading.strip), reading.strip != was.strip);
+        // What the screen says of the edges a bar or dock that shows only sometimes follows.
+        // They are the desk's, derived with the rest of it: the session makes them again every
+        // start, so they are never the person's record and never need committing.
+        set(
+            "bar_reached",
+            Value::Bool(reading.bar_reached),
+            reading.bar_reached != was.bar_reached,
+        );
+        set(
+            "bar_covered",
+            Value::Bool(reading.bar_covered),
+            reading.bar_covered != was.bar_covered,
+        );
+        set(
+            "dock_reached",
+            Value::Bool(reading.dock_reached),
+            reading.dock_reached != was.dock_reached,
+        );
+        set(
+            "dock_covered",
+            Value::Bool(reading.dock_covered),
+            reading.dock_covered != was.dock_covered,
+        );
         set("title", text(&reading.title), reading.title != was.title);
         set("here", text(&reading.here), reading.here != was.here);
         set(
@@ -1328,6 +1545,7 @@ impl Origin for SessionOrigin {
             }
         };
         let writes = match self.writes(&reading, &root, &types) {
+            // The desk's own change is applied below, in the origin's own transaction.
             Ok(writes) => writes,
             Err(why) => {
                 tracing::error!(why, "the session's desk does not fit the shell");
@@ -1361,6 +1579,7 @@ impl Origin for SessionOrigin {
                 self.keep_inserted(&reading, &types, inserted, made);
                 self.written = Some(reading);
                 polled.wrote = true;
+
             }
             Err(error) => {
                 // Nothing was written: the next reading tries again from what was.
@@ -1513,8 +1732,10 @@ pub struct ShellPart {
     outputs: Option<(i32, i32, u32, u32)>,
     /// A menu the part opened, or a surface of the desk's (its overview, the switcher, the
     /// launcher, the notifications), is up: the part covers the outputs so it has room. At
-    /// rest it covers only its band, so a change draws only that.
+    /// rest it covers only its bands, so a change draws only that.
     cover: bool,
+    /// The edges the shell's chrome stands on: what the part covers of the outputs.
+    edges: HostEdges,
 }
 
 impl ShellPart {
@@ -1583,25 +1804,85 @@ impl ShellPart {
             band: band.max(1),
             outputs: None,
             cover: false,
+            edges: HostEdges {
+                bar: true,
+                bar_top: true,
+                dock: false,
+                dock_bottom: false,
+            },
         };
+        part.seed();
         part.turn();
         part
     }
 
-    /// Stand over the outputs: the whole of them while a menu of the part's is up, else the
-    /// band.
-    fn place(&mut self) {
-        let Some((x, y, width, height)) = self.outputs else {
+    /// Make the shell's own record (`root shell: Shell`) and let the package's migration seed
+    /// it — the bar's parts and the dock's items, on a shell never arranged — as the package
+    /// version's change, as an app's migration is. Both go through the part's own turns: the
+    /// record is created as a queued change, the migration runs once the record is had, and
+    /// [`Self::commit`] writes each into the part's record.
+    fn seed(&mut self) {
+        let Some(host) = self.instance.host() else {
+            return;
+        };
+        let roots = host
+            .package(self.instance.app())
+            .map(|package| package.meta.named_roots)
+            .unwrap_or_default();
+        for root in &roots {
+            if let Err(error) = host.root_record(self.instance.app(), &root.ty) {
+                tracing::warn!(%error, "the shell's record could not be made");
+                return;
+            }
+        }
+        if roots.is_empty() {
+            return;
+        }
+        // The package's migrations run for the room's origin alone, as an app's do. Each
+        // committed action is written into the part's record, as the door writes an app's: the
+        // record's making first, then the seed that runs once the record is had.
+        self.instance.set_origin(true);
+        for _ in 0..3 {
+            self.instance.sync(Some(&self.record));
+            self.instance.commit_planned();
+            if !self.commit() {
+                break;
+            }
+        }
+        // The seed moved the record: the part's next turn settles what it started (a view
+        // that read a bound field runs again), as any change of the record does.
+        self.instance.moved();
+
+    }
+
+    /// Stand over the outputs: the whole of them while a menu of the part's is up, and else
+    /// over each edge the shell's bar and dock ride — a bar at the top takes the top band, a
+    /// dock at the bottom the bottom one — through `edges`. A shell whose chrome is off at an
+    /// edge, or is a bar at the top alone (the first shell), takes that band only.
+    fn place(&mut self, edges: HostEdges) {
+        let Some((x, y, width, output_height)) = self.outputs else {
             return;
         };
         let scale = self.widgets.placement().scale;
-        let height = if self.cover {
-            height
+        let band = self.band.min(output_height);
+        // A menu of the part's, or a surface of the desk's, takes the whole outputs; else the
+        // part stands in the band at each edge the chrome rides, so a change draws only what
+        // shows there.
+        let at_top = !self.cover && edges.bar_at_top();
+        let at_bottom = !self.cover && edges.dock_at_bottom();
+        let height = match (at_top, at_bottom) {
+            (true, false) | (false, true) => band,
+            _ => output_height.max(band),
+        };
+        let origin_y = if at_bottom && !at_top {
+            y.saturating_add(
+                i32::try_from(output_height.saturating_sub(height)).unwrap_or(i32::MAX),
+            )
         } else {
-            self.band.min(height)
+            y
         };
         self.widgets.set_placement(Placement {
-            origin: (x, y),
+            origin: (x, origin_y),
             size: (width.max(1), height.max(1)),
             scale,
         });
@@ -1628,7 +1909,7 @@ impl ShellPart {
         let cover = menu || surface;
         if cover != self.cover {
             self.cover = cover;
-            self.place();
+            self.place(self.edges);
         }
     }
 
@@ -1661,6 +1942,37 @@ impl ShellPart {
                     rect.height(),
                 )
             })
+    }
+
+    /// The edges the shell's chrome stands on, as the session read them from the shell's
+    /// record: where the part covers the outputs. A change moves the part to the edges it
+    /// now names.
+    pub fn set_edges(&mut self, edges: HostEdges) {
+        if edges == self.edges {
+            return;
+        }
+        self.edges = edges;
+        self.place(edges);
+    }
+
+    /// The shell's own record (`root shell: Shell`) as it holds it now, when the package has
+    /// one and the record is made: what its edge settings are read from.
+    #[must_use]
+    pub fn shell_record(&self) -> Option<tilolang_tilo::record::DynRecord> {
+        let host = self.instance.host()?;
+        let package = host.package(self.instance.app())?;
+        let root = package
+            .meta
+            .named_roots
+            .iter()
+            .find(|root| root.name == SHELL_RECORD)?;
+        host.store().record(&format!("root-{}", root.ty)).ok()
+    }
+
+    /// The package the part shows, as it was compiled: its types and their fields.
+    #[must_use]
+    pub fn package(&self) -> Option<tilolang_tilo::host::Package> {
+        self.instance.host()?.package(self.instance.app())
     }
 
     /// The toolkit's host of the part's widget tree, to drive it directly.
@@ -1706,13 +2018,14 @@ impl ShellPart {
                 });
             if let Err(why) = &applied {
                 tracing::error!(why, "a shell change could not be committed");
+            } else {
             }
             self.instance.answered(&address, applied.err());
             committed = true;
         }
         if committed {
             // The record holds the changes once they are committed: the instance reads them
-            // from its heads.
+            // from its heads, and every view runs again, since the change is the record's.
             self.record.commit();
             let at = std::time::Instant::now();
             self.instance.sync(Some(&self.record));
@@ -1918,7 +2231,7 @@ impl SurfaceHost for ShellPart {
             return;
         };
         self.outputs = Some((x0, y0, width, height));
-        self.place();
+        self.place(self.edges);
     }
 
     fn wants_keyboard(&self) -> bool {
@@ -2287,6 +2600,35 @@ mod tests {
             part.origin.borrow().in_flight.is_empty(),
             "the effect was answered"
         );
+    }
+
+
+
+
+
+
+
+
+    #[test]
+    fn the_part_stands_in_the_band_the_shell_records_dock_names() {
+        let (mut part, _link) = part();
+        assert_eq!(
+            part.widgets.placement().origin,
+            (0, 0),
+            "the first shell: a bar at the top"
+        );
+        part.set_edges(HostEdges {
+            bar: false,
+            bar_top: true,
+            dock: true,
+            dock_bottom: true,
+        });
+        assert_eq!(
+            part.widgets.placement().origin.1,
+            800 - 32,
+            "a dock at the bottom alone stands in the bottom band"
+        );
+        assert_eq!(part.widgets.placement().size, (1280, 32));
     }
 }
 

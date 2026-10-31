@@ -105,6 +105,16 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
          `open`, `dismiss`, `act` and `reply`, and the desk's `clear-notices` and \
          `dismiss-notice`.",
     ),
+    (
+        "session.launch",
+        "Opens an app, or goes to what a dock item stands for: the item's `key` — an app id, \
+         or a resource's reference.",
+    ),
+    (
+        "session.set",
+        "Sets one of the device's settings the shell's Quick Settings shows, by the setting's \
+         key and the value: `(key, value)`.",
+    ),
 ];
 
 /// Every kind of every origin the platform has.
@@ -514,6 +524,54 @@ pub const KINDS: &[OriginKind] = &[
                 "state",
                 "Text",
                 "`running`, `waiting` (for the person) or `done`.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.control",
+        doc: "A device control the person's shell shows in Quick Settings: sound, brightness, \
+              the network, Bluetooth, the power, the theme and the do-not-disturb state. The \
+              session writes what the device says; the person changes it, as the system's own \
+              panel does.",
+        derived: true,
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "Which control: `volume`, `brightness`, `network`, `bluetooth`, `wifi`, \
+                 `power`, `theme`, `quiet`.",
+            ),
+            field(
+                "label",
+                "Text",
+                "What it is called, in the person's language.",
+            ),
+            field("icon", "Text", "Its glyph, by the platform icon's name."),
+            field(
+                "on",
+                "Bool",
+                "Whether it is on: Bluetooth, Wi-Fi, do-not-disturb.",
+            ),
+            field(
+                "value",
+                "Int",
+                "Its level, 0 to 100 (sound, brightness); 0 when it has none.",
+            ),
+            field(
+                "detail",
+                "Text",
+                "What it stands at in words: the network's name, the theme's name, the \
+                 battery's charge.",
+            ),
+            field(
+                "available",
+                "Bool",
+                "Whether the device has it, or it can be changed now.",
+            ),
+            field(
+                "has_level",
+                "Bool",
+                "Whether it is a level the person sets (sound, brightness).",
             ),
         ],
     },

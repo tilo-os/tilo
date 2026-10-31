@@ -5,7 +5,6 @@
 ///
 /// They are seed data for shots, tests and benchmarks, never a person's: a real first launch
 /// starts empty.
-
 /// An afternoon at a desk: three workspaces, four strips of the one in front with windows in
 /// each, two people working alongside and a task running. The desk at rest.
 scenario "an afternoon at the desk" {

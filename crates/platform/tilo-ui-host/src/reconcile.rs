@@ -352,6 +352,8 @@ fn is_container(kind: &str) -> bool {
             | "layers"
             | "primary"
             | "secondary"
+            // A component whose own layout is a row or a column of its slots.
+            | "ui.DragRun"
     )
 }
 

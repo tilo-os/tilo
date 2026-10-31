@@ -1900,6 +1900,12 @@ impl Session {
         };
         shell.publish();
         shell.publish_arrangement(self.shared.arrangement.borrow().reading());
+        // What the screen says of its edges is what a bar or dock that shows only sometimes
+        // follows; it moves without the desk, so it goes every turn. The part covers the bands
+        // the record says the chrome stands in.
+        let edges = shell.edges();
+        shell.publish_edges(&self.compositor);
+        shell.set_edges(edges);
         if !shell.has_asks() {
             return Ok(());
         }

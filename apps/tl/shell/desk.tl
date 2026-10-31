@@ -1,16 +1,90 @@
-/// The desk: what this device shows. The bar across the top, and one surface over it at a
-/// time: the overview, the switcher, search and launching, the notifications, the workspaces
-/// and the composer. Which one is up is the session's (`d.here`), so the shell re-runs when it
-/// changes and nothing else moves while the desk is at rest.
+/// The desk: what this device shows. The person's bar across the top edge its settings name,
+/// the dock on its own edge, and one surface over the desk at a time: the overview, the
+/// switcher, search and launching, the notifications, the workspaces and the composer. Which
+/// one is up is the session's (`d.here`), so the shell re-runs when it changes and nothing else
+/// moves while the desk is at rest.
 ///
-/// Every surface is drawn over the bar's ground, so the bar stays reachable and a press outside
-/// a surface closes it, as the session's chrome decides. Nothing here draws a window: the
-/// desk's windows are the compositor's, behind this view.
+/// The bar and the dock are `ui.Chrome` bodies over the theme's bar material: edge to edge and
+/// square at the `full` fit, an inset rounded body at the floating one. Every surface is drawn
+/// over them, so the bar stays reachable and a press outside a surface closes it, as the
+/// session's chrome decides. Nothing here draws a window: the desk's windows are the
+/// compositor's, behind this view.
 view desk(d: Desk) {
-    stack(gap: .tight) {
-        bar(d)
-        surface_or_rest(d)
+    let s = shell
+    layers {
+        stack(gap: .tight) {
+            if bar_shows(s, d) {
+                bar_on_edge(s, d)
+            }
+            surface_or_rest(d)
+        }
+        if dock_shows(s, d) {
+            if s.dock_edge == .bottom {
+                row(at: .bottom, fill, align: .center, distribute: .center) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .bottom, fill: if s.dock_fit == .full { 1 } else { 0 }) {
+                        dock(s, d)
+                    }
+                }
+            } else if s.dock_edge == .top {
+                row(at: .top, fill, align: .center, distribute: .center) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .top, fill: if s.dock_fit == .full { 1 } else { 0 }) {
+                        dock(s, d)
+                    }
+                }
+            } else if s.dock_edge == .left {
+                stack(at: .leading, fill, align: .center) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .leading) {
+                        dock(s, d)
+                    }
+                }
+            } else {
+                stack(at: .trailing, fill, align: .center) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .trailing) {
+                        dock(s, d)
+                    }
+                }
+            }
+        }
     }
+}
+
+/// The top bar on the edge it rides: the whole width with its parts spread along it at the
+/// `full` fit, an inset run centred on the edge at the floating one — where it covers less of
+/// what is under it. Its ground is the theme's bar material either way; how much of the output
+/// it spans is what its fit says.
+view bar_on_edge(s: Shell, d: Desk) {
+    let on_top = s.bar_edge == .top
+    if s.bar_fit == .full and on_top {
+        row(at: .top, fill, align: .center) {
+            ui.Chrome(name: "Top bar", shape: .square, edge: .top, fill) {
+                top_bar(d)
+            }
+        }
+    } else if s.bar_fit == .full {
+        row(at: .bottom, fill, align: .center) {
+            ui.Chrome(name: "Top bar", shape: .square, edge: .bottom, fill) {
+                top_bar(d)
+            }
+        }
+    } else if on_top {
+        row(at: .top, align: .center, padding: .related) {
+            ui.Chrome(name: "Top bar", shape: .rounded, edge: .top) {
+                top_bar(d)
+            }
+        }
+    } else {
+        row(at: .bottom, align: .center, padding: .related) {
+            ui.Chrome(name: "Top bar", shape: .rounded, edge: .bottom) {
+                top_bar(d)
+            }
+        }
+    }
+}
+
+/// The bar's parts in the person's order, as the run the person reorders by dragging a part:
+/// what the desk's bar and the desk window's bar both draw.
+view top_bar(d: Desk) {
+    bar(d)
 }
 
 /// What stands under the bar: the desk at rest, or the surface the person is in.

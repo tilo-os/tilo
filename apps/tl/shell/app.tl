@@ -28,6 +28,14 @@ type Desk (origin: session.desk) {
     workspaces: Collection<Workspace>
     tasks: Collection<Task>
     people: Collection<Person>
+    /// The pointer at the top edge, and a window standing where the bar rides: what a bar that
+    /// shows only sometimes follows. The session writes them with the rest of the desk; no
+    /// action changes them and no preset names them.
+    bar_reached: Bool
+    bar_covered: Bool
+    /// The pointer at the bottom edge, and a window standing where the dock rides.
+    dock_reached: Bool
+    dock_covered: Bool
     title: Text merge register
     agents: Collection<Agent>
     rooms: Collection<Room>
@@ -113,11 +121,11 @@ root arrangement: Arrangement
 
 root Desk
 
-/// The shell's two layers: the desk the person sees (its bar over the surface that is up),
-/// and the top bar alone, which the session's bar part lays out in its band.
 default view desk for Desk
 
 default view desk_view for arrangement
+
+default view shell_settings for Shell
 
 /// Brings the workspace to the front.
 action switch_to(w: Workspace) (icon: .layers, label: "Switch to") {
@@ -210,85 +218,119 @@ view desk_view(a: Arrangement) {
     }
 }
 
-/// Where the person is: the system's menu, the workspace in front with the workspaces to
-/// switch to, the strip in front, and the tasks running. A narrow output keeps the menu and the
-/// workspace; the strip and the tasks are in the overview.
-view places(d: Desk) {
-    row(gap: .tight, align: .center, wrap: true) {
-        ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
-            on press: system_menu(d)
-        }
-        ui.MenuButton(d.workspace, role: .bar) {
-            for w in d.workspaces {
-                ui.MenuItem(w.name, checked: .some(w.current)) {
-                    on choose: switch_to(w)
-                }
-            }
-            ui.MenuItem("New workspace", icon: .plus) {
-                on choose: new_workspace(d)
-            }
-            ui.MenuItem("Join a workspace", icon: .users) {
-                on choose: join_workspace(d)
-            }
-            ui.MenuItem("Workspace settings", icon: .settings) {
-                on choose: workspace_settings(d)
-            }
-            ui.MenuItem("Overview", icon: .layout_grid) {
-                on choose: show_overview(d)
-            }
-        }
-        if not space.compact {
-            if d.strip != "" {
-                ui.Button(d.strip, icon: .chevron_right, role: .bar) {
-                    on press: strips(d)
-                }
-            }
-            for t in d.tasks {
-                ui.Button(t.title, icon: .bot, role: .bar)
-            }
-        }
-    }
-}
-
 /// The time, to the minute.
 view clock(d: Desk) {
     ui.Text(d.clock, role: .subheading, numeric: true)
 }
 
-/// Who is here, the person, and the device's status. A narrow output keeps the status; who is
-/// here is in the system's menu.
-view presence(d: Desk) {
-    row(gap: .sibling, align: .center, distribute: .end) {
-        if not space.compact {
-            for p in d.people {
-                person_chip(p)
-            }
-            if d.person != "" {
-                ui.Avatar(name: .some(d.person))
-            }
-        }
-        row(gap: .tight, align: .center) {
-            ui.Button(if d.unread > 0 { "Notifications, {d.unread} unread" } else { "Notifications" }, icon: if d.quiet { .bell_off } else { .bell }, icon_only: true, role: .bar) {
-                on press: status(d)
-            }
-            if d.unread > 0 {
-                ui.Badge(count: d.unread)
+/// The top bar: the parts the person put on it, in their order, each a view of its own — so a
+/// change runs only the part that reads it: the minute, the clock alone. The bar is a run the
+/// person reorders by dragging a part, and a part dragged onto it from the settings lands where
+/// it is dropped; letting go runs one action, `place_part`.
+view bar(d: Desk) {
+    let s = shell
+    ui.DragRun(axis: .horizontal, name: "Top bar") {
+        on drop(moved: BarPart, at: Int): place_part(s, moved, at)
+        for part in s.bar_parts {
+            if part.shown {
+                ui.DragItem(part, title: part.title, group: if part.slot == .clock { .center } else if part.slot == .people or part.slot == .status or part.slot == .power { .trailing } else if part.slot == .space { .space } else { .leading }) {
+                    bar_part(d, part)
+                }
             }
         }
     }
 }
 
-/// The top bar: the system's menu and the workspace in front, which opens the workspaces to
-/// switch between, then the strip and the tasks running; the time in the middle; the people
-/// here, the person and the device's status at the end. Each part is a view of its own, so a
-/// change runs only the part that reads it: the minute, the clock alone. Narrower than its
-/// parts, the bar takes a second line rather than pressing one part into another.
-view bar(d: Desk) {
-    row(padding: .tight, align: .center, wrap: true) {
-        places(d)
+/// One part of the bar, drawn from what it is. A narrow output keeps the menu, the workspace
+/// and the status; the strip, the tasks and who is here give way, because the bar's parts must
+/// never press into each other (the overview shows them).
+view bar_part(d: Desk, part: BarPart) {
+    if part.slot == .space {
         spacer
+    } else if part.slot == .clock {
         clock(d)
-        spacer
-        presence(d)
+    } else if part.slot == .menu {
+        ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
+            on press: system_menu(d)
+        }
+    } else if part.slot == .workspace {
+        workspace_menu(d)
+    } else if part.slot == .app_menu {
+        ui.MenuButton("File", role: .bar) {
+            ui.MenuItem("Close window", icon: .x)
+            ui.MenuItem("Save", icon: .download)
+        }
+    } else if part.slot == .strip {
+        if d.strip != "" and not space.compact {
+            ui.Button(d.strip, icon: .chevron_right, role: .bar) {
+                on press: strips(d)
+            }
+        }
+    } else if part.slot == .tasks {
+        if not space.compact {
+            for t in d.tasks {
+                ui.Button(t.title, icon: .bot, role: .bar)
+            }
+        }
+    } else if part.slot == .people {
+        if not space.compact {
+            row(gap: .tight, align: .center) {
+                for p in d.people {
+                    person_chip(p)
+                }
+                if d.person != "" {
+                    ui.Avatar(name: .some(d.person))
+                }
+            }
+        }
+    } else if part.slot == .power {
+        ui.Button("Power", icon: .battery, icon_only: true, role: .bar)
+    } else if part.slot == .agent {
+        for a in d.agents {
+            agent_chip(a)
+        }
+    } else if part.slot == .status {
+        bell(d)
+    }
+}
+
+/// The workspace in front, opening the workspaces to switch between and the actions on this
+/// device's workspaces.
+view workspace_menu(d: Desk) {
+    ui.MenuButton(d.workspace, role: .bar) {
+        for w in d.workspaces {
+            ui.MenuItem(w.name, checked: .some(w.current)) {
+                on choose: switch_to(w)
+            }
+        }
+        ui.MenuItem("New workspace", icon: .plus) {
+            on choose: new_workspace(d)
+        }
+        ui.MenuItem("Join a workspace", icon: .users) {
+            on choose: join_workspace(d)
+        }
+        ui.MenuItem("Workspace settings", icon: .settings) {
+            on choose: workspace_settings(d)
+        }
+        ui.MenuItem("Overview", icon: .layout_grid) {
+            on choose: show_overview(d)
+        }
+    }
+}
+
+/// The device's status: an icon button named with what it shows — "Notifications", how many
+/// are unread, or that they are silenced — with the count above it as a badge, so the name
+/// assistive technology reads is the whole fact and the number is for the eye. Pressing it
+/// opens or closes the device's status: the quick settings, or the notifications.
+view bell(d: Desk) {
+    let name = if d.quiet { "Notifications silenced" } else { "Notifications" }
+    let label = if d.unread == 0 { name } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }
+    row(gap: .tight, align: .center) {
+        ui.Button(label, icon: if d.quiet { .bell_off } else { .bell }, icon_only: true, role: .bar) {
+            on press: status(d)
+        }
+        if d.unread > 0 {
+            ui.Badge(count: d.unread)
+        }
     }
 }

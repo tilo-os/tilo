@@ -800,6 +800,63 @@
       }
     },
     {
+      "name": "Chrome",
+      "doc": "A bar or a dock's body: the theme's bar finish behind what the body holds.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the body is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "shape",
+          "doc": "How the body sits in its edge: edge to edge and square (the default), or an inset, rounded body.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "ChromeShape",
+                "cases": [
+                  "square",
+                  "rounded"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "edge",
+          "doc": "The screen edge the body stands on, where a square body draws its rule.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "ChromeEdge",
+                "cases": [
+                  "top",
+                  "bottom",
+                  "leading",
+                  "trailing"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "body",
+          "doc": "What the body holds.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
       "name": "CodeEditor",
       "doc": "Code to read or write, with line numbers and its language's colouring. What is typed edits the text it is bound to, each edit spliced in, never written over.",
       "props": [
@@ -1252,6 +1309,97 @@
       ],
       "semantics": {
         "role": "Group"
+      }
+    },
+    {
+      "name": "DragRun",
+      "doc": "A run of items — a dock's icons, a toolbar's tiles, a row of cards — reordered by dragging one. Each item is one `ui.DragItem`.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the run is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "axis",
+          "doc": "Whether the items lead to trailing (the default) or run top to bottom.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Axis",
+                "cases": [
+                  "horizontal",
+                  "vertical"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "distribute",
+          "doc": "Where the run's packed items sit along it: its leading edge (the default), its centre, its trailing edge, or spread between its ends. A run whose items fall in groups packs each group at its own edge; this places a run of one group, such as a dock.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Distribute",
+                "cases": [
+                  "start",
+                  "center",
+                  "end",
+                  "between"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "align",
+          "doc": "Where the items pack across the run: centred (the default).",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Align",
+                "cases": [
+                  "start",
+                  "center",
+                  "end",
+                  "stretch"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "items",
+          "doc": "The items, in order.",
+          "accepts": {
+            "component": "DragItem"
+          },
+          "many": true,
+          "default": true
+        },
+        {
+          "name": "trailing",
+          "doc": "What stands beside the items at the run's trailing end and is never moved: a taskbar's time and device status.",
+          "accepts": "view",
+          "many": true
+        }
+      ],
+      "events": [
+        {
+          "name": "drop",
+          "doc": "An item was let go in a new place: carries the resource it stands for and its place among the run's other items, from 0 — what `items.move(item, to: at)` takes.",
+          "value": "resource",
+          "at": "int"
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
       }
     },
     {
@@ -5295,6 +5443,62 @@
       "semantics": {
         "role": "Row",
         "presents": "item"
+      }
+    },
+    {
+      "name": "DragItem",
+      "doc": "One item of a run: what it stands for, and the view drawn in its slot.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The resource the item stands for: what a drop carries, and what a drag out of the run reports.",
+          "type": {
+            "option": "resource"
+          },
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What the item is called, for its ghost and for assistive technology.",
+          "type": "text",
+          "required": true
+        },
+        {
+          "name": "group",
+          "doc": "The part of the run it belongs to: a bar's leading group, its centre, its trailing group, or the room between two groups.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "RunGroup",
+                "cases": [
+                  "leading",
+                  "center",
+                  "trailing",
+                  "space"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "body",
+          "doc": "What it shows.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "activate",
+          "doc": "It was pressed and let go without moving: open what it stands for."
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "label": "title"
       }
     },
     {

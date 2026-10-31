@@ -203,8 +203,6 @@ pub struct Metrics {
     pub picture_tile_width: f32,
     /// How far a press may move and still be a click.
     pub click_slop: f32,
-    /// How far one arrow-key press pans a map or canvas.
-    pub key_pan: f32,
     /// The line a drag draws where the dragged item would land, and the
     /// outline of the ghost it carries under the pointer.
     pub drag_line_px: f32,
@@ -286,7 +284,6 @@ impl Metrics {
         picture_tile_min_width: 104.0,
         picture_tile_width: 168.0,
         click_slop: 4.0,
-        key_pan: 64.0,
         drag_line_px: 2.0,
     };
 
@@ -412,7 +409,6 @@ impl Metrics {
             picture_tile_min_width: self.picture_tile_min_width * factor,
             picture_tile_width: self.picture_tile_width * factor,
             click_slop: self.click_slop * factor,
-            key_pan: self.key_pan * factor,
             drag_line_px: self.drag_line_px * factor,
         }
     }

@@ -260,6 +260,9 @@ impl Desk {
             notice_actions: notice_actions(&self.notices),
             badges: self.signals.badges(),
             people,
+            // What the screen says of its edges moves without the desk; the link publishes it
+            // beside this reading and carries it over (`SessionLink::publish_edges`).
+            ..DeskReading::default()
         })
     }
 }

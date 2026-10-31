@@ -3299,7 +3299,13 @@ pub mod board;
 mod board_component;
 pub use board::{Board, BoardDrop};
 pub use board_component::{BoardCardProps, BoardLaneProps, BoardProps};
+pub use drag_bus::{InFlight, Landed};
+pub use drag_run::{DragDrop, DragRun, RunAxis, RunGroup, RunItem};
+pub use drag_run_component::{DragItemProps, DragRunProps};
 pub mod drag;
+pub mod drag_bus;
+pub mod drag_run;
+pub mod drag_run_component;
 pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
 mod scrollable;
 pub use scrollable::{ScrollAxis, ScrollProps, Scrollable};
@@ -3629,6 +3635,8 @@ pub use quick_tile::{QuickTile, QuickTileOutcome, QuickTilePart};
 // EmptyState / Banner / StatTile also expose an immediate-mode `paint(...)`
 // entry point for apps that render straight to a `Scene` rather than a
 // widget tree.
+pub mod chrome_body;
+pub use chrome_body::{ChromeBody, ChromeEdge, ChromeProps, ChromeShape};
 pub mod docked;
 pub use docked::{Docked, DockedProps};
 pub mod map;

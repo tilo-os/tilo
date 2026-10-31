@@ -7,12 +7,15 @@
 /// The results are the desk's windows and the desk's own doors; what apps, files and actions
 /// hold is the platform's search, which Enter hands `submit_search` to, so no list this view
 /// keeps can go stale.
-
 /// The launcher, with the person's last query in the field.
 view launcher(d: Desk) {
     lens query: Text = d.spotlight
     let typed = query != ""
-    let windows = if typed { d.windows.matching(query).sort_by(w -> w.recency).take(10) } else { d.windows.sort_by(w -> w.recency).take(8) }
+    let windows = if typed {
+        d.windows.matching(query).sort_by(w -> w.recency).take(10)
+    } else {
+        d.windows.sort_by(w -> w.recency).take(8)
+    }
     ui.FloatingPanel {
         header: {
             ui.TextInput(value: query, placeholder: "Search apps, windows, actions and files") {

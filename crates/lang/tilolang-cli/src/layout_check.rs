@@ -187,6 +187,10 @@ pub struct Options {
     /// light and dark variant, or a theme bundle's directory (`ui::theme_bundle`); none takes
     /// the stock light and dark.
     pub themes: Vec<String>,
+    /// The layer of the package to lay out, when it has more than one root (`Desk`, the
+    /// `shell` record): a shot of the shell's desk is `--root Desk`. None lays out the
+    /// package's first root, as the launcher opens an app.
+    pub root: Option<String>,
 }
 
 /// The light and the dark variant of the shipped theme `name`: `default` the stock pair,
@@ -293,6 +297,7 @@ pub fn check(options: &Options) -> Result<Report, String> {
             options.dump,
             options.shots.as_deref(),
             &options.themes,
+            options.root.as_deref(),
         )?;
         findings.extend(app_findings);
         layouts_run = layouts_run.saturating_add(ran);
@@ -326,6 +331,7 @@ fn check_app(
     dump: Option<(u32, u32)>,
     shots: Option<&Path>,
     themes: &[String],
+    root: Option<&str>,
 ) -> Result<(Vec<Finding>, usize, Vec<String>), String> {
     let mut search = search.to_vec();
     search.extend(dir.parent().map(Path::to_path_buf));
@@ -351,57 +357,65 @@ fn check_app(
         shown: BTreeSet::new(),
     };
     let first = layouts().first().copied().ok_or("no layouts")?;
-    for scenario in &meta.scenarios {
-        let mut staged = stage::Staged::new(
-            &meta.app,
-            &packages,
-            &scenario.name,
-            (first.size.width, first.size.height),
-            ui::Theme::light(),
-        )?;
-        check.run(&mut staged, &scenario.name)?;
-        // The views of types the scenario did not open, on a resource its window names.
-        for default in &meta.default_views {
-            let Some(view) = meta.views.iter().find(|v| v.id == default.view) else {
-                continue;
-            };
-            // The root's own view is the window's first column already.
-            if check.shown.contains(&view.name) || meta.roots.contains(&default.ty) {
-                continue;
-            }
-            let Some(resource) = staged.resources().into_iter().find(|r| r.ty == default.ty) else {
-                continue;
-            };
-            staged.open(resource);
-            check.run(
-                &mut staged,
-                &format!("{}, then a {} opened", scenario.name, view.name),
+    // The layer laid out, when the caller names one: a package with more than one root (the
+    // shell's `Desk` beside its `Arrangement`) is laid out one layer at a time, and a shot of
+    // the desk is `--root Desk`. Without one the package's first root is laid out, as the
+    // launcher opens an app.
+    let roots: Vec<Option<String>> = vec![root.map(str::to_owned)];
+    for root in &roots {
+        for scenario in &meta.scenarios {
+            let mut staged = stage::Staged::over(
+                &meta.app,
+                &packages,
+                &scenario.name,
+                (first.size.width, first.size.height),
+                ui::Theme::light(),
+                root.as_deref(),
             )?;
-        }
-        // The views the system shows on surfaces of its own rather than in a window of the
-        // app: a type's row view (a search result, a row of an agent's answer) and an action's
-        // proposal view (the card asking to run it), on a resource of the type they take.
-        for view in surface_views(&meta) {
-            if check.shown.contains(&view.name) {
-                continue;
+            check.run(&mut staged, &scenario.name)?;
+            // The views of types the scenario did not open, on a resource its window names.
+            for default in &meta.default_views {
+                let Some(view) = meta.views.iter().find(|v| v.id == default.view) else {
+                    continue;
+                };
+                // The root's own view is the window's first column already.
+                if check.shown.contains(&view.name) || meta.roots.contains(&default.ty) {
+                    continue;
+                }
+                let Some(resource) = staged.resources().into_iter().find(|r| r.ty == default.ty) else {
+                    continue;
+                };
+                staged.open(resource);
+                check.run(
+                    &mut staged,
+                    &format!("{}, then a {} opened", scenario.name, view.name),
+                )?;
             }
-            let [param] = view.params.as_slice() else {
-                continue;
-            };
-            // A parameter names its type as written; a resource carries the type's id.
-            let Some(ty) = meta.types.iter().find(|t| t.name == param.ty) else {
-                continue;
-            };
-            let Some(resource) = staged.resources().into_iter().find(|r| r.ty == ty.id) else {
-                continue;
-            };
-            staged.open_with(&resource, &view.id);
-            check.run(
-                &mut staged,
-                &format!("{}, then {} shown", scenario.name, view.name),
-            )?;
+            // The views the system shows on surfaces of its own rather than in a window of the
+            // app: a type's row view (a search result, a row of an agent's answer) and an action's
+            // proposal view (the card asking to run it), on a resource of the type they take.
+            for view in surface_views(&meta) {
+                if check.shown.contains(&view.name) {
+                    continue;
+                }
+                let [param] = view.params.as_slice() else {
+                    continue;
+                };
+                // A parameter names its type as written; a resource carries the type's id.
+                let Some(ty) = meta.types.iter().find(|t| t.name == param.ty) else {
+                    continue;
+                };
+                let Some(resource) = staged.resources().into_iter().find(|r| r.ty == ty.id) else {
+                    continue;
+                };
+                staged.open_with(&resource, &view.id);
+                check.run(
+                    &mut staged,
+                    &format!("{}, then {} shown", scenario.name, view.name),
+                )?;
+            }
+            press_stage(&mut check, &meta, &packages, &scenario.name, root.as_deref())?;
         }
-        press_stage(&mut check, &meta, &packages, &scenario.name)?;
     }
     let unreached = meta
         .views
@@ -424,6 +438,7 @@ fn press_stage(
     meta: &tilolang::PackageMeta,
     packages: &Rc<stage::Packages>,
     scenario: &str,
+    root: Option<&str>,
 ) -> Result<(), String> {
     for label in primary_labels(meta) {
         for size in SIZES {
@@ -433,8 +448,14 @@ fn press_stage(
                 text_scale: 1.0,
             };
             let viewport = (size.width, size.height);
-            let mut staged =
-                stage::Staged::new(&meta.app, packages, scenario, viewport, layout.theme())?;
+            let mut staged = stage::Staged::over(
+                &meta.app,
+                packages,
+                scenario,
+                viewport,
+                layout.theme(),
+                root,
+            )?;
             staged.lay_out_moving(viewport, layout.theme(), layout.input())?;
             let Some(id) = button_named(&staged.harness().inspection().root, label) else {
                 continue;
