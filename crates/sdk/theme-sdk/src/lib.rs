@@ -29,7 +29,6 @@ mod scene;
 mod tokens;
 pub mod wire;
 
-#[doc(hidden)]
 pub mod guest;
 
 pub use kurbo;

@@ -38,27 +38,37 @@ pub fn call(painter: &dyn PartPainter, len: u32) -> u64 {
     BUFFER.with(|buffer| {
         let mut buffer = buffer.borrow_mut();
         let len = usize::try_from(len).unwrap_or(0).min(buffer.len());
-        let answer = match buffer.get(..len).and_then(wire::request) {
-            Some(Request::Paint(request)) => wire::paint_answer(
-                painter
-                    .paint(
-                        request.part,
-                        request.size,
-                        request.state,
-                        request.progress,
-                        &request.tokens,
-                    )
-                    .as_ref(),
-            ),
-            Some(Request::Transition { part, from, to }) => {
-                wire::transition_answer(painter.transition(part, from, to))
-            }
-            Some(Request::Params) => wire::params_answer(&painter.params()),
-            None => Vec::new(),
-        };
-        *buffer = answer;
+        *buffer = buffer
+            .get(..len)
+            .map_or_else(Vec::new, |request| answer(painter, request));
         (u64::from(address(&buffer)) << 32) | u64::try_from(buffer.len()).unwrap_or(0)
     })
+}
+
+/// `painter`'s answer to the wire bytes `request`, as the module's call
+/// gives it to the host; empty for bytes that are not a request. A theme's
+/// tests run their painter through it natively, over the same bytes the
+/// host exchanges with the module.
+#[must_use]
+pub fn answer(painter: &dyn PartPainter, request: &[u8]) -> Vec<u8> {
+    match wire::request(request) {
+        Some(Request::Paint(request)) => wire::paint_answer(
+            painter
+                .paint(
+                    request.part,
+                    request.size,
+                    request.state,
+                    request.progress,
+                    &request.tokens,
+                )
+                .as_ref(),
+        ),
+        Some(Request::Transition { part, from, to }) => {
+            wire::transition_answer(painter.transition(part, from, to))
+        }
+        Some(Request::Params) => wire::params_answer(&painter.params()),
+        None => Vec::new(),
+    }
 }
 
 /// Export `painter` (a `static` or a constant expression of a type that
