@@ -14,6 +14,9 @@ use tilo_surface_host::{AppHost, Placement};
 use ui::application::{ApplicationDefinition, ComponentRunnerInputs, prepare_private_surface};
 use ui::host_operation::ResourceOperationStart;
 
+/// A display's rectangle, in logical pixels: the display a sheet covers.
+pub(crate) type Place = (i32, i32, u32, u32);
+
 /// One sheet's app on its layer.
 pub(crate) struct Sheet<S: Seat> {
     host: AppHost,
@@ -96,14 +99,10 @@ impl<S: Seat> Sheet<S> {
         self.seat.presentation().is_drawn()
     }
 
-    /// The sheet covers the display the shell placed it on, or the first
+    /// The sheet covers the display the session placed it on, or the first
     /// one while it named none.
     fn follow_place(&mut self) {
-        let named = self.seat.presentation().place().and_then(|(x, y, w, h)| {
-            let (w, h) = (i32::try_from(w).ok()?, i32::try_from(h).ok()?);
-            self.outputs.contains(&(x, y, w, h)).then_some((x, y, w, h))
-        });
-        let Some((x, y, w, h)) = named.or_else(|| self.outputs.first().copied()) else {
+        let Some((x, y, w, h)) = covering(self.seat.presentation().place(), &self.outputs) else {
             return;
         };
         let scale = self.host.placement().scale;
@@ -116,6 +115,24 @@ impl<S: Seat> Sheet<S> {
             scale,
         });
     }
+}
+
+/// The display among `outputs` a sheet covers, its rectangle as the
+/// compositor reports it: the one the session `named` while it is still
+/// there, else the first in reading order, left to right and top to bottom:
+/// a display unplugged from under a sheet takes it to the one the person's
+/// eye starts at rather than leaving it on nothing.
+fn covering(
+    named: Option<Place>,
+    outputs: &[(i32, i32, i32, i32)],
+) -> Option<(i32, i32, i32, i32)> {
+    let named = named.and_then(|(x, y, w, h)| {
+        let (w, h) = (i32::try_from(w).ok()?, i32::try_from(h).ok()?);
+        Some((x, y, w, h))
+    });
+    named
+        .filter(|place| outputs.contains(place))
+        .or_else(|| outputs.iter().copied().min_by_key(|(x, y, _, _)| (*x, *y)))
 }
 
 impl<S: Seat> Published for Sheet<S> {
@@ -243,5 +260,40 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
         self.outputs = outputs.to_vec();
         self.follow_place();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Place, covering};
+
+    const RIGHT: Place = (1000, 0, 1000, 700);
+    const LEFT_SHOWN: (i32, i32, i32, i32) = (0, 0, 1000, 700);
+    const RIGHT_SHOWN: (i32, i32, i32, i32) = (1000, 0, 1000, 700);
+
+    #[test]
+    fn a_sheet_covers_the_display_it_was_given() {
+        assert_eq!(
+            covering(Some(RIGHT), &[LEFT_SHOWN, RIGHT_SHOWN]),
+            Some(RIGHT_SHOWN)
+        );
+    }
+
+    #[test]
+    fn a_sheet_covers_the_first_display_when_the_one_it_was_given_is_gone() {
+        // The focused display was unplugged, and the compositor lists the
+        // one still there second: the sheet goes to the one on the left,
+        // where the person's eye starts, not to whichever came first.
+        let unplugged: Place = (2000, 0, 1000, 700);
+        assert_eq!(
+            covering(Some(unplugged), &[RIGHT_SHOWN, LEFT_SHOWN]),
+            Some(LEFT_SHOWN)
+        );
+    }
+
+    #[test]
+    fn a_sheet_covers_the_first_display_in_reading_order_when_none_was_given() {
+        assert_eq!(covering(None, &[RIGHT_SHOWN, LEFT_SHOWN]), Some(LEFT_SHOWN));
+        assert_eq!(covering(None, &[]), None);
     }
 }

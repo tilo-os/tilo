@@ -120,6 +120,11 @@ fn screenshots() -> PathBuf {
 }
 
 impl CaptureStudio {
+    /// The studio sheet's presentation: where the sheet sits.
+    pub(crate) fn presentation(&self) -> &tilo_sheets::Presentation {
+        tilo_sheets::Seat::presentation(&self.seat)
+    }
+
     /// Answer what the studio asked since the last pass, feed the recorder
     /// and hand back what came of it.
     pub(crate) fn serve(&mut self, compositor: &mut Compositor) {

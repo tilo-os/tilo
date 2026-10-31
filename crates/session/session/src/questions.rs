@@ -42,10 +42,6 @@ use tilo_sheets::portal::{
 };
 use tilo_sheets::{Seat as _, word, words};
 
-/// A display's rectangle, in logical pixels: where a sheet that follows the
-/// person goes.
-pub(crate) type PromptPlace = (i32, i32, u32, u32);
-
 /// The sheet that asked the person.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Sheet {
@@ -171,13 +167,14 @@ impl Asker {
     }
 
     /// Take what the person decided since the last pass, and put up the
-    /// oldest question nothing shows yet at `place`.
-    pub(crate) fn follow(&self, place: Option<PromptPlace>) {
+    /// oldest question nothing shows yet. The sheet draws on the display
+    /// the session put it on.
+    pub(crate) fn follow(&self) {
         let Some(questions) = &self.questions else {
             return;
         };
         self.settle(questions);
-        self.retire(questions, place);
+        self.retire(questions);
         // The sheet saying what was granted makes way for a question that
         // arrived meanwhile.
         if self.shown.borrow().is_some() && !questions.pending().is_empty() {
@@ -195,7 +192,7 @@ impl Asker {
         }
         let showing = questions.pending().into_iter().find_map(|question| {
             let kind = question.kind.clone();
-            self.show(question, place).then_some(kind)
+            self.show(question).then_some(kind)
         });
         if let Some(kind) = showing {
             tracing::debug!(kind, "a question is up on its sheet");
@@ -396,7 +393,7 @@ impl Asker {
 
     /// Take the sheet down when its question is gone from under it, or
     /// show it again when its service changed what it asks.
-    fn retire(&self, questions: &Questions, place: Option<PromptPlace>) {
+    fn retire(&self, questions: &Questions) {
         let current = self.shown.borrow().as_ref().map(Shown::state);
         let Some((handle, sheet, details)) = current else {
             return;
@@ -411,7 +408,7 @@ impl Asker {
         };
         if question.details != details {
             self.shown.borrow_mut().take();
-            self.show(question, place);
+            self.show(question);
         }
     }
 
@@ -431,7 +428,6 @@ impl Asker {
                     portal.show(None);
                     portal.presentation().close();
                     portal.presentation().gone();
-                    portal.presentation().place_at(None);
                 }
             }
             Sheet::Files => {
@@ -439,15 +435,13 @@ impl Asker {
                     picker.ask(None);
                     picker.presentation().close();
                     picker.presentation().gone();
-                    picker.presentation().place_at(None);
                 }
             }
         }
     }
 
-    /// Show `question` at `place`, unless nothing shows its kind: whether
-    /// it is up.
-    fn show(&self, question: Question, place: Option<PromptPlace>) -> bool {
+    /// Show `question`, unless nothing shows its kind: whether it is up.
+    fn show(&self, question: Question) -> bool {
         if question.kind == tilo_portal::file_chooser::FILE_CHOOSER_QUESTION {
             let Ok(asked) = serde_json::from_value::<FileChooserQuestion>(question.details.clone())
             else {
@@ -467,7 +461,6 @@ impl Asker {
                 grant: None,
             }));
             picker.ask(Some(request));
-            picker.presentation().place_at(place);
             picker.presentation().open(false);
             return true;
         }
@@ -488,7 +481,6 @@ impl Asker {
             grant: composed.grant,
         }));
         portal.show(Some(composed.dialog));
-        portal.presentation().place_at(place);
         portal.presentation().open(false);
         true
     }

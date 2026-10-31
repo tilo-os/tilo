@@ -441,9 +441,6 @@ struct Shared {
     /// The copies the person can paste again, and what the Clipboard section
     /// was last fed of them.
     clipboard: mount::clipboard::Clipboard,
-    /// Where a question goes: the display the focused window is on, which
-    /// the session settles before the shared state follows its sheets.
-    place: std::cell::Cell<Option<questions::PromptPlace>>,
     /// The overview's pictures and the clock they fly on, which its panel
     /// in the chrome draws with.
     overview: mount::overview::Overview,
@@ -968,7 +965,7 @@ impl Shared {
                 }
             }
         }
-        self.asker.follow(self.place.get());
+        self.asker.follow();
     }
 
     fn show_quick_settings(&self) {
@@ -1507,7 +1504,6 @@ impl Session {
                 notice_signals,
             )),
             asker,
-            place: std::cell::Cell::new(None),
             notice_view: RefCell::new(None),
             sync,
             clipboard: mount::clipboard::Clipboard::new(),
@@ -1889,7 +1885,8 @@ impl Session {
         // What the apps copied since the last pass joins the history; a copy
         // chosen in it is pasted once the panel let the keyboard go.
         self.shared.clipboard.follow(&mut self.compositor);
-        self.shared.place.set(self.question_place());
+        let place = self.sheet_place();
+        self.place_sheets(place);
         // Each round can ask for another (a key's shortcut the chrome
         // leaves to the session); a few rounds settle any chain.
         for _ in 0..4 {
@@ -1937,31 +1934,66 @@ impl Session {
         sync.follow();
     }
 
-    /// Where a question goes: the display the focused window is on, so a
-    /// prompt appears in front of what it is about; `None` when no window
-    /// has focus, which puts it where sheets go by default.
-    fn question_place(&self) -> Option<questions::PromptPlace> {
-        let focused = self.compositor.focused_window()?;
-        let windows = self.compositor.windows();
-        let (.., (x, y, w, h)) = windows.iter().find(|(info, _)| info.id == focused.id)?;
-        let centre = (x.saturating_add(w / 2), y.saturating_add(h / 2));
-        let outputs = self.compositor.outputs();
-        let (ox, oy, ow, oh) = outputs
-            .iter()
+    /// Where every sheet goes: the display the person is working on, so a
+    /// question appears in front of what it is about and the power menu
+    /// where they are looking. `None` while the desk knows no such display
+    /// (one display needs no telling apart), which leaves a sheet on the
+    /// first display there is.
+    fn sheet_place(&self) -> Option<sheets::Place> {
+        let display = self.shared.handle.focused_display()?;
+        let monitor = self
+            .shared
+            .handle
+            .read(|tree| tree.outputs.monitor_of(display).map(str::to_owned))?;
+        let (x, y, w, h) = self
+            .compositor
+            .outputs()
+            .into_iter()
             .filter(|output| output.enabled)
-            .filter_map(|output| output.rect)
-            .find(|(ox, oy, ow, oh)| {
-                centre.0 >= *ox
-                    && centre.0 < ox.saturating_add(*ow)
-                    && centre.1 >= *oy
-                    && centre.1 < oy.saturating_add(*oh)
-            })?;
+            .find(|output| output.monitor == monitor)
+            .and_then(|output| output.rect)?;
         Some((
-            ox,
-            oy,
-            u32::try_from(ow.max(1)).unwrap_or(1),
-            u32::try_from(oh.max(1)).unwrap_or(1),
+            x,
+            y,
+            u32::try_from(w.max(1)).unwrap_or(1),
+            u32::try_from(h.max(1)).unwrap_or(1),
         ))
+    }
+
+    /// Tell every sheet which display it covers: the one the person is
+    /// working on, whenever the desk names another.
+    fn place_sheets(&self, place: Option<sheets::Place>) {
+        for presentation in self.sheet_presentations() {
+            presentation.place_at(place);
+        }
+    }
+
+    /// Every mounted sheet's presentation, in the order it draws.
+    fn sheet_presentations(&self) -> impl Iterator<Item = &tilo_sheets::Presentation> {
+        let shared = &self.shared;
+        [
+            shared.power.as_ref().map(tilo_sheets::Seat::presentation),
+            shared
+                .workspace_settings
+                .as_ref()
+                .map(tilo_sheets::Seat::presentation),
+            shared
+                .directory
+                .as_ref()
+                .map(tilo_sheets::Seat::presentation),
+            shared.portal.as_ref().map(tilo_sheets::Seat::presentation),
+            shared
+                .file_picker
+                .as_ref()
+                .map(tilo_sheets::Seat::presentation),
+            shared.lock.as_ref().map(tilo_sheets::Seat::presentation),
+            self.capture_studio
+                .as_ref()
+                .map(capture_studio::CaptureStudio::presentation),
+            shared.dictation.presentation(),
+        ]
+        .into_iter()
+        .flatten()
     }
 
     /// Tell the portal what it asks of the session about its apps: which
