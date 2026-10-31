@@ -793,6 +793,74 @@
       }
     },
     {
+      "name": "CodeEditor",
+      "doc": "Code to read or write, with line numbers and its language's colouring. What is typed edits the text it is bound to, each edit spliced in, never written over.",
+      "props": [
+        {
+          "name": "placeholder",
+          "doc": "What to type, shown while it is empty.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "language",
+          "doc": "The language it colours (the language's own name, `rust`, `json`); plain text unless said.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Language",
+                "cases": [
+                  "plain_text",
+                  "rust",
+                  "typst",
+                  "sql",
+                  "json",
+                  "tilolang"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "min_lines",
+          "doc": "The fewest lines it is tall for.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "max_lines",
+          "doc": "The most lines it is tall for; past them it scrolls.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "gutter",
+          "doc": "The line numbers show.",
+          "type": "bool"
+        },
+        {
+          "name": "read_only",
+          "doc": "It is read and copied, never edited.",
+          "type": "bool"
+        }
+      ],
+      "bindings": [
+        {
+          "name": "value",
+          "doc": "The text it edits.",
+          "type": "text",
+          "merge": "splice"
+        }
+      ],
+      "semantics": {
+        "role": "TextInput",
+        "label": "placeholder"
+      }
+    },
+    {
       "name": "ColorPicker",
       "doc": "A colour, picked from a saturation and value field, a hue strip, the red, green and blue sliders, or a hex field; a palette of quick picks sits under them when given.",
       "props": [
@@ -1160,6 +1228,57 @@
       ],
       "semantics": {
         "role": "Group"
+      }
+    },
+    {
+      "name": "DropZone",
+      "doc": "Where files go: drag them here, or press the button to choose them (an import, a picture to swap, a file to open). At rest it is a dashed edge around a glyph and a title; while a drag hovers it takes your colour.",
+      "props": [
+        {
+          "name": "title",
+          "doc": "What the zone takes, in a sentence: \"Drop files to import\".",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "message",
+          "doc": "A line under the title saying what it accepts: \"PNG or JPEG up to 50 MB\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "icon",
+          "doc": "A glyph for what it takes, a download arrow unless said.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "action",
+          "doc": "The label of a button offering the same route without dragging (\"Choose files\").",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "drop",
+          "doc": "Files were dropped: carries their paths, as `List<Text>`.",
+          "value": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "choose",
+          "doc": "The action's button was pressed: the view asks for the files its own way."
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "title"
       }
     },
     {
@@ -1540,6 +1659,135 @@
       }
     },
     {
+      "name": "Image",
+      "doc": "A picture: artwork, a photo, a cover. Its bytes are read from its address as it arrives; a picture that is not here yet keeps its place, and one whose bytes cannot be read shows the error mark, never nothing.",
+      "props": [
+        {
+          "name": "src",
+          "doc": "Where the picture's bytes are: a content address (`tilo-blob://<hash>`) or a URL.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "alt",
+          "doc": "What the picture shows, as assistive technology announces it; without one it is decorative.",
+          "type": {
+            "option": "text"
+          },
+          "required": true
+        },
+        {
+          "name": "fit",
+          "doc": "How it fills its box: `contain` (the whole picture, letterboxed, unless said), `cover` (cropped to fill) or `fill` (stretched to the box).",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "ImageFit",
+                "cases": [
+                  "contain",
+                  "cover",
+                  "fill"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "alt"
+      }
+    },
+    {
+      "name": "ImageCropEditor",
+      "doc": "A picture with a crop its four corners set (a scanned page, a photo to trim): drag a corner to move it, or an edge's arrow keys, and it reports the crop each time it changes. The picture is letterboxed in its box; the crop is a share of the picture, never of the box.",
+      "props": [
+        {
+          "name": "image",
+          "doc": "The picture to crop.",
+          "type": "picture",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "left",
+          "doc": "The left crop edge, from 0 (the picture's left) to 1.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "top",
+          "doc": "The top crop edge, from 0 (the picture's top) to 1.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "right",
+          "doc": "The right crop edge, to 1 at the picture's right.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "bottom",
+          "doc": "The bottom crop edge, to 1 at the picture's bottom.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "aspect",
+          "doc": "The box's shape before the picture is here (its width over its height).",
+          "type": {
+            "option": "float"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "change",
+          "doc": "The crop changed: carries its edges, left, top, right, bottom, each `0..=1`.",
+          "value": {
+            "list": "float"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Group"
+      }
+    },
+    {
+      "name": "ImageViewer",
+      "doc": "A picture to look at closely: scroll to zoom at the pointer, drag to pan, and a reset to the whole picture. It fills its box; the picture is letterboxed inside it.",
+      "props": [
+        {
+          "name": "image",
+          "doc": "The picture to show.",
+          "type": "picture",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "alt",
+          "doc": "What the picture is, as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          },
+          "required": true
+        },
+        {
+          "name": "aspect",
+          "doc": "The box's shape: its width over its height, which it stands at before the picture is here. The picture's own shape once it is.",
+          "type": {
+            "option": "float"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "alt"
+      }
+    },
+    {
       "name": "InputHint",
       "doc": "The keys of a shortcut as drawn keycaps, in the person's own keyboard legends (\"Strg\" on a German keyboard, the Command key on a Mac), beside the command it runs. Never a typed string.",
       "props": [
@@ -1755,6 +2003,219 @@
       "semantics": {
         "role": "ListItem",
         "label": "label"
+      }
+    },
+    {
+      "name": "MediaGrid",
+      "doc": "Cards in a grid: a library, an album's covers, a shelf of books, a set of channels. The cards reflow into as many columns as fit, every row's text as tall as its tallest so titles line up; `justified`, they make rows of photos that span the width at each picture's own shape.",
+      "props": [
+        {
+          "name": "size",
+          "doc": "How large each card is: how wide a column holds.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "MediaSize",
+                "cases": [
+                  "small",
+                  "regular",
+                  "large"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "justified",
+          "doc": "The cards are photos at their own shape: justified rows that span the width, rather than equal columns.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "items",
+          "doc": "The cards, in order.",
+          "accepts": {
+            "component": "MediaCard"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Grid"
+      }
+    },
+    {
+      "name": "MediaTransport",
+      "doc": "What is playing and the controls that steer it, as one band: the art and the song, like and lyrics, shuffle, previous, play/pause, next and repeat over the scrubber, the queue and the volume. It stands across the window's foot, under every column.\nA control the view gives no event for is left out: an app that cannot shuffle shows no shuffle. A control the view leaves off changes what the band shows rather than what plays.",
+      "props": [
+        {
+          "name": "title",
+          "doc": "The song's name, or what the band says with nothing playing.",
+          "type": "text",
+          "required": true
+        },
+        {
+          "name": "subtitle",
+          "doc": "Who it is by, or why it cannot play.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "error",
+          "doc": "The subtitle says why it cannot play: it reads as an error.",
+          "type": "bool"
+        },
+        {
+          "name": "art",
+          "doc": "Its cover: a picture by its address, loaded as it arrives. Without one the placeholder shows the album's initials.",
+          "type": {
+            "option": "picture"
+          }
+        },
+        {
+          "name": "art_name",
+          "doc": "The name the placeholder cover takes its initials and colour from (the album).",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "opens",
+          "doc": "What a press on the art opens (\"Open album\", \"Show lyrics\"), as it is announced.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "playing",
+          "doc": "Whether it plays.",
+          "type": "bool"
+        },
+        {
+          "name": "idle",
+          "doc": "Nothing can play: every control rests disabled.",
+          "type": "bool"
+        },
+        {
+          "name": "position",
+          "doc": "Where it is, in seconds.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "duration",
+          "doc": "How long it is, in seconds.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "volume",
+          "doc": "The volume, `0..=1`; zero is muted.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "shuffle",
+          "doc": "Whether shuffle is on. Without it there is no shuffle control.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
+          "name": "repeat",
+          "doc": "What repeat repeats. Without it there is no repeat control.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "TransportRepeat",
+                "cases": [
+                  "off",
+                  "all",
+                  "one"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "liked",
+          "doc": "Whether what plays is liked. Without it there is no like control.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
+          "name": "lyrics",
+          "doc": "Whether the lyrics show. Without it there is no lyrics control.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
+          "name": "queue",
+          "doc": "Whether the queue shows. Without it there is no queue control.",
+          "type": {
+            "option": "bool"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "act_play_pause",
+          "doc": "The play/pause control was pressed."
+        },
+        {
+          "name": "act_previous",
+          "doc": "The previous control was pressed."
+        },
+        {
+          "name": "act_next",
+          "doc": "The next control was pressed."
+        },
+        {
+          "name": "act_shuffle",
+          "doc": "Shuffle was toggled."
+        },
+        {
+          "name": "act_repeat",
+          "doc": "Repeat was toggled."
+        },
+        {
+          "name": "act_like",
+          "doc": "What plays was liked or unliked."
+        },
+        {
+          "name": "act_mute",
+          "doc": "The band was muted or unmuted."
+        },
+        {
+          "name": "act_seek",
+          "doc": "The band was moved to a place in the song: carries `0..=1`.",
+          "value": "float"
+        },
+        {
+          "name": "act_volume",
+          "doc": "The volume was set: carries `0..=1`.",
+          "value": "float"
+        },
+        {
+          "name": "act_lyrics",
+          "doc": "The lyrics were asked for."
+        },
+        {
+          "name": "act_queue",
+          "doc": "The queue was asked for."
+        }
+      ],
+      "semantics": {
+        "role": "Toolbar",
+        "label": "title"
       }
     },
     {
@@ -2004,6 +2465,108 @@
       }
     },
     {
+      "name": "PagePreview",
+      "doc": "A page's shape in a print queue, a scan or a document picker: a sheet of paper with the lines a page holds, and \"Page n of m\" under it. It shows the shape and the progress, never the content, which it does not have.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the page is: its file's name, for assistive technology.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "page",
+          "doc": "Which page this is, counted from 1 (clamped into the count).",
+          "type": "int",
+          "required": true
+        },
+        {
+          "name": "page_count",
+          "doc": "How many pages the document has.",
+          "type": "int",
+          "required": true
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "label"
+      }
+    },
+    {
+      "name": "PageSidebar",
+      "doc": "A rail down a document's side: one numbered thumbnail per page, the page open lifted, and, unless read-only, pages that can be dragged to reorder, copied, moved and added.",
+      "props": [
+        {
+          "name": "aspect",
+          "doc": "A page's height over its width (`1.414` for A4, `792/612` for US Letter).",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "count",
+          "doc": "How many pages the document has.",
+          "type": "int",
+          "required": true
+        },
+        {
+          "name": "current",
+          "doc": "Which page is open, counted from 0.",
+          "type": "int",
+          "required": true
+        },
+        {
+          "name": "header",
+          "doc": "The rail's title above the thumbnails: \"Pages\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "add",
+          "doc": "The label of the button that adds a page at the foot (\"Import…\"). Without it there is no add button.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "panel",
+          "doc": "The rail paints its own panel (a document's whole side column). Without it it paints only the thumbnails, on the ground its host gives it.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "select",
+          "doc": "A page was chosen: carries its index, from 0.",
+          "value": "int"
+        },
+        {
+          "name": "reorder",
+          "doc": "A page was moved: carries its old index, then its place among the others.",
+          "value": "int",
+          "at": "int"
+        },
+        {
+          "name": "duplicate",
+          "doc": "A page was to be copied: carries its index.",
+          "value": "int"
+        },
+        {
+          "name": "delete",
+          "doc": "A page was to be removed: carries its index.",
+          "value": "int"
+        },
+        {
+          "name": "add_page",
+          "doc": "A page was to be added."
+        }
+      ],
+      "semantics": {
+        "role": "List"
+      }
+    },
+    {
       "name": "PictureChoice",
       "doc": "A choice among pictures whose meaning is visual: a text size, a pointer size, a colour filter. Each tile shows its picture over its name, and the chosen tile carries the selection edge.",
       "props": [
@@ -2178,6 +2741,243 @@
       }
     },
     {
+      "name": "ModalDialog",
+      "doc": "A question over the window: a dimmed page, a sheet with a title, the view's content, and up to three answers. Escape or a click on the scrim closes it; Enter fires the main answer, except in a destructive question, where Enter is the safe one.",
+      "props": [
+        {
+          "name": "title",
+          "doc": "What the question is, as its title (name the action: \"Delete 3 notes?\").",
+          "type": "text",
+          "required": true
+        },
+        {
+          "name": "icon",
+          "doc": "A glyph before the title naming what asks.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "description",
+          "doc": "What assistive technology says after the title.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "open",
+          "doc": "Whether it is open. A closed dialog paints nothing and takes no input.",
+          "type": "bool"
+        },
+        {
+          "name": "primary",
+          "doc": "The main answer's label (\"Delete\"): the inverted button, and what Enter fires.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "secondary",
+          "doc": "The other answer's label, usually Cancel. Escape fires it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "tertiary",
+          "doc": "A third answer's label, standing apart (\"Don't save\"). Enter never fires it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "destructive",
+          "doc": "The main answer destroys something: it is a destructive button, and Enter is the safe answer instead.",
+          "type": "bool"
+        },
+        {
+          "name": "primary_enabled",
+          "doc": "The main answer cannot be taken yet. A dialog with this has it disabled.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "body",
+          "doc": "The view's content, inside the sheet.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "act_primary",
+          "doc": "The main answer was taken."
+        },
+        {
+          "name": "act_secondary",
+          "doc": "The other answer was taken."
+        },
+        {
+          "name": "act_tertiary",
+          "doc": "The third answer was taken."
+        },
+        {
+          "name": "dismiss",
+          "doc": "It was closed (Escape, the scrim, or a click on Cancel): a dialog with this closes as it is."
+        }
+      ],
+      "semantics": {
+        "role": "Dialog",
+        "label": "title"
+      }
+    },
+    {
+      "name": "FloatingPanel",
+      "doc": "A floating panel a view places itself: a header slot, a body and a footer slot, on the floating material.\nA view rarely places one: a menu is a `Popover` beside its control, a question a `ModalDialog`, and the window's chrome belongs to the shell (§7c). It is for the surface a canvas's own inspector or a document's navigator stands on.",
+      "props": [
+        {
+          "name": "width",
+          "doc": "A fixed width, in logical pixels (a utility panel).",
+          "type": {
+            "option": "float"
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "body",
+          "doc": "The panel's body.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        },
+        {
+          "name": "header",
+          "doc": "Its header, above the body; a field there renders embedded.",
+          "accepts": "view"
+        },
+        {
+          "name": "footer",
+          "doc": "Its footer, under the body.",
+          "accepts": "view"
+        }
+      ],
+      "semantics": {
+        "role": "Group"
+      }
+    },
+    {
+      "name": "Popover",
+      "doc": "A menu or a small form beside its control: the one anchored floating panel. The view's content is inside it.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "Its accessible name (a menu says what it chooses: \"Refresh interval\").",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "open",
+          "doc": "Whether it is open.",
+          "type": "bool"
+        },
+        {
+          "name": "side",
+          "doc": "The side of its anchor it prefers: `below` unless said.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "PopoverSide",
+                "cases": [
+                  "above",
+                  "below",
+                  "left",
+                  "right"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "content",
+          "doc": "Its content.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "dismiss",
+          "doc": "It was closed (Escape, or a press outside it): a popover with this closes as it is."
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "label"
+      }
+    },
+    {
+      "name": "PopoverButton",
+      "doc": "A button that opens a popover anchored to itself: a filter's options, a share sheet, a picker of values. A press opens it, and it closes by a second press, Escape, or a press outside it.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the button is called, as it is announced.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "icon",
+          "doc": "A glyph instead of the label, on an icon-only button.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "side",
+          "doc": "The side of the button it opens on: `below` unless said.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "PopoverSide",
+                "cases": [
+                  "above",
+                  "below",
+                  "left",
+                  "right"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "trailing",
+          "doc": "Whether it opens at the button's trailing edge instead of its leading edge.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "content",
+          "doc": "The popover's content.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "label"
+      }
+    },
+    {
       "name": "TextStack",
       "doc": "A title over a secondary line, with an optional third line under it, in fixed roles and at fixed gaps: a file's name over its folder, a person over their role. Each line is one line, cut short with an ellipsis; two facts never share a line.",
       "props": [
@@ -2319,6 +3119,35 @@
       }
     },
     {
+      "name": "QrCode",
+      "doc": "A QR code of a payload, for a phone's camera to read: a pairing handshake, an invite.\nIts payload may be private (a pairing secret): give `secret`, and it is left out of screenshots, recordings and screens, and never spoken by assistive technology.",
+      "props": [
+        {
+          "name": "payload",
+          "doc": "What the code carries, as the scanner reads it.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "alt",
+          "doc": "What scanning it means, as assistive technology announces it; \"QR code\" unless said.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "secret",
+          "doc": "The payload is private pairing material: leave the code out of screenshots and recordings, and never speak it.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "alt"
+      }
+    },
+    {
       "name": "Time",
       "doc": "A moment shown as how long ago it was, or how far ahead: `2 min ago`, `Yesterday`, `in 3 min`, in the person's language and time zone. It changes when what it says does, and wakes the window for nothing else.",
       "props": [
@@ -2403,6 +3232,80 @@
           "doc": "The rich text it edits.",
           "type": "rich_text",
           "merge": "rich"
+        }
+      ],
+      "semantics": {
+        "role": "TextInput",
+        "label": "placeholder"
+      }
+    },
+    {
+      "name": "RichTextLine",
+      "doc": "One line of text, edited in place: a block editor's cell, a composer's message. It carries its text and its inline marks, and reports the keys that would carry the edit out of the line itself (Enter, Shift+Enter, Backspace at the start), so a host composing several lines can split or join them.",
+      "props": [
+        {
+          "name": "placeholder",
+          "doc": "What to type, shown while it is empty.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "role",
+          "doc": "How the text reads: `body` unless said.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "TextRole",
+                "cases": [
+                  "display",
+                  "large_title",
+                  "title",
+                  "heading",
+                  "subheading",
+                  "body",
+                  "label",
+                  "caption",
+                  "reading",
+                  "code"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "mono",
+          "doc": "The text is monospace (code).",
+          "type": "bool"
+        },
+        {
+          "name": "wrap",
+          "doc": "The line wraps to its width rather than scrolling across.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "enter",
+          "doc": "Enter was pressed: the line ends at this byte.",
+          "value": "int"
+        },
+        {
+          "name": "soft_enter",
+          "doc": "Shift+Enter was pressed: the line breaks at this byte, a soft break.",
+          "value": "int"
+        },
+        {
+          "name": "backspace_at_start",
+          "doc": "Backspace at the start was pressed: the line joins the one before it."
+        }
+      ],
+      "bindings": [
+        {
+          "name": "value",
+          "doc": "The text it edits.",
+          "type": "text",
+          "merge": "splice"
         }
       ],
       "semantics": {
@@ -3371,6 +4274,90 @@
       }
     },
     {
+      "name": "VideoPlayer",
+      "doc": "A video with its playback controls over it: play/pause, the scrubber, the volume, mute and fullscreen. The app's player is the one truth; what the person does reaches the view as its events.\nThe video's bytes are a camera, a capture, or the medium it names (a file or a stream), which the toolkit opens on the engine its app hands in.",
+      "props": [
+        {
+          "name": "title",
+          "doc": "The video's title, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "poster",
+          "doc": "A still shown before the first frame: a picture by its address.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "playing",
+          "doc": "Whether it plays.",
+          "type": "bool"
+        },
+        {
+          "name": "position",
+          "doc": "Where it is, in seconds.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "duration",
+          "doc": "How long it is, in seconds.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "source",
+          "doc": "Where it is stored, as a `file://` address or a URL the engine fetches.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "volume",
+          "doc": "The volume, `0..=1`.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "muted",
+          "doc": "Whether it is muted.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "set_playing",
+          "doc": "Play or pause was pressed: carries `true` when it plays.",
+          "value": "bool"
+        },
+        {
+          "name": "seek",
+          "doc": "It was moved to a place in the video: carries `0..=1`.",
+          "value": "float"
+        },
+        {
+          "name": "set_volume",
+          "doc": "The volume was set: carries `0..=1`.",
+          "value": "float"
+        },
+        {
+          "name": "fail",
+          "doc": "The player could not show its video: carries what the engine said.",
+          "value": "text"
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "title"
+      }
+    },
+    {
       "name": "VirtualList",
       "doc": "A long list of rows that costs only the rows on screen: each is built when it scrolls into view. Selection follows the person's choice and is reported with the item it shows; the list is one focus stop.",
       "props": [
@@ -3449,6 +4436,42 @@
       "semantics": {
         "role": "List",
         "label": "name"
+      }
+    },
+    {
+      "name": "WebView",
+      "doc": "A page, live: a browser's content, a help document, a web app embedded in a view. Its address bar, navigation and permission prompts belong to its host: this is the page alone, and the app reports what the page navigated to as its events.",
+      "props": [
+        {
+          "name": "title",
+          "doc": "What the page is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "uri",
+          "doc": "The page's address, which it opens at first.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "navigate",
+          "doc": "The page navigated (the person followed a link): carries the address.",
+          "value": "text"
+        },
+        {
+          "name": "fail",
+          "doc": "The page could not load: carries what the engine said.",
+          "value": "text"
+        }
+      ],
+      "semantics": {
+        "role": "Document",
+        "label": "title"
       }
     },
     {
@@ -4162,6 +5185,82 @@
       "semantics": {
         "role": "Button",
         "label": "label"
+      }
+    },
+    {
+      "name": "MediaCard",
+      "doc": "One card of a grid: the art (a cover, a thumbnail, a photo) with its title and up to two meta lines under it. A press opens what it stands for.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The resource the card stands for: what a press opens. Without one it is a picture with a title, which does nothing when pressed.",
+          "type": {
+            "option": "resource"
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What the card is called, under its art. Without one it is art only (a photo).",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "picture",
+          "doc": "Its art: a picture by its address, loaded as it arrives.",
+          "type": {
+            "option": "picture"
+          }
+        },
+        {
+          "name": "icon",
+          "doc": "The icon of a kind of thing, on the neutral tile: a podcast, a folder. Without a picture the placeholder shows the title's initials.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "meta",
+          "doc": "One line under the title (an artist, a channel, an author). Give two for two lines.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "aspect",
+          "doc": "The shape of its art, `square` unless said.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "MediaAspect",
+                "cases": [
+                  "square",
+                  "wide",
+                  "portrait",
+                  "circle"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "selected",
+          "doc": "Whether it is the selected card.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "activate",
+          "doc": "It was pressed: open what it stands for."
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "label": "title",
+        "presents": "item"
       }
     },
     {

@@ -170,10 +170,14 @@ pub enum Value {
     /// An action offered to the person: how a control shows it, and the event of its node
     /// that choosing it fires.
     Action(Offered),
+    /// A picture: where its bytes are read from, and what it says to assistive technology.
+    Picture(Picture),
 }
 
 /// An action a node offers ([`Value::Action`]), as the toolkit holds one.
 pub use tilo_ui_graph::component::Offered;
+/// A picture a node shows ([`Value::Picture`]): its address, and its accessible name.
+pub use tilo_ui_graph::component::Picture;
 
 impl Value {
     #[must_use]

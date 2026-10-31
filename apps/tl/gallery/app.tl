@@ -45,6 +45,7 @@ type Gallery {
     feedback: Collection<Feedback>
     data: Collection<Data>
     controls: Collection<Controls>
+    media: Collection<Media>
 }
 
 root Gallery
@@ -78,6 +79,9 @@ view gallery(g: Gallery) {
             }
             for x in g.controls {
                 ui.ListRow(x.title, item: x, icon: .settings)
+            }
+            for x in g.media {
+                ui.ListRow(x.title, item: x, icon: .image)
             }
         }
     }
