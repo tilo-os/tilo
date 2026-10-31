@@ -49,12 +49,17 @@ pub(crate) struct Displays {
     staged: Option<DisplayTransaction>,
     /// The trusted display tools the compositor was last given.
     trusted: Option<Vec<PathBuf>>,
+    /// The built-in output last turned with the device, and the turn, so a
+    /// device that stays put is not laid out again on every pass.
+    turned: Option<(String, Transform)>,
 }
 
 impl Displays {
     /// Bring the displays in line with the person's settings and advance the
     /// change they were asked to confirm, `night_light` being the colour
-    /// temperature the session runs the night light at while it is on.
+    /// temperature the session runs the night light at while it is on, and
+    /// `turned` the built-in output the device's orientation turns, with the
+    /// turn it shows.
     ///
     /// # Errors
     /// The compositor could not set a mode, scale, arrangement or HDR.
@@ -62,6 +67,7 @@ impl Displays {
         &mut self,
         compositor: &mut Compositor,
         night_light: Option<u32>,
+        turned: Option<(&str, Transform)>,
     ) -> Result<(), tilo_compositor::Error> {
         let now = unix_now_ms();
         let expired = self.deadline.is_some_and(|deadline| now >= deadline);
@@ -69,7 +75,8 @@ impl Displays {
         let document = settings_store::document_changed(self.seen, self.stamp, stamp);
         let generation = compositor.displays_generation();
         let monitors_changed = self.generation != Some(generation);
-        if !document && !expired && !monitors_changed {
+        let turned_changed = self.turned_changed(turned);
+        if !document && !expired && !monitors_changed && !turned_changed {
             return Ok(());
         }
         self.seen = true;
@@ -110,7 +117,18 @@ impl Displays {
         };
         let (stored, last) =
             settings_store::hardware::DisplayConfig::load_effective_remembering(&set);
-        let config = sent(&stored, &self.descriptors, &last, night_light);
+        if turned_changed {
+            self.turned = turned.map(|(connector, turn)| (connector.to_owned(), turn));
+        }
+        let config = sent(
+            &stored,
+            &self.descriptors,
+            &last,
+            night_light,
+            self.turned
+                .as_ref()
+                .map(|(connector, turn)| (connector.as_str(), *turn)),
+        );
         if self.applied.as_ref() == Some(&config) {
             return Ok(());
         }
@@ -152,6 +170,16 @@ impl Displays {
             transaction.request_revert()?;
         }
         Ok(true)
+    }
+
+    /// Whether `turned` is a different output or a different turn from the
+    /// one last laid out.
+    fn turned_changed(&self, turned: Option<(&str, Transform)>) -> bool {
+        match (&self.turned, turned) {
+            (None, None) => false,
+            (Some((connector, turn)), Some((now, shown))) => connector != now || *turn != shown,
+            _ => true,
+        }
     }
 }
 
@@ -273,16 +301,22 @@ fn reconcile(
 }
 
 /// The stored arrangement as the compositor takes it, at the night light
-/// temperature the session runs while it is on.
+/// temperature the session runs while it is on, with `turned`'s output
+/// turned the way the device is held.
 ///
 /// A monitor the person never arranged for keeps the scale and rotation it
 /// was last shown at, so a familiar laptop panel is not thrown back to 1x
 /// the first time it is docked.
+///
+/// The turn goes over the stored one for that panel: a screen whose machine
+/// is held on its side is not readable at the angle its arrangement was
+/// arranged at, and the rotation lock is what pins it instead.
 fn sent(
     stored: &settings_store::hardware::DisplayConfig,
     descriptors: &[OutputDescriptor],
     last: &BTreeMap<String, MonitorLast>,
     night_light: Option<u32>,
+    turned: Option<(&str, Transform)>,
 ) -> CompositorDisplayConfig {
     let mut config = CompositorDisplayConfig {
         night_light,
@@ -306,6 +340,9 @@ fn sent(
             ..OutputConfig::default()
         };
         place(&mut config, &descriptor.connector, &output);
+    }
+    if let Some((connector, transform)) = turned {
+        config.transforms.insert(connector.to_owned(), transform);
     }
     config
 }
@@ -462,7 +499,13 @@ mod tests {
                 ..OutputConfig::default()
             },
         );
-        let config = super::sent(&stored, &[], &std::collections::BTreeMap::new(), Some(3400));
+        let config = super::sent(
+            &stored,
+            &[],
+            &std::collections::BTreeMap::new(),
+            Some(3400),
+            None,
+        );
         assert_eq!(config.night_light, Some(3400));
         assert!(config.disabled.contains("DP-1"));
         assert_eq!(config.positions.get("DP-1"), Some(&(1920, 240)));
@@ -513,11 +556,37 @@ mod tests {
             std::slice::from_ref(&descriptor),
             &last,
             None,
+            None,
         );
         assert_eq!(config.scales.get("eDP-1"), Some(&1.5));
         assert_eq!(
             config.transforms.get("eDP-1"),
             Some(&tilo_compositor::Transform::_90)
+        );
+    }
+
+    #[test]
+    fn the_panel_follows_the_device_over_the_turn_it_was_shown_at() {
+        let mut stored = settings_store::hardware::DisplayConfig::default();
+        stored.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                transform: OutputTransform::Rotate180,
+                ..OutputConfig::default()
+            },
+        );
+        let turned = Some(("eDP-1", tilo_compositor::Transform::_90));
+        let config = super::sent(
+            &stored,
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            turned,
+        );
+        assert_eq!(
+            config.transforms.get("eDP-1"),
+            Some(&tilo_compositor::Transform::_90),
+            "the panel turns with the machine, whatever its arrangement says"
         );
     }
 

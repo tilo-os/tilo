@@ -54,6 +54,7 @@ mod plane;
 pub mod portal_link;
 mod questions;
 mod records;
+mod rotation;
 pub mod run;
 mod search;
 mod setup;
@@ -105,6 +106,7 @@ pub use launches::Launches;
 pub use lists::{AppLists, Lists};
 pub use mount::vpn::KillSwitch;
 pub use records::Records;
+pub use rotation::Accelerometer;
 pub use run::{Backend, Reach};
 pub use search::{AppActions, SearchOptions};
 pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
@@ -162,6 +164,8 @@ pub struct Options {
     pub quick_settings: Option<QuickSettings>,
     /// The person's settings: shortcuts, input, gestures.
     pub config: SessionConfig,
+    /// The built-in panel turns with the way up this reads the device.
+    pub accelerometer: Accelerometer,
     /// The system services the session hosts: what they publish is the
     /// session's, beside the desktop's.
     pub services: Vec<Box<dyn Service>>,
@@ -342,6 +346,7 @@ impl Default for Options {
             presentation: ComponentRunnerInputs::from_native_process,
             quick_settings: None,
             config: SessionConfig::default(),
+            accelerometer: Accelerometer::default(),
             services: Vec::new(),
             search: SearchOptions::default(),
             apps: None,
@@ -1342,6 +1347,8 @@ pub struct Session {
     displays: display_settings::Displays,
     /// The question about a display change, and the answers it takes.
     confirmation: display_confirm::Confirmation,
+    /// Which way up the device is held, and the lock that pins the panel.
+    rotation: rotation::Rotation,
     /// The keyboard input sources, and the one that types.
     sources: config::Sources,
     /// The machine's power: the idle policy, the service over logind and
@@ -1748,6 +1755,7 @@ impl Session {
             surface_apps,
             displays: display_settings::Displays::default(),
             confirmation: display_confirm::Confirmation::default(),
+            rotation: rotation::Rotation::mount(options.accelerometer),
             sources,
             ended: false,
             magnifier: (
@@ -1807,11 +1815,13 @@ impl Session {
         Ok(())
     }
 
-    /// Bring the displays in line with the person's arrangement and advance
-    /// a change waiting for their answer.
+    /// Bring the displays in line with the person's arrangement and the way up
+    /// the device is held, and advance a change waiting for their answer.
     fn follow_displays(&mut self) -> Result<(), Error> {
         let night_light = self.night_light.0.then_some(NIGHT_LIGHT_WARMTH);
-        self.displays.follow(&mut self.compositor, night_light)
+        let turned = self.rotation.follow(&self.compositor.outputs());
+        self.displays
+            .follow(&mut self.compositor, night_light, turned)
     }
 
     /// The keyboard input sources, in the person's order.
