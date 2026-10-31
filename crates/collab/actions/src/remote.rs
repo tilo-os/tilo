@@ -40,6 +40,7 @@ mod catalogue;
 mod confirmation;
 mod content_put;
 pub mod crash_records;
+pub mod downloaded_apps;
 pub mod feedback;
 pub mod home_relay_hosting;
 mod nodes;

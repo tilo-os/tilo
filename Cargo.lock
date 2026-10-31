@@ -17590,6 +17590,8 @@ version = "0.1.0"
 dependencies = [
  "collab-types",
  "collaboration",
+ "fs-protocol",
+ "host-fs",
  "launcher",
  "libc",
  "runtime-portal",
@@ -17597,13 +17599,18 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-actions",
  "tilo-desktop-entry",
  "tilo-installed-apps",
+ "tilo-lock",
  "tilo-mime",
  "tilo-paths",
+ "tilo-resource",
+ "tilo-service",
  "tilo-test-env",
  "tilo-ui",
  "tracing",
+ "uuid",
  "workspace-hack",
 ]
 
