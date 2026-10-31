@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
-use settings_store::keyboard_shortcuts::catalogue;
+use settings_store::keyboard_shortcuts::{ShortcutEntry, catalogue};
 use ui::framework::{Dispatcher, Effected, ResourceApp, ViewCx};
 use ui::input::{
     ControllerBinding, ControllerButton, InputBinding, KeyLegend, KeyboardBinding,
@@ -432,6 +432,7 @@ fn keys(mut column: Column, guide: &Guide, dispatch: &Dispatcher<ShortcutGuide>)
         "guide-group-windows",
         "guide-group-search",
         "guide-group-capture",
+        "guide-published-heading",
     ];
     let mut groups = Row::new().with_gap(ui::tokens::Spacing::BASE.s6);
     for (index, rows) in guide.essentials.iter().enumerate() {
@@ -595,21 +596,7 @@ pub fn keyboard_guide(table: &ShortcutConfig) -> Guide {
                     .any(|action| table.bindings.get(action) != defaults.bindings.get(action)),
             })
             .collect(),
-        essentials: ESSENTIALS
-            .iter()
-            .map(|group| {
-                group
-                    .iter()
-                    .filter_map(|id| entries.iter().find(|entry| entry.id == *id))
-                    .map(|entry| {
-                        (
-                            t(&entry.label_key),
-                            entry.chords.iter().map(keycaps).collect(),
-                        )
-                    })
-                    .collect()
-            })
-            .collect(),
+        essentials: essentials(table, &entries),
         notes: notes(table),
         listening: None,
         message: None,
@@ -716,9 +703,7 @@ fn chord_text(chord: &KeyChord) -> String {
 
 /// What else the guide tells the person about the keys, in reading order.
 fn notes(table: &ShortcutConfig) -> Vec<String> {
-    let mut notes = vec![strip_jump_note(table), app_tab_note()];
-    notes.extend(action_summary(table));
-    notes
+    vec![strip_jump_note(table), app_tab_note()]
 }
 
 /// Going straight to a strip with the live chords of the first and the last
@@ -757,23 +742,39 @@ fn app_tab_note() -> String {
     )
 }
 
-/// One line naming every chord a published action answers, or `None` when
-/// nothing is published: those are not catalogue entries, so the guide would
-/// not mention them otherwise.
-fn action_summary(table: &ShortcutConfig) -> Option<String> {
-    if table.actions.is_empty() {
-        return None;
-    }
-    let list = table
-        .actions
+/// The essential groups: the platform's own, then what the apps published,
+/// each action a row of its name and the chord that answers it.
+fn essentials(
+    table: &ShortcutConfig,
+    entries: &[ShortcutEntry],
+) -> Vec<Vec<(String, Vec<KeyboardBinding>)>> {
+    let mut groups: Vec<Vec<(String, Vec<KeyboardBinding>)>> = ESSENTIALS
         .iter()
-        .map(|bound| format!("{} · {}", bound.label, chord_text(&bound.chord)))
-        .collect::<Vec<_>>()
-        .join("   ");
-    Some(crate::t_args(
-        "guide-your-shortcuts",
-        &[("shortcuts", ui::i18n::ArgValue::Text(list))],
-    ))
+        .map(|group| {
+            group
+                .iter()
+                .filter_map(|id| entries.iter().find(|entry| entry.id == *id))
+                .map(|entry| {
+                    (
+                        t(&entry.label_key),
+                        entry.chords.iter().map(keycaps).collect(),
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    // A published action is no catalogue entry, so the guide would not
+    // mention it otherwise.
+    if !table.actions.is_empty() {
+        groups.push(
+            table
+                .actions
+                .iter()
+                .map(|bound| (bound.label.clone(), vec![keycaps(&bound.chord)]))
+                .collect(),
+        );
+    }
+    groups
 }
 
 /// The app's definition, which the shell mounts.
@@ -850,10 +851,12 @@ mod tests {
         );
     }
 
+    /// A published action is a row of its own: its name, and the chord beside
+    /// it, laid out as key hints rather than joined into one string.
     #[test]
-    fn published_action_chords_are_named_in_a_note_of_their_own() {
+    fn a_published_action_is_a_row_of_its_name_and_its_chord() {
         let mut table = ShortcutConfig::default();
-        assert_eq!(action_summary(&table), None);
+        assert_eq!(keyboard_guide(&table).essentials.len(), ESSENTIALS.len());
         table.actions.push(settings_store::hardware::ActionChord {
             chord: KeyChord::parse("Ctrl+Alt+D").expect("a free chord"),
             target: settings_store::hardware::ActionChordTarget {
@@ -863,8 +866,18 @@ mod tests {
             },
             label: "Deploy".to_owned(),
         });
-        let note = action_summary(&table).expect("the published chord is named");
-        assert!(note.contains("Deploy"), "{note}");
-        assert!(note.contains("Ctrl+Alt+D"), "{note}");
+        let guide = keyboard_guide(&table);
+        let published = guide.essentials.last().expect("the published group");
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].0, "Deploy");
+        assert_eq!(published[0].1.len(), 1);
+        assert_eq!(
+            published[0].1[0],
+            keycaps(&KeyChord::parse("Ctrl+Alt+D").unwrap())
+        );
+        assert!(
+            guide.notes.iter().all(|note| !note.contains("Deploy")),
+            "no note joins the published chord onto other copy"
+        );
     }
 }

@@ -36,6 +36,7 @@ use tilo_audio_service::sound::{Device, SOUND, Sound, SoundAction, Stream};
 use tracing::warn;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
+use ui::tilo_actions::ResourcePresentation;
 use ui::tilo_resource::{self, Effect};
 
 use crate::area::AreaContext;
@@ -652,19 +653,27 @@ fn stream_live_row(stream: &Stream) -> LiveRow {
     } else {
         "settings.audio-recording"
     };
-    LiveRow::new(format!("{kind}:{}", stream.node), kind, stream.label())
-        .operation(offer(AudioEffect::SetStreamMuted {
-            stream: stream.node,
-            muted: !stream.muted,
-        }))
-        .operation(offer(AudioEffect::SetStreamVolume {
-            stream: stream.node,
-            volume: f64::from(stream.volume.unwrap_or(1.0)),
-        }))
-        .operation(offer(AudioEffect::RouteStream {
-            stream: stream.node,
-            device: FOLLOW_DEFAULT.into(),
-        }))
+    let row = LiveRow::new(format!("{kind}:{}", stream.node), kind, stream.label());
+    let row = match stream.plays() {
+        Some(plays) => row.presentation(ResourcePresentation {
+            detail: Some(plays.to_owned()),
+            badge: None,
+            preview: None,
+        }),
+        None => row,
+    };
+    row.operation(offer(AudioEffect::SetStreamMuted {
+        stream: stream.node,
+        muted: !stream.muted,
+    }))
+    .operation(offer(AudioEffect::SetStreamVolume {
+        stream: stream.node,
+        volume: f64::from(stream.volume.unwrap_or(1.0)),
+    }))
+    .operation(offer(AudioEffect::RouteStream {
+        stream: stream.node,
+        device: FOLLOW_DEFAULT.into(),
+    }))
 }
 
 #[expect(

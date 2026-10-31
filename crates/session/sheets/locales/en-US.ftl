@@ -131,7 +131,7 @@ guide-unassigned = Unassigned
 guide-unassigned-inline = unassigned
 guide-strip-jump = Go straight to a strip with { $first } … { $last }; strip 1 is the top one
 guide-app-tab-chords = { $next }, { $previous } and { $reopen } go to the app first; the desktop’s tab shortcuts here always work
-guide-your-shortcuts = Your shortcuts: { $shortcuts }
+guide-published-heading = Your shortcuts
 
 ## The catalogue's shortcut names, which the guide lists
 shortcut-name-focus-previous-window = Focus previous window

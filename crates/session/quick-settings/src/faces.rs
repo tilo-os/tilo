@@ -1216,7 +1216,8 @@ mod tests {
         state.sound_streams = vec![
             SoundStream {
                 node: 60,
-                label: "Music — Clair de lune".into(),
+                label: "Music".into(),
+                plays: Some("Clair de lune".into()),
                 playback: true,
                 target: Some(41),
                 level: 0.3,
@@ -1224,7 +1225,8 @@ mod tests {
             },
             SoundStream {
                 node: 61,
-                label: "Browser — Recording".into(),
+                label: "Browser".into(),
+                plays: Some("Recording".into()),
                 playback: false,
                 target: Some(50),
                 level: 0.8,

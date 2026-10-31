@@ -55,6 +55,7 @@ pub(crate) fn land(qs: &mut QuickSettingsState, sound: &Sound) {
         .map(|stream| SoundStream {
             node: stream.node,
             label: stream.label(),
+            plays: stream.plays().map(str::to_owned),
             playback: stream.playback,
             target: stream.target,
             level: stream.volume.unwrap_or(0.0),
@@ -180,13 +181,14 @@ mod tests {
             qs.sound_streams,
             [SoundStream {
                 node: 60,
-                label: "Music — Clair de lune".into(),
+                label: "Music".into(),
+                plays: Some("Clair de lune".into()),
                 playback: true,
                 target: Some(41),
                 level: 0.3,
                 muted: false,
             }],
-            "the application's stream, named as the service names it"
+            "the application's stream, and what it plays as its own fact"
         );
     }
 

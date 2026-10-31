@@ -224,8 +224,11 @@ pub struct SoundStream {
     /// The stream's audio node: what routing it, its level and its mute
     /// name.
     pub node: u32,
-    /// The application, and what it plays.
+    /// The application that owns the stream.
     pub label: String,
+    /// What it plays or records, when the application says: the row's own
+    /// column.
+    pub plays: Option<String>,
     /// Whether it plays (`true`) or records.
     pub playback: bool,
     /// The output (or input) it is linked to now.

@@ -1069,22 +1069,27 @@ fn role_label(role: RoomRole) -> String {
     })
 }
 
-/// How lively a listing is, and how many belong to it, in a line.
+/// How lively a listing is: the row's secondary line.
 fn activity_line(listing: &Listed, now_ms: u64) -> String {
-    let activity = match listing.activity(now_ms) {
+    match listing.activity(now_ms) {
         Activity::HereNow(count) => {
             tilo_sheets::words("directory-here-now", &[("count", &count.to_string())])
         }
         Activity::ActiveToday => tilo_sheets::word("directory-active-today"),
         Activity::ActiveThisWeek => tilo_sheets::word("directory-active-week"),
         Activity::Quiet => tilo_sheets::word("directory-quiet"),
-    };
+    }
+}
+
+/// How many belong to a listing, in the row's own column; `None` when it
+/// does not say.
+fn members_line(listing: &Listed) -> Option<String> {
     match listing.entry.members {
-        0 => activity,
-        members => format!(
-            "{activity} · {}",
-            tilo_sheets::words("directory-members", &[("count", &members.to_string())])
-        ),
+        0 => None,
+        members => Some(tilo_sheets::words(
+            "directory-members",
+            &[("count", &members.to_string())],
+        )),
     }
 }
 
@@ -1156,6 +1161,7 @@ pub(crate) fn view(store: &Store, handle: &DesktopHandle) -> Directory {
                 || activity_line(&listing, now_ms),
                 |reason| tilo_sheets::words("directory-join-failed-line", &[("error", reason)]),
             ),
+            members: failure.map_or_else(|| members_line(&listing), |_| None),
             joins_as: joins_as(&listing),
             here: listing
                 .entry
@@ -1344,25 +1350,20 @@ mod tests {
     }
 
     #[test]
-    fn the_activity_line_says_who_is_here_and_how_many_belong() {
+    fn who_is_here_and_how_many_belong_are_two_facts() {
         let mut busy = entry("Busy");
         busy.here_count = 3;
         busy.members = 12;
-        let line = activity_line(
-            &Listed {
-                entry: busy,
-                door: None,
-                site: None,
-                host: "eu1.tilo.coffee".into(),
-            },
-            0,
-        );
-        assert!(line.contains('3'), "{line}");
-        assert!(line.contains("12"), "{line}");
-        assert_eq!(
-            line.matches(" · ").count(),
-            1,
-            "a row says one thing: {line}"
-        );
+        let listed = Listed {
+            entry: busy,
+            door: None,
+            site: None,
+            host: "eu1.tilo.coffee".into(),
+        };
+        let activity = activity_line(&listed, 0);
+        assert!(activity.contains('3'), "{activity}");
+        assert!(!activity.contains("12"), "{activity}");
+        let members = members_line(&listed).expect("a listing with members");
+        assert!(members.contains("12"), "{members}");
     }
 }

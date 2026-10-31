@@ -78,10 +78,7 @@ glyph-join 2 crates/session/desktop-surface/src/person_cursor.rs
 glyph-join 1 crates/session/desktop/src/here.rs
 glyph-join 1 crates/session/desktop/src/workspace_settings.rs
 glyph-join 2 crates/session/desktop/src/workspace_settings/agent_access.rs
-glyph-join 1 apps/imager/src/setup/destination/disk_row.rs
-glyph-join 12 apps/imager/src/setup/destination/installer_app.rs
-glyph-join 1 apps/imager/src/setup/destination/installer_app/surface.rs
-glyph-join 1 apps/imager/src/setup/destination/step_indicator.rs
+glyph-join 10 apps/imager/src/setup/destination/installer_app.rs
 glyph-join 2 crates/session/shell/src/bin/shots/main.rs
 glyph-join 5 crates/session/shell/src/bin/shots/scenario.rs
 glyph-join 1 crates/session/shell/src/compositor/backend/drm/seat_diag.rs
@@ -91,7 +88,6 @@ glyph-join 1 crates/session/shell/src/portal/print.rs
 glyph-join 2 crates/session/shell/src/shell/automation_host.rs
 glyph-join 1 crates/session/shell/src/shell/broker_services.rs
 glyph-join 1 crates/session/shell/src/shell/broker_services/airdrop_transfer.rs
-glyph-join 1 crates/session/shell/src/shell/directory_sheet.rs
 glyph-join 1 crates/session/shell/src/shell/fixed_chords.rs
 glyph-join 1 crates/session/messaging-service/src/service/sms.rs
 glyph-join 1 crates/session/shell/src/shell/now_playing_panel.rs

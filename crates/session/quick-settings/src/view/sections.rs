@@ -386,6 +386,10 @@ fn stream_rows(cx: &ViewCx<QuickSettings>, face: &StreamFace) -> Vec<Element> {
                 muted: !stream.muted,
             },
         )));
+    let row = match &stream.plays {
+        Some(plays) => row.meta(plays.clone()),
+        None => row,
+    };
     let mut rows: Vec<Element> = vec![
         Box::new(row),
         Box::new(actions.bind_effect(
