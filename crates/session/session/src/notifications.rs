@@ -35,6 +35,21 @@ use crate::system_sounds::SystemSounds;
 /// The most unread notifications one app's icon counts to.
 const MAX_BADGE: u32 = 9_999;
 
+/// The event sound an arrival asks for: a `suppress-sound` sender asks for
+/// none, a critical one gets the machine's error voice — something failed,
+/// and that sound plays through quiet modes — and anything else gets its
+/// category's.
+fn sound_event(sent: &tilo_notifications_service::Notification) -> Option<SystemSoundEvent> {
+    if sent.suppress_sound {
+        return None;
+    }
+    Some(if sent.urgency == 2 {
+        SystemSoundEvent::Error
+    } else {
+        SystemSoundEvent::for_notification_category(sent.category.as_deref())
+    })
+}
+
 /// The desktop's notification for what an app sent the daemon. Critical
 /// urgency stays until the person acts, as the specification asks;
 /// otherwise `-1` is the desktop's default, `0` stays, and a positive
@@ -497,10 +512,7 @@ impl SessionNotifications {
                 let transient = sent.transient;
                 let app_id = sent.caller.as_ref().map(|caller| caller.app_id.clone());
                 let badge_count = sent.badge_count;
-                // What event sound it asks for, if any: a `suppress-sound`
-                // sender asks for none.
-                let sound = (!sent.suppress_sound)
-                    .then(|| SystemSoundEvent::for_notification_category(sent.category.as_deref()));
+                let sound = sound_event(&sent);
                 let effective = self.effective(app_id.as_deref(), sent.priority_contact);
                 // A notification under a shown one's id replaces it.
                 if let Some(old) = self.by_sender.remove(&sender) {

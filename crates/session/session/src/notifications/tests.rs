@@ -597,3 +597,27 @@ fn a_chosen_banner_hands_its_app_a_token_to_raise_its_window() {
     assert_eq!(rig.tokens(), [Some("token-1".into())]);
     assert!(!rig.live(id), "and the banner closes behind it");
 }
+
+#[test]
+fn a_critical_arrival_gets_the_error_sound_and_a_silenced_one_none() {
+    let mut critical = sent(1);
+    critical.urgency = 2;
+    assert_eq!(
+        sound_event(&critical),
+        Some(SystemSoundEvent::Error),
+        "a failed job gets the error voice, which plays through quiet modes"
+    );
+
+    let mut device = sent(2);
+    device.category = Some("device.added".into());
+    assert_eq!(
+        sound_event(&device),
+        Some(SystemSoundEvent::DeviceConnected),
+        "an ordinary arrival keeps its category's sound"
+    );
+
+    let mut silenced = sent(3);
+    silenced.urgency = 2;
+    silenced.suppress_sound = true;
+    assert_eq!(sound_event(&silenced), None, "a sender may ask for none");
+}
