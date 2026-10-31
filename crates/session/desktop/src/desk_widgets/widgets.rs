@@ -1942,7 +1942,7 @@ mod tests {
             "taken off the desk"
         );
         let toast = rig.toast();
-        assert_eq!(toast.title, "Calendar removed from the desk");
+        assert_eq!(toast.title, "Calendar removed from the desktop");
         assert_eq!(
             toast.actions,
             [("default".to_owned(), "Undo".to_owned())],
@@ -1986,7 +1986,7 @@ mod tests {
             "thrown off the desk"
         );
         let toast = rig.toast();
-        assert_eq!(toast.title, "Calendar removed from the desk");
+        assert_eq!(toast.title, "Calendar removed from the desktop");
         rig.notices
             .answer(tilo_desktop_surface::notifications::BannerAsk::Activate(
                 toast.id,
