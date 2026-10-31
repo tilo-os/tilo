@@ -327,6 +327,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shell",
+ "tasks",
  "tempfile",
  "tilo-action-policy",
  "tilo-actions",
@@ -21830,6 +21831,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-theme-sdk"
+version = "0.1.0"
+dependencies = [
+ "kurbo",
+ "peniko",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-thumbnail"
 version = "0.1.0"
 dependencies = [
@@ -22029,6 +22039,7 @@ dependencies = [
  "tilo-spellcheck",
  "tilo-startup-metrics",
  "tilo-test-env",
+ "tilo-theme-sdk",
  "tilo-tts",
  "tilo-ui",
  "tilo-ui-graph",
