@@ -96,10 +96,7 @@ const SHELL_FILES: &[(&str, &str)] = &[
         "composer.tl",
         include_str!("../../../../apps/tl/shell/composer.tl"),
     ),
-    (
-        "desk.tl",
-        include_str!("../../../../apps/tl/shell/desk.tl"),
-    ),
+    ("desk.tl", include_str!("../../../../apps/tl/shell/desk.tl")),
     (
         "docks.tl",
         include_str!("../../../../apps/tl/shell/docks.tl"),
@@ -354,9 +351,6 @@ pub struct DeskReading {
     pub strip: String,
     pub workspaces: Vec<WorkspaceReading>,
     pub tasks: Vec<TaskReading>,
-    /// What the bar names the desk: the workspace in front, and the strip after it.
-    #[serde(default)]
-    pub title: String,
     /// The surface the desk shows over its windows: `none`, `desk`, `overview`, `switcher`,
     /// `launcher`, `centre`, `workspaces` or `composer`.
     #[serde(default)]
@@ -916,7 +910,6 @@ impl SessionOrigin {
             Value::Bool(reading.dock_covered),
             reading.dock_covered != was.dock_covered,
         );
-        set("title", text(&reading.title), reading.title != was.title);
         set("here", text(&reading.here), reading.here != was.here);
         set(
             "spotlight",
@@ -1579,7 +1572,6 @@ impl Origin for SessionOrigin {
                 self.keep_inserted(&reading, &types, inserted, made);
                 self.written = Some(reading);
                 polled.wrote = true;
-
             }
             Err(error) => {
                 // Nothing was written: the next reading tries again from what was.
@@ -1852,7 +1844,6 @@ impl ShellPart {
         // The seed moved the record: the part's next turn settles what it started (a view
         // that read a bound field runs again), as any change of the record does.
         self.instance.moved();
-
     }
 
     /// Stand over the outputs: the whole of them while a menu of the part's is up, and else
@@ -2601,13 +2592,6 @@ mod tests {
             "the effect was answered"
         );
     }
-
-
-
-
-
-
-
 
     #[test]
     fn the_part_stands_in_the_band_the_shell_records_dock_names() {

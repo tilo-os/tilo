@@ -36,7 +36,6 @@ type Desk (origin: session.desk) {
     /// The pointer at the bottom edge, and a window standing where the dock rides.
     dock_reached: Bool
     dock_covered: Bool
-    title: Text merge register
     agents: Collection<Agent>
     rooms: Collection<Room>
     notices: Collection<Notice>

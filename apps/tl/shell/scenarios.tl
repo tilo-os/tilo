@@ -17,7 +17,6 @@ scenario "an afternoon at the desk" {
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
-    d.title = "Studio — Drafts"
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.workspaces.insert(Workspace(key: "release", name: "Release 4.2"))

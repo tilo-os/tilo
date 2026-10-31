@@ -238,7 +238,6 @@ impl Desk {
             // The native session runs no agent tasks of its own yet: none is published until a
             // task host reports to it.
             tasks: Vec::new(),
-            title: title_of(tree),
             here: self.surfaces.here(),
             spotlight: self.surfaces.spotlight(),
             banner: String::new(),
@@ -264,22 +263,6 @@ impl Desk {
             // beside this reading and carries it over (`SessionLink::publish_edges`).
             ..DeskReading::default()
         })
-    }
-}
-
-/// What the bar names the desk: the workspace in front, and the strip after it.
-fn title_of(tree: &DesktopTree) -> String {
-    let workspace = tree
-        .active_workspace()
-        .map(|workspace| workspace.name.clone())
-        .unwrap_or_default();
-    let strip = strip_in_front(tree);
-    if strip.is_empty() {
-        workspace
-    } else if workspace.is_empty() {
-        strip
-    } else {
-        format!("{workspace} — {strip}")
     }
 }
 
