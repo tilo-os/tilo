@@ -181,6 +181,8 @@ impl StoreCatalogue {
             }
         };
         Some(Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind,
             provider: self.id().into(),
             id,
@@ -197,6 +199,10 @@ impl StoreCatalogue {
 impl Source for StoreCatalogue {
     fn id(&self) -> &'static str {
         "store-catalogue"
+    }
+
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-store")
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {

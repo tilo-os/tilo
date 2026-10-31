@@ -1296,12 +1296,17 @@ impl NotificationStack {
     }
 
     /// A live region, so a screen reader announces a freshly-posted banner.
-    /// While locked only the count is exposed, and nothing when there is
-    /// nothing to count.
+    /// While locked only the count of what the person allows there is
+    /// exposed, and nothing when there is nothing to count.
     pub fn accessibility(&self) -> Option<AccessNode> {
         use ui::a11y::{AccessState, Politeness, Role};
         if self.feed.locked {
-            let n = self.feed.banners.len();
+            let n = self
+                .feed
+                .banners
+                .iter()
+                .filter(|banner| banner.notification.show_on_lock_screen)
+                .count();
             if n == 0 {
                 return None;
             }
@@ -2247,5 +2252,26 @@ pub(super) mod tests {
         let node = act(&mut stack, &host, |s| s.accessibility()).unwrap();
         assert_eq!(node.value.as_deref(), Some("2 notifications"));
         assert_eq!(node.live, Some(Politeness::Polite));
+    }
+
+    /// A notification the person keeps off the lock screen does not lend
+    /// its count to it.
+    #[test]
+    fn the_locked_live_region_counts_only_what_is_allowed_there() {
+        let host = TestHost::default();
+        host.locked.set(true);
+        let mut kept_off = Notification::new("Private", "secret");
+        kept_off.show_on_lock_screen = false;
+        host.push(kept_off);
+        let mut stack = NotificationStack::new();
+        assert!(
+            act(&mut stack, &host, |s| s.accessibility()).is_none(),
+            "nothing the person keeps off the lock screen is counted"
+        );
+        let mut allowed = Notification::new("New mail", "secret");
+        allowed.show_on_lock_screen = true;
+        host.push(allowed);
+        let node = act(&mut stack, &host, |s| s.accessibility()).unwrap();
+        assert_eq!(node.value.as_deref(), Some("1 notification"));
     }
 }

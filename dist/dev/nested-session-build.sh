@@ -2,8 +2,8 @@
 # Build everything dist/dev/nested-session.sh runs, into one directory: the
 # host programs (shell, launcher, installer, packager, runtime-bundle tool,
 # model gateway, the ush supervisor, tilo-control, the native-room governor
-# fixture), the workspace host and room service a local site runs
-# (nested-pair.sh), the thin apps, the tilolang runtime binary (apps/tilolang,
+# fixture), the `tilolang` CLI (`tilolang dev --session` installs into the
+# session), the thin apps, the tilolang runtime binary (apps/tilolang,
 # which nested-session.sh bakes into the tilolang runtime bundle), the shared
 # runtime library they link and
 # its engines, the Rust standard library that runtime was linked against, the
@@ -22,16 +22,21 @@
 #
 # The env-runtime is sealed from the tree built from the tree's own RPM package set, as a run's dev images get
 # theirs: TILO_ENV_RUNTIME_TREES names the directory holding
-# env-runtime-tree-ARCH.tar. A builder without those trees (one with no RPM
-# snapshot) builds everything else, and the session it
-# runs has no env-runtime: Terminal has no environment to start a shell in.
+# env-runtime-tree-ARCH.tar. Without those trees the session takes the runtime
+# published for this tree's definition (os/dev/resolve-env-runtime.sh), as a
+# Tilo image of the tree ships it; with none published either, the session has
+# no env-runtime and Terminal has no environment to start a shell in.
+#
+# With Browser among the apps, the Chromium engine it renders with is built
+# too (scripts/browser/build-host.py, CMake and the pinned CEF SDK) and staged
+# in chromium-engine/, which nested-session.sh signs as the engine runtime.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # Directory names under apps/. The session installs these or a subset.
 # TILO_NESTED_APPS builds fewer (a list of the same names, possibly empty):
 # `tilolang run` needs none of them, only the runtime and the tilolang binary.
-apps=${TILO_NESTED_APPS-"agent notes code-editor word-processor chat settings sheets tasks file-explorer browser terminal web-search"}
+apps=${TILO_NESTED_APPS-"agent notes code-editor word-processor chat settings sheets tasks file-explorer browser terminal web-search mail pdf-viewer"}
 if [[ ${1:-} == --apps ]]; then
     printf '%s\n' "$apps"
     exit 0
@@ -46,7 +51,7 @@ if [[ -n ${TILO_ENV_RUNTIME_TREES:-} ]]; then
     [[ -f $env_runtime_trees/env-runtime-tree-$arch.tar && -f $env_runtime_trees/env-runtime-rpms-$arch.txt ]] \
         || { echo "no env-runtime tree for $arch in $env_runtime_trees" >&2; exit 1; }
 else
-    echo "TILO_ENV_RUNTIME_TREES is not set: the session gets no env-runtime (Terminal opens no shell)" >&2
+    echo "TILO_ENV_RUNTIME_TREES is not set: the session gets the published env-runtime, if there is one" >&2
 fi
 target=$(realpath -m "${CARGO_TARGET_DIR:-target}")
 out=${out:-$target/nested-session}
@@ -58,7 +63,7 @@ export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$target/test-assets}
 # profile, features and wrapper differ), and each build spends minutes on a few
 # large crates (tilo-ui, the shell) with most cores idle: one after another, the
 # job used a third of its cores. So the thin build runs beside the host and
-# site builds, under one jobserver holding the job's cores: together they never
+# tilolang-host builds, under one jobserver holding the job's cores: together they never
 # run more compilers (or take more memory) than one build of that width would.
 jobs=${CARGO_BUILD_JOBS:-$(nproc)}
 mkdir -p "$target"
@@ -92,21 +97,36 @@ profile_args() {
 # Each line of a build's output carries its name, as the builds interleave.
 label() { sed -u "s/^/$1: /"; }
 host_profile=nested
-host_bins=(shell tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
-           tilo-model-gateway tilo-ush tilo-control tilolang-host nested-session-bus)
+# tilo-runtime-mcp is the agent's end of the session's agent door
+# (`tilo-runtime-mcp --connect`), so a check that drives the session as an
+# admitted agent runs against the staged build without building its own.
+host_bins=(shell tilo-runtime-mcp tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
+           tilo-model-gateway tilo-ush tilo-control tilolang-host tilolang nested-session-bus)
 build_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
+    # The shell, the launcher and the installer read the session's own
+    # inputs (system interfaces, runtimes, trust) through the crates they
+    # share, whose `dev-overrides` features unify only when the three build
+    # together under the plain feature name: a `package/feature` form leaves
+    # the shell reading the host's declarations through a remote builder.
     cargo build --locked --timings "${args[@]}" \
-        -p shell --bin shell --example packaged_native_governor --features shell/dev-overrides \
-        -p launcher --bin tilo-launcher --features launcher/dev-overrides \
-        -p install --bin tilo-install --features install/dev-overrides \
+        -p shell --bin shell --bin tilo-runtime-mcp --example packaged_native_governor \
+        -p launcher --bin tilo-launcher \
+        -p install --bin tilo-install \
+        --features dev-overrides || return 1
+    cargo build --locked --timings "${args[@]}" \
         -p tilo-app-package-cli --bin tilo-app-package \
         -p runtime-bundle --bin tilo-runtime-bundle \
-        -p tilo-model-gateway --bin tilo-model-gateway \
         -p ush --bin tilo-ush \
         -p tilo-control --bin tilo-control \
-        -p nested-session-bus --bin nested-session-bus
+        -p nested-session-bus --bin nested-session-bus || return 1
+    # The gateway, on a build of its own: its binary needs `server`, which no
+    # longer comes from building beside the shell, and the session's gateway
+    # runs with the features the workspace builds it with.
+    cargo build --locked --timings "${args[@]}" \
+        -p tilo-model-gateway --bin tilo-model-gateway \
+        --features server,host-backend,local-models,runtime-client
 }
 # The tilolang host, in a build of its own: built with the shell, the features the shell
 # turns on in the crates both use (media, the toolkit's services) would unify into it, and its
@@ -117,22 +137,14 @@ build_tilolang_host() {
     mapfile -t args < <(profile_args "$host_profile")
     cargo build --locked --timings "${args[@]}" -p tilolang-host --bin tilolang-host
 }
-# The workspace host and the room service in front of it, as the room
-# service's image builds them (tilo-relay with its agents): the local site
-# dist/dev/nested-pair.sh runs, so two nested sessions meet in its home
-# workspace the way two computers meet in a community's. A second build, so
-# the relay's features never unify into the shell's dependencies; after the
-# host build and in its profile, so the units both resolve the same way (most
-# of the toolkit and the agent crates) are compiled once.
-site_bins=(tilo-relay tilo-room-service)
-build_site() {
+# The `tilolang` CLI authors run against the session (`tilolang dev --session`), in
+# a build of its own for the same reason: its toolkit features stay out of the
+# host programs and the tilolang host.
+build_tilolang_cli() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
-    cargo build --locked --timings "${args[@]}" \
-        -p tilo-relay --bin tilo-relay --features tilo-relay/agents \
-        -p tilo-room-service --bin tilo-room-service
+    cargo build --locked --timings "${args[@]}" -p tilolang-cli --bin tilolang
 }
-
 # --- Thin apps and the shared runtime -----------------------------------------
 # Resolved against the default collection's runtime, so the runtime is the one
 # every app of the collection links, whichever of them the session installs.
@@ -164,27 +176,74 @@ build_thin() {
 # session ships it in a system store of its own, with that key as the store's
 # image publisher, and the ush supervisor finds it there as on a Tilo device.
 # Sealing takes minutes; it needs only the host build's packer, so it runs
-# beside the site build rather than after everything.
+# beside the thin build rather than after everything.
 env_runtime=$target/nested-session-env-runtime
 seal_env_runtime() {
     rm -rf "$env_runtime"
-    [[ -n $env_runtime_trees ]] || return 0
+    if [[ -z $env_runtime_trees ]]; then
+        published_env_runtime
+        return
+    fi
     local began=$SECONDS
     bash tools/ci/publish/env-runtime.sh dev "$arch" "$env_runtime_trees" "$target/$host_profile" "$env_runtime"
     printf 'sealed the env-runtime in %s s\n' "$((SECONDS - began))"
 }
-build_host_then_site() {
+# Without trees to seal, the runtime published for this tree's definition
+# (os/dev/resolve-env-runtime.sh: the registry's image of that fingerprint,
+# its signature checked) is the one a Tilo image of this tree ships: its
+# /env-runtime directory is what install-env-runtime.sh installs from.
+published_env_runtime() {
+    local ref container
+    if ! ref=$(bash os/dev/resolve-env-runtime.sh); then
+        echo "no env-runtime is published for os/Containerfile.env-runtime and no trees were given: Terminal opens no shell" >&2
+        return 0
+    fi
+    podman pull --quiet "$ref" >/dev/null || return 1
+    container=$(podman create --quiet "$ref" true) || return 1
+    podman cp "$container:/env-runtime" "$env_runtime"
+    local copied=$?
+    podman rm --force "$container" >/dev/null
+    return "$copied"
+}
+
+# The Browser's Chromium engine (scripts/browser/build-host.py: the pinned CEF
+# SDK and the native host), which the session signs as the
+# `tilo-runtime/<RUNTIME_VERSION>` bundle Browser requires
+# (ui::webview::chromium::runtime). Built again only when the CEF pin or the
+# host's sources change.
+chromium_engine=$target/nested-session-chromium
+build_chromium_engine() {
+    local key began=$SECONDS
+    key=$( { cat scripts/browser/cef-lock.json scripts/browser/build-host.py
+             git ls-files -s apps/browser/chromium crates/browser/tilo-chromium-blocker; } \
+           | sha256sum | cut -c1-64)
+    if [[ -f $chromium_engine/.key && $(<"$chromium_engine/.key") == "$key" \
+          && -x $chromium_engine/runtime/chromium/tilo-chromium-host ]]; then
+        echo "the Chromium engine is up to date"
+        return 0
+    fi
+    rm -rf "$chromium_engine"
+    mkdir -p "$chromium_engine"
+    python3 scripts/browser/build-host.py --runtime "$chromium_engine/runtime" \
+        --jobs "${CARGO_BUILD_JOBS:-$(nproc)}" || return 1
+    printf '%s\n' "$key" > "$chromium_engine/.key"
+    printf 'built the Chromium engine in %s s\n' "$((SECONDS - began))"
+}
+build_host_then_tilolang() {
     build_host 2>&1 | label host || return 1
     local seal
     seal_env_runtime 2>&1 | label seal & seal=$!
-    build_site 2>&1 | label site || { wait "$seal"; return 1; }
     build_tilolang_host 2>&1 | label tilolang-host || { wait "$seal"; return 1; }
+    build_tilolang_cli 2>&1 | label tilolang || { wait "$seal"; return 1; }
     wait "$seal"
 }
 
 pids=()
-build_host_then_site & pids+=($!)
+build_host_then_tilolang & pids+=($!)
 (build_thin 2>&1 | label thin) & pids+=($!)
+if [[ " $apps " == *" browser "* ]]; then
+    (build_chromium_engine 2>&1 | label chromium) & pids+=($!)
+fi
 failed=0
 for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
 exec 9<&-
@@ -195,7 +254,7 @@ unset MAKEFLAGS
 # --- Stage ----------------------------------------------------------------------
 rm -rf "$out"
 mkdir -p "$out/bin/examples" "$out/thin-app"
-for name in "${host_bins[@]}" "${site_bins[@]}"; do cp -p "$target/$host_profile/$name" "$out/bin/"; done
+for name in "${host_bins[@]}"; do cp -p "$target/$host_profile/$name" "$out/bin/"; done
 cp -p "$target/$host_profile/examples/packaged_native_governor" "$out/bin/examples/"
 # Cargo writes the timings where it ran; a build forwarded to a builder leaves none here.
 [[ ! -d $timings ]] || cp -rp "$timings" "$out/timings"
@@ -206,6 +265,7 @@ done < <(cat "$target/$thin_profile/runtime-engines"
          echo tilolang-app
          ((${#selected[@]})) && python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.catalog[].binary')
 [[ ! -d $env_runtime ]] || cp -rp "$env_runtime" "$out/env-runtime"
+[[ ! -d $chromium_engine/runtime/chromium ]] || cp -rp "$chromium_engine/runtime/chromium" "$out/chromium-engine"
 # The runtime bundle carries the exact libstd the runtime links, so the
 # session needs no local Rust toolchain.
 needed_std=$(readelf -dW "$out/thin-app/libruntime_dylib.so" \

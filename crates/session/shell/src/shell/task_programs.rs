@@ -20,10 +20,10 @@ use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
 use tilo_lock::MutexRecover as _;
 
-use crate::shell::remote_actions::BrokerActionHost;
+use tilo_action_broker::collab_app_broker::TaskRunHost;
 
 /// One task's session of the door.
-type Door = tilo_runtime::mcp::McpServer<BrokerActionHost>;
+type Door = tilo_runtime::mcp::McpServer<TaskRunHost>;
 
 /// A task, by its room, its agent and its issue.
 type TaskKey = (String, String, String);
@@ -123,36 +123,32 @@ fn bind(argument: Option<&str>) -> Result<ActionArgs, String> {
 }
 
 /// The task's session of the door, started for its run `group` when it has none or its last
-/// run's.
+/// run's: over `host`, the run's own host, so everything its programs do (an app's action, a
+/// read or a change of a record) is a step the run admits, as the agent door's are.
 fn session_of(
+    host: &TaskRunHost,
     room: &str,
     agent: &str,
     person: Option<&str>,
     issue: &str,
     group: tilo_actions::WorkGroup,
-) -> Result<Arc<Door>, String> {
+) -> Arc<Door> {
     let key = (room.to_owned(), agent.to_owned(), issue.to_owned());
     let mut sessions = sessions().lock_recover();
     if let Some((run, door)) = sessions.get(&key)
         && *run == group.id
     {
-        return Ok(Arc::clone(door));
+        return Arc::clone(door);
     }
-    let broker = crate::shell::link_open::session_broker()?;
     let run = group.id.clone();
     let door = Arc::new(
-        Door::for_task(
-            BrokerActionHost::new(broker),
-            room.to_owned(),
-            agent,
-            person,
-        )
-        .with_work_group(group)
-        .with_task_hosts(Some(Arc::new(TaskHosts))),
+        Door::for_task(host.clone(), room.to_owned(), agent, person)
+            .with_work_group(group)
+            .with_task_hosts(Some(Arc::new(TaskHosts))),
     );
     // A later run of the issue ends the earlier one's session, its host with it.
     sessions.insert(key, (run, Arc::clone(&door)));
-    Ok(door)
+    door
 }
 
 impl HostStepServices for BrokerDoor {
@@ -166,6 +162,10 @@ impl HostStepServices for BrokerDoor {
 
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
         vec![descriptor()]
+    }
+
+    fn for_tasks(&self) -> bool {
+        true
     }
 
     fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
@@ -197,6 +197,9 @@ impl HostStepServices for BrokerDoor {
             .strip_prefix("agent:")
             .unwrap_or_else(|| actor.id());
         let door = session_of(
+            request
+                .task_run
+                .ok_or("a task's programs run only as steps of its run")?,
             request.room,
             agent,
             actor.acting_for(),
@@ -206,7 +209,7 @@ impl HostStepServices for BrokerDoor {
                 label,
                 kind: "task".into(),
             },
-        )?;
+        );
         let (complete, answered) = pending();
         // The program waits on the task's host and on every call it makes: never on the
         // broker's thread.

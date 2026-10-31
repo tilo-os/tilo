@@ -3585,7 +3585,8 @@ impl Namespace {
     }
 
     /// Attach the content hash of a generated thumbnail blob to `ino`, so the
-    /// pointer rides namespace gossip and a peer can preview before fetching the full content.
+    /// pointer rides the namespace replica and a peer can preview before
+    /// fetching the full content.
     pub fn set_thumb(&mut self, ino: u64, thumb: &Hash) -> bool {
         if self.content_authority == ContentAuthority::SignedRecords {
             return false;

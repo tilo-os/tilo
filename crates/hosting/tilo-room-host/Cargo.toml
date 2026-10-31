@@ -16,7 +16,7 @@ path = "src/lib.rs"
 test-support = ["tilo-relay-store/test-support"]
 # Agents on the host: rooms keep apps' confined replicas and hand their
 # records' channel keys to pages.
-agents = ["web", "dep:tilo-agent-participant", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:ui", "dep:chat"]
+agents = ["web", "dep:tilo-agent-participant", "dep:tilo-secrets", "dep:ui", "dep:chat"]
 # Pages reach the host: the live plane's voice relay.
 web = ["tilo-relay-shell/web", "dep:tilo-moq"]
 
@@ -57,7 +57,6 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 app-registry = { path = "../../packaging/app-registry" }
 libc.workspace = true
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
-tilo-governor = { path = "../../collab/tilo-governor" }
 collab-types = { path = "../../collab/collab-types" }
 channel-crypto = { path = "../../collab/channel-crypto" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
@@ -71,7 +70,6 @@ tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 chat = { path = "../../../apps/chat", optional = true, default-features = false }
 tilo-automation = { path = "../../collab/automation" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
-tilo-browser-peer = { path = "../../browser/tilo-browser-peer", default-features = false, optional = true }
 
 [dev-dependencies]
 # The store's continuity tests count each thread's heap.
@@ -83,8 +81,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-relay-shell = { path = "../tilo-relay-shell", features = ["test-support"] }
 tilo-relay-store = { path = "../tilo-relay-store", features = ["test-support"] }
-# Native enrollment and the private owner in the private network tests.
-tilo-joined-room = { path = "../../collab/tilo-joined-room" }
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 

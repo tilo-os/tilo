@@ -43,10 +43,14 @@ use crate::widget::Widget;
 use crate::widget::activation::Activation;
 
 /// How strongly a tone washes the pill's body over its ground.
-const TINT_FILL: f32 = 0.15;
+pub(crate) const TINT_FILL: f32 = 0.15;
 /// How strongly the same tone draws the pill's edge: enough to close the
 /// shape on a dark and a light ground, quieter than the label.
-const TINT_EDGE: f32 = 0.38;
+pub(crate) const TINT_EDGE: f32 = 0.38;
+
+/// The chip's own flips, as the view actions it publishes.
+const TOGGLE_CHIP: &str = "tilo.ui.chip.toggle";
+const REMOVE_CHIP: &str = "tilo.ui.chip.remove";
 
 /// What a chip or badge is. The style is the whole appearance; there is no
 /// colour, size or radius to set.
@@ -374,6 +378,7 @@ impl<'a> ChipFace<'a> {
             &PillPaint {
                 rect: self.rect,
                 label: self.label,
+                face: "",
                 lead: self.lead,
                 style: self.style,
                 selected: self.selected,
@@ -402,6 +407,9 @@ impl<'a> ChipFace<'a> {
 pub(crate) struct PillPaint<'a> {
     pub rect: Rect,
     pub label: &'a str,
+    /// Whose face a [`ChipLead::Face`] shows, when the label says more than their name;
+    /// empty: the label is the name.
+    pub face: &'a str,
     pub lead: ChipLead,
     pub style: ChipStyle,
     pub selected: bool,
@@ -529,7 +537,12 @@ pub(crate) fn paint_pill(
             let side = metrics.face();
             let face = Rect::from_center_size(Point::new(x + side / 2.0, cy), (side, side));
             let mut ctx = crate::paint::PaintCtx::new(scene, transform, text_renderer, theme);
-            crate::widget::avatar::AvatarFace::new(pill.label, pill.label)
+            let name = if pill.face.is_empty() {
+                pill.label
+            } else {
+                pill.face
+            };
+            crate::widget::avatar::AvatarFace::new(name, name)
                 .presence(colour)
                 .paint(&mut ctx, face);
             x += side + metrics.gap;
@@ -599,6 +612,8 @@ pub(crate) fn paint_pill(
 )]
 pub struct Chip {
     label: String,
+    /// Whose face leads it ([`Self::with_face`]); empty: the label is the name.
+    face: String,
     selectable: bool,
     selected: bool,
     removable: bool,
@@ -611,6 +626,9 @@ pub struct Chip {
     on_toggle: Option<Box<dyn FnMut(bool)>>,
     /// Told each time a person presses the "×".
     on_remove: Option<Box<dyn FnMut()>>,
+    /// The chip's own flips, published as its view actions.
+    toggle_verb: Option<super::control_verb::ControlVerb<bool>>,
+    remove_verb: Option<super::control_verb::ControlVerb<bool>>,
     rect: Rect,
     x_rect: Rect,
     last_cursor: Point,
@@ -668,6 +686,7 @@ impl Chip {
             tooltip: None,
             accessible_name: None,
             label,
+            face: String::new(),
             selectable: false,
             selected: false,
             removable: false,
@@ -678,6 +697,8 @@ impl Chip {
             removed: false,
             on_toggle: None,
             on_remove: None,
+            toggle_verb: None,
+            remove_verb: None,
             rect: Rect::ZERO,
             x_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
@@ -688,6 +709,15 @@ impl Chip {
             interaction: crate::interaction::InteractionEnvironment::default(),
             footprint: None,
         }
+    }
+
+    /// Led by the face of `name` (their initials) on their presence `colour`, when the label
+    /// says more than their name: `Helper · Tidy my notes`.
+    #[must_use]
+    pub fn with_face(mut self, name: impl Into<String>, colour: Color) -> Self {
+        self.face = name.into();
+        self.lead = ChipLead::Face(colour);
+        self
     }
 
     /// A stable id for tests, inspection and the chip's bound action
@@ -768,7 +798,28 @@ impl Chip {
     /// but no target is smaller than 32 px, so the 2 px above and below the
     /// pill belong to it as well.
     pub fn hit_rect(&self) -> Rect {
-        Self::grown_to_target(self.rect, self.pointer_target())
+        Self::grown_to_target(self.pill_rect(), self.pointer_target())
+    }
+
+    /// How tall the chip's box is laid out: the pill, or on a coarse
+    /// pointer the minimum target for a chip a person presses. The pill
+    /// keeps its height and stands centred in the box, so the band a finger
+    /// may land in is the chip's own room in its line, never its
+    /// neighbour's.
+    fn box_height(&self) -> f64 {
+        let pill = self.metrics.height.ceil();
+        if self.interaction.supports_hover() || !(self.pressable() || self.removable) {
+            pill
+        } else {
+            pill.max(self.pointer_target().ceil())
+        }
+    }
+
+    /// The painted pill: centred in the chip's box ([`Self::box_height`]).
+    fn pill_rect(&self) -> Rect {
+        let height = self.metrics.height.ceil().min(self.rect.height());
+        let y0 = self.rect.center().y - height / 2.0;
+        Rect::new(self.rect.x0, y0, self.rect.x1, y0 + height)
     }
 
     /// The "×" target, grown vertically like [`Chip::hit_rect`]. Only
@@ -848,30 +899,54 @@ impl Chip {
         self.selected = on;
     }
 
-    /// Run `f` with the new selection whenever a person flips the chip
-    /// (implies [`selectable`](Self::selectable)): a host that keeps its
-    /// filters elsewhere hears of each change without draining.
+    /// Flip the chip's selection as the chip's published view action
+    /// `toggle` (implies [`selectable`](Self::selectable)): a person's press,
+    /// a screen reader, a script and an agent flip it through the same
+    /// action, and `f` hears the selection it reports.
     #[must_use]
-    pub fn on_toggle(mut self, f: impl FnMut(bool) + 'static) -> Self {
+    pub fn on_toggle_view(mut self, f: impl FnMut(bool) + 'static) -> Self {
         self.selectable = true;
+        let id = self.activation.id().to_owned();
+        let label = self.label.clone();
+        self.toggle_verb = Some(super::control_verb::ControlVerb::new(
+            &id,
+            &label,
+            "toggle",
+            TOGGLE_CHIP,
+            super::control_verb::VerbArgument::Flag,
+        ));
         self.on_toggle = Some(Box::new(f));
         self
     }
 
-    /// Run `f` whenever a person presses the "×" (implies
-    /// [`removable`](Self::removable)).
+    /// Remove the chip as its published view action `remove` (implies
+    /// [`removable`](Self::removable)), so the × a person presses, a screen
+    /// reader, a script and an agent all remove it the same way.
     #[must_use]
-    pub fn on_remove(mut self, f: impl FnMut() + 'static) -> Self {
+    pub fn on_remove_view(mut self, f: impl FnMut() + 'static) -> Self {
         self.removable = true;
+        let id = self.activation.id().to_owned();
+        let label = self.label.clone();
+        self.remove_verb = Some(super::control_verb::ControlVerb::new(
+            &id,
+            &label,
+            "remove",
+            REMOVE_CHIP,
+            super::control_verb::VerbArgument::Flag,
+        ));
         self.on_remove = Some(Box::new(f));
         self
     }
 
     /// The selection was flipped by a person.
     fn flipped(&mut self) {
-        self.selected = !self.selected;
+        let selected = !self.selected;
+        if let Some(verb) = &mut self.toggle_verb {
+            verb.emit(selected);
+            return;
+        }
+        self.selected = selected;
         self.toggled = true;
-        let selected = self.selected;
         if let Some(on_toggle) = self.on_toggle.as_mut() {
             on_toggle(selected);
         }
@@ -879,6 +954,10 @@ impl Chip {
 
     /// The "×" was pressed.
     fn remove_pressed(&mut self) {
+        if let Some(verb) = &mut self.remove_verb {
+            verb.emit(true);
+            return;
+        }
         self.removed = true;
         if let Some(on_remove) = self.on_remove.as_mut() {
             on_remove();
@@ -928,7 +1007,7 @@ impl Chip {
         );
         taffy::Size {
             width: width.ceil() as f32,
-            height: self.metrics.height.ceil() as f32,
+            height: self.box_height() as f32,
         }
     }
 }
@@ -944,7 +1023,11 @@ impl Widget for Chip {
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
-        self.interaction = environment;
+        if self.interaction != environment {
+            self.interaction = environment;
+            // The box grows to a coarse pointer's target: measure it again.
+            self.footprint = None;
+        }
     }
 
     #[allow(
@@ -987,7 +1070,7 @@ impl Widget for Chip {
             },
             size: taffy::Size {
                 width,
-                height: length(self.metrics.height as f32),
+                height: length(self.box_height() as f32),
             },
             ..Default::default()
         };
@@ -1061,7 +1144,8 @@ impl Widget for Chip {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let face = ChipFace::new(self.rect, &self.label);
+        let pill = self.pill_rect();
+        let face = ChipFace::new(pill, &self.label);
         self.x_rect = if self.removable {
             face.removable(false).remove_rect(theme)
         } else {
@@ -1073,8 +1157,9 @@ impl Widget for Chip {
         let remove_hovered = self.remove_hit_rect().contains(self.last_cursor);
         paint_pill(
             &PillPaint {
-                rect: self.rect,
+                rect: pill,
                 label: &self.label,
+                face: &self.face,
                 lead: self.lead,
                 style: self.style,
                 selected: self.shows_chosen(),
@@ -1092,8 +1177,8 @@ impl Widget for Chip {
             theme,
         );
         if self.focused {
-            let radius = f64::from(theme.tokens.radii.full).min(self.rect.height() / 2.0);
-            crate::widget::paint_focus_ring(scene, transform, self.rect, radius, theme);
+            let radius = f64::from(theme.tokens.radii.full).min(pill.height() / 2.0);
+            crate::widget::paint_focus_ring(scene, transform, pill, radius, theme);
         }
     }
 
@@ -1234,9 +1319,88 @@ impl Widget for Chip {
     }
 }
 
-crate::widget::activation::activation_controls!(Chip, activation);
+impl crate::widget::controls::ActionControls for Chip {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        self.activation.install_custody(domain, attachment);
+        for verb in [self.toggle_verb.as_mut(), self.remove_verb.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            verb.install_custody(domain, attachment);
+        }
+        for child in crate::widget::Widget::children_mut(self) {
+            crate::widget::controls::install_control_custody(child, domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.activation
+            .take_invocation()
+            .or_else(|| {
+                self.toggle_verb
+                    .as_mut()
+                    .and_then(super::control_verb::ControlVerb::take)
+            })
+            .or_else(|| {
+                self.remove_verb
+                    .as_mut()
+                    .and_then(super::control_verb::ControlVerb::take)
+            })
+            .or_else(|| {
+                crate::widget::Widget::children_mut(self)
+                    .into_iter()
+                    .find_map(crate::widget::controls::take_control_invocation)
+            })
+    }
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = self.activation.bindings();
+        let control_id = self.activation.id();
+        if let Some(verb) = &self.toggle_verb {
+            bindings.push(verb.metadata(control_id));
+        }
+        if let Some(verb) = &self.remove_verb {
+            bindings.push(verb.metadata(control_id));
+        }
+        for child in crate::widget::Widget::children(self) {
+            bindings.extend(crate::widget::controls::control_action_bindings(child));
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        self.activation.refresh_availability(allowed);
+        for verb in [self.toggle_verb.as_mut(), self.remove_verb.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            verb.refresh_availability(allowed);
+        }
+        for child in crate::widget::Widget::children_mut(self) {
+            crate::widget::controls::refresh_control_action_availability(child, allowed);
+        }
+    }
+}
 
 impl crate::widget::ResourceOperations for Chip {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        let mut mask = 0;
+        if !self.activation.native_handler().is_empty() {
+            mask |= 1;
+        }
+        if self.toggle_verb.is_some() {
+            mask |= 2;
+        }
+        if self.remove_verb.is_some() {
+            mask |= 4;
+        }
+        CHIP_OPERATIONS[mask]
+    }
+
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         self.activation.native_handlers()
     }
@@ -1247,13 +1411,63 @@ impl crate::widget::ResourceOperations for Chip {
         _doc: &mut crate::widget::Edits<'_>,
         _path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let toggled = self
+            .toggle_verb
+            .as_ref()
+            .map(|verb| verb.start(op))
+            .transpose()?
+            .flatten();
+        if let Some(selected) = toggled {
+            self.selected = selected;
+            self.toggled = true;
+            if let Some(on_toggle) = self.on_toggle.as_mut() {
+                on_toggle(selected);
+            }
+            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
+        let removed = self
+            .remove_verb
+            .as_ref()
+            .map(|verb| verb.start(op))
+            .transpose()?
+            .flatten();
+        if removed.is_some() {
+            self.removed = true;
+            if let Some(on_remove) = self.on_remove.as_mut() {
+                on_remove();
+            }
+            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
         self.activation.start_native(op)
     }
 }
 
+/// The chip's own operations, indexed by the mask of those it publishes.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "the mask is built from the same bits"
+)]
+const CHIP_OPERATIONS: [&[&str]; 8] = {
+    const A: &str = crate::widget::activation::NATIVE_INVOKE;
+    const T: &str = TOGGLE_CHIP;
+    const R: &str = REMOVE_CHIP;
+    [&[], &[A], &[T], &[A, T], &[R], &[A, R], &[T, R], &[A, T, R]]
+};
+
 impl crate::resources::PublishesResources for Chip {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        self.activation.native_resources()
+        let mut resources = self.activation.native_resources();
+        resources.extend(
+            [self.toggle_verb.as_ref(), self.remove_verb.as_ref()]
+                .into_iter()
+                .flatten()
+                .map(super::control_verb::ControlVerb::resource),
+        );
+        resources
     }
 }
 #[cfg(test)]
@@ -1609,7 +1823,7 @@ mod activation_tests {
         let counter = Rc::clone(&opened);
         let mut chip = Chip::new("design")
             .with_id("tag-design")
-            .on_click(move || counter.set(counter.get() + 1));
+            .on_view(move || counter.set(counter.get() + 1));
         assert!(chip.is_focusable());
         let node = Widget::accessibility(&chip).unwrap();
         assert_eq!(node.role, crate::a11y::Role::Button);
@@ -1623,6 +1837,8 @@ mod activation_tests {
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
+        assert_eq!(opened.get(), 0, "the press waits to be answered");
+        assert_eq!(crate::testing::answer_controls(&mut chip), 1);
         assert_eq!(opened.get(), 1, "Enter, Space and AT press the chip");
         let mut harness = crate::headless::FrameHarness::new(
             crate::State::new(),
@@ -1634,6 +1850,47 @@ mod activation_tests {
         assert_eq!(opened.get(), 2);
         // A plain label chip is not a control.
         assert!(!Chip::new("label").is_focusable());
+    }
+
+    /// On a touchscreen a chip a person presses takes a finger's target of room in its line,
+    /// with its pill the selector height centred in it, so a press above or below the pill
+    /// lands on the chip and never on what is next to it; a label chip, or a chip under a
+    /// mouse, keeps the pill's height.
+    #[test]
+    fn a_pressed_chip_takes_a_fingers_room_on_touch() {
+        use crate::interaction::InteractionEnvironment;
+        let pill = f64::from(crate::tokens::Metrics::BASE.selector_height);
+        let finger = f64::from(InteractionEnvironment::TOUCH.minimum_target());
+        let chips: [(&str, fn() -> Chip, bool); 3] = [
+            (
+                "navigating",
+                || Chip::new("3 replies").on_click(|| {}),
+                true,
+            ),
+            ("removable", || Chip::new("planning").removable(), true),
+            ("label", || Chip::new("draft"), false),
+        ];
+        for (name, chip, pressed) in chips {
+            for (input, room) in [
+                (InteractionEnvironment::POINTER, pill),
+                (
+                    InteractionEnvironment::TOUCH,
+                    if pressed { finger } else { pill },
+                ),
+            ] {
+                let mut harness = crate::headless::FrameHarness::new(
+                    crate::State::new(),
+                    Box::new(crate::widget::Row::new().push(Box::new(chip()))),
+                    (400, 100),
+                );
+                harness.set_interaction_environment(input);
+                let [_, _, _, h] = harness.inspection().root.children[0].rect;
+                assert!(
+                    (h - room).abs() < 0.5,
+                    "the {name} chip takes {room} for {input:?}, not {h}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1648,7 +1905,7 @@ mod activation_tests {
             &mut text,
         );
         assert!(menu > plain);
-        let chip = Chip::new("Sort").menu().on_click(|| {});
+        let chip = Chip::new("Sort").menu().on_view(|| {});
         let node = Widget::accessibility(&chip).unwrap();
         assert_eq!(node.state.expanded, Some(false));
         // A key wider than its label: the label sits in the middle.

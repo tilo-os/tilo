@@ -51,10 +51,6 @@ class AppCopyTests(unittest.TestCase):
             request.thread_name("settings-portal");
             crate::device_read::thread("settings-reader", Box::new(job));
             DeviceInfo { icon: "net-device-icon".into() };
-            self.push_confirm(body, package,
-                ("settings-confirm-id", "settings-cancel-id"), action);
-            Self::push_confirm(actions, body, package,
-                ("settings-install-id", "settings-dismiss-id"), action);
         }
         '''
         self.assertEqual(self.keys(source), {"settings-button-label"})
@@ -135,22 +131,65 @@ class AppCopyTests(unittest.TestCase):
                 "apps/settings/src/view.rs:1: en-US lacks agent-absent",
             ])
 
-    def test_a_crate_resolving_at_its_root_is_checked_in_its_own_catalogue(self):
+    def test_keys_resolved_by_another_crates_root_are_looked_up_in_its_catalogue(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
-            setup = "setup-done = Done\n"
+            setup = "setup-title = Welcome\n"
             self.crate(root, "crates/session/setup", {"en-US": setup, "de-DE": setup}, "")
             (root / "crates/session/setup/Cargo.toml").write_text('[package]\nname = "tilo-setup"\n')
-            self.crate(root, "crates/session/shell", {"en-US": "shell-x = X\n"},
-                       'fn page() { tilo_setup::t("setup-done"); tilo_setup::t("setup-gone"); }\n')
+            (root / "crates/session/setup/src/lib.rs").write_text(
+                'ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);\n')
+            own = "host-x = X\n"
+            self.crate(root, "crates/session/host", {"en-US": own, "de-DE": own},
+                       'fn page() { tilo_setup::t("setup-title"); tilo_setup::t("setup-gone"); }\n')
+            (root / "crates/session/host/Cargo.toml").write_text('[package]\nname = "tilo-host"\n')
             self.assertEqual(copy.missing_copy(root), [
-                "crates/session/shell/src/view.rs:1: de-DE lacks setup-gone (crates/session/setup)",
-                "crates/session/shell/src/view.rs:1: en-US lacks setup-gone (crates/session/setup)",
+                "crates/session/host/src/view.rs:1: de-DE lacks setup-gone (crates/session/setup)",
+                "crates/session/host/src/view.rs:1: en-US lacks setup-gone (crates/session/setup)",
             ])
 
     def test_every_actual_source_key_is_in_its_catalogues(self):
         self.assertEqual(copy.missing_copy(copy.ROOT), [])
+
+    def test_a_crate_reading_anothers_catalogue_is_checked_in_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
+            catalogue = "desk-open = Open\n"
+            self.crate(root, "crates/session/desktop-surface",
+                       {"en-US": catalogue, "de-DE": catalogue}, "")
+            (root / "crates/session/desktop-surface/Cargo.toml").write_text(
+                '[package]\nname = "tilo-desktop-surface"\n')
+            desktop = root / "crates/session/desktop"
+            (desktop / "src").mkdir(parents=True)
+            (desktop / "Cargo.toml").write_text('[package]\nname = "tilo-desktop"\n')
+            (desktop / "src/lib.rs").write_text(
+                "pub use tilo_desktop_surface::{activity, i18n};\n")
+            (desktop / "src/view.rs").write_text('fn bar() { t("desk-absent"); }\n')
+            self.assertEqual(copy.missing_copy(root), [
+                "crates/session/desktop/src/view.rs:1: de-DE lacks desk-absent",
+                "crates/session/desktop/src/view.rs:1: en-US lacks desk-absent",
+            ])
+
+    def test_the_desktop_surface_checks_the_activity_keys_a_match_picks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
+            open_ = "activity-morning-open = Open\n"
+            self.crate(root, "crates/session/desktop-surface",
+                       {"en-US": open_, "de-DE": open_},
+                       '''
+                       fn label(&self) -> &'static str {
+                           let key = if ready { "activity-morning-open" } else { "activity-morning-next" };
+                           let elsewhere = "workspace-tree";
+                           t(key)
+                       }
+                       ''')
+            self.assertEqual(copy.missing_copy(root), [
+                "crates/session/desktop-surface/src/view.rs:3: de-DE lacks activity-morning-next",
+                "crates/session/desktop-surface/src/view.rs:3: en-US lacks activity-morning-next",
+            ])
 
 
 if __name__ == "__main__":

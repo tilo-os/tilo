@@ -3957,21 +3957,28 @@ mod tests {
             }));
         }
         {
-            let (app, doc, _root) = sample_app();
-            let mut app = render_at(app, doc, 900.0, 700.0);
-            Framed::harness_mut(&mut app)
-                .press_window_action("Open Photos")
-                .unwrap();
-            // The host runs the press as the live window's idle service
-            // does: the typed handoff to Photos went out, and the bar says so.
+            // The bar's Open Photos asks the window's session to open Photos,
+            // and the bar says so.
+            let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
+            let session = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
+            app.harness().set_session_door(
+                ui::RemoteActions::with_host(
+                    session.clone(),
+                    ui::tilo_actions::remote::Caller::local_app("so.tilo.camera").in_room("room"),
+                ),
+                Some("room".into()),
+            );
+            app.harness().press_window_action("Open Photos").unwrap();
+            let asked = session.take_asked();
+            assert_eq!(asked.len(), 1, "Photos browse hands off to Photos");
+            assert_eq!(
+                asked[0].target,
+                ui::tilo_actions::remote::application_open_target("room", "so.tilo.photos")
+            );
             assert_eq!(
                 ui::window_toolbar::notice().map(|notice| notice.text),
                 Some("Opening Photos…".to_owned()),
-                "Photos browse hands off to Photos"
-            );
-            assert!(
-                app.captures.len() <= 1,
-                "Camera still owns no gallery cache"
+                "and the bar says so"
             );
         }
         {
@@ -5176,6 +5183,7 @@ mod tests {
             "use-mode",
             "use-lens",
             "set-grid",
+            "crop-page",
         ] {
             assert!(
                 camera_ids.contains(&id.to_owned()),
@@ -5202,7 +5210,6 @@ mod tests {
                 "recognize-text",
                 "copy-text",
                 "export-pdf",
-                "crop-page",
                 "move-page-earlier",
                 "move-page-later",
                 "remove-page",
@@ -5223,6 +5230,10 @@ mod tests {
             app.effect_on(crate::actions::DOCUMENT_ROW, &CameraEffect::RotatePage)
                 .is_err(),
             "a page operation waits for a page"
+        );
+        assert!(
+            app.effect(&CameraEffect::CropPage).is_err(),
+            "cropping waits for a page"
         );
     }
 }

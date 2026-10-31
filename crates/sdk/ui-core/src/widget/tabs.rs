@@ -304,6 +304,10 @@ impl TabMark {
     clippy::struct_excessive_bools,
     reason = "independent interaction and animation flags are not one state machine"
 )]
+#[crate::component::not_a_component(
+    shell,
+    "tabs and window groups are the system's (AGENTS.md principle 3)"
+)]
 pub struct TabBar {
     group_id_tag: String,
     tabs: Vec<TabDescriptor>,
@@ -3031,6 +3035,9 @@ impl TabBar {
     /// not a control (it stands on a canvas): its title and location carry
     /// it, and a click on them still does what it does.
     pub fn set_carriable(&mut self, carriable: bool) {
+        if self.carriable == carriable {
+            return;
+        }
         self.touch();
         self.carriable = carriable;
         self.toolbar_row.set_carriable(carriable);
@@ -3397,6 +3404,7 @@ impl TabBar {
             return colors.text_dim;
         }
         let grounds = crate::tokens::SelectorFinish::frosted_extremes(
+            colors,
             self.ground(theme),
             colors.surfaces.material_opacity,
         );
@@ -10444,6 +10452,7 @@ mod tests {
                 continue;
             }
             for ground in crate::tokens::SelectorFinish::frosted_extremes(
+                &theme.tokens.colors,
                 crate::chrome::strip_ground(&theme),
                 theme.tokens.colors.surfaces.material_opacity,
             ) {

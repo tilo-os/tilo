@@ -1446,7 +1446,7 @@ mod save_status_fixture {
             // Queue the older revision, then leave a newer transaction open while the
             // real writer makes that older checkpoint visible. The private RecordStore
             // predicate test separately observes the producer acknowledgement.
-            self.host.records.tick();
+            self.host.records.tick().unwrap();
             let older = self
                 .host
                 .records

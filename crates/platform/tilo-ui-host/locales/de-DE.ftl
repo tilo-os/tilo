@@ -4,6 +4,7 @@ tilolang-title = Apps
 tilolang-home-heading = Apps
 tilolang-home-empty = Es sind keine Apps installiert.
 tilolang-open-failed = Diese App konnte nicht geöffnet werden.
+tilolang-seen-failed = Was dieses Fenster gezeigt hat, konnte nicht als gesehen markiert werden.
 tilolang-back = Alle Apps
 tilolang-detail = Details
 tilolang-ask-title = Diese Änderung erlauben?
@@ -41,3 +42,18 @@ tilolang-thread-replies = { $count ->
 app-activate-window = Dieses Fenster anzeigen
 app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.
 tilolang-form-cancel = Abbrechen
+tilolang-none-value = Keine Angabe
+tilolang-empty-value = Leer
+tilolang-yes = Ja
+tilolang-no = Nein
+tilolang-undo-unavailable = Dieses Fenster kann keinen Schritt aus seinem Verlauf zurücknehmen.
+tilolang-history = Verlauf
+tilolang-history-changes = { $count ->
+    [one] 1 Änderung
+   *[other] { $count } Änderungen
+}
+tilolang-history-show = Änderungen zeigen
+tilolang-history-hide = Änderungen ausblenden
+tilolang-history-undo-run = Ausführung rückgängig machen
+tilolang-history-made = Erstellt
+tilolang-history-removed = Entfernt

@@ -14,6 +14,81 @@ pub fn dispatch<W: Widget + ?Sized>(widget: &mut W, event: &WindowEvent) -> bool
     Dispatch::new().send(widget, event).handled
 }
 
+/// Answer the controls `widget`'s subtree queued, the way a host answers the
+/// action a press published: a person's click on a
+/// [`Button::on_view`](crate::widget::Button::on_view) reaches its handler
+/// here, not at the press, and so does the value a field, a picker or a chip
+/// reported through its own verb. Answers how many ran.
+///
+/// For a tree that keeps no resource host of its own: the control that
+/// published the action is the one that answers it, and a press addressed to
+/// one that publishes nothing here answers where it is drawn, exactly as
+/// [`crate::widget::controls::start_pending_control_invocations`] does for
+/// the shell. A test that presses a published control and then asserts what
+/// it did calls this between the two; one that only asserts the press was
+/// handled need not.
+pub fn answer_controls(widget: &mut dyn Widget) -> usize {
+    // A handler can queue another control (a confirmation, a follow-up);
+    // the bound keeps a tree that keeps queueing from holding the test.
+    const MOST: usize = 64;
+    let mut doc = AutoCommit::new();
+    let mut ran = 0;
+    for _ in 0..MOST {
+        let Some(invocation) = crate::widget::controls::take_control_invocation(widget) else {
+            break;
+        };
+        // A control's own press and its own verb (the value a field reports,
+        // a chip's flip, the row a table chose) are both actions the tree
+        // publishes: dispatch the one it named, as a resource host does.
+        let spec = crate::widget::controls::published_action(widget, &doc, &invocation.address);
+        let encoded = spec
+            .as_ref()
+            .and_then(|spec| spec.build_json(&invocation.arguments).ok());
+        // A press addressed to a control the tree publishes nothing for still
+        // answers where it is drawn, as the shell answers it.
+        let control_press = encoded
+            .is_none()
+            .then(|| {
+                let control = invocation.address.resource.strip_prefix("tilo.control:")?;
+                (invocation.address.action == "invoke").then(|| serde_json::to_vec(control).ok())
+            })
+            .flatten()
+            .flatten();
+        let (kind, type_id, payload) = match (&spec, &encoded, &control_press) {
+            (Some(spec), Some(encoded), _) => (
+                spec.kind,
+                encoded.type_id.as_str(),
+                encoded.payload.as_slice(),
+            ),
+            (_, _, Some(payload)) => (
+                tilo_actions::OperationKind::Effect,
+                crate::widget::NATIVE_INVOKE,
+                payload.as_slice(),
+            ),
+            _ => continue,
+        };
+        let operation = crate::widget::ResourceOperation::local(
+            tilo_actions::InvocationId::new(),
+            kind,
+            type_id,
+            payload,
+        );
+        let mut state = Edits::lend(&mut doc);
+        if matches!(
+            crate::widget::resource_operation::start_operation(
+                widget,
+                &operation,
+                &mut state,
+                &automerge::ROOT
+            ),
+            Ok(Some(_))
+        ) {
+            ran += 1;
+        }
+    }
+    ran
+}
+
 /// The context [`Dispatch::send`] lends a widget, scratch unless set.
 pub struct Dispatch<'a> {
     scale_factor: f64,
@@ -133,5 +208,61 @@ impl<'a> Dispatch<'a> {
             handled,
             focus_target,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::Button;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[test]
+    fn answer_controls_runs_the_action_a_press_published() {
+        let fired = Rc::new(Cell::new(0_u32));
+        let count = Rc::clone(&fired);
+        let mut button = Button::new("answer", "Answer").on_view(move || {
+            count.set(count.get() + 1);
+        });
+        let mut doc = AutoCommit::new();
+        let activated = Widget::perform_action(
+            &mut button,
+            &crate::a11y::Action::Activate,
+            &[],
+            &mut Edits::lend(&mut doc),
+            &automerge::ROOT,
+        );
+        assert!(activated, "the button takes the activation");
+        assert_eq!(fired.get(), 0, "a published press runs when it is answered");
+        assert_eq!(answer_controls(&mut button), 1);
+        assert_eq!(fired.get(), 1);
+        assert_eq!(answer_controls(&mut button), 0, "answered once");
+    }
+
+    #[test]
+    fn answer_controls_runs_the_value_a_control_reported() {
+        use crate::widget::Chip;
+        let reported = Rc::new(Cell::new(None));
+        let heard = Rc::clone(&reported);
+        let mut chip = Chip::new("Sort")
+            .selectable()
+            .on_toggle_view(move |on| heard.set(Some(on)));
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_action(
+            &mut chip,
+            &crate::a11y::Action::Activate,
+            &[],
+            &mut Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            reported.get(),
+            None,
+            "a published verb reaches its handler when it is answered"
+        );
+        assert_eq!(answer_controls(&mut chip), 1);
+        assert_eq!(reported.get(), Some(true));
+        assert_eq!(answer_controls(&mut chip), 0, "answered once");
     }
 }

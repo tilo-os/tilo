@@ -57,6 +57,7 @@ pub(crate) mod address_book;
 pub mod app;
 pub mod attachment_store;
 pub mod avatars;
+pub mod bindings;
 pub mod compose;
 pub(crate) mod connect;
 pub mod copies;
@@ -88,6 +89,14 @@ pub mod model;
 pub mod oauth;
 pub mod reader;
 pub mod resource;
+#[cfg(all(feature = "live", any(test, feature = "fake-servers")))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test fixture: what fails fails the test that set it up"
+)]
+pub mod review_fixture;
 #[cfg(feature = "samples")]
 pub mod sample;
 

@@ -1782,7 +1782,7 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
             let button_id = format!("action-{id}");
             let captured = std::rc::Rc::clone(&captured);
             Box::new(
-                crate::widget::Button::new(&button_id, "Action").on_click(move || {
+                crate::widget::Button::new(&button_id, "Action").on_effect(move || {
                     captured.set(captured.get().saturating_add(1));
                 }),
             )
@@ -1791,24 +1791,41 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
         app.init_layout();
 
         let update = app.build_a11y_tree_update(1.0);
-        let buttons = update
-            .nodes
-            .iter()
-            .filter(|(_, node)| node.role() == accesskit::Role::Button)
-            .collect::<Vec<_>>();
-        assert_eq!(buttons.len(), 1, "delegate is not announced twice");
-        let button_id = buttons[0].0;
         let row = update
             .nodes
             .iter()
             .find(|(_, node)| node.role() == accesskit::Role::TreeItem)
             .map(|(_, node)| node)
             .expect("tree item");
-        assert_eq!(row.children(), &[button_id]);
+        // The row announces its delegate's button once. The button's own
+        // published action is offered beside the tree as a resource action
+        // of its own, a door for whoever invokes it, not a second row child.
+        let [button_id] = row.children() else {
+            panic!(
+                "delegate is not announced twice: {:?}",
+                row.children()
+                    .iter()
+                    .filter_map(|id| update
+                        .nodes
+                        .iter()
+                        .find(|(at, _)| at == id)
+                        .map(|(_, node)| (node.role(), node.label())))
+                    .collect::<Vec<_>>()
+            );
+        };
+        let button = &update
+            .nodes
+            .iter()
+            .find(|(id, _)| id == button_id)
+            .expect("the row's button is announced")
+            .1;
+        assert_eq!(button.role(), accesskit::Role::Button);
+        assert_eq!(button.label(), Some("Action"));
         assert!(
             row.bounds().is_some(),
             "platform row keeps viewport geometry"
         );
+        let button_id = *button_id;
         assert_eq!(
             app.dispatch_a11y_action(button_id, &crate::a11y::Action::Activate),
             None
@@ -1849,7 +1866,7 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
             ],
             0,
         )
-        .on_change(move |index| captured.set(index));
+        .on_view("choice", move |index| captured.set(index));
         let mut app = App::new(State::new(), Box::new(group));
         app.init_layout();
         app.refresh_semantic_tree();
@@ -1870,7 +1887,7 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
     {
         let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
         let captured = std::rc::Rc::clone(&presses);
-        let button = Button::new("drive-me", "Drive me").on_click(move || {
+        let button = Button::new("drive-me", "Drive me").on_effect(move || {
             captured.set(captured.get().saturating_add(1));
         });
         let mut app = App::new(State::new(), Box::new(button));

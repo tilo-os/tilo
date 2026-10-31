@@ -1,4 +1,4 @@
-//! This device's native owner (`tilo_joined_room`'s), its record in a file
+//! This device's native owner (`tilo_peer_state::owner`'s), its record in a file
 //! of its own beside the state file ([`owner_file`]). The tree keeps a
 //! read-only projection of the record ([`WorkspaceTree::native_authority`])
 //! and follows each publication ([`TreeHost`]): a room installed is
@@ -20,17 +20,17 @@ mod tests;
 #[cfg(test)]
 pub(crate) use publication_tests::edit as test_document_edit;
 #[cfg(test)]
-pub(crate) use tests::{test_enrolled_owner, test_owner_before_enrollment, tree_of};
+pub(crate) use tests::{grant_invite, test_enrolled_owner, test_owner_before_enrollment, tree_of};
 
 use super::state::{RoomId, WorkspaceId, WorkspaceTreeHandle};
 use std::path::{Path, PathBuf};
 pub use store::NativeStateRuntime;
 pub(crate) use store::NativeStateWitness;
-pub use tilo_joined_room::NativeAuthorityStorage;
-use tilo_joined_room::{Change, FileHost};
-pub(crate) use tilo_joined_room::{DocumentRead, NativeCommittedView, NativeWorkspaceOwner};
+pub use tilo_peer_state::owner::NativeAuthorityStorage;
+use tilo_peer_state::owner::{Change, FileHost};
+pub(crate) use tilo_peer_state::owner::{DocumentRead, NativeCommittedView, NativeWorkspaceOwner};
 #[cfg(test)]
-pub(crate) use tilo_joined_room::{NativeBootstrap, PendingEnrollmentId, PendingEnrollmentStatus};
+pub(crate) use tilo_peer_state::owner::{PendingEnrollmentId, PendingEnrollmentStatus};
 
 #[cfg(test)]
 thread_local! {
@@ -40,7 +40,24 @@ thread_local! {
 
 /// Where the owner of the state file at `state` keeps its record.
 pub(crate) fn owner_file(state: &Path) -> PathBuf {
-    tilo_joined_room::owner_file_of(state)
+    tilo_peer_state::owner::owner_file_of(state)
+}
+
+/// Which of `tree`'s workspaces this device holds, as the state dump reports
+/// them: one `{"workspace": id, "room": room}` row per workspace whose room's
+/// replica the owner has installed here. An enrollment still in flight is not
+/// held yet, so its workspace is not in the list.
+pub(crate) fn held_workspaces(tree: &super::state::WorkspaceTree) -> serde_json::Value {
+    serde_json::Value::Array(
+        tree.desktop
+            .workspaces
+            .iter()
+            .filter(|workspace| tree.native_authority.holds(workspace.room()))
+            .map(|workspace| {
+                serde_json::json!({ "workspace": workspace.id.raw(), "room": workspace.room() })
+            })
+            .collect(),
+    )
 }
 
 /// The tree following the owner's publications.
@@ -85,12 +102,12 @@ impl FileHost for TreeHost {
             {
                 return Err("the workspace made for the join is gone".into());
             }
-            let candidate = rooms_change.then(|| tree.clone_without_documents());
+            // Every publication moves the record on, so every one takes the
+            // export that carries it, rooms changed or not.
+            let mut candidate = tree.clone_without_documents();
             drop(tree);
-            candidate.map(|mut candidate| {
-                apply(&mut candidate, next, change);
-                crate::shell::action_authority::Export::of(&candidate)
-            })
+            apply(&mut candidate, next, change);
+            crate::shell::action_authority::Export::of(&candidate)
         };
         #[cfg(test)]
         {
@@ -108,15 +125,26 @@ impl FileHost for TreeHost {
         if rooms_change {
             // Only the final admitted projection reaches authority exports.
             tree.export_fs_capabilities();
-            if let Some(export) = export {
-                export.submit();
-            }
         }
+        export.submit();
         // A save of the tree taken before this record reached it stood
-        // down (`persist::TreeSnapshot`): this one carries the record. Its
-        // policy and file-system exports are the ones taken above.
+        // down (`persist::TreeSnapshot`): this one carries the record, and
+        // so does the policy exported with it. The export above may never
+        // land: a save of the tree taken before the record reached it, but
+        // written before the owner accepted the record, is a later
+        // snapshot, and an export behind it is ignored. This one is taken
+        // after every such save, so the policy reaches the owner's record
+        // and the sandboxes waiting on it are judged. The file-system
+        // export is the one taken above.
         if let Some(path) = tree.persist_path.clone() {
-            super::persist::queue_save(&tree, &path, || {});
+            let actions = crate::shell::action_authority::Export::of(&tree);
+            let failure = actions.failure_handle();
+            super::persist::queue_save_or_report(
+                &tree,
+                &path,
+                move || actions.publish(),
+                move |error| failure.fail(error),
+            );
         }
         drop(tree);
         Ok(())
@@ -135,7 +163,9 @@ fn apply(
     let before = tree.desktop.workspaces.len();
     tree.native_authority = next.clone();
     match *change {
-        Change::Room { room, peer, .. } => tree.project_native_room(room, peer),
+        Change::Room {
+            room, peer, host, ..
+        } => tree.project_native_room(room, peer, host),
         // The room and its workspace go together.
         Change::Released { room } => {
             tree.forget_personal_room(room);
@@ -179,7 +209,7 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
             .ok_or("native owner requires the actual state-file path")?
     };
     runtime.bind(&path).map_err(|e| e.to_string())?;
-    let owner = tilo_joined_room::open_file_with(
+    let owner = tilo_peer_state::owner::open_file_with(
         &owner_file(&path),
         std::sync::Arc::new(TreeHost { tree: tree.clone() }),
     )?;
@@ -194,7 +224,7 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
     native.native_authority = storage;
     for room in owner.rooms() {
         owner.with_current(room, |view| {
-            native.project_native_room(room, view.peer());
+            native.project_native_room(room, view.peer(), view.room_host());
             Ok(())
         })?;
     }
@@ -271,6 +301,26 @@ pub(crate) fn attached(tree: &WorkspaceTreeHandle) -> Option<NativeWorkspaceOwne
     runtime.owner_of(tree).ok().flatten()
 }
 
+/// Whether `room`'s host is one that hosts rooms for others: a device that
+/// acts as a host, named by the room's own transport hint. Such a host issues
+/// an invitation for every member the room's policy lets invite, where another
+/// person's own device signs its invitations alone.
+pub(crate) fn host_hosts_for_others(view: &NativeCommittedView, room: RoomId) -> bool {
+    let Ok(hint) = view.transport_hint() else {
+        return false;
+    };
+    let Ok((hint, _)) =
+        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+            hint,
+        )
+    else {
+        return false;
+    };
+    hint.room == room.to_string()
+        && &hint.host_device_certificate == view.room_host()
+        && view.room_host().capabilities.can_act_as_host
+}
+
 /// Another open of `tree`'s writer, in progress on a thread of its own
 /// until the returned sender is dropped (or `longest` passed): every other
 /// open of the writer waits behind it, so the owner stays opening
@@ -304,14 +354,13 @@ pub(crate) type GovernedRoomGuard = (tempfile::TempDir, NativeWorkspaceOwner);
 #[cfg(test)]
 pub(crate) fn test_chrome_governing_its_room()
 -> (crate::shell::chrome_state::Chrome, GovernedRoomGuard) {
-    use crate::shell::invite_policy::{native_governor, tests::grant_invite};
+    use crate::shell::native_workspace_owner::grant_invite;
     let (directory, owner, room, _now, _key) = test_enrolled_owner();
-    let governor = crate::shell::state::person_id_of(
-        native_governor(Some(owner.clone()), room)
-            .expect("the room's admitted governor")
-            .person,
-    )
-    .expect("person id");
+    let governor = owner
+        .with_current(room, |view| Ok(view.owner()))
+        .ok()
+        .and_then(crate::shell::state::person_id_of)
+        .expect("the room's admitted governor");
     let handle = test_tree_of(&owner);
     {
         let mut tree = handle.write();

@@ -12,10 +12,12 @@
 mod desktop;
 mod door;
 mod frames;
+pub mod shell_part;
 mod widget;
 
-pub use desktop::{DeskGesture, DesktopHost, StripPolicy, desktop, desktop_with};
+pub use desktop::{DeskGesture, DesktopHost, StripPolicy, WindowObserver, desktop, desktop_with};
 pub use door::{Doors, Published, Shared, through_door};
+pub use shell_part::{DeskReading, SessionLink, ShellPart, ShellWork};
 pub use widget::WidgetHost;
 
 use std::cell::Cell;
@@ -297,6 +299,10 @@ impl SurfaceHost for AppHost {
             size,
             frame: self.frames.frame(),
         }]
+    }
+
+    fn withholds_captures(&self) -> bool {
+        self.app.withholds_captures()
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {

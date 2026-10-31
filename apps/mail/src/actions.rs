@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Effect, JsonSchema};
 
-use tilo_actions::ActionSpec;
+use tilo_actions::{ActionSpec, ResourceSpec};
 use ui::framework::LiveRow;
 
 use crate::attachment_store;
@@ -49,8 +49,6 @@ pub enum MailTarget {
     Draft,
     /// Another draft, by id, in a composer of its own.
     DraftId(String),
-    /// An attachment of a message, in the app that opens its type.
-    Attachment { message: String, index: usize },
 }
 
 /// What Mail does that changes no document: what the window shows, the
@@ -70,6 +68,12 @@ pub enum MailEffect {
     /// Choose a recipient and sending account from shared Contacts.
     #[effect(view)]
     ContactRecipients,
+    /// Account in Settings
+    ///
+    /// Opens this device's Settings on External Accounts, where an account is
+    /// added, changed or removed. The mailbox itself changes not at all.
+    #[effect(view, idempotent)]
+    AccountSettings,
     /// Prepare a draft from this exact address-book recipient and sender.
     ///
     /// Requires review; creates no identity link and sends nothing.
@@ -186,6 +190,22 @@ pub enum MailEffect {
         all: Option<bool>,
         #[param("Private notes on the draft (a review, what to check), never sent")]
         notes: Option<String>,
+    },
+    /// Open attachment
+    ///
+    /// Opens the attachment in the app registered for its type (a PDF in
+    /// the PDF viewer) through the desktop's `open`, handed over as
+    /// workspace content: a window of its own, or a tab of the window
+    /// `group`. Answers the window, its group and strip, once it is up.
+    #[effect(row, job, kind = "read", returns)]
+    OpenAttachment {
+        message: String,
+        index: usize,
+        #[param(
+            "The window group to open it as a tab of, as the desktop's open or list-windows \
+             answered it; a window of its own when omitted"
+        )]
+        group: Option<String>,
     },
     /// Get content
     ///
@@ -747,15 +767,12 @@ pub(crate) fn attachment_row(
         index,
     }
     .bound();
-    let open = bound(
-        &MailEffect::Open {
-            target: MailTarget::Attachment {
-                message: message_id.to_owned(),
-                index,
-            },
-        },
-        "Open attachment",
-    );
+    let open = MailEffect::OpenAttachment {
+        message: message_id.to_owned(),
+        index,
+        group: None,
+    }
+    .bound_asking(&["group"]);
     let not_downloaded = |spec: ActionSpec| {
         if attachment.downloadable {
             spec
@@ -775,6 +792,23 @@ pub(crate) fn attachment_row(
     .operation(not_downloaded(content))
     .operation(not_downloaded(open))
     .operation(not_downloaded(save))
+}
+
+/// The draft `id` as the item `draft-reply` and `read` name it
+/// (`mail.draft:<id>`): opening it shows it in a composer of its own, bound
+/// to it.
+pub(crate) fn draft_resource(id: &str, draft: &crate::resource::DraftState) -> ResourceSpec {
+    let target = if crate::resource::is_composer_draft(id) {
+        MailTarget::Draft
+    } else {
+        MailTarget::DraftId(id.to_owned())
+    };
+    ResourceSpec::new(
+        format!("mail.draft:{id}"),
+        "mail.draft",
+        crate::resource::draft_label(draft),
+    )
+    .with_action(bound(&MailEffect::Open { target }, "Open draft"))
 }
 
 /// Open, preview, reply, reply all and forward, bound to the message

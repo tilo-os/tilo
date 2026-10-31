@@ -30,6 +30,10 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 
+#[path = "badge_component.rs"]
+mod component;
+pub use component::BadgeProps;
+
 /// See module docs for content semantics.
 #[derive(Clone, Debug)]
 pub enum BadgeContent {
@@ -235,6 +239,7 @@ fn badge_pill(
     PillPaint {
         rect,
         label,
+        face: "",
         lead: ChipLead::None,
         style,
         selected: false,
@@ -261,6 +266,7 @@ fn paint_badge_pill(
         &PillPaint {
             rect,
             label,
+            face: "",
             lead: ChipLead::None,
             style,
             selected: false,

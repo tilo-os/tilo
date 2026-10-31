@@ -452,6 +452,7 @@ impl ContainersApp {
             offsets: view::Offsets::default(),
             sort: ui::LocalState::new(None),
             detail_title: ui::LocalState::new(String::new()),
+            actions: None,
         };
         let window = view::window(&parts);
         let state = ContainersState {
@@ -755,6 +756,14 @@ fn focus_draft(create: &mut ModalDialog<Column>, field: Option<CreateField>) {
 /// engine's rows and search entries.
 pub(crate) fn window(cx: &ViewCx<Containers>, mut window: ContainersApp) -> Element {
     window.document = Some(cx.live().clone());
+    // The pages' rows run the app's published actions; the window is built
+    // before it joins the view, so give it its actions now and lay it out
+    // again.
+    {
+        let mut state = window.state.borrow_mut();
+        state.parts.actions = Some(cx.actions());
+        window.window = view::window(&state.parts);
+    }
     let dispatcher = cx.dispatcher();
     crate::create_form::for_each_input(window.create.content_mut(), &mut |input| {
         input.attach(dispatcher.clone());
@@ -777,11 +786,15 @@ pub(crate) fn window(cx: &ViewCx<Containers>, mut window: ContainersApp) -> Elem
     cx.on_open(state.borrow().opener());
     {
         let (answer, status) = (Rc::clone(&state), Rc::clone(&state));
-        cx.effects(move |effect: ContainersEffect, _| {
-            answer
+        cx.effects(move |effect: ContainersEffect, _| match effect {
+            ContainersEffect::ReadContainer { container } => answer
+                .borrow()
+                .read_container(&container)
+                .map(Effected::value),
+            effect => answer
                 .borrow_mut()
                 .perform_effect(effect)
-                .map(|()| Effected::done())
+                .map(|()| Effected::done()),
         })
         .status(move || status.borrow().effect_statuses());
     }
@@ -1489,22 +1502,6 @@ impl ContainersState {
         }
     }
 
-    /// Enter a distrobox in the Tilo terminal.
-    fn enter_distrobox(&mut self, name: &str) {
-        if self.engine.live {
-            self.request(
-                format!("distrobox:{name}"),
-                ContainersEffect::EnterDistrobox {
-                    distrobox: name.to_owned(),
-                },
-            );
-        } else if !self.live {
-            self.show_toast(format!("Entered {name}"), false);
-        } else {
-            self.show_toast("Podman isn't running", true);
-        }
-    }
-
     pub(crate) fn submit_create(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let draft = <Containers as ui::tilo_resource::Resource>::read(doc.doc())
             .map(|record| record.draft)
@@ -1700,31 +1697,16 @@ impl ContainersState {
             }
             Intent::OpenShell(id) => self.attach_shell(&id),
             Intent::NewContainer => self.set_create_open(true),
-            Intent::PullImage(Some(reference)) => self.start_pull(&reference),
-            Intent::PullImage(None) => self.ask_prompt(Prompt {
+            Intent::PullImage => self.ask_prompt(Prompt {
                 kind: PromptKind::PullImage,
                 value: String::new(),
                 context: String::new(),
-            }),
-            Intent::TagImage(reference) => self.ask_prompt(Prompt {
-                kind: PromptKind::TagImage,
-                value: String::new(),
-                context: reference,
-            }),
-            Intent::RemoveImage(reference) => self.ask_confirm(Confirm {
-                name: reference.clone(),
-                target: ConfirmTarget::Image { reference },
             }),
             Intent::NewVolume => self.ask_prompt(Prompt {
                 kind: PromptKind::NewVolume,
                 value: String::new(),
                 context: String::new(),
             }),
-            Intent::RemoveVolume(name) => self.ask_confirm(Confirm {
-                name: name.clone(),
-                target: ConfirmTarget::Volume { name },
-            }),
-            Intent::EnterDistrobox(name) => self.enter_distrobox(&name),
             Intent::SubmitCreate => self.submit_create(doc),
             Intent::CloseCreate => self.set_create_open(false),
             Intent::ConfirmAccept => self.accept_confirm(),
@@ -2171,6 +2153,11 @@ pub(crate) fn container_row(container: &crate::model::Container, engine_live: bo
         "containers.container",
         container.name.clone(),
     )
+    .operation(
+        ContainersEffect::ReadContainer { container: id() }
+            .bound()
+            .reads_document(),
+    )
     .operation({
         let mut open = ContainersEffect::SelectContainer { id: Some(id()) }.bound();
         open.type_mut().label = format!("Open {}", container.name);
@@ -2218,9 +2205,6 @@ fn image_row(image: &crate::model::Image, engine_live: bool) -> LiveRow {
         "containers.image",
         reference.clone(),
     )
-    .effect(&ContainersEffect::ShowImage {
-        image: reference.clone(),
-    })
     .operation(offered(
         &ContainersEffect::RemoveImage { image: reference },
         engine_live,
@@ -2234,9 +2218,6 @@ fn volume_row(volume: &crate::model::Volume, engine_live: bool) -> LiveRow {
         "containers.volume",
         volume.name.clone(),
     )
-    .effect(&ContainersEffect::ShowVolume {
-        volume: volume.name.clone(),
-    })
     .operation(offered(
         &ContainersEffect::RemoveVolume {
             volume: volume.name.clone(),
@@ -2252,9 +2233,6 @@ fn distrobox_row(distrobox: &crate::model::DistroBox, engine_live: bool) -> Live
         "containers.distrobox",
         distrobox.name.clone(),
     )
-    .effect(&ContainersEffect::ShowDistrobox {
-        distrobox: distrobox.name.clone(),
-    })
     .operation(offered(
         &ContainersEffect::EnterDistrobox {
             distrobox: distrobox.name.clone(),

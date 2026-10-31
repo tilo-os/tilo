@@ -12,7 +12,7 @@ fn labeled(mut certificate: DeviceCert, label: &str) -> DeviceCert {
 #[test]
 fn roster_preserves_historical_enrollment_conflicts_and_signature_checks() {
     let (peer, _, _, mut member, now) = crate::admission_tests::seeded();
-    let authority = peer.authority().clone();
+    let authority = peer.owner_certificates()[0].clone();
     let now = now_ns(now);
     member.expires_at_ns = Some(now);
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
@@ -54,7 +54,7 @@ fn roster_preserves_historical_enrollment_conflicts_and_signature_checks() {
 #[test]
 fn roster_restores_many_and_repeated_signed_entries() {
     let (peer, _, _, _, now) = crate::admission_tests::seeded();
-    let authority = peer.authority().clone();
+    let authority = peer.owner_certificates()[0].clone();
     let root = SigningKey::from_bytes(&[1; 32]);
     let mut certificates = Vec::new();
     for index in 0u32..128 {

@@ -33,6 +33,9 @@ pub(crate) struct PowerRun {
     next: Arc<Mutex<Option<SessionConfig>>>,
     /// What the sleep in flight installed, so a failed one undoes only that.
     sleep: SleepLock,
+    /// Whether the sleep in flight is the idle timer's: its lock stays on
+    /// this device, as the idle timer's own lock does.
+    idle_sleep: bool,
     /// Keeps the settings watch alive: the loader's one watch, which the
     /// compositor's assists and the power policy both follow.
     watch: Option<settings_store::watch::SettingsWatch>,
@@ -50,6 +53,7 @@ impl PowerRun {
                 prepared: false,
                 locked_before: false,
             },
+            idle_sleep: false,
             watch: None,
         }
     }
@@ -99,6 +103,14 @@ pub(crate) fn install(compositor: &mut Compositor, options: &Options) -> PowerRu
         let waker = compositor.waker();
         move || waker.wake_by_ref()
     }));
+    // A hold appearing or lapsing is not a signal the service sends: it
+    // changes what the loop applies to the compositor and what the bar
+    // says, so the loop wakes to read it rather than waiting for the next
+    // frame something else causes.
+    link.registry().on_change({
+        let waker = compositor.waker();
+        move || waker.wake_by_ref()
+    });
     apply(compositor, &link);
     run.link = Some(link);
     run
@@ -156,8 +168,16 @@ impl Session {
             PowerSignal::Lock => self.lock_for_power()?,
             PowerSignal::PreparingForSleep => {
                 let locked_before = self.compositor.locked();
+                // A sleep the idle timer asked for locks as the idle timer
+                // does: its lock stays on this device, while the one a lid,
+                // a key or the power service asked for is the person's own.
+                let locked_by = if std::mem::take(&mut self.machine.idle_sleep) {
+                    tilo_compositor::LockedBy::IdleTimer
+                } else {
+                    tilo_compositor::LockedBy::Person
+                };
                 self.compositor
-                    .prepare_for_sleep(link.policy().lock_on_sleep)?;
+                    .prepare_for_sleep(link.policy().lock_on_sleep, locked_by)?;
                 self.machine.sleep = SleepLock {
                     prepared: true,
                     locked_before,
@@ -170,6 +190,7 @@ impl Session {
             }
             PowerSignal::SuspendFailed => {
                 let sleep = std::mem::take(&mut self.machine.sleep);
+                self.machine.idle_sleep = false;
                 self.compositor.cancel_suspend();
                 if sleep.prepared && !sleep.locked_before {
                     self.compositor.unlock()?;
@@ -226,6 +247,9 @@ impl Session {
                 self.compositor.cancel_suspend();
                 return;
             }
+            // The sleep is the idle timer's: its lock stays on this device,
+            // as the idle timer's own lock does.
+            self.machine.idle_sleep = true;
             if link.is_attached() {
                 link.bridge().request_idle_suspend();
                 return;
@@ -233,6 +257,7 @@ impl Session {
         }
         // Without a service over logind (a machine without one) the
         // session's own action is what sleeping is.
+        self.machine.idle_sleep = true;
         if let Err(error) = (self.shared.session_actions)(crate::SessionAction::Suspend) {
             tracing::warn!(%error, "suspend");
         }

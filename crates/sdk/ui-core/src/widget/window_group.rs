@@ -162,6 +162,7 @@ const FULLSCREEN_TARGET: &str = "window.fullscreen";
     clippy::struct_excessive_bools,
     reason = "independent UI flags on a widely-shared pub struct; not a state bitset"
 )]
+#[crate::component::not_a_component(shell, "a group of windows")]
 pub struct WindowGroup {
     external_navigation: bool,
     /// Transient presentation from the parent row; never a persisted maximize.

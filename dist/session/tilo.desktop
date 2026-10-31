@@ -3,9 +3,14 @@
 # others (GDM, SDDM, greetd — anything that scans
 # /usr/share/wayland-sessions). The Tilo image ships its own entries under
 # os/usr/share/wayland-sessions/; this one differs in that it names
-# /usr/bin/tilo-shell rather than /usr/bin/shell, because a package installed
+# /usr/bin/tilo-session rather than /usr/bin/shell, because a package installed
 # onto someone else's distribution has no business claiming a name as generic
 # as `shell` in /usr/bin.
+#
+# `Exec` starts the packaged native session; `X-Tilo-Session-Default=true` is
+# what the Tilo greeter offers first (crates/session/greeter/src/sessions.rs).
+# `Tilo (old shell)` beside it, in tilo-shell.desktop, starts the compositor
+# this one replaces while both are shipped.
 #
 # DesktopNames=tilo is what the xdg-desktop-portal `tilo.portal` file
 # matches via UseIn=tilo to activate the Tilo portal backend.
@@ -13,6 +18,7 @@ Name=Tilo
 GenericName=Collaborative spatial desktop
 Comment=Tilo compositor as a session on this machine
 Exec=/usr/libexec/tilo-session
-TryExec=/usr/bin/tilo-shell
+TryExec=/usr/bin/tilo-session
 Type=Application
 DesktopNames=tilo
+X-Tilo-Session-Default=true

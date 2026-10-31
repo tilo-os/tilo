@@ -3,7 +3,7 @@
 //! the shell presents, and the controls pressed on it, which the shell
 //! hands back.
 //!
-//! The app holds a `LiveActivity` capability
+//! The app calls on its channel
 //! ([`crate::ChannelHandle::live_activity`]): it shows its activity with
 //! [`LiveActivityHandle::show`] and follows the controls pressed on it with
 //! [`LiveActivityHandle::controls`]. The host answers it with
@@ -12,14 +12,12 @@
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use capnp::capability::Promise;
 use runtime_portal::NotAvailable;
 use serde_json::Value;
 
-use crate::collab_capnp::live_activity;
+use crate::wire::{LiveActivityCall, Reply};
 use tilo_lock::MutexRecover as _;
 
 /// The most bytes one activity or batch of controls carries on the wire.
@@ -28,55 +26,63 @@ pub const MAX_LIVE_ACTIVITY_BYTES: usize = 16 * 1024;
 /// The most controls kept for an app that does not take them.
 const MAX_PENDING_CONTROLS: usize = 32;
 
-/// The capability [`crate::ChannelHandle::live_activity`] answers.
+/// What [`crate::ChannelHandle::live_activity`] answers.
 #[derive(Clone)]
 pub struct LiveActivityHandle {
-    pub(crate) inner: Rc<live_activity::Client>,
-}
-
-impl From<live_activity::Client> for LiveActivityHandle {
-    fn from(client: live_activity::Client) -> Self {
-        Self {
-            inner: Rc::new(client),
-        }
-    }
+    pub(crate) channel: crate::ChannelHandle,
 }
 
 impl LiveActivityHandle {
     /// Show `activity` as the app's live activity, or end it with `None`.
+    ///
+    /// # Errors
+    /// Refuses an oversized activity, and the host's refusal.
     pub async fn show(&self, activity: Option<&Value>) -> Result<(), NotAvailable> {
         let bytes = match activity {
             Some(activity) => serde_json::to_vec(activity)
-                .map_err(|error| NotAvailable::Capnp(capnp::Error::failed(error.to_string())))?,
+                .map_err(|error| NotAvailable::Refused(error.to_string()))?,
             None => Vec::new(),
         };
         if bytes.len() > MAX_LIVE_ACTIVITY_BYTES {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
+            return Err(NotAvailable::Refused(
                 "live activity exceeds the wire bound".into(),
-            )));
+            ));
         }
-        let mut request = self.inner.show_request();
-        request.get().set_activity_json(&bytes);
-        request.send().promise.await?;
-        Ok(())
+        match self
+            .channel
+            .live_activity_call(LiveActivityCall::Show(bytes))
+            .await?
+        {
+            Reply::Done => Ok(()),
+            other => Err(NotAvailable::Refused(format!(
+                "the collaboration host answered a live activity with {other:?}"
+            ))),
+        }
     }
 
     /// The controls pressed on the app's activity after `after`, once there
     /// is one, and the serial to pass back for the next.
+    ///
+    /// # Errors
+    /// The host refuses, is unavailable, or answers malformed controls.
     pub async fn controls(&self, after: u64) -> Result<(u64, Vec<Value>), NotAvailable> {
-        let mut request = self.inner.controls_request();
-        request.get().set_after(after);
-        let reply = request.send().promise.await?;
-        let reply = reply.get()?;
-        let bytes = reply.get_controls_json()?;
-        if bytes.len() > MAX_LIVE_ACTIVITY_BYTES {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "live activity controls exceed the wire bound".into(),
+        let reply = self
+            .channel
+            .live_activity_call(LiveActivityCall::Controls { after })
+            .await?;
+        let Reply::Controls { serial, controls } = reply else {
+            return Err(NotAvailable::Refused(format!(
+                "the collaboration host answered live activity controls with {reply:?}"
             )));
+        };
+        if controls.len() > MAX_LIVE_ACTIVITY_BYTES {
+            return Err(NotAvailable::Refused(
+                "live activity controls exceed the wire bound".into(),
+            ));
         }
-        let controls = serde_json::from_slice(bytes)
-            .map_err(|error| NotAvailable::Capnp(capnp::Error::failed(error.to_string())))?;
-        Ok((reply.get_serial(), controls))
+        let controls = serde_json::from_slice(&controls)
+            .map_err(|error| NotAvailable::Refused(error.to_string()))?;
+        Ok((serial, controls))
     }
 }
 
@@ -87,6 +93,10 @@ pub struct LiveActivities {
     apps: Mutex<BTreeMap<String, App>>,
     changed: tokio::sync::Notify,
     revision: std::sync::atomic::AtomicU64,
+    /// What wakes the host presenting the board when an activity moves: it
+    /// draws on its own frames, so a timer starting in the background must
+    /// reach the screen without waiting for the next one.
+    host: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 #[derive(Default)]
@@ -110,6 +120,23 @@ impl LiveActivities {
         self.revision.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// Wake `wake` whenever an activity or a pressed control moves the
+    /// board, so the host presenting it can draw again.
+    pub fn set_host_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        *self.lock_host() = Some(wake);
+    }
+
+    fn lock_host(&self) -> std::sync::MutexGuard<'_, Option<Arc<dyn Fn() + Send + Sync>>> {
+        self.host.lock_recover()
+    }
+
+    fn wake_host(&self) {
+        let wake = self.lock_host().clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
+
     pub fn show(&self, app_id: &str, activity: Option<Value>) {
         let mut apps = self.lock();
         let app = apps.entry(app_id.to_owned()).or_default();
@@ -120,6 +147,7 @@ impl LiveActivities {
         drop(apps);
         self.revision
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.wake_host();
     }
 
     /// Hand `control` to app `app_id`, pressed on its activity.
@@ -133,6 +161,7 @@ impl LiveActivities {
         app.controls.drain(..excess);
         drop(apps);
         self.changed.notify_waiters();
+        self.wake_host();
     }
 
     /// The controls app `app_id` has not taken after `after`, and the
@@ -157,11 +186,11 @@ impl LiveActivities {
 
 /// Asked before every call; an error refuses it (the channel's admission
 /// was withdrawn).
-pub type Revalidate = Arc<dyn Fn() -> Result<(), capnp::Error> + Send + Sync>;
+pub type Revalidate = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 
-/// One app's `LiveActivity` capability over the host's board. The app is
+/// One app's live activity calls, answered on the host's board. The app is
 /// the one the channel certified; there is no way to name another. Its
-/// activity ends when the app lets the capability go.
+/// activity ends when the app's channel closes.
 pub struct LiveActivityServer {
     app_id: String,
     board: Arc<LiveActivities>,
@@ -193,74 +222,52 @@ impl Drop for LiveActivityServer {
     }
 }
 
-#[allow(
-    refining_impl_trait,
-    reason = "the generated server methods return a future; a Promise is one"
-)]
-impl live_activity::Server for LiveActivityServer {
-    fn show(
-        self: Rc<Self>,
-        params: live_activity::ShowParams,
-        _results: live_activity::ShowResults,
-    ) -> Promise<(), capnp::Error> {
-        if let Err(error) = (self.revalidate)() {
-            return Promise::err(error);
+impl LiveActivityServer {
+    /// Show `activity` (a JSON object) as the app's activity; empty ends it.
+    ///
+    /// # Errors
+    /// The channel's admission was withdrawn, or the activity is malformed.
+    pub fn show(&self, activity: &[u8]) -> Result<(), String> {
+        (self.revalidate)()?;
+        if activity.len() > MAX_LIVE_ACTIVITY_BYTES {
+            return Err("live activity exceeds the wire bound".into());
         }
-        let shown = (|| {
-            let bytes = params.get()?.get_activity_json()?;
-            if bytes.len() > MAX_LIVE_ACTIVITY_BYTES {
-                return Err(capnp::Error::failed(
-                    "live activity exceeds the wire bound".into(),
-                ));
+        let activity = if activity.is_empty() {
+            None
+        } else {
+            match serde_json::from_slice(activity) {
+                Ok(activity @ Value::Object(_)) => Some(activity),
+                _ => return Err("a live activity is a JSON object".into()),
             }
-            if bytes.is_empty() {
-                return Ok(None);
-            }
-            match serde_json::from_slice(bytes) {
-                Ok(activity @ Value::Object(_)) => Ok(Some(activity)),
-                _ => Err(capnp::Error::failed(
-                    "a live activity is a JSON object".into(),
-                )),
-            }
-        })();
-        match shown {
-            Ok(activity) => {
-                self.shown.set(activity.is_some());
-                self.board.show(&self.app_id, activity);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(error),
-        }
+        };
+        self.shown.set(activity.is_some());
+        self.board.show(&self.app_id, activity);
+        Ok(())
     }
 
-    fn controls(
-        self: Rc<Self>,
-        params: live_activity::ControlsParams,
-        mut results: live_activity::ControlsResults,
-    ) -> Promise<(), capnp::Error> {
-        let after = match params.get() {
-            Ok(params) => params.get_after(),
-            Err(error) => return Promise::err(error),
-        };
-        Promise::from_future(async move {
-            loop {
-                (self.revalidate)()?;
-                // Armed before looking, so a press between the look and the
-                // wait still wakes it.
-                let pressed = self.board.changed.notified();
-                tokio::pin!(pressed);
-                pressed.as_mut().enable();
-                if let Some((serial, controls)) = self.board.controls_after(&self.app_id, after) {
-                    let bytes = serde_json::to_vec(&controls)
-                        .map_err(|error| capnp::Error::failed(error.to_string()))?;
-                    let mut reply = results.get();
-                    reply.set_serial(serial);
-                    reply.set_controls_json(&bytes);
-                    return Ok(());
-                }
-                pressed.await;
+    /// The controls pressed after `after`, once there is one, as a JSON
+    /// array, and the serial of the last.
+    ///
+    /// # Errors
+    /// The channel's admission was withdrawn.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the host answers each app on its single-threaded broker task"
+    )]
+    pub async fn controls(&self, after: u64) -> Result<(u64, Vec<u8>), String> {
+        loop {
+            (self.revalidate)()?;
+            // Armed before looking, so a press between the look and the
+            // wait still wakes it.
+            let pressed = self.board.changed.notified();
+            tokio::pin!(pressed);
+            pressed.as_mut().enable();
+            if let Some((serial, controls)) = self.board.controls_after(&self.app_id, after) {
+                let bytes = serde_json::to_vec(&controls).map_err(|error| error.to_string())?;
+                return Ok((serial, bytes));
             }
-        })
+            pressed.await;
+        }
     }
 }
 
@@ -289,5 +296,27 @@ mod tests {
 
         board.show("so.tilo.clocks", None);
         assert_eq!(board.activity("so.tilo.clocks"), None);
+    }
+
+    /// The host presenting the board is woken by an activity moving and by
+    /// a pressed control, so a timer starting in the background is drawn
+    /// without waiting for the next frame the host would have run.
+    #[test]
+    fn the_board_wakes_the_host_presenting_it() {
+        let board = LiveActivities::default();
+        let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&woken);
+        board.set_host_wake(Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }));
+        board.show("so.tilo.clocks", Some(serde_json::json!({"label": "Tea"})));
+        assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 1);
+        // The same activity again moves nothing and wakes no one.
+        board.show("so.tilo.clocks", Some(serde_json::json!({"label": "Tea"})));
+        assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 1);
+        board.press("so.tilo.clocks", serde_json::json!({"command": "toggle"}));
+        assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 2);
+        board.show("so.tilo.clocks", None);
+        assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 3);
     }
 }

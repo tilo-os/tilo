@@ -43,6 +43,7 @@ pub fn a11y(settings: &AccessibilitySettings) -> A11y {
             }),
         },
         cursor: CursorA11y {
+            theme: settings.cursor_theme.as_str().to_owned(),
             size: settings.effective_cursor_size(),
             crosshair: settings.cursor_crosshair,
         },
@@ -211,6 +212,32 @@ mod tests {
     fn a_crosshair_goes_with_its_setting() {
         let a11y = a11y(&settings(&[("cursor_crosshair", true.into())]));
         assert!(a11y.cursor.crosshair);
+    }
+
+    /// The pointer theme the person stored is the one the compositor draws,
+    /// from the same update that carries every other assist, and the theme
+    /// the desktop ships with until they choose another.
+    #[test]
+    fn the_pointer_draws_the_theme_the_person_stored() {
+        assert_eq!(
+            a11y(&settings(&[])).cursor.theme,
+            tilo_accessibility_settings::DEFAULT_CURSOR_THEME
+        );
+        let mut compositor =
+            Compositor::headless(Box::new(tilo_compositor::StackPolicy)).expect("compositor");
+        apply(
+            &mut compositor,
+            &a11y(&settings(&[("cursor_theme", "Bibata-Modern-Ice".into())])),
+        )
+        .expect("apply");
+        assert_eq!(compositor.a11y().cursor.theme, "Bibata-Modern-Ice");
+
+        // And back to the one the desktop ships with, live as well.
+        apply(&mut compositor, &a11y(&settings(&[]))).expect("apply");
+        assert_eq!(
+            compositor.a11y().cursor.theme,
+            tilo_accessibility_settings::DEFAULT_CURSOR_THEME
+        );
     }
 
     #[test]

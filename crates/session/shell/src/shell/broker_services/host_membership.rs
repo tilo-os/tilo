@@ -13,10 +13,10 @@ pub(super) async fn commit_at_own_host(
     network: &super::super::network::ShellNetwork,
     owner: &super::super::native_workspace_owner::NativeWorkspaceOwner,
     room: super::super::state::RoomId,
-    request: &tilo_owner_commit::OwnerCommitRequest,
+    request: &tilo_peer_state::owner_commit::OwnerCommitRequest,
     caller: &tilo_user_identity::DeviceCert,
     command: &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-) -> Option<Result<tilo_owner_commit::OwnerCommitReceipt, String>> {
+) -> Option<Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String>> {
     if !network.own_host_governs(room, caller) {
         return None;
     }
@@ -63,7 +63,7 @@ pub(super) async fn commit_at_own_host(
         }
         network.check_native_custody(owner, room)?;
         owner.with_current(room, |view| {
-            Ok(tilo_owner_commit::OwnerCommitReceipt {
+            Ok(tilo_peer_state::owner_commit::OwnerCommitReceipt {
                 binding: request.binding()?,
                 generation: view.generation(),
                 aggregate_hash: *blake3::hash(&view.peer().durable()?).as_bytes(),

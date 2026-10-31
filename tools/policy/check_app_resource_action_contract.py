@@ -66,7 +66,6 @@ FRAMEWORK_LAUNCH = re.compile(
 # vocabulary: a surface's `ResourceSurface::effect`, a view's `cx.effects(..)`.
 TYPED_EFFECT_HANDLER = re.compile(r"\bfn\s+effect\s*\(|\.\s*effects\s*\(\s*(?:move\s*)?\|")
 LEGACY_ENTRY_POINTS = {
-    "legacy room-action override": re.compile(r"\bfn\s+apply_room_action\s*\("),
     "bespoke automation entry point": re.compile(
         r"\bfn\s+(?:automation|agent|mcp|control)_"
         r"(?:invoke|enumerate|dispatch|serve|listen)\b"
@@ -135,8 +134,8 @@ CONTROL_CALLBACKS = frozenset(
         "on_name_group", "on_navigate", "on_open_entry", "on_outcome", "on_remove",
         "on_rename", "on_retry",
         "on_revert", "on_row_action", "on_row_click", "on_save",
-        "on_section_action", "on_seek", "on_select", "on_station", "on_submit",
-        "on_toggle", "on_undo_band",
+        "on_section_action", "on_select", "on_station", "on_submit",
+        "on_toggle", "on_undo", "on_undo_band", "on_confirm", "on_decline",
     }
 )
 # The toolkit's other closure-taking `on_*` builders, and why none is a
@@ -173,6 +172,16 @@ NOT_CONTROL_CALLBACKS = {
     "what this window shows, no edit",
     "on_sync": "a view's per-sync upkeep hook, run by the framework, not a control",
     "on_presented": "a view's after-frame hook, run by the framework, not a control",
+    "on_station_view": "answers the stepper's published view action for the station chosen",
+    "on_files_view": "answers the drop zone's published view action for the files dropped",
+    "on_check_view": "answers the table's published view action for the box turned",
+    "on_row_click_view": "answers the table's published view action for the row clicked",
+    "on_submit_view": "answers the field's published view action for the text submitted",
+    "on_change_view": "answers the control's published view action for the value its person set",
+    "on_toggle_view": "answers the chip's published view action for the flip its person made",
+    "on_remove_view": "answers the chip's published view action for the removal its person made",
+    "on_enter_default": "the surrounding dialog's default action reaching a host that has no "
+    "dialog around the body, not a control of the prompt's own",
 }
 # Buttons a toolkit composite draws itself and runs a closure for: a row's
 # and a property's actions, a row's swipe actions, a card's hover action, a
@@ -1583,6 +1592,54 @@ def shared_framework_host(
     return False
 
 
+def model_crate_host(root: Path, app_dir: Path, manifest: dict, code: str) -> bool:
+    """Whether the app hosts a framework app whose record a model crate declares.
+
+    An app may keep its record in an `apps/*-model` crate (the portability
+    rules let an app depend on one): the types, the verbs and the typed action
+    arguments are then shared with whatever else works the same records, such
+    as the agent that runs a tracker's issues. The app hosts a framework app
+    whose resource that crate declares — `impl ResourceApp for X { type
+    Resource = R; }` in the app, `R` declared with `#[resource]` in the crate
+    — exactly as one that declares `R` locally, so it publishes the same
+    actions and needs no surface of its own.
+
+    Only a normal path dependency the app names is followed, and only one whose
+    directory is an `apps/*-model` crate, so an unrelated library cannot
+    satisfy the contract. The resource the app's own `type Resource` names must
+    be one the crate declares.
+    """
+    hosted: set[str] = set()
+    for match in RESOURCE_APP_IMPL.finditer(code):
+        body = brace_body(code, match.start()) or ""
+        resource = ASSOCIATED_RESOURCE.search(body)
+        if resource is not None:
+            hosted.add(rust_type_name(resource.group(1)))
+    if not hosted:
+        return False
+    for table in runtime_dependency_tables(manifest):
+        for specification in table.values():
+            if not isinstance(specification, dict):
+                continue
+            path = specification.get("path")
+            if not isinstance(path, str):
+                continue
+            dependency = (app_dir / path).resolve()
+            try:
+                dependency.relative_to(root.resolve())
+            except ValueError:
+                continue
+            if not dependency.name.endswith("-model") or not (dependency / "src").is_dir():
+                continue
+            crate = "\n".join(
+                production_code(item.read_text(encoding="utf-8"))
+                for item in sorted((dependency / "src").rglob("*.rs"))
+            )
+            if hosted & declared_resource_names(crate):
+                return True
+    return False
+
+
 def unattached_handler_entries(text: str) -> list[str]:
     """Registry claims with no evidence on the reachable dispatch path."""
     registry = OPERATION_HANDLER_REGISTRY.search(text)
@@ -1895,7 +1952,9 @@ def audit(
             framework_host = (
                 FRAMEWORK_APP.search(combined) is not None
                 and bool(declared_resource_names(combined))
-            ) or shared_framework_host(root, manifest_path.parent, manifest, shipped)
+            ) or shared_framework_host(
+                root, manifest_path.parent, manifest, shipped
+            ) or model_crate_host(root, manifest_path.parent, manifest, combined)
             toolkit_host = TOOLKIT_ACTION_HOST.search(combined) is not None
             # A host with several operations builds its descriptor directly;
             # the toolkit helpers each describe a single operation.
@@ -2050,13 +2109,29 @@ def write_baseline(
         if path not in files:
             path.unlink()
     for path, rules in files.items():
-        lines = []
+        lines = leading_comments(path)
         for rule in sorted(rules):
             lines.append(f"[ratchets.{rule}]")
             lines += [f'"{relative}" = {limit}' for relative, limit in sorted(rules[rule].items())]
             lines.append("")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+
+
+def leading_comments(path: Path) -> list[str]:
+    """The comment block a baseline file opens with, kept across rewrites: it
+    says why the ceiling that is left is there, which no count can say."""
+    if not path.exists():
+        return []
+    kept: list[str] = []
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith("#"):
+            if kept and line.strip() == "":
+                kept.append("")
+            break
+        kept.append(line)
+    return kept
 
 
 def main() -> int:

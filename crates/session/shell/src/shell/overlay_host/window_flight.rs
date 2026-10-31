@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use tilo_desktop::overview_picture::GridMetrics;
-use tilo_desktop::window_flight::WindowFlight;
+use tilo_desktop::window_flight::{WindowFlight, WindowPicture};
 use tilo_desktop::window_switcher::{
     PreviewSource, PreviewState, PreviewWell, SwitcherWindow, WindowSwitcher, draw_preview_well,
 };
@@ -218,10 +218,6 @@ impl ShellOverlayHost {
     /// pictures: flying from where it stands to where it rests, faded in
     /// where it rests when it has nowhere to fly from, the carried one over
     /// everything with its shadow.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "Rect ± Vec2 is float geometry translation and cannot panic"
-    )]
     pub(super) fn draw_window_flight(
         &mut self,
         scene: &mut Scene,
@@ -247,10 +243,13 @@ impl ShellOverlayHost {
         let output = self.overview_output_rect();
         // In flight the pictures cross the whole display; at rest they keep
         // to where the overview shows them.
+        let shift = Affine::translate(origin);
         let clip = if p < 1.0 {
             output
         } else {
-            flight.clip().map_or(output, |clip| clip + origin)
+            flight
+                .clip()
+                .map_or(output, |clip| shift.transform_rect_bbox(clip))
         };
         scene.push_clip_layer(Fill::NonZero, transform, &clip);
         let g = GridMetrics::for_theme(theme);
@@ -259,7 +258,7 @@ impl ShellOverlayHost {
             let Some(window) = listed.get(&picture.tab) else {
                 continue;
             };
-            let at_rest = picture.rect + origin;
+            let at_rest = shift.transform_rect_bbox(picture.rect);
             if picture.lifted {
                 ui::surface::shadow(
                     scene,
@@ -286,18 +285,7 @@ impl ShellOverlayHost {
                 .flies
                 .then(|| sources.get(&picture.tab).copied())
                 .flatten();
-            let (rect, radius, alpha) = match source {
-                Some(from) => (
-                    ui::motion::Zoom::rect_at(from, at_rest, p),
-                    ui::motion::Zoom::radius_at(g.window_radius, picture.radius, p),
-                    picture.alpha,
-                ),
-                None => (
-                    at_rest,
-                    picture.radius,
-                    picture.alpha * ui::motion::unit_opacity(p),
-                ),
-            };
+            let (rect, radius, alpha) = flight_frame(picture, source, at_rest, p, g.window_radius);
             if alpha <= 0.0 {
                 continue;
             }
@@ -331,5 +319,29 @@ impl ShellOverlayHost {
         }
         scene.pop_layer();
         self.overview_thumbnails = Some((key, thumbnails));
+    }
+}
+
+/// Where `picture` is drawn at the zoom's progress `p`, and how opaque: flying from `source`
+/// (where its window stands, of corner radius `window_radius`) to `at_rest`, or faded in at
+/// rest when it has nowhere to fly from.
+fn flight_frame(
+    picture: &WindowPicture,
+    source: Option<Rect>,
+    at_rest: Rect,
+    p: f64,
+    window_radius: f64,
+) -> (Rect, f64, f32) {
+    match source {
+        Some(from) => (
+            ui::motion::Zoom::rect_at(from, at_rest, p),
+            ui::motion::Zoom::radius_at(window_radius, picture.radius, p),
+            picture.alpha,
+        ),
+        None => (
+            at_rest,
+            picture.radius,
+            picture.alpha * ui::motion::unit_opacity(p),
+        ),
     }
 }

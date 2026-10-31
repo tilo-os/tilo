@@ -278,7 +278,6 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
         user_public_key: cert.user_public_key,
         device_public_key: cert.device_public_key,
         cert: cert.clone(),
-        role: crate::auth::PeerRole::Device,
     };
     let issue = |id| grants.issue(&sessions, session.token, &peer, id, None);
     assert!(issue(73).await.is_none());
@@ -431,7 +430,6 @@ async fn live_grants_follow_announced_changes() {
         user_public_key: cert.user_public_key,
         device_public_key: cert.device_public_key,
         cert: cert.clone(),
-        role: crate::auth::PeerRole::Device,
     };
     let mut held = Vec::new();
     for id in [81, 82] {
@@ -531,7 +529,6 @@ async fn expired_cert_gets_no_live_grant() {
             expires_at_ns,
             ..cert.clone()
         },
-        role: crate::auth::PeerRole::Device,
     };
     let current = peer(Some(tilo_clock::unix_now_ns() + 600_000_000_000));
     assert!(
@@ -556,13 +553,6 @@ async fn expired_cert_gets_no_live_grant() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[cfg_attr(
-    feature = "agents",
-    expect(
-        clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
-    )
-)]
 async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_input() {
     let signer = SigningKey::from_bytes(&[61; 32]);
     let other_root = SigningKey::from_bytes(&[62; 32]);
@@ -1111,6 +1101,7 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
     let online = online_sessions.online_users();
     assert_eq!(online.len(), 1, "{online:?}");
     assert_eq!(online.get(&owner.user_public_key), Some(&1));
+    drop(online_sessions);
     assert_eq!(
         post(addr, "/node", Some(background), Vec::new()).await.0,
         200,
@@ -1250,8 +1241,8 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
     // A member wrote in the chat's channel.
     let record = "@tilo:package-primary";
     let node = rooms
-        .own_endpoint_keys(
-            &tilo_browser_peer::DocumentRoute {
+        .own_route_keys(
+            &tilo_peer_state::document_frame::DocumentRoute {
                 app_id: "so.tilo.chat".into(),
                 cluster_id: room.room.clone(),
                 record: record.into(),

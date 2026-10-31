@@ -3309,7 +3309,7 @@ mod tests {
         let encoded = action
             .build_json(arguments)
             .map_err(|error| error.to_string())?;
-        ImportEffect::from_payload(&encoded.payload)
+        ImportEffect::from_payload(&encoded.payload).map_err(|error| error.to_string())
     }
 
     fn action(resource: &tilo_actions::ResourceSpec, id: &str) -> tilo_actions::ActionSpec {

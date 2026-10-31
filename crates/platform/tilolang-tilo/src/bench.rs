@@ -80,6 +80,10 @@ type Doc = tilo_resource::Doc;
 
 /// What to measure.
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent switch of what a run measures"
+)]
 pub struct BenchConfig {
     /// The package directory (`apps/tl/notes`).
     pub package: PathBuf,
@@ -103,7 +107,23 @@ pub struct BenchConfig {
     pub open_only: bool,
     /// Check the records against the budgets ([`over_budget`]).
     pub budgets: bool,
+    /// Also run what is measured in time alone, which counts no [`Work`]: loading the record,
+    /// the first frame over the index, search over every entry, re-indexing and republishing the
+    /// whole room, idle wakeups; and every sample of an open (the first counts its work). Off, a
+    /// run does the work a gate on the counts reads, and nothing else.
+    pub timings: bool,
     pub env: Env,
+}
+
+impl BenchConfig {
+    /// The samples of an open: the first counts the work, the rest only time it.
+    fn open_samples(&self) -> usize {
+        if self.timings {
+            self.samples
+        } else {
+            self.samples.min(1)
+        }
+    }
 }
 
 /// The measurements that compare engines ([`engines`]).
@@ -1276,6 +1296,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
     if engine != config.engine {
         return Err(format!("the process's engine is already {engine:?}"));
     }
+    let kept = engines::CompiledDir::new(config)?;
     let compiling = Instant::now();
     let packages = compile(&config.package)?;
     let compiled_in = ms(compiling.elapsed());
@@ -1327,37 +1348,23 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         if let Some(isolation) = &config.memory {
             out.push(memory(&sized, isolation)?);
         }
-        for record in open(&sized)?.into_iter().chain(search_entries(&sized)?) {
+        for record in open(&sized)? {
+            out.push(record);
+        }
+        if config.timings
+            && let Some(record) = search_entries(&sized)?
+        {
             out.push(record);
         }
         if config.workloads.cold {
-            out.push(engines::start(&sized)?);
+            for record in engines::start(&sized, &kept)? {
+                out.push(record);
+            }
         }
         if config.open_only {
             continue;
         }
-        let mut room = sized.open()?;
-        room.settle();
-        for record in index_everything(&sized, &room) {
-            out.push(record);
-        }
-        room.frame(&mut [])?;
-        room.phases.take();
-        if shape.subject().is_some() || text_input(&room.host, room.list.tree()).is_some() {
-            out.push(keystroke(&sized, &mut room)?);
-        } else {
-            out.push(press(&sized, &mut room)?);
-        }
-        out.push(peer_edit(&sized, &mut room)?);
-        let more = [
-            peer_post(&sized, &mut room)?,
-            scroll(&sized, &mut room)?,
-            filter(&sized, &mut room)?,
-        ];
-        for record in more.into_iter().flatten() {
-            out.push(record);
-        }
-        out.push(idle(&sized, &mut room)?);
+        changes(&sized, &mut out)?;
     }
     if let Some(list) = &shape.list
         && let Some(nested) = &list.nested
@@ -1371,6 +1378,41 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         }
     }
     Ok(out.records)
+}
+
+/// The scenarios that change a room of the size after it opened, in one window onto it.
+fn changes(sized: &Sized<'_>, out: &mut Recorder<'_>) -> Result<(), String> {
+    let mut room = sized.open()?;
+    engines::settle(sized.packages.iter().map(|p| &p.wasm))?;
+    room.settle();
+    if sized.config.timings {
+        for record in index_everything(sized, &room) {
+            out.push(record);
+        }
+    }
+    room.frame(&mut [])?;
+    room.phases.take();
+    if sized.shape.subject().is_some() || text_input(&room.host, room.list.tree()).is_some() {
+        match keystroke(sized, &mut room)? {
+            Some(record) => out.push(record),
+            None => eprintln!("tilolang bench: keystroke not measured: nothing to type into"),
+        }
+    } else {
+        out.push(press(sized, &mut room)?);
+    }
+    out.push(peer_edit(sized, &mut room)?);
+    let more = [
+        peer_post(sized, &mut room)?,
+        scroll(sized, &mut room)?,
+        filter(sized, &mut room)?,
+    ];
+    for record in more.into_iter().flatten() {
+        out.push(record);
+    }
+    if sized.config.timings {
+        out.push(idle(sized, &mut room)?);
+    }
+    Ok(())
 }
 
 /// The process's anonymous memory, in MiB.
@@ -1480,14 +1522,14 @@ fn measure_memory(room: &Path, package: &Path, index: Option<PathBuf>) -> Result
 /// search and publication, which read the room off the frame, have it all. Beside them, loading
 /// the room's record from its saved bytes, which opening a room from disk adds first: the one
 /// part of opening that reads the whole record, and grows with it.
-fn open(sized: &Sized<'_>) -> Result<[Record; 6], String> {
+fn open(sized: &Sized<'_>) -> Result<Vec<Record>, String> {
     let mut samples = Vec::new();
     let mut nodes = 0;
     let mut phases = Phases::default();
     let mut ready = Vec::new();
     let mut live = tilolang_runtime::LiveStats::default();
     let mut work = None;
-    for _ in 0..sized.config.samples {
+    for _ in 0..sized.config.open_samples() {
         // Each sample opens a room of its own, from a store that read nothing yet.
         let allocated = allocations();
         let start = Instant::now();
@@ -1514,6 +1556,17 @@ fn open(sized: &Sized<'_>) -> Result<[Record; 6], String> {
         m.insert("nodes".into(), json!(nodes));
         m.insert("boundaries".into(), json!(live.boundaries));
     }
+    let open = sized.record("open", "ms", samples, extra);
+    let ready = sized.record("ready", "ms", ready, Json::Null);
+    let index_build = sized.record(
+        "index_build",
+        "ms",
+        vec![sized.index_build],
+        json!({"bytes": sized.index.bytes()}),
+    );
+    if !sized.config.timings {
+        return Ok(vec![open, ready, index_build]);
+    }
     let saved = sized.base.clone().save();
     let mut loads = Vec::new();
     for _ in 0..sized.config.samples {
@@ -1521,20 +1574,11 @@ fn open(sized: &Sized<'_>) -> Result<[Record; 6], String> {
         std::hint::black_box(Doc::load(&saved).map_err(|e| e.to_string())?);
         loads.push(ms(start.elapsed()));
     }
-    let [first, write] = first_frame(sized, &saved)?;
-    Ok([
-        sized.record("open", "ms", samples, extra),
-        sized.record("ready", "ms", ready, Json::Null),
-        sized.record("load", "ms", loads, json!({"bytes": saved.len()})),
-        sized.record(
-            "index_build",
-            "ms",
-            vec![sized.index_build],
-            json!({"bytes": sized.index.bytes()}),
-        ),
-        first,
-        write,
-    ])
+    let firsts = first_frame(sized, &saved)?;
+    let load = sized.record("load", "ms", loads, json!({"bytes": saved.len()}));
+    let mut records = vec![open, ready, load, index_build];
+    records.extend(firsts);
+    Ok(records)
 }
 
 /// The room's record, loading on a thread of its own: what a window opening over its index
@@ -1568,11 +1612,13 @@ impl Loading {
 
 /// From the saved room to the first frame of a window opening over its index while the
 /// record loads beside it (and to the record had and taken in, in its meta); and the first
-/// change right after that frame, which waits for the record.
-fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<[Record; 2], String> {
+/// change right after that frame, which waits for the record: not measured for a package
+/// with nothing to type into (the shell's bar, which only the session changes).
+fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<Vec<Record>, String> {
     let (mut frames, mut loaded, mut taken, mut writes) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut work = None;
+    let mut untyped = false;
     for sample in 0..sized.config.samples {
         let index = sized.index.copy()?;
         let start = Instant::now();
@@ -1611,18 +1657,17 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<[Record; 2], String> {
                 "evaluated": reads.evaluated,
             }));
         }
-        if sample % 2 == 0 {
-            // The record had in the background, then taken in.
-            loading.borrow_mut().wait()?;
-            loaded.push(ms(start.elapsed()));
-            let doc = loading.borrow_mut().wait()?.clone();
-            host.sync_from(&doc);
-            taken.push(ms(start.elapsed()));
+        // Where the keystroke phase types: an item's window, else the main window.
+        let typing_here = if sample % 2 == 0 || untyped {
+            None
         } else {
+            let found = typing(sized, &host, list.tree())?;
+            untyped = found.is_none();
+            found
+        };
+        if let Some((typing, text)) = typing_here {
             // A change at once: it waits for the record.
             let after_frame = Instant::now();
-            // Where the keystroke phase types: an item's window, else the main window.
-            let (typing, text) = typing(sized, &host, list.tree())?;
             let text = format!("{text}x");
             let mut editor = match typing {
                 Typing::Item(editor, input) => {
@@ -1647,6 +1692,13 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<[Record; 2], String> {
                 editor.poll_patches().map_err(|e| e.to_string())?;
             }
             writes.push(ms(after_frame.elapsed()));
+        } else {
+            // The record had in the background, then taken in.
+            loading.borrow_mut().wait()?;
+            loaded.push(ms(start.elapsed()));
+            let doc = loading.borrow_mut().wait()?.clone();
+            host.sync_from(&doc);
+            taken.push(ms(start.elapsed()));
         }
     }
     let extra = json!({
@@ -1654,10 +1706,13 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<[Record; 2], String> {
         "record_taken_ms": taken,
         "work": work,
     });
-    Ok([
-        sized.record("first_frame", "ms", frames, extra),
-        sized.record("first_write", "ms", writes, Json::Null),
-    ])
+    let mut records = vec![sized.record("first_frame", "ms", frames, extra)];
+    if untyped {
+        eprintln!("tilolang bench: first_write not measured: nothing to type into");
+    } else {
+        records.push(sized.record("first_write", "ms", writes, Json::Null));
+    }
+    Ok(records)
 }
 
 /// What a live window publishes to the session's search index right after it opens: every
@@ -1783,8 +1838,14 @@ pub(crate) fn typed(view: &ViewInstance, input: &str, text: &str) -> Value {
     }
 }
 
-/// Where a person types in the window `main` of `host` shows.
-fn typing(sized: &Sized<'_>, host: &Host, main: &UiNode) -> Result<(Typing, String), String> {
+/// Where a person types in the window `main` of `host` shows; nowhere when the main window
+/// has no text input and the items no window of their own (the shell's bar, which only the
+/// session changes).
+fn typing(
+    sized: &Sized<'_>,
+    host: &Host,
+    main: &UiNode,
+) -> Result<Option<(Typing, String)>, String> {
     if let Some((root, list)) = sized.shape.subject()
         && has_default_view(sized.packages, &list.item_ty)
     {
@@ -1801,17 +1862,17 @@ fn typing(sized: &Sized<'_>, host: &Host, main: &UiNode) -> Result<(Typing, Stri
                 .or_else(|| composer_input(&editor, editor.tree()))
                 .ok_or("the item's window has no text input")?,
         };
-        return Ok((Typing::Item(Box::new(editor), input), text));
+        return Ok(Some((Typing::Item(Box::new(editor), input), text)));
     }
-    let (key, text) = text_input(host, main)
-        .ok_or("the main window has no text input, and the items no window of their own")?;
-    Ok((Typing::Main(key), text))
+    Ok(text_input(host, main).map(|(key, text)| (Typing::Main(key), text)))
 }
 
 /// Typing one letter a frame where a person types in the package: into the title of an item
 /// in the item's own window, or else into the main window's first text input.
-fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
-    let (mut typing, mut text) = typing(sized, &room.host, room.list.tree())?;
+fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> {
+    let Some((mut typing, mut text)) = typing(sized, &room.host, room.list.tree())? else {
+        return Ok(None);
+    };
     let mut changes = Changes::default();
     for _ in 0..sized.config.samples {
         text.push('x');
@@ -1854,7 +1915,7 @@ fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
         };
         m.insert("into".into(), json!(into));
     }
-    Ok(sized.record("keystroke", "ms", samples, extra))
+    Ok(Some(sized.record("keystroke", "ms", samples, extra)))
 }
 
 /// Pressing the main window's first button, one press a frame.
@@ -2208,6 +2269,7 @@ fn parse(args: &[String]) -> Result<BenchConfig, String> {
         }),
         open_only: false,
         budgets: false,
+        timings: true,
         env: Env {
             commit: std::env::var("TILO_COMMIT").unwrap_or_else(|_| "unknown".into()),
             virtualization: "none".into(),

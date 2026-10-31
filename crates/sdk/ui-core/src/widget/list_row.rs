@@ -24,7 +24,6 @@
 //!
 //! [`row_bleed`]: crate::chrome::row_bleed
 
-use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use taffy::style_helpers::{auto, length, percent};
@@ -45,6 +44,9 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::tokens::colors::{PresenceHue, SMALL_TEXT_MIN_CONTRAST};
 use crate::widget::activation::{Activation, Interaction};
+
+/// The operation type of a row's leading checkbox turned.
+const CHECK_ROW: &str = "tilo.ui.row.check";
 use crate::widget::avatar::AvatarFace;
 use crate::widget::{
     ActionEmitter, BadgeFace, ChipStyle, ControlBindingMetadata, Element, MediaArt, MediaAspect,
@@ -141,6 +143,33 @@ impl RowStatus<'_> {
             Self::Idle => Some("Idle"),
             Self::Presence(_) => None,
         }
+    }
+}
+
+/// How strongly the colour of whoever made an unseen change washes the row: a hint, quieter
+/// than a selection.
+const CHANGE_WASH: f32 = 0.07;
+
+/// A change someone else made to what the row shows and the person has not seen yet
+/// (task-legibility §3): their face on the row's trailing edge, their colour faintly under it,
+/// at the row's own height.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RowChange<'a> {
+    /// Their presence identity, which picks their colour.
+    pub identity: &'a str,
+    /// What the room calls them: their face's initials.
+    pub name: &'a str,
+    /// What assistive technology says of it: who, and in which run.
+    pub spoken: &'a str,
+}
+
+impl RowChange<'_> {
+    fn colour(self, theme: &Theme) -> Color {
+        theme
+            .tokens
+            .colors
+            .presence
+            .hue(PresenceHue::of_identity(self.identity))
     }
 }
 
@@ -298,6 +327,8 @@ struct RowGeometry {
     value_right: f64,
     /// The status dot's centre x.
     dot_x: Option<f64>,
+    /// The face of whoever made a change the person has not seen.
+    change: Option<Rect>,
     check: Option<Rect>,
     /// The disclosure chevron's slot.
     disclosure: Option<Rect>,
@@ -342,6 +373,8 @@ pub struct ListRowFace<'a> {
     /// Indented one leading column under the row above it.
     nested: bool,
     status: Option<RowStatus<'a>>,
+    change: Option<RowChange<'a>>,
+    struck: bool,
     disclosure: bool,
     /// How far the chevron has turned towards pointing down, 0 to 1: a row
     /// that opens in place rather than onto a page.
@@ -365,6 +398,10 @@ pub struct ListRowFace<'a> {
     /// the rect the text is laid out in (a retained row whose trailing
     /// control wrapped under its text).
     frame: Option<Rect>,
+    /// The least a row a person presses is tall: the input's minimum for adjacent collection
+    /// rows (48 for a finger, as a button's face grows to its target), so a finger never lands
+    /// on the row beside it.
+    min_target: f64,
 }
 
 /// Where `line` has one of `words`: at the start of a word of it, compared
@@ -439,6 +476,8 @@ impl<'a> ListRowFace<'a> {
             leading_column: None,
             nested: false,
             status: None,
+            change: None,
+            struck: false,
             disclosure: false,
             disclosure_turn: 0.0,
             checked: None,
@@ -455,6 +494,7 @@ impl<'a> ListRowFace<'a> {
             trailing_after: 0.0,
             interaction: Interaction::default(),
             frame: None,
+            min_target: 0.0,
         }
     }
 
@@ -607,6 +647,27 @@ impl<'a> ListRowFace<'a> {
     pub fn nested(mut self, nested: bool) -> Self {
         self.nested = nested;
         self
+    }
+
+    #[must_use]
+    pub fn change(mut self, change: RowChange<'a>) -> Self {
+        self.change = Some(change);
+        self
+    }
+
+    /// The row stands for an item that was removed: its title struck through, in the weaker
+    /// ink, at the row's own height.
+    #[must_use]
+    pub fn struck(mut self, struck: bool) -> Self {
+        self.struck = struck;
+        self
+    }
+
+    /// Where the face of an unseen change sits in `rect`, when the row shows one.
+    #[must_use]
+    pub fn change_rect(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> Option<Rect> {
+        self.geometry(rect, &RowMetrics::new(theme), text, theme)
+            .change
     }
 
     #[must_use]
@@ -859,7 +920,8 @@ impl<'a> ListRowFace<'a> {
             )
         );
         let min = RowMetrics::min_height_for(theme, self.extra_lines() > 0, big_leading)
-            .max(m.min_height);
+            .max(m.min_height)
+            .max(self.min_target);
         (self.text_block(text, &m).max(leading_h).max(value) + 2.0 * m.pad_y)
             .max(min)
             .ceil()
@@ -905,6 +967,9 @@ impl<'a> ListRowFace<'a> {
         if self.status.is_some() {
             width += m.dot + m.column_gap;
         }
+        if self.change.is_some() {
+            width += m.icon + m.column_gap;
+        }
         width
     }
 
@@ -948,6 +1013,15 @@ impl<'a> ListRowFace<'a> {
         if self.status.is_some() {
             geo.dot_x = Some(right - m.dot / 2.0);
             right -= m.dot + m.column_gap;
+        }
+        if self.change.is_some() {
+            geo.change = Some(Rect::new(
+                right - m.icon,
+                cy - m.icon / 2.0,
+                right,
+                cy + m.icon / 2.0,
+            ));
+            right -= m.icon + m.column_gap;
         }
         if let Some(width) = self.trailing_width
             && width > 0.0
@@ -1125,6 +1199,22 @@ impl<'a> ListRowFace<'a> {
                 .fill(Fill::NonZero, ctx.transform, ground, None, &frame_row);
         }
 
+        // Someone else's change the person has not seen: their colour, faintly, under the row.
+        let ground = match self.change {
+            Some(change) => {
+                let wash = crate::tokens::colors::mix8(ground, change.colour(theme), CHANGE_WASH);
+                ctx.scene.fill(
+                    Fill::NonZero,
+                    ctx.transform,
+                    wash,
+                    None,
+                    &RoundedRect::from_rect(frame_row, f64::from(theme.tokens.radii.control)),
+                );
+                wash
+            }
+            None => ground,
+        };
+
         let lifted = self.selected || self.interaction.pressed;
         let hovered = self.interaction.hovered && !self.interaction.disabled;
         // Selected takes the accent's tint; a press is the neutral lift.
@@ -1187,6 +1277,13 @@ impl<'a> ListRowFace<'a> {
         }
         if let (Some(r), Some(true)) = (geo.check, self.checked) {
             Icon::Check.draw(ctx.scene, ctx.transform, r, theme.text_primary);
+        }
+        if let (Some(change), Some(r)) = (self.change, geo.change) {
+            let cy = Self::dot_cy(&geo, row, extra, title_cy);
+            let face = Rect::from_center_size(Point::new(r.center().x, cy), r.size());
+            crate::widget::avatar::AvatarFace::new(change.name, change.identity)
+                .presence(change.colour(theme))
+                .paint(ctx, face);
         }
         if let (Some(status), Some(x)) = (self.status, geo.dot_x) {
             let cy = Self::dot_cy(&geo, row, extra, title_cy);
@@ -1287,14 +1384,24 @@ impl<'a> ListRowFace<'a> {
                 let mark = Rect::new(start, y, start + f64::from(width), y + f64::from(height));
                 crate::widget::paint_find_match(ctx.scene, ctx.transform, mark, false, theme);
             }
-            ctx.text(
-                line,
-                &title_style,
-                theme.text_primary,
-                Point::new(text_x, y),
-                None,
-            );
+            // A removed item's title is struck through, in the weaker ink.
+            let ink = if self.struck {
+                theme.text_dim
+            } else {
+                theme.text_primary
+            };
+            ctx.text(line, &title_style, ink, Point::new(text_x, y), None);
             last_end = text_x + f64::from(ctx.text.measure_style(line, None, &title_style).0);
+            if self.struck {
+                let through = y + title_line / 2.0;
+                ctx.scene.stroke(
+                    &Stroke::new(1.0),
+                    ctx.transform,
+                    ink,
+                    None,
+                    &vello::kurbo::Line::new((text_x, through), (last_end, through)),
+                );
+            }
             y += title_line;
         }
         if lines.is_empty() {
@@ -1658,6 +1765,7 @@ impl<'a> ListRowFace<'a> {
                 self.value.map(|(value, _)| value),
                 count.as_deref(),
                 self.status.and_then(RowStatus::spoken),
+                self.change.map(|change| change.spoken),
             ]
             .into_iter()
             .flatten(),
@@ -1859,6 +1967,14 @@ struct Trailing {
     on_disclosure_column: bool,
 }
 
+/// An unseen change a retained row shows ([`ListRow::change`]).
+struct Changed {
+    identity: String,
+    name: String,
+    spoken: String,
+    show: Option<Box<dyn FnMut()>>,
+}
+
 /// One of a row's own pressable controls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RowPart {
@@ -1866,6 +1982,8 @@ enum RowPart {
     Action(usize),
     /// The leading checkbox.
     Check,
+    /// The face of an unseen change: shows what was done.
+    Change,
 }
 
 impl RowPart {
@@ -1878,6 +1996,7 @@ impl RowPart {
         match self {
             Self::Action(index) => format!("{row}/action/{index}"),
             Self::Check => format!("{row}/check"),
+            Self::Change => format!("{row}/change"),
         }
     }
 }
@@ -1916,6 +2035,10 @@ pub struct ListRow {
     leading_tooltip: Option<String>,
     tooltip: Option<String>,
     status: Option<(StatusKind, String)>,
+    /// An unseen change of what the row shows ([`Self::change`]).
+    change: Option<Changed>,
+    /// It stands for a removed item ([`Self::struck`]).
+    struck: bool,
     disclosure: bool,
     checked: Option<bool>,
     emphasized: bool,
@@ -1934,6 +2057,9 @@ pub struct ListRow {
     swipe_offset: f64,
     trailing: Option<Trailing>,
     activation: Activation,
+    /// The leading checkbox's own state, published as the row's view action
+    /// `check` ([`ListRow::checkbox_view`]) and answered by the row.
+    check_verb: Option<super::control_verb::ControlVerb<bool>>,
     environment: crate::interaction::InteractionEnvironment,
     metrics: Option<RowMetrics>,
     theme: Option<Theme>,
@@ -1982,6 +2108,8 @@ impl ListRow {
             leading_tooltip: None,
             tooltip: None,
             status: None,
+            change: None,
+            struck: false,
             disclosure: false,
             checked: None,
             emphasized: false,
@@ -1998,6 +2126,7 @@ impl ListRow {
             swipe_offset: 0.0,
             trailing: None,
             activation: Activation::new(id),
+            check_verb: None,
             environment: crate::interaction::InteractionEnvironment::default(),
             metrics: None,
             theme: None,
@@ -2227,6 +2356,27 @@ impl ListRow {
         self
     }
 
+    /// [`Self::checkbox`] published as the row's view action `check`: a
+    /// press on the box, Space on the focused row, a screen reader's toggle,
+    /// a script's and an agent's all reach `on_toggle` through the same
+    /// action. The row's control is `id` ([`Self::new`]).
+    #[must_use]
+    pub fn checkbox_view(mut self, checked: bool, on_toggle: impl FnMut(bool) + 'static) -> Self {
+        let control = self.activation.id().to_owned();
+        self.check_verb = Some(super::control_verb::ControlVerb::new(
+            &control,
+            "Check",
+            "check",
+            CHECK_ROW,
+            super::control_verb::VerbArgument::Flag,
+        ));
+        self.leading = Some(Leading::Checkbox {
+            checked,
+            on_toggle: Box::new(on_toggle),
+        });
+        self
+    }
+
     /// See [`RowLeading::Swatch`].
     #[must_use]
     pub fn swatch(mut self, colour: Color) -> Self {
@@ -2300,6 +2450,38 @@ impl ListRow {
     #[must_use]
     pub fn idle(mut self) -> Self {
         self.status = Some((StatusKind::Idle, String::new()));
+        self
+    }
+
+    /// The row stands for a removed item: its title struck through ([`ListRowFace::struck`]).
+    #[must_use]
+    pub fn struck(mut self) -> Self {
+        self.struck = true;
+        self
+    }
+
+    /// A change `identity` (called `name`) made to what the row shows and the person has not
+    /// seen: their face on the trailing edge and their colour faintly under the row, at its own
+    /// height; `spoken` (who, in which run) on hover and to assistive technology; pressing the
+    /// face runs `show`.
+    #[must_use]
+    pub fn change(
+        mut self,
+        identity: impl Into<String>,
+        name: impl Into<String>,
+        spoken: impl Into<String>,
+        show: Option<Box<dyn FnMut()>>,
+    ) -> Self {
+        let spoken = spoken.into();
+        if self.tooltip.is_none() {
+            self.tooltip = Some(spoken.clone());
+        }
+        self.change = Some(Changed {
+            identity: identity.into(),
+            name: name.into(),
+            spoken,
+            show,
+        });
         self
     }
 
@@ -2706,6 +2888,9 @@ impl ListRow {
             .tags(&tags)
             .meta_spans(&spans)
             .interaction(interaction);
+        if self.answers_pointer() {
+            face.min_target = f64::from(self.environment.minimum_collection_row());
+        }
         if self.two_line_title {
             face = face.two_line_title();
         }
@@ -2785,6 +2970,14 @@ impl ListRow {
                 Leading::Signal(level) => RowLeading::Signal(*level),
             });
         }
+        face = face.struck(self.struck);
+        if let Some(change) = &self.change {
+            face = face.change(RowChange {
+                identity: &change.identity,
+                name: &change.name,
+                spoken: &change.spoken,
+            });
+        }
         if let Some((kind, id)) = &self.status {
             face = face.status(match kind {
                 StatusKind::Active => RowStatus::Active,
@@ -2849,6 +3042,16 @@ impl ListRow {
         })
     }
 
+    /// Where the face of an unseen change sits, when the row shows one that does something.
+    fn change_hit(&self) -> Option<Rect> {
+        self.change.as_ref()?.show.as_ref()?;
+        let theme = self.theme.as_ref()?;
+        let band = self.text_band();
+        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            self.with_face(|face| face.change_rect(band, text, theme))
+        })
+    }
+
     fn leading_hit(&self) -> Option<Rect> {
         let theme = self.theme.as_ref()?;
         if !matches!(
@@ -2872,8 +3075,13 @@ impl ListRow {
     fn toggle_checkbox(&mut self) -> bool {
         if let Some(Leading::Checkbox { checked, on_toggle }) = &mut self.leading {
             *checked = !*checked;
-            on_toggle(*checked);
+            let now = *checked;
             self.dirty = true;
+            if let Some(verb) = &mut self.check_verb {
+                verb.emit(now);
+                return true;
+            }
+            on_toggle(now);
             return true;
         }
         false
@@ -3290,6 +3498,10 @@ impl Widget for ListRow {
         if let Some(trailing) = &self.trailing {
             exclude.push(trailing.element.get_rect());
         }
+        let change = self.change_hit();
+        if let Some(r) = change {
+            exclude.push(r);
+        }
         let outer = self.outer();
         if let WindowEvent::CursorMoved { .. } = event {
             let changed = self.activation.handle_pointer(event, ctx, outer, &exclude);
@@ -3326,6 +3538,11 @@ impl Widget for ListRow {
                         .flatten()
                         .filter(|r| r.contains(cursor))
                         .map(|r| (RowPart::Check, r))
+                })
+                .or_else(|| {
+                    change
+                        .filter(|r| r.contains(cursor))
+                        .map(|r| (RowPart::Change, r))
                 });
             let key = over.map(|(part, _)| part.key(self.activation.id()));
             let at = over
@@ -3353,6 +3570,13 @@ impl Widget for ListRow {
                             }
                             RowPart::Check => {
                                 self.toggle_checkbox();
+                            }
+                            RowPart::Change => {
+                                if let Some(show) =
+                                    self.change.as_mut().and_then(|change| change.show.as_mut())
+                                {
+                                    show();
+                                }
                             }
                         }
                         return;
@@ -3596,6 +3820,9 @@ impl Widget for ListRow {
 impl crate::widget::ResourceOperations for ListRow {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         let mut handlers = self.activation.native_handlers();
+        if self.check_verb.is_some() {
+            handlers.insert(CHECK_ROW.to_owned());
+        }
         if let Some(trailing) = &self.trailing {
             handlers.extend(crate::widget::resource_operation_handlers(
                 &*trailing.element,
@@ -3613,13 +3840,35 @@ impl crate::widget::ResourceOperations for ListRow {
         if let Some(started) = self.activation.start_native(op)? {
             return Ok(Some(started));
         }
+        let checked = self
+            .check_verb
+            .as_ref()
+            .map(|verb| verb.start(op))
+            .transpose()?
+            .flatten();
+        if let Some(checked) = checked {
+            if let Some(Leading::Checkbox {
+                checked: shown,
+                on_toggle,
+            }) = &mut self.leading
+            {
+                *shown = checked;
+                self.dirty = true;
+                on_toggle(checked);
+            }
+            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
         crate::widget::start_in_children(self, op, doc, path)
     }
 }
 
 impl crate::resources::PublishesResources for ListRow {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        self.activation.native_resources()
+        let mut resources = self.activation.native_resources();
+        resources.extend(self.check_verb.iter().map(|verb| verb.resource()));
+        resources
     }
 }
 
@@ -3630,6 +3879,9 @@ impl crate::widget::controls::ActionControls for ListRow {
         attachment: crate::control_custody::CustodyAttachment,
     ) {
         self.activation.install_custody(domain, attachment);
+        if let Some(verb) = &mut self.check_verb {
+            verb.install_custody(domain, attachment);
+        }
         for action in &mut self.actions {
             if let ActionHandler::Bound(emitter) = &mut action.handler {
                 let _ = emitter.install_custody(domain, attachment);
@@ -3642,6 +3894,13 @@ impl crate::widget::controls::ActionControls for ListRow {
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         if let Some(invocation) = self.activation.take_invocation() {
+            return Some(invocation);
+        }
+        if let Some(invocation) = self
+            .check_verb
+            .as_mut()
+            .and_then(super::control_verb::ControlVerb::take)
+        {
             return Some(invocation);
         }
         for action in &mut self.actions {
@@ -3659,15 +3918,17 @@ impl crate::widget::controls::ActionControls for ListRow {
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let mut bindings = self.activation.bindings();
         let id = self.activation.id();
+        if let Some(verb) = &self.check_verb {
+            bindings.push(verb.metadata(id));
+        }
         for (index, action) in self.actions.iter().enumerate() {
             match &action.handler {
                 ActionHandler::Bound(emitter) => {
                     bindings.push(emitter.metadata(format!("{id}/action/{index}")));
                 }
-                ActionHandler::Callback(_) => bindings.push(ControlBindingMetadata {
-                    control_id: format!("{id}/action/{index}"),
-                    kind: crate::widget::ControlBindingKind::LegacyCallback,
-                }),
+                // A callback-only action reaches no door, so it is no
+                // binding: the inventory names what an agent can invoke.
+                ActionHandler::Callback(_) => {}
             }
         }
         for child in Widget::children(self) {
@@ -3681,6 +3942,9 @@ impl crate::widget::controls::ActionControls for ListRow {
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         let mut changed = self.activation.refresh_availability(allowed);
+        if let Some(verb) = &mut self.check_verb {
+            verb.refresh_availability(allowed);
+        }
         for action in &mut self.actions {
             if let ActionHandler::Bound(emitter) = &mut action.handler {
                 let before = emitter.is_available();
@@ -3697,238 +3961,6 @@ impl crate::widget::controls::ActionControls for ListRow {
     }
 }
 
-/// Whether a [`ControlRow`] is the chosen one, and how to choose it.
-struct RowChoice {
-    is_chosen: Box<dyn Fn() -> bool>,
-    choose: Box<dyn FnMut()>,
-}
-
-/// A selectable row of a short list whose items carry real controls (a
-/// layers panel with each layer's thumbnail, name and switches; a list of
-/// versions with a restore button): a [`crate::widget::Row`] of widgets
-/// standing in the list row's selection lift.
-///
-/// It is selected while the [`crate::LocalState`] it was bound to with
-/// [`ControlRow::choosing`] holds its value, so every row of the list
-/// follows one selection without being rebuilt. A press on the row that
-/// none of its controls took chooses it; assistive technology meets it as a
-/// selectable list item. Its look is a [`ListRowFace`]'s: the lift of the
-/// ground it stands on, hovered or chosen, at the row radius.
-pub struct ControlRow {
-    content: crate::widget::Row,
-    id: Option<String>,
-    name: Option<String>,
-    choice: Option<RowChoice>,
-    selected: bool,
-    hovered: bool,
-    cursor: Point,
-    /// The lift changed since the last frame.
-    dirty: bool,
-}
-
-impl ControlRow {
-    pub fn new(content: crate::widget::Row) -> Self {
-        Self {
-            content,
-            id: None,
-            name: None,
-            choice: None,
-            selected: false,
-            hovered: false,
-            cursor: Point::ZERO,
-            dirty: true,
-        }
-    }
-
-    /// The row stands for `value`: it is selected while `state` holds it,
-    /// and choosing the row stores it.
-    #[must_use]
-    pub fn choosing<T: Clone + PartialEq + Send + Sync + 'static>(
-        self,
-        state: &crate::LocalState<T>,
-        value: T,
-    ) -> Self {
-        self.choosing_any(state, vec![value])
-    }
-
-    /// The row stands for several values, the first its own and the rest
-    /// parts of it (a layer and its mask): it is selected while `state`
-    /// holds any of them, and choosing the row stores the first unless a
-    /// part of it is already chosen.
-    #[must_use]
-    pub fn choosing_any<T: Clone + PartialEq + Send + Sync + 'static>(
-        mut self,
-        state: &crate::LocalState<T>,
-        values: Vec<T>,
-    ) -> Self {
-        let Some(first) = values.first().cloned() else {
-            return self;
-        };
-        let read = state.clone();
-        let write = state.clone();
-        let mine = values.clone();
-        self.choice = Some(RowChoice {
-            is_chosen: Box::new(move || read.with(|current| mine.contains(current))),
-            choose: Box::new(move || {
-                if write.with(|current| !values.contains(current)) {
-                    write.set(first.clone());
-                }
-            }),
-        });
-        self.selected = self
-            .choice
-            .as_ref()
-            .is_some_and(|choice| (choice.is_chosen)());
-        self
-    }
-
-    /// A stable name to find the row by in tests and tools.
-    #[must_use]
-    pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
-        self
-    }
-
-    /// What a screen reader announces for the row.
-    #[must_use]
-    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
-        self.name = Some(name.into());
-        self
-    }
-
-    pub fn is_selected(&self) -> bool {
-        self.selected
-    }
-
-    fn choose(&mut self) -> bool {
-        let Some(choice) = self.choice.as_mut() else {
-            return false;
-        };
-        (choice.choose)();
-        self.selected = true;
-        self.dirty = true;
-        true
-    }
-
-    fn paint_lift(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let Some(fill) = row_fill(theme, self.selected, self.hovered && self.choice.is_some())
-        else {
-            return;
-        };
-        let rect: Rect = Widget::get_rect(&self.content);
-        let radius = RowMetrics::new(theme).radius;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            fill,
-            None,
-            &RoundedRect::from_rect(rect, radius),
-        );
-    }
-}
-
-impl crate::widget::Decorator for ControlRow {
-    type Inner = crate::widget::Row;
-
-    fn inner(&self) -> &crate::widget::Row {
-        &self.content
-    }
-
-    fn inner_mut(&mut self) -> &mut crate::widget::Row {
-        &mut self.content
-    }
-
-    fn concrete_type_name(&self) -> &'static str {
-        "ControlRow"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        self.id.as_deref()
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        if let Some(choice) = &self.choice {
-            let selected = (choice.is_chosen)();
-            self.dirty |= selected != self.selected;
-            self.selected = selected;
-        }
-        self.content.sync(state, path);
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.paint_lift(scene, transform, theme);
-        self.content
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = ctx.logical(position);
-            let hovered = Widget::get_rect(&self.content).contains(self.cursor);
-            self.dirty |= hovered != self.hovered;
-            self.hovered = hovered;
-        }
-        if let WindowEvent::CursorLeft { .. } = event {
-            self.dirty |= self.hovered;
-            self.hovered = false;
-        }
-        self.content.handle_event(event, ctx);
-        // A press the row's own controls did not take chooses the row.
-        if let WindowEvent::MouseInput {
-            state: winit::event::ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-            ..
-        } = event
-            && !*ctx.handled
-            && Widget::get_rect(&self.content).contains(self.cursor)
-            && self.choose()
-        {
-            *ctx.handled = true;
-        }
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.dirty || self.content.needs_redraw()
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-        self.content.mark_drawn();
-    }
-
-    fn accessibility(&self) -> Option<AccessNode> {
-        // A row of a list is addressed by its position: the item it shows
-        // is addressed by its own controls' actions.
-        Some(
-            AccessNode::new(Role::ListItem)
-                .with_optional_name(self.name.clone())
-                .with_state(AccessState::new().selected(self.selected)),
-        )
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        _key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        match action {
-            crate::a11y::Action::Activate | crate::a11y::Action::SetSelection { .. } => {
-                self.choose()
-            }
-            _ => self.content.perform_action(action, &[], state, path),
-        }
-    }
-}
-
 #[path = "list_row_shape.rs"]
 mod shape;
 pub use shape::{RowLeadingShape, RowShape};
@@ -3937,53 +3969,8 @@ pub use shape::{RowLeadingShape, RowShape};
 #[path = "list_row_tests.rs"]
 mod tests;
 
-#[cfg(test)]
-mod control_row_tests {
-    use super::*;
-
-    #[test]
-    fn control_rows_follow_one_shared_choice() {
-        let chosen = crate::LocalState::new("ink".to_owned());
-        let mut ink = ControlRow::new(crate::widget::Row::new())
-            .choosing(&chosen, "ink".to_owned())
-            .with_accessible_name("Ink");
-        let mut oil = ControlRow::new(crate::widget::Row::new())
-            .choosing_any(&chosen, vec!["oil".to_owned(), "oil-mask".to_owned()]);
-        assert!(ink.is_selected() && !oil.is_selected());
-
-        // Activating a row chooses it; the other follows on sync.
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        assert!(Widget::perform_action(
-            &mut oil,
-            &crate::a11y::Action::Activate,
-            &[],
-            &mut crate::widget::Edits::lend(&mut doc),
-            &root
-        ));
-        assert_eq!(chosen.with(Clone::clone), "oil");
-        Widget::sync(&mut ink, &doc, &root);
-        assert!(!ink.is_selected() && oil.is_selected());
-
-        // A part of the row (its mask) keeps the row chosen, and choosing
-        // the row again does not take the part's place.
-        chosen.set("oil-mask".to_owned());
-        Widget::sync(&mut oil, &doc, &root);
-        assert!(oil.is_selected());
-        Widget::perform_action(
-            &mut oil,
-            &crate::a11y::Action::Activate,
-            &[],
-            &mut crate::widget::Edits::lend(&mut doc),
-            &root,
-        );
-        assert_eq!(chosen.with(Clone::clone), "oil-mask");
-
-        let node = Widget::accessibility(&ink).expect("a list item");
-        assert_eq!(node.role, Role::ListItem);
-        assert_eq!(node.name.as_deref(), Some("Ink"));
-    }
-}
-
 mod component;
 pub use component::{ListRowProps, SwipeActionProps};
+
+mod control_row;
+pub use control_row::ControlRow;

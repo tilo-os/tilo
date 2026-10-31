@@ -134,6 +134,57 @@ mod https_completion {
     };
     use registry_types::{ModerationCaseStatus, RegistryEntry, RegistryTarget, RegistryVersion};
 
+    /// The Store's own `action` with `exact`, as invocation `invocation`,
+    /// carrying caller-supplied confirmation the host must not trust.
+    fn store_request(
+        peer: u64,
+        invocation: uuid::Uuid,
+        revision: Option<&str>,
+        action: &str,
+        exact: &str,
+    ) -> tilo_actions::remote::InvokeRequest {
+        let descriptor = descriptor(action);
+        let serde_json::Value::Object(argument) = serde_json::from_str(exact).unwrap() else {
+            unreachable!("the argument is an object")
+        };
+        tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId(invocation),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: peer.to_string(),
+                address: tilo_actions::ActionAddress::new(descriptor.resource, action),
+            },
+            argument: tilo_actions::remote::InvokeArgument::Json(argument),
+            context: None,
+            confirmation: Some(tilo_actions::remote::Confirmation::Witnessed(
+                "caller-supplied".into(),
+            )),
+            revision: revision.map(Into::into),
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        }
+    }
+
+    /// The app sends `request` over `handle`: its receipt, or why it was
+    /// refused.
+    async fn store_invoke(
+        handle: runtime_collab::ChannelHandle,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, String> {
+        let receipt = signed_worker::receipt(
+            signed_worker::ask(
+                &handle,
+                tilo_actions::remote::RemoteActionMessage::Invoke(request),
+            )
+            .await
+            .map_err(|error| error.to_string())?,
+        );
+        match receipt.status {
+            tilo_actions::remote::ReceiptStatus::Rejected { error } => Err(format!("{error:?}")),
+            _ => Ok(receipt),
+        }
+    }
+
     struct DirectoryPump(tokio::task::JoinHandle<()>);
 
     impl Drop for DirectoryPump {
@@ -144,12 +195,23 @@ mod https_completion {
 
     struct StoreDirectory;
 
-    impl runtime_collab::raw::action_directory::Server for StoreDirectory {
+    impl wire::DirectorySource for StoreDirectory {
+        fn query(
+            &self,
+            _query: runtime_collab::ActionDirectoryQuery,
+            _max_bytes: u32,
+        ) -> wire::Asked<runtime_collab::ActionDirectoryPage> {
+            Box::pin(std::future::ready(Err(
+                "this directory only resolves".into()
+            )))
+        }
+
         fn resolve(
-            self: Rc<Self>,
-            _: runtime_collab::raw::action_directory::ResolveParams,
-            mut results: runtime_collab::raw::action_directory::ResolveResults,
-        ) -> Promise<(), capnp::Error> {
+            &self,
+            _: (&str, &str, &str),
+            _local_document: bool,
+            _max_bytes: u32,
+        ) -> wire::Asked<runtime_collab::ActionDirectoryResolution> {
             let mut row = signed_worker::directory_state("moderation-r1")
                 .borrow()
                 .row();
@@ -163,12 +225,12 @@ mod https_completion {
             row.visibility.as_mut().unwrap().contract = descriptor.contract.clone();
             row.visibility.as_mut().unwrap().governing_kind = Some(descriptor.operation_kind);
             row.descriptor = Some(descriptor);
-            runtime_collab::write_action_directory_row(
-                results.get().init_resolution().init_found(),
-                &row,
-            )
-            .unwrap();
-            Promise::ok(())
+            Box::pin(std::future::ready(Ok(
+                runtime_collab::ActionDirectoryResolution::Found {
+                    row: Box::new(row),
+                    revision: None,
+                },
+            )))
         }
     }
 
@@ -470,45 +532,29 @@ mod https_completion {
                 }));
                 target
                     .handle
-                    .publish_action_directory(
-                        &room.route.app_id,
-                        capnp_rpc::new_client(StoreDirectory),
-                    )
+                    .publish_action_directory(crate::collab_app_broker::wire_answerer(Rc::new(
+                        StoreDirectory,
+                    )))
                     .await
                     .unwrap();
-                let descriptor = descriptor("submit-report");
                 let stream = target.handle.subscribe_stable_invocations().await.unwrap();
-                let (_, binding) = target
-                    .handle
-                    .resolve_published_action_for_invocation(
-                        988,
-                        "moderation-r1",
-                        &descriptor.resource,
-                        &descriptor.action,
-                    )
-                    .await
-                    .unwrap();
                 let operation = approved_operation(&server, "The description is misleading", None);
                 let exact = argument(&operation);
-                let evidence = r#"{"confirm":true,"confirmation_token":"caller-supplied"}"#;
-                let absent = uuid::Uuid::new_v4();
-                let unavailable = target
-                    .handle
-                    .invoke_resolved_published_action_durable(
-                        absent.as_bytes(),
-                        &binding,
-                        "moderation-r1",
-                        &descriptor.resource,
-                        &descriptor.action,
-                        Some(&exact),
-                        evidence,
+                let request = |invocation| {
+                    store_request(
+                        988,
+                        invocation,
+                        Some("moderation-r1"),
+                        "submit-report",
+                        &exact,
                     )
-                    .await
-                    .expect_err("caller evidence cannot replace an absent host");
+                };
+                let unavailable =
+                    store_invoke(target.handle.clone(), request(uuid::Uuid::new_v4()))
+                        .await
+                        .expect_err("caller evidence cannot replace an absent host");
                 assert!(
-                    unavailable
-                        .to_string()
-                        .contains("host confirmation unavailable"),
+                    unavailable.contains("ConfirmationRequired"),
                     "{unavailable}"
                 );
                 let (send, mut sheets) = tokio::sync::mpsc::unbounded_channel();
@@ -520,15 +566,7 @@ mod https_completion {
                 // invocation, so nothing denied and no retry was delivered.
                 for allow in [false, true, true] {
                     let invocation = uuid::Uuid::new_v4();
-                    let call = target.handle.invoke_resolved_published_action_durable(
-                        invocation.as_bytes(),
-                        &binding,
-                        "moderation-r1",
-                        &descriptor.resource,
-                        &descriptor.action,
-                        Some(&exact),
-                        evidence,
-                    );
+                    let call = store_invoke(target.handle.clone(), request(invocation));
                     tokio::pin!(call);
                     let (question, answer) = tokio::select! {
                         result = &mut call => panic!("durable invocation bypassed host sheet: {result:?}"),
@@ -565,26 +603,18 @@ mod https_completion {
                             .unwrap();
                         delivery = Box::pin(stream.read());
                         assert_eq!(delivered.invocation_uuid, *invocation.as_bytes());
-                        let retry = target
-                            .handle
-                            .invoke_resolved_published_action_durable(
-                                invocation.as_bytes(),
-                                &binding,
-                                "moderation-r1",
-                                &descriptor.resource,
-                                &descriptor.action,
-                                Some(&exact),
-                                "{}",
-                            )
-                            .await
-                            .unwrap();
-                        assert_eq!(retry, admitted);
+                        assert!(matches!(
+                            admitted.status,
+                            tilo_actions::remote::ReceiptStatus::Accepted
+                        ));
+                        // The same request again admits nothing new and asks
+                        // the person nothing: it carries the caller's own
+                        // evidence, not the person's confirmation.
+                        let retry = store_invoke(target.handle.clone(), request(invocation)).await;
+                        assert_eq!(retry.as_ref(), Ok(&admitted), "{retry:?}");
                     } else {
                         let denied = result.expect_err("the host declined disclosure");
-                        assert!(
-                            denied.to_string().contains("Store disclosure declined"),
-                            "{denied}"
-                        );
+                        assert!(denied.contains("NotPermitted"), "{denied}");
                     }
                     assert!(matches!(
                         sheets.try_recv(),
@@ -629,6 +659,16 @@ mod https_completion {
                 let owner = Arc::new(StoreOwner(files.path().join("store.automerge")));
                 let room = Room::with_original(true, Some(owner.clone()), original);
                 let target = bounded("native Store launch", native_app(&room, 987)).await;
+                let state = Arc::downgrade(&room.state);
+                let directories = room.directories.clone();
+                let turn = room.state.action_directory_bridge.turn.clone();
+                let _pump = DirectoryPump(tokio::task::spawn_local(async move {
+                    loop {
+                        turn.notified().await;
+                        let Some(state) = state.upgrade() else { break };
+                        state.drain_action_directory_bridge(&directories);
+                    }
+                }));
                 let (send, mut sheets) = tokio::sync::mpsc::unbounded_channel();
                 room.state.set_app_action_consent(Arc::new(Sheet(send)));
                 let stream = target.handle.subscribe_stable_invocations().await.unwrap();
@@ -644,16 +684,13 @@ mod https_completion {
                     let descriptor = descriptor(action);
                     target
                         .handle
-                        .publish_actions(&room.route.app_id, std::slice::from_ref(&descriptor))
+                        .publish_actions(std::slice::from_ref(&descriptor))
                         .await
                         .unwrap();
                     let exact = argument(&operation);
-                    let call = target.handle.invoke_published_action(
-                        987,
-                        &descriptor.resource,
-                        action,
-                        Some(&exact),
-                        r#"{"confirm":true,"confirmation_token":"caller-supplied"}"#,
+                    let call = store_invoke(
+                        target.handle.clone(),
+                        store_request(987, uuid::Uuid::new_v4(), None, action, &exact),
                     );
                     tokio::pin!(call);
                     let (question, answer) = tokio::select! {

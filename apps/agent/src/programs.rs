@@ -306,6 +306,9 @@ pub fn step_of(source: &str, naming: &Naming<'_>, answered: Result<&Value, &str>
         Some("view") => {
             step.answer
                 .push("// a view: answer with it by finishing with `view`".to_owned());
+            if let Some(shows) = value.pointer("/definition/shows").and_then(Value::as_str) {
+                step.answer.push(format!("// it shows a {shows}"));
+            }
         }
         _ => {
             step.answer.push(format!("// {value}"));

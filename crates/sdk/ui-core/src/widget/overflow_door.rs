@@ -115,6 +115,7 @@ pub fn plan(width: f64, widths: impl IntoIterator<Item = f64>, gap: f64, door: f
 /// the items it was given ([`Self::open`]); the row the person chose comes
 /// back once, by index, in the order the items were given
 /// ([`Self::take_choice`]).
+#[crate::component::not_a_component(shell, "the strip's overflow")]
 pub struct OverflowDoor {
     button: Button,
     menu: ContextMenu,
@@ -340,6 +341,17 @@ impl Widget for OverflowDoor {
         } else {
             Vec::new()
         }
+    }
+
+    /// Its button takes the person's input also while hidden: it is laid
+    /// out then too, and shows at the size that input needs when the row
+    /// overflows.
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        Widget::set_interaction_environment(&mut self.button, environment);
+        Widget::set_interaction_environment(&mut self.menu, environment);
     }
 
     fn is_layout_dirty(&self) -> bool {

@@ -217,6 +217,80 @@ pub enum QsEffect {
         #[param("The output's audio node")]
         node: u32,
     },
+    /// Set the microphone's level.
+    #[effect(
+        own_device,
+        idempotent,
+        label = "Microphone level",
+        icon = "mic",
+        keywords = "microphone level, mic gain, eingangspegel"
+    )]
+    SetInputVolume {
+        #[param("Level from 0 to 1")]
+        level: f64,
+    },
+    /// Mute or unmute the microphone.
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "mic-off",
+        keywords = "microphone, mic mute"
+    )]
+    SetInputMuted {
+        #[param("Whether the microphone is muted")]
+        muted: bool,
+    },
+    /// Unmute the microphone when it is muted, and mute it when it is not.
+    #[effect(
+        own_device,
+        label = "Mute or unmute the microphone",
+        icon = "mic-off",
+        keywords = "microphone, mic mute, mikrofon"
+    )]
+    ToggleInputMuted,
+    /// Play (or record) one application's stream through an output (or
+    /// input), or release it to follow the default.
+    #[effect(
+        own_device,
+        idempotent,
+        label = "Route an application",
+        icon = "speaker",
+        keywords = "per-app volume, application routing, app stream"
+    )]
+    RouteStream {
+        #[param("The stream's audio node")]
+        stream: u32,
+        #[param("The output's (or input's) audio node; none follows the default")]
+        device: Option<u32>,
+    },
+    /// Set one application's volume.
+    #[effect(
+        own_device,
+        idempotent,
+        label = "Application volume",
+        icon = "volume-2",
+        keywords = "per-app volume, application level, app stream"
+    )]
+    SetStreamVolume {
+        #[param("The stream's audio node")]
+        stream: u32,
+        #[param("Level from 0 to 1")]
+        level: f64,
+    },
+    /// Mute or unmute one application.
+    #[effect(
+        own_device,
+        idempotent,
+        label = "Mute an application",
+        icon = "volume-x",
+        keywords = "per-app mute, application mute, app stream"
+    )]
+    SetStreamMuted {
+        #[param("The stream's audio node")]
+        stream: u32,
+        #[param("Whether the stream is muted")]
+        muted: bool,
+    },
     /// Join a Wi-Fi network that needs no password typed.
     #[effect(own_device)]
     JoinWifi {
@@ -458,6 +532,13 @@ pub enum QsEffect {
     ChooseOutput {
         #[param("The destination, as the now-playing card lists it")]
         output: String,
+    },
+    /// Continue here what another of the person's devices handed over, at
+    /// the point it stopped.
+    #[effect(own_device, keywords = "handoff, continue, resume, another device")]
+    ResumePlayback {
+        #[param("The handoff, as the card lists it")]
+        request: String,
     },
 }
 

@@ -51,11 +51,22 @@ pub fn audience(msg: &NeighbourMsg) -> Option<&[collab_types::Ed25519PublicKey]>
 /// acknowledgement, and a channel's governance head, are each complete on
 /// their own; an Automerge checkpoint is not (whether it covers what came
 /// before is proven from the document).
+///
+/// A compaction is: its author folded every write it holds of the record,
+/// its own included, into the snapshot it publishes, so a host keeps the
+/// author's earlier writes on that record no longer. A host that cannot read
+/// the record takes that on the signed op's word, as it does with every
+/// sealed write: only a device the record admits as a writer of it can make
+/// one. In the clear, whether a checkpoint covers what came before stays
+/// proven from the document.
 pub fn standalone(msg: &NeighbourMsg) -> bool {
     match msg {
         NeighbourMsg::MlsGovernance { frame, .. } => {
             // Each genesis keeps a route of its own.
             !matches!(frame.action, collab_types::MlsGovernanceAction::Genesis)
+        }
+        NeighbourMsg::AppDocument { envelope, .. } => {
+            envelope.encryption.is_some() && envelope.kind == collab_types::OpKind::Compaction
         }
         NeighbourMsg::MlsAccessRequest { .. }
         | NeighbourMsg::MlsRoutedAccessRequest { .. }
@@ -208,6 +219,7 @@ mod tests {
     fn the_host_retains_exactly_what_its_signed_classes_allow() {
         host_retains_every_segment_of_a_large_snapshot_after_its_checkpoint();
         host_retains_content_key_ciphertext_by_its_signed_class();
+        only_a_sealed_compaction_stands_alone();
         host_retains_channel_governance_per_channel_and_device();
         host_persists_state_but_never_late_session_actions();
         channel_digests_are_stable();
@@ -276,6 +288,35 @@ mod tests {
                 3, channel
             )),
             None
+        );
+    }
+
+    /// A compaction a member sealed replaces that member's retained history
+    /// of the record, which is what the host keeps it by; a sealed write or
+    /// a checkpoint in the clear does not.
+    fn only_a_sealed_compaction_stands_alone() {
+        let channel = collab_types::ChannelId::new();
+        let sealed = |kind| {
+            let mut msg = frame(vec![0xde, 0xad]);
+            if let NeighbourMsg::AppDocument { envelope, .. } = &mut msg {
+                envelope.kind = kind;
+                envelope.encryption = Some(collab_types::EncryptionMetadata::content_key(
+                    3,
+                    channel,
+                    collab_types::ContentRetention::Checkpoint,
+                ));
+            }
+            msg
+        };
+        assert!(standalone(&sealed(collab_types::OpKind::Compaction)));
+        assert!(!standalone(&sealed(collab_types::OpKind::Change)));
+        let mut clear = sealed(collab_types::OpKind::Compaction);
+        if let NeighbourMsg::AppDocument { envelope, .. } = &mut clear {
+            envelope.encryption = None;
+        }
+        assert!(
+            !standalone(&clear),
+            "in the clear, coverage is proven from the document"
         );
     }
 

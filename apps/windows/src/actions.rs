@@ -24,6 +24,19 @@ pub enum WindowsEffect {
         #[param("The application id")]
         app: String,
     },
+    /// Read application
+    ///
+    /// Answers what one application is and where it stands: its name and
+    /// publisher, how it runs and how it is recommended to run, how well
+    /// the catalogue knows it, its installation state and what it may use.
+    /// It is the application row's read: what discloses the row, so
+    /// launching, publishing, uninstalling and its other operations are
+    /// offered to whoever may read it, an agent too.
+    #[effect(view, row, returns, idempotent, label = "Read application")]
+    ReadApp {
+        #[param("The application id")]
+        app: String,
+    },
     /// Install Windows application.
     #[effect(job, privileged, kind = "outside")]
     Install {
@@ -220,6 +233,13 @@ fn app_row(app: &crate::model::WindowsApp) -> LiveRow {
         &app.name,
     )
     .operation(
+        WindowsEffect::ReadApp {
+            app: app.id.clone(),
+        }
+        .bound()
+        .reads_document(),
+    )
+    .operation(
         WindowsEffect::Show {
             app: app.id.clone(),
         }
@@ -389,7 +409,14 @@ mod tests {
         let arguments =
             serde_json::Map::from_iter([("path".to_owned(), serde_json::json!("setup.exe"))]);
         let refused = WindowsEffect::decode("install", &arguments).unwrap_err();
-        assert!(refused.contains("absolute"), "{refused}");
+        assert!(
+            matches!(
+                &refused,
+                ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                    if name == "path" && source.to_string().contains("absolute")
+            ),
+            "{refused}"
+        );
     }
 
     #[test]

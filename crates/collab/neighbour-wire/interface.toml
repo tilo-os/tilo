@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 23
+version = 24
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -17,6 +17,7 @@ sources = [
     "crates/hosting/tilo-delivery-protocol/src/transport_v2/presence.rs",
     "crates/hosting/tilo-delivery-protocol/src/peer_actions.rs",
     "crates/collab/neighbour-wire/src/lib.rs",
+    "crates/collab/neighbour-wire/src/actions.rs",
     "crates/collab/neighbour-wire/src/colorimetry.rs",
     "crates/collab/neighbour-wire/src/hdr_metadata.rs",
     "crates/collab/neighbour-wire/src/presence_slot.rs",
@@ -41,11 +42,12 @@ sources = [
     "crates/collab/collab-types/src/role.rs",
     "crates/collab/collab-types/src/peer.rs",
 ]
-roots = ["Hello", "HelloAck", "HelloAck2", "EnvelopeV2", "NeighbourMsg"]
+roots = ["Hello", "HelloAck", "HelloAck2", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction"]
 
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
 Value = "serde_json::Value: any JSON value, carried as its text"
+RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-host vocabulary, carried as opaque postcard bytes and versioned by the relay transport's remote-action envelope"
 
 [schema]
 "ActionCapability" = "enum external"
@@ -96,6 +98,8 @@ Value = "serde_json::Value: any JSON value, carried as its text"
 "ActionMessage::observation.update" = "#2 Option<InvocationUpdate>"
 "ActionMessage::rejected" = "#5 struct"
 "ActionMessage::rejected.code" = "#0 String"
+"ActionMessage::remote" = "#11 struct"
+"ActionMessage::remote.message" = "#0 Box<RemoteActionMessage>"
 "ActionMessage::status" = "#7 struct"
 "ActionMessage::status.invocation" = "#0 InvocationId"
 "ActionMessage::update" = "#8 struct"
@@ -192,6 +196,12 @@ Value = "serde_json::Value: any JSON value, carried as its text"
 "DeltaSegment::Copy.len" = "#1 u32"
 "DeltaSegment::Copy.offset" = "#0 u32"
 "DeltaSegment::Literal" = "#1 tuple(Vec<u8>)"
+"DeviceAction" = "struct"
+"DeviceAction.message" = "#4 RemoteActionMessage with=message_frame"
+"DeviceAction.request_id" = "#1 Uuid"
+"DeviceAction.source" = "#2 [u8; 32]"
+"DeviceAction.target" = "#3 [u8; 32]"
+"DeviceAction.workspace" = "#0 String"
 "DeviceCapabilities" = "struct"
 "DeviceCapabilities.can_act_as_host" = "#2 bool"
 "DeviceCapabilities.can_administer_devices" = "#5 bool"
@@ -369,19 +379,12 @@ Value = "serde_json::Value: any JSON value, carried as its text"
 "EnvelopeV2::ActionsReady" = "#2 struct"
 "EnvelopeV2::ActionsReady.capability" = "#1 ActionCapability"
 "EnvelopeV2::ActionsReady.room" = "#0 Uuid"
-"EnvelopeV2::CertifiedDelivered" = "#8 struct"
-"EnvelopeV2::CertifiedDelivered.action" = "#0 DirectedAction"
-"EnvelopeV2::CertifiedDelivered.source_certificate" = "#1 Vec<u8>"
 "EnvelopeV2::CertifiedSignedDelivered" = "#10 struct"
 "EnvelopeV2::CertifiedSignedDelivered.action" = "#0 SignedDirectedAction"
 "EnvelopeV2::CertifiedSignedDelivered.source_certificate" = "#1 Vec<u8>"
 "EnvelopeV2::CodedDelta" = "#13 struct"
 "EnvelopeV2::CodedDelta.segments" = "#1 Vec<DeltaSegment>"
 "EnvelopeV2::CodedDelta.slot" = "#0 u16"
-"EnvelopeV2::Delivered" = "#5 struct"
-"EnvelopeV2::Delivered.action" = "#0 DirectedAction"
-"EnvelopeV2::Delivered.source_user" = "#1 [u8; 32]"
-"EnvelopeV2::Directed" = "#3 tuple(DirectedAction)"
 "EnvelopeV2::EnableActions" = "#1 struct"
 "EnvelopeV2::EnableActions.room" = "#0 Uuid"
 "EnvelopeV2::EnableBrokerClient" = "#6 struct"
@@ -392,6 +395,13 @@ Value = "serde_json::Value: any JSON value, carried as its text"
 "EnvelopeV2::RegisterBroker" = "#7 struct"
 "EnvelopeV2::RegisterBroker.host" = "#1 Uuid"
 "EnvelopeV2::RegisterBroker.room" = "#0 Uuid"
+"EnvelopeV2::RetiredCertifiedDelivered" = "#8 struct"
+"EnvelopeV2::RetiredCertifiedDelivered.action" = "#0 DirectedAction"
+"EnvelopeV2::RetiredCertifiedDelivered.source_certificate" = "#1 Vec<u8>"
+"EnvelopeV2::RetiredDelivered" = "#5 struct"
+"EnvelopeV2::RetiredDelivered.action" = "#0 DirectedAction"
+"EnvelopeV2::RetiredDelivered.source_user" = "#1 [u8; 32]"
+"EnvelopeV2::RetiredDirected" = "#3 tuple(DirectedAction)"
 "EnvelopeV2::SignedDirected" = "#9 tuple(SignedDirectedAction)"
 "EnvelopeV2::State" = "#0 tuple(Envelope)"
 "EnvelopeV2::Unavailable" = "#4 struct"
@@ -719,6 +729,11 @@ Value = "serde_json::Value: any JSON value, carried as its text"
 "Showing.muted" = "#2 bool"
 "Showing.screen" = "#1 bool"
 "Signature" = "tuple([u8; 64]) transparent"
+"SignedDeviceAction" = "struct try_from=SignedWire into=SignedWire"
+"SignedDeviceAction.action" = "#0 DeviceAction"
+"SignedDeviceAction.encoded" = "#1 Vec<u8>"
+"SignedDeviceAction.issued_at_ns" = "#2 u64"
+"SignedDeviceAction.signature" = "#3 [u8; 64]"
 "SignedDirectedAction" = "struct try_from=SignedWire into=SignedWire"
 "SignedDirectedAction.action" = "#0 DirectedAction"
 "SignedDirectedAction.encoded" = "#1 Vec<u8>"

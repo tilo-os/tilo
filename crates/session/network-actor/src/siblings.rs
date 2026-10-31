@@ -100,6 +100,7 @@ pub(crate) async fn spawn_ticking(
             revocations: RevocationList::new(),
         },
         endpoint.clone(),
+        None,
     )
     .await
     .expect("the device's host opens");

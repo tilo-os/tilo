@@ -845,6 +845,7 @@ impl SparseTreeIndex {
     clippy::struct_excessive_bools,
     reason = "independent focus, selection, and retained-delegate invalidation states"
 )]
+#[crate::component::not_a_component(part, "the typed body of a tree view")]
 pub struct TreeImpl<T, M = TreeNode<T>> {
     test_id: Option<String>,
     model: M,
@@ -2925,6 +2926,11 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
+        // Every structural rebuild repeats the window's input; what mounts
+        // since hears it as it mounts.
+        if self.interaction == environment {
+            return;
+        }
         self.interaction = environment;
         self.viewport
             .set_minimum_height(f64::from(environment.minimum_collection_row()));
@@ -5448,10 +5454,14 @@ mod tests {
         taffy: &TaffyTree<()>,
         node: taffy::NodeId,
     ) -> bool {
-        Dispatch::new()
+        let handled = Dispatch::new()
             .layout(taffy, node)
             .send(view, event)
-            .handled
+            .handled;
+        // Opening a node is a published action the host answers after the
+        // event that reported it.
+        crate::testing::answer_controls(view);
+        handled
     }
 
     #[test]
@@ -6774,7 +6784,7 @@ mod tests {
         let a = Rc::clone(&activated);
         let s = Rc::clone(&selected);
         let view = view
-            .on_activate(move |id| a.borrow_mut().push(id))
+            .on_activate_view("tree", move |id| a.borrow_mut().push(id))
             .on_select(move |id| s.borrow_mut().push(id));
         (view, activated, selected)
     }

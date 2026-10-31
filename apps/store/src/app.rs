@@ -1960,6 +1960,12 @@ impl StoreState {
                     Finish::ImportedPackage,
                 ));
             }
+            StoreEffect::OpenLink { url } => {
+                if !url.starts_with("https://") && !url.starts_with("http://") {
+                    return Err("only web addresses open in a browser".into());
+                }
+                ui::widget::open_external_url(&url);
+            }
             StoreEffect::OpenReference { path, contents } => {
                 if path.is_none() && contents.is_none() {
                     return Err("name a Flatpak reference to open".into());
@@ -3124,7 +3130,14 @@ mod tests {
         let relative =
             <StoreEffect as ui::tilo_resource::Effect>::decode("import-package", &arguments)
                 .unwrap_err();
-        assert!(relative.contains("absolute"), "{relative}");
+        assert!(
+            matches!(
+                &relative,
+                ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                    if name == "path" && source.to_string().contains("absolute")
+            ),
+            "{relative}"
+        );
         let size_refused = ui::i18n!("store-package-size-refused");
         app.apply_worker_snapshot(crate::worker::Snapshot {
             items: Vec::new(),

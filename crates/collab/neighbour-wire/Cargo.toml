@@ -21,17 +21,22 @@ serde.workspace = true
 collab-types = { version = "0.1.0", path = "../collab-types" }
 # Device certificates and revocations for identity announcements.
 tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
-# Host retention channels are BLAKE3 digests of the message route.
+# Host retention channels are BLAKE3 digests of the message route, and an
+# action's signature covers the digest of the bytes it signs.
 blake3.workspace = true
+# The app↔host action payload a directed action carries.
+tilo-actions = { version = "0.1.0", path = "../actions" }
+# A directed action's routing fields and signature.
+uuid.workspace = true
+ed25519-dalek.workspace = true
+serde_bytes.workspace = true
+postcard = { workspace = true, features = ["alloc"] }
+thiserror.workspace = true
 
 [dev-dependencies]
 # The production codec; tests pin every variant's exact encoding.
 hex.workspace = true
-postcard = { workspace = true, features = ["alloc"] }
 serde_json.workspace = true
-uuid.workspace = true
-# Signs the governance fixtures the retention tests classify.
-ed25519-dalek.workspace = true
 
 [lints]
 workspace = true

@@ -338,9 +338,9 @@ impl ShellNetwork {
             let host = self.local_host()?;
             return self.commit_membership_at_own_host(&host, owner, room, caller, command);
         }
-        let request = tilo_owner_commit::OwnerCommitRequest {
+        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
             room: room.to_string(),
-            operation: tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
+            operation: tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller,
                 command,

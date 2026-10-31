@@ -54,6 +54,8 @@ tempfile.workspace = true
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 # The screen reader's recording speaker, to hear what it said.
 tilo-tts = { path = "../../system/tts" }
+# A fake greetd that speaks the real conversation protocol over a socket.
+greetd_ipc = { version = "0.10", features = ["sync-codec"] }
 
 [lints]
 workspace = true

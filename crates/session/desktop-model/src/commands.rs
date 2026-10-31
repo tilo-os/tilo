@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tilo_sort::CompactSort as _;
 
 use crate::apps::canonical_app_id;
+use crate::closed_tabs::Leaving;
 use crate::ids::{MintIds, StripId, WorkspaceId};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::topology::DropTarget;
@@ -33,6 +34,23 @@ pub const ACTION: &str = "command";
 pub const OPEN_APP_RESOURCE_PREFIX: &str = "desktop:app:";
 /// Action id of the per-application open action.
 pub const OPEN_APP_ACTION: &str = "open";
+
+/// The desktop's layout actions on this device's broker, on [`RESOURCE`]:
+/// what an agent opens and arranges windows with, by id.
+pub mod layout {
+    /// The provider the session's broker answers them under.
+    pub const PROVIDER: &str = "tilo.desktop";
+    /// Open a resource, content or web address in a new window.
+    pub const OPEN: &str = "open";
+    pub const CREATE_STRIP: &str = "create-strip";
+    pub const RENAME_STRIP: &str = "rename-strip";
+    pub const MOVE_GROUP: &str = "move-group";
+    pub const ARRANGE: &str = "arrange";
+    pub const LIST_WINDOWS: &str = "list-windows";
+    /// Take a run of layout changes back (`{"run": …}`), as every
+    /// history's `undo` does.
+    pub const UNDO: &str = "undo";
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DesktopCommandError {
@@ -223,13 +241,25 @@ pub enum DesktopCommand {
         group: u64,
         place: crate::arrangement::CanvasPlace,
     },
+    /// Put the window closed most recently in this workspace back where it
+    /// was, and show it: the close [`Self::CloseTab`] undid. `strip` names
+    /// the strip the workspace shows, where the window's group goes again
+    /// when the strip it remembers is gone; without it the owner keeps to
+    /// the workspace's own strips as they are. The closes a workspace
+    /// remembers are this device's own history rather than a revision of the
+    /// shared layout, so a stale source revision does not refuse this.
+    /// Appended last: existing encodings are unchanged.
+    ReopenClosed {
+        strip: Option<u64>,
+    },
 }
 
 impl DesktopCommand {
     /// Whether the owner applies this against its own current desktop, so it
     /// needs no source revision: an [`Self::OpenApp`] it places itself, a
-    /// namespace claim that changes only the registry, or a governance
-    /// command that touches no topology.
+    /// namespace claim that changes only the registry, a governance
+    /// command that touches no topology, or the reopen of a window this
+    /// device closed.
     pub fn is_placement_independent(&self) -> bool {
         matches!(
             self,
@@ -239,6 +269,7 @@ impl DesktopCommand {
                 | Self::AssignPreset { .. }
                 | Self::GrantAppAction { .. }
                 | Self::RevokeAppAction { .. }
+                | Self::ReopenClosed { .. }
         )
     }
 }
@@ -614,8 +645,14 @@ fn place(
     }
     Ok(())
 }
-fn remove(workspace: &mut Workspace, at: TabIndex) -> Result<Tab, String> {
+fn remove(workspace: &mut Workspace, at: TabIndex, leaving: Leaving) -> Result<Tab, String> {
     let (strip, group, tab) = at;
+    // The one door every close goes through: what a person closed is
+    // remembered here, so it can be reopened, whatever closed it. A window
+    // only moving keeps nothing to undo.
+    if leaving == Leaving::Closed {
+        workspace.note_close(strip, group, tab);
+    }
     let groups = &mut strip_at_mut(workspace, strip)?.window_groups;
     let window = groups.get_mut(group).ok_or("group was removed")?;
     if tab >= window.tabs.len() {
@@ -633,6 +670,12 @@ fn remove(workspace: &mut Workspace, at: TabIndex) -> Result<Tab, String> {
         groups.remove(group);
     }
     Ok(removed)
+}
+fn reopen(workspace: &mut Workspace, strip: Option<u64>) -> Result<(), String> {
+    workspace
+        .reopen_closed(strip.map(StripId))
+        .map(|_| ())
+        .ok_or_else(|| "there is no closed window to reopen".to_owned())
 }
 fn name(value: &str) -> Result<String, String> {
     let value = value.trim();
@@ -727,7 +770,7 @@ fn move_tab(
         *workspace = tree.workspaces.remove(0);
         return Ok(());
     }
-    let tab = remove(workspace, source)?;
+    let tab = remove(workspace, source, Leaving::Moved)?;
     place(workspace, tab, placement, group, None)
 }
 fn split_tab(
@@ -835,8 +878,9 @@ pub fn apply_command(
             duplicate_tab(workspace, at, mint, create)?;
         }
         DesktopCommand::CloseTab { location: at } => {
-            remove(workspace, location(workspace, at)?)?;
+            remove(workspace, location(workspace, at)?, Leaving::Closed)?;
         }
+        DesktopCommand::ReopenClosed { strip } => reopen(workspace, *strip)?,
         DesktopCommand::ReorderTab {
             location: at,
             before,
@@ -953,6 +997,22 @@ pub fn apply_to_active_workspace(
     command: &DesktopCommand,
     mint: &mut impl FnMut() -> Result<u64, String>,
 ) -> Result<Option<StripId>, String> {
+    let active = tree.active;
+    apply_to_workspace(tree, active, command, mint)
+}
+
+/// [`apply_to_active_workspace`] for the workspace `id`, shown or not: an
+/// agent arranging the workspace it works in edits that one.
+///
+/// # Errors
+///
+/// As [`apply_to_active_workspace`], or the workspace is gone.
+pub fn apply_to_workspace(
+    tree: &mut DesktopTree,
+    id: crate::ids::WorkspaceId,
+    command: &DesktopCommand,
+    mint: &mut impl FnMut() -> Result<u64, String>,
+) -> Result<Option<StripId>, String> {
     if !matches!(
         command,
         DesktopCommand::CreateStrip { .. }
@@ -963,12 +1023,12 @@ pub fn apply_to_active_workspace(
     ) {
         return Err("not a strip or workspace edit".into());
     }
-    let active = tree.active;
+    let active = id;
     let workspace = tree
         .workspaces
         .iter_mut()
         .find(|workspace| workspace.id == active)
-        .ok_or("there is no active workspace")?;
+        .ok_or("the workspace is gone")?;
     let before = workspace.strips.len();
     apply_command(workspace, command, mint, &mut |_, _| {
         Err("a strip or workspace edit creates no record".into())

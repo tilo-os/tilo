@@ -25,9 +25,12 @@ use tilo_desktop_model::commands::{
     DesktopCommand, TabLocation, TabPlacement, apply_command, apply_to_active_workspace,
     move_tab_to_workspace,
 };
-use tilo_desktop_model::{DesktopTree, Strip, StripId, TabId, Workspace, WorkspaceId};
+use tilo_desktop_model::{
+    DesktopTree, RoomId, Strip, StripId, TabId, TileContent, Workspace, WorkspaceId,
+};
 use tilo_desktop_surface::navigation::{ActivityView, Command, Route, RouteIds};
 use tilo_desktop_surface::{DesktopHandle, HostActionSource};
+use ui::icons::AppImage;
 use ui::presence::PresenceCtx;
 use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
 use ui::widget::{AppModel, EventCtx, ModelPath, Stack, TaffyTreeExt as _, Widget};
@@ -38,16 +41,18 @@ use winit::event::{ElementState, Modifiers, WindowEvent};
 
 use crate::about::TiloMenu;
 use crate::chrome::ChromeIntent;
+use crate::desk_widgets::music::MusicAction;
 use crate::desktop_actions::{
     DesktopAction, OPERATION, chrome_resource, desk_resource, launchpad_resource,
 };
+use crate::emoji_picker::{EmojiLink, EmojiPicker};
 use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use crate::overview::{OverviewHost, room_cards};
 use crate::overview_panel::{OverviewPanel, OverviewPick};
 use crate::shortcuts::{page_chord, page_shortcut_action};
 use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
 use crate::strip_switcher::Command as StripCommand;
-use crate::topbar::{TOPBAR_HEIGHT_PX, TopBarChrome};
+use crate::topbar::{BarSpace, Placement, TOPBAR_HEIGHT_PX, TopBarChrome};
 use crate::window_flight::WindowFlight;
 use crate::window_switcher::{
     NoThumbnails, SwitcherOutcome, SwitcherScope, WindowSource, WindowSwitcher,
@@ -55,6 +60,11 @@ use crate::window_switcher::{
 use crate::workspace_menu::{
     WorkspaceAction, WorkspaceChoice, WorkspaceMenu, WorkspaceMenuChoice, WorkspaceMenuModel,
 };
+
+/// The next deadline a child widget reports, for the earliest of them.
+fn wake_deadline(child: &dyn Widget) -> Option<ui::time::Instant> {
+    child.next_wake_deadline()
+}
 
 /// Workspace menu keys: a workspace of this desktop, by id, and one of the
 /// person's others the host opens, by its host action.
@@ -123,6 +133,9 @@ pub enum DesktopAsk {
     /// A desktop shortcut the layers have no part in (search, quick
     /// settings, locking, the magnifier, …): the host's to carry out.
     Shortcut(ShortcutAction),
+    /// The person pressed one of the music widget's controls: the host
+    /// steers the player it shows.
+    Music(MusicAction),
 }
 
 /// Whether the desk shown has no window. Every desk, not only a workspace's
@@ -252,10 +265,13 @@ fn grow(taffy: &mut TaffyTree<()>, node: NodeId) {
     let _ = taffy.set_style(node, style);
 }
 
-/// What lies under the windows: the backdrop, and below the bar's band the
+/// What lies under the windows: the backdrop, and below the bar's room the
 /// strips of the desktop surface over the empty desk's launchpad.
 pub struct DeskLayer {
     backdrop: crate::backdrop::DesktopBackdrop,
+    /// The room the bar takes above the strips: none under a fullscreen
+    /// window, else the bar's height.
+    band: BarSpace,
     area: Stack,
     handle: DesktopHandle,
     empty: Rc<Cell<bool>>,
@@ -286,6 +302,17 @@ impl DeskLayer {
     ) -> Self {
         let empty = Rc::new(Cell::new(handle.read(desk_is_empty)));
         let workspace = handle.read(|tree| tree.active_workspace().map(|workspace| workspace.id.0));
+        // The room the bar takes above the strips, at the same height it
+        // takes itself. The bar docks in this desktop's column, so its room
+        // is there until a window covers its display and the bar steps
+        // aside.
+        let desk = handle.clone();
+        let band = BarSpace::new(Rc::new(move || {
+            (
+                desk.read(|tree| tree.fullscreen_group().is_some()),
+                crate::chrome::TopBarPresence::Docked,
+            )
+        }));
         let mut area = Stack::new();
         for layer in beneath {
             area = area.push(layer);
@@ -299,6 +326,7 @@ impl DeskLayer {
             .push(surface);
         Self {
             backdrop: crate::backdrop::DesktopBackdrop::new(),
+            band,
             area,
             handle,
             empty,
@@ -470,19 +498,9 @@ impl Widget for DeskLayer {
         theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        use taffy::{Dimension, Size};
         let backdrop = self.backdrop.build_layout(taffy, theme, map);
         fill(taffy, backdrop);
-        let band = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(TOPBAR_HEIGHT_PX),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap_or(backdrop);
+        let band = self.band.build_layout(taffy, theme, map);
         let area = self.area.build_layout(taffy, theme, map);
         grow(taffy, area);
         let node = taffy.widget_node(column(), &[backdrop, band, area], map, self);
@@ -493,8 +511,9 @@ impl Widget for DeskLayer {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
-        if let [backdrop, _, area] = taffy.children(node).unwrap_or_default()[..] {
+        if let [backdrop, band, area] = taffy.children(node).unwrap_or_default()[..] {
             self.backdrop.apply_layout(taffy, backdrop, inner);
+            self.band.apply_layout(taffy, band, inner);
             self.area.apply_layout(taffy, area, inner);
         }
     }
@@ -531,11 +550,11 @@ impl Widget for DeskLayer {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.backdrop, &self.area]
+        vec![&self.backdrop, &self.band, &self.area]
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.backdrop, &mut self.area]
+        vec![&mut self.backdrop, &mut self.band, &mut self.area]
     }
 
     fn visit_retained_components(
@@ -597,11 +616,21 @@ struct PlainOverview {
     user: String,
 }
 
-/// The switcher's view of a host: every window carries its app's mark, and
-/// none is pictured ([`NoThumbnails`]).
-struct SwitcherWindows;
+/// The switcher's view of a host: a window shows the icon it set for itself
+/// and keeps its app's glyph when it set none; none is pictured
+/// ([`NoThumbnails`]).
+struct SwitcherWindows<'a> {
+    handle: &'a DesktopHandle,
+}
 
-impl WindowSource for SwitcherWindows {}
+impl WindowSource for SwitcherWindows<'_> {
+    fn app_icon(&self, tile: &TileContent) -> Option<AppImage> {
+        let TileContent::Foreign { surface_id, .. } = tile else {
+            return None;
+        };
+        self.handle.window_artwork(*surface_id)
+    }
+}
 
 impl WindowSource for PlainOverview {}
 
@@ -624,15 +653,31 @@ impl OverviewHost for PlainOverview {
 /// chords.
 pub struct DesktopChrome {
     bar: TopBarChrome,
+    /// The bars of the other displays, each on its own: a display besides
+    /// the one in use carries the compact bar.
+    compact: Vec<TopBarChrome>,
+    /// Where the bars stood at the bar's source last reading, and the
+    /// snapshot revision it was read at.
+    placement: Placement,
+    bars_revision: u64,
     overview: OverviewPanel,
     tilo_menu: TiloMenu,
     workspace_menu: WorkspaceMenu,
+    /// What the person can do to the window in front, at its window.
     /// Where the person is in the workspace (the strip ribbon grown into
     /// the strip switcher, and the window rail).
     navigator: StripNavigator,
     /// The Alt+Tab switcher: the windows of the workspace by when they were
     /// last used, shown over the desk while Alt is held.
     switcher: WindowSwitcher,
+    /// The emoji picker: Super+. opens its card at the caret of the field the
+    /// person types into, and every pick is written into that field by the
+    /// host.
+    emoji: EmojiPicker,
+    /// Where the picker's next opening goes, and what came of the last pick.
+    emoji_link: EmojiLink,
+    /// The display the open card stands on.
+    emoji_viewport: Rect,
     /// Where the navigator's ribbon and rail stand and what they report.
     navigator_frame: StripFrame,
     /// What the navigator last read: the navigation and who-is-here
@@ -664,6 +709,46 @@ pub struct DesktopChrome {
     /// Whether the chrome takes the keyboard, as of its last update or
     /// event.
     keyboard: Rc<Cell<bool>>,
+    /// Whether the reader's focus is on the chrome rather than on the desk's
+    /// windows, as the overlay that is up takes the keyboard.
+    focused: bool,
+}
+
+/// The overlays the chrome paints itself, as opposed to the retained widgets
+/// it hands to layout: what a screen reader only reaches if the chrome puts
+/// them in its own tree.
+#[derive(Clone, Copy)]
+enum PaintedOverlay {
+    /// The strip ribbon's labels, open for the keyboard or under the pointer.
+    StripLabels,
+    /// The Alt+Tab window switcher.
+    Windows,
+    /// The emoji card.
+    Emoji,
+}
+
+impl PaintedOverlay {
+    /// Every painted overlay, bottom to top.
+    const ALL: [Self; 3] = [Self::StripLabels, Self::Windows, Self::Emoji];
+
+    /// The key its node keeps in the chrome's tree, so the id survives the
+    /// other overlays opening and closing.
+    fn key(self) -> u64 {
+        ui::a11y::hash_key(&match self {
+            Self::StripLabels => "chrome-strip-labels",
+            Self::Windows => "chrome-window-switcher",
+            Self::Emoji => "chrome-emoji-card",
+        })
+    }
+
+    /// Whether `chrome` has it on screen.
+    fn is_open(self, chrome: &DesktopChrome) -> bool {
+        match self {
+            Self::StripLabels => chrome.navigator.is_open(),
+            Self::Windows => chrome.switcher.is_active(),
+            Self::Emoji => chrome.emoji.is_open(),
+        }
+    }
 }
 
 impl DesktopChrome {
@@ -682,11 +767,17 @@ impl DesktopChrome {
     ) -> Self {
         Self {
             bar,
+            compact: Vec::new(),
+            placement: Placement::default(),
+            bars_revision: u64::MAX,
             overview: OverviewPanel::new(),
             tilo_menu,
             workspace_menu: WorkspaceMenu::new(),
             navigator: StripNavigator::default(),
             switcher: WindowSwitcher::default(),
+            emoji: EmojiPicker::new(),
+            emoji_link: EmojiLink::default(),
+            emoji_viewport: Rect::ZERO,
             navigator_frame: StripFrame::empty(Rect::ZERO),
             navigator_seen: None,
             overview_revision: 0,
@@ -703,6 +794,7 @@ impl DesktopChrome {
             asks: Rc::default(),
             intents: Rc::default(),
             keyboard: Rc::default(),
+            focused: false,
         }
     }
 
@@ -711,6 +803,22 @@ impl DesktopChrome {
     #[must_use]
     pub fn keyboard(&self) -> Rc<Cell<bool>> {
         Rc::clone(&self.keyboard)
+    }
+
+    /// Keep the emoji picker's openings, picks and recents through `link`: the
+    /// host says where the focused field's caret is, writes each pick into
+    /// that field and keeps the recents where the link's store does.
+    #[must_use]
+    pub fn with_emoji(mut self, link: EmojiLink) -> Self {
+        self.emoji_link = link;
+        self
+    }
+
+    /// The emoji picker, as the host sees it: open or not, the card's place,
+    /// and what the person picked.
+    #[must_use]
+    pub const fn emoji(&self) -> &EmojiPicker {
+        &self.emoji
     }
 
     /// Use `shortcuts` for the desktop's chords (the person's bindings).
@@ -727,6 +835,22 @@ impl DesktopChrome {
     /// The top bar, to open what it anchors.
     pub fn bar_mut(&mut self) -> &mut TopBarChrome {
         &mut self.bar
+    }
+
+    /// Where every display's bar stands, as the bar's source last said.
+    #[must_use]
+    pub const fn placement(&self) -> &Placement {
+        &self.placement
+    }
+
+    /// Every bar the chrome shows: the full one on the display in use,
+    /// then the compact one of each other display in the placement's
+    /// order, with the display each stands on (`None` for the full bar).
+    #[must_use]
+    pub fn bars(&self) -> Vec<(Option<u32>, &TopBarChrome)> {
+        std::iter::once((self.bar.display(), &self.bar))
+            .chain(self.compact.iter().map(|bar| (bar.display(), bar)))
+            .collect()
     }
 
     /// The Tilo menu behind the bar's mark.
@@ -746,14 +870,141 @@ impl DesktopChrome {
         self.tilo_menu.is_open() || self.workspace_menu.is_open()
     }
 
+    /// Let the open menus take what they cover, in the order they stand;
+    /// true when one took `event`.
+    fn menu_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut EventCtx<'_>,
+        [tilo_menu, workspace_menu]: [NodeId; 2],
+    ) -> bool {
+        if self.workspace_menu.is_open() {
+            self.workspace_menu
+                .handle_event(event, &mut ctx.reborrow(ctx.path, workspace_menu));
+            if *ctx.handled {
+                return true;
+            }
+        }
+        if self.tilo_menu.is_open() {
+            self.tilo_menu
+                .handle_event(event, &mut ctx.reborrow(ctx.path, tilo_menu));
+            if *ctx.handled {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Whether keys should come here rather than to the window in front:
-    /// a menu, the overview or the strip switcher is up.
+    /// a menu, the overview, the emoji picker or the strip switcher is up.
     #[must_use]
     pub fn wants_keyboard(&self) -> bool {
         self.menu_open()
             || self.overview.is_open()
+            || self.emoji.is_open()
             || self.navigator.takes_keys()
             || self.switcher.is_active()
+    }
+
+    /// The chrome's own accessibility node: the group over the desk that
+    /// carries what the chrome paints itself. The retained parts (the bars,
+    /// the overview, the menus) are children widgets, which the host's walk
+    /// exports on its own.
+    fn accessibility_group(&self) -> ui::a11y::AccessNode {
+        ui::a11y::AccessNode::new(ui::a11y::Role::Group).with_state(
+            ui::a11y::AccessState::new()
+                .focusable(self.is_focusable())
+                .focused(self.focused),
+        )
+    }
+
+    /// Take the keyboard while an overlay of the chrome's own is up, and hand
+    /// it back — the reader's focus with it — once none is. Reached from
+    /// everywhere the chrome's overlays open, close or take a key.
+    fn take_keyboard(&mut self) {
+        let wanted = self.wants_keyboard();
+        self.keyboard.set(wanted);
+        if !wanted {
+            self.focused = false;
+        }
+    }
+
+    /// The painted overlays on screen now, bottom to top — the order a
+    /// reader meets them in.
+    fn painted_overlays(&self) -> Vec<PaintedOverlay> {
+        PaintedOverlay::ALL
+            .into_iter()
+            .filter(|overlay| overlay.is_open(self))
+            .collect()
+    }
+
+    /// What one painted overlay says to assistive technology, while it is up.
+    fn overlay_accessibility(&self, overlay: PaintedOverlay) -> Option<ui::a11y::AccessNode> {
+        match overlay {
+            PaintedOverlay::StripLabels => self.navigator.accessibility(),
+            PaintedOverlay::Windows => self.switcher.accessibility(),
+            PaintedOverlay::Emoji => self.emoji.accessibility(),
+        }
+    }
+
+    /// Open the emoji picker at the caret of the field the person types into,
+    /// centred on the display they are working on when that field reported
+    /// none. What is picked goes to the host, which writes it into that
+    /// field.
+    pub fn open_emoji(&mut self) {
+        let place = self.emoji_link.place().unwrap_or_default();
+        self.emoji_viewport = place
+            .viewport
+            .or_else(|| self.working_display())
+            .unwrap_or(self.rect);
+        self.emoji.open_at(
+            self.emoji_viewport,
+            place.caret,
+            &ui::i18n::I18nManager::current_locale(),
+        );
+        self.take_keyboard();
+    }
+
+    /// The display the person is working on, while the desk spans several:
+    /// where a card without a caret is centred.
+    fn working_display(&self) -> Option<Rect> {
+        let tree = self.rules.tree();
+        let focused = tree.outputs.focused_display()?;
+        tree.outputs
+            .displays
+            .iter()
+            .find(|display| display.id == focused)
+            .map(|display| {
+                Rect::new(
+                    display.x,
+                    display.y,
+                    display.x + display.width,
+                    display.y + display.height,
+                )
+            })
+    }
+
+    /// Close the emoji picker without inserting anything.
+    pub fn close_emoji(&mut self) {
+        self.emoji.close();
+        self.take_keyboard();
+    }
+
+    /// Super+. opens the picker, and closes it again while it is up.
+    pub fn toggle_emoji(&mut self) {
+        if self.emoji.is_open() {
+            self.close_emoji();
+        } else {
+            self.open_emoji();
+        }
+    }
+
+    /// Hand the host the emoji the person picked since the card last ran, for
+    /// it to write into the field they were typing into.
+    fn note_emoji_picks(&mut self) {
+        for text in self.emoji.take_commits() {
+            self.emoji_link.note_picked(text);
+        }
     }
 
     /// The Alt+Tab switcher is open: Alt is held after Tab, and every key
@@ -1121,7 +1372,7 @@ impl DesktopChrome {
                 None
             }
             OverviewPick::NewWorkspace => {
-                self.new_workspace();
+                self.new_workspace(None, None);
                 None
             }
             OverviewPick::JoinWorkspace => Some(DesktopAction::JoinWorkspace),
@@ -1322,19 +1573,35 @@ impl DesktopChrome {
         Ok(())
     }
 
-    /// Add an empty workspace after the others and go there; its launchpad
-    /// offers what to open.
-    fn new_workspace(&self) {
-        if let Err(refusal) = self.rules.may_create_workspace() {
-            self.handle.acknowledge(refusal);
-            return;
-        }
+    /// Make a workspace after the others and go there; with `room`, the
+    /// workspace sharing that room, joining it when this computer has none (a
+    /// workspace that exists is a room that exists, so joining one is holding
+    /// its room, which needs no room of the person's own to make).
+    fn new_workspace(&self, room: Option<&str>, name: Option<&str>) {
         let mut tree = self.handle.read(Clone::clone);
-        let name = tilo_desktop_surface::i18n::t_args(
-            "browser-new-workspace-name",
-            &[("number", tree.workspaces.len().saturating_add(1).into())],
-        );
-        let mut workspace = Workspace::new(WorkspaceId(self.handle.mint_id()), name);
+        let name = Self::name_of(name, tree.workspaces.len());
+        let mut workspace = if let Some(room) = room {
+            let Some(room) = RoomId::parse(room) else {
+                self.handle
+                    .acknowledge(tilo_desktop_surface::i18n::t("desktop-joined-room-unknown"));
+                return;
+            };
+            if let Some(held) = tree.workspaces.iter().find(|held| held.room() == room) {
+                // Already held, here or from another device: go there rather
+                // than make a second workspace of one room.
+                let held = held.id;
+                tree.active = held;
+                self.handle.replace_tree(tree);
+                return;
+            }
+            Workspace::in_room(WorkspaceId::of_room(room), room, name)
+        } else {
+            if let Err(refusal) = self.rules.may_create_workspace() {
+                self.handle.acknowledge(refusal);
+                return;
+            }
+            Workspace::new(WorkspaceId(self.handle.mint_id()), name)
+        };
         let strip = Strip::new(StripId(self.handle.mint_id()), "Main");
         let strip_id = strip.id;
         workspace.strips.push(strip);
@@ -1343,6 +1610,20 @@ impl DesktopChrome {
         tree.active_strip.insert(id, strip_id);
         tree.active = id;
         self.handle.replace_tree(tree);
+    }
+
+    /// What a workspace made with `name` is called: that name, or one
+    /// numbered by how many workspaces `held` there are here.
+    fn name_of(name: Option<&str>, held: usize) -> String {
+        name.map_or_else(
+            || {
+                tilo_desktop_surface::i18n::t_args(
+                    "browser-new-workspace-name",
+                    &[("number", held.saturating_add(1).into())],
+                )
+            },
+            str::to_owned,
+        )
     }
 
     /// The window `step` places from the focused one in the shown strip, or
@@ -1434,6 +1715,24 @@ impl DesktopChrome {
         });
     }
 
+    /// Cover the display with the focused window, or give it back.
+    fn toggle_fullscreen(&self) {
+        let covering = self.handle.read(|tree| {
+            let focused = tree
+                .active_strip_id()
+                .and_then(|strip| tree.active_group_for(strip));
+            focused.is_some() && focused == tree.fullscreen_group()
+        });
+        let Some(route) = self.handle.snapshot(&self.generation, Vec::new()).active else {
+            return;
+        };
+        self.dispatch(&Command::Fullscreen {
+            generation: self.generation.clone(),
+            route,
+            fullscreen: !covering,
+        });
+    }
+
     /// A desktop chord, applied; false when `event` is not one. The chord
     /// is looked up in the desktop's one shortcut table, with a host's
     /// stand-in for Super counting as Super ([`page_shortcut_action`]).
@@ -1462,7 +1761,9 @@ impl DesktopChrome {
                 let tree = self.rules.tree();
                 let opened = self.switcher.begin(
                     &tree,
-                    &SwitcherWindows,
+                    &SwitcherWindows {
+                        handle: &self.handle,
+                    },
                     scope,
                     modifiers.state().shift_key(),
                     ui::time::now(),
@@ -1663,6 +1964,7 @@ impl DesktopChrome {
     pub fn shortcut(&mut self, action: ShortcutAction) -> bool {
         match action {
             ShortcutAction::WorkspaceOverview => self.toggle_overview(),
+            ShortcutAction::EmojiPicker => self.toggle_emoji(),
             ShortcutAction::FocusPreviousWindow | ShortcutAction::FocusNextWindow => {
                 let step = if action == ShortcutAction::FocusPreviousWindow {
                     -1
@@ -1681,11 +1983,20 @@ impl DesktopChrome {
             ShortcutAction::NextWorkspace => self.apply_intent(ChromeIntent::SwitchWorkspace(1)),
             ShortcutAction::MaximizeWindow => self.maximize_focused(Some(true)),
             ShortcutAction::RestoreWindow => self.maximize_focused(Some(false)),
-            // A tab covers the display by filling the strip it is laid out
-            // in, so the fullscreen chord fills the strip and gives it back.
-            ShortcutAction::ToggleMaximize | ShortcutAction::ToggleFullscreen => {
-                self.maximize_focused(None);
+            // The window the person closed last in the shown workspace comes
+            // back where it was. Nothing closed is no reason to leave the
+            // chord to whatever holds the keyboard: the desktop answers it
+            // either way, as the shell it replaces did.
+            ShortcutAction::ReopenClosedTab => {
+                self.dispatch(&Command::Reopen {
+                    generation: self.generation.clone(),
+                });
             }
+            // A window covers the display it stands on by covering the whole
+            // strip, bar's room included: the chord and the window menu's
+            // row are the same request.
+            ShortcutAction::ToggleMaximize => self.maximize_focused(None),
+            ShortcutAction::ToggleFullscreen => self.toggle_fullscreen(),
             ShortcutAction::ReportProblem => self.asks.borrow_mut().push(DesktopAsk::ReportProblem),
             other => {
                 if let Some(index) = other.focus_strip_index() {
@@ -1705,19 +2016,72 @@ impl DesktopChrome {
     /// Whether anything of the chrome is due a redraw.
     fn chrome_needs_redraw(&self) -> bool {
         self.switcher.is_active()
+            || self.emoji.needs_redraw()
+            || self.emoji_link.has_delivered()
             || self.navigator.needs_animation_frame(ui::time::now())
-            || [
-                &self.bar as &dyn Widget,
-                &self.overview,
-                &self.tilo_menu,
-                &self.workspace_menu,
-            ]
-            .iter()
-            .any(|child| child.needs_redraw())
+            || self.children().iter().any(|child| child.needs_redraw())
     }
 }
 
 impl DesktopChrome {
+    /// Put every display's bar where the desk's source says, when what it
+    /// says moved: a display arriving or going, the person moving to
+    /// another display, or a window going fullscreen there. Returns
+    /// whether anything moved.
+    ///
+    /// A desk of one display carries no places: the full bar then stands
+    /// where layout puts it, across the whole desk.
+    fn follow_bars(&mut self) -> bool {
+        let Some(chrome) = self.bar.chrome().cloned() else {
+            return false;
+        };
+        let revision = chrome.snapshot().revision;
+        if revision == self.bars_revision {
+            return false;
+        }
+        self.bars_revision = revision;
+        let placement = chrome.bars();
+        if placement == self.placement {
+            return false;
+        }
+        // The full bar stands on the display in use, where the person is
+        // working; each of the others carries the compact bar on its own
+        // display, so each follows its own display's rectangle.
+        let full = placement.bars.iter().find(|place| place.full).copied();
+        self.bar.set_placement(full.map(|place| place.rect));
+        let tree = placement
+            .bars
+            .iter()
+            .any(|place| !place.full)
+            .then(|| chrome.tree());
+        let mut kept = std::mem::take(&mut self.compact);
+        let mut bars = Vec::with_capacity(placement.bars.len().saturating_sub(1));
+        for place in placement.bars.iter().filter(|place| !place.full) {
+            let reused = kept
+                .iter()
+                .position(|bar| bar.display() == Some(place.display))
+                .map(|at| kept.remove(at));
+            let mut bar = if let Some(bar) = reused {
+                bar
+            } else {
+                let Some(tree) = tree.as_ref() else {
+                    continue;
+                };
+                TopBarChrome::from_tree(tree)
+                    .compact()
+                    .on_display(place.display)
+                    .with_chrome(Rc::clone(&chrome))
+            };
+            bar.set_placement(Some(place.rect));
+            // A fullscreen window on this display has the room by itself.
+            bar.set_aside(placement.fullscreen.contains(&place.display));
+            bars.push(bar);
+        }
+        self.compact = bars;
+        self.placement = placement;
+        true
+    }
+
     /// Carry out a chrome action; false for one of the desk's.
     fn perform(&mut self, action: &DesktopAction) -> bool {
         if let Some(done) = self.perform_workspace_action(action) {
@@ -1732,12 +2096,13 @@ impl DesktopChrome {
                 ChromeIntent::SwitchWorkspace(i32::try_from(*delta).unwrap_or_default())
             }
             DesktopAction::ShowPerson { person } => ChromeIntent::ShowPerson(person.clone()),
+            DesktopAction::ToggleCollaborators => ChromeIntent::ToggleCollaborators,
             DesktopAction::StepStrip { steps } => {
                 self.step_strip(isize::try_from(*steps).unwrap_or_default());
                 return true;
             }
-            DesktopAction::NewWorkspace => {
-                self.new_workspace();
+            DesktopAction::NewWorkspace { room, name } => {
+                self.new_workspace(room.as_deref(), name.as_deref());
                 return true;
             }
             DesktopAction::Overview { open } => {
@@ -1880,6 +2245,13 @@ impl Widget for DesktopChrome {
         dyn ui::host_operation::ResourceOperations
     );
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let intents = std::mem::take(&mut *self.intents.borrow_mut());
         let mut changed = !intents.is_empty();
@@ -1907,8 +2279,25 @@ impl Widget for DesktopChrome {
             changed = true;
         }
         changed |= self.bar.update(state, path);
+        changed |= self.follow_bars();
+        // Each display's bar keeps its own copy of the desk's tree, and
+        // its own clock under it.
+        for bar in &mut self.compact {
+            changed |= bar.update(state, path);
+        }
+        // The host says where the recents are kept, and what of the person's
+        // picks reached a field: a secret field's emoji is never remembered.
+        if let Some(store) = self.emoji_link.take_store() {
+            self.emoji.attach_store(store);
+            changed = true;
+        }
+        for (text, sensitive) in self.emoji_link.take_delivered() {
+            self.emoji.note_delivered(&text, sensitive);
+            changed = true;
+        }
+        changed |= self.emoji.needs_redraw();
         self.observe_navigation();
-        self.keyboard.set(self.wants_keyboard());
+        self.take_keyboard();
         if let Some(open) = &self.overview_open {
             open.set(self.overview.is_open());
         }
@@ -1945,12 +2334,24 @@ impl Widget for DesktopChrome {
         let _ = taffy.set_style(overview, style);
         let tilo_menu = self.tilo_menu.build_layout(taffy, theme, map);
         let workspace_menu = self.workspace_menu.build_layout(taffy, theme, map);
-        let node = taffy.widget_node(
-            column(),
-            &[bar, content, overview, tilo_menu, workspace_menu],
-            map,
-            self,
-        );
+        let mut kids = vec![bar, content, overview, tilo_menu, workspace_menu];
+        // Every other display's bar stands over its own display's top
+        // edge, laid out across the desk: it takes no room in the column,
+        // its place carrying it where its display is.
+        for compact in &mut self.compact {
+            let node = compact.build_layout(taffy, theme, map);
+            let mut style = taffy.style(node).cloned().unwrap_or_default();
+            style.position = Position::Absolute;
+            style.inset = taffy::Rect {
+                left: LengthPercentageAuto::length(0.0),
+                right: LengthPercentageAuto::auto(),
+                top: LengthPercentageAuto::length(0.0),
+                bottom: LengthPercentageAuto::auto(),
+            };
+            let _ = taffy.set_style(node, style);
+            kids.push(node);
+        }
+        let node = taffy.widget_node(column(), &kids, map, self);
         fill(taffy, node);
         node
     }
@@ -1958,15 +2359,26 @@ impl Widget for DesktopChrome {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
-        if let [bar, content, overview, tilo_menu, workspace_menu] =
-            taffy.children(node).unwrap_or_default()[..]
-        {
-            self.bar.apply_layout(taffy, bar, inner);
-            self.content = ui::widget::layout_rect(taffy, content, inner);
-            self.overview.apply_layout(taffy, overview, inner);
-            self.tilo_menu.apply_layout(taffy, tilo_menu, inner);
-            self.workspace_menu
-                .apply_layout(taffy, workspace_menu, inner);
+        let kids = taffy.children(node).unwrap_or_default();
+        let [
+            bar,
+            content,
+            overview,
+            tilo_menu,
+            workspace_menu,
+            compact @ ..,
+        ] = &kids[..]
+        else {
+            return;
+        };
+        self.bar.apply_layout(taffy, *bar, inner);
+        self.content = ui::widget::layout_rect(taffy, *content, inner);
+        self.overview.apply_layout(taffy, *overview, inner);
+        self.tilo_menu.apply_layout(taffy, *tilo_menu, inner);
+        self.workspace_menu
+            .apply_layout(taffy, *workspace_menu, inner);
+        for (bar, node) in self.compact.iter_mut().zip(compact) {
+            bar.apply_layout(taffy, *node, inner);
         }
     }
 
@@ -1987,6 +2399,11 @@ impl Widget for DesktopChrome {
             ui::time::now(),
         );
         self.overview.draw(scene, transform, text, theme, presence);
+        for bar in &mut self.compact {
+            if !bar.steps_aside() {
+                bar.draw(scene, transform, text, theme, presence);
+            }
+        }
         // Last, so what the bar opens below its band stays above the rest.
         self.bar.draw(scene, transform, text, theme, presence);
         // Above even that: while Alt is held, the switcher is what the
@@ -2000,12 +2417,19 @@ impl Widget for DesktopChrome {
             ui::time::now(),
             &mut NoThumbnails,
         );
+        // Above all of it: the emoji picker is modal, the one thing the person
+        // works with until it closes.
+        if self.emoji.is_open() {
+            self.emoji.advance_scroll();
+            self.emoji
+                .draw(scene, transform, text, theme, presence, self.emoji_viewport);
+            self.emoji.mark_drawn();
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        let [bar, _, overview, tilo_menu, workspace_menu] =
-            ctx.taffy.children(ctx.node_id).unwrap_or_default()[..]
-        else {
+        let kids = ctx.taffy.children(ctx.node_id).unwrap_or_default();
+        let [bar, _, overview, tilo_menu, workspace_menu, compact @ ..] = &kids[..] else {
             return;
         };
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -2016,21 +2440,38 @@ impl Widget for DesktopChrome {
         } else if matches!(event, WindowEvent::CursorLeft { .. }) {
             self.cursor = None;
         }
+        // The emoji picker is modal: its own chord closes it, and every other
+        // key and press is the card's, reaching nothing behind it.
+        if self.emoji.is_open() {
+            let own = matches!(event, WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == ElementState::Pressed
+                    && page_shortcut_action(
+                        &self.shortcuts,
+                        &key.logical_key,
+                        key.physical_key,
+                        *ctx.modifiers,
+                        self.mac,
+                    ) == Some(ShortcutAction::EmojiPicker));
+            if own {
+                self.close_emoji();
+            } else {
+                self.emoji.handle_event(
+                    event,
+                    ctx.scale_factor,
+                    ctx.modifiers.state(),
+                    self.cursor,
+                    ui::time::now(),
+                );
+            }
+            self.note_emoji_picks();
+            *ctx.handled = true;
+            self.take_keyboard();
+            return;
+        }
         // The menus take what they cover, the keyboard and the press that
         // dismisses them.
-        if self.workspace_menu.is_open() {
-            self.workspace_menu
-                .handle_event(event, &mut ctx.reborrow(ctx.path, workspace_menu));
-            if *ctx.handled {
-                return;
-            }
-        }
-        if self.tilo_menu.is_open() {
-            self.tilo_menu
-                .handle_event(event, &mut ctx.reborrow(ctx.path, tilo_menu));
-            if *ctx.handled {
-                return;
-            }
+        if self.menu_event(event, ctx, [*tilo_menu, *workspace_menu]) {
+            return;
         }
         // While the switcher is open every key is the switcher's, and the
         // pointer is once its panel is up.
@@ -2043,7 +2484,7 @@ impl Widget for DesktopChrome {
             );
             if self.take_switcher(outcome) {
                 *ctx.handled = true;
-                self.keyboard.set(self.wants_keyboard());
+                self.take_keyboard();
                 return;
             }
         }
@@ -2063,31 +2504,125 @@ impl Widget for DesktopChrome {
         // above it stays usable.
         if self.overview.is_open() {
             self.overview
-                .handle_event(event, &mut ctx.reborrow(ctx.path, overview));
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *overview));
         }
         if !*ctx.handled {
             self.bar
-                .handle_event(event, &mut ctx.reborrow(ctx.path, bar));
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *bar));
         }
-        self.keyboard.set(self.wants_keyboard());
+        // The other displays' bars take what is theirs on their own
+        // display; one stepped aside for a fullscreen window takes
+        // nothing.
+        if !*ctx.handled {
+            for (bar, node) in self.compact.iter_mut().zip(compact) {
+                if bar.steps_aside() {
+                    continue;
+                }
+                bar.handle_event(event, &mut ctx.reborrow(ctx.path, *node));
+                if *ctx.handled {
+                    break;
+                }
+            }
+        }
+        self.take_keyboard();
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![
+        let mut children: Vec<&dyn Widget> = vec![
             &self.bar,
             &self.overview,
             &self.tilo_menu,
             &self.workspace_menu,
-        ]
+        ];
+        children.extend(self.compact.iter().map(|bar| bar as &dyn Widget));
+        children
+    }
+
+    /// Focus reaches the chrome while an overlay of its own takes the
+    /// keyboard, so a reader standing in the emoji card stays there as the
+    /// chrome rebuilds under it rather than falling back to the window.
+    fn is_focusable(&self) -> bool {
+        self.wants_keyboard()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    /// The desk's overlays a screen reader can reach: the labels, the card
+    /// and the switcher the chrome paints, plus the children widgets the
+    /// walk adds below them.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let children = self
+            .painted_overlays()
+            .into_iter()
+            .filter_map(|overlay| {
+                self.overlay_accessibility(overlay)
+                    .map(|node| node.with_key(overlay.key()))
+            })
+            .collect();
+        Some(self.accessibility_group().with_children(children))
+    }
+
+    fn accessibility_root(&self) -> Option<ui::a11y::AccessNode> {
+        Some(self.accessibility_group())
+    }
+
+    /// Where the overlay element at `path` is drawn, so assistive
+    /// activation presses it where the person sees it.
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let (&overlay, rest) = path.split_first()?;
+        let overlay = *self.painted_overlays().get(overlay)?;
+        let mut node = self.overlay_accessibility(overlay)?;
+        for &step in rest {
+            node = node.children.into_iter().nth(step)?;
+        }
+        node.bounds
+            .map(ui::a11y::AccessBounds::to_rect)
+            .filter(|rect| rect.area() > 0.0)
+    }
+
+    /// A strip label's semantic target, pressed as a click on the label is.
+    /// The card and the switcher name no targets: their elements are not
+    /// carried out by a target but pressed where they are drawn, which the
+    /// host does through [`Widget::synthetic_accessibility_rect`].
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ModelPath,
+    ) -> bool {
+        if !target.starts_with(crate::strip_switcher::TARGET_PREFIX)
+            || !matches!(action, ui::a11y::Action::Activate)
+        {
+            return false;
+        }
+        let Some(answer) = self
+            .navigator
+            .activate_target(&self.navigator_frame, target)
+        else {
+            return false;
+        };
+        if let Some(navigation) = answer {
+            self.apply_navigation(navigation);
+        }
+        true
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![
+        let mut children: Vec<&mut (dyn Widget + '_)> = vec![
             &mut self.bar,
             &mut self.overview,
             &mut self.tilo_menu,
             &mut self.workspace_menu,
-        ]
+        ];
+        children.extend(self.compact.iter_mut().map(|bar| bar as &mut dyn Widget));
+        children
     }
 
     fn visit_retained_components(
@@ -2122,22 +2657,21 @@ impl Widget for DesktopChrome {
 
     fn needs_animation_frame(&self) -> bool {
         self.switcher.needs_frame(ui::time::now())
+            || self.emoji.needs_animation_frame()
             || self.navigator.needs_animation_frame(ui::time::now())
-            || [
-                &self.bar as &dyn Widget,
-                &self.overview,
-                &self.tilo_menu,
-                &self.workspace_menu,
-            ]
-            .iter()
-            .any(|child| child.needs_animation_frame())
+            || self
+                .children()
+                .iter()
+                .any(|child| child.needs_animation_frame())
     }
 
-    /// The bar's own deadline turns its clock over on the minute.
+    /// The bar's own deadline turns its clock over on the minute, on every
+    /// display that shows one.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         [&self.bar as &dyn Widget, &self.overview, &self.tilo_menu]
-            .iter()
-            .filter_map(|child| child.next_wake_deadline())
+            .into_iter()
+            .chain(self.compact.iter().map(|bar| bar as &dyn Widget))
+            .filter_map(wake_deadline)
             .chain(
                 self.navigator
                     .next_wake_deadline(&self.navigator_frame, ui::time::now()),

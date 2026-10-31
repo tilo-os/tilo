@@ -664,6 +664,10 @@ pub(crate) enum Item {
     },
     Awake(String),
     Output(crate::SoundOutput),
+    /// The microphone that records, with its own level and mute.
+    Microphone(crate::SoundInput),
+    /// One application's stream, and the outputs it can move to.
+    Stream(StreamFace),
     /// A Devices row, which the desktop describes.
     Device(crate::hosted::HostedRow),
     /// The clipboard's copies, which the section filters as the person
@@ -673,6 +677,18 @@ pub(crate) enum Item {
         label: String,
         link: &'static str,
     },
+}
+
+/// One application's stream as the Sound section lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StreamFace {
+    pub stream: crate::SoundStream,
+    /// Where it goes now, in words: the output it plays on or the
+    /// microphone it records from.
+    pub goes: String,
+    /// The outputs it can move to, the one it plays on marked: empty for a
+    /// stream that records.
+    pub outputs: Vec<crate::SoundOutput>,
 }
 
 /// What `section` holds.
@@ -904,17 +920,77 @@ fn power_mode(state: &QuickSettingsState) -> Vec<Item> {
 }
 
 fn sound(state: &QuickSettingsState) -> Vec<Item> {
-    let mut items: Vec<Item> = state
-        .sound_outputs
-        .iter()
-        .cloned()
-        .map(Item::Output)
-        .collect();
+    let mut items: Vec<Item> = Vec::new();
+    // The microphone first and the outputs next, so where sound goes stays
+    // put however many applications come and go below them.
+    if let Some(microphone) = &state.microphone {
+        items.push(Item::Microphone(microphone.clone()));
+    }
+    items.extend(state.sound_outputs.iter().cloned().map(Item::Output));
+    items.extend(
+        state
+            .sound_streams
+            .iter()
+            .map(|stream| Item::Stream(stream_face(state, stream))),
+    );
     items.push(Item::Settings {
         label: t("qs-sound-settings"),
         link: "settings://sound",
     });
     items
+}
+
+/// One application's stream: where it goes now, and the outputs it can
+/// move to when it plays.
+fn stream_face(state: &QuickSettingsState, stream: &crate::SoundStream) -> StreamFace {
+    StreamFace {
+        stream: stream.clone(),
+        goes: stream_destination(state, stream),
+        outputs: if stream.playback {
+            state
+                .sound_outputs
+                .iter()
+                .map(|output| crate::SoundOutput {
+                    node: output.node,
+                    name: output.name.clone(),
+                    current: stream.target == Some(output.node),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+/// Where a stream goes, in words: the output it plays on, the microphone it
+/// records from, or the default it follows.
+fn stream_destination(state: &QuickSettingsState, stream: &crate::SoundStream) -> String {
+    if stream.playback {
+        let output = stream
+            .target
+            .and_then(|target| {
+                state
+                    .sound_outputs
+                    .iter()
+                    .find(|output| output.node == target)
+            })
+            .map_or_else(|| t("qs-default-output"), |output| output.name.clone());
+        t_args("qs-stream-plays-on", &[("output", output.into())])
+    } else {
+        let input = stream
+            .target
+            .and_then(|target| {
+                state
+                    .microphone
+                    .as_ref()
+                    .filter(|microphone| microphone.node == target)
+            })
+            .map_or_else(
+                || t("qs-default-input"),
+                |microphone| microphone.name.clone(),
+            );
+        t_args("qs-stream-records-from", &[("input", input.into())])
+    }
 }
 
 fn devices(state: &QuickSettingsState) -> Vec<Item> {
@@ -969,6 +1045,7 @@ pub(crate) fn copies_caption(query: &str, matches: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{SoundInput, SoundOutput, SoundStream};
 
     fn network(ssid: &str, signal: u8, connected: bool, known: bool) -> WifiNetwork {
         WifiNetwork {
@@ -1113,5 +1190,89 @@ mod tests {
         assert_eq!(titles("noon laptop"), ["Meeting at noon"]);
         assert!(titles("nothing").is_empty());
         assert_eq!(copies_caption("phone", 1), "One copy matches “phone”");
+    }
+
+    #[test]
+    fn the_sound_section_keeps_the_microphone_and_the_outputs_above_the_streams() {
+        let mut state = QuickSettingsState::fixture();
+        state.microphone = Some(SoundInput {
+            node: 50,
+            name: "Microphone".into(),
+            level: 0.5,
+            muted: false,
+        });
+        state.sound_outputs = vec![
+            SoundOutput {
+                node: 40,
+                name: "Speakers".into(),
+                current: true,
+            },
+            SoundOutput {
+                node: 41,
+                name: "Headphones".into(),
+                current: false,
+            },
+        ];
+        state.sound_streams = vec![
+            SoundStream {
+                node: 60,
+                label: "Music — Clair de lune".into(),
+                playback: true,
+                target: Some(41),
+                level: 0.3,
+                muted: false,
+            },
+            SoundStream {
+                node: 61,
+                label: "Browser — Recording".into(),
+                playback: false,
+                target: Some(50),
+                level: 0.8,
+                muted: false,
+            },
+        ];
+
+        let listed: Vec<String> = sound(&state)
+            .into_iter()
+            .map(|item| match item {
+                Item::Microphone(microphone) => format!("input:{}", microphone.node),
+                Item::Output(output) => format!("output:{}", output.node),
+                Item::Stream(stream) => format!("stream:{}:{}", stream.stream.node, stream.goes),
+                Item::Settings { .. } => "settings".to_owned(),
+                _ => "other".to_owned(),
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                "input:50",
+                "output:40",
+                "output:41",
+                "stream:60:Playing on Headphones",
+                "stream:61:Recording from Microphone",
+                "settings",
+            ],
+            "the microphone, the outputs, then every stream and the way to the settings"
+        );
+
+        let Item::Stream(playing) = &sound(&state)[3] else {
+            panic!("the playing stream's row");
+        };
+        assert_eq!(
+            playing
+                .outputs
+                .iter()
+                .map(|output| (output.name.as_str(), output.current))
+                .collect::<Vec<_>>(),
+            [("Speakers", false), ("Headphones", true)],
+            "the output it plays on is the one marked"
+        );
+        let Item::Stream(recording) = &sound(&state)[4] else {
+            panic!("the recording stream's row");
+        };
+        assert!(
+            recording.outputs.is_empty(),
+            "a stream that records does not move between outputs"
+        );
     }
 }

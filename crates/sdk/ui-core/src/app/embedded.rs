@@ -44,6 +44,10 @@ impl AppSurface for Region {
 use crate::widget::SETTLE_FRAMES;
 
 /// An app a host shows in a region of its own scene.
+#[crate::component::not_a_component(
+    framework,
+    "an app shown in a region of its host; the language embeds with `embed`"
+)]
 pub struct EmbeddedApp {
     app: Box<App>,
     /// Its actions are offered to this device's automation only.
@@ -64,6 +68,10 @@ pub struct EmbeddedApp {
     entering_backwards: bool,
     /// The app asked for another frame.
     wants_frame: Cell<bool>,
+    /// The frame the app last drew asked for the next one: it moves. A change
+    /// it has yet to draw is not motion; the update or input that made it
+    /// answers it with one frame.
+    moving: Cell<bool>,
     /// Painted into the host's scene at the region's origin, and painted
     /// again as it is until the app has something new to show.
     painted: RefCell<Scene>,
@@ -161,6 +169,7 @@ impl EmbeddedApp {
             restore_focus: None,
             entering_backwards: false,
             wants_frame: Cell::new(true),
+            moving: Cell::new(false),
             painted: RefCell::new(Scene::new()),
             painted_parts: RefCell::new(None),
             woken,
@@ -302,6 +311,17 @@ impl EmbeddedApp {
         if self.app.surface_build_tree(&mut self.damage) {
             self.app.mark_semantic_tree_stale();
             self.wants_frame.set(true);
+        }
+    }
+
+    /// The control with the keyboard moved from `before`: the tree the
+    /// host's accessibility walk reads says so now. The host publishes that
+    /// tree in the tick the focus moved, before any frame paints, and a
+    /// reader left on the old control (or on the app as a whole) would
+    /// stay there until something else repainted the app.
+    fn follow_focus_in_semantics(&mut self, before: Option<NodeId>) {
+        if self.app.focused_control() != before {
+            let _ = self.app.refresh_semantic_tree();
         }
     }
 
@@ -550,8 +570,9 @@ impl Widget for EmbeddedApp {
             };
             // What the host's accessibility walk reads of the app.
             let _ = self.app.refresh_semantic_tree();
-            self.wants_frame
-                .set(again || self.region.redraw.replace(false));
+            let next = again || self.region.redraw.replace(false);
+            self.wants_frame.set(next);
+            self.moving.set(next);
             self.painted_focus = self.focused;
             self.painted_control = self.app.focused_control();
         }
@@ -644,9 +665,11 @@ impl Widget for EmbeddedApp {
         self.entering_backwards = ctx.modifiers.state().shift_key();
         let local = self.local_event(event, ctx.scale_factor);
         self.app.set_surface_modifiers(*ctx.modifiers);
+        let control = self.app.focused_control();
         if self.app.surface_input(&self.region, local, false) {
             *ctx.handled = true;
         }
+        self.follow_focus_in_semantics(control);
         if self.region.redraw.replace(false) {
             self.wants_frame.set(true);
         }
@@ -733,6 +756,9 @@ impl Widget for EmbeddedApp {
             self.restore_focus = self.app.focused_control();
             self.app.restore_focused_control(None);
         }
+        // The reader follows the keyboard into (or out of) the app in the
+        // tick it moved, as `follow_focus_in_semantics` says.
+        let _ = self.app.refresh_semantic_tree();
     }
 
     fn is_focused(&self) -> bool {
@@ -819,6 +845,12 @@ impl Widget for EmbeddedApp {
 
     fn needs_redraw(&self) -> bool {
         self.wants_frame.get() || self.focus_moved()
+    }
+
+    /// The app is moving while each frame it draws asks for the next, as a
+    /// window of its own is redrawn for.
+    fn needs_animation_frame(&self) -> bool {
+        self.moving.get()
     }
 
     fn has_pending_visual_work(&self) -> bool {
@@ -1260,6 +1292,7 @@ impl EmbeddedApp {
                     if std::mem::discriminant(verb) == std::mem::discriminant(action))
             })
             .map(|candidate| candidate.name.clone());
+        let control = self.app.focused_control();
         let done = match offered {
             Some(name) => {
                 let argument = match action {
@@ -1280,6 +1313,7 @@ impl EmbeddedApp {
         if done && matches!(action, Action::Focus) && !self.focused {
             self.restore_focus = self.app.focused_control();
         }
+        self.follow_focus_in_semantics(control);
         self.wants_frame.set(true);
         done
     }
@@ -1877,7 +1911,7 @@ mod semantic_target_tests {
             .push(Box::new(crate::widget::Button::new("first", "First")))
             .push(Box::new(
                 crate::widget::Button::new("probe", "Probe")
-                    .on_click(move || counter.set(counter.get() + 1)),
+                    .on_effect(move || counter.set(counter.get() + 1)),
             ));
         let app = App::new_with_controlled_inputs(crate::state::State::new(), Box::new(column));
         let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();

@@ -4,9 +4,24 @@
 
 use std::collections::BTreeSet;
 
+use tilo_network_actor::NearbyTransferCheckpoint;
 use tilo_network_actor::fabric::DeviceId;
 
-use crate::{ClipboardEntry, DeviceFabric, PersonalFabricAction};
+use crate::{
+    ClipboardEntry, DeviceFabric, OwnerSession, PersonalFabricAction, RoamingSetting, WakeRoute,
+};
+
+/// One of this device's files, staged in its private Nearby spool, on its way
+/// to one of the person's other devices: the checkpoint the stream resumes
+/// from, and the object to stream.
+#[derive(Debug)]
+pub struct NearbySpoolOffer {
+    /// Where the receiving device wants the stream to start, as it confirmed
+    /// it holds the bytes up to there.
+    pub checkpoint: NearbyTransferCheckpoint,
+    /// The staged spool object the checkpoint names.
+    pub file: std::fs::File,
+}
 
 /// Why a personal fabric action did not reach the transport.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +87,51 @@ pub trait FabricLink {
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
         let _ = entries;
     }
+    /// Offer the ways this device's interfaces can be woken to the person's
+    /// other devices, as this device's own record in its next snapshot.
+    ///
+    /// A link whose transport does not carry wake routes yet ignores the
+    /// offer; what their devices offered still merges in from
+    /// [`Self::device_fabric`].
+    fn share_wake_routes(&self, routes: Vec<WakeRoute>) {
+        let _ = routes;
+    }
+    /// Offer the person's settings this device holds to their other devices,
+    /// as this device's own records in its next snapshot.
+    ///
+    /// A link whose transport does not carry settings yet ignores the offer;
+    /// what their devices set still merges in from [`Self::device_fabric`].
+    fn share_settings(&self, settings: Vec<RoamingSetting>) {
+        let _ = settings;
+    }
+    /// Say the person's session on this device to their other devices, as
+    /// this device's own record in its next snapshot: whether it is locked,
+    /// when they last locked or unlocked it themselves, and when they last
+    /// used it. Their devices read it from [`Self::device_fabric`].
+    ///
+    /// A link whose transport does not carry this yet ignores it.
+    fn publish_owner_session(&self, session: OwnerSession) {
+        let _ = session;
+    }
+    /// Stream one of this device's staged spool objects to `target`: the
+    /// bytes of an offer already sent to it, from the checkpoint it confirmed.
+    ///
+    /// A link whose transport does not carry files yet ignores the stream; the
+    /// offer itself (an ordinary personal fabric action) still reaches its
+    /// device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersonalFabricSendError::Backpressure`] while the transport's
+    /// command queue is full, otherwise why it refused the stream.
+    fn share_nearby_spool(
+        &self,
+        target: &DeviceId,
+        offer: NearbySpoolOffer,
+    ) -> Result<(), PersonalFabricSendError> {
+        let _ = (target, offer);
+        Ok(())
+    }
 }
 
 /// A link a service keeps beyond one call, for work it finishes later.
@@ -112,5 +172,25 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
 
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
         (**self).share_clipboard(entries);
+    }
+
+    fn share_settings(&self, settings: Vec<RoamingSetting>) {
+        (**self).share_settings(settings);
+    }
+
+    fn share_wake_routes(&self, routes: Vec<WakeRoute>) {
+        (**self).share_wake_routes(routes);
+    }
+
+    fn publish_owner_session(&self, session: OwnerSession) {
+        (**self).publish_owner_session(session);
+    }
+
+    fn share_nearby_spool(
+        &self,
+        target: &DeviceId,
+        offer: NearbySpoolOffer,
+    ) -> Result<(), PersonalFabricSendError> {
+        (**self).share_nearby_spool(target, offer)
     }
 }

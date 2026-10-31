@@ -9,6 +9,7 @@ use taffy::{NodeId, Style, TaffyTree};
     clippy::struct_excessive_bools,
     reason = "independent layout flags model orthogonal sizing choices"
 )]
+#[crate::component::not_a_component(layout, "the language's `stack` (`column` is its older name)")]
 pub struct Column {
     flow: Flow,
     extra_left_padding: f32,

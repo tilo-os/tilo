@@ -15,7 +15,7 @@ use crate::i18n::t;
 /// The operation type every desktop action carries.
 pub const OPERATION: &str = "tilo.desktop.command";
 /// The resource of the chrome above the windows.
-pub const CHROME_RESOURCE: &str = "desktop:chrome";
+pub use tilo_desktop_search::CHROME_RESOURCE;
 /// The resource of the desk under the windows.
 pub const DESK_RESOURCE: &str = "desktop:desk";
 
@@ -37,8 +37,15 @@ pub enum DesktopAction {
     SwitchWorkspace { delta: i64 },
     /// Go `steps` strips on in the active workspace.
     StepStrip { steps: i64 },
-    /// Add an empty workspace and go there.
-    NewWorkspace,
+    /// Add an empty workspace and go there; with `room`, a workspace whose
+    /// shared room is `room` (joining it when this computer has none), named
+    /// `name` when given.
+    NewWorkspace {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        room: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
     /// Move the tab `tab` to the workspace `to` (its id or its name).
     MoveTab { tab: u64, to: String },
     /// Move the tab `tab` onto the strip `strip` (its id or its name) of
@@ -94,6 +101,8 @@ pub enum DesktopAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         argument: Option<String>,
     },
+    /// Open or close the people panel: who is here.
+    ToggleCollaborators,
     /// Show the person `person` in the people panel.
     ShowPerson { person: String },
 }
@@ -208,12 +217,7 @@ pub fn chrome_resource() -> ResourceSpec {
                 steps: count(args, "steps"),
             },
         ))
-        .with_action(action(
-            "new-workspace",
-            t("desktop-action-new-workspace"),
-            Vec::new(),
-            |_| DesktopAction::NewWorkspace,
-        ))
+        .with_action(new_workspace())
         .with_action(action(
             "shortcut",
             t("desktop-action-shortcut"),
@@ -225,6 +229,12 @@ pub fn chrome_resource() -> ResourceSpec {
             |args| DesktopAction::Shortcut {
                 action: args.text("action").unwrap_or_default().to_owned(),
             },
+        ))
+        .with_action(action(
+            tilo_desktop_search::SHOW_COLLABORATORS,
+            t("desktop-action-toggle-collaborators"),
+            Vec::new(),
+            |_| DesktopAction::ToggleCollaborators,
         ))
         .with_action(action(
             tilo_desktop_search::providers::people::SHOW_PERSON,
@@ -239,6 +249,27 @@ pub fn chrome_resource() -> ResourceSpec {
             },
         ));
     with_workspace_actions(with_strip_actions(resource))
+}
+
+/// Making a workspace: an empty one, or the one sharing the room a join was
+/// granted, named as its directory lists it.
+fn new_workspace() -> ActionSpec {
+    action(
+        "new-workspace",
+        t("desktop-action-new-workspace"),
+        vec![
+            ActionParam::optional_owned("room", ParamType::Text, t("desktop-action-param-room")),
+            ActionParam::optional_owned(
+                "name",
+                ParamType::Text,
+                t("desktop-action-param-workspace-name"),
+            ),
+        ],
+        |args| DesktopAction::NewWorkspace {
+            room: args.text("room").map(str::to_owned),
+            name: args.text("name").map(str::to_owned),
+        },
+    )
 }
 
 /// A window sent elsewhere, or a strip renamed or moved: what the overview

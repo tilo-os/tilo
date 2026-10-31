@@ -105,6 +105,13 @@ pub enum Command {
         generation: String,
         route: Route,
     },
+    /// Put the window closed most recently in the shown workspace back where
+    /// it was, and focus it. Nothing closed is no error: the chord that sent
+    /// it belongs to the desktop whether or not it had a window to bring
+    /// back.
+    Reopen {
+        generation: String,
+    },
     Workspace {
         generation: String,
         workspace: String,
@@ -156,6 +163,12 @@ pub enum Command {
         route: Route,
         maximized: bool,
     },
+    /// Cover the display with the window at `route`, or give it back.
+    Fullscreen {
+        generation: String,
+        route: Route,
+        fullscreen: bool,
+    },
     /// Name the window at `route`; a blank name gives it its window's title
     /// back.
     Rename {
@@ -188,12 +201,105 @@ pub enum Command {
         generation: String,
         app: String,
     },
+    /// Open `app` as a tab right after the tab at `beside`, in its window
+    /// group: another window of an app that asked to open beside one of its
+    /// own. It takes focus unless `background`.
+    TabOpenBeside {
+        generation: String,
+        app: String,
+        beside: Route,
+        background: bool,
+    },
+    /// Carry the window at `route` into `strip`, another strip of its
+    /// workspace.
+    MoveToStrip {
+        generation: String,
+        route: Route,
+        strip: String,
+    },
+    /// Take the tab at `route` into `workspace`, as a window of its own.
+    MoveToWorkspace {
+        generation: String,
+        route: Route,
+        workspace: String,
+    },
+    /// Show the window at `route` on `display`.
+    MoveToDisplay {
+        generation: String,
+        route: Route,
+        display: u32,
+    },
+    /// Give the window at `route` a preset share of its strip.
+    WidthPreset {
+        generation: String,
+        route: Route,
+        preset: WidthPreset,
+    },
+    /// Give every window of the strip the window at `route` stands in the
+    /// same share of it.
+    EqualizeWidths {
+        generation: String,
+        route: Route,
+    },
+    /// Share the window at `route` with the people of its workspace, or stop
+    /// sharing it.
+    ShareWindow {
+        generation: String,
+        route: Route,
+        shared: bool,
+    },
+    /// Detach the tab at `route` into a window of its own, right after the
+    /// one it is in.
+    SplitRight {
+        generation: String,
+        route: Route,
+    },
+    /// Detach the tab at `route` into a window of its own at the end of its
+    /// strip.
+    MoveToNewGroup {
+        generation: String,
+        route: Route,
+    },
+    /// Close every tab of the window at `route`, as one close.
+    CloseWindow {
+        generation: String,
+        route: Route,
+    },
+    /// Take back the control of the desktop the app showing `route` holds.
+    StopDesktopControl {
+        generation: String,
+        route: Route,
+    },
+}
+
+/// A share of its strip a window takes in one step.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WidthPreset {
+    /// Half the strip.
+    Half,
+    Narrow,
+    Normal,
+    Wide,
+}
+
+impl From<WidthPreset> for tilo_desktop_model::WindowWidth {
+    fn from(preset: WidthPreset) -> Self {
+        use tilo_desktop_model::WindowWidth;
+        match preset {
+            WidthPreset::Half => WindowWidth::Fraction(500),
+            WidthPreset::Narrow => WindowWidth::Narrow,
+            WidthPreset::Normal => WindowWidth::Normal,
+            WidthPreset::Wide => WindowWidth::Wide,
+        }
+    }
 }
 
 impl Command {
     pub fn generation(&self) -> &str {
         match self {
             Self::Close { generation, .. }
+            | Self::Reopen { generation }
             | Self::Workspace { generation, .. }
             | Self::WorkspaceActivity { generation, .. }
             | Self::CloseWorkspaceActivity { generation, .. }
@@ -204,12 +310,24 @@ impl Command {
             | Self::Strip { generation, .. }
             | Self::Width { generation, .. }
             | Self::Maximize { generation, .. }
+            | Self::Fullscreen { generation, .. }
             | Self::Rename { generation, .. }
             | Self::Scroll { generation, .. }
             | Self::GlobalSearch { generation }
             | Self::Commands { generation, .. }
             | Self::Launch { generation, .. }
-            | Self::Open { generation, .. } => generation,
+            | Self::Open { generation, .. }
+            | Self::TabOpenBeside { generation, .. }
+            | Self::MoveToStrip { generation, .. }
+            | Self::MoveToWorkspace { generation, .. }
+            | Self::MoveToDisplay { generation, .. }
+            | Self::WidthPreset { generation, .. }
+            | Self::EqualizeWidths { generation, .. }
+            | Self::ShareWindow { generation, .. }
+            | Self::SplitRight { generation, .. }
+            | Self::MoveToNewGroup { generation, .. }
+            | Self::CloseWindow { generation, .. }
+            | Self::StopDesktopControl { generation, .. } => generation,
         }
     }
 }
@@ -246,8 +364,12 @@ impl From<ScrollAction> for ui::widget::PrimaryScrollAction {
 pub enum Admitted {
     Select(RouteIds),
     Close(RouteIds),
+    /// Reopen the newest close of the active workspace.
+    Reopen(WorkspaceId),
     Width(RouteIds, u32),
     Maximize(RouteIds, bool),
+    /// Cover the display with the window, or give it back.
+    Fullscreen(RouteIds, bool),
     /// A person's name for the window; empty clears it.
     Rename(RouteIds, String),
     Strip(WorkspaceId, StripId),
@@ -274,6 +396,30 @@ pub enum Admitted {
     CloseActivity(WorkspaceId),
     /// Open or close the notification centre.
     NotificationCenter(bool),
+    /// Open `app` as a tab right after the tab at the route, in its group,
+    /// taking focus unless the last field says not to.
+    TabOpenBeside(RouteIds, String, bool),
+    /// Carry the window into another strip of its workspace.
+    MoveToStrip(RouteIds, StripId),
+    /// Take the tab into another workspace, as a window of its own.
+    MoveToWorkspace(RouteIds, WorkspaceId),
+    /// Show the window on another display.
+    MoveToDisplay(RouteIds, u32),
+    /// Give the window a preset share of its strip.
+    WidthPreset(RouteIds, tilo_desktop_model::WindowWidth),
+    /// Give every window of the strip the same share of it.
+    EqualizeWidths(RouteIds),
+    /// Share the window with the people of its workspace, or stop.
+    ShareWindow(RouteIds, bool),
+    /// Detach the tab into a window of its own, right after the one it is
+    /// in.
+    SplitRight(RouteIds),
+    /// Detach the tab into a window of its own at the end of its strip.
+    MoveToNewGroup(RouteIds),
+    /// Close every tab of the window, as one close.
+    CloseWindow(RouteIds),
+    /// Take back the app's control of the desktop.
+    StopDesktopControl(RouteIds),
 }
 
 pub fn scroll_region(route: RouteIds, key: &str) -> String {
@@ -358,10 +504,25 @@ fn admit_activity(
     }
 }
 
+/// The workspace whose closes a `reopen` undoes: the one the surface shows.
+///
+/// The closes a workspace remembers belong to the device the person closed
+/// them on, so what can be reopened is read when the command applies; here
+/// the shown workspace is all there is to check.
+fn admit_reopen(tree: &DesktopTree) -> Result<Admitted, String> {
+    tree.active_workspace()
+        .map(|workspace| Admitted::Reopen(workspace.id))
+        .ok_or_else(|| "Workspace unavailable".into())
+}
+
 /// [`admit`] for a surface performing `capabilities`.
 ///
 /// # Errors
 /// As [`admit`].
+#[expect(
+    clippy::too_many_lines,
+    reason = "one command, one arm: every navigation command is admitted here"
+)]
 pub fn admit_with(
     command: &Command,
     generation: &str,
@@ -389,6 +550,7 @@ pub fn admit_with(
     match command {
         Command::Select { route: r, .. } => route(r).map(Admitted::Select),
         Command::Close { route: r, .. } => route(r).map(Admitted::Close),
+        Command::Reopen { .. } => admit_reopen(tree),
         Command::Width {
             route: r, permille, ..
         } => {
@@ -403,6 +565,11 @@ pub fn admit_with(
             maximized,
             ..
         } => route(r).map(|ids| Admitted::Maximize(ids, *maximized)),
+        Command::Fullscreen {
+            route: r,
+            fullscreen,
+            ..
+        } => route(r).map(|ids| Admitted::Fullscreen(ids, *fullscreen)),
         Command::Rename { route: r, name, .. } => named(r, name, tree),
         Command::Workspace { workspace: w, .. } => workspace(w).map(Admitted::Workspace),
         Command::Strip {
@@ -456,16 +623,81 @@ pub fn admit_with(
                 Err("Search query too long".into())
             }
         }
-        Command::Launch { app, .. } => {
-            let workspace = tree.active_workspace().ok_or("Workspace unavailable")?;
-            active_strip(tree, workspace).ok_or("Strip unavailable")?;
-            if app.is_empty() {
-                return Err("Application unavailable".into());
-            }
-            Ok(Admitted::Launch(app.clone()))
-        }
+        Command::Launch { app, .. } => admit_launch(tree, app),
+        Command::TabOpenBeside {
+            app,
+            beside: r,
+            background,
+            ..
+        } => route(r).and_then(|ids| admit_beside(ids, app, *background)),
         Command::Open { app, .. } => admit_open(tree, app),
+        Command::MoveToStrip {
+            route: r, strip, ..
+        } => {
+            let ids = route(r)?;
+            let to = StripId(id(strip)?);
+            let there = tree
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == ids.workspace)
+                .is_some_and(|workspace| {
+                    to != ids.strip && workspace.strips.iter().any(|held| held.id == to)
+                });
+            there
+                .then_some(Admitted::MoveToStrip(ids, to))
+                .ok_or_else(|| "Strip unavailable".into())
+        }
+        Command::MoveToWorkspace {
+            route: r,
+            workspace: to,
+            ..
+        } => {
+            let ids = route(r)?;
+            let to = workspace(to)?;
+            (to != ids.workspace)
+                .then_some(Admitted::MoveToWorkspace(ids, to))
+                .ok_or_else(|| "Workspace unavailable".into())
+        }
+        Command::MoveToDisplay {
+            route: r, display, ..
+        } => {
+            let ids = route(r)?;
+            let connected = tree.outputs.displays.iter().any(|held| held.id == *display)
+                && tree.outputs.display_of(ids.group) != Some(*display);
+            connected
+                .then_some(Admitted::MoveToDisplay(ids, *display))
+                .ok_or_else(|| "Display unavailable".into())
+        }
+        Command::WidthPreset {
+            route: r, preset, ..
+        } => route(r).map(|ids| Admitted::WidthPreset(ids, (*preset).into())),
+        Command::EqualizeWidths { route: r, .. } => route(r).map(Admitted::EqualizeWidths),
+        Command::ShareWindow {
+            route: r, shared, ..
+        } => route(r).map(|ids| Admitted::ShareWindow(ids, *shared)),
+        Command::SplitRight { route: r, .. } => route(r).map(Admitted::SplitRight),
+        Command::MoveToNewGroup { route: r, .. } => route(r).map(Admitted::MoveToNewGroup),
+        Command::CloseWindow { route: r, .. } => route(r).map(Admitted::CloseWindow),
+        Command::StopDesktopControl { route: r, .. } => route(r).map(Admitted::StopDesktopControl),
     }
+}
+
+/// A launch, checked against the desktop it opens on.
+fn admit_launch(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
+    let workspace = tree.active_workspace().ok_or("Workspace unavailable")?;
+    active_strip(tree, workspace).ok_or("Strip unavailable")?;
+    if app.is_empty() {
+        return Err("Application unavailable".into());
+    }
+    Ok(Admitted::Launch(app.to_owned()))
+}
+
+/// A tab opening beside the window at `ids`, with the app it opens.
+fn admit_beside(ids: RouteIds, app: &str, background: bool) -> Result<Admitted, String> {
+    if app.is_empty() {
+        return Err("Application unavailable".into());
+    }
+    Ok(Admitted::TabOpenBeside(ids, app.to_owned(), background))
 }
 
 fn admit_open(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {

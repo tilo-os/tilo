@@ -3,8 +3,9 @@
 //!
 //! Built-in presets, distribution defaults, the user's theme and every
 //! theme Theme Studio writes are one [`ThemeDocument`]. It names semantic
-//! roles only — a palette, an emphasis, the presence tone, the window
-//! radius, density, type, motion character and the floating material — and
+//! roles only — a palette, an emphasis, the presence tone, the shape
+//! (window radius and border), density, type, motion, what each surface
+//! role is made of and how surfaces stand off what is below them — and
 //! never a widget, so it cannot restyle an app's internals, remove the lift
 //! or the focus ring, or break a contrast floor that [`ThemeDocument::findings`]
 //! measures and the runtime repairs.
@@ -15,19 +16,87 @@
 use serde::{Deserialize, Serialize};
 
 use crate::tokens::colors::{Colors, PresenceHue};
-use crate::tokens::contrast::{ContrastFinding, audit};
+use crate::tokens::contrast::{ContrastFinding, audit, audit_materials};
+use crate::tokens::finish::{Border, Depth, Finish, RoleFinishes};
 use crate::tokens::palette::{Emphasis, Palette, Tone};
 use crate::tokens::selector::SelectorFinish;
 
-/// The one schema this build reads and writes.
-pub const THEME_SCHEMA_VERSION: u32 = 7;
+/// The schema this build writes.
+pub const THEME_SCHEMA_VERSION: u32 = 8;
 
-/// The window tile's radius. Every other radius derives from it
-/// concentrically (`crate::tokens::Radii::from_window_radius`).
+/// Every schema this build reads. A document of an older one is read as
+/// the current schema: every role added since takes its stock value, and
+/// the document is written back at [`THEME_SCHEMA_VERSION`] the next time
+/// it is saved. A schema leaves this list only with a reader that still
+/// resolves its documents as they were.
+pub const THEME_SCHEMAS_READ: &[u32] = &[7, THEME_SCHEMA_VERSION];
+
+/// Reads `schema_version`: a schema in [`THEME_SCHEMAS_READ`] is read as
+/// the current one; any other is kept so [`ThemeDocument::validate`]
+/// refuses it.
+fn read_schema<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    let version = u32::deserialize(deserializer)?;
+    Ok(if THEME_SCHEMAS_READ.contains(&version) {
+        THEME_SCHEMA_VERSION
+    } else {
+        version
+    })
+}
+
+/// Schema 7's material: one floating finish, as a blur and a tint.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MaterialV7 {
+    blur: f32,
+    tint_opacity: f32,
+    selector: SelectorFinish,
+}
+
+impl From<MaterialV7> for ThemeMaterial {
+    /// The floating role keeps exactly the blur and tint schema 7 built
+    /// it with; every other role takes its stock finish, as schema 7 had
+    /// no way to name one.
+    fn from(old: MaterialV7) -> Self {
+        Self {
+            floating: Finish::Translucent {
+                blur: old.blur,
+                tint: old.tint_opacity,
+                saturation: 1.0,
+            },
+            selector: old.selector,
+            ..Self::STOCK
+        }
+    }
+}
+
+/// `material` as either schema writes it.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum MaterialWire {
+    Current(ThemeMaterial),
+    V7(MaterialV7),
+}
+
+fn read_material<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<ThemeMaterial, D::Error> {
+    Ok(match MaterialWire::deserialize(deserializer)? {
+        MaterialWire::Current(material) => material,
+        MaterialWire::V7(old) => old.into(),
+    })
+}
+
+/// The window tile's radius, from which every other radius derives
+/// concentrically (`crate::tokens::Radii::from_window_radius`; `0` makes
+/// every corner square), and how surfaces are outlined.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeShape {
     pub window_radius: f32,
+    /// The outline every surface carries ([`Border`]); the stock border
+    /// keeps the design language's hairlines.
+    #[serde(default)]
+    pub border: Border,
 }
 
 impl ThemeShape {
@@ -73,9 +142,86 @@ pub struct ThemeType {
     /// ([`Self::distinguishes_letters`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distinct_letters: Option<bool>,
+    /// How far the role sizes stand apart: each role's size is the body
+    /// size times its stock ratio to the body raised to this power. `1` is
+    /// the design language's scale, below it titles come closer to body
+    /// text, above it they stand further off.
+    #[serde(default = "ThemeType::stock_contrast")]
+    pub contrast: f32,
+    /// The weight of each weight tier.
+    #[serde(default)]
+    pub weights: ThemeWeights,
+}
+
+/// A weight a theme may give a tier of text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeWeight {
+    Regular,
+    Medium,
+    Semibold,
+    Bold,
+}
+
+impl ThemeWeight {
+    /// The renderer's weight.
+    #[must_use]
+    pub const fn text_weight(self) -> crate::text_render::TextWeight {
+        use crate::text_render::TextWeight;
+        match self {
+            Self::Regular => TextWeight::Regular,
+            Self::Medium => TextWeight::Medium,
+            Self::Semibold => TextWeight::Semibold,
+            Self::Bold => TextWeight::Bold,
+        }
+    }
+}
+
+/// The weights of the three tiers the type roles are set in: body text
+/// (body, caption, reading, code), labels (control labels and row titles)
+/// and headings (display down to subheading).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThemeWeights {
+    pub body: ThemeWeight,
+    pub label: ThemeWeight,
+    pub heading: ThemeWeight,
+}
+
+impl ThemeWeights {
+    /// The design language's weights: 400, 500, 600.
+    pub const STOCK: Self = Self {
+        body: ThemeWeight::Regular,
+        label: ThemeWeight::Medium,
+        heading: ThemeWeight::Semibold,
+    };
+
+    /// Whether the tiers keep their order: a heading is never lighter than
+    /// a label, nor a label than body text, so hierarchy survives.
+    #[must_use]
+    pub fn ordered(&self) -> bool {
+        let rank = |w: ThemeWeight| w.text_weight().to_u16();
+        rank(self.body) <= rank(self.label) && rank(self.label) <= rank(self.heading)
+    }
+}
+
+impl Default for ThemeWeights {
+    fn default() -> Self {
+        Self::STOCK
+    }
 }
 
 impl ThemeType {
+    /// The stock spread of role sizes.
+    pub const STOCK_CONTRAST: f32 = 1.0;
+    /// Band of role-size contrast a document may state: below it a title
+    /// no longer reads larger than body text.
+    pub const CONTRAST_ADMITTED: std::ops::RangeInclusive<f32> = 0.5..=1.5;
+
+    const fn stock_contrast() -> f32 {
+        Self::STOCK_CONTRAST
+    }
+
     /// The stock body size.
     pub const BASE_SIZE: f32 = 14.0;
     /// Band a document may state.
@@ -101,47 +247,133 @@ impl ThemeType {
     }
 }
 
-/// The character of the shared UI springs: `0` calm, `1` the stock snappy
-/// motion, `2` lively. Reduced motion still replaces movement with a fade.
+/// How the shared UI moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotionCurve {
+    /// Springs, at the document's `character`: the stock motion.
+    Spring,
+    /// Critically damped: every movement eases in and settles with no
+    /// overshoot, whatever its character.
+    Eased,
+    /// Nothing moves and nothing fades: every change lands at once.
+    None,
+}
+
+/// The motion of the shared UI: its curve, the character of its springs
+/// (`0` calm, `1` the stock snappy motion, `2` lively) and how long timed
+/// transitions take. Reduced motion still replaces movement with a fade.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeMotion {
     pub character: f32,
+    #[serde(default = "ThemeMotion::stock_curve")]
+    pub curve: MotionCurve,
+    /// Every timed transition's duration, as a multiple of the stock one.
+    #[serde(default = "ThemeMotion::stock_duration_scale")]
+    pub duration_scale: f32,
 }
 
 impl ThemeMotion {
     /// Band a document may state, and is built at.
     pub const ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=2.0;
+    /// Duration band a document may state, and is built at.
+    pub const DURATION_ADMITTED: std::ops::RangeInclusive<f32> = 0.5..=2.0;
+
+    /// The stock motion.
+    pub const STOCK: Self = Self {
+        character: 1.0,
+        curve: MotionCurve::Spring,
+        duration_scale: 1.0,
+    };
+
+    const fn stock_curve() -> MotionCurve {
+        MotionCurve::Spring
+    }
+
+    const fn stock_duration_scale() -> f32 {
+        1.0
+    }
 }
 
-/// The floating material: how strongly the backdrop behind floating chrome
-/// is blurred, how opaque the overlay tint over it is, and the finish of
-/// selectors, whose docked strip is made of it.
+/// What every surface role is made of ([`Finish`] per
+/// [`crate::tokens::SurfaceRole`]), and the finish of selectors. A role a
+/// document leaves out keeps its stock finish.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeMaterial {
-    /// Backdrop blur, in logical pixels. `0` keeps floating chrome opaque.
-    pub blur: f32,
-    /// Opacity of the overlay tint over the blurred backdrop.
-    pub tint_opacity: f32,
+    /// The window ground every app paints on.
+    #[serde(default = "ThemeMaterial::stock_window")]
+    pub window: Finish,
+    /// Raised controls: buttons, fields, tracks, cards.
+    #[serde(default = "ThemeMaterial::stock_control")]
+    pub control: Finish,
+    /// Floating chrome: menus, popovers, the palette, sheets, notifications.
+    #[serde(default = "ThemeMaterial::stock_floating")]
+    pub floating: Finish,
+    /// The top bar's body; absent, the bar stands on the desktop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar: Option<Finish>,
     /// What the window group's tab strip stands on, and the lit rim and
     /// hover film of the selectors in it and everywhere else.
+    #[serde(default = "ThemeMaterial::stock_selector")]
     pub selector: SelectorFinish,
 }
 
 impl ThemeMaterial {
-    /// Blur band a document may state.
-    pub const BLUR_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=64.0;
-    /// Blur band a theme is built at.
-    pub const BLUR_USABLE: std::ops::RangeInclusive<f32> = 0.0..=48.0;
-    /// Tint opacity band: below 0.6 text on a busy backdrop stops reading.
-    pub const TINT_ADMITTED: std::ops::RangeInclusive<f32> = 0.6..=1.0;
+    /// The design language's materials.
+    pub const STOCK: Self = Self {
+        window: RoleFinishes::STOCK.window,
+        control: RoleFinishes::STOCK.control,
+        floating: RoleFinishes::STOCK.floating,
+        bar: RoleFinishes::STOCK.bar,
+        selector: SelectorFinish::STOCK,
+    };
+
+    /// Everything opaque, as high contrast paints.
+    pub const OPAQUE: Self = Self {
+        window: RoleFinishes::OPAQUE.window,
+        control: RoleFinishes::OPAQUE.control,
+        floating: RoleFinishes::OPAQUE.floating,
+        bar: RoleFinishes::OPAQUE.bar,
+        selector: SelectorFinish::OPAQUE,
+    };
+
+    const fn stock_window() -> Finish {
+        Self::STOCK.window
+    }
+
+    const fn stock_control() -> Finish {
+        Self::STOCK.control
+    }
+
+    const fn stock_floating() -> Finish {
+        Self::STOCK.floating
+    }
+
+    const fn stock_selector() -> SelectorFinish {
+        Self::STOCK.selector
+    }
+
+    /// The finish of every role.
+    #[must_use]
+    pub const fn roles(&self) -> RoleFinishes {
+        RoleFinishes {
+            window: self.window,
+            control: self.control,
+            floating: self.floating,
+            bar: self.bar,
+        }
+    }
 }
 
 /// A theme, as data. See the module documentation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeDocument {
+    /// Read through [`THEME_SCHEMAS_READ`]: an older schema it lists is
+    /// held as the current one.
+    #[serde(deserialize_with = "read_schema")]
     pub schema_version: u32,
     pub id: String,
     pub name: String,
@@ -155,7 +387,11 @@ pub struct ThemeDocument {
     #[serde(rename = "type")]
     pub type_: ThemeType,
     pub motion: ThemeMotion,
+    #[serde(deserialize_with = "read_material")]
     pub material: ThemeMaterial,
+    /// How surfaces stand off what is below them.
+    #[serde(default)]
+    pub depth: Depth,
 }
 
 fn text_field_ok(value: &str) -> bool {
@@ -180,6 +416,7 @@ impl ThemeDocument {
             presence: palette.stock_presence(),
             shape: ThemeShape {
                 window_radius: crate::tokens::Radii::WINDOW,
+                border: Border::STOCK,
             },
             density: ThemeDensity {
                 spacing: ThemeDensity::REGULAR,
@@ -189,25 +426,16 @@ impl ThemeDocument {
                 reading: ThemeType::default_reading(),
                 base_size: ThemeType::BASE_SIZE,
                 distinct_letters: None,
+                contrast: ThemeType::STOCK_CONTRAST,
+                weights: ThemeWeights::STOCK,
             },
-            motion: ThemeMotion { character: 1.0 },
-            material: ThemeMaterial {
-                blur: if opaque {
-                    0.0
-                } else {
-                    crate::tokens::colors::MATERIAL_BLUR_PX
-                },
-                tint_opacity: if opaque {
-                    1.0
-                } else {
-                    crate::tokens::colors::MATERIAL_ALPHA
-                },
-                selector: if opaque {
-                    SelectorFinish::OPAQUE
-                } else {
-                    SelectorFinish::STOCK
-                },
+            motion: ThemeMotion::STOCK,
+            material: if opaque {
+                ThemeMaterial::OPAQUE
+            } else {
+                ThemeMaterial::STOCK
             },
+            depth: Depth::STOCK,
         }
     }
 
@@ -242,15 +470,21 @@ impl ThemeDocument {
         if !within(self.type_.base_size, &ThemeType::ADMITTED) {
             return Err("base type size outside 10..=24");
         }
+        if !within(self.type_.contrast, &ThemeType::CONTRAST_ADMITTED) {
+            return Err("type contrast outside 0.5..=1.5");
+        }
+        if !self.type_.weights.ordered() {
+            return Err("type weights out of order: heading ≥ label ≥ body");
+        }
         if !within(self.motion.character, &ThemeMotion::ADMITTED) {
             return Err("motion character outside 0..=2");
         }
-        if !within(self.material.blur, &ThemeMaterial::BLUR_ADMITTED) {
-            return Err("material blur outside 0..=64");
+        if !within(self.motion.duration_scale, &ThemeMotion::DURATION_ADMITTED) {
+            return Err("motion duration scale outside 0.5..=2");
         }
-        if !within(self.material.tint_opacity, &ThemeMaterial::TINT_ADMITTED) {
-            return Err("material tint opacity outside 0.6..=1");
-        }
+        self.shape.border.validate()?;
+        self.depth.validate()?;
+        self.material.roles().validate()?;
         let selector = &self.material.selector;
         if !within(selector.rim_span, &SelectorFinish::RIM_SPAN_ADMITTED) {
             return Err("selector rim span outside 0..=1");
@@ -284,6 +518,13 @@ impl ThemeDocument {
                 }
             }
         }
+        let colors = Colors::as_authored(
+            &self.palette,
+            self.emphasis,
+            self.presence,
+            PresenceHue::Blue,
+        );
+        worst.extend(audit_materials(&colors, &self.material.roles()));
         worst
     }
 
@@ -310,7 +551,16 @@ impl ThemeDocument {
             palette: stock.palette,
             emphasis: Emphasis::Inverted,
             presence: stock.presence,
-            material: stock.material,
+            material: {
+                let roles = self.material.roles().opaque();
+                ThemeMaterial {
+                    window: roles.window,
+                    control: roles.control,
+                    floating: roles.floating,
+                    bar: roles.bar,
+                    selector: SelectorFinish::OPAQUE,
+                }
+            },
             ..self.clone()
         }
     }
@@ -328,10 +578,35 @@ pub enum Preset {
     HighContrast,
     /// Light, every text pairing at WCAG AAA.
     HighContrastLight,
+    /// Everything glass: translucent windows, controls, bars and floating
+    /// chrome that bend and catch the light. A plain theme document
+    /// (`themes/glass.json`).
+    Glass,
+    /// [`Self::Glass`] on the light ladder (`themes/glass-light.json`).
+    GlassLight,
+    /// Everything flat and square: opaque, bordered, no shadows, no motion
+    /// (`themes/block.json`).
+    Block,
+    /// [`Self::Block`] on the light ladder (`themes/block-light.json`).
+    BlockLight,
 }
 
+/// The shipped themes that are plain documents, by preset.
+const SHIPPED_DOCUMENTS: [(Preset, &str); 4] = [
+    (Preset::Glass, include_str!("../themes/glass.json")),
+    (
+        Preset::GlassLight,
+        include_str!("../themes/glass-light.json"),
+    ),
+    (Preset::Block, include_str!("../themes/block.json")),
+    (
+        Preset::BlockLight,
+        include_str!("../themes/block-light.json"),
+    ),
+];
+
 impl Preset {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 11] = [
         Self::Dark,
         Self::DarkCool,
         Self::DarkGraphite,
@@ -339,6 +614,10 @@ impl Preset {
         Self::Light,
         Self::HighContrast,
         Self::HighContrastLight,
+        Self::Glass,
+        Self::GlassLight,
+        Self::Block,
+        Self::BlockLight,
     ];
 
     /// The stored id (`appearance.dark_theme`, `appearance.light_theme`).
@@ -352,6 +631,10 @@ impl Preset {
             Self::Light => "light",
             Self::HighContrast => "high-contrast",
             Self::HighContrastLight => "high-contrast-light",
+            Self::Glass => "glass",
+            Self::GlassLight => "glass-light",
+            Self::Block => "block",
+            Self::BlockLight => "block-light",
         }
     }
 
@@ -366,25 +649,55 @@ impl Preset {
             Self::Light => "Light",
             Self::HighContrast => "High contrast",
             Self::HighContrastLight => "High contrast light",
+            Self::Glass => "Glass",
+            Self::GlassLight => "Glass light",
+            Self::Block => "Block",
+            Self::BlockLight => "Block light",
         }
     }
 
     #[must_use]
     pub const fn palette(self) -> Palette {
         match self {
-            Self::Dark => Palette::dark(),
+            Self::Dark | Self::Glass | Self::Block => Palette::dark(),
             Self::DarkCool => Palette::dark_cool(),
             Self::DarkGraphite => Palette::dark_graphite(),
             Self::DarkSoft => Palette::dark_soft(),
-            Self::Light => Palette::light(),
+            Self::Light | Self::GlassLight | Self::BlockLight => Palette::light(),
             Self::HighContrast => Palette::high_contrast_dark(),
             Self::HighContrastLight => Palette::high_contrast_light(),
         }
     }
 
+    /// The preset's document: the stock roles around its palette, or for a
+    /// shipped document its file, parsed once.
     #[must_use]
     pub fn document(self) -> ThemeDocument {
-        ThemeDocument::stock(self.id(), self.name(), self.palette())
+        static PARSED: std::sync::LazyLock<Vec<(Preset, ThemeDocument)>> = std::sync::LazyLock::new(
+            || {
+                SHIPPED_DOCUMENTS
+                    .iter()
+                    .filter_map(|(preset, json)| {
+                        match serde_json::from_str::<ThemeDocument>(json) {
+                            Ok(document) => Some((*preset, document)),
+                            Err(error) => {
+                                // `shipped_documents_are_valid_and_legible`
+                                // keeps this from ever reaching a build.
+                                tracing::error!(preset = preset.id(), %error, "a shipped theme document does not parse");
+                                None
+                            }
+                        }
+                    })
+                    .collect()
+            },
+        );
+        PARSED
+            .iter()
+            .find(|(preset, _)| *preset == self)
+            .map_or_else(
+                || ThemeDocument::stock(self.id(), self.name(), self.palette()),
+                |(_, document)| document.clone(),
+            )
     }
 
     /// A preset by id or name, loosely: case, spaces, hyphens and
@@ -404,6 +717,10 @@ impl Preset {
             "light" => Self::Light,
             "highcontrast" | "contrast" | "highcontrastdark" => Self::HighContrast,
             "highcontrastlight" => Self::HighContrastLight,
+            "glass" | "glassdark" => Self::Glass,
+            "glasslight" => Self::GlassLight,
+            "block" | "blockdark" => Self::Block,
+            "blocklight" => Self::BlockLight,
             _ => return None,
         })
     }
@@ -497,7 +814,49 @@ mod tests {
             ),
             (
                 "tint",
-                Box::new(|d: &mut ThemeDocument| d.material.tint_opacity = 0.2),
+                Box::new(|d: &mut ThemeDocument| {
+                    d.material.floating = Finish::Translucent {
+                        blur: 24.0,
+                        tint: 1.4,
+                        saturation: 1.0,
+                    };
+                }),
+            ),
+            (
+                "glass",
+                Box::new(|d: &mut ThemeDocument| {
+                    d.material.window = Finish::Glass {
+                        blur: 24.0,
+                        tint: 0.4,
+                        saturation: 1.0,
+                        refraction: 90.0,
+                        edge_highlight: 0.2,
+                        specular: 0.1,
+                    };
+                }),
+            ),
+            (
+                "border",
+                Box::new(|d: &mut ThemeDocument| d.shape.border.width = 12.0),
+            ),
+            (
+                "depth",
+                Box::new(|d: &mut ThemeDocument| d.depth = Depth::Shadow { strength: -1.0 }),
+            ),
+            (
+                "type contrast",
+                Box::new(|d: &mut ThemeDocument| d.type_.contrast = 4.0),
+            ),
+            (
+                "weights",
+                Box::new(|d: &mut ThemeDocument| {
+                    d.type_.weights.heading = ThemeWeight::Regular;
+                    d.type_.weights.label = ThemeWeight::Bold;
+                }),
+            ),
+            (
+                "duration",
+                Box::new(|d: &mut ThemeDocument| d.motion.duration_scale = 0.0),
             ),
             (
                 "hover",
@@ -541,8 +900,211 @@ mod tests {
         assert_eq!(hc.emphasis, Emphasis::Inverted);
         assert!((hc.shape.window_radius - 6.0).abs() < f32::EPSILON);
         assert!((hc.density.spacing - 1.2).abs() < f32::EPSILON);
-        assert!(hc.material.blur.abs() < f32::EPSILON);
+        assert_eq!(hc.material, ThemeMaterial::OPAQUE);
         assert_eq!(hc.material.selector, SelectorFinish::OPAQUE);
         assert_eq!(hc.findings(), Vec::new());
+    }
+
+    #[test]
+    fn shipped_documents_are_valid_and_legible_and_parse_from_their_files() {
+        for (preset, json) in SHIPPED_DOCUMENTS {
+            let parsed: ThemeDocument = serde_json::from_str(json).unwrap();
+            assert_eq!(parsed.id, preset.id());
+            assert_eq!(parsed.name, preset.name());
+            assert_eq!(parsed.palette, preset.palette(), "{}", preset.name());
+            assert_eq!(preset.document(), parsed);
+        }
+        let glass = Preset::Glass.document();
+        for role in [
+            glass.material.window,
+            glass.material.control,
+            glass.material.floating,
+        ] {
+            assert!(matches!(role, Finish::Glass { .. }), "{role:?}");
+        }
+        let block = Preset::Block.document();
+        assert_eq!(block.shape.window_radius, 0.0);
+        assert_eq!(block.depth, Depth::None);
+        assert_eq!(block.motion.curve, MotionCurve::None);
+        assert!(block.shape.border.outlines());
+        assert_eq!(block.material.roles().opaque(), block.material.roles());
+    }
+
+    /// A theme a person saved at schema 7 keeps applying: it is read as
+    /// the current schema, resolves to exactly the theme it built before,
+    /// and is written back at the current schema.
+    #[test]
+    fn a_schema_7_document_resolves_as_it_did_and_saves_as_the_current_schema() {
+        const EMBER_V7: &str = include_str!("../tests/fixtures/themes/ember-schema-7.json");
+        assert!(THEME_SCHEMAS_READ.contains(&7));
+        let old: ThemeDocument = serde_json::from_str(EMBER_V7).expect("schema 7 is read");
+        assert_eq!(old.validate(), Ok(()));
+        assert_eq!(old.schema_version, THEME_SCHEMA_VERSION);
+
+        // What schema 7 built: its blur and tint on floating chrome, and
+        // every role it could not name at its stock value.
+        let mut current: serde_json::Value = serde_json::from_str(EMBER_V7).unwrap();
+        current["schema_version"] = serde_json::json!(THEME_SCHEMA_VERSION);
+        current["material"] = serde_json::json!({
+            "floating": { "painter": "default", "blur": 30.0, "tint": 0.8, "saturation": 1.0 },
+            "selector": current["material"]["selector"].clone(),
+        });
+        let current: ThemeDocument = serde_json::from_value(current).unwrap();
+        assert_eq!(old, current);
+        let theme = crate::theme::Theme::from_document(&old).expect("admitted");
+        let surfaces = &theme.tokens.colors.surfaces;
+        assert!((surfaces.material_blur_px - 30.0).abs() < f32::EPSILON);
+        assert!((surfaces.material_opacity - 0.8).abs() < f32::EPSILON);
+        assert_eq!(
+            theme.tokens,
+            crate::theme::Theme::from_document(&current).unwrap().tokens
+        );
+
+        // The stock dark theme as schema 7 wrote it resolves to Dark.
+        let mut dark = serde_json::to_value(Preset::Dark.document()).unwrap();
+        dark["schema_version"] = serde_json::json!(7);
+        dark["shape"] = serde_json::json!({ "window_radius": dark["shape"]["window_radius"] });
+        for added in ["contrast", "weights"] {
+            dark["type"].as_object_mut().unwrap().remove(added);
+        }
+        for added in ["curve", "duration_scale"] {
+            dark["motion"].as_object_mut().unwrap().remove(added);
+        }
+        dark.as_object_mut().unwrap().remove("depth");
+        dark["material"] = serde_json::json!({
+            "blur": crate::tokens::colors::MATERIAL_BLUR_PX,
+            "tint_opacity": crate::tokens::colors::MATERIAL_ALPHA,
+            "selector": dark["material"]["selector"].clone(),
+        });
+        let dark: ThemeDocument = serde_json::from_value(dark).expect("schema 7 is read");
+        assert_eq!(
+            crate::theme::Theme::from_document(&dark).unwrap().tokens,
+            crate::theme::Theme::dark().tokens
+        );
+
+        let saved = serde_json::to_value(&old).unwrap();
+        assert_eq!(saved["schema_version"], THEME_SCHEMA_VERSION);
+        assert!(saved["material"].get("blur").is_none());
+        assert_eq!(serde_json::from_value::<ThemeDocument>(saved).unwrap(), old);
+
+        // A schema the list does not name is still refused.
+        let mut unknown: serde_json::Value = serde_json::from_str(EMBER_V7).unwrap();
+        unknown["schema_version"] = serde_json::json!(6);
+        let unknown: ThemeDocument = serde_json::from_value(unknown).unwrap();
+        assert_eq!(unknown.validate(), Err("unsupported theme schema"));
+    }
+
+    #[test]
+    fn every_material_round_trips_on_a_whole_document() {
+        let glass = Finish::Glass {
+            blur: 20.0,
+            tint: 0.2,
+            saturation: 1.8,
+            refraction: 12.0,
+            edge_highlight: 0.4,
+            specular: 0.2,
+        };
+        let translucent = Finish::Translucent {
+            blur: 30.0,
+            tint: 0.4,
+            saturation: 0.5,
+        };
+        for finish in [Finish::Flat, Finish::Solid, translucent, glass] {
+            let mut doc = Preset::Dark.document();
+            doc.material.window = finish;
+            doc.material.control = finish;
+            doc.material.floating = finish;
+            doc.material.bar = Some(finish);
+            doc.shape.border = Border {
+                width: 2.0,
+                ink: crate::tokens::BorderInk::Standard,
+            };
+            doc.depth = Depth::Outline;
+            doc.type_.contrast = 1.25;
+            doc.type_.weights = ThemeWeights {
+                body: ThemeWeight::Medium,
+                label: ThemeWeight::Semibold,
+                heading: ThemeWeight::Bold,
+            };
+            doc.motion = ThemeMotion {
+                character: 0.5,
+                curve: MotionCurve::Eased,
+                duration_scale: 1.5,
+            };
+            assert_eq!(doc.validate(), Ok(()), "{finish:?}");
+            let json = serde_json::to_string(&doc).unwrap();
+            let back: ThemeDocument = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, doc, "{finish:?}");
+            assert_eq!(doc.findings(), Vec::new(), "{finish:?}");
+        }
+    }
+
+    #[test]
+    fn a_document_naming_only_the_old_roles_takes_the_stock_new_ones() {
+        let json = serde_json::json!({
+            "schema_version": THEME_SCHEMA_VERSION,
+            "id": "terse", "name": "Terse",
+            "palette": serde_json::to_value(Palette::dark()).unwrap(),
+            "presence": { "lightness": 0.74, "chroma": 0.14 },
+            "shape": { "window_radius": 14.0 },
+            "density": { "spacing": 1.0 },
+            "type": { "face": "Default", "reading": "Literata", "base_size": 14.0 },
+            "motion": { "character": 1.0 },
+            "material": {}
+        });
+        let doc: ThemeDocument = serde_json::from_value(json).unwrap();
+        assert_eq!(doc.material, ThemeMaterial::STOCK);
+        assert_eq!(doc.depth, Depth::STOCK);
+        assert_eq!(doc.shape.border, Border::STOCK);
+        assert_eq!(doc.motion, ThemeMotion::STOCK);
+        assert_eq!(doc.type_.weights, ThemeWeights::STOCK);
+        assert_eq!(doc.validate(), Ok(()));
+    }
+
+    #[test]
+    fn the_backdrop_band_narrows_to_what_the_ink_can_afford() {
+        use crate::tokens::SurfaceRole;
+        use crate::tokens::finish::{MATERIAL_SPREAD, material_spread, worst_grounds};
+        // Ink that clears its floor on the opaque ground with little to
+        // spare: the band a translucent window shows through narrows so it
+        // still clears it over the darkest and the lightest backdrop.
+        let mut doc = Preset::Dark.document();
+        doc.palette.ink.secondary = 0.64;
+        doc.material.window = Finish::Glass {
+            blur: 24.0,
+            tint: 0.0,
+            saturation: 1.0,
+            refraction: 8.0,
+            edge_highlight: 0.2,
+            specular: 0.1,
+        };
+        assert_eq!(doc.validate(), Ok(()));
+        let colors =
+            Colors::as_authored(&doc.palette, doc.emphasis, doc.presence, PresenceHue::Blue);
+        let spread = material_spread(&colors, colors.surfaces.content);
+        assert!((1.0..MATERIAL_SPREAD).contains(&spread), "{spread}");
+        for ground in worst_grounds(&colors, &doc.material.roles(), SurfaceRole::Window) {
+            for (ink, floor) in [(colors.text_dim, 4.5), (colors.text_tertiary, 3.0)] {
+                let ratio = crate::color::contrast_ratio(ink, ground);
+                assert!(ratio >= floor - 1e-6, "{ratio} under {floor}");
+            }
+        }
+        assert!(
+            !doc.findings()
+                .iter()
+                .any(|f| matches!(f.ground, crate::tokens::contrast::Role::Material(_))),
+            "no ink misses its floor on the material"
+        );
+        // The stock dark ink affords the whole band.
+        let stock = Colors::as_authored(
+            &Palette::dark(),
+            Emphasis::You,
+            Palette::dark().stock_presence(),
+            PresenceHue::Blue,
+        );
+        assert!(
+            (material_spread(&stock, stock.surfaces.overlay) - MATERIAL_SPREAD).abs() < 1e-9,
+            "Default's floating material keeps its band"
+        );
     }
 }

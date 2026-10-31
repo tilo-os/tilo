@@ -50,21 +50,60 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
 A room's records are sealed per app: today only a connection holding that app's launch custody
 opens them. The task host is not an app, so it gets its own admission instead of borrowing one:
 
-- **Admission.** The broker admits a task host's connection as *the agent acting for the
-  person* (`BrokerActor` agent for person, never session-delegated, so no preset widens it).
-  It holds no app's route and publishes nothing.
-- **Reads, per record.** Each record the program reads is decided by the same check every
-  reader goes through (`check_document_read` with that actor: the lesser of the agent's and
-  the person's grants). When allowed, the identity service hands the task host that record
-  channel's read key, for that record only and for the task's lifetime. A revoked grant or a
-  removed member cuts it like any other reader's. Index queries (`find`, `grep`) answer only
-  from records the same check allows.
-- **Changes, never writes.** The task host gets no write custody. It runs the action's code
-  from the app's package provisionally (preview) and sends the invocation (action, arguments,
-  package version) to the record's origin, which orders and applies it like any device's
-  action (convergence.md). An app's own instance is never asked to act for the program.
+- **Admission.** The door serves the task as *the agent acting for the person* who admitted
+  it (`Caller::local_agent(agent).acting_for(person)`; `BrokerActor` agent for person, never
+  session-delegated, so no preset widens it). The task host's only connection is its program
+  connection to the door: it holds no app's route, no broker connection and publishes nothing.
+- **Reads, per record.** The task host asks the door for each record it reads, once per
+  program (`{"record": {app, record}}`; the person's own record for an app with
+  `records: .own`). The broker decides it at the record's node with that actor, the lesser of
+  the agent's and the person's grants (`RecordReads`, `record_read.rs`), and the room's
+  document owner captures it under the person's device certificate, whose own check is the
+  person's read. The capture decides the agent's read again before every chunk it hands out.
+  The task host gets the record's committed content, read-only: the record channel's keys
+  never leave the broker. It reads that content with the app's own package, the reads an app's
+  host answers (`task_records.rs`), and builds the index `find` and `grep` search from records
+  that passed the check. A revoked grant or a removed member cuts the next read and one under
+  way. No app runs for a read, so whether its window is open never matters. A record of a
+  sealed room this device holds no write of, once the room's host replay landed, is one the
+  room has none of: it reads as none. Every record's first change is its named genesis, so
+  what an app writes on a record's channel always makes a whole record there. A record an older
+  store wrote, whose first change is its schema stamp with no name, is claimed by what that
+  change is: a root change with no deps that only sets the schema version is the record's
+  genesis. Its host hands the room the whole copy on its next send; no change is rewritten.
+  What the record's origin applied for the task is kept for the task's life and put into every
+  record the task reads, so each program reads the task's earlier changes while the copy the
+  door hands over still lags the origin.
+- **Changes, never writes.** The task host gets no write custody. It plans the action from the
+  app's package over the record it read, for the preview only, and sends the invocation
+  (action, arguments, the record it changes, the planned writes) to the door. The broker
+  decides it at the action's node for the agent acting for the person (`RecordChanges`): an
+  Ask answers that it asks the person first, a Deny never leaves the broker. The record's origin applies it:
+  the host of the app's author in that workspace, handed the app's collaboration connection
+  for that record as an instance's is, holds the record and the app's package with no
+  instance and no window (`hosted::Applier`). It runs the action's code against the record as
+  it is then, so requirements and invariants are decided on what others wrote since the
+  task's read, applies what it wrote as the invoker's step and hands it to the room; a
+  requirement that now fails refuses with its reason, and a result that differs from the
+  preview is applied and reported as differing. A change the room would refuse (its claim names
+  an action or a resource kind the app's surface does not publish) is taken back out of the
+  record at once and the task is told why: the record never keeps, builds on or stores a change
+  its room has none of. Each change is decided against the resource kind its own action names,
+  so a record holding items of several kinds (Chat's categories among its channels) is handed
+  to its room whole. Arguments travel as the action's published parameters take them: a
+  resource by the catalogue's reference of its own type, so a union or a type of another app
+  says which it is; a plain enum by its case's name; rich text as its text, or encoded whole. An action on the app's root that no window
+  made yet makes the root first, as the invoker's step, and answers the whole record. Undo goes
+  the same way, by the app's id and record. An app's own instance is never asked to act for the program.
 - **Native apps.** Their types and views come from the published catalogue the same way. Their
-  action code is the app's Rust, so the origin routes the invocation to whatever executes it.
+  action code is the app's Rust, so the origin routes the invocation to whatever executes it: a
+  window of the app when one is open, else an instance of the app with no window. For an action
+  that shows nothing the broker asks the host for one (`LauncherServices::windowless`) instead of
+  launching the app; the session mounts the app's own component on the room's record in its own
+  process, never drawn, connected as the app and marked windowless (`shell/windowless.rs`), and
+  the broker delivers to it. Tasks runs this way, so asking an agent and a run's reports to its
+  issue open no Tasks window. An `open` never goes to a windowless instance: it launches a
+  window.
 
 ## 2. What the agent knows from the start
 
@@ -154,9 +193,10 @@ make first guesses mostly right.
 ## 8. Answering and the trail
 
 An answer composes views (agent-ux.md); the door checks it before the person sees it: quotes
-resolve, suggested actions are allowed, it fits. After a task, its result is checked against
-the request: on by default for small-model profiles, which skip or get parts of long requests
-wrong most often. `history task` lists the steps; `undo task` reverses them.
+resolve, suggested actions are allowed, it fits. A view answer is a `view` declaration that
+becomes one of the person's own views (agent-ux.md, "Answers as views"). After a task, its
+result is checked against the request: on by default for small-model profiles, which skip or
+get parts of long requests wrong most often. `history task` lists the steps; `undo task` reverses them.
 
 ## 9. Evals
 

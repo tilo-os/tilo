@@ -23,7 +23,7 @@ use crate::files::{
 /// An entry's sync state: `local`, `projected` or `downloading`.
 pub const SYNC_XATTR: &str = "user.tilo.sync";
 /// A file's thumbnail preview. Absent when not previewable, not locally
-/// generatable, and not gossiped yet.
+/// generatable, and not replicated yet.
 pub const THUMB_XATTR: &str = "user.tilo.thumb";
 /// Raw 32-byte BLAKE3 manifest hash for a file's current content. Clients use
 /// this stable content identity for metadata/thumbnail caches, so identical

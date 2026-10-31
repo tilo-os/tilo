@@ -180,12 +180,12 @@ impl PopulatedShellFixture {
         panic!("the populated desktop's apps kept writing their records");
     }
 
-    /// Acknowledge the startup writes of the fixture's `surfaces` Notes
-    /// windows and present that. Startup creates real records, and the
+    /// Acknowledge the startup writes of the fixture's `records` Notes
+    /// records and present that on the `surfaces` Notes windows shown. Startup creates real records, and the
     /// writer otherwise acknowledges them on its own thread whenever it gets
     /// to them, flipping each window from Saving to Saved between two frames
     /// a test compares.
-    pub(crate) fn acknowledge_notes_startup_writes(&mut self, surfaces: usize) {
+    pub(crate) fn acknowledge_notes_startup_writes(&mut self, (records, surfaces): (usize, usize)) {
         let (apps, room) = {
             let chrome = self.chrome();
             let room = chrome
@@ -202,16 +202,23 @@ impl PopulatedShellFixture {
                 .clone();
             (apps, room)
         };
-        assert_eq!(
-            apps.borrow_mut()
-                .flush_fixture_records(notes::definition().app_id(), &room)
-                .expect("actual Notes startup writes acknowledged"),
-            surfaces
-        );
+        let open = apps
+            .borrow_mut()
+            .flush_fixture_records(notes::definition().app_id(), &room)
+            .expect("actual Notes startup writes acknowledged");
+        assert_eq!(open.len(), records, "the Notes records open: {open:?}");
         // Durability is sampled after sync; the next sync presents that sample.
-        assert_eq!(self.wake_mounted_components(), surfaces);
+        // Every mounted component wakes, the chrome's own apps among them;
+        // the Notes windows are the ones counted.
+        let notes = |root: &mut dyn ui::Widget| {
+            tilo_app::framework::testing::surface_in_root::<notes::NotesShell, notes::NotesApp>(
+                root,
+            )
+            .is_some()
+        };
+        assert_eq!(self.wake_mounted_components_where(notes), surfaces);
         let _ = self.paint_with_damage();
-        assert_eq!(self.wake_mounted_components(), surfaces);
+        assert_eq!(self.wake_mounted_components_where(notes), surfaces);
         let _ = self.paint_with_damage();
     }
 }
@@ -402,7 +409,8 @@ pub struct OwnHostedRoom {
 )]
 pub fn host_active_room(tree: &crate::shell::state::WorkspaceTreeHandle) -> OwnHostedRoom {
     let directory = tempfile::tempdir().expect("a directory for the state file");
-    let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).expect("room");
+    let room =
+        crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::ROOM).expect("room");
     {
         let mut tree = tree.write();
         let active = tree.desktop.active;
@@ -415,8 +423,9 @@ pub fn host_active_room(tree: &crate::shell::state::WorkspaceTreeHandle) -> OwnH
     let owner = crate::shell::native_workspace_owner::open(tree.clone()).expect("the owner opens");
     let person_root = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
     let key = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
-    let certificate = tilo_joined_room::testing::certificate(&person_root, &key, "This device");
-    tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate)
+    let certificate =
+        tilo_peer_state::owner::testing::certificate(&person_root, &key, "This device");
+    tilo_peer_state::owner::testing::enroll_interactive_governor(&owner, &key, &certificate)
         .expect("this device's host lets its owner in");
     assert!(tree.read().holds_room(room));
     OwnHostedRoom {

@@ -518,6 +518,12 @@ impl ResourceSurface<Workspace> for Window {
     fn stage(&mut self, scenario: Option<&str>) {
         self.instance.stage(scenario);
     }
+
+    /// A change mark in the window asks the shell to show the task run that made the change.
+    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+        let run = self.view.take_shown_run()?;
+        Some(ui::widget::AppHostIntent::ShowTaskRun { group: run })
+    }
 }
 
 impl Widget for Window {
@@ -571,11 +577,39 @@ impl Widget for Window {
             self.instance.update()
         };
         let received = self.view.receive();
-        if self.instance.take_undo() {
-            self.undo.request(ui::undo::UndoRequest::Undo);
+        // The person's Undo on a notice is the framework's undo of the record, as Ctrl+Z is here.
+        for asked in self.instance.take_history() {
+            match asked {
+                instance::HistoryAsk::Undo => {
+                    self.undo.request(ui::undo::UndoRequest::Undo);
+                }
+                instance::HistoryAsk::Redo => {
+                    self.undo.request(ui::undo::UndoRequest::Redo);
+                }
+                // The framework's undo here takes back the person's last step only; a step or
+                // a run named from a view is taken back where a tilolang host runs the
+                // instance, on the record's own history verb.
+                instance::HistoryAsk::UndoStep(_) | instance::HistoryAsk::UndoRun(_) => {
+                    tracing::warn!(?asked, "an undo named from a view needs the tilolang host");
+                    self.instance
+                        .history_failed(crate::i18n::t("tilolang-undo-unavailable"));
+                }
+            }
         }
         let child = self.view.update(state, path);
         changed || received || child
+    }
+
+    /// The body's deadlines, and when the time a view read (`today`) next reads differently:
+    /// the window sleeps until then, and the frame then runs again the views that read it.
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        let views = self.instance.wakes_in().and_then(|wait| {
+            ui::time::now().checked_add(ui::time::Duration::from_secs(wait.as_secs()))
+        });
+        match (views, self.view.next_wake_deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     fn handle_event(

@@ -88,6 +88,14 @@ fn run(door: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
     let storage = std::env::var_os(STORAGE_ENV)
         .filter(|dir| !dir.is_empty())
         .map(std::path::PathBuf::from);
+    // The host's own compiled modules, in its own storage: what a later start of this host
+    // starts compiled. Not a package's directory: those never start with a dot.
+    if let Some(storage) = &storage
+        && let Err(error) =
+            tilolang_tilo::runtime::engine::keep_compiled_in(storage.join(".compiled"))
+    {
+        tracing::warn!(%error, "compiled tilolang modules are not kept");
+    }
     let mut host = TilolangHost::new(storage, wake.waker());
     let mut door = Some(door);
     // Why the door closed, when the session did not close it.
@@ -123,7 +131,16 @@ fn run(door: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
             };
             return (exit, None);
         }
-        let ready = match wait(door.as_ref().map(|door| door.as_fd()), wake.fd(), &host, -1) {
+        // Until something arrives, or until the time a view read moves on (its midnight).
+        let timeout_ms = host.wakes_in().map_or(-1, |wait| {
+            i32::try_from(wait.as_millis()).unwrap_or(i32::MAX)
+        });
+        let ready = match wait(
+            door.as_ref().map(|door| door.as_fd()),
+            wake.fd(),
+            &host,
+            timeout_ms,
+        ) {
             Ok(ready) => ready,
             Err(error) => return (Exit::failed(format!("its wait failed: {error}")), door),
         };

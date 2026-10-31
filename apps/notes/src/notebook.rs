@@ -976,9 +976,20 @@ impl Notebook {
     /// Only notes and their bodies are addressed by the notebook's read.
     /// Tags and custom view children do not inherit that disclosure.
     fn document_projection_child(&self, id: &str) -> bool {
+        if let Some(tag) = Self::tag_of_resource(id) {
+            return self.tags.get(&tag).is_some();
+        }
         crate::actions::page_of_resource(id)
             .or_else(|| crate::actions::page_of_body_resource(id))
             .is_some_and(|page| self.pages.get(&page_id(page)).is_some())
+    }
+
+    /// The tag a published resource id names (`notes.notebook/tags/<id>`).
+    fn tag_of_resource(id: &str) -> Option<Id> {
+        match tilo_resource::items::item_of_resource::<Self>(id) {
+            Some(("tags", tag)) => Some(tag),
+            _ => None,
+        }
     }
 
     /// One note, or the notebook, as a reader reads it: the notebook as its
@@ -1008,6 +1019,26 @@ impl Notebook {
                 })).collect::<Vec<_>>(),
             }));
         };
+        if let Some(id) = Self::tag_of_resource(item.as_str()) {
+            let tag = self
+                .tags
+                .get(&id)
+                .ok_or_else(|| format!("no tag `{item}`; read the notebook for its tags"))?;
+            return Ok(serde_json::json!({
+                "kind": "notes.tag",
+                "item": item.as_str(),
+                "name": tag.name.0,
+                "notes": self
+                    .pages
+                    .iter()
+                    .filter(|(_, page)| page.tags.contains(&id))
+                    .map(|(page, page_state)| serde_json::json!({
+                        "item": note(page),
+                        "title": page_state.title,
+                    }))
+                    .collect::<Vec<_>>(),
+            }));
+        }
         if let Some(page) = crate::actions::page_of_body_resource(item.as_str()) {
             let body = body_object(doc, page).ok_or_else(|| {
                 format!("no note `{item}`; read the notebook for the notes it holds")

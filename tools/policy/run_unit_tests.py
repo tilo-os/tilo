@@ -21,7 +21,12 @@ each a share of the file's tests as discover finds them (`--shard`), and those s
 first; the file is still reported as one. The slowest files are listed at the end of every run:
 one that holds the run up belongs in SHARDS.
 
-Usage: run_unit_tests.py [--jobs N] DIR|FILE [DIR|FILE ...]
+With --except FILE, a file of the directories named is left out: tools/policy/run.sh --no-node
+runs the unit step without the files that run Node.js scripts, which run where Node.js is
+(tools/policy/steps.toml, `node_tests`). A file left out that the directories do not hold is an
+error, so a stale exclusion cannot hide a file.
+
+Usage: run_unit_tests.py [--jobs N] [--except FILE ...] DIR|FILE [DIR|FILE ...]
        run_unit_tests.py --shard I N FILE    (the I-th of N shares of FILE's tests, from 0)
 """
 from __future__ import annotations
@@ -172,11 +177,18 @@ def main(argv: list[str]) -> int:
             parser.error("--shard I N FILE")
         return run_shard(int(argv[1]), int(argv[2]), Path(argv[3]))
     parser.add_argument("--jobs", type=int, default=DEFAULT_JOBS)
+    parser.add_argument("--except", dest="excepted", action="append", type=Path, default=[],
+                        metavar="FILE", help="leave out this file of the directories named")
     parser.add_argument("directories", nargs="+", type=Path)
     args = parser.parse_args(argv)
     if args.jobs < 1:
         parser.error("--jobs must be at least 1")
     paths = files(args.directories)
+    excepted = {path.resolve() for path in args.excepted}
+    stale = sorted(str(path) for path in args.excepted if path.resolve() not in {p.resolve() for p in paths})
+    if stale:
+        parser.error(f"--except names a file the directories do not hold: {', '.join(stale)}")
+    paths = [path for path in paths if path.resolve() not in excepted]
     if not paths:
         print(f"run_unit_tests.py: no {PATTERN} in {', '.join(map(str, args.directories))}", file=sys.stderr)
         return 1

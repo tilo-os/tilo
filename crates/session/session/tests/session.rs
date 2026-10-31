@@ -11,17 +11,18 @@
     clippy::indexing_slicing,
     clippy::struct_excessive_bools,
     clippy::arithmetic_side_effects,
-    reason = "test fixtures: a failed step is the assertion"
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
 use std::cell::RefCell;
-use std::io::BufRead as _;
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
 use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
+use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::clipboard_history::{Copy, TEXT_MIME};
 use tilo_compositor::{Compositor, GestureEvent, InputEvent, KeyRepeat, OutputConfig, Selection};
 use tilo_desktop::desktop_actions::{CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND};
@@ -39,8 +40,9 @@ use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileReque
 use tilo_sheets::lock::LockEffect;
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
-use tilo_sheets::workspace_settings::WorkspaceSettingsEffect;
+use tilo_sheets::workspace_settings::{WorkspaceSettingsApp, WorkspaceSettingsEffect};
 use tilo_surface_host::Published;
+use tilo_test_env::PrivateBus;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
     wl_keyboard::WlKeyboard, wl_pointer, wl_pointer::WlPointer, wl_registry,
@@ -238,6 +240,23 @@ fn session() -> Session {
     .expect("session")
 }
 
+/// A session whose app lists are `lists`: what the desk offers to open.
+fn session_with_lists(lists: tilo_session::AppLists) -> Session {
+    Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            collab: false,
+            search: tilo_session::SearchOptions {
+                lists: tilo_session::Lists::fixed(lists),
+                ..tilo_session::SearchOptions::default()
+            },
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session")
+}
+
 /// A session that keeps this device's desk under `state`, the way one with
 /// a state directory does.
 fn session_keeping(state: &std::path::Path) -> Session {
@@ -403,6 +422,31 @@ fn centre(session: &mut Session, rect: (i32, i32, i32, i32)) -> [u8; 4] {
     shot.pixel(x, y).unwrap()
 }
 
+/// The colours across the bar's band on the display.
+fn band(session: &mut Session) -> std::collections::BTreeSet<[u8; 4]> {
+    let frame = session.compositor().screenshot("HEADLESS-1").unwrap();
+    (0..frame.width)
+        .step_by(4)
+        .filter_map(|x| frame.pixel(x, 12))
+        .collect()
+}
+
+/// The colour the display shows most across the bar's band.
+fn band_colour(session: &mut Session) -> [u8; 4] {
+    let frame = session.compositor().screenshot("HEADLESS-1").unwrap();
+    let mut counts = std::collections::BTreeMap::new();
+    for x in (0..frame.width).step_by(4) {
+        if let Some(pixel) = frame.pixel(x, 12) {
+            *counts.entry(pixel).or_insert(0_usize) += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(colour, _)| colour)
+        .unwrap()
+}
+
 /// Step the session until `done` holds, for up to three seconds of its
 /// clock.
 #[track_caller]
@@ -420,6 +464,88 @@ fn within(
         }
     }
     panic!("condition not reached in time");
+}
+
+/// Wait for the size the desktop configures the window to, draw it at that
+/// size as its client does, and wait until the compositor shows it there.
+fn take_size(session: &mut Session, client: &mut TestClient, app: &str, size: (i32, i32)) {
+    let until = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < until && client.seen.size != Some(size) {
+        client.exchange();
+        session.step(Duration::from_millis(4)).expect("step");
+    }
+    assert_eq!(
+        client.seen.size,
+        Some(size),
+        "the desktop asks the window for its new size"
+    );
+    client.show(size.0, size.1, [200, 40, 40, 255]);
+    let app = app.to_owned();
+    within(session, client, move |session| {
+        window(session.compositor(), &app)
+            .is_some_and(|(_, rect)| (rect.2, rect.3) == (size.0, size.1))
+    });
+}
+
+/// A window taken across the display covers it, the bar's room included,
+/// and the bar draws again once the window gives the display back.
+#[test]
+fn a_full_screen_window_covers_the_display_and_the_bar_comes_back() {
+    const APP: &str = "org.example.Cinema";
+    const RED: [u8; 4] = [200, 40, 40, 255];
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let mut client = mapped(&mut session, APP);
+    let (id, rect) = window(session.compositor(), APP).unwrap();
+    assert!(
+        f64::from(rect.1) >= f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX).floor(),
+        "the window stands under the bar: {rect:?}"
+    );
+    assert!(
+        band(&mut session).len() > 2,
+        "and the bar draws in its band"
+    );
+    assert_ne!(
+        band_colour(&mut session),
+        RED,
+        "the bar's band is not the window"
+    );
+
+    assert!(
+        session
+            .desktop()
+            .with_policy(|policy| policy.set_fullscreen(id, true)),
+        "the desk holds the window"
+    );
+    take_size(&mut session, &mut client, APP, (WIDTH, HEIGHT));
+    assert_eq!(
+        window(session.compositor(), APP),
+        Some((id, (0, 0, WIDTH, HEIGHT))),
+        "the display from its top edge to its bottom"
+    );
+    assert_eq!(
+        band_colour(&mut session),
+        RED,
+        "the bar stepped aside: its band is the window"
+    );
+
+    assert!(
+        session
+            .desktop()
+            .with_policy(|policy| policy.set_fullscreen(id, false))
+    );
+    take_size(&mut session, &mut client, APP, (rect.2, rect.3));
+    assert_eq!(
+        window(session.compositor(), APP),
+        Some((id, rect)),
+        "the window stands where it stood"
+    );
+    assert!(band(&mut session).len() > 2, "the bar is back in its band");
+    assert_ne!(
+        band_colour(&mut session),
+        RED,
+        "and the band is not the window again"
+    );
 }
 
 #[test]
@@ -456,6 +582,10 @@ fn a_window_fades_in_as_it_opens_and_its_last_frame_fades_out_as_it_closes() {
 mod keys {
     pub const TAB: u32 = 15;
     pub const A: u32 = 30;
+    pub const D: u32 = 32;
+    pub const LEFT_SHIFT: u32 = 42;
+    pub const ESCAPE: u32 = 1;
+    pub const ENTER: u32 = 28;
     pub const LEFT_META: u32 = 125;
     pub const VOLUME_UP: u32 = 115;
     pub const MUTE: u32 = 113;
@@ -799,84 +929,6 @@ fn the_touchpad_key_and_the_sessions_own_action_switch_the_touchpad() {
         session.input_config().touchpad_enabled,
         "the action turned it on"
     );
-}
-
-#[test]
-fn the_lock_action_locks_the_session_behind_the_lock_screen_which_a_password_unlocks() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            user: "ada".to_owned(),
-            verifier: std::sync::Arc::new(Sesame),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-    let _client = mapped(&mut session, "org.example.Terminal");
-    let unlocked = session.compositor().screenshot("HEADLESS-1").unwrap();
-    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
-    session.step(Duration::from_millis(1)).unwrap();
-    assert!(session.compositor().locked());
-    let unlock = tilo_sheets::lock::LockEffect::UNLOCK.id;
-    assert!(
-        publisher(&session, "toggle-overview").is_none(),
-        "the locked session withholds the desktop's actions"
-    );
-    let screen = publisher(&session, unlock).expect("the lock screen publishes unlocking");
-    let locked = session.compositor().screenshot("HEADLESS-1").unwrap();
-    assert_ne!(
-        locked.rgba, unlocked.rgba,
-        "the lock screen hides the desktop"
-    );
-    let colours: std::collections::BTreeSet<&[u8]> = locked.rgba.chunks(4).collect();
-    assert!(
-        colours.len() > 2,
-        "the lock screen draws its clock and prompt, not only the dim"
-    );
-
-    let type_password = tilo_sheets::lock::LockEffect::TYPE_PASSWORD.id;
-    session
-        .invoke(
-            &screen,
-            type_password,
-            &arguments(serde_json::json!({ "password": "wrong" })),
-        )
-        .expect("type");
-    session
-        .invoke(&screen, unlock, &serde_json::Map::new())
-        .expect("unlock");
-    pump(&mut session, &mut [], |session, _| {
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| label.contains("did not unlock"))
-    });
-    assert!(
-        session.compositor().locked(),
-        "a wrong password keeps it locked"
-    );
-
-    session
-        .invoke(
-            &screen,
-            type_password,
-            &arguments(serde_json::json!({ "password": "sesame" })),
-        )
-        .expect("type");
-    session
-        .invoke(&screen, unlock, &serde_json::Map::new())
-        .expect("unlock");
-    pump(&mut session, &mut [], |session, _| {
-        !session.compositor().locked()
-    });
-    assert!(
-        publisher(&session, unlock).is_none(),
-        "the lock screen is gone"
-    );
-    assert!(publisher(&session, "toggle-overview").is_some());
 }
 
 /// Unlocks with "sesame" only.
@@ -1306,10 +1358,10 @@ impl Audio {
         use tilo_audio_service::sound::Device;
         let device = |node, label: &str, chosen| Device {
             node,
+            name: format!("node-{node}"),
             label: label.into(),
             chosen,
-            volume: None,
-            muted: false,
+            ..Device::default()
         };
         Self {
             sound: RefCell::new(tilo_audio_service::sound::Sound {
@@ -1360,7 +1412,6 @@ impl tilo_session::Service for Audio {
 
 #[test]
 fn a_session_without_an_audio_service_offers_no_sound_to_change() {
-    use std::sync::Arc;
     let _settled = ui::motion::testing::settled();
     let reads = Machine::laptop();
     let session = Session::headless(
@@ -1369,8 +1420,8 @@ fn a_session_without_an_audio_service_offers_no_sound_to_change() {
             quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
                 DeviceHost::new(
                     Device {
-                        reads: Arc::new(reads.clone()),
-                        dispatcher: Arc::new(reads),
+                        reads: std::sync::Arc::new(reads.clone()),
+                        dispatcher: std::sync::Arc::new(reads),
                         preferences: Box::new(Kept::default()),
                     },
                     wake,
@@ -1391,7 +1442,6 @@ fn a_session_without_an_audio_service_offers_no_sound_to_change() {
 
 #[test]
 fn the_panels_sound_is_the_audio_services_and_its_changes_are_the_services_actions() {
-    use std::sync::Arc;
     let _settled = ui::motion::testing::settled();
     let machine = Machine::laptop();
     let reads = machine.clone();
@@ -1402,8 +1452,8 @@ fn the_panels_sound_is_the_audio_services_and_its_changes_are_the_services_actio
             quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
                 DeviceHost::new(
                     Device {
-                        reads: Arc::new(reads.clone()),
-                        dispatcher: Arc::new(reads),
+                        reads: std::sync::Arc::new(reads.clone()),
+                        dispatcher: std::sync::Arc::new(reads),
                         preferences: Box::new(Kept::default()),
                     },
                     wake,
@@ -1852,10 +1902,25 @@ fn pixel_at(picture: &image::RgbaImage, x: i32, y: i32) -> [u8; 4] {
         .0
 }
 
+#[path = "session/bars.rs"]
+mod bars;
+#[path = "session/chrome.rs"]
+mod chrome;
+#[path = "session/lock.rs"]
+mod lock;
+#[path = "session/lock_recovery.rs"]
+mod lock_recovery;
 mod questions;
+#[path = "session/workspace_settings.rs"]
+mod workspace_settings;
 
 #[path = "session/capture_studio.rs"]
 mod capture_studio;
+#[path = "session/portal_capture.rs"]
+mod portal_capture;
+
+#[path = "session/secret_captures.rs"]
+mod secret_captures;
 
 impl Dispatch<WlRegistry, ()> for Seen {
     fn event(
@@ -2027,15 +2092,14 @@ delegate_noop!(Seen: ignore WlSurface);
 #[test]
 fn the_display_action_steps_through_the_ways_of_using_two_displays() {
     let _settled = ui::motion::testing::settled();
-    let mut external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT);
-    external.position = (WIDTH, 0);
+    let external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT).at(WIDTH, 0);
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT), external],
+        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0), external],
     )
     .expect("session");
     let arrangement = |session: &mut Session| {
@@ -2075,116 +2139,6 @@ fn the_display_action_steps_through_the_ways_of_using_two_displays() {
     );
     let corners: std::collections::BTreeSet<_> = extended.iter().map(|output| output.2).collect();
     assert_eq!(corners.len(), 2, "side by side again: {extended:?}");
-}
-
-/// A screenshot the portal asks for is the session's frames: the loop is
-/// woken and answers with a PNG of every display, side by side.
-#[test]
-fn the_portals_screenshot_is_a_picture_of_every_display() {
-    use tilo_portal::Capture as _;
-
-    let _settled = ui::motion::testing::settled();
-    let directory = tempfile::tempdir().unwrap();
-    let wake = tilo_service::LoopWake::default();
-    let (capture, captures) =
-        tilo_session::capture::channel_to(directory.path().to_owned(), wake.handle());
-    let mut external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT);
-    external.position = (WIDTH, 0);
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            wake,
-            captures: Some(captures),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT), external],
-    )
-    .expect("session");
-    session.step(Duration::from_millis(1)).unwrap();
-    let asked = std::thread::spawn(move || {
-        tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(capture.screenshot(tilo_portal::CaptureTarget::Screen))
-    });
-    let started = std::time::Instant::now();
-    while !asked.is_finished() {
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "the screenshot was never answered"
-        );
-        session.step(Duration::from_secs(1)).unwrap();
-    }
-    let path = asked.join().unwrap().expect("a screenshot");
-    assert!(path.starts_with(directory.path()));
-    let picture = image::open(&path).unwrap().to_rgba8();
-    assert_eq!(
-        picture.dimensions(),
-        (
-            u32::try_from(WIDTH * 2).unwrap(),
-            u32::try_from(HEIGHT).unwrap()
-        )
-    );
-}
-
-/// A screenshot of the window with focus is that window's own frame: what
-/// its client drew, not the desk around it.
-#[test]
-fn the_portals_screenshot_of_the_active_window_is_that_window_alone() {
-    use tilo_portal::Capture as _;
-
-    let _settled = ui::motion::testing::settled();
-    let directory = tempfile::tempdir().unwrap();
-    let wake = tilo_service::LoopWake::default();
-    let (capture, captures) =
-        tilo_session::capture::channel_to(directory.path().to_owned(), wake.handle());
-    // What a session can be asked for: everything the displays show and
-    // the window with focus. A window or area the person picks would need
-    // a selector, which the session draws none of.
-    assert_eq!(
-        capture.targets(),
-        tilo_portal::CaptureTarget::Screen.bit() | tilo_portal::CaptureTarget::ActiveWindow.bit()
-    );
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            wake,
-            captures: Some(captures),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-    let _client = mapped(&mut session, "org.example.Terminal");
-    let asked = std::thread::spawn(move || {
-        tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(capture.screenshot(tilo_portal::CaptureTarget::ActiveWindow))
-    });
-    let started = std::time::Instant::now();
-    while !asked.is_finished() {
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "the screenshot was never answered"
-        );
-        session.step(Duration::from_secs(1)).unwrap();
-    }
-    let path = asked.join().unwrap().expect("a screenshot");
-    let picture = image::open(&path).unwrap().to_rgba8();
-    let (width, height) = picture.dimensions();
-    assert!(
-        width < u32::try_from(WIDTH).unwrap() && height < u32::try_from(HEIGHT).unwrap(),
-        "the window, not the display: {width}x{height}"
-    );
-    #[allow(clippy::cast_possible_wrap, reason = "a window's pixels on a screen")]
-    let (middle_x, middle_y) = ((width / 2) as i32, (height / 2) as i32);
-    assert_eq!(
-        pixel_at(&picture, middle_x, middle_y),
-        [200, 40, 40, 255],
-        "the colour its client drew"
-    );
 }
 
 // =====================================================================
@@ -2798,181 +2752,61 @@ fn a_copy_is_listed_pinned_across_a_restart_and_pasted_into_the_app_in_front() {
     assert_eq!(bytes, text);
 }
 
-// =====================================================================
-// Notifications from an app
-// =====================================================================
-
-/// A session bus of its own, as `dbus-run-session` starts one, stopped on
-/// drop.
-struct SessionBus {
-    daemon: std::process::Child,
-    address: String,
-    _directory: tempfile::TempDir,
-}
-
-impl SessionBus {
-    fn start() -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let mut daemon = std::process::Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .arg(format!(
-                "--address=unix:path={}",
-                directory.path().join("bus").display()
-            ))
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("the session bus needs dbus-daemon, which the builder image installs");
-        let mut address = String::new();
-        std::io::BufReader::new(daemon.stdout.take().unwrap())
-            .read_line(&mut address)
-            .unwrap();
-        assert!(!address.trim().is_empty(), "dbus-daemon printed no address");
-        Self {
-            daemon,
-            address: address.trim().to_owned(),
-            _directory: directory,
-        }
-    }
-}
-
-impl Drop for SessionBus {
-    fn drop(&mut self) {
-        let _ = self.daemon.kill();
-        let _ = self.daemon.wait();
-    }
-}
-
-/// Send one notification over the freedesktop interface on `address`, as an
-/// app of the session would, and name the id the daemon gave it. The
-/// connection is the app's: it stays open until the caller drops it.
-async fn notify(address: &str, summary: &str, body: &str, timeout: i32) -> (zbus::Connection, u32) {
-    let app = zbus::connection::Builder::address(address)
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-    let proxy = zbus::Proxy::new(
-        &app,
-        "org.freedesktop.Notifications",
-        "/org/freedesktop/Notifications",
-        "org.freedesktop.Notifications",
-    )
-    .await
-    .unwrap();
-    let reply = proxy
-        .call_method(
-            "Notify",
-            &(
-                "Mail",
-                0_u32,
-                "",
-                summary,
-                body,
-                Vec::<&str>::new(),
-                std::collections::HashMap::<String, zbus::zvariant::OwnedValue>::new(),
-                timeout,
-            ),
-        )
-        .await
-        .unwrap();
-    (app, reply.body().deserialize().unwrap())
-}
-
-/// An app's notification over the freedesktop interface, from the process
-/// whose window the session shows: a banner and a centre entry named after
-/// that app, and the bar's bell counting it.
 #[test]
-fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
+fn the_dictation_key_shows_the_session_s_own_card_and_escape_closes_it() {
     let _settled = ui::motion::testing::settled();
-    let bus = SessionBus::start();
-    let wake = tilo_service::LoopWake::default();
-    let (side, link) = tilo_session::portal_link::channel(wake.handle());
-    let desktop = Rc::new(
-        DesktopServices::start(
-            &Buses {
-                session: Bus::Address(bus.address.clone()),
-                system: Bus::None,
-            },
-            &wake.handle(),
-            std::sync::Arc::new(tilo_portal::NoCapture),
-            &side,
-            None,
-        )
-        .expect("desktop services"),
-    );
-    let portal = desktop
-        .portal()
-        .map(|serving| link.with_captures(serving.input_captures().clone()));
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            services: desktop.services(),
-            wake,
-            desktop: Some(Rc::clone(&desktop)),
-            portal,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-
-    // The app the session knows by its window; the sender's process is the
-    // one that window's client runs in.
-    let mut client = mapped(&mut session, "so.tilo.mail");
-
-    let runtime = desktop.runtime();
-    // It waits for the person: nothing here measures the banner running out.
-    let (app, id) = runtime.block_on(notify(bus.address.as_str(), "New mail", "From Ada", 0));
-
-    pump(&mut session, &mut [&mut client], |session, _| {
-        session.notifications().unread() == 1
+    let mut session = session();
+    let mut client = mapped(&mut session, "org.example.Editor");
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        clients[0].seen.keyboard_focused
     });
-    let centre = session.notifications();
-    let banners = centre.log();
-    assert_eq!(banners.active().len(), 1, "the notification is a banner");
-    let banner = banners.active()[0].clone();
-    drop(banners);
-    assert_eq!(banner.title, "New mail");
-    assert_eq!(
-        banner.app_id.as_deref(),
-        Some("so.tilo.mail"),
-        "named after the app whose window sent it"
-    );
-    assert_eq!(banner.sender_id, Some(id));
-
-    // The bar's bell counts what is unread.
-    let bell = session.accessible_labels();
-    assert!(
-        bell.iter().any(|label| label == "Notifications, 1 unread"),
-        "the bell says what is unread: {bell:?}"
-    );
-
-    // The person closes the banner on its own control: it is kept in the
-    // centre, named after the same app.
-    let dismiss = until(&mut session, &mut client, |session| {
+    let before = session.accessible_labels();
+    key(&mut session, keys::LEFT_META, true);
+    key(&mut session, keys::LEFT_SHIFT, true);
+    tap(&mut session, keys::D);
+    key(&mut session, keys::LEFT_SHIFT, false);
+    key(&mut session, keys::LEFT_META, false);
+    pump(&mut session, &mut [&mut client], |session, _| {
         session
-            .banners()
-            .shown()
-            .accessibility
-            .as_ref()
-            .and_then(|node| control(node, "Dismiss"))
-    })
-    .expect("the banner offers a way out");
-    session
-        .banners()
-        .command(tilo_notification_banners::Command::Activate(dismiss));
-    pump(&mut session, &mut [&mut client], |session, _| {
-        session.notifications().log().active().is_empty()
+            .read("dictation:session")
+            .is_some_and(|reading| reading["session"].is_number())
     });
-    let centre = session.notifications();
-    let history = centre.log();
-    let kept = history
-        .history()
-        .iter()
-        .find(|shown| shown.title == "New mail")
-        .expect("the centre keeps it");
-    assert_eq!(kept.app_id.as_deref(), Some("so.tilo.mail"));
-    assert_eq!(centre.unread(), 1, "and it stays unread until read");
-    drop(app);
+    assert_eq!(
+        session.read("dictation:session").expect("dictation reads")["status"],
+        "preparing",
+        "the key asks for a dictation"
+    );
+    let labels = session.accessible_labels().join("\n");
+    assert!(
+        labels.contains("Checking the focused editable field"),
+        "the card is up on the session's own sheet: {labels}"
+    );
+    assert_ne!(session.accessible_labels(), before, "and it is new");
+
+    // Escape is the card's to answer, and the person's typing is not: the
+    // field they were in keeps seeing every other key.
+    tap(&mut session, keys::A);
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        clients[0].seen.keys.contains(&(keys::A, true))
+    });
+    tap(&mut session, keys::ESCAPE);
+    pump(&mut session, &mut [&mut client], |session, _| {
+        session
+            .read("dictation:session")
+            .is_some_and(|reading| reading["status"] == "idle")
+    });
+    let labels = session.accessible_labels().join("\n");
+    assert!(
+        !labels.contains("Checking the focused editable field"),
+        "the card is gone: {labels}"
+    );
+    assert!(
+        !client
+            .seen
+            .keys
+            .iter()
+            .any(|(code, _)| *code == keys::ESCAPE),
+        "Escape was the card's, never the window's: {:?}",
+        client.seen.keys
+    );
 }

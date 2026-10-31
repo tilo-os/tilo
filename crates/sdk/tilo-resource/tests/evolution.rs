@@ -259,3 +259,64 @@ fn a_replica_acts_through_the_door() {
     assert_eq!(verb.action.action, "rename");
     assert_eq!(verb.action.kind, "test.contact");
 }
+
+/// Before there was one version key, a document's version could be stored
+/// under a key of its own. It is read there, and the document keeps it under
+/// the one key from its next open on.
+#[test]
+fn a_version_under_an_old_key_is_read_and_the_key_dropped() {
+    for legacy in evolution::LEGACY_VERSION_KEYS {
+        let mut doc = old_document();
+        let before = doc.get_heads();
+        doc.put(automerge::ROOT, *legacy, automerge::ScalarValue::Uint(1))
+            .unwrap();
+        doc.commit();
+        assert_eq!(evolution::stored_version(&doc), 1, "{legacy}");
+        assert!(evolution::needs_migrate::<Contact>(&doc));
+        let legacy_down = doc.get_heads();
+
+        // The migration carries the drop: an older document is written to
+        // once, whichever keys it used.
+        assert!(evolution::migrate::<Contact>(&mut doc).unwrap());
+        assert!(doc.get(automerge::ROOT, *legacy).unwrap().is_none());
+        assert_eq!(evolution::stored_version(&doc), 2);
+        assert_eq!(
+            evolution::read_checked::<Contact>(&doc).unwrap().given,
+            "Ada"
+        );
+        assert!(!evolution::needs_migrate::<Contact>(&doc));
+        assert!(!evolution::migrate::<Contact>(&mut doc).unwrap(), "once");
+        assert_ne!(legacy_down, doc.get_heads());
+        assert_ne!(before, doc.get_heads());
+    }
+}
+
+/// A document already at its version still drops the old key once, without
+/// running its migration.
+#[test]
+fn a_current_document_still_drops_the_old_key() {
+    let mut replica = Replica::<Contact>::new();
+    replica
+        .apply(Contact::RENAME.with(("Ada".to_owned(), "Lovelace".to_owned())))
+        .unwrap();
+    let mut doc = replica.doc_mut().fork();
+    doc.put(
+        automerge::ROOT,
+        "tilo:schema_version",
+        automerge::ScalarValue::Uint(2),
+    )
+    .unwrap();
+    doc.commit();
+    assert!(evolution::needs_migrate::<Contact>(&doc));
+    assert!(evolution::migrate::<Contact>(&mut doc).unwrap());
+    assert!(
+        doc.get(automerge::ROOT, "tilo:schema_version")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(evolution::stored_version(&doc), 2);
+    assert_eq!(
+        evolution::read_checked::<Contact>(&doc).unwrap().given,
+        "Ada"
+    );
+}

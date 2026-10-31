@@ -1,20 +1,3 @@
 # What `tilolang layout-check` finds in the shipped apps today, one finding id per line: these
 # are known and do not fail `tests/layout_check.rs`; a finding not named here does. Take a line
 # out once its problem is fixed (the test says when one no longer shows).
-#
-# The window's own buttons (Back, Show sidebar, More) keep their pointer size on touch.
-small-hit-target notes › (window) › nav-shell-back [Button]
-small-hit-target notes › (window) › nav-shell-more-overview [Button]
-small-hit-target notes › (window) › nav-shell-sidebar [Button]
-small-hit-target tasks › (window) › nav-shell-back [Button]
-small-hit-target tasks › (window) › nav-shell-more-content [Button]
-small-hit-target tasks › (window) › nav-shell-more-overview [Button]
-small-hit-target tasks › (window) › nav-shell-sidebar [Button]
-small-hit-target mail › (window) › nav-shell-back [Button]
-small-hit-target chat › (window) › nav-shell-back [Button]
-small-hit-target chat › (window) › nav-shell-sidebar [Button]
-
-# The apps' own views.
-small-hit-target tasks › task_row › row [SwipeRow]
-overflow mail › conversation › std.page [Stack]
-small-hit-target chat › channel › channel_message [Chip]

@@ -36,12 +36,15 @@ use super::view::ViewCx;
 
 mod facts;
 mod live_head;
+mod read;
 mod search;
 mod shared_tree;
 mod shown_item;
 mod typed;
 mod widget;
 use live_head::LiveHead;
+pub(crate) use read::READ_TYPE;
+use read::{offer_document_reads, offer_item_reads, read, read_spec};
 pub(crate) use search::{
     BodyText, IndexedEntries, LiveSearch, ResourceSearch, field_weight, index_entry,
 };
@@ -281,74 +284,6 @@ pub fn reserved_action_ids() -> Vec<String> {
     ids.sort();
     ids.dedup();
     ids
-}
-
-/// The operation type of the framework's `read` view.
-pub(crate) const READ_TYPE: &str = tilo_resource::read::TYPE;
-
-/// `read`: what a [readable](Resource::READABLE) resource holds, as typed
-/// data ([`tilo_resource::read::spec`]).
-fn read_spec() -> tilo_actions::ActionSpec {
-    read_spec_for(None)
-}
-
-/// Bind a document read to one of the readable resource's own children.
-/// These declarations never apply to live surface rows or external resources.
-fn offer_document_reads(resource: &mut ResourceSpec, eligible: &dyn Fn(&str) -> bool) {
-    if eligible(resource.id.as_str()) && !resource.actions.iter().any(|spec| spec.id == "read") {
-        resource
-            .actions
-            .push(read_spec_for(Some(resource.id.as_str())));
-    }
-    for child in &mut resource.children {
-        offer_document_reads(child, eligible);
-    }
-}
-
-fn read_spec_for(item: Option<&str>) -> tilo_actions::ActionSpec {
-    tilo_resource::read::spec(item)
-}
-
-/// Answer a `read` request against the committed document of the resource
-/// `typed` reads, whose state is `state`.
-fn read(
-    typed: &dyn TypedRoot,
-    state: &dyn std::any::Any,
-    doc: &AutoCommit,
-    payload: &[u8],
-) -> Result<tilo_actions::ActionOutput, String> {
-    let args: serde_json::Value = if payload.is_empty() {
-        serde_json::Value::Null
-    } else {
-        tilo_actions::decode_json(payload).map_err(|error| error.to_string())?
-    };
-    let item = args.get("item").and_then(serde_json::Value::as_str);
-    let value = match args.get("version").and_then(serde_json::Value::as_str) {
-        Some(version) => {
-            let heads = ui_core::history_source::steps::resolve(doc, version)?;
-            let frozen = doc
-                .clone()
-                .fork_at(&heads)
-                .map_err(|error| error.to_string())?;
-            // The type's own adapter over the frozen version: its content,
-            // or the exact bytes it holds. A version that does not read as
-            // the type says which of the three ways it does not.
-            let content = typed
-                .historical_content(&frozen, item)
-                .map_err(|gap| gap.to_string())?;
-
-            super::history::review::bounded(serde_json::json!({
-                "version": heads.iter().map(ToString::to_string).collect::<Vec<_>>().join("+"),
-                "heads": heads.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                "content": content,
-            }))?
-        }
-        None => typed.read_content(state, doc, item)?,
-    };
-    Ok(tilo_actions::ActionOutput {
-        value: Some(value),
-        resources: Vec::new(),
-    })
 }
 
 /// The window's arrival: the app's view, shown once the room's holdings
@@ -1679,7 +1614,10 @@ impl RootModel for ResourceRoot {
         // Opening another app is routed by the host to the workspace
         // broker, whichever resource offers it.
         handlers.insert(tilo_actions::remote::ApplicationLaunch::TYPE.to_owned());
-        if self.resource.readable {
+        // A resource reads itself when it says it does, and its items from
+        // its record's table when it does not (`offer_item_reads`): the read
+        // it publishes is always one it answers.
+        if self.resource.readable || self.resource.record_table.is_some() {
             handlers.insert(READ_TYPE.to_owned());
         }
         if self.resource.facts {
@@ -1759,12 +1697,13 @@ impl RootModel for ResourceRoot {
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
         }
-        if self.resource.readable
+        if (self.resource.readable || self.resource.record_table.is_some())
             && let Some(request) = op.unscoped()
             && request.type_id == READ_TYPE
         {
             let output = read(
                 self.typed.as_ref(),
+                &self.resource,
                 &*self.typed.state(),
                 doc,
                 request.payload,
@@ -2178,7 +2117,10 @@ impl RootPublishes for ResourceRoot {
             resource = resource.with_action(open_spec());
         }
         if self.stages.opens() {
-            offer_item_open(self.resource.item_of, &mut resource);
+            offer_item_open(self.resource.opens_as_item, &mut resource);
+        }
+        if let Some(table) = self.resource.record_table {
+            offer_item_reads(&mut resource, table, self.resource.kind);
         }
         let mut resources = vec![resource];
         resources.append(&mut extras);
@@ -2239,7 +2181,7 @@ impl RootPublishes for ResourceRoot {
         if let Some(mut resolved) = resolved {
             self.bind_row_declarations(std::slice::from_mut(&mut resolved));
             if self.stages.opens() {
-                offer_item_open(self.resource.item_of, &mut resolved);
+                offer_item_open(self.resource.opens_as_item, &mut resolved);
             }
             return Some(resolved);
         }
@@ -2487,6 +2429,10 @@ impl RootApp for ResourceRoot {
             if let Some(surface) = surface_mut(widget, resource)
                 && let Some(intent) = surface.take_host_intent()
             {
+                return Some(intent);
+            }
+            // A view whose app runs elsewhere asks through its own door.
+            if let Some(intent) = ui_core::component_lifecycle::take_host_intent(widget) {
                 return Some(intent);
             }
             widget

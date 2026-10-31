@@ -89,6 +89,10 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/compiler_cache_metrics.py": "tools/tests/test_ci_compiler_cache_metrics.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
     "tools/ci/current_source_metadata.py": "tools/tests/test_current_source_metadata.py",
+    "tools/ci/local_affected.py": "tools/tests/test_local_affected.py",
+    "tools/ci/local-affected.sh": "tools/tests/test_local_affected.py",
+    "tools/ci/test-changed.sh": "tools/tests/test_local_affected.py",
+    "tools/ci/lint-affected.sh": "tools/tests/test_local_affected.py",
     "tools/ci/macos_apps.py": "tools/tests/test_dev_macos_workflows.py",
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.json": "tools/tests/test_ci_select.py",
@@ -1181,6 +1185,12 @@ def make_plan(
         "selected": sorted(selected),
         "reached": sorted(reached if not full else selected),
         "tested": sorted(tested),
+        # One edge from the change: the changed packages, the packages that read the changed
+        # files, every direct dependant of a changed package, and what is tested. A change being
+        # edited is linted over these (tools/ci/test-changed.sh); a batch over `selected`.
+        "near": sorted(selected if full else
+                       (seeds | checked | dev_only | readers | tested
+                        | {name for seed in seeds for name in reverse.get(seed, ())}) & selected),
         # Packages that only read a changed file through a scoped input; the
         # test job runs just the tests that read it.
         "scoped_tests": {name: f"--test {scope.test} -E '{scope.filter}'"

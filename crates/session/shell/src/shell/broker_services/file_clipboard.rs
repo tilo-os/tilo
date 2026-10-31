@@ -2961,8 +2961,10 @@ mod tests {
         {
             let mut tree = tree.write();
             let workspace = tree.workspaces.first_mut().expect("test workspace");
-            let grants = workspace
-                .app_grant_ids_at(super::super::nearby_transfer::FILES_APP_ID, tilo_clock::unix_now());
+            let grants = workspace.app_grant_ids_at(
+                super::super::nearby_transfer::FILES_APP_ID,
+                tilo_clock::unix_now(),
+            );
             assert!(!grants.is_empty());
             for grant in grants {
                 assert!(workspace.revoke_sandbox(&grant));

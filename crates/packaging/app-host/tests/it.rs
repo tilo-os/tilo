@@ -9,8 +9,6 @@
 #[path = "common/mod.rs"]
 mod common;
 
-#[path = "cap_n_proto_round_trip.rs"]
-mod cap_n_proto_round_trip;
 #[path = "gc_removes_tried_under_pressure.rs"]
 mod gc_removes_tried_under_pressure;
 #[path = "install_resolves_round_trip.rs"]
@@ -19,6 +17,8 @@ mod install_resolves_round_trip;
 mod pin_unpin_changes_state;
 #[path = "socket_activation.rs"]
 mod socket_activation;
+#[path = "wire_round_trip.rs"]
+mod wire_round_trip;
 
 #[path = "local_trust.rs"]
 mod local_trust;

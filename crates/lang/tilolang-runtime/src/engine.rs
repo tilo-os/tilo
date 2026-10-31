@@ -12,19 +12,29 @@
 //! * Imports reach the host through the [`Host`] trait; the engine knows nothing of the ABI
 //!   beyond the signatures in [`crate::abi`].
 //!
-//! The engine is wasmi ([`EngineKind::Wasmi`]). With the `wasmtime` feature the process can run
-//! on wasmtime instead, compiled by Cranelift or Winch, to compare them
-//! (docs/tilolang-engines.md). What differs between engines is behind [`Backend`]: making a
-//! module, linking the imports, instantiating with the limits, and one call. Caching, pooling,
-//! profiling, import dispatch and how errors are reported are written once, here, so a call
-//! gives the same result on every engine.
+//! With the `wasmtime` feature, which every shipped build has, the engine is tiered
+//! ([`EngineKind::Tiered`], `engine/tiering.rs`): a module runs on wasmi, the interpreter, from
+//! the moment it is loaded, while Cranelift compiles it on a thread of its own, and calls move
+//! to the compiled module between calls once it is ready. Compiled modules are kept on disk
+//! ([`keep_compiled_in`]), so a module compiled once starts compiled. Without the feature the
+//! engine is wasmi alone. A process can also run on one engine only, wasmi, Cranelift or Winch,
+//! to compare them (docs/tilolang-engines.md). What differs between engines is behind
+//! [`Backend`]: making a module, linking the imports, instantiating with the limits, and one
+//! call. Caching, pooling, profiling, import dispatch and how errors are reported are written
+//! once, here, so a call gives the same result on every engine, and the same before and after
+//! a module moves to compiled code.
 
+#[cfg(all(test, feature = "wasmtime"))]
+mod tests;
+#[cfg(feature = "wasmtime")]
+mod tiering;
 mod wasmi_backend;
 #[cfg(feature = "wasmtime")]
 mod wasmtime_backend;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
@@ -110,10 +120,12 @@ pub enum Translation {
 }
 
 /// Which engine runs the process's wasm.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EngineKind {
+    /// wasmi first, then Cranelift once a module is compiled (the `wasmtime` feature): what a
+    /// shipped build runs.
+    Tiered,
     /// The wasmi interpreter.
-    #[default]
     Wasmi,
     /// wasmtime with its optimizing compiler, Cranelift (the `wasmtime` feature).
     Cranelift,
@@ -121,14 +133,26 @@ pub enum EngineKind {
     Winch,
 }
 
+impl Default for EngineKind {
+    /// Tiered when the build has wasmtime, else wasmi.
+    fn default() -> Self {
+        if cfg!(feature = "wasmtime") {
+            Self::Tiered
+        } else {
+            Self::Wasmi
+        }
+    }
+}
+
 impl EngineKind {
     /// Every engine, built in or not.
-    pub const ALL: [Self; 3] = [Self::Wasmi, Self::Cranelift, Self::Winch];
+    pub const ALL: [Self; 4] = [Self::Tiered, Self::Wasmi, Self::Cranelift, Self::Winch];
 
-    /// The name a person types: `wasmi`, `cranelift`, `winch`.
+    /// The name a person types: `tiered`, `wasmi`, `cranelift`, `winch`.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Tiered => "tiered",
             Self::Wasmi => "wasmi",
             Self::Cranelift => "cranelift",
             Self::Winch => "winch",
@@ -146,7 +170,7 @@ impl EngineKind {
     pub const fn built_in(self) -> bool {
         match self {
             Self::Wasmi => true,
-            Self::Cranelift | Self::Winch => cfg!(feature = "wasmtime"),
+            Self::Tiered | Self::Cranelift | Self::Winch => cfg!(feature = "wasmtime"),
         }
     }
 }
@@ -174,7 +198,7 @@ impl EngineConfig {
             return Ok(Self::default());
         };
         let kind = EngineKind::from_name(&name).ok_or_else(|| {
-            format!("{ENGINE_VARIABLE}={name} names no engine (wasmi, cranelift, winch)")
+            format!("{ENGINE_VARIABLE}={name} names no engine (tiered, wasmi, cranelift, winch)")
         })?;
         Ok(Self {
             kind,
@@ -210,13 +234,38 @@ pub fn configured() -> EngineConfig {
 
 /// Forget the modules the process compiled, so the next runtime that loads one compiles it
 /// again: how a benchmark measures a cold start in a warm process. Runtimes keep what they
-/// already loaded.
+/// already loaded; compiled modules kept on disk stay there.
 pub fn forget_compiled() {
     match shared() {
         Ok(Shared::Wasmi(p)) => p.forget(),
         #[cfg(feature = "wasmtime")]
         Ok(Shared::Wasmtime(p)) => p.forget(),
+        #[cfg(feature = "wasmtime")]
+        Ok(Shared::Tiered(t)) => {
+            t.base.forget();
+            t.top.forget();
+        }
         Err(_) => {}
+    }
+}
+
+/// Keep the modules the tiered engine compiles in `dir`, and start modules found there on
+/// compiled code: a process calls it once, before its first runtime loads a module, with a
+/// directory that is its own (a tilolang host keeps them in its storage). Without it compiled
+/// modules last as long as the process. Other engines keep nothing on disk.
+///
+/// # Errors
+///
+/// The tiered engine already read its cache from another directory, or the process's engine
+/// could not be made.
+pub fn keep_compiled_in(dir: PathBuf) -> Result<(), String> {
+    match shared()? {
+        #[cfg(feature = "wasmtime")]
+        Shared::Tiered(t) => t.top.keep_in(dir),
+        _ => {
+            drop(dir);
+            Ok(())
+        }
     }
 }
 
@@ -366,12 +415,39 @@ impl<B: Backend> Compiler<B> {
             .unwrap_or_else(PoisonError::into_inner)
             .clear();
     }
+
+    #[cfg(feature = "wasmtime")]
+    fn drop_module(&self, hash: &ModuleHash) {
+        self.modules
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(hash);
+    }
 }
 
 enum Shared {
     Wasmi(Compiler<wasmi_backend::Wasmi>),
     #[cfg(feature = "wasmtime")]
     Wasmtime(Compiler<wasmtime_backend::Wasmtime>),
+    #[cfg(feature = "wasmtime")]
+    Tiered(Box<Tiers>),
+}
+
+/// The tiered engine's two tiers: wasmi, which runs a module at once, and Cranelift.
+#[cfg(feature = "wasmtime")]
+struct Tiers {
+    base: Compiler<wasmi_backend::Wasmi>,
+    top: tiering::Tiering,
+}
+
+#[cfg(feature = "wasmtime")]
+impl Tiers {
+    fn new(translation: Translation) -> Result<Self, String> {
+        Ok(Self {
+            base: Compiler::new(wasmi_backend::Wasmi::new(translation)),
+            top: tiering::Tiering::new()?,
+        })
+    }
 }
 
 struct Process {
@@ -391,8 +467,12 @@ impl Process {
                 wasmtime_backend::Wasmtime::new(config.kind)
                     .map(|backend| Shared::Wasmtime(Compiler::new(backend)))
             }
+            #[cfg(feature = "wasmtime")]
+            EngineKind::Tiered => Tiers::new(config.translation)
+                .map(Box::new)
+                .map(Shared::Tiered),
             #[cfg(not(feature = "wasmtime"))]
-            EngineKind::Cranelift | EngineKind::Winch => Err(format!(
+            EngineKind::Tiered | EngineKind::Cranelift | EngineKind::Winch => Err(format!(
                 "this build has no {} engine (build with the `wasmtime` feature)",
                 config.kind.name()
             )),
@@ -448,7 +528,7 @@ impl<B: Backend> Pools<B> {
         limits: &EngineLimits,
         compiled_in: impl FnOnce(Duration),
     ) -> Result<(), CallError> {
-        if self.modules.borrow().contains_key(hash) {
+        if self.has(hash) {
             return Ok(());
         }
         let module = if let Some(module) = self.compiler.known(hash) {
@@ -464,6 +544,16 @@ impl<B: Backend> Pools<B> {
             self.compiler.keep(hash.clone(), module.clone());
             module
         };
+        self.adopt(hash, module, limits)
+    }
+
+    /// Run `module` for `hash` from now on, with its first instance made.
+    fn adopt(
+        &self,
+        hash: &ModuleHash,
+        module: B::Module,
+        limits: &EngineLimits,
+    ) -> Result<(), CallError> {
         let first = self
             .compiler
             .backend
@@ -476,6 +566,17 @@ impl<B: Backend> Pools<B> {
             },
         );
         Ok(())
+    }
+
+    fn has(&self, hash: &ModuleHash) -> bool {
+        self.modules.borrow().contains_key(hash)
+    }
+
+    /// Drop the module and its idle instances; one still running is dropped when its call
+    /// ends.
+    #[cfg(feature = "wasmtime")]
+    fn remove(&self, hash: &ModuleHash) {
+        self.modules.borrow_mut().remove(hash);
     }
 
     fn exports(&self, module: &ModuleHash) -> Vec<String> {
@@ -530,19 +631,125 @@ impl<B: Backend> Pools<B> {
     }
 }
 
+/// One runtime's instances on the tiered engine: each module's on wasmi until its compiled
+/// module is ready, then on Cranelift.
+#[cfg(feature = "wasmtime")]
+struct TieredPools {
+    tiering: &'static tiering::Tiering,
+    base: Pools<wasmi_backend::Wasmi>,
+    top: Pools<wasmtime_backend::Wasmtime>,
+}
+
+#[cfg(feature = "wasmtime")]
+impl TieredPools {
+    fn new(tiers: &'static Tiers) -> Result<Self, String> {
+        Ok(Self {
+            tiering: &tiers.top,
+            base: Pools::new(&tiers.base)?,
+            top: Pools::new(&tiers.top.compiler)?,
+        })
+    }
+
+    fn compile(
+        &self,
+        hash: &ModuleHash,
+        bytes: &[u8],
+        limits: &EngineLimits,
+        compiled_in: impl FnOnce(Duration),
+    ) -> Result<(), CallError> {
+        if self.has(hash) {
+            return Ok(());
+        }
+        // Compiled earlier, in this process or (from the disk cache) in an earlier one: it
+        // starts compiled.
+        let started = Instant::now();
+        if let Some(module) = self.tiering.ready(hash) {
+            let adopted = self.top.adopt(hash, module, limits);
+            compiled_in(started.elapsed());
+            return adopted;
+        }
+        self.base.compile(hash, bytes, limits, compiled_in)?;
+        self.tiering.request(hash, bytes);
+        Ok(())
+    }
+
+    fn has(&self, hash: &ModuleHash) -> bool {
+        self.top.has(hash) || self.base.has(hash)
+    }
+
+    /// Move the module to its compiled code if that is ready. This happens between calls
+    /// into it: a call still running on wasmi keeps its instance, which is dropped when it
+    /// ends.
+    fn tier_up(&self, hash: &ModuleHash, limits: &EngineLimits) {
+        if self.top.has(hash) || !self.base.has(hash) {
+            return;
+        }
+        let Some(module) = self.tiering.compiled(hash) else {
+            return;
+        };
+        match self.top.adopt(hash, module, limits) {
+            Ok(()) => self.base.remove(hash),
+            Err(error) => self.tiering.reject(hash, error.to_string()),
+        }
+    }
+
+    fn tier(&self, hash: &ModuleHash) -> Option<EngineKind> {
+        if self.top.has(hash) {
+            Some(EngineKind::Cranelift)
+        } else if self.base.has(hash) {
+            Some(EngineKind::Wasmi)
+        } else {
+            None
+        }
+    }
+
+    fn exports(&self, hash: &ModuleHash) -> Vec<String> {
+        if self.top.has(hash) {
+            self.top.exports(hash)
+        } else {
+            self.base.exports(hash)
+        }
+    }
+
+    fn cached(&self) -> usize {
+        self.top.cached().saturating_add(self.base.cached())
+    }
+
+    fn call(
+        &self,
+        hash: &ModuleHash,
+        export: &str,
+        args: &[Wasm],
+        limits: &EngineLimits,
+        cx: Cx,
+    ) -> Result<Option<Wasm>, CallError> {
+        self.tier_up(hash, limits);
+        if self.top.has(hash) {
+            self.top.call(hash, export, args, limits, cx)
+        } else {
+            self.base.call(hash, export, args, limits, cx)
+        }
+    }
+}
+
 enum Pooled {
     Wasmi(Pools<wasmi_backend::Wasmi>),
     #[cfg(feature = "wasmtime")]
     Wasmtime(Pools<wasmtime_backend::Wasmtime>),
+    #[cfg(feature = "wasmtime")]
+    Tiered(TieredPools),
 }
 
-/// The same expression for whichever engine the process runs.
+/// The same expression for whichever engine the process runs: [`Pools`] and [`TieredPools`]
+/// have the same methods.
 macro_rules! on_engine {
     ($pooled:expr, $pools:ident => $body:expr) => {
         match $pooled {
             Pooled::Wasmi($pools) => $body,
             #[cfg(feature = "wasmtime")]
             Pooled::Wasmtime($pools) => $body,
+            #[cfg(feature = "wasmtime")]
+            Pooled::Tiered($pools) => $body,
         }
     };
 }
@@ -550,6 +757,7 @@ macro_rules! on_engine {
 /// One runtime's view of the process's engine: its instances of the modules it loaded, and
 /// its limits.
 pub struct Engine {
+    kind: EngineKind,
     pooled: Pooled,
     limits: EngineLimits,
     profile: RefCell<Option<Rc<Cell<EngineProfile>>>>,
@@ -563,12 +771,19 @@ impl Engine {
     /// The process's engine could not be made, or the import table is inconsistent, which is a
     /// bug.
     pub fn new(limits: EngineLimits) -> Result<Self, String> {
-        let pooled = match shared()? {
+        Self::on(shared()?, process().config.kind, limits)
+    }
+
+    fn on(shared: &'static Shared, kind: EngineKind, limits: EngineLimits) -> Result<Self, String> {
+        let pooled = match shared {
             Shared::Wasmi(compiler) => Pooled::Wasmi(Pools::new(compiler)?),
             #[cfg(feature = "wasmtime")]
             Shared::Wasmtime(compiler) => Pooled::Wasmtime(Pools::new(compiler)?),
+            #[cfg(feature = "wasmtime")]
+            Shared::Tiered(tiers) => Pooled::Tiered(TieredPools::new(tiers)?),
         };
         Ok(Self {
+            kind,
             pooled,
             limits,
             profile: RefCell::new(None),
@@ -577,8 +792,47 @@ impl Engine {
 
     /// Which engine this is.
     #[must_use]
-    pub fn kind(&self) -> EngineKind {
-        process().config.kind
+    pub const fn kind(&self) -> EngineKind {
+        self.kind
+    }
+
+    /// Which engine runs the module's calls now: on the tiered engine, wasmi until its
+    /// compiled module is ready and a call moved it there, then Cranelift; on any other, the
+    /// engine. `None` for a module not loaded.
+    #[must_use]
+    pub fn tier(&self, module: &ModuleHash) -> Option<EngineKind> {
+        match &self.pooled {
+            #[cfg(feature = "wasmtime")]
+            Pooled::Tiered(pools) => pools.tier(module),
+            _ => on_engine!(&self.pooled, pools => pools.has(module)).then_some(self.kind),
+        }
+    }
+
+    /// Wait until the tiered engine's compile of the module has ended, so that its next call
+    /// runs compiled (or, if the compile failed, stays on wasmi): for benchmarks and tests.
+    /// The compile thread ends the wait when it finishes the module, either way. Returns at
+    /// once on another engine or for a module not being compiled.
+    pub fn settle_compile(&self, module: &ModuleHash) {
+        #[cfg(feature = "wasmtime")]
+        if let Pooled::Tiered(pools) = &self.pooled {
+            pools.tiering.settle(module);
+        }
+        #[cfg(not(feature = "wasmtime"))]
+        let _ = module;
+    }
+
+    /// Why the tiered engine could not compile the module, which then stays on wasmi; `None`
+    /// while it compiles, once it compiled, and on any other engine.
+    #[must_use]
+    pub fn compile_failure(&self, module: &ModuleHash) -> Option<String> {
+        match &self.pooled {
+            #[cfg(feature = "wasmtime")]
+            Pooled::Tiered(pools) => pools.tiering.failure(module),
+            _ => {
+                let _ = module;
+                None
+            }
+        }
     }
 
     /// Start counting where the time of calls goes (or stop, with `false`); see

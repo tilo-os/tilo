@@ -25,6 +25,9 @@ pub struct AppLists {
     /// id: resolved here so a banner paints an app's artwork without reading
     /// its manifest on the letter's thread.
     pub icons: BTreeMap<String, PathBuf>,
+    /// Every app that opens a kind of file or link here, and which kinds:
+    /// what workspace settings offer as default openers.
+    pub candidates: Vec<desktop_policy::AppCandidate>,
 }
 
 impl AppLists {
@@ -56,10 +59,14 @@ impl AppLists {
         // first read starts: what later asks for an entry's icon or name on
         // the loop (`crate::app_icons::entry_icon`) finds it read already.
         let scan = desktop_entry::cache::cached_scan();
+        // The entries Tilo keeps for the person's downloaded programs are
+        // search's own source (`providers::downloaded`): it lists them with
+        // what the registry knows of them (their kind, and a file that went
+        // away), which a host app row says nothing of.
         let host_apps = scan
             .entries
             .iter()
-            .filter(|entry| !entry.no_display && !entry.hidden)
+            .filter(|entry| !entry.no_display && !entry.hidden && entry.downloaded.is_none())
             .map(|entry| HostAppEntry {
                 desktop_id: entry.id.clone(),
                 name: entry.name.clone(),
@@ -67,6 +74,44 @@ impl AppLists {
                 comment: entry.comment.clone(),
                 keywords: entry.keywords.clone(),
             })
+            .collect();
+        let candidates: Vec<desktop_policy::AppCandidate> = installed
+            .iter()
+            .map(|app| desktop_policy::AppCandidate {
+                package_id: app.package_id.clone(),
+                display_name: app.display_name.clone(),
+                resources: app
+                    .opens_extensions
+                    .iter()
+                    .filter_map(|ext| desktop_policy::ResourceKind::extension(ext).ok())
+                    .chain(
+                        app.opens_mime_types
+                            .iter()
+                            .filter_map(|mime| desktop_policy::ResourceKind::mime(mime).ok()),
+                    )
+                    .chain(
+                        app.opens_uri_schemes
+                            .iter()
+                            .filter_map(|scheme| desktop_policy::ResourceKind::scheme(scheme).ok()),
+                    )
+                    .collect::<std::collections::BTreeSet<_>>(),
+                secondary: app.opens_secondary,
+            })
+            .chain(scan.entries.iter().filter_map(|entry| {
+                let resources: std::collections::BTreeSet<_> = entry
+                    .mime_types
+                    .iter()
+                    .filter_map(|mime| desktop_policy::ResourceKind::from_mimeapps_type(mime))
+                    .collect();
+                (!resources.is_empty() && !entry.no_display && !entry.hidden).then(|| {
+                    desktop_policy::AppCandidate {
+                        package_id: entry.id.clone(),
+                        display_name: entry.name.clone(),
+                        resources,
+                        secondary: false,
+                    }
+                })
+            }))
             .collect();
         let present = app_catalogue::Installed::from_ids(
             installed
@@ -88,6 +133,7 @@ impl AppLists {
             host_apps,
             catalogue,
             icons,
+            candidates,
         }
     }
 

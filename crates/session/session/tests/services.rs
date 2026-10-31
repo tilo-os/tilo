@@ -10,19 +10,31 @@
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    reason = "test fixtures: a failed step is the assertion"
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion, and the session \
+              outlives every call made into it"
 )]
 
 use std::io::BufReader;
 use std::sync::{Arc, Mutex};
 
 use media::audio::{AudioDevice, AudioGraph, GraphControl};
+use runtime_collab::{SpeakerCommand, SpeakerMemberSpec, SpeakerReply, SpeakerRoleSpec};
 use serde_json::{Map, Value, json};
 use tilo_actions::DoorError;
 use tilo_audio_service::sound::{self, Graph, SoundService};
 use tilo_compositor::OutputConfig;
 use tilo_connectivity_service::Connectivity;
 use tilo_connectivity_service::device::{Change, Device, Readings};
+use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError};
+use tilo_device_fabric::speaker_group::{
+    AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState,
+};
+use tilo_device_fabric::unlock::UnlockFabricState;
+use tilo_device_fabric::{
+    DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
+    FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
+};
 use tilo_service::lines::{self, Remote};
 use tilo_session::{Options, Service, Session};
 use ui::host_operation::ResourceOperationStart;
@@ -248,4 +260,298 @@ fn choosing_headphones_is_an_action_of_the_published_sound() {
         session.invoke("sound", "set-volume", &arguments(json!({"level": "loud"}))),
         Err(DoorError::InvalidArguments(_))
     ));
+}
+
+/// The person's device fabric as a stand-in transport keeps it: which of
+/// their devices are on it, each publishing one output speaker groups can be
+/// made of.
+#[derive(Clone)]
+struct Fabric {
+    converged: Arc<Mutex<DeviceFabric>>,
+    local: DeviceId,
+}
+
+impl Fabric {
+    /// This laptop, alone on the fabric.
+    fn laptop() -> Self {
+        let fabric = Self {
+            converged: Arc::new(Mutex::new(DeviceFabric::default())),
+            local: DeviceId::new("this-laptop").expect("a device id"),
+        };
+        fabric.publish("this-laptop", "This laptop");
+        fabric
+    }
+
+    /// The output `device` offers, as it publishes it.
+    fn output(device: &str) -> EndpointSelector {
+        EndpointSelector::mint(
+            &DeviceId::new(device).expect("a device id"),
+            "alsa_output.analog-stereo",
+        )
+    }
+
+    /// Publish `device` on the fabric as it stands now.
+    fn publish(&self, device: &str, label: &str) {
+        let owner = DeviceId::new(device).expect("a device id");
+        let snapshot = DeviceFabricSnapshot {
+            schema_version: FABRIC_SCHEMA_VERSION,
+            owner: owner.clone(),
+            presence: DevicePresence {
+                device: owner.clone(),
+                label: label.into(),
+                kind: DeviceKind::Laptop,
+                capabilities: FabricCapabilities {
+                    audio_output: true,
+                    audio_group: true,
+                    ..FabricCapabilities::default()
+                },
+                online: true,
+                last_seen_unix_ms: 1,
+                wake_routes: Vec::new(),
+                session: OwnerSession::default(),
+                stamp: FabricStamp {
+                    counter: 1,
+                    device: owner,
+                },
+            },
+            media: Vec::new(),
+            clipboard: Vec::new(),
+            settings: Vec::new(),
+            wifi: Vec::new(),
+            display: None,
+            speakers: SpeakerFabricState {
+                endpoints: vec![AudioEndpoint {
+                    selector: Self::output(device),
+                    kind: AudioEndpointKind::Output,
+                    label: "Speakers".into(),
+                    is_default: true,
+                }],
+                ..SpeakerFabricState::default()
+            },
+            unlock: UnlockFabricState::default(),
+        };
+        self.converged
+            .lock()
+            .unwrap()
+            .upsert(snapshot)
+            .expect("the snapshot is valid");
+    }
+
+    /// Another of the person's devices joins the fabric, online.
+    fn arrives(&self, device: &str, label: &str) {
+        self.publish(device, label);
+    }
+
+    /// Publish this device's speaker records as its snapshot does: the sets
+    /// it leads, as the group core hands them to the snapshot builder.
+    fn publishes_its_speaker_sets(&self) {
+        let mut converged = self.converged.lock().unwrap();
+        let mut snapshot = converged
+            .snapshots()
+            .get(&self.local)
+            .cloned()
+            .expect("this device is published");
+        snapshot.presence.stamp.counter = snapshot.presence.stamp.counter.saturating_add(1);
+        let stamp = snapshot.presence.stamp.clone();
+        snapshot.speakers = tilo_speaker_service::groups::authored_state(
+            &self.local,
+            Some(&snapshot.speakers),
+            &stamp,
+            true,
+        );
+        converged.upsert(snapshot).expect("the snapshot is valid");
+    }
+
+    /// The sets Settings' snapshot shows, by name.
+    fn groups(&self) -> Vec<String> {
+        let reply = tilo_speaker_service::settings::handle(&self.link(), SpeakerCommand::Snapshot);
+        let SpeakerReply::Snapshot { snapshot } = reply else {
+            panic!("Settings asks for a snapshot: {reply:?}");
+        };
+        snapshot
+            .groups
+            .into_iter()
+            .map(|group| group.name)
+            .collect()
+    }
+
+    fn link(&self) -> tilo_device_fabric::link::SharedLink {
+        Arc::new(self.clone())
+    }
+
+    /// Which devices Settings' snapshot shows, as they stand.
+    fn settings_sees(&self) -> Vec<String> {
+        let reply = tilo_speaker_service::settings::handle(&self.link(), SpeakerCommand::Snapshot);
+        let SpeakerReply::Snapshot { snapshot } = reply else {
+            panic!("Settings asks for a snapshot: {reply:?}");
+        };
+        let mut labels = snapshot
+            .devices
+            .into_iter()
+            .map(|device| device.label)
+            .collect::<Vec<_>>();
+        labels.sort();
+        labels
+    }
+}
+
+impl FabricLink for Fabric {
+    fn device_fabric(&self) -> DeviceFabric {
+        self.converged.lock().unwrap().clone()
+    }
+
+    fn online_device_ids(&self) -> std::collections::BTreeSet<DeviceId> {
+        std::collections::BTreeSet::from([self.local.clone()])
+    }
+
+    fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
+        Some((self.local.clone(), "This laptop".into()))
+    }
+
+    fn send_personal_fabric_action(
+        &self,
+        _: &DeviceId,
+        _: PersonalFabricAction,
+    ) -> Result<[u8; 16], String> {
+        Err("no transport in a test".into())
+    }
+
+    fn try_send_personal_fabric_action(
+        &self,
+        _: &DeviceId,
+        _: PersonalFabricAction,
+    ) -> Result<[u8; 16], PersonalFabricSendError> {
+        Err(PersonalFabricSendError::Rejected("no transport".into()))
+    }
+
+    fn require_media(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+fn fabric_session(fabric: &Fabric) -> Session {
+    Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            collab: false,
+            fabric: Some(fabric.link()),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
+    )
+    .expect("session")
+}
+
+/// The speaker service keeps one view and one revision per process, so the
+/// tests that speak to it take turns.
+static SPEAKER_SERVICE: Mutex<()> = Mutex::new(());
+
+/// Settings' wait for the next change of the snapshot its Speakers page
+/// shows.
+struct Wait(std::pin::Pin<Box<dyn std::future::Future<Output = u64> + Send>>);
+
+impl Wait {
+    /// Wait from `after`, on what `fabric` holds now.
+    fn from(fabric: &Fabric, after: u64) -> Self {
+        Self(Box::pin(tilo_speaker_service::settings::changed(
+            &fabric.link(),
+            after,
+        )))
+    }
+
+    fn poll(&mut self) -> std::task::Poll<u64> {
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        self.0.as_mut().poll(&mut context)
+    }
+}
+
+/// Step the session's passes until Settings hears of the change they see:
+/// a pass is what tells it to read the groups again.
+fn when_settings_hears(session: &mut Session, wait: &mut Wait) -> u64 {
+    for _ in 0..2000 {
+        if let std::task::Poll::Ready(revision) = wait.poll() {
+            return revision;
+        }
+        session.step(std::time::Duration::from_millis(1)).unwrap();
+    }
+    panic!("the session's passes never told Settings of the change");
+}
+
+/// A device arriving on the person's fabric is visible to the next snapshot
+/// Settings takes: the session's passes are what notice it and what resolve
+/// the wait Settings keeps while its Speakers page is open.
+#[test]
+fn a_device_arriving_on_the_fabric_reaches_the_next_settings_snapshot() {
+    let _turn = SPEAKER_SERVICE.lock().unwrap();
+    let fabric = Fabric::laptop();
+    let mut session = fabric_session(&fabric);
+    assert_eq!(fabric.settings_sees(), ["This laptop"]);
+
+    // Settings' first wait answers at once, with the revision its reads
+    // start from; the next one is for a change that has not happened.
+    let started = when_settings_hears(&mut session, &mut Wait::from(&fabric, 0));
+    let mut waiting = Wait::from(&fabric, started);
+    for _ in 0..8 {
+        assert!(
+            waiting.poll().is_pending(),
+            "nothing moved, so Settings is not told it did"
+        );
+        session.step(std::time::Duration::from_millis(1)).unwrap();
+    }
+
+    // The person's shelf joins the fabric; the session's next passes see it.
+    fabric.arrives("Shelf", "Shelf");
+    let changed = when_settings_hears(&mut session, &mut waiting);
+    assert_ne!(changed, started, "the revision moved");
+    assert_eq!(fabric.settings_sees(), ["Shelf", "This laptop"]);
+}
+
+/// A set saved from Settings' Speakers page reaches the session's speaker
+/// groups and is read back from them: the session admits it against the
+/// devices its fabric carries, and the next snapshot it publishes is what
+/// Settings lists it from.
+#[test]
+fn a_speaker_set_saved_in_settings_is_read_back_from_the_session() {
+    let _turn = SPEAKER_SERVICE.lock().unwrap();
+    let fabric = Fabric::laptop();
+    let mut session = fabric_session(&fabric);
+    assert!(fabric.groups().is_empty());
+
+    let reply = tilo_speaker_service::settings::handle(
+        &fabric.link(),
+        SpeakerCommand::Create {
+            name: "Living room".into(),
+            members: vec![SpeakerMemberSpec {
+                device: "this-laptop".into(),
+                output: Fabric::output("this-laptop").to_hex(),
+                role: SpeakerRoleSpec::Room {
+                    x_mm: 0,
+                    y_mm: 600,
+                    z_mm: 1100,
+                },
+            }],
+        },
+    );
+    let SpeakerReply::Done { group: Some(group) } = reply else {
+        panic!("the session saved the set: {reply:?}");
+    };
+
+    fabric.publishes_its_speaker_sets();
+    assert_eq!(fabric.groups(), ["Living room"]);
+
+    let reply = tilo_speaker_service::settings::handle(&fabric.link(), SpeakerCommand::Snapshot);
+    let SpeakerReply::Snapshot { snapshot } = reply else {
+        panic!("Settings asks for a snapshot: {reply:?}");
+    };
+    let saved = snapshot
+        .groups
+        .into_iter()
+        .find(|entry| entry.id == group)
+        .expect("the saved set is in the snapshot");
+    assert_eq!(saved.name, "Living room");
+    assert!(saved.led_here, "this device leads it");
+    assert_eq!(saved.members.len(), 1);
+
+    // The session keeps running the sets on its fabric passes.
+    session.step(std::time::Duration::from_millis(1)).unwrap();
 }

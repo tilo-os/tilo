@@ -282,7 +282,14 @@ fn granting_a_relative_folder_is_refused() {
         ("path".to_owned(), serde_json::json!("projects")),
     ]);
     let refused = TerminalEffect::decode("grant-folder", &arguments).unwrap_err();
-    assert!(refused.contains("absolute"), "{refused}");
+    assert!(
+        matches!(
+            &refused,
+            ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                if name == "path" && source.to_string().contains("absolute")
+        ),
+        "{refused}"
+    );
 }
 
 #[test]

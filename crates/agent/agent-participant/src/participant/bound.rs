@@ -3,7 +3,7 @@
 //! step runs.
 
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::AgentParticipant;
 use crate::planner::{Step, StepAction};

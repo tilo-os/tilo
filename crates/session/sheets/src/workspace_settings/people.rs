@@ -186,7 +186,7 @@ fn row(people: &People, person: &Person, parts: &Parts) -> Element {
                 .role(ButtonRole::Destructive)
                 .control_size(ControlSize::Small)
                 .with_enabled(person.can_manage)
-                .on_click(move || {
+                .on_effect(move || {
                     confirm.confirm(Confirm::RemoveMember {
                         member: member.clone(),
                         name: name.clone(),

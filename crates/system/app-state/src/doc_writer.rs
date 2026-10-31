@@ -16,17 +16,13 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-use automerge::transaction::Transactable;
-use automerge::{ActorId, AutoCommit, ChangeHash, ROOT};
+use automerge::{ActorId, AutoCommit, ChangeHash};
 use durable_store::{
     Durability, DurableStore, Lease, ReadyWake, Revision, SettleWatch, StorageKey,
     StoreError as SeamError, WriteOp,
 };
 
-use crate::{
-    SCHEMA_VERSION, SCHEMA_VERSION_KEY, StoreError, decode_canonical_with, load_hint,
-    validate_canonical_schema_of,
-};
+use crate::{StoreError, decode_canonical_with, load_hint};
 
 /// Debounce window [`FsStore`](crate::FsStore) applies by default. Long
 /// enough to swallow a burst of keystrokes, short enough that a `kill` a
@@ -267,26 +263,9 @@ impl DocOwner {
         &self.actor
     }
 
-    /// A private current-schema candidate. Nothing is published or reset.
-    ///
-    /// # Errors
-    /// Propagates a failure stamping the schema version.
-    pub fn new_document(&self) -> Result<AutoCommit, StoreError> {
-        let mut doc = AutoCommit::new().with_actor(self.actor.clone());
-        doc.put(ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION))
-            .map_err(|source| StoreError::Automerge {
-                path: self.label.clone(),
-                source: Box::new(source),
-            })?;
-        Ok(doc)
-    }
-
-    /// See [`validate_canonical_schema_of`].
-    ///
-    /// # Errors
-    /// Rejects malformed, conflicting and newer schemas.
-    pub fn validate_schema(&self, doc: &AutoCommit) -> Result<(), StoreError> {
-        validate_canonical_schema_of(doc, &self.label)
+    /// A new empty document carrying this owner's actor.
+    pub fn new_document(&self) -> AutoCommit {
+        AutoCommit::new().with_actor(self.actor.clone())
     }
 
     /// Decode the stored document, dropping a torn tail into a private repair.
@@ -365,7 +344,6 @@ impl DocOwner {
                 path: self.label.clone(),
             });
         }
-        self.validate_schema(&loaded.doc)?;
         loaded.doc.set_actor(self.actor.clone());
         let heads = loaded.doc.get_heads();
         let accepted = if let Some(bytes) = loaded.repair {
@@ -1022,7 +1000,8 @@ impl Drop for DocWriter {
 mod tests {
     use super::*;
     use crate::FsStore;
-    use automerge::{ObjType, ReadDoc};
+    use automerge::transaction::Transactable;
+    use automerge::{ObjType, ROOT, ReadDoc};
     use durable_store::MemoryStore;
     use std::time::Duration;
 
@@ -1115,7 +1094,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let mut doc = owner.new_document().unwrap();
+        let mut doc = owner.new_document();
         let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
         let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
         doc.splice_text(&body, 0, 0, "draft").unwrap();
@@ -1165,7 +1144,7 @@ mod tests {
             let store: Rc<dyn DurableStore> =
                 Rc::new(FsStore::with_debounce(&root, Duration::ZERO));
             let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
-            let mut doc = owner.new_document().unwrap();
+            let mut doc = owner.new_document();
             let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
             doc.splice_text(&body, 0, 0, "stored").unwrap();
             let writer = DocWriter::start_new(&owner, &mut doc).unwrap();
@@ -1214,7 +1193,7 @@ mod tests {
         {
             for subject in Subject::all() {
                 let owner = subject.owner("burst");
-                let mut doc = owner.new_document().unwrap();
+                let mut doc = owner.new_document();
                 let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
                 let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
                 for (i, ch) in "persisted".chars().enumerate() {
@@ -1239,7 +1218,7 @@ mod tests {
         {
             for subject in Subject::all() {
                 let owner = subject.owner("growth");
-                let mut doc = owner.new_document().unwrap();
+                let mut doc = owner.new_document();
                 let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
                 doc.splice_text(&body, 0, 0, "seed").unwrap();
                 let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
@@ -1272,7 +1251,7 @@ mod tests {
         {
             for subject in Subject::all() {
                 let owner = subject.owner("status");
-                let mut doc = owner.new_document().unwrap();
+                let mut doc = owner.new_document();
                 let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
                 subject.flush(&writer).unwrap();
                 doc.put(ROOT, "value", 1_u64).unwrap();
@@ -1305,7 +1284,7 @@ mod tests {
                     continue; // an immediately durable store cannot fail
                 }
                 let owner = subject.owner("failure");
-                let mut doc = owner.new_document().unwrap();
+                let mut doc = owner.new_document();
                 doc.put(ROOT, "body", "original").unwrap();
                 let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
                 subject.flush(&writer).unwrap();
@@ -1345,7 +1324,7 @@ mod tests {
         {
             for subject in Subject::all() {
                 let owner = subject.owner("seeded");
-                let mut doc = owner.new_document().unwrap();
+                let mut doc = owner.new_document();
                 doc.put(ROOT, "body", "stored").unwrap();
                 store_raw_leased(&subject, &owner, doc.save());
                 let mut writer = DocWriter::try_start(&owner).unwrap();
@@ -1373,7 +1352,7 @@ mod tests {
             Rc::new(FsStore::with_debounce(tmp.path(), Duration::from_secs(600)));
         let key = StorageKey::record("so.tilo.test", "room", "on-the-loop");
         let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
-        let mut doc = owner.new_document().unwrap();
+        let mut doc = owner.new_document();
         doc.put(ROOT, "body", "typed").unwrap();
         {
             let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
@@ -1501,22 +1480,6 @@ mod tests {
                 ));
             }
         }
-        // Phase `schema_refusal_leaves_newer_documents_untouched`.
-        {
-            for subject in Subject::all() {
-                let mut doc = AutoCommit::new();
-                doc.put(ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION) + 1)
-                    .unwrap();
-                let bytes = doc.save();
-                store_raw(&subject, "newer", bytes.clone());
-                let owner = subject.owner("newer");
-                assert!(matches!(owner.load(), Err(StoreError::NewerSchema { .. })));
-                assert_eq!(
-                    subject.store.read(owner.key()).unwrap().unwrap().bytes,
-                    bytes
-                );
-            }
-        }
     }
 
     #[test]
@@ -1548,14 +1511,14 @@ mod tests {
                 let primary = Rc::new(
                     DocOwner::acquire_shared(Rc::clone(&subject.store), key.clone()).unwrap(),
                 );
-                let mut doc = primary.new_document().unwrap();
+                let mut doc = primary.new_document();
                 let writer = DocWriter::start_new(&primary, &mut doc).unwrap();
                 subject.flush(&writer).unwrap();
                 let secondary = Rc::new(
                     DocOwner::acquire_shared(Rc::clone(&subject.store), key.clone()).unwrap(),
                 );
                 assert_ne!(secondary.actor(), primary.actor(), "{}", subject.name);
-                let mut other = secondary.new_document().unwrap();
+                let mut other = secondary.new_document();
                 other.put(ROOT, "from", "secondary").unwrap();
                 let second = DocWriter::start_new(&secondary, &mut other).unwrap();
                 subject.flush(&second).unwrap();
@@ -1586,7 +1549,7 @@ mod tests {
             Rc::new(FsStore::with_debounce(tmp.path(), Duration::from_secs(600)));
         let key = StorageKey::record("so.tilo.test", "room", "large");
         let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
-        let mut doc = owner.new_document().unwrap();
+        let mut doc = owner.new_document();
         let items = doc.put_object(ROOT, "items", ObjType::Map).unwrap();
         for i in 0..6_000_u64 {
             let value = blake3::hash(&i.to_le_bytes()).to_hex().to_string();

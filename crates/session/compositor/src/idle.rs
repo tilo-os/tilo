@@ -63,6 +63,17 @@ pub enum SessionTransition {
     Suspend,
 }
 
+/// Who locked the session: the person, whose lock their other devices follow,
+/// or the idle timer (and the lock an idle sleep puts up), which stays on this
+/// device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockedBy {
+    /// A key, a command, the power service, the lock screen's own unlocking.
+    Person,
+    /// The idle timer, or the sleep the idle timer asked for.
+    IdleTimer,
+}
+
 /// What holds the session awake at a tick.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Holds {

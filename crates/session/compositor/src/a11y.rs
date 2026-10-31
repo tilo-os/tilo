@@ -75,9 +75,13 @@ impl Magnifier {
     }
 }
 
-/// The pointer's size and its crosshair.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The pointer's theme, its size and its crosshair.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CursorA11y {
+    /// The cursor theme the pointer is drawn from, by the directory's name;
+    /// empty leaves the environment's choice (`XCURSOR_THEME`, else
+    /// `default`) in force.
+    pub theme: String,
     /// The pointer's size in logical pixels.
     pub size: u32,
     /// Draw full-height and full-width guides through the pointer, so it is
@@ -88,6 +92,7 @@ pub struct CursorA11y {
 impl Default for CursorA11y {
     fn default() -> Self {
         Self {
+            theme: String::new(),
             size: DEFAULT_CURSOR_SIZE,
             crosshair: false,
         }
@@ -322,12 +327,45 @@ mod tests {
         let a11y = A11y::default();
         assert_eq!(a11y.cursor.size, DEFAULT_CURSOR_SIZE);
         assert!(!a11y.cursor.crosshair);
+        assert_eq!(
+            a11y.cursor.theme, "",
+            "no stored theme: the environment's pointer is drawn"
+        );
         assert!(a11y.color_filter.is_off());
         assert!(!a11y.magnifier.is_on());
         assert!(!a11y.visual_alerts);
         assert!(a11y.assists.switch.is_none());
         assert!(!a11y.assists.sticky_keys);
         assert!(!a11y.assists.mouse_keys);
+    }
+
+    /// A theme applied while the session runs is the pointer's from the same
+    /// update: no restart, and no theme has to be installed here for it to
+    /// name one.
+    #[test]
+    fn a_new_theme_redraws_the_pointer_at_once() {
+        let mut compositor = crate::Compositor::headless(Box::new(crate::StackPolicy))
+            .expect("a headless compositor");
+        let environment = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".to_owned());
+        assert_eq!(
+            compositor.data.state.cursor.theme_name(),
+            environment,
+            "until the person chooses, the environment's pointer is drawn"
+        );
+
+        let mut themed = |theme: &str| {
+            let mut a11y = A11y::default();
+            a11y.cursor.theme = theme.to_owned();
+            compositor.set_a11y(a11y).expect("the theme applies");
+            compositor.data.state.cursor.theme_name().to_owned()
+        };
+        assert_eq!(themed("Bibata-Modern-Ice"), "Bibata-Modern-Ice");
+        assert_eq!(themed("Adwaita"), "Adwaita");
+        assert_eq!(
+            themed(""),
+            environment,
+            "and the environment's again once they draw back to it"
+        );
     }
 
     #[test]

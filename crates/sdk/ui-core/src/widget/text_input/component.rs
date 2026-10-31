@@ -1,6 +1,6 @@
 //! [`TextInput`] as a described component.
 
-use crate::component::{Bound, Component, Described, Event, Value};
+use crate::component::{Bound, Component, Described, Event, Person, Value};
 use crate::tokens::TextRole;
 
 use super::TextInput;
@@ -21,6 +21,11 @@ pub struct TextInputProps {
     pub title: bool,
     /// Whether it can be typed into now.
     pub enabled: bool,
+    /// Someone else changed the text and the person has not seen it yet: the field takes their
+    /// colour. The host sets it, from what the field is bound to (task-legibility §3).
+    pub changed_by: Option<Person>,
+    /// What the text was before that change, said when the field is hovered.
+    pub previous: Option<String>,
     /// Enter was pressed: what was typed is done (a quick add's entry). With it, Enter ends the
     /// text rather than breaking its line; Shift+Enter still breaks a wrapping field's line.
     #[component(event)]
@@ -35,8 +40,24 @@ impl Default for TextInputProps {
             lines: None,
             title: false,
             enabled: true,
+            changed_by: None,
+            previous: None,
             submit: Event::None,
         }
+    }
+}
+
+/// What a field changed by someone else says on hover: who changed it, and what it held.
+fn change_note(by: &Person, previous: Option<&str>) -> String {
+    match previous {
+        Some(before) => crate::i18n::widget_format(
+            "change-field-before",
+            &[
+                ("who", by.name.clone().into()),
+                ("before", before.to_owned().into()),
+            ],
+        ),
+        None => crate::i18n::widget_format("change-field", &[("who", by.name.clone().into())]),
     }
 }
 
@@ -50,8 +71,14 @@ impl Described for TextInput {
             lines,
             title,
             enabled,
+            changed_by,
+            previous,
             submit,
         } = props;
+        let change = changed_by.map(|by| {
+            let note = change_note(&by, previous.as_deref());
+            (by.identity, note)
+        });
         let placeholder = placeholder.unwrap_or_default();
         let name = if value.name.is_empty() {
             placeholder.clone()
@@ -61,10 +88,11 @@ impl Described for TextInput {
         let edits = value.clone();
         let mut input = Self::from_state(&value.state)
             .with_presence_path(value.path.clone())
-            .on_change(move |text| edits.edited(Value::Text(text.to_owned())))
+            .on_change_view(move |text| edits.edited(Value::Text(text.to_owned())))
             .with_id(key)
             .with_accessible_name(&name)
             .with_placeholder(&placeholder)
+            .with_change(change)
             .disabled(!enabled);
         if let Some(lines) = lines {
             input = input
@@ -80,7 +108,7 @@ impl Described for TextInput {
                 .with_enter_submits(true);
         }
         if !submit.is_none() {
-            input = input.on_submit(move |_| submit.fire(None));
+            input = input.on_submit_view(move |_| submit.fire(None));
         }
         input
     }

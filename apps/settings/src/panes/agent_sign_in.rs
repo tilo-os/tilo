@@ -60,9 +60,9 @@ impl Service {
 
     pub(crate) fn preset(self) -> Preset {
         match self {
-            Self::ChatGpt => Preset::ChatGpt,
-            Self::Copilot => Preset::Copilot,
-            Self::OpenRouter => Preset::OpenRouter,
+            Self::ChatGpt => Preset::CHATGPT,
+            Self::Copilot => Preset::COPILOT,
+            Self::OpenRouter => Preset::OPENROUTER,
         }
     }
 

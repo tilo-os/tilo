@@ -233,7 +233,7 @@ pub fn facet_bar(
                 if !offer.active || offer.clearable {
                     let change = Rc::clone(on_change);
                     let next = query.toggled(&Chip::toggle(offer.key.clone()));
-                    chip = chip.on_toggle(move |_| change(next.clone()));
+                    chip = chip.on_toggle_view(move |_| change(next.clone()));
                 }
             }
             FilterKind::Value => {
@@ -242,11 +242,11 @@ pub fn facet_bar(
                 chip = chip
                     .menu()
                     .current(offer.active)
-                    .on_click(move || open(&key));
+                    .on_view(move || open(&key));
                 if offer.clearable {
                     let change = Rc::clone(on_change);
                     let next = query.cleared(&offer.key);
-                    chip = chip.on_remove(move || change(next.clone()));
+                    chip = chip.on_remove_view(move || change(next.clone()));
                 }
             }
         }

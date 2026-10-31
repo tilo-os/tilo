@@ -86,7 +86,7 @@ pub fn certified_person_fixture_for_seeds(
     tree.persist_path = Some(evidence_home.root().join("workspace.json"));
     tree.set_active(crate::test_support::WorkspaceId(71));
     let fanout = Arc::new(FanoutState::new());
-    let (state, _) = CapnpBrokerState::new(
+    let (state, _) = AppBrokerState::new(
         &fanout,
         Arc::new(Mutex::new(BrokerChannels::default())),
         PeerPublisher::disabled(),

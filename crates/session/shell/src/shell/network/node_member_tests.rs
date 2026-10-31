@@ -17,7 +17,8 @@ use collab_types::{
     document_artifact_id, document_attestation_id,
 };
 use ed25519_dalek::SigningKey;
-use tilo_browser_peer::{DocumentRoute, Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle};
+use tilo_browser_peer::{Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle};
+use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use super::{HostIdentity, Reach, ShellNetwork};

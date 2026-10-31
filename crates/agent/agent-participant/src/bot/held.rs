@@ -16,7 +16,7 @@ use collab_types::DocumentMutation;
 use serde_json::{Map, Value};
 use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
 use tilo_actions::{ActionContext, ActionInvoker, ActionOutput};
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::door::{DoorParticipant, RunStep};
 use super::item_json::{OutboxRow, outbox_entries};

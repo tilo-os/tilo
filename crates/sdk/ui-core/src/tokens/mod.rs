@@ -1,7 +1,9 @@
+pub mod brand;
 pub mod colors;
 pub mod contrast;
 pub mod density;
 pub mod elevation;
+pub mod finish;
 pub mod layout;
 pub mod metrics;
 pub mod motion;
@@ -20,7 +22,8 @@ pub use colors::{
     dark_overlays, light_overlays, nearest_presence_hue,
 };
 pub use density::{Density, RowHeights};
-pub use elevation::{Elevation, Shadow};
+pub use elevation::{Elevation, Outline, Shadow};
+pub use finish::{Border, BorderInk, Depth, Finish, Optics, RoleFinishes, SurfaceRole};
 pub use layout::{Breakpoint, BreakpointTracker, Layout};
 pub use metrics::Metrics;
 pub use motion::{
@@ -63,6 +66,17 @@ pub struct Tokens {
     /// The density these tokens are at; [`crate::Theme::with_density`]
     /// moves it.
     pub density: Density,
+    /// What each surface role is made of, as authored (the painters ask
+    /// [`crate::Theme::finish`], which applies reduced transparency).
+    pub finishes: RoleFinishes,
+    /// How surfaces are outlined.
+    pub border: Border,
+    /// The colour the border is drawn in, resolved from its ink by the
+    /// theme; `None` where surfaces keep the design language's hairlines.
+    pub border_color: Option<vello::peniko::Color>,
+    /// How surfaces stand off what is below them; the elevation above is
+    /// already this depth's.
+    pub depth: Depth,
 }
 
 impl Tokens {
@@ -96,6 +110,14 @@ impl Tokens {
                 SelectorFinish::STOCK
             },
             density: Density::Comfortable,
+            finishes: if colors_high_contrast {
+                RoleFinishes::OPAQUE
+            } else {
+                RoleFinishes::STOCK
+            },
+            border: Border::STOCK,
+            border_color: None,
+            depth: Depth::STOCK,
         }
     }
 

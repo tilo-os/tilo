@@ -73,7 +73,6 @@ async fn writer_boundary(
         runtime.admit_device(peer.device_public_key).unwrap();
         runtime.add_subscriber(Subscriber {
             device_public_key: peer.device_public_key,
-            role: peer.role,
             tx: tx.clone(),
             disconnect: disconnect.clone(),
         });
@@ -111,6 +110,7 @@ async fn writer_boundary(
         own_user_public_key: &user.public_key,
         own_device_cert: &source_peer.cert,
         own_device_public_key: &source_peer.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: None,
         metrics: &metrics,
         trust_policy: &policy,
@@ -139,7 +139,6 @@ async fn writer_boundary(
             &workspace,
             crate::transport::decode(&bytes[4..]).unwrap(),
             Some(source.clone()),
-            source_peer.role,
             metrics.clone(),
         )
         .await
@@ -367,7 +366,6 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         runtime.admit_device(peer.device_public_key).unwrap();
         runtime.add_subscriber(Subscriber {
             device_public_key: peer.device_public_key,
-            role: peer.role,
             tx: tx.clone(),
             disconnect: disconnect.clone(),
         });
@@ -405,6 +403,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         own_user_public_key: &user.public_key,
         own_device_cert: &source_peer.cert,
         own_device_public_key: &source_peer.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: None,
         metrics: &metrics,
         trust_policy: &policy,
@@ -448,7 +447,6 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
             &workspace,
             crate::transport::decode(&bytes[4..]).unwrap(),
             Some(source.clone()),
-            source_peer.role,
             metrics.clone(),
         )
         .await
@@ -609,7 +607,6 @@ async fn a_fanned_delivery_skips_the_rooms_lock_until_authority_moves() {
     runtime.admit_device(recipient.device_public_key).unwrap();
     runtime.add_subscriber(Subscriber {
         device_public_key: recipient.device_public_key,
-        role: recipient.role,
         tx: outbound.clone(),
         disconnect: disconnect.clone(),
     });
@@ -653,6 +650,7 @@ async fn a_fanned_delivery_skips_the_rooms_lock_until_authority_moves() {
         own_user_public_key: &user.public_key,
         own_device_cert: &recipient.cert,
         own_device_public_key: &recipient.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: None,
         metrics: &metrics,
         trust_policy: &policy,

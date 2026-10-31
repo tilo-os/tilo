@@ -1,7 +1,3 @@
-#![allow(
-    refining_impl_trait,
-    reason = "the Cap'n Proto server impls return the concrete `Promise` where the generated traits declare `impl Future`"
-)]
 //! Adapters from the shared broker to the native session's existing services.
 use super::state::WorkspaceTreeHandle;
 #[cfg(target_os = "linux")]
@@ -121,7 +117,7 @@ impl NativeOwnerCommitService {
         self.owner.opened(unavailable)
     }
 }
-impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
+impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
     fn requires_room(&self, room: &str) -> bool {
         super::state::RoomId::parse(room)
             .is_some_and(|room| self.tree.read().commits_native_documents(room))
@@ -137,8 +133,8 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
     }
     fn commit(
         &self,
-        request: tilo_owner_commit::OwnerCommitRequest,
-    ) -> tilo_owner_commit::CommitFuture {
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
         let owner = self.owner.clone();
         let network = self.network.clone();
         let writes = self.writes.clone();
@@ -150,7 +146,7 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
             let now = std::time::SystemTime::now();
             if !matches!(
                 request.operation,
-                tilo_owner_commit::CommitOperation::EffectReceipt { .. }
+                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt { .. }
             ) {
                 if let Some(network) = network.as_ref() {
                     network.check_native_custody(&owner, room)?;
@@ -201,7 +197,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             }
         }
         owner.with_current(room_id, |view| {
-            if view.device() != view.governor() {
+            if !view.hosted_here() {
                 return Err("native checkpoint requires the actual governing owner".into());
             }
             Ok(())
@@ -210,7 +206,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             .map_err(|error| format!("checkpoint governor custody unavailable: {error}"))?;
         let now = std::time::SystemTime::now();
         owner.with_current(room_id, |view| {
-            if view.device() != view.governor() || view.governor() != &governor {
+            if !view.hosted_here() || view.room_host() != &governor {
                 return Err("checkpoint governor custody changed".into());
             }
             view.peer().workspace().check_checkpoint_writer(&key, now)?;
@@ -245,7 +241,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 }
             }
             owner.with_current(room, |view| {
-                if view.device() != view.governor() {
+                if !view.hosted_here() {
                     return Err("native checkpoint requires the actual governing owner".into());
                 }
                 Ok(())
@@ -253,7 +249,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
                 .map_err(|error| format!("checkpoint governor custody unavailable: {error}"))?;
             owner.with_current(room, |view| {
-                if view.governor() != &governor {
+                if view.room_host() != &governor {
                     return Err("checkpoint governor custody changed".into());
                 }
                 Ok(())
@@ -285,7 +281,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         }
     }
     fn requires_room(&self, room: &str) -> bool {
-        tilo_owner_commit::OwnerCommitService::requires_room(self, room)
+        tilo_peer_state::owner_commit::OwnerCommitService::requires_room(self, room)
     }
 
     /// The one app-access decision every opening of an app takes
@@ -332,7 +328,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             return false;
         }
         self.opened_owner("native checkpoint governor unavailable")
-            .and_then(|owner| owner.with_current(room, |view| Ok(view.device() == view.governor())))
+            .and_then(|owner| owner.with_current(room, |view| Ok(view.hosted_here())))
             .unwrap_or(false)
     }
 
@@ -364,8 +360,8 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
     /// ([`host_membership::commit_at_own_host`]).
     fn execute(
         &self,
-        request: tilo_owner_commit::OwnerCommitRequest,
-    ) -> tilo_owner_commit::CommitFuture {
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
         let owner = self.owner.clone();
         let network = self.network.clone();
         Box::pin(async move {
@@ -376,7 +372,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 .ok_or("invalid native membership room")?;
             if let Some(network) = network.as_ref() {
                 network.check_native_custody(&owner, room)?;
-                if let tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
+                if let tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
                     caller,
                     command,
                     ..
@@ -662,9 +658,51 @@ fn stage_launch_content(
         &caller.app_id,
         content_hash,
     )?;
+    stage_content_bytes(app_id, content_hash, &bytes, workspace).map(Some)
+}
+
+/// The workspace content `hash` of `room`: what content puts, agents' and
+/// apps', keep under the room's neutral scope, which every app of the room
+/// reads by reference.
+///
+/// # Errors
+///
+/// Why it cannot be read here: still arriving, nowhere, or the store is
+/// unreachable.
+pub(crate) fn read_room_content(room: &str, hash: &str) -> Result<Vec<u8>, String> {
+    use runtime_fs::blobs::ReadOutcome;
+    let result = with_session_blobs(|client| {
+        client
+            .scope(room, tilo_action_broker::services::CONTENT_PUT_SCOPE)
+            .and_then(|scoped| scoped.read_all(hash))
+    });
+    match result {
+        Ok(ReadOutcome::Ready { bytes, .. }) => Ok(bytes),
+        Ok(ReadOutcome::Pending) => Err(format!(
+            "tilo.content:{hash} is still arriving on this device"
+        )),
+        Ok(ReadOutcome::Unavailable) => Err(format!(
+            "tilo.content:{hash} is not in this workspace's content"
+        )),
+        Err(error) => Err(format!("the workspace content store: {error}")),
+    }
+}
+
+/// Stage `bytes`, whose hash is `content_hash`, as a read-only file granted
+/// to `app_id` in `workspace`; its path.
+///
+/// # Errors
+///
+/// The bytes do not match the hash or are too large, or staging failed.
+pub(crate) fn stage_content_bytes(
+    app_id: &str,
+    content_hash: &str,
+    bytes: &[u8],
+    workspace: &mut super::state::Workspace,
+) -> Result<std::path::PathBuf, String> {
     if bytes.is_empty()
         || bytes.len() > MAX_LAUNCH_CONTENT_BYTES
-        || !tilo_content::verify(content_hash, &bytes)
+        || !tilo_content::verify(content_hash, bytes)
     {
         return Err("launch content failed integrity validation".into());
     }
@@ -680,7 +718,7 @@ fn stage_launch_content(
     .map_err(|error| format!("protect launch staging: {error}"))?;
     // Content travels without the name its sender gave it: its bytes say
     // what it is, and so what the opened app takes it as.
-    let (extension, _) = tilo_content::opened_as(&bytes);
+    let (extension, _) = tilo_content::opened_as(bytes);
     let path = dir.join(format!("{content_hash}.{extension}"));
     match std::fs::OpenOptions::new()
         .write(true)
@@ -689,7 +727,7 @@ fn stage_launch_content(
     {
         Ok(mut file) => {
             use std::io::Write;
-            file.write_all(&bytes)
+            file.write_all(bytes)
                 .and_then(|()| file.sync_all())
                 .map_err(|error| format!("stage launch content: {error}"))?;
         }
@@ -717,7 +755,7 @@ fn stage_launch_content(
             scope: super::state::GRANT_SESSION,
         },
     );
-    Ok(Some(path))
+    Ok(path)
 }
 
 /// Launches installed apps, in every room on this device itself: with the
@@ -938,6 +976,13 @@ impl LauncherServices for NativeLauncher {
             None => super::launcher::launch_in_workspace(app, workspace),
         };
         launched.map(|_| ()).map_err(|e| e.to_string())
+    }
+    fn windowless(
+        &self,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<tilo_action_broker::services::WindowlessStart>, String> {
+        Ok(super::windowless::request(app, room))
     }
     fn begin_launch(
         &self,
@@ -1240,9 +1285,9 @@ impl NativeShortcutLibrary {
         if let Some(network) = &network {
             network.check_native_custody(&owner, room)?;
         }
-        let request = tilo_owner_commit::OwnerCommitRequest {
+        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
             room: room.to_string(),
-            operation: tilo_owner_commit::CommitOperation::ShortcutChange {
+            operation: tilo_peer_state::owner_commit::CommitOperation::ShortcutChange {
                 invocation: uuid::Uuid::new_v4(),
                 caller: device.clone(),
                 change: serde_json::to_vec(&change).map_err(|error| error.to_string())?,
@@ -1848,15 +1893,18 @@ fn native_workspace_memberships(
 }
 
 /// The room's tracker, read for the broker's runs and for whoever follows
-/// one in the shell.
+/// one in the shell: from the owner where it commits the room, from the
+/// sealed writes this device holds where the room seals its records.
 pub(crate) fn native_tracker(
     tree: &WorkspaceTreeHandle,
     network: Option<Arc<super::network::ShellNetwork>>,
     history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
+    sealed_writes: Option<SealedWrites>,
 ) -> Arc<NativeTrackerRuns> {
     Arc::new(tracker_runs::NativeTrackerRuns::new(
         NativeOwnerCommitService {
             history_keys,
+            sealed_writes,
             ..NativeOwnerCommitService::new(tree.clone(), network)
         },
     ))
@@ -1895,8 +1943,12 @@ pub fn native_services(
     sealed_writes: Option<SealedWrites>,
 ) -> HostServices {
     let tracker_runs = membership.as_ref().map(|tree| {
-        native_tracker(tree, network.clone(), history_keys.clone())
-            as Arc<dyn tilo_action_broker::services::TrackerRuns>
+        native_tracker(
+            tree,
+            network.clone(),
+            history_keys.clone(),
+            sealed_writes.clone(),
+        ) as Arc<dyn tilo_action_broker::services::TrackerRuns>
     });
     let committed_documents = membership
         .as_ref()
@@ -1997,6 +2049,7 @@ pub fn native_services(
             .chain([
                 super::settings_records::broker_door(),
                 super::activity_provider::broker_door(),
+                super::desktop_door::broker_door(),
                 super::crash_records::broker_door(),
                 super::task_programs::broker_door(),
             ])
@@ -2035,6 +2088,7 @@ pub fn native_services(
         settings: settings_store::installed_source(),
         display_control,
         live_activities: Some(super::live_activities::board()),
+        record_changes: Some(Arc::new(TaskChanges)),
         ..Default::default()
     }
 }
@@ -2058,19 +2112,18 @@ impl NativeOwnDevice {
 impl tilo_action_broker::services::OwnDeviceActions for NativeOwnDevice {
     fn invoke(
         &self,
-        caller: &tilo_actions::remote::Caller,
-        checked: &tilo_actions::remote::own_device::Checked,
-        request: &tilo_actions::remote::InvokeRequest,
+        _caller: &tilo_actions::remote::Caller,
+        _checked: &tilo_actions::remote::own_device::Checked,
+        _request: &tilo_actions::remote::InvokeRequest,
     ) -> Result<
         tilo_actions::remote::Pending<tilo_action_broker::services::OwnDeviceOutcome>,
         tilo_actions::remote::ActionHostError,
     > {
-        let tilo_actions::remote::CallerPrincipal::Person(person) = caller.principal() else {
-            return Err(tilo_actions::remote::ActionHostError::NotPermitted);
-        };
-        self.0
-            .invoke_own_device(person, checked, request)
-            .map_err(|reason| tilo_actions::remote::ActionHostError::Refused { reason })
+        // Running an action on another of the person's devices is the device
+        // engine's, which this session does not hand actions to yet.
+        Err(tilo_actions::remote::ActionHostError::Unavailable {
+            reason: "actions run on this device only".into(),
+        })
     }
 
     fn ask_person(
@@ -2086,7 +2139,7 @@ impl tilo_action_broker::services::OwnDeviceActions for NativeOwnDevice {
         let Some(person) = caller.user_public_key() else {
             return Err(tilo_actions::remote::ActionHostError::NotPermitted);
         };
-        let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(*person);
+        let person = tilo_action_broker::collab_app_broker::principal_id_for_root(*person);
         if caller.principal() != &tilo_actions::remote::CallerPrincipal::Person(person) {
             return Err(tilo_actions::remote::ActionHostError::NotPermitted);
         }
@@ -2135,13 +2188,11 @@ pub(crate) fn test_broker_with_membership(
         applications: Some(Arc::new(NativeApplications)),
         ..Default::default()
     };
-    tilo_action_broker::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
+    tilo_action_broker::collab_app_broker::AppBrokerState::test_broker_with_authority(
         authority, services,
     )
 }
 
-use capnp::capability::Promise;
-use runtime_collab::raw::workspace_control_handle;
 use std::rc::Rc;
 use tilo_lock::MutexRecover as _;
 use tokio::sync::Mutex as AsyncMutex;
@@ -2259,15 +2310,14 @@ impl WorkspaceControlServices for NativeWorkspaceControl {
         &self,
         room: tilo_desktop_model::RoomId,
         target: [u8; 32],
-        revalidate: Arc<dyn Fn() -> Result<(), capnp::Error> + Send + Sync>,
-    ) -> Result<workspace_control_handle::Client, capnp::Error> {
+        revalidate: tilo_action_broker::services::ControlRevalidate,
+    ) -> Result<Rc<dyn tilo_action_broker::services::WorkspaceControlSession>, String> {
         revalidate()?;
         let target = iroh::EndpointId::from_bytes(&target)
-            .map_err(|_| capnp::Error::failed("invalid target device identity".into()))?;
+            .map_err(|_| "invalid target device identity".to_owned())?;
         let session = self
             .0
-            .open_workspace_control(tilo_network_actor::room_topic_id(room), target)
-            .map_err(capnp::Error::failed)?;
+            .open_workspace_control(tilo_network_actor::room_topic_id(room), target)?;
         let initial_route = match session.route() {
             tilo_network_actor::WorkspaceControlRoute::Direct { .. } => {
                 runtime_collab::WorkspaceControlRoute::Direct
@@ -2278,31 +2328,27 @@ impl WorkspaceControlServices for NativeWorkspaceControl {
                 }
             }
         };
-        Ok(capnp_rpc::new_client(CapnpWorkspaceControlHandle {
+        Ok(Rc::new(NativeWorkspaceControlSession {
             revalidate,
             network: self.0.clone(),
-            session: Rc::new(AsyncMutex::new(session)),
-            inbound: Rc::new(AsyncMutex::new(self.0.subscribe_workspace_control())),
-            initial: Rc::new(AsyncMutex::new(Some(
+            session: AsyncMutex::new(session),
+            inbound: AsyncMutex::new(self.0.subscribe_workspace_control()),
+            initial: AsyncMutex::new(Some(
                 runtime_collab::WorkspaceControlEvent::WaitingForConsent {
                     route: initial_route,
                 },
-            ))),
+            )),
         }))
     }
 }
-struct CapnpWorkspaceControlHandle {
-    revalidate: Arc<dyn Fn() -> Result<(), capnp::Error> + Send + Sync>,
+struct NativeWorkspaceControlSession {
+    revalidate: tilo_action_broker::services::ControlRevalidate,
     network: Arc<crate::shell::network::ShellNetwork>,
-    session: Rc<AsyncMutex<tilo_network_actor::workspace_control::WorkspaceControlSession>>,
-    inbound: Rc<
-        AsyncMutex<
-            tokio::sync::mpsc::UnboundedReceiver<
-                crate::shell::network::WorkspaceControlNetworkEvent,
-            >,
-        >,
+    session: AsyncMutex<tilo_network_actor::workspace_control::WorkspaceControlSession>,
+    inbound: AsyncMutex<
+        tokio::sync::mpsc::UnboundedReceiver<crate::shell::network::WorkspaceControlNetworkEvent>,
     >,
-    initial: Rc<AsyncMutex<Option<runtime_collab::WorkspaceControlEvent>>>,
+    initial: AsyncMutex<Option<runtime_collab::WorkspaceControlEvent>>,
 }
 
 fn workspace_control_event(
@@ -2348,169 +2394,127 @@ fn closed_workspace_control_event(
     ))
 }
 
-impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
-    fn read(
-        self: Rc<Self>,
-        _params: workspace_control_handle::ReadParams,
-        mut results: workspace_control_handle::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        let this = self;
-        Promise::from_future(async move {
-            let initial_event = {
-                let mut initial = this.initial.lock().await;
-                initial.take()
+impl NativeWorkspaceControlSession {
+    async fn next_event(&self) -> Result<runtime_collab::WorkspaceControlEvent, String> {
+        let initial_event = self.initial.lock().await.take();
+        if let Some(event) = initial_event {
+            (self.revalidate)()?;
+            return Ok(event);
+        }
+        loop {
+            let closed = closed_workspace_control_event(&*self.session.lock().await);
+            if let Some(event) = closed {
+                return Ok(event);
+            }
+            if let Err(error) = (self.revalidate)() {
+                return Ok(workspace_control_event(
+                    self.session.lock().await.deny(error),
+                ));
+            }
+            let network_event =
+                match tokio::time::timeout(std::time::Duration::from_millis(250), async {
+                    self.inbound.lock().await.recv().await
+                })
+                .await
+                {
+                    Ok(Some(event)) => event,
+                    Ok(None) => return Err("workspace-control observer closed".to_owned()),
+                    Err(_) => continue,
+                };
+            let mut session = self.session.lock().await;
+            (self.revalidate)()?;
+            let update = match network_event {
+                crate::shell::network::WorkspaceControlNetworkEvent::Message(event)
+                    if event.workspace_topic == session.workspace() =>
+                {
+                    session.observe_from(event.transport_peer, &event.message)
+                }
+                crate::shell::network::WorkspaceControlNetworkEvent::PeerLeft {
+                    workspace_topic,
+                    peer,
+                } if workspace_topic == session.workspace() => session.peer_departed(peer),
+                crate::shell::network::WorkspaceControlNetworkEvent::PeerRevoked {
+                    workspace_topic,
+                    peer,
+                } if workspace_topic == session.workspace() && peer == session.target() => {
+                    Some(session.deny("target device certificate was revoked"))
+                }
+                _ => None,
             };
-            if let Some(event) = initial_event {
-                (this.revalidate)()?;
-                let bytes = postcard::to_allocvec(&event)
-                    .map_err(|error| capnp::Error::failed(error.to_string()))?;
-                results.get().set_event(&bytes);
-                return Ok(());
+            drop(session);
+            if let Some(update) = update {
+                return Ok(workspace_control_event(update));
             }
-            loop {
-                let closed = {
-                    let session = this.session.lock().await;
-                    closed_workspace_control_event(&session)
+        }
+    }
+
+    async fn input(&self, input: runtime_collab::WorkspaceControlInput) -> Result<(), String> {
+        (self.revalidate)()?;
+        let session = self.session.lock().await;
+        (self.revalidate)()?;
+        let input = match input {
+            runtime_collab::WorkspaceControlInput::RequestKeyframe { seq } => {
+                let published = self
+                    .network
+                    .publish_workspace_control_keyframe_request(&session, seq);
+                drop(session);
+                return published;
+            }
+            runtime_collab::WorkspaceControlInput::PointerMotion { x, y } => {
+                tilo_window_share::streaming::InputEvent::PointerMotion { x, y }
+            }
+            runtime_collab::WorkspaceControlInput::PointerButton { button, pressed } => {
+                tilo_window_share::streaming::InputEvent::PointerButton { button, pressed }
+            }
+            runtime_collab::WorkspaceControlInput::Key {
+                keycode,
+                pressed,
+                modifiers,
+            } => tilo_window_share::streaming::InputEvent::Key {
+                keysym: keycode,
+                pressed,
+                modifiers,
+            },
+            runtime_collab::WorkspaceControlInput::KeyboardFocus { focused } => {
+                let tilo_network_actor::workspace_control::WorkspaceControlStatus::Active {
+                    surface,
+                    ..
+                } = session.status()
+                else {
+                    return Err("target has not granted control".to_owned());
                 };
-                if let Some(event) = closed {
-                    let bytes = postcard::to_allocvec(&event)
-                        .map_err(|error| capnp::Error::failed(error.to_string()))?;
-                    results.get().set_event(&bytes);
-                    return Ok(());
-                }
-                if let Err(error) = (this.revalidate)() {
-                    let event = {
-                        let mut session = this.session.lock().await;
-                        workspace_control_event(session.deny(error.to_string()))
-                    };
-                    let bytes = postcard::to_allocvec(&event)
-                        .map_err(|error| capnp::Error::failed(error.to_string()))?;
-                    results.get().set_event(&bytes);
-                    return Ok(());
-                }
-                let network_event =
-                    match tokio::time::timeout(std::time::Duration::from_millis(250), async {
-                        this.inbound.lock().await.recv().await
-                    })
-                    .await
-                    {
-                        Ok(Some(event)) => event,
-                        Ok(None) => {
-                            return Err(capnp::Error::disconnected(
-                                "workspace-control observer closed".into(),
-                            ));
-                        }
-                        Err(_) => continue,
-                    };
-                let mut session = this.session.lock().await;
-                (this.revalidate)()?;
-                let update = match network_event {
-                    crate::shell::network::WorkspaceControlNetworkEvent::Message(event)
-                        if event.workspace_topic == session.workspace() =>
-                    {
-                        session.observe_from(event.transport_peer, &event.message)
-                    }
-                    crate::shell::network::WorkspaceControlNetworkEvent::PeerLeft {
-                        workspace_topic,
-                        peer,
-                    } if workspace_topic == session.workspace() => session.peer_departed(peer),
-                    crate::shell::network::WorkspaceControlNetworkEvent::PeerRevoked {
-                        workspace_topic,
-                        peer,
-                    } if workspace_topic == session.workspace() && peer == session.target() => {
-                        Some(session.deny("target device certificate was revoked"))
-                    }
-                    _ => None,
-                };
-                if let Some(update) = update {
-                    let bytes = postcard::to_allocvec(&workspace_control_event(update))
-                        .map_err(|error| capnp::Error::failed(error.to_string()))?;
-                    results.get().set_event(&bytes);
-                    return Ok(());
+                tilo_window_share::streaming::InputEvent::KeyboardFocus {
+                    surface: *surface,
+                    focused,
                 }
             }
-        })
+        };
+        let published = self
+            .network
+            .publish_workspace_control_input(&session, &input);
+        drop(session);
+        published
+    }
+}
+
+impl tilo_action_broker::services::WorkspaceControlSession for NativeWorkspaceControlSession {
+    fn read(
+        &self,
+    ) -> tilo_action_broker::services::ControlAnswer<'_, runtime_collab::WorkspaceControlEvent>
+    {
+        Box::pin(self.next_event())
     }
 
     fn send_input(
-        self: Rc<Self>,
-        params: workspace_control_handle::SendInputParams,
-        _results: workspace_control_handle::SendInputResults,
-    ) -> Promise<(), capnp::Error> {
-        if let Err(error) = (self.revalidate)() {
-            return Promise::err(error);
-        }
-        let bytes = match params.get().and_then(
-            runtime_collab::collab_capnp::workspace_control_handle::send_input_params::Reader::get_event,
-        ) {
-            Ok(bytes) => bytes,
-            Err(error) => return Promise::err(error),
-        };
-        let input: runtime_collab::WorkspaceControlInput = match postcard::from_bytes(bytes) {
-            Ok(input) => input,
-            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-        };
-        let this = self;
-        Promise::from_future(async move {
-            {
-                let session = this.session.lock().await;
-                (this.revalidate)()?;
-                let input = match input {
-                    runtime_collab::WorkspaceControlInput::RequestKeyframe { seq } => {
-                        let published = this
-                            .network
-                            .publish_workspace_control_keyframe_request(&session, seq)
-                            .map_err(capnp::Error::failed);
-                        drop(session);
-                        return published;
-                    }
-                    runtime_collab::WorkspaceControlInput::PointerMotion { x, y } => {
-                        tilo_window_share::streaming::InputEvent::PointerMotion { x, y }
-                    }
-                    runtime_collab::WorkspaceControlInput::PointerButton { button, pressed } => {
-                        tilo_window_share::streaming::InputEvent::PointerButton { button, pressed }
-                    }
-                    runtime_collab::WorkspaceControlInput::Key {
-                        keycode,
-                        pressed,
-                        modifiers,
-                    } => tilo_window_share::streaming::InputEvent::Key {
-                        keysym: keycode,
-                        pressed,
-                        modifiers,
-                    },
-                    runtime_collab::WorkspaceControlInput::KeyboardFocus { focused } => {
-                        let surface = match session.status() {
-                            tilo_network_actor::workspace_control::WorkspaceControlStatus::Active { surface, .. } => {
-                                *surface
-                            }
-                            _ => {
-                                return Err(capnp::Error::failed(
-                                    "target has not granted control".into(),
-                                ));
-                            }
-                        };
-                        tilo_window_share::streaming::InputEvent::KeyboardFocus { surface, focused }
-                    }
-                };
-                let published = this
-                    .network
-                    .publish_workspace_control_input(&session, &input)
-                    .map_err(capnp::Error::failed);
-                drop(session);
-                published
-            }
-        })
+        &self,
+        input: runtime_collab::WorkspaceControlInput,
+    ) -> tilo_action_broker::services::ControlAnswer<'_, ()> {
+        Box::pin(self.input(input))
     }
 
-    fn close(
-        self: Rc<Self>,
-        _params: workspace_control_handle::CloseParams,
-        _results: workspace_control_handle::CloseResults,
-    ) -> Promise<(), capnp::Error> {
-        let session = self.session.clone();
-        Promise::from_future(async move {
-            session.lock().await.disconnect();
+    fn close(&self) -> tilo_action_broker::services::ControlAnswer<'_, ()> {
+        Box::pin(async move {
+            self.session.lock().await.disconnect();
             Ok(())
         })
     }
@@ -2573,8 +2577,9 @@ mod tests {
         let foreign_time = other.policy_time().unwrap().unwrap();
         let root = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[74; 32]);
-        let certificate = tilo_joined_room::testing::certificate(&root, &device, "clock test");
-        let room_id = uuid::Uuid::parse_str(tilo_joined_room::testing::ROOM).unwrap();
+        let certificate =
+            tilo_peer_state::owner::testing::certificate(&root, &device, "clock test");
+        let room_id = uuid::Uuid::parse_str(tilo_peer_state::owner::testing::ROOM).unwrap();
         assert_eq!(
             authority
                 .authorize_with_policy_time(room_id, &certificate, &foreign_time)
@@ -2642,6 +2647,7 @@ mod tests {
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
             opens_secondary: false,
+            opens_resource_kinds: Vec::new(),
             offers: Vec::new(),
         };
         let host = |id: &str, name: &str| crate::shell::host_apps::HostApp {
@@ -2826,3 +2832,28 @@ mod native_owner_tests;
 #[cfg(test)]
 #[path = "broker_services/host_admission_tests.rs"]
 mod host_admission_tests;
+
+/// Where an agent task's changes of a tilolang app's record are applied: at the record's
+/// origin, by the host of the app's workspace and author, with no instance
+/// ([`super::launcher::apply_task_change`]).
+struct TaskChanges;
+
+impl tilo_action_broker::services::RecordChangeServices for TaskChanges {
+    fn apply(
+        &self,
+        room: &str,
+        change: &tilo_actions::remote::RecordChange,
+        invoker: &tilo_actions::ActionInvoker,
+    ) -> Result<serde_json::Value, String> {
+        let applied = runtime_portal::tilolang_host::Change {
+            resource: change.resource.clone(),
+            action: change.action.clone(),
+            arguments: change.arguments.clone(),
+            invoker: serde_json::to_value(invoker).map_err(|error| error.to_string())?,
+            context: None,
+            preview: change.preview.clone(),
+        };
+        super::launcher::apply_task_change(room, &change.app, &applied)
+            .map_err(|error| error.to_string())
+    }
+}

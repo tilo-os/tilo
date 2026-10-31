@@ -65,20 +65,23 @@ impl Reads {
     /// withdrawing every generation before disconnected health is published.
     pub(super) fn close(&self) {
         self.5.closed.store(true, Ordering::Release);
-        if let Ok(rows) = self.0.lock() {
+        {
+            let rows = self.0.lock_recover();
             for gate in rows.values() {
                 if let Gate::Required(ready, _) = gate {
                     ready.store(false, Ordering::Release);
                 }
             }
         }
-        if let Ok(mut rows) = self.1.lock() {
+        {
+            let mut rows = self.1.lock_recover();
             for read in rows.values() {
                 read.valid.store(false, Ordering::Release);
             }
             rows.clear();
         }
-        if let Ok(mut requests) = self.2.lock() {
+        {
+            let mut requests = self.2.lock_recover();
             requests.clear();
         }
         self.progressed();
@@ -90,9 +93,7 @@ impl Reads {
         if !value {
             return ready.swap(false, Ordering::AcqRel);
         }
-        let Ok(rows) = self.0.lock() else {
-            return ready.swap(false, Ordering::AcqRel);
-        };
+        let rows = self.0.lock_recover();
         let current = !self.closed() && rows.values().any(|gate| {
             matches!(gate, Gate::Required(candidate, _) if std::ptr::eq(candidate.as_ref(), ready))
         });
@@ -129,22 +130,20 @@ impl Reads {
     }
     /// Whether the owner asked for a fresh read, without consuming the ask.
     fn refresh_pending(&self, key: &str) -> bool {
-        self.2.lock().is_ok_and(|requests| requests.contains(key))
+        self.2.lock_recover().contains(key)
     }
     pub(super) fn readiness_diagnostic(&self, key: &str) -> Option<ReadinessDiagnostic> {
         let required = self
             .0
-            .lock()
-            .ok()?
+            .lock_recover()
             .get(key)
             .is_some_and(|gate| matches!(gate, Gate::Required(_, _)));
         let staged = self
             .1
-            .lock()
-            .ok()?
+            .lock_recover()
             .get(key)
             .map(|read| read.merged.load(Ordering::Acquire));
-        let refresh_requested = self.2.lock().ok()?.contains(key);
+        let refresh_requested = self.2.lock_recover().contains(key);
         Some(ReadinessDiagnostic {
             required,
             staged: staged.is_some(),
@@ -153,14 +152,14 @@ impl Reads {
         })
     }
     pub(super) fn delivery_generation(&self, key: &str) -> Option<Arc<AtomicBool>> {
-        let rows = self.0.lock().ok()?;
+        let rows = self.0.lock_recover();
         match rows.get(key)? {
             Gate::Required(ready, _) => Some(ready.clone()),
             _ => None,
         }
     }
     pub(super) fn delivery_turn(&self, key: &str) -> Result<Arc<tokio::sync::Semaphore>, String> {
-        let mut turns = self.3.lock().map_err(|_| "document turn map poisoned")?;
+        let mut turns = self.3.lock_recover();
         Ok(turns
             .entry(key.into())
             .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
@@ -169,22 +168,19 @@ impl Reads {
     pub(super) fn set_document_owner_routes(&self, mut keys: Vec<String>, generation: u64) {
         keys.compact_sort();
         keys.dedup();
-        if let Ok(mut owners) = self.4.lock() {
+        {
+            let mut owners = self.4.lock_recover();
             *owners = Some(DocumentOwners {
                 routes: keys,
                 generation,
             });
         }
     }
-    pub(super) fn document_owner_routes(&self, original: &str) -> Result<Vec<String>, String> {
+    pub(super) fn document_owner_routes(&self, original: &str) -> Vec<String> {
         self.4
-            .lock()
-            .map_err(|_| "document owner routes poisoned".into())
-            .map(|owners| {
-                owners
-                    .as_ref()
-                    .map_or_else(|| vec![original.into()], |owners| owners.routes.clone())
-            })
+            .lock_recover()
+            .as_ref()
+            .map_or_else(|| vec![original.into()], |owners| owners.routes.clone())
     }
     /// The owner an invocation arriving on `key` now belongs to.
     pub(super) fn delivery_owner(&self, key: &str) -> DeliveryOwner {
@@ -251,9 +247,9 @@ impl Reads {
             return false;
         }
         self.0
-            .lock()
-            .ok()
-            .and_then(|rows| rows.get(key).cloned())
+            .lock_recover()
+            .get(key)
+            .cloned()
             .is_some_and(|gate| match gate {
                 Gate::Joining | Gate::Failed(_) => false,
                 Gate::Legacy => true,
@@ -262,15 +258,16 @@ impl Reads {
     }
     pub(super) fn required(&self, key: &str) -> bool {
         self.0
-            .lock()
-            .is_ok_and(|rows| matches!(rows.get(key), Some(Gate::Required(_, _))))
+            .lock_recover()
+            .get(key)
+            .is_some_and(|gate| matches!(gate, Gate::Required(_, _)))
     }
     pub(super) fn bind_private_window(
         &self,
         key: &str,
         instance: Option<u64>,
     ) -> Result<(), String> {
-        let rows = self.0.lock().map_err(|_| "document reads poisoned")?;
+        let rows = self.0.lock_recover();
         let Some(Gate::Required(_, bound)) = rows.get(key) else {
             return Err("private binding requires admitted native document custody".into());
         };
@@ -278,7 +275,7 @@ impl Reads {
         Ok(())
     }
     pub(super) fn private_window(&self, key: &str) -> Option<u64> {
-        let rows = self.0.lock().ok()?;
+        let rows = self.0.lock_recover();
         let Gate::Required(_, instance) = rows.get(key)? else {
             return None;
         };
@@ -287,9 +284,7 @@ impl Reads {
     }
 
     pub(super) fn joining(&self, key: &str) -> bool {
-        let Ok(mut rows) = self.0.lock() else {
-            return false;
-        };
+        let mut rows = self.0.lock_recover();
         let rejoin = matches!(rows.get(key), Some(Gate::Failed(_)));
         if self.closed() || (rows.contains_key(key) && !rejoin) || (!rejoin && rows.len() >= 64) {
             return false;
@@ -300,9 +295,7 @@ impl Reads {
     /// The route of `key` could not be joined, or its first read failed,
     /// with `error`: a reader waiting for its read is told so at once.
     pub(super) fn join_failed(&self, key: &str, error: String) {
-        let Ok(mut rows) = self.0.lock() else {
-            return;
-        };
+        let mut rows = self.0.lock_recover();
         match rows.get(key) {
             Some(Gate::Joining) => {}
             Some(Gate::Required(ready, _)) => ready.store(false, Ordering::Release),
@@ -319,7 +312,7 @@ impl Reads {
         if self.closed() {
             return Some("committed document reader closed".into());
         }
-        let rows = self.0.lock().ok()?;
+        let rows = self.0.lock_recover();
         match rows.get(key) {
             Some(Gate::Failed(error)) => Some(error.clone()),
             None => Some("committed document route capacity".into()),
@@ -330,13 +323,14 @@ impl Reads {
     /// channel ([`Self::legacy`]): no committed read will be staged for it.
     pub(super) fn answered_by_own_channel(&self, key: &str) -> bool {
         self.0
-            .lock()
-            .is_ok_and(|rows| matches!(rows.get(key), Some(Gate::Legacy)))
+            .lock_recover()
+            .get(key)
+            .is_some_and(|gate| matches!(gate, Gate::Legacy))
     }
     pub(super) fn initial(&self, key: &str) -> Option<CommittedDocument> {
         // Only a whole document can seed an owner; staged changes apply
         // only to the owner that holds their base.
-        if let Some(read) = self.1.lock().ok().and_then(|rows| rows.get(key).cloned()) {
+        if let Some(read) = self.1.lock_recover().get(key).cloned() {
             if read.base.is_none() {
                 return Some(read);
             }
@@ -353,9 +347,7 @@ impl Reads {
         if self.publishable(key) && self.required(key) {
             #[cfg(any(test, feature = "test-support"))]
             tracing::warn!(key, "an owner asked for a whole committed read");
-            if let Ok(mut refresh) = self.2.lock() {
-                refresh.insert(key.into());
-            }
+            self.2.lock_recover().insert(key.into());
             self.5.reader.notify_waiters();
         }
         None
@@ -363,13 +355,12 @@ impl Reads {
     /// The current staged capture still awaiting the canonical owner's merge.
     /// Unlike `initial`, observing this handoff does not request a refresh.
     pub(super) fn unapplied(&self, key: &str) -> Option<CommittedDocument> {
-        let gates = self.0.lock().ok()?;
+        let gates = self.0.lock_recover();
         if !matches!(gates.get(key), Some(Gate::Required(_, _))) {
             return None;
         }
         self.1
-            .lock()
-            .ok()?
+            .lock_recover()
             .get(key)
             .filter(|read| {
                 read.is_current() && read.base.is_none() && !read.merged.load(Ordering::Acquire)
@@ -382,16 +373,13 @@ impl Reads {
         ready: &Arc<AtomicBool>,
         read: CommittedDocument,
     ) -> Result<(), String> {
-        let gates = self.0.lock().map_err(|_| "document reads poisoned")?;
+        let gates = self.0.lock_recover();
         if self.closed()
             || !matches!(gates.get(key),Some(Gate::Required(current, _)) if Arc::ptr_eq(current,ready))
         {
             return Err("committed route replaced".into());
         }
-        let mut rows = self
-            .1
-            .lock()
-            .map_err(|_| "committed read staging poisoned")?;
+        let mut rows = self.1.lock_recover();
         if !rows.contains_key(key) && rows.len() >= 64 {
             return Err("committed staging capacity".into());
         }
@@ -402,10 +390,10 @@ impl Reads {
         Ok(())
     }
     fn clear_stage(&self, key: &str, merged: &Arc<AtomicBool>) {
-        if let Ok(mut rows) = self.1.lock()
-            && rows
-                .get(key)
-                .is_some_and(|read| Arc::ptr_eq(&read.merged, merged))
+        let mut rows = self.1.lock_recover();
+        if rows
+            .get(key)
+            .is_some_and(|read| Arc::ptr_eq(&read.merged, merged))
         {
             rows.remove(key);
         }
@@ -414,23 +402,24 @@ impl Reads {
         if self.closed() {
             return false;
         }
-        self.0.lock().is_ok_and(|rows|matches!(rows.get(key),Some(Gate::Required(current, _)) if Arc::ptr_eq(current,ready)))
+        self.0.lock_recover().get(key).is_some_and(
+            |gate| matches!(gate, Gate::Required(current, _) if Arc::ptr_eq(current, ready)),
+        )
     }
     fn discard_stage(&self, key: &str) {
-        if let Ok(mut rows) = self.1.lock()
-            && let Some(read) = rows.remove(key)
         {
-            read.valid.store(false, Ordering::Release);
+            let mut rows = self.1.lock_recover();
+            if let Some(read) = rows.remove(key) {
+                read.valid.store(false, Ordering::Release);
+            }
         }
-        if let Ok(mut requests) = self.2.lock() {
-            requests.remove(key);
-        }
+        self.2.lock_recover().remove(key);
     }
     fn refresh_requested(&self, key: &str) -> bool {
-        self.2.lock().is_ok_and(|mut requests| requests.remove(key))
+        self.2.lock_recover().remove(key)
     }
     fn legacy(&self, key: &str) -> Result<(), String> {
-        let mut rows = self.0.lock().map_err(|_| "document reads poisoned")?;
+        let mut rows = self.0.lock_recover();
         if self.closed() {
             return Err("committed document reader closed".into());
         }
@@ -440,7 +429,7 @@ impl Reads {
         Ok(())
     }
     fn pending(&self, key: &str) -> Result<Arc<AtomicBool>, String> {
-        let mut rows = self.0.lock().map_err(|_| "document reads poisoned")?;
+        let mut rows = self.0.lock_recover();
         if self.closed() {
             return Err("committed document reader closed".into());
         }
@@ -483,10 +472,7 @@ pub struct CommittedDocument {
 impl std::fmt::Debug for CommittedDocument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CommittedDocument")
-            .field(
-                "bytes",
-                &self.data.bytes.lock().map(|bytes| bytes.len()).unwrap_or(0),
-            )
+            .field("bytes", &self.data.bytes.lock_recover().len())
             .finish_non_exhaustive()
     }
 }
@@ -531,11 +517,7 @@ impl CommittedDocument {
         if !self.is_current() {
             return Err("committed capture route replaced".into());
         }
-        let mut bytes = self
-            .data
-            .bytes
-            .lock()
-            .map_err(|_| "committed history capture poisoned")?;
+        let mut bytes = self.data.bytes.lock_recover();
         let taken = std::mem::take(&mut *bytes);
         let mutation = if self.base.is_some() {
             collab_types::DocumentMutation::Incremental(taken)
@@ -1346,7 +1328,7 @@ impl From<&str> for CaptureFailure {
 
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn read_capture(
     channel: &runtime_collab::ChannelHandle,
@@ -1521,10 +1503,6 @@ pub(super) struct NativeReadJoin {
     pub(super) record_kind: String,
 }
 impl NativeReadJoin {
-    #[expect(
-        clippy::future_not_send,
-        reason = "the original capnp root stays on its shovel LocalSet"
-    )]
     async fn renew(
         &self,
         spec: &RouteSpec,
@@ -1600,7 +1578,7 @@ enum Woke {
 /// shovel sleeps; a hang meanwhile is met by the next ask.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn until_stale(
     channel: &runtime_collab::ChannelHandle,
@@ -1656,7 +1634,7 @@ fn opens_committed_document(participant_kind: &str) -> bool {
 
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 pub(super) async fn install(
     channel: &runtime_collab::ChannelHandle,

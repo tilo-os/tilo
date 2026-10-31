@@ -81,7 +81,7 @@ mod cases {
         let channels = build(app_source!("chat"), &[]);
         let today = build(app_source!("today"), &[&notes, &todo, &channels]);
         let board = build(app_source!("board"), &[]);
-        let views = build(app_source!("views"), &[&board, &todo, &channels, &notes]);
+        let views = build(app_source!("views"), &[&channels]);
         Apps {
             notes,
             todo,
@@ -154,6 +154,18 @@ mod cases {
         fn id_of(&self, which: usize) -> &PackageId {
             &self.ids[which]
         }
+    }
+
+    /// The id of `app`'s field `field` of its type `ty`: what a control bound to it names.
+    fn field_id(app: &App, ty: &str, field: &str) -> String {
+        app.meta()
+            .types
+            .iter()
+            .find(|t| t.name == ty)
+            .and_then(|t| t.fields.iter().find(|f| f.name == field))
+            .unwrap_or_else(|| panic!("{ty}.{field} is declared"))
+            .id
+            .clone()
     }
 
     fn res(r: &ResourceRef) -> Value {
@@ -484,13 +496,18 @@ mod cases {
         assert_eq!(state(found[0]), "view", "{}", dump(view.tree()));
         let title = of_kind(found[0], "ui.TextInput")[0];
         let binding = title.binding.clone().expect("the title input is bound");
-        assert_eq!(binding.field().map(|(target, _)| target), Some(&note));
+        assert_eq!(
+            binding.field(),
+            Some((&note, &field_id(&apps.notes, "Note", "title"))),
+            "the first input edits the note's title"
+        );
         assert_eq!(
             &binding.author,
             w.id_of(0),
             "the nested view is the notes package's code, not the agent's"
         );
-        assert_eq!(text_prop(title, "placeholder"), "Title");
+        // A new note's title starts empty: "Untitled" is only what the field prompts with.
+        assert_eq!(text_prop(title, "placeholder"), "Untitled");
 
         let key = title.key.clone();
         assert_eq!(
@@ -1019,7 +1036,16 @@ mod cases {
         let editor = w.rt.open_resource(&me(), &note, None).unwrap();
         assert_eq!(editor.window(), note.id_string());
         let title = of_kind(editor.tree(), "ui.TextInput")[0];
-        assert_eq!(text_prop(title, "placeholder"), "Title");
+        assert_eq!(
+            title
+                .binding
+                .as_ref()
+                .and_then(tilolang_runtime::Binding::field),
+            Some((&note, &field_id(&apps.notes, "Note", "title"))),
+            "the note's editor edits its title"
+        );
+        // A new note's title starts empty: "Untitled" is only what the field prompts with.
+        assert_eq!(text_prop(title, "placeholder"), "Untitled");
         assert_eq!(
             w.rt.default_view(&note.ty).as_deref(),
             Some(apps.notes.view("note_editor").as_str())
@@ -1166,7 +1192,7 @@ mod cases {
     }
 
     #[test]
-    fn an_answer_draws_its_view_block_live_over_other_apps_as_its_task_wrote_it() {
+    fn an_answer_draws_its_written_view_live_over_other_apps_as_its_task_wrote_it() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let list = w.rt.create_root("Tasks").unwrap();
@@ -1177,7 +1203,7 @@ mod cases {
         add("Update the changelog");
         let frozen = add("Freeze the strings for translation");
         w.call(&apps.todo, "check", vec![res(&frozen)]);
-        let answers = w.rt.create_root("Answers").unwrap();
+        let answers = w.rt.create_root("Views").unwrap();
         // The agent's task answers; the answer records it as the block's author.
         let task = Principal::new("agent-task:release");
         let id = apps.views.action("answer");
@@ -1191,13 +1217,14 @@ mod cases {
                         Value::text("Left for the release"),
                         Value::text("what's left for the release?"),
                         Value::text(release_view()),
+                        Value::text(""),
                     ],
                 ),
             )
             .unwrap(),
         );
         assert_eq!(author_of(&w, &answer), "agent-task:release");
-        let mut view = w.view(&apps.views, "answer_page", vec![res(&answer)]);
+        let mut view = w.view(&apps.views, "view_page", vec![res(&answer)]);
         let found = embeds(view.tree());
         assert_eq!(found.len(), 1, "{}", dump(view.tree()));
         assert_eq!(state(found[0]), "view", "{}", dump(view.tree()));
@@ -1222,7 +1249,7 @@ mod cases {
         );
         // As a window draws it, with rows built as they are shown: the answer's rows are there.
         let lazy =
-            w.rt.open_view(&me(), &apps.views.view("answer_page"), vec![res(&answer)])
+            w.rt.open_view(&me(), &apps.views.view("view_page"), vec![res(&answer)])
                 .unwrap();
         let lazy_rows = of_kind(embeds(lazy.tree())[0], "ui.ListRow").len();
         assert_eq!(

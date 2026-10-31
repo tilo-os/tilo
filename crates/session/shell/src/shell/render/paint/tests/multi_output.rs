@@ -202,7 +202,7 @@ fn far_deadline() -> Instant {
 fn differences(desktop: &[u8], image: &[u8]) -> (usize, u8) {
     let crop = crop(desktop, 4864, (2944, 0, 1920, 1080));
     assert_eq!(crop.len(), image.len(), "the image is the display's size");
-    let mut pixels: usize = 0;
+    let mut pixels = 0_usize;
     let mut largest = 0;
     for (a, b) in crop.chunks_exact(4).zip(image.chunks_exact(4)) {
         let worst = a

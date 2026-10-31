@@ -87,10 +87,10 @@ window or a place.
 
 - A resource's actions are available in its views, in the command surface for what has focus,
   and to agents.
-- Arranging is actions too: open, close, move to another strip, follow. Agents can do them
-  under the same rules.
-- Every change shows where it happened: as presence in the windows showing the resource, and
-  as a suggestion with a preview when it waits for approval.
+- Arranging (open, close, move, follow) is the person's own: their input, or a view acting on
+  it. It is never done from a task, so no agent or script rearranges anyone's screen.
+- Every change shows where it happened: marked in the views showing the resource, as presence,
+  and in its task (shell.md, "What a person sees of a task").
 
 ## 8. In the language
 
@@ -121,8 +121,8 @@ default view note_editor for Note
 
 A person's arrangement is typed state of theirs, in the shell's own terms, synced across their
 devices with history and undo. The shell is a view of it and of the workspace (resources,
-tasks, presence). Arranging is actions on it, so agents can open things for the person too,
-within the same rules.
+tasks, presence). The person and the agents acting for them arrange it, attributed and undoable
+like any change; how agents' work shows up is the person's setting (shell.md §5).
 
 ## 10. Shells
 

@@ -5,7 +5,7 @@
 //! Kept apart from [`crate::app`] so the rules that decide what a sync
 //! deletes or rewrites are readable without the widget around them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::model::{AccountConfig, Folder, Message, MessageId};
 use crate::state::MailState;
@@ -66,17 +66,59 @@ pub(super) fn server_changes(
     (gone, reflagged)
 }
 
+/// The messages of `mail`'s drafts' server copies: each is the draft
+/// itself, so fetched back with Drafts it is kept as nothing.
+fn draft_copies(mail: &crate::resource::Mail) -> HashSet<MessageId> {
+    mail.draft_copy_ids()
+        .iter()
+        .filter_map(|id| id.parse().ok())
+        .collect()
+}
+
+/// Take the copies servers keep of drafts out of what a sync of `folder`
+/// fetched, before anything is kept of them: no message, no entry in the
+/// record, nothing on this device or for its other devices. Their UIDs
+/// join what the folder's next sync counts as held, so they are not
+/// fetched again.
+pub(super) fn pass_over_draft_copies(
+    st: &mut MailState,
+    mail: &crate::resource::Mail,
+    account_id: &str,
+    folder: Folder,
+    synced: &mut crate::sync::Synced,
+) {
+    let copies = draft_copies(mail);
+    if copies.is_empty() {
+        return;
+    }
+    let (passed, kept): (Vec<Message>, Vec<Message>) = std::mem::take(&mut synced.messages)
+        .into_iter()
+        .partition(|message| copies.contains(&message.id));
+    synced.messages = kept;
+    if passed.is_empty() {
+        return;
+    }
+    synced.originals.retain(|(id, _)| !copies.contains(id));
+    if let Some(window) = crate::sync::Window::of_messages(&passed, folder) {
+        let key = (account_id.to_owned(), folder);
+        let earlier = st.passed_over.get(&key).copied();
+        st.passed_over.insert(key, window.with(earlier));
+    }
+}
+
 /// What a server search found joins the mail this device holds, and so the
-/// search; nothing held is replaced.
+/// search; nothing held is replaced, and a draft's server copy is not
+/// taken.
 pub(super) fn take_found(
     doc: &mut ui::widget::Edits<'_>,
     st: &mut MailState,
     account_id: &str,
     messages: Vec<Message>,
 ) {
+    let copies = draft_copies(&crate::resource::read_mail(doc.doc()).unwrap_or_default());
     let fresh: Vec<Message> = messages
         .into_iter()
-        .filter(|message| st.mailbox.get(message.id).is_none())
+        .filter(|message| st.mailbox.get(message.id).is_none() && !copies.contains(&message.id))
         .collect();
     st.ingest_fetched(doc, account_id, &fresh);
     for message in fresh {

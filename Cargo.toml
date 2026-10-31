@@ -1,4 +1,6 @@
 [workspace]
+# Vendored crates stay out: cargo makes a package under this directory a workspace member when a
+# member names it by path, and a member's dev-dependencies then build with every workspace build.
 exclude = [
     "vendor/leveldb-sys",
     "vendor/buffa-build",
@@ -41,6 +43,8 @@ exclude = [
     "vendor/atspi-proxies",
     "vendor/rustypipe",
     "vendor/miracast",
+    "vendor/smithay",
+    "vendor/web-transport-proto",
     "vendor/davey",
     "vendor/zbus",
 ]
@@ -75,7 +79,6 @@ members = [
     "crates/browser/tilo-browser-compute",
     "crates/browser/tilo-browser-peer",
     "crates/browser/paint-stream",
-    "crates/hosting/tilo-room-service",
     "crates/hosting/tilo-moq",
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
@@ -147,6 +150,7 @@ members = [
     "apps/thumbnails",
     "apps/tilolang",
     "apps/tasks",
+    "apps/tasks-model",
     "apps/totp",
     "apps/tube",
     "apps/typst-editor",
@@ -181,6 +185,7 @@ members = [
     "crates/sdk/tilo-rich-text",
     "crates/sdk/tilo-page-raster",
     "crates/sdk/ui-paint",
+    "crates/sdk/theme-sdk",
     "crates/sdk/canvas",
     "crates/sdk/winit-x11",
     "crates/sdk/search",
@@ -194,16 +199,14 @@ members = [
     "crates/collab/collab-types",
     "crates/collab/collaboration",
     "crates/collab/neighbour-wire",
-    "crates/collab/owner-commit",
     "crates/collab/reference",
     "crates/collab/feedback-review",
     "crates/collab/feedback",
     "crates/collab/moderation",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
-    "crates/collab/tilo-governor",
-    "crates/collab/tilo-joined-room",
     "crates/collab/tilo-lan-discovery",
+    "crates/collab/tilo-store-link",
     "crates/collab/tilo-unlock-protocol",
     "crates/collab/tilo-user-identity",
     "crates/collab/workspace-join",
@@ -212,7 +215,6 @@ members = [
     "crates/dev/workspace-unify",
     "crates/dev/collab-probe",
     "crates/dev/copy-lint",
-    "crates/dev/room-load",
     "crates/dev/fake-discord",
     "crates/dev/frame-link",
     "crates/dev/nested-session-bus",
@@ -254,6 +256,7 @@ members = [
     "crates/hosting/tilo-relay-shell",
     "crates/hosting/tilo-relay-store",
     "crates/hosting/tilo-room-host",
+    "crates/hosting/tilo-store-node",
 
     # Media
     "crates/media/ocr",
@@ -406,11 +409,13 @@ members = [
     "crates/session/session",
     "crates/session/console-control",
     "crates/session/crash-records",
+    "crates/session/agent-runs",
     "crates/session/onboarding-walk",
     "crates/session/control-cli",
     "crates/session/desktop-model",
     "crates/session/desktop-policy",
     "crates/session/desktop-search",
+    "crates/session/dictation",
     "crates/session/app-launch",
     "crates/session/desktop-surface",
     "crates/session/frame-metrics",
@@ -449,6 +454,7 @@ members = [
     "crates/session/topbar",
     "crates/session/tray-host",
     "crates/session/wayland-ext",
+    "crates/session/window-menu",
     "crates/session/window-share",
 
     # System
@@ -1354,6 +1360,10 @@ hyper-proxy2 = { path = "vendor/hyper-proxy2" }
 # text is measured and kerned at the width it is drawn. See
 # vendor/cosmic-text/TILO-PATCH.md.
 cosmic-text = { path = "vendor/cosmic-text" }
+# Rounds layout onto the display's device pixels at any scale, not only whole
+# logical pixels, and measures a flex item at the cross size it is laid out
+# at. See vendor/taffy/TILO-PATCH.md.
+taffy = { path = "vendor/taffy" }
 # Erasing above the cursor clears the first line too. See
 # vendor/alacritty_terminal/PROVENANCE.md.
 alacritty_terminal = { path = "vendor/alacritty_terminal" }

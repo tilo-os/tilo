@@ -106,9 +106,9 @@ impl GraphControl for Fake {
 
     fn set_node_volume(&self, node_id: u32, perceptual: f32) -> Result<(), String> {
         self.call(format!("volume {node_id} {perceptual:.2}"), |graph| {
-            for sink in &mut graph.sinks {
-                if sink.id == node_id {
-                    sink.volume = Some(perceptual);
+            for device in graph.sinks.iter_mut().chain(&mut graph.sources) {
+                if device.id == node_id {
+                    device.volume = Some(perceptual);
                 }
             }
         })
@@ -276,4 +276,91 @@ fn without_an_output_the_volume_is_unavailable() {
         );
     }
     assert!(fake.calls().is_empty());
+}
+
+/// An application's stream is routed, made louder and muted by its node,
+/// and the reading lists it with its app.
+#[test]
+fn an_applications_stream_is_routed_and_mixed() {
+    let fake = Fake::laptop();
+    let mut service = service(&fake);
+    assert_eq!(read(&service)["streams"][0]["app"], json!("Music"));
+
+    for (action, arguments) in [
+        ("set-stream-volume", json!({"stream": 70, "level": 0.3})),
+        ("set-stream-muted", json!({"stream": 70, "muted": true})),
+        ("route-stream", json!({"stream": 70, "device": 41})),
+        ("route-stream", json!({"stream": 70, "device": null})),
+    ] {
+        let taken = service.invoke(
+            SOUND,
+            action,
+            &crate::sound::service::tests::arguments(arguments),
+        );
+        assert_eq!(taken, Ok(Started::Accepted), "{action}");
+        service.settle();
+    }
+    assert_eq!(
+        fake.calls(),
+        [
+            "volume 70 0.30",
+            "mute 70 true",
+            "route 70 41",
+            "unroute 70"
+        ]
+    );
+}
+
+/// The input's level and a sound card's profile are published and taken,
+/// and a card with nothing to choose from offers no profile.
+#[test]
+fn the_input_level_and_the_cards_profiles_are_taken() {
+    let fake = Arc::new(Fake {
+        graph: Mutex::new(AudioGraph {
+            sources: vec![device(50, "Microphone", true)],
+            hardware: vec![media::audio::AudioHardwareDevice {
+                id: 60,
+                description: "Headset".into(),
+                active_profile: Some(1),
+                profiles: vec![
+                    media::audio::DeviceProfile {
+                        index: 1,
+                        name: "a2dp".into(),
+                        description: "High Fidelity".into(),
+                        available: true,
+                    },
+                    media::audio::DeviceProfile {
+                        index: 2,
+                        name: "hfp".into(),
+                        description: "Headset microphone".into(),
+                        available: true,
+                    },
+                ],
+            }],
+            ..AudioGraph::default()
+        }),
+        calls: Mutex::new(Vec::new()),
+    });
+    let mut service = service(&fake);
+    let sound = read(&service);
+    assert_eq!(sound["input"], json!(50));
+    assert_eq!(sound["hardware"][0]["label"], json!("Headset"));
+    assert_eq!(sound["hardware"][0]["profile"], json!(1));
+
+    for (action, params) in [
+        ("set-input-volume", json!({"level": 0.4})),
+        ("set-profile", json!({"device": 60, "profile": 2})),
+    ] {
+        let taken = service.invoke(SOUND, action, &arguments(params));
+        assert_eq!(taken, Ok(Started::Accepted), "{action}");
+        service.settle();
+    }
+    assert_eq!(fake.calls(), ["volume 50 0.40", "profile 60 2"]);
+    assert_eq!(read(&service)["input-volume"], json!(0.4_f32));
+
+    let out_of_range = service.invoke(SOUND, "set-input-volume", &arguments(json!({"level": 3})));
+    assert!(
+        matches!(out_of_range, Err(DoorError::InvalidArguments(_))),
+        "{out_of_range:?}"
+    );
 }

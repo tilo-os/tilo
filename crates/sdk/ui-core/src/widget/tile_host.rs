@@ -261,6 +261,7 @@ mod window_search;
     clippy::struct_excessive_bools,
     reason = "history policy, record refusal, focus, layout dirtiness and presentation latches are independent"
 )]
+#[crate::component::not_a_component(shell, "hosts an app's window in the strip")]
 pub struct TileHost {
     content: TileContent,
     history: Option<crate::history_mode::host::HistoryChrome>,
@@ -1698,10 +1699,10 @@ impl Widget for TileHost {
         }
     }
 
-    fn resets_callback_binding(&self) -> bool {
+    fn resets_binding_inheritance(&self) -> bool {
         self.history.is_some()
     }
-    fn inactive_callback_boundary(&self) -> Option<NodeId> {
+    fn inactive_bound_dispatch_boundary(&self) -> Option<NodeId> {
         self.history
             .as_ref()
             .filter(|history| !history.live_interactive())
@@ -1978,9 +1979,15 @@ impl Widget for TileHost {
         // frame due to show, is a change of what the tile shows: the host
         // that woke for it paints.
         let progress = self.arrival_progress();
+        let now = crate::motion::frame_now();
         let arrival = self
             .arrival_now()
-            .is_some_and(|arrival| arrival.needs_redraw(crate::motion::frame_now(), progress));
+            .is_some_and(|arrival| arrival.needs_redraw(now, progress));
+        // The arrival's steps advance with time, not with drawing: a tile on
+        // a strip that is not shown is never drawn, and a step that came due
+        // there, unconsumed, would be due again on every wake, turning the
+        // loop as fast as it can.
+        self.advance_arrival(now);
         self.update_content(s, p) || arrival || adopted
     }
     fn build_layout(

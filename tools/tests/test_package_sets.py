@@ -129,7 +129,7 @@ class PackageSetsTests(unittest.TestCase):
         # built with its own features, so a target table it alone owns is what gets tested.
         packages = {name: {} for name in (*package_sets.WASM_ALSO, "native-only")}
         self.assertEqual(package_sets.wasm_crates(packages),
-                         {"tilo-browser-peer", "channel-crypto", "tilo-peer-state", "tilo-joined-room"})
+                         {"tilo-browser-peer", "channel-crypto", "tilo-peer-state"})
 
     def test_vendored_test_crates_are_workspaces_the_runner_tests_by_default(self):
         for crate in package_sets.VENDORED_TEST_CRATES:

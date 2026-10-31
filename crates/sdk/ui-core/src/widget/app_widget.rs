@@ -119,6 +119,10 @@ pub enum AppHostIntent {
         /// an empty resource lens while the durable indexes converge.
         entry: Option<crate::widget::HistoryEntry>,
     },
+    /// Show what an agent's task run did: History, at the run (`group`, its
+    /// `runtime_collab::task_run_group`), listed as one unit with Undo for
+    /// each step and for the run. A change mark activates it.
+    ShowTaskRun { group: String },
     /// Open the platform search scoped to this app (or one part of it), with
     /// the query already typed. The shell focuses the source tab first.
     OpenSearch(crate::search::SearchRequest),
@@ -1322,16 +1326,6 @@ mod component_adapter {
                 .unwrap_or_default()
         }
 
-        fn apply_room_action(
-            &mut self,
-            doc: &mut crate::widget::Edits<'_>,
-            type_id: &str,
-            payload: &[u8],
-        ) -> bool {
-            self.with_root_edits(doc, |root, edits, _| {
-                root.apply_room_action(edits, type_id, payload)
-            })
-        }
         fn wants_pointer_capture(&self) -> bool {
             self.in_root(|root| root.wants_pointer_capture())
                 .unwrap_or_default()

@@ -49,7 +49,7 @@ fn original_import(
         // Same-root device enrollment remains supported. Independent roots
         // must carry the durable receipt written by invitation redemption.
         if !peer.core.certificates.contains_key(&cert.device_public_key)
-            && cert.user_public_key != peer.core.authority.user_public_key
+            && cert.user_public_key != peer.owner()
             && !has_admission
             && !members.contains_key(&hex::encode(cert.user_public_key))
         {
@@ -95,7 +95,7 @@ fn compare_case(
         room,
         &peer.core.certificates,
         &peer.core.revocations,
-        peer.authority(),
+        &peer.core.owner,
         now,
     )
 }
@@ -115,7 +115,6 @@ fn row(cert: DeviceCert) -> GovernedIdentity {
         revocations: vec![],
         admission: None,
         admissions: vec![],
-        workspace_delegations: vec![],
         delegate: None,
     }
 }

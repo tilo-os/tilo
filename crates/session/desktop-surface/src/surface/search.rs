@@ -16,9 +16,10 @@
 
 use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, TileContent};
 use tilo_desktop_search::providers::{CommandSpec, WindowEntry};
-use tilo_desktop_search::{SearchData, Target};
+use tilo_desktop_search::{Reach, SearchData, Target};
 use ui::automerge::AutoCommit;
 use ui::kurbo::{Point, Rect};
+use ui::search::system::SearchScope;
 use ui::taffy::{NodeId, TaffyTree};
 use ui::widget::Widget;
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
@@ -63,14 +64,89 @@ pub struct SearchHostFeed {
     pub usage: Option<tilo_desktop_search::Usage>,
 }
 
+/// The field the person types into in the desktop itself: the open search's
+/// query field, where text committed from outside the keyboard (a
+/// dictation's) may go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypedField {
+    /// The field's identity for the desktop's life.
+    pub id: u64,
+    /// The revision of its text and selection: any edit or caret move since
+    /// moves it, so committed text can tell whether the field is still the
+    /// one it was meant for.
+    pub revision: u64,
+    /// The field takes more than one line.
+    pub multiline: bool,
+}
+
+/// Why the desktop's own field may not take committed text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypedRefusal {
+    /// The desktop has no field the person types into.
+    NoField,
+    /// The field takes a secret, so words spoken elsewhere never go into it.
+    Secret,
+}
+
+/// What became of committed text in the desktop's own field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypedInsertion {
+    /// The field took the text.
+    Inserted,
+    /// The field is no longer the one the text was meant for: nothing went
+    /// in.
+    Changed,
+    /// The field may not take committed text any more.
+    Refused(TypedRefusal),
+}
+
+/// Text committed into the desktop's own field, for the next update pass.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct TypedAsk {
+    /// The field the text was committed into, and its revision then.
+    field: TypedField,
+    text: String,
+}
+
+/// The identity of the search query field, for the desktop's life.
+const QUERY_FIELD: u64 = 1;
+
+/// The key the query field's revision is fingerprinting with: it never
+/// leaves the process, and only says whether the field moved.
+const TYPING_KEY: &[u8; 32] = b"desktop typing field revision 1!";
+
+/// The open search's query field, as committed text may write into it. The
+/// palette draws it in the desktop itself, so no text-input boundary of the
+/// windows the desk shows ever sees it.
+fn typed_field(
+    search: &tilo_desktop_search::LazyDesktopSearch,
+) -> Result<TypedField, TypedRefusal> {
+    let Some(field) = search.query_field(TYPING_KEY) else {
+        return Err(TypedRefusal::NoField);
+    };
+    if field.secret {
+        return Err(TypedRefusal::Secret);
+    }
+    let mut revision = [0u8; 8];
+    revision.copy_from_slice(&field.fingerprint[..8]);
+    Ok(TypedField {
+        id: QUERY_FIELD,
+        revision: u64::from_le_bytes(revision),
+        multiline: field.multiline,
+    })
+}
+
 /// A host that adds to the desktop's search and carries out what is chosen
 /// there that only it can: running an action by address through its action
 /// host, starting an app, opening an address.
 pub trait SearchHost {
     /// What to search beyond the desktop's own, in the workspace of room
-    /// `room`. Called as search opens, inside the desktop's update pass: it
+    /// `room`, narrowed to it unless `scope` is
+    /// [`SearchScope::All`](ui::search::system::SearchScope::All): then the
+    /// rows of every workspace are offered too, each saying which workspace
+    /// it is in. Called as search opens, inside the desktop's update pass: it
     /// reads what the host keeps, never the desktop's own tree.
-    fn feed(&self, room: &str) -> SearchHostFeed;
+    fn feed(&self, room: &str, scope: SearchScope) -> SearchHostFeed;
     /// Whether the host carries out `target` itself; the desktop then hands
     /// it back through [`DesktopHandle::take_search_choices`].
     fn performs(&self, target: &Target) -> bool;
@@ -97,7 +173,6 @@ pub(super) enum SearchAsk {
 
 const CLOSE_WINDOW: &str = "desktop.close-window";
 const MAXIMIZE_WINDOW: &str = "desktop.maximize-window";
-const WORKSPACE_PREFIX: &str = "desktop.workspace:";
 /// Search command ids and banner action keys of the host's own actions.
 const HOST_PREFIX: &str = "host:";
 /// The least room the palette keeps from the surface's sides.
@@ -291,6 +366,33 @@ impl DesktopHandle {
             .push(SearchAsk::Query(query));
     }
 
+    /// The field the person types into in the desktop itself, as of the last
+    /// update pass: the open search's query field.
+    ///
+    /// # Errors
+    /// Returns why the desktop has no field to write into: none takes typing,
+    /// or the one that does takes a secret.
+    pub fn typed_field(&self) -> Result<TypedField, TypedRefusal> {
+        self.shared.borrow().typed_field
+    }
+
+    /// Write committed text (a dictation's) into `field`, on the next update
+    /// pass, if the person is still typing into it then.
+    #[must_use]
+    pub fn commit_typed(&self, field: TypedField, text: &str) -> TypedInsertion {
+        let mut shared = self.shared.borrow_mut();
+        match shared.typed_field {
+            Ok(current) if current == field => {}
+            Ok(_) => return TypedInsertion::Changed,
+            Err(refusal) => return TypedInsertion::Refused(refusal),
+        }
+        shared.typed_ask = Some(TypedAsk {
+            field,
+            text: text.to_owned(),
+        });
+        TypedInsertion::Inserted
+    }
+
     /// Choose the open search's row `index` ([`Self::search_rows`]), with
     /// `argument` the line its action asks for, on the next update pass.
     pub fn choose_search_row(&self, index: usize, argument: Option<String>) {
@@ -341,13 +443,13 @@ fn is_search_chord(
     }
 }
 
+/// Escape as a person presses it; a held key counts as each press it repeats,
+/// as the old launcher did: the first clears, the next closes.
 fn is_escape(event: &WindowEvent) -> bool {
-    matches!(
-        event,
-        WindowEvent::KeyboardInput { event: key, .. }
-            if key.state == ElementState::Pressed
-                && key.logical_key == Key::Named(NamedKey::Escape)
-    )
+    let WindowEvent::KeyboardInput { event: key, .. } = event else {
+        return false;
+    };
+    key.state == ElementState::Pressed && matches!(&key.logical_key, Key::Named(NamedKey::Escape))
 }
 
 /// Every open window as search lists it: the app it shows (for its glyph),
@@ -493,7 +595,11 @@ fn commands(
     for workspace in &tree.workspaces {
         if workspace.id != tree.active {
             out.push(CommandSpec {
-                id: format!("{WORKSPACE_PREFIX}{}", workspace.id.0),
+                id: format!(
+                    "{}{}",
+                    tilo_desktop_search::WORKSPACE_COMMAND_PREFIX,
+                    workspace.id.0
+                ),
                 title: format!("Switch to {}", workspace.name),
                 subtitle: Some("Workspace".into()),
             });
@@ -503,8 +609,14 @@ fn commands(
 }
 
 impl DesktopSurface {
-    /// Open search over what the desktop has open now.
-    pub(super) fn open_search(&mut self, doc: &AutoCommit, query: Option<String>) {
+    /// Open search over what the desktop has open now: over the workspace in
+    /// front, or over every workspace when `every_workspace`.
+    pub(super) fn open_search(
+        &mut self,
+        doc: &AutoCommit,
+        query: Option<String>,
+        every_workspace: bool,
+    ) {
         let (windows, commands, (room, people), host) = {
             let shared = self.shared.borrow();
             (
@@ -516,7 +628,12 @@ impl DesktopSurface {
                 shared.search_host.clone(),
             )
         };
-        let mut feed = host.map(|host| host.feed(&room)).unwrap_or_default();
+        let scope = if every_workspace {
+            SearchScope::All
+        } else {
+            SearchScope::Workspace
+        };
+        let mut feed = host.map(|host| host.feed(&room, scope)).unwrap_or_default();
         let usage = feed.usage.take();
         let mut applications = self.tiles.search_applications();
         applications.extend(feed.applications);
@@ -528,7 +645,11 @@ impl DesktopSurface {
             applications,
             windows,
             commands,
-            answers: true,
+            reach: if every_workspace {
+                Reach::EveryWorkspace
+            } else {
+                Reach::Workspace
+            },
             published: feed.published,
             sources,
             preferences: feed.preferences,
@@ -611,7 +732,7 @@ impl DesktopSurface {
             .and_then(|row| row.groups.iter().find(|candidate| candidate.id == group))
             .and_then(|window| window.active_host());
         let Some(host) = host else {
-            self.open_search(doc, request.query);
+            self.open_search(doc, request.query, false);
             return;
         };
         // The field says what it searches: the part of the app asked for,
@@ -648,8 +769,8 @@ impl DesktopSurface {
         let request = self.shared.borrow_mut().search_request.take();
         match request {
             Some(SearchRequest::Toggle) if self.search.is_open() => self.close_search(),
-            Some(SearchRequest::Toggle) => self.open_search(doc, None),
-            Some(SearchRequest::Open(query)) => self.open_search(doc, query),
+            Some(SearchRequest::Toggle) => self.open_search(doc, None, false),
+            Some(SearchRequest::Open(query)) => self.open_search(doc, query, false),
             Some(SearchRequest::Applications) => self.open_applications_search(None),
             Some(SearchRequest::NewTab(strip, group)) => {
                 self.open_applications_search(Some((strip, group)));
@@ -672,8 +793,29 @@ impl DesktopSurface {
             }
             self.structure_dirty = true;
         }
-        self.follow_search();
+        let ask = self.shared.borrow_mut().typed_ask.take();
+        if let Some(ask) = ask {
+            self.commit_typed(&ask);
+        }
+        self.follow_search(doc);
         self.publish_search_rows();
+    }
+
+    /// Write text committed into the desktop's own field, if the person is
+    /// still typing into the field it was meant for.
+    fn commit_typed(&mut self, ask: &TypedAsk) {
+        if !self.search.is_open() {
+            return;
+        }
+        // The field may have taken an edit or moved its caret since the text
+        // was committed: then the text is not the person's to review any
+        // more and goes nowhere, as a dictation into a field that moved.
+        if typed_field(&self.search) != Ok(ask.field) {
+            return;
+        }
+        if self.search.commit_query_text(&ask.text) {
+            self.structure_dirty = true;
+        }
     }
 
     /// Keep what the open search shows where the desktop publishes it.
@@ -696,42 +838,30 @@ impl DesktopSurface {
         } else {
             String::new()
         };
+        let typed = if self.search.is_open() {
+            typed_field(&self.search)
+        } else {
+            Err(TypedRefusal::NoField)
+        };
         let mut shared = self.shared.borrow_mut();
         shared.search_rows = rows;
         shared.search_query = query;
+        shared.typed_field = typed;
     }
 
     /// After the palette handled input (an event, or an assistive
     /// technology action), take its outcome.
-    fn follow_search(&mut self) {
+    fn follow_search(&mut self, doc: &AutoCommit) {
+        // Backspace at the start of the field, or the token's own button,
+        // takes the scope away: the same search, over every workspace.
+        if self.search.is_open() && self.search.take_scope_widened() {
+            let query = self.search.query().to_owned();
+            self.open_search(doc, Some(query), true);
+        }
         if self.search.is_open() {
             let closed = self.search.observe();
             let refreshed = self.search.refresh();
             self.structure_dirty |= closed || refreshed;
-        }
-        if (self.search_window.is_some() || !self.search_owners.is_empty())
-            && let Some(invocation) = self
-                .search
-                .palette_mut()
-                .and_then(ui::widget::controls::take_control_invocation)
-        {
-            match self.search_window {
-                Some((strip, group)) => self.run_in_window(strip, group, invocation),
-                None => match self
-                    .search_owners
-                    .get(invocation.address.resource.as_str())
-                    .copied()
-                {
-                    // Chosen in search over everything: the app's window
-                    // comes forward and runs it.
-                    Some((strip, group)) => {
-                        self.bring_forward(strip, group);
-                        self.run_in_window(strip, group, invocation);
-                    }
-                    // Not an app's: the desktop's own door runs it.
-                    None => self.unrouted_control = Some(invocation),
-                },
-            }
         }
         let choice = self.search.take_choice();
         if choice.is_some()
@@ -752,6 +882,7 @@ impl DesktopSurface {
             (Some(Target::Launch { app }), Some((strip, group))) => {
                 self.open_tab_in_group(strip, group, &app);
             }
+            (Some(Target::Action(action)), _) => self.run_action(&action),
             (Some(target), _) => self.perform(target),
             (None, into) => self.new_tab_into = into,
         }
@@ -779,6 +910,39 @@ impl DesktopSurface {
             .map(ui::widget::WindowGroup::active_tab_id);
         if let Some(tab) = tab {
             self.perform(Target::Window { tab, app: None });
+        }
+    }
+
+    /// Run a chosen action row: by its address, in the window the search
+    /// was opened in or the window of the app publishing it, as that app's
+    /// own control would; the desktop's own door runs a row of its own.
+    fn run_action(&mut self, action: &tilo_desktop_search::ActionTarget) {
+        let mut arguments = serde_json::Map::new();
+        if let Some((param, value)) = action.preset.clone() {
+            arguments.insert(param, serde_json::Value::String(value));
+        }
+        let invocation = ui::tilo_actions::ControlInvocation {
+            address: action.address(),
+            arguments,
+        };
+        match self.search_window {
+            Some((strip, group)) => self.run_in_window(strip, group, invocation),
+            None => {
+                match self
+                    .search_owners
+                    .get(invocation.address.resource.as_str())
+                    .copied()
+                {
+                    // Chosen in search over everything: the app's window
+                    // comes forward and runs it.
+                    Some((strip, group)) => {
+                        self.bring_forward(strip, group);
+                        self.run_in_window(strip, group, invocation);
+                    }
+                    // Not an app's: the desktop's own door runs it.
+                    None => self.unrouted_control = Some(invocation),
+                }
+            }
         }
     }
 
@@ -834,6 +998,11 @@ impl DesktopSurface {
                     let choice = choice.to_owned();
                     shared.host_choices.push(choice);
                     None
+                } else if id == tilo_desktop_search::ALL_APPS_COMMAND {
+                    // Every app by its name: the applications' own search,
+                    // as the empty desk's launchpad opens it.
+                    shared.search_request = Some(SearchRequest::Applications);
+                    None
                 } else if id == CLOSE_WINDOW {
                     match active {
                         Some(ids) if shared.holders.contains_key(&ids.tab) => {
@@ -849,7 +1018,7 @@ impl DesktopSurface {
                         Some(Admitted::Maximize(ids, !group.maximized))
                     })
                 } else {
-                    id.strip_prefix(WORKSPACE_PREFIX)
+                    id.strip_prefix(tilo_desktop_search::WORKSPACE_COMMAND_PREFIX)
                         .and_then(|id| id.parse::<u64>().ok())
                         .map(tilo_desktop_model::WorkspaceId)
                         .filter(|id| shared.tree.workspaces.iter().any(|w| w.id == *id))
@@ -895,10 +1064,15 @@ impl DesktopSurface {
                 }
                 None
             }
-            // An app's action runs through the palette's control
-            // invocation instead. Without a host running them, a desktop
-            // lists no host-published actions or jobs.
-            Target::Action(_) | Target::Invoke(_) | Target::Cancel { .. } => None,
+            // An app's action row is run by its own window
+            // ([`Self::run_action`]), and one published through the host is
+            // handed to it ([`SearchHost::performs`]). Without a host
+            // running them, a desktop lists no host-published actions or
+            // jobs.
+            Target::Action(_)
+            | Target::Invoke(_)
+            | Target::Cancel { .. }
+            | Target::Prefer { .. } => None,
         };
         if let Some(admitted) = admitted {
             shared.queue.push(admitted);
@@ -915,7 +1089,7 @@ impl DesktopSurface {
         let modifiers = *ctx.modifiers;
         if !self.search.is_open() {
             if is_search_chord(event, modifiers, self.platform) {
-                self.open_search(&ctx.state, None);
+                self.open_search(&ctx.state, None, false);
                 self.shared.borrow_mut().search_open = true;
                 return true;
             }
@@ -938,17 +1112,18 @@ impl DesktopSurface {
             .is_some_and(|palette| palette.get_rect().contains(self.search_pointer));
         if outside_press || is_search_chord(event, modifiers, self.platform) {
             self.close_search();
+        } else if is_escape(event) && self.search.escape() {
+            // Cleared the query, or closed an empty search: see
+            // [`DesktopSearch::escape`].
+            self.structure_dirty = true;
         } else {
-            if is_escape(event) {
-                self.search.dismissing();
-            }
             let path = ctx.path.clone();
             let node_id = ctx.node_id;
             if let Some(palette) = self.search.palette_mut() {
                 palette.handle_event(event, &mut ctx.reborrow(&path, node_id));
             }
         }
-        self.follow_search();
+        self.follow_search(&ctx.state);
         true
     }
 

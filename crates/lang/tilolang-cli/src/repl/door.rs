@@ -19,12 +19,6 @@ const PROTOCOL: &str = "2025-06-18";
 pub const CLIENT: &str = "tilolang repl";
 pub const AGENT: &str = "tilolang-repl";
 
-/// What the person's remote answer admits the REPL to a nested session's workspace as: the
-/// delegation a person's device gives its agents (reading and undoable changes, reaching outside
-/// asking first). The answers the person gives it (Settings → Agents → Review access) are theirs:
-/// the REPL never writes them, so a `deny` or `ask` there decides its invocations.
-const PRESET: &str = "operator";
-
 /// How long a door call may take.
 const CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -150,8 +144,8 @@ pub struct Door {
 
 impl Door {
     /// Connect to the door at `socket` and be admitted: by the person in the session's own
-    /// prompt, or, for a nested session (`control`), by the person's remote answer, which admits
-    /// it as [`PRESET`].
+    /// prompt, or, for a nested session (`control`), by the person's remote answer. Admitted, it
+    /// works in the task run the session makes for the connection.
     ///
     /// # Errors
     /// The door is not there, the person did not admit the REPL, or the door refused it.
@@ -178,7 +172,7 @@ impl Door {
                 control.request(&json!({
                     "op": "actions_invoke", "provider": "permission-prompts",
                     "id": format!("allow-once@{prompt}"),
-                    "args": {"confirm": true, "agent": AGENT, "preset": PRESET},
+                    "args": {"confirm": true, "agent": AGENT},
                     "wait_ms": 5000
                 }))?;
             }

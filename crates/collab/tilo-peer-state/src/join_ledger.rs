@@ -50,6 +50,14 @@ pub struct JoinError {
     code: u16,
 }
 
+impl From<crate::state::MembershipError> for JoinError {
+    /// A joining device the room does not admit is refused in the words its
+    /// membership refusal already has.
+    fn from(error: crate::state::MembershipError) -> Self {
+        Self::new(error.to_string())
+    }
+}
+
 impl JoinError {
     /// A refusal.
     pub fn new(message: impl Into<String>) -> Self {
@@ -107,6 +115,8 @@ impl From<String> for JoinError {
 pub struct Governed<'a> {
     /// The room's admitted state.
     pub peer: &'a StatePeer,
+    /// The device answering the join: a device of the room's owner.
+    pub host: &'a DeviceCert,
     /// The room's workspace id on the wire
     /// ([`crate::join::room_workspace_id`]).
     pub workspace_id: u64,
@@ -144,7 +154,7 @@ impl Governed<'_> {
             role,
             room: self.peer.room().to_owned(),
             workspace_id: self.workspace_id,
-            authority: self.peer.authority().clone(),
+            host: self.host.clone(),
             certified_roster: self.peer.certificates(),
             revocations: self.peer.revocations(),
             records: self.peer.rows(),
@@ -450,14 +460,10 @@ impl JoinLedger {
             return Ok(record.issued.clone());
         }
         validate_issue_request(&request, now)?;
-        let authority = room.peer.authority().clone();
-        let issuer = DeviceCert::clone(&authority);
         let grant = InviteGrant {
             workspace_id: room.workspace_id,
             room: room.peer.room().to_owned(),
-            authority,
-            issuer,
-            delegation: None,
+            issuer: room.host.clone(),
             role: request.role,
             nonce,
             recipient_user_public_key: request.recipient_user_public_key,
@@ -682,7 +688,7 @@ impl JoinLedger {
             if room.peer.certificate_expired(&device, system_time(now)) {
                 return Err(JoinError::refresh());
             }
-            return Err(error.into());
+            return Err(JoinError::new(error.to_string()));
         }
         prior.replay(room).map(Some)
     }
@@ -876,6 +882,7 @@ impl JoinLedger {
         }
         let challenge = room.peer.governance().membership_challenge(
             room.workspace_id,
+            room.host,
             &request.device_cert,
             request.request_id,
             nonce,

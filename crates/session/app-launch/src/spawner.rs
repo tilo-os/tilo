@@ -11,12 +11,24 @@
 //! ([`End::crashed`]): an app that exited with a failure or was killed left
 //! its windows behind, and the person is offered the app again rather than
 //! the desktop going down with it.
+//!
+//! An app that ended because memory ran out is not a crash the app caused:
+//! the launcher ended it, and remembers why
+//! ([`launcher::memory_pressure::Cause`]). The report carries that with the
+//! status ([`End::memory`]), so the person is told the session closed the app
+//! rather than that it stopped working.
 
+use std::os::fd::AsFd as _;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 
+use crate::doors::HeldDoor;
 use crate::plan::Planned;
+
+/// Why the system ended an app: what the launcher remembers of it.
+pub use launcher::memory_pressure::Cause;
 
 /// What wakes the session's loop when an app ends.
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
@@ -25,27 +37,79 @@ pub type Wake = Arc<dyn Fn() + Send + Sync>;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum End {
     /// It exited with this status.
-    Exited(i32),
+    Exited {
+        code: i32,
+        /// Why memory ended it, when memory did.
+        memory: Option<Cause>,
+    },
     /// This signal ended it.
-    Signalled(i32),
+    Signalled {
+        signal: i32,
+        /// Why memory ended it, when memory did.
+        memory: Option<Cause>,
+    },
     /// It never started, and why.
     Failed(String),
 }
 
 impl End {
+    /// An app that exited with `code` on its own.
+    #[must_use]
+    pub const fn exited(code: i32) -> Self {
+        Self::Exited { code, memory: None }
+    }
+
+    /// An app this signal ended.
+    #[must_use]
+    pub const fn signalled(signal: i32) -> Self {
+        Self::Signalled {
+            signal,
+            memory: None,
+        }
+    }
+
+    /// An app that never started.
+    #[must_use]
+    pub fn failed(reason: impl Into<String>) -> Self {
+        Self::Failed(reason.into())
+    }
+
+    /// The same end, with memory having closed the app (`cause`).
+    #[must_use]
+    pub fn remembering(mut self, cause: Cause) -> Self {
+        match &mut self {
+            Self::Exited { memory, .. } | Self::Signalled { memory, .. } => {
+                *memory = Some(cause);
+            }
+            Self::Failed(_) => {}
+        }
+        self
+    }
+
+    /// Why memory ended the app, when it did: `None` for an app that chose to
+    /// end, for one that never started, and for one the launcher holds no
+    /// memory of.
+    #[must_use]
+    pub fn memory(&self) -> Option<Cause> {
+        match self {
+            Self::Exited { memory, .. } | Self::Signalled { memory, .. } => *memory,
+            Self::Failed(_) => None,
+        }
+    }
+
     /// Whether the app ended without choosing to: anything but a clean exit
     /// is a crash, including one the app itself reports as a failure.
     #[must_use]
     pub fn crashed(&self) -> bool {
-        !matches!(self, Self::Exited(0))
+        !matches!(self, Self::Exited { code: 0, .. })
     }
 }
 
 impl std::fmt::Display for End {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Exited(code) => write!(f, "exited with {code}"),
-            Self::Signalled(signal) => write!(f, "was killed by signal {signal}"),
+            Self::Exited { code, .. } => write!(f, "exited with {code}"),
+            Self::Signalled { signal, .. } => write!(f, "was killed by signal {signal}"),
             Self::Failed(reason) => write!(f, "did not start: {reason}"),
         }
     }
@@ -108,6 +172,30 @@ impl Spawner {
     /// # Errors
     /// The program could not be started.
     pub fn start(&mut self, planned: &Planned) -> Result<Started, SpawnError> {
+        self.start_with(planned, None, &|_| {})
+            .map(|(started, _)| started)
+    }
+
+    /// [`Self::start`] with the window door `door` of the app's room, which
+    /// the app is handed with its release so it opens the app's later
+    /// windows itself.
+    ///
+    /// The launcher waits at a registration gate until `record` has written
+    /// the launch down: an app that connected before its launch was known
+    /// would be refused by the session's services. A launch without a door
+    /// gets no gate, and its command line is its stdin.
+    ///
+    /// The door comes back held for as long as the app runs, so the caller
+    /// keeps it until the app ends.
+    ///
+    /// # Errors
+    /// The program could not be started.
+    pub fn start_with(
+        &mut self,
+        planned: &Planned,
+        mut door: Option<HeldDoor>,
+        record: &dyn Fn(u32),
+    ) -> Result<(Started, Option<HeldDoor>), SpawnError> {
         let mut command = Command::new(&planned.program);
         command
             .args(&planned.args)
@@ -116,16 +204,43 @@ impl Spawner {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        let gate = match door {
+            Some(_) => match launcher::registration_gate::install(&mut command) {
+                Ok(gate) => Some(gate),
+                // Without its gate the launch would run unreleased: it starts
+                // nothing, as an app that cannot start does.
+                Err(error) => {
+                    return Err(SpawnError {
+                        app: planned.app.clone(),
+                        reason: format!("no launch gate: {error}"),
+                    });
+                }
+            },
+            None => None,
+        };
         let child = command.spawn().map_err(|error| SpawnError {
             app: planned.app.clone(),
             reason: error.to_string(),
         })?;
+        drop(command);
         let id = self.next;
         self.next = self.next.wrapping_add(1);
         let started = Started {
             id,
             pid: child.id(),
         };
+        record(started.pid);
+        if let Some(gate) = gate {
+            // The launch is written down: the app may connect.
+            let served = door.as_mut().and_then(|door| door.serve(started.pid));
+            let released = match &served {
+                Some(theirs) => gate.release_with_window_door(theirs.as_fd()),
+                None => gate.release(),
+            };
+            if let Err(error) = released {
+                tracing::warn!(app = %planned.app, %error, "the launch was not released");
+            }
+        }
         let app = planned.app.clone();
         let title = planned.title.clone();
         let events = self.events.0.clone();
@@ -150,36 +265,69 @@ impl Spawner {
                 app: planned.app.clone(),
                 reason: format!("no thread to watch it: {error}"),
             })?;
-        Ok(started)
+        Ok((started, door))
     }
 
     /// The apps that ended since the last call, oldest first.
     pub fn events(&self) -> Vec<Event> {
         self.events.1.try_iter().collect()
     }
+
+    /// Report `event` as if the app it names had ended: what the session
+    /// hears of a launch it did not start itself.
+    #[cfg(feature = "test-support")]
+    pub fn report(&self, event: Event) {
+        let _ = self.events.0.send(event);
+    }
 }
 
-/// How `child` ended: its exit status, or the signal that killed it.
+/// How `child` ended: its exit status, or the signal that killed it, with
+/// why memory ended it when memory did.
 fn ended(mut child: Child) -> End {
-    match child.wait() {
+    // Asked before the child is reaped, when its cgroup can still be read:
+    // the launcher moved it there before it started anything.
+    let cgroup = app_cgroup(child.id());
+    let end = match child.wait() {
         Ok(status) => {
             if let Some(code) = status.code() {
-                End::Exited(code)
+                End::exited(code)
             } else {
                 #[cfg(unix)]
                 {
                     use std::os::unix::process::ExitStatusExt as _;
                     match status.signal() {
-                        Some(signal) => End::Signalled(signal),
-                        None => End::Failed("it ended without a status".into()),
+                        Some(signal) => End::signalled(signal),
+                        None => End::failed("it ended without a status"),
                     }
                 }
                 #[cfg(not(unix))]
-                End::Failed("it ended without a status".into())
+                End::failed("it ended without a status")
             }
         }
-        Err(error) => End::Failed(error.to_string()),
+        Err(error) => End::failed(error.to_string()),
+    };
+    if !end.crashed() {
+        // The app ended as it meant to: memory did not close it.
+        return end;
     }
+    match cgroup.and_then(|cgroup| launcher::spawner::memory_end(&cgroup)) {
+        Some(cause) => end.remembering(cause),
+        None => end,
+    }
+}
+
+/// The cgroup of the app `pid` runs in, when the launcher put it in one: the
+/// spawner that keeps the app tree also remembers why it ended an app in it.
+#[cfg(target_os = "linux")]
+fn app_cgroup(pid: u32) -> Option<PathBuf> {
+    let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
+    launcher::app_cgroup::app_cgroup_of(&cgroup)
+        .map(|cgroup| launcher::app_cgroup::fs_path(&cgroup))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn app_cgroup(_pid: u32) -> Option<PathBuf> {
+    None
 }
 
 #[cfg(test)]
@@ -242,7 +390,8 @@ mod tests {
         let event = events(&spawner, 1).remove(0);
         assert_eq!(event.app, "org.example.Probe");
         assert_eq!(event.title, "Probe");
-        assert_eq!(event.end, End::Exited(0));
+        assert_eq!(event.end, End::exited(0));
+        assert_eq!(event.end.memory(), None, "a clean exit is nobody's doing");
         assert!(!event.end.crashed(), "a clean exit is not a crash");
         assert_eq!(
             std::fs::read_to_string(&written).expect("the probe's environment"),
@@ -263,11 +412,15 @@ mod tests {
         assert_ne!(failing.id, killed.id, "each launch is reported on its own");
         let mut events = events(&spawner, 2);
         events.sort_by_key(|event| event.id);
-        assert_eq!(events[0].end, End::Exited(3));
+        assert_eq!(events[0].end, End::exited(3));
         assert!(events[0].end.crashed());
-        assert_eq!(events[1].end, End::Signalled(9));
+        assert_eq!(events[1].end, End::signalled(9));
         assert!(events[1].end.crashed());
         assert_eq!(events[1].end.to_string(), "was killed by signal 9");
+        assert!(
+            events.iter().all(|event| event.end.memory().is_none()),
+            "a launcher that keeps no app tree remembers nothing"
+        );
     }
 
     #[test]

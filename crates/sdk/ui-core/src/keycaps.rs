@@ -348,7 +348,7 @@ fn is_number(text: &str) -> bool {
 
 /// The canonical modifier a chord token names, in any of the spellings the
 /// chord parsers accept.
-fn canonical_modifier(token: &str) -> Option<KeyboardModifier> {
+pub(crate) fn canonical_modifier(token: &str) -> Option<KeyboardModifier> {
     Some(match token.trim().to_ascii_lowercase().as_str() {
         "super" | "meta" | "cmd" | "command" | "logo" => KeyboardModifier::System,
         "ctrl" | "control" => KeyboardModifier::Control,
@@ -769,8 +769,7 @@ mod tests {
             [KeyboardModifier::Control, KeyboardModifier::Shift],
             KeyLegend::Delete,
         );
-        let entry =
-            crate::widget::command_palette::CommandEntry::new("x", "X").keybinding("Super+PageUp");
+        let entry = crate::CommandEntry::new("x", "X").keybinding("Super+PageUp");
         set_active(Keycaps::from_xkb("de", ""));
         let german = (
             binding.keycap_labels(linux),

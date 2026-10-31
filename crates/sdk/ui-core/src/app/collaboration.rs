@@ -708,6 +708,14 @@ impl App {
         self.collaboration.manager.state()
     }
 
+    /// Whether the app offered its action directory on its route, and how
+    /// many of its offers the broker took and refused (`None` without a
+    /// transport): what a host waiting for the app's directory says when it
+    /// never arrives.
+    pub fn action_directory_observation(&self) -> (bool, Option<(u64, u64)>) {
+        self.collaboration.manager.action_directory_observation()
+    }
+
     /// What this device can do with the document's end-to-end encrypted
     /// channel: while it is waiting for access (a new device before its
     /// welcome arrives) or was removed, nothing is read or written and the
@@ -764,7 +772,6 @@ impl App {
                 &crate::collaboration::handoff::HandoffReport::OwnerSubscribe { version: 1 },
             );
             self.publish_continuation_metadata();
-            self.publish_playback_handoff();
             self.publish_search_index();
             self.broadcast_doc_delta();
             self.publish_action_surface();
@@ -949,13 +956,6 @@ impl App {
                 payload,
             } => {
                 self.apply_remote_presence(user_id, key, payload);
-            }
-            CollabEvent::ActionArrived {
-                type_id,
-                payload,
-                from_user_id,
-            } => {
-                self.apply_collab_action_arrived(&type_id, &payload, &from_user_id);
             }
             event @ (CollabEvent::Document { .. } | CollabEvent::ScrollbackBatch { .. }) => {
                 self.apply_document_collab_event(event);
@@ -1289,33 +1289,6 @@ impl App {
             );
         }
         self.collaboration.context_participants = current;
-    }
-
-    /// Every app in the room is handed every action; the one whose registry
-    /// knows the type applies it, so the owner stays the only writer.
-    /// `before` MUST be read ahead of apply: a baseline left behind the
-    /// incoming change means the user's next Ctrl+Z reverts someone else's
-    /// edit along with their own keystroke.
-    fn apply_collab_action_arrived(&mut self, type_id: &str, payload: &[u8], from_user_id: &str) {
-        let before = self.state.doc.get_heads();
-        let applied = self.root_widget.apply_room_action(
-            &mut crate::widget::Edits::lend(&mut self.state.doc),
-            type_id,
-            payload,
-        );
-        if applied {
-            self.invalidate_widget_resource_cache();
-            // Named after the publisher so local Ctrl+Z walks past it
-            // instead of through it.
-            self.state.record_committed_action_authored(
-                before,
-                None,
-                None,
-                Some(crate::permissions::UserId(from_user_id.to_string())),
-            );
-            self.needs_sync = true;
-            self.layout.request_rebuild();
-        }
     }
 
     /// Bypasses the collab manager's socket/poll path — for tests using a

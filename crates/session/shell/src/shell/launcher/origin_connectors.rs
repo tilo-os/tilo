@@ -56,15 +56,12 @@ pub(super) fn connection(app: &InstalledApp, room: RoomId) -> std::io::Result<Op
 fn attach(app: &InstalledApp, room: RoomId, origin: &str) -> std::io::Result<OwnedFd> {
     let (instance, theirs) = origin_connector::connection()?;
     let key = (app.package_id.clone(), origin.to_owned(), room.to_string());
-    // The door is taken under the lock and used after it: answering a
-    // connection sends on a socket, which is not done holding the registry.
-    let door = super::lock(&CONNECTORS)
-        .get_or_insert_with(HashMap::new)
-        .get(&key)
-        .map(|running| running.door.try_clone())
-        .transpose()?;
-    if let Some(door) = door {
-        match origin_connector::send_attachment(&door, &theirs) {
+    // Held until the connector is attached or started, so two windows of the
+    // same origin never start two connectors.
+    let mut held = super::lock(&CONNECTORS);
+    let connectors = held.get_or_insert_with(HashMap::new);
+    if let Some(running) = connectors.get(&key) {
+        match origin_connector::send_attachment(&running.door, &theirs) {
             Ok(()) => return Ok(instance),
             // It ended: start another.
             Err(error) => {
@@ -77,9 +74,8 @@ fn attach(app: &InstalledApp, room: RoomId, origin: &str) -> std::io::Result<Own
     }
     let running = start(app, room, origin, key.clone())?;
     origin_connector::send_attachment(&running.door, &theirs)?;
-    super::lock(&CONNECTORS)
-        .get_or_insert_with(HashMap::new)
-        .insert(key, running);
+    connectors.insert(key, running);
+    drop(held);
     Ok(instance)
 }
 

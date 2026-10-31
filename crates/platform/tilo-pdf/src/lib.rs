@@ -424,7 +424,9 @@ impl Engine {
     /// In development builds without an installed helper, or on a host that
     /// cannot confine it, pdfium runs in process (with a warning on stderr);
     /// release builds never parse with pdfium in process and use the portable
-    /// engine instead. See
+    /// engine instead. A process that confined itself to a policy refusing
+    /// `exec` (an app worker) always gets the portable engine: it could not
+    /// start the helper. See
     /// [When the sandbox cannot be enforced](crate#when-the-sandbox-cannot-be-enforced).
     ///
     /// # Errors
@@ -437,6 +439,14 @@ impl Engine {
         return Ok(Self::portable());
         #[cfg(unix)]
         {
+            // A process that confined itself to a policy refusing `exec` (an
+            // app worker) cannot start the helper at all: the attempt fails
+            // with EPERM, and every document would fail with it. Parse in
+            // this process with the portable engine, which needs no program
+            // started, rather than choosing an engine this host cannot run.
+            if tilo_sandbox::confine::no_exec() {
+                return Ok(Self::portable());
+            }
             if !pdfium::library_candidates().iter().any(|p| p.is_file()) {
                 return Ok(Self::portable());
             }

@@ -92,6 +92,8 @@ mod tests {
 
     fn hit(id: &str) -> Hit {
         Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind: ui::search::system::ResourceKind::Application,
             provider: "applications".into(),
             id: id.into(),

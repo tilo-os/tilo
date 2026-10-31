@@ -21,7 +21,7 @@ mod workspace_record_custody {
         identity: &AdmittedJoinIdentity,
         route: &CrdtRoute,
         socket: &tokio::net::UnixStream,
-    ) -> CapnpChannelHandle {
+    ) -> JoinedChannel {
         let local = native_media::LocalAppConnection::attested(
             LAUNCHED.into(),
             room.route.cluster_id.clone(),
@@ -33,10 +33,11 @@ mod workspace_record_custody {
                 }),
                 continuation_instance: Some(91),
                 launch_ticket: None,
+                windowless: false,
             },
         )
         .unwrap();
-        CapnpChannelHandle {
+        JoinedChannel {
             as_app: None,
             person_chat_views: RefCell::default(),
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
@@ -193,11 +194,12 @@ mod workspace_record_custody {
                     refused.to_string().contains("grants deny"),
                     "refused by the grants, not elsewhere: {refused}"
                 );
-                let client: channel_handle::Client = capnp_rpc::new_client(channel);
-                let mut send = client.send_request();
-                send.get().set_op(&postcard::to_stdvec(&add).unwrap());
+                let client = wire_channel(channel);
                 assert!(
-                    send.send().promise.await.is_err(),
+                    client
+                        .send(&postcard::to_stdvec(&add).unwrap())
+                        .await
+                        .is_err(),
                     "the channel refuses the viewer's change"
                 );
             })

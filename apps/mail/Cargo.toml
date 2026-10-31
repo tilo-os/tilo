@@ -117,7 +117,7 @@ live = ["account-custody/custody", "dep:async-imap", "dep:lettre", "dep:tokio", 
 
 # The test IMAP and SMTP servers (`fake_servers`), for other crates' tests of
 # what talks to mail servers through this engine. Never in a release.
-fake-servers = ["live", "dep:rcgen"]
+fake-servers = ["live", "dep:rcgen", "ui/test-support"]
 
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:

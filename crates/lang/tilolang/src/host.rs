@@ -92,11 +92,104 @@ pub const VALUE_TYPES: &[ValueType] = &[
     ValueType {
         name: "Version",
         id: "host-version",
-        doc: "A version of a resource, as history keeps it: who made it, when, and by which action.",
+        doc: "A version of a resource, as history keeps it: who made it, when, by which action, in which task run, and what it did.",
         fields: &[
             ("who", "Principal", "Who made it: a person, or an agent."),
             ("at", "Time", "When it was made."),
             ("what", "Text", "The action that made it, by its label."),
+            (
+                "task",
+                "Option<TaskRun>",
+                "The task run that made it; `.none` for a change made outside a run.",
+            ),
+            (
+                "kind",
+                "Text",
+                "What it did to the resource: `created`, `changed` or `removed`. A removed resource keeps its versions, so who removed it stays answerable.",
+            ),
+            (
+                "fields",
+                "List<Text>",
+                "The fields it changed, by name; empty for one that made or removed the resource.",
+            ),
+            ("of", "Resource", "The resource it is a version of."),
+            (
+                "mine",
+                "Bool",
+                "Whether the person looking made it, outside any task run: one they may undo on its own.",
+            ),
+            (
+                "description",
+                "Text",
+                "What the action that made it does, as its declaration describes it: `Renames a note.`; empty for one that describes nothing.",
+            ),
+            (
+                "icon",
+                "Option<Text>",
+                "The icon of the action that made it, when it declares one.",
+            ),
+            (
+                "changes",
+                "List<Change>",
+                "Each field it changed, with what the field held before and after, read from the change itself; empty for one that made or removed the resource.",
+            ),
+        ],
+    },
+    ValueType {
+        name: "Step",
+        id: "host-step",
+        doc: "A step of a resource's history as people read it: consecutive versions by the same person, or by the same task run, folded into one.",
+        fields: &[
+            ("who", "Principal", "Who made it: a person, or an agent."),
+            ("at", "Time", "When its last version was made."),
+            (
+                "task",
+                "Option<TaskRun>",
+                "The task run that made it; `.none` for changes made outside a run.",
+            ),
+            ("versions", "List<Version>", "Its versions, oldest first."),
+            (
+                "mine",
+                "Bool",
+                "Whether the person looking made it, outside any task run.",
+            ),
+        ],
+    },
+    ValueType {
+        name: "Change",
+        id: "host-change",
+        doc: "A field a version changed: which, and what it held before and after, each shown as the field's type shows it.",
+        fields: &[
+            ("field", "Text", "The field, by its name in the source."),
+            ("label", "Text", "The field, in words: `Due` for `due`."),
+            (
+                "before",
+                "View",
+                "What the field held before the change, shown as its type shows it: a day as a day, a person as a person.",
+            ),
+            (
+                "after",
+                "View",
+                "What the field holds after the change, shown as its type shows it.",
+            ),
+        ],
+    },
+    ValueType {
+        name: "TaskRun",
+        id: "host-task-run",
+        doc: "One run of a task: what an agent did for the person who started it, kept and undone as one unit.",
+        fields: &[
+            (
+                "id",
+                "Text",
+                "The run's group, which every change it made is stamped with.",
+            ),
+            ("task", "Text", "The task it is a run of, by its id."),
+            (
+                "title",
+                "Text",
+                "What the run was asked, as its task is titled when it ran.",
+            ),
         ],
     },
     ValueType {
@@ -270,6 +363,20 @@ pub fn value_field(ty: &str, field: &str) -> Option<usize> {
         .fields
         .iter()
         .position(|(name, ..)| *name == field)
+}
+
+/// The value types that name an action, `Version` (the one that made it) and `Action` (the
+/// one offered), which `v.is(edit)` asks about by the action itself rather than its label.
+pub const NAMES_AN_ACTION: &[&str] = &["Version", "Action"];
+
+/// Where the tuple of the value type `ty` holds the id of the action it names: after its
+/// fields, which code reads by name, so the id is compared only through `.is(action)`.
+#[must_use]
+pub fn action_id_at(ty: &str) -> Option<usize> {
+    NAMES_AN_ACTION
+        .contains(&ty)
+        .then(|| value_type(ty).map(|t| t.fields.len()))
+        .flatten()
 }
 
 fn field(name: &str, ty: &str, doc: &str) -> FieldMeta {

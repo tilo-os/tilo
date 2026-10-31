@@ -1,9 +1,9 @@
-name: Publish / room service and web entry
+name: Publish / web entry
 
-# The images tilo.coffee runs: the room service and the web entry, built from
-# one commit of main, tested and pushed as dev-<commit>. The site is released
-# by hand and independently of stable: whoever releases it dispatches this on
-# main and pins both receipts' digests in the infra repository.
+# The image tilo.coffee runs: the web entry, built from one commit of main,
+# tested and pushed as dev-<commit>. The site is released by hand and
+# independently of stable: whoever releases it dispatches this on main and
+# pins the receipt's digest in the infra repository.
 #
 # One job of the CI builder:
 # privileged only inside the disposable guest, where buildah builds and tests
@@ -59,7 +59,7 @@ jobs:
       - name: Prepare compiler cache
         # The runner offers sccache; a job only uses it once this sets
         # RUSTC_WRAPPER and starts the server. Without it every publish
-        # compiled the room service and the web desktop from nothing.
+        # compiled the web desktop from nothing.
         run: bash tools/ci/sccache.sh prepare
       - name: Fetch fonts
         # The download cache step turns font fetching off for hermetic test
@@ -76,8 +76,6 @@ jobs:
             dnf install -y --setopt=install_weak_deps=False "${missing[@]}"
           fi
 
-      - name: Build the room service's programs
-        run: bash tools/ci/publish/room-service-binaries.sh "$OUT/room-service/bin"
       - name: Build the web desktop
         run: |
           set -euo pipefail
@@ -86,8 +84,8 @@ jobs:
 
       - name: Give buildah a scratch disk
         # Its overlay driver refuses the job container's own overlayfs; a t step
-        # had an ext4 scratch disk. Both images are small (fedora-minimal and
-        # caddy bases), so a tmpfs holds their layers.
+        # had an ext4 scratch disk. The image is small (a caddy base), so a
+        # tmpfs holds its layers.
         run: |
           set -euo pipefail
           mkdir -p /var/tmp/buildah-scratch
@@ -98,14 +96,6 @@ jobs:
         if: always()
         run: bash tools/ci/sccache.sh report
 
-      - name: Build and test the room service image
-        run: |
-          set -euo pipefail
-          dir=$OUT/room-service
-          bash tools/ci/publish/room-service-context.sh "$dir/context" "$dir/bin" "$OUT/web-desktop/bundle"
-          revision=$(cat "$dir/context/source-revision")
-          bash tools/ci/publish/oci-build.sh "$dir/context" "$dir/context/Containerfile" "$dir" --build-arg "SOURCE_REVISION=$revision"
-          bash crates/hosting/tilo-room-service/container/test-image.sh "$dir/image.oci.tar" "$revision"
       - name: Build and test the web entry image
         run: |
           set -euo pipefail
@@ -115,20 +105,16 @@ jobs:
           bash tools/ci/publish/oci-build.sh "$dir/context" "$dir/context/Containerfile" "$dir" --build-arg "SOURCE_REVISION=$revision"
           bash crates/browser/tilo-browser-runtime/container/test-image.sh "$dir/image.oci.tar"
 
-      - name: Publish both
+      - name: Publish
         env:
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          for image in room-service web-entry; do
-            bash tools/ci/publish/oci-publish.sh dev "registry.tilo.so/tilo/$image" "$OUT/$image" 'dev-{commit}'
-            echo "::notice::$image: $(cat "$OUT/$image/receipt.json")"
-          done
+          bash tools/ci/publish/oci-publish.sh dev "registry.tilo.so/tilo/web-entry" "$OUT/web-entry" 'dev-{commit}'
+          echo "::notice::web-entry: $(cat "$OUT/web-entry/receipt.json")"
       - name: Keep the receipts
         uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: receipts
-          path: |
-            out/room-service/receipt.json
-            out/web-entry/receipt.json
+          path: out/web-entry/receipt.json

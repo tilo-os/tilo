@@ -1,16 +1,16 @@
-//! The desktop search palette: the toolkit's [`CommandPalette`] over the
-//! portable sources. The host owns placement and input routing; choosing an
-//! action row queues the palette's own control invocation (the host's action
-//! door resolves it against the live resource tree), every other row is
-//! handed back through [`DesktopSearch::take_choice`].
+//! The desktop search palette: the toolkit's [`ActionPalette`] over the
+//! portable sources. The host owns placement and input routing; a chosen row
+//! is handed back through [`DesktopSearch::take_choice`], an action row as
+//! the address the host's action door resolves against the live resource
+//! tree.
 
 use tilo_actions::{FlatAction, ResourceSpec};
-use ui::widget::command_palette::{CommandEntry, CommandPalette};
+use ui::{ActionPalette, CommandEntry};
 
 use crate::model::{Hit, Source, Target, search, search_with};
 use crate::providers::{
     Actions, Answers, AppEntry, Applications, CommandSpec, Commands, Content, Published,
-    PublishedActions, Recents, WebSearch, WindowEntry, Windows,
+    PublishedActions, Recents, Switches, WebSearch, WindowEntry, Windows,
 };
 use crate::window::WindowSearch;
 use ui::search::system::ResourceKind;
@@ -18,6 +18,22 @@ use ui::search::system::ResourceKind;
 /// Row id prefix of the row that lists the rest of a group the palette's
 /// height cut short; `more:{i}` expands `more_rows[i]`.
 const MORE_PREFIX: &str = "more:";
+
+/// The row under the apps that lists every one of them, by its name.
+const ALL_APPS_ID: &str = "all-apps";
+
+/// How far the desk's own search reaches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Reach {
+    /// Names only: the applications a new tab may show.
+    #[default]
+    Names,
+    /// Everything the desk has open, over the workspace in front, and what a
+    /// query that is not a name answers.
+    Workspace,
+    /// The same over every workspace, each row saying which one holds it.
+    EveryWorkspace,
+}
 
 /// What the host can search right now, collected when search opens.
 #[derive(Default)]
@@ -33,12 +49,10 @@ pub struct SearchData {
     pub providers: Vec<Box<dyn ui::search::SearchProvider>>,
     /// Search what the resources hold, not what can be done to them.
     pub content_only: bool,
-    /// Offer what a query that is not a name answers: its sum or unit
-    /// conversion, the address it is, and searching the web for it
-    /// ([`crate::providers::Answers`], [`crate::providers::WebSearch`]).
-    /// The desktop's search over everything does; a search narrowed to the
-    /// apps or one window does not.
-    pub answers: bool,
+    /// How far the search reaches: the desktop's search over everything
+    /// answers what is not a name and covers a workspace, a search narrowed
+    /// to the apps or one window does neither.
+    pub reach: Reach,
     /// The exchange rates the host last fetched, which money is answered
     /// with, and now, in Unix seconds, to say how old they are.
     pub rates: Option<crate::answers::currency::Rates>,
@@ -120,7 +134,7 @@ impl Sources {
             } else {
                 data.published
             }),
-            answers: data.answers.then(|| {
+            answers: (data.reach != Reach::Names).then(|| {
                 (
                     Answers {
                         rates: data.rates,
@@ -151,7 +165,7 @@ impl Sources {
 }
 
 pub struct DesktopSearch {
-    palette: CommandPalette,
+    palette: ActionPalette,
     sources: Option<Sources>,
     recents: Recents,
     /// What the person chose before, which orders equal matches.
@@ -170,9 +184,9 @@ pub struct DesktopSearch {
     /// [`ui::search::engine_generation`] when the rows were built: the
     /// content rows come again once the index's code arrived.
     shown_generation: u64,
-    /// The palette is closing because it was dismissed, not because a row
-    /// was chosen.
-    dismissed: bool,
+    /// Whether this search is the applications alone, each already listed:
+    /// then no row offers to list them all again.
+    catalogue: bool,
     choice: Option<Target>,
 }
 
@@ -182,14 +196,18 @@ impl Default for DesktopSearch {
     }
 }
 
-const PLACEHOLDER: &str = "Search apps, windows, documents and actions\u{2026}";
+/// What the empty field says the search over everything covers: the groups
+/// (kinds) it asks, in the desktop's language.
+fn placeholder() -> String {
+    crate::i18n::t("search-placeholder")
+}
 
 impl DesktopSearch {
     pub fn new() -> Self {
-        let mut palette = CommandPalette::commands();
+        let mut palette = ActionPalette::rows(Vec::new());
         // Rows arrive already matched and ranked by the shared ranking.
         palette.set_bypass_fuzzy(true);
-        palette.set_query_placeholder(PLACEHOLDER);
+        palette.set_query_placeholder(placeholder());
         Self {
             palette,
             sources: None,
@@ -201,7 +219,7 @@ impl DesktopSearch {
             auto_selected: None,
             shown_query: None,
             shown_generation: 0,
-            dismissed: false,
+            catalogue: false,
             choice: None,
         }
     }
@@ -218,11 +236,24 @@ impl DesktopSearch {
 
     /// Open over `data` with an empty query.
     pub fn open(&mut self, mut data: SearchData) {
-        let placeholder = data.placeholder.take();
-        self.palette
-            .set_query_placeholder(placeholder.as_deref().unwrap_or(PLACEHOLDER));
+        let placeholder = data.placeholder.take().unwrap_or_else(placeholder);
+        self.palette.set_query_placeholder(placeholder.as_str());
+        // A search over the workspace in front says so at the start of the
+        // field, and offers the one control that widens it; over every
+        // workspace there is nothing left to say or widen.
+        let (token, widen) = match data.reach {
+            Reach::Workspace => (
+                Some(crate::i18n::t("search-scope-workspace")),
+                Some(crate::i18n::t("search-launcher-widen")),
+            ),
+            Reach::Names | Reach::EveryWorkspace => (None, None),
+        };
+        self.palette.set_scope_token(token);
+        self.palette.set_scope_token_action(widen);
+        // The apps alone, listed whole: nothing else is searched, so there
+        // is nothing a row could lead to that is not already here.
+        self.catalogue = data.reach == Reach::Names && !data.window;
         self.sources = Some(Sources::new(data));
-        self.dismissed = false;
         self.choice = None;
         self.shown_query = None;
         self.expanded.clear();
@@ -232,14 +263,30 @@ impl DesktopSearch {
 
     /// Close without choosing anything.
     pub fn close(&mut self) {
-        self.dismissed = true;
         self.palette.close();
         self.finish();
     }
 
-    /// The palette is about to be dismissed by the key it is handed next.
-    pub fn dismissing(&mut self) {
-        self.dismissed = true;
+    /// What Escape does in the desk's search: a typed query is cleared first
+    /// and search stays open, so a slip of the finger never costs the whole
+    /// search; Escape on the empty field closes it. Returns whether the desk
+    /// did that.
+    ///
+    /// A step that asks for a value, a row's other actions, or a question a
+    /// window's control asked is the palette's own to back out of, before it
+    /// would close ([`ActionPalette::handle_event`]): then this answers
+    /// `false` and the key goes to the palette, which goes back a step and
+    /// closes only from the results.
+    pub fn escape(&mut self) -> bool {
+        if !self.is_open() || self.palette.in_argument_mode() {
+            return false;
+        }
+        if self.query().is_empty() {
+            self.close();
+        } else {
+            self.set_query("");
+        }
+        true
     }
 
     pub fn set_query(&mut self, query: &str) {
@@ -256,11 +303,11 @@ impl DesktopSearch {
         &self.rows
     }
 
-    pub fn palette(&self) -> &CommandPalette {
+    pub fn palette(&self) -> &ActionPalette {
         &self.palette
     }
 
-    pub fn palette_mut(&mut self) -> &mut CommandPalette {
+    pub fn palette_mut(&mut self) -> &mut ActionPalette {
         &mut self.palette
     }
 
@@ -289,6 +336,36 @@ impl DesktopSearch {
         true
     }
 
+    /// What every source finds for `query`: the desktop's own, the ones the
+    /// host adds, and the rows that switch each of them off and on again.
+    fn everywhere(
+        &self,
+        sources: &Sources,
+        query: &str,
+    ) -> Vec<ui::search::system::KindGroup<Hit>> {
+        let mut all: Vec<&dyn Source> = vec![
+            &self.recents,
+            &sources.applications,
+            &sources.windows,
+            &sources.content,
+            &sources.actions,
+            &sources.published,
+            &sources.commands,
+        ];
+        if let Some((answers, web)) = &sources.answers {
+            all.extend([answers as &dyn Source, web]);
+        }
+        all.extend(sources.host.iter().map(|source| &**source));
+        let switches = switches(sources, &all);
+        all.retain(|source| sources.preferences.enabled(source.id()));
+        if let Some(switches) = &switches {
+            all.push(switches);
+        }
+        let usage = &self.usage;
+        let now = sources.now;
+        search_with(query, &all, 0, &|hit| usage.strength(query, hit, now))
+    }
+
     fn rebuild_rows(&mut self, query: String, generation: u64) {
         let Some(sources) = &self.sources else {
             return;
@@ -307,23 +384,7 @@ impl DesktopSearch {
             held.extend(actions);
             held
         } else {
-            let mut all: Vec<&dyn Source> = vec![
-                &self.recents,
-                &sources.applications,
-                &sources.windows,
-                &sources.content,
-                &sources.actions,
-                &sources.published,
-                &sources.commands,
-            ];
-            if let Some((answers, web)) = &sources.answers {
-                all.extend([answers as &dyn Source, web]);
-            }
-            all.extend(sources.host.iter().map(|source| &**source));
-            all.retain(|source| sources.preferences.enabled(source.id()));
-            let usage = &self.usage;
-            let now = sources.now;
-            search_with(&query, &all, 0, &|hit| usage.strength(&query, hit, now))
+            self.everywhere(sources, &query)
         };
         // Each group shares what the palette shows without scrolling; a
         // group cut short offers the rest in place.
@@ -347,9 +408,12 @@ impl DesktopSearch {
         let mut rows = Vec::new();
         let mut entries = Vec::new();
         self.more_rows.clear();
+        let browsing = query.trim().is_empty();
         for group in groups {
             let label = group.kind.label().to_owned();
             let capped = group.is_capped();
+            let applications =
+                browsing && !self.catalogue && group.kind == ResourceKind::Application;
             for hit in group.results {
                 entries.push(
                     entry_for(&hit, format!("hit:{}", rows.len()))
@@ -365,6 +429,16 @@ impl DesktopSearch {
                     group.total,
                 ));
                 self.more_rows.push(group.kind);
+            }
+            if applications {
+                // The rest of what the person has: every app, by its name,
+                // where the few they reach for most are listed.
+                entries.push(
+                    CommandEntry::new(ALL_APPS_ID, crate::i18n::t("search-launcher-all-apps"))
+                        .icon(ui::icons::Icon::LayoutGrid)
+                        .group(label)
+                        .group_total(group.total),
+                );
             }
         }
         let kept = chosen.and_then(|chosen| match chosen {
@@ -431,19 +505,19 @@ impl DesktopSearch {
                 .and_then(|more| more.parse().ok())
             {
                 self.expand(more);
+            } else if outcome.id == ALL_APPS_ID {
+                // The catalogue of every app: the desktop lists them all,
+                // by name, as its empty desk's launchpad does.
+                self.choice = Some(Target::Command {
+                    id: crate::model::ALL_APPS_COMMAND.into(),
+                });
+                self.palette.close();
             } else if let Some(hit) = self.hit(&outcome.id) {
                 self.choose_hit(hit, outcome.argument);
             }
         }
         if self.sources.is_none() || self.palette.is_open() {
             return false;
-        }
-        if !self.dismissed
-            && self.choice.is_none()
-            && let Some(hit) = self.palette.selected_id().and_then(|id| self.hit(id))
-        {
-            // An action row closed the palette after queueing its invocation.
-            self.remember(&hit);
         }
         self.finish();
         true
@@ -453,18 +527,43 @@ impl DesktopSearch {
     /// it is remembered, and its target is the choice. A switch stays in
     /// view, showing what it flipped to; anything else closes search.
     fn choose_hit(&mut self, hit: Hit, argument: Option<String>) {
+        // A source switched off or on again: the rows change under the
+        // switch, which stays where it is so it can be flipped back.
+        if let Target::Prefer { source, enabled } = &hit.target {
+            let (source, enabled) = (source.clone(), *enabled);
+            if let Some(sources) = &mut self.sources {
+                sources.preferences.set_enabled(&source, enabled);
+            }
+            self.choice = Some(hit.target);
+            let query = self.palette.query().to_owned();
+            self.rebuild_rows(query, ui::search::engine_generation());
+            return;
+        }
         self.remember(&hit);
         let mut target = hit.target;
         let mut toggles = false;
-        if let Target::Invoke(invoke) = &mut target
-            && let Some(descriptor) = &invoke.descriptor
-        {
-            toggles = descriptor.state.toggles;
-            if let (Some(param), Some(value)) = (descriptor.prompt_param(), argument) {
-                invoke
-                    .arguments
-                    .insert(param.to_owned(), serde_json::Value::String(value));
+        match &mut target {
+            Target::Invoke(invoke) => {
+                if let Some(descriptor) = &invoke.descriptor {
+                    toggles = descriptor.state.toggles;
+                    if let (Some(param), Some(value)) = (descriptor.prompt_param(), argument) {
+                        invoke
+                            .arguments
+                            .insert(param.to_owned(), serde_json::Value::String(value));
+                    }
+                }
             }
+            // An app's own action row runs with the value the person typed,
+            // where the row asks for one.
+            Target::Action(action) => {
+                toggles = action.spec.state.toggles;
+                if let (Some(param), Some(value)) = (action.spec.prompt_param(), argument) {
+                    action
+                        .preset
+                        .get_or_insert_with(|| (param.to_owned(), value));
+                }
+            }
+            _ => {}
         }
         self.choice = Some(target);
         if !toggles {
@@ -483,7 +582,7 @@ impl DesktopSearch {
     /// choosing it does, with `argument` the line its action asks for:
     /// what a caller of the desktop's published search runs. An app's own
     /// action row ([`Target::Action`]) runs only from its window, through
-    /// the palette's control. Returns whether there was such a row.
+    /// the host's action door. Returns whether there was such a row.
     pub fn choose(&mut self, index: usize, argument: Option<String>) -> bool {
         let Some(hit) = self.rows.get(index).cloned() else {
             return false;
@@ -504,9 +603,16 @@ impl DesktopSearch {
         self.usage = usage;
     }
 
-    /// The chosen non-action row, for the host to perform.
+    /// The chosen row, for the host to perform.
     pub fn take_choice(&mut self) -> Option<Target> {
         self.choice.take()
+    }
+
+    /// Whether the person took the field's scope token away since the last
+    /// call: the search is narrowed no more, and the host opens it again
+    /// over every workspace.
+    pub fn take_scope_widened(&mut self) -> bool {
+        self.palette.take_scope_token_removed()
     }
 
     fn hit(&self, id: &str) -> Option<Hit> {
@@ -531,12 +637,27 @@ impl DesktopSearch {
         self.expanded.clear();
         self.auto_selected = None;
         self.shown_query = None;
-        self.dismissed = false;
     }
 }
 
 /// One hit as a palette row: an application wears its own glyph, the one
 /// its windows wear, never the generic grid every app shared.
+/// The rows that switch a source off and on again, one per switchable
+/// source of a search over everything, by the name a person knows it by.
+/// A search of the desktop's own (the apps only, one window) has no host
+/// sources and nothing to keep a choice in, and offers none.
+fn switches(sources: &Sources, all: &[&dyn Source]) -> Option<Switches> {
+    if sources.host.is_empty() {
+        return None;
+    }
+    let names = all
+        .iter()
+        .filter(|source| crate::preferences::switchable(source.id()))
+        .map(|source| (source.id().to_owned(), source.name()))
+        .collect();
+    Some(Switches::new(names, &sources.preferences))
+}
+
 fn entry_for(hit: &Hit, id: String) -> CommandEntry {
     let (mut entry, icon) = match &hit.target {
         Target::Action(action) => {
@@ -550,11 +671,12 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
                 depth: 0,
             };
             let mut entry = CommandEntry::from_flat_action(&flat);
-            if let Some((param, value)) = &action.preset {
-                entry = entry.with_action_preset(param.clone(), value.clone());
+            if action.preset.is_some() {
                 // The row is the hit (a video, a search of the service), not
                 // the generic `open` it runs through: only the hit's own
-                // subtitle describes it.
+                // subtitle describes it, and it runs at the hit the row
+                // already carries instead of asking for it.
+                entry = entry.with_preset();
                 entry.description = None;
             }
             entry.id = id;
@@ -573,6 +695,18 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
             hit.icon
                 .unwrap_or_else(|| ui::search::system::icon_for_kind(&hit.kind)),
         ),
+        // A source's switch wears what it is set to now, as a published
+        // switch does: `enabled` is what choosing it makes it, so the badge
+        // says the other.
+        Target::Prefer { enabled, .. } => (
+            CommandEntry::new(id, hit.title.clone()).badge(crate::i18n::t(if *enabled {
+                "search-source-badge-off"
+            } else {
+                "search-source-badge-on"
+            })),
+            hit.icon
+                .unwrap_or_else(|| ui::search::system::icon_for_kind(&hit.kind)),
+        ),
         Target::Launch { app } | Target::Window { app: Some(app), .. } => (
             CommandEntry::new(id, hit.title.clone()),
             ui::icons::app_glyph(app, crate::availability::category_for(app)),
@@ -588,13 +722,18 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
     if !hit.facts.is_empty() {
         entry = entry.facts(hit.facts.clone());
     }
+    if !hit.faces.is_empty() {
+        entry = entry.faces(hit.faces.clone());
+    }
+    if let Some(outcome) = &hit.outcome {
+        entry = entry.outcome(outcome.clone());
+    }
     entry.icon(icon)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::automerge::{AutoCommit, ROOT};
 
     fn data() -> SearchData {
         SearchData {
@@ -623,16 +762,173 @@ mod tests {
         }
     }
 
+    /// Opened before anything is typed, the card names each group it holds:
+    /// "Apps" over the applications, "Windows" over the open windows. A
+    /// person never reads a bare list, and the field says what those groups
+    /// are ("Search apps, windows, documents and actions…").
+    #[test]
+    fn the_empty_card_names_its_groups() {
+        let mut search = DesktopSearch::new();
+        search.open(data());
+        assert_eq!(search.query(), "", "nothing typed yet");
+        let groups: Vec<&str> = search
+            .palette()
+            .visible_entries()
+            .iter()
+            .map(|entry| {
+                entry
+                    .group
+                    .as_deref()
+                    .expect("every row is under a named group")
+            })
+            .collect();
+        assert!(groups.contains(&"Apps"), "{groups:?}");
+        assert!(groups.contains(&"Windows"), "{groups:?}");
+        assert_eq!(
+            crate::i18n::t("search-placeholder"),
+            "Search apps, windows, documents and actions\u{2026}",
+            "the empty field names those groups"
+        );
+    }
+
+    /// Someone is here: the empty palette leads with them and the call
+    /// they could join, and choosing that row joins it.
+    #[test]
+    fn the_empty_palette_leads_with_who_is_here() {
+        use crate::providers::happening::{CallHere, Happening, PersonHere, WorkspaceHere};
+        let person = PersonHere {
+            id: "ada".into(),
+            name: "Ada".into(),
+            colour: (200, 100, 50),
+            agent: false,
+            away: false,
+            tab: None,
+        };
+        let here = WorkspaceHere {
+            id: 1,
+            room: "room".into(),
+            name: "Studio".into(),
+            active: true,
+            people: vec![person.clone()],
+            windows: Vec::new(),
+            calls: vec![CallHere {
+                channel: "c_voice".into(),
+                name: String::new(),
+                people: vec![person],
+            }],
+        };
+        let mut data = data();
+        data.reach = Reach::Workspace;
+        data.sources
+            .push(Box::new(Happening::new(false, vec![here])));
+        let mut search = DesktopSearch::new();
+        search.open(data);
+        let entries = search.palette().visible_entries();
+        assert_eq!(
+            entries[0].group.as_deref(),
+            Some("Happening now"),
+            "who is here leads the empty palette"
+        );
+        assert_eq!(entries[0].label, "Studio");
+        assert_eq!(entries[0].faces.len(), 1, "their face is worn");
+        let call = entries
+            .iter()
+            .find(|entry| entry.label == "Call")
+            .expect("the call to join");
+        assert_eq!(call.outcome.as_deref(), Some("Join"));
+        let at = entries
+            .iter()
+            .position(|entry| entry.id == call.id)
+            .unwrap();
+        search.palette_mut().set_cursor(at);
+        search.palette_mut().activate_selected();
+        assert!(search.observe(), "choosing a row closes search");
+        let Some(Target::Invoke(invoke)) = search.take_choice() else {
+            panic!("the call is joined by asking Chat");
+        };
+        assert_eq!(invoke.app, "so.tilo.chat");
+        assert_eq!(invoke.address.action.as_str(), "join-call");
+    }
+
+    /// Under the apps the empty palette offers every one of them: the
+    /// catalogue, as the empty desk's launchpad opens it.
+    #[test]
+    fn every_app_is_one_row_under_the_apps() {
+        let mut full = data();
+        full.reach = Reach::Workspace;
+        let mut search = DesktopSearch::new();
+        search.open(full);
+        let entries = search.palette().visible_entries();
+        let last = entries
+            .iter()
+            .rfind(|entry| entry.group.as_deref() == Some("Apps"))
+            .expect("the apps' group");
+        assert_eq!(last.id, ALL_APPS_ID);
+        assert_eq!(last.label, "All apps");
+        let at = entries
+            .iter()
+            .position(|entry| entry.id == ALL_APPS_ID)
+            .unwrap();
+        search.palette_mut().set_cursor(at);
+        search.palette_mut().activate_selected();
+        assert!(search.observe(), "choosing it closes search");
+        assert_eq!(
+            search.take_choice(),
+            Some(Target::Command {
+                id: crate::model::ALL_APPS_COMMAND.into()
+            })
+        );
+
+        // The catalogue itself is every app: it does not offer itself again.
+        let mut catalogue = data();
+        catalogue.reach = Reach::Names;
+        catalogue.windows.clear();
+        catalogue.commands.clear();
+        catalogue.resources.clear();
+        catalogue.sources.clear();
+        let mut search = DesktopSearch::new();
+        search.open(catalogue);
+        let entries = search.palette().visible_entries();
+        assert!(
+            entries.iter().any(|entry| entry.label == "Sheets"),
+            "the catalogue lists the apps: {entries:?}"
+        );
+        assert!(
+            entries.iter().all(|entry| entry.id != ALL_APPS_ID),
+            "and offers no second way into itself"
+        );
+    }
+
+    /// Escape clears what was typed before it closes the search: a slip of
+    /// the finger costs the query, not the search. A second Escape on the
+    /// empty field closes it, as the launcher's did.
+    #[test]
+    fn escape_clears_what_was_typed_before_it_closes() {
+        let mut search = DesktopSearch::new();
+        search.open(data());
+        search.set_query("notes");
+        assert!(search.escape(), "the desk's search clears its query");
+        assert!(search.is_open(), "the first Escape keeps search open");
+        assert_eq!(search.query(), "", "…and clears the query");
+        assert!(
+            search.results().iter().any(|hit| hit.title == "Sheets"),
+            "the empty field lists everything again"
+        );
+        assert!(search.escape());
+        assert!(!search.is_open(), "Escape on the empty field closes");
+        assert!(
+            !search.escape(),
+            "and Escape on a closed search is not the desk's to handle"
+        );
+    }
+
     #[test]
     fn enter_on_a_typed_app_name_chooses_its_launch() {
         let mut search = DesktopSearch::new();
         search.open(data());
         search.set_query("sheets");
         assert_eq!(search.results()[0].title, "Sheets");
-        let mut doc = AutoCommit::new();
-        search
-            .palette_mut()
-            .activate_selected(&mut ui::widget::Edits::lend(&mut doc), &ROOT);
+        search.palette_mut().activate_selected();
         assert!(search.observe(), "choosing a row closes search");
         assert_eq!(
             search.take_choice(),
@@ -692,10 +988,7 @@ mod tests {
         assert_eq!(entries[0].badge.as_deref(), Some("Off"));
         assert_eq!(entries[0].keybinding.as_deref(), Some("Super+D"));
         drop(entries);
-        let mut doc = AutoCommit::new();
-        search
-            .palette_mut()
-            .activate_selected(&mut ui::widget::Edits::lend(&mut doc), &ROOT);
+        search.palette_mut().activate_selected();
         assert!(
             !search.observe(),
             "a switch keeps search open on its new state"
@@ -739,6 +1032,152 @@ mod tests {
         );
     }
 
+    /// A host's own source, named as a person knows it: the notes a notes
+    /// app holds.
+    struct Notes;
+
+    impl Source for Notes {
+        fn id(&self) -> &'static str {
+            "notes"
+        }
+
+        fn name(&self) -> String {
+            "Notes".into()
+        }
+
+        fn query(&self, needle: &str) -> Vec<Hit> {
+            if needle.trim().is_empty() {
+                return Vec::new();
+            }
+            vec![Hit {
+                faces: Vec::new(),
+                outcome: None,
+                kind: ResourceKind::Note,
+                provider: self.id().into(),
+                id: "groceries".into(),
+                title: format!("Groceries for {needle}"),
+                subtitle: None,
+                facts: Vec::new(),
+                score: ui::search::system::MAX_PROVIDER_SCORE,
+                icon: None,
+                target: Target::Window { tab: 7, app: None },
+            }]
+        }
+    }
+
+    /// A search over the desktop and what one host adds.
+    fn with_notes(reach: Reach) -> SearchData {
+        SearchData {
+            sources: vec![Box::new(Notes)],
+            reach,
+            ..data()
+        }
+    }
+
+    #[test]
+    fn switching_a_source_off_from_its_row_takes_its_rows_away_and_stays_open() {
+        let mut search = DesktopSearch::new();
+        search.open(with_notes(Reach::Workspace));
+        search.set_query("groceries tomatoes");
+        assert!(
+            search.results().iter().any(|hit| hit.provider == "notes"),
+            "{:?}",
+            search.results()
+        );
+
+        search.set_query("disable notes");
+        let at = search
+            .palette()
+            .visible_entries()
+            .iter()
+            .position(|entry| entry.label == "Disable Notes search")
+            .expect("the source's switch is offered");
+        let entries = search.palette().visible_entries();
+        assert_eq!(entries[at].badge.as_deref(), Some("ON"));
+        drop(entries);
+        search.palette_mut().set_cursor(at);
+        search.palette_mut().activate_selected();
+
+        assert!(
+            !search.observe(),
+            "a switch keeps search open on what it switched"
+        );
+        assert!(search.is_open());
+        assert_eq!(
+            search.take_choice(),
+            Some(Target::Prefer {
+                source: "notes".into(),
+                enabled: false
+            }),
+            "the host keeps the person's choice"
+        );
+
+        // The switch now offers to switch it back on...
+        let switched = |search: &DesktopSearch| {
+            search
+                .results()
+                .iter()
+                .find(|hit| matches!(hit.target, Target::Prefer { .. }))
+                .map(|hit| hit.title.clone())
+        };
+        assert_eq!(switched(&search).as_deref(), Some("Enable Notes search"));
+        // ...and what it switched off is gone.
+        search.set_query("groceries tomatoes");
+        assert!(
+            search.results().iter().all(|hit| hit.provider != "notes"),
+            "{:?}",
+            search.results()
+        );
+        // The desktop's own rows stay, whatever was switched: the app.
+        search.set_query("sheets");
+        assert!(search.results().iter().any(|hit| hit.title == "Sheets"));
+    }
+
+    #[test]
+    fn the_actions_stay_whatever_is_switched_off() {
+        let mut search = DesktopSearch::new();
+        search.open(with_notes(Reach::Workspace));
+        search.set_query("disable");
+        assert!(
+            !search.results().iter().any(|hit| matches!(
+                &hit.target,
+                Target::Prefer { source, .. } if source == "actions"
+            )),
+            "the actions are how anything is done from search: {:?}",
+            search.results()
+        );
+    }
+
+    #[test]
+    fn a_search_over_the_workspace_in_front_offers_to_widen_it() {
+        let mut search = DesktopSearch::new();
+        search.open(with_notes(Reach::Workspace));
+        assert_eq!(search.palette().scope_token(), Some("Workspace"));
+        assert_eq!(
+            search.palette().scope_token_action(),
+            Some("Search every workspace")
+        );
+
+        // Widened, the token is gone: there is nothing left to widen.
+        search.close();
+        search.open(with_notes(Reach::EveryWorkspace));
+        assert_eq!(search.palette().scope_token(), None);
+        assert_eq!(search.palette().scope_token_action(), None);
+    }
+
+    /// A search the desktop opens of its own (the apps a new tab may show)
+    /// is not narrowed to a workspace, and says nothing about one.
+    #[test]
+    fn a_search_of_the_desktops_own_names_no_scope() {
+        let mut search = DesktopSearch::new();
+        search.open(SearchData {
+            applications: data().applications,
+            ..SearchData::default()
+        });
+        assert_eq!(search.palette().scope_token(), None);
+        assert_eq!(search.palette().scope_token_action(), None);
+    }
+
     #[test]
     fn a_dismissed_palette_chooses_nothing_and_remembers_nothing() {
         let mut search = DesktopSearch::new();
@@ -758,10 +1197,7 @@ mod tests {
         let mut search = DesktopSearch::new();
         search.open(data());
         search.set_query("sheets");
-        let mut doc = AutoCommit::new();
-        search
-            .palette_mut()
-            .activate_selected(&mut ui::widget::Edits::lend(&mut doc), &ROOT);
+        search.palette_mut().activate_selected();
         search.observe();
         search.open(data());
         assert_eq!(search.results()[0].provider, "recent");
@@ -769,7 +1205,7 @@ mod tests {
     }
 
     #[test]
-    fn an_action_row_queues_its_invocation_for_the_host_and_closes() {
+    fn an_action_row_hands_its_address_to_the_host_and_closes() {
         let mut resource = ResourceSpec::new("page-1", "notes.page", "Groceries");
         resource
             .actions
@@ -789,16 +1225,13 @@ mod tests {
         });
         search.set_query("duplicate");
         assert_eq!(search.results()[0].title, "Duplicate note");
-        let mut doc = AutoCommit::new();
-        search
-            .palette_mut()
-            .activate_selected(&mut ui::widget::Edits::lend(&mut doc), &ROOT);
+        search.palette_mut().activate_selected();
         assert!(search.observe());
-        assert_eq!(search.take_choice(), None, "the host's action door runs it");
-        let invocation = ui::widget::controls::take_control_invocation(search.palette_mut())
-            .expect("queued for the host");
+        let Some(Target::Action(action)) = search.take_choice() else {
+            panic!("the host's action door runs it");
+        };
         assert_eq!(
-            invocation.address,
+            action.address(),
             tilo_actions::ActionAddress::new("page-1", "duplicate")
         );
     }
@@ -1124,15 +1557,12 @@ mod tests {
         assert_eq!(header, Some(total), "the header counts every app");
 
         let mut reached = std::collections::BTreeSet::new();
-        let mut doc = AutoCommit::new();
         for _ in 0..(total * 4) {
             let id = search.palette().selected_id().map(str::to_owned);
             if let Some(id) = id {
                 if id.starts_with(MORE_PREFIX) {
                     let cursor = search.palette().cursor();
-                    search
-                        .palette_mut()
-                        .activate_selected(&mut ui::widget::Edits::lend(&mut doc), &ROOT);
+                    search.palette_mut().activate_selected();
                     assert!(!search.observe(), "showing all keeps search open");
                     assert!(search.is_open() && search.palette().is_open());
                     assert_eq!(search.palette().cursor(), cursor, "the row stays put");

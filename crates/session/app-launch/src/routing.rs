@@ -12,9 +12,14 @@
 //! by the manifest's extensions as well, since a Tilo app's own formats often
 //! have no MIME type registered on the host. A link is matched by its scheme
 //! (`x-scheme-handler/https`), and a Tilo app claims one by name.
+//!
+//! A record is not matched at all: a launch that names a record already names
+//! the app that holds it, and the only question left is how to ask that app
+//! for the record ([`record`]).
 
 use std::path::Path;
 
+use collaboration::record::RecordId;
 use desktop_entry::Scan;
 use tilo_installed_apps::InstalledApp;
 
@@ -105,6 +110,16 @@ pub fn link(uri: &str, installed: &[InstalledApp], entries: &Scan) -> Option<Lau
     )
 }
 
+/// What an app is asked to open to reach the record `record`: the record's
+/// own URI ([`RecordId::uri`]), which its launcher hands the app as the
+/// record to open. `None` when `record` is not a record id — the launch
+/// comes from a window, so its record is checked before it reaches an app's
+/// command line.
+#[must_use]
+pub fn record(record: &str) -> Option<Open> {
+    Some(Open::Uri(RecordId::parse(record)?.uri()))
+}
+
 /// The scheme `uri` names, when it is one: a letter followed by letters,
 /// digits, `+`, `-` or `.`, then a colon. Anything else is not a link this
 /// desktop routes — in particular not a bare path.
@@ -138,6 +153,7 @@ mod tests {
             has_gui: true,
             opens_extensions: extensions.iter().map(|ext| (*ext).to_owned()).collect(),
             opens_mime_types: mimes.iter().map(|mime| (*mime).to_owned()).collect(),
+            opens_resource_kinds: Vec::new(),
             opens_uri_schemes: schemes.iter().map(|scheme| (*scheme).to_owned()).collect(),
             opens_secondary: false,
             offers: Vec::new(),
@@ -204,6 +220,29 @@ mod tests {
                 app: "so.tilo.sheets".into(),
                 open: Some(Open::File("/home/you/budget.tilosheet".into())),
             })
+        );
+    }
+
+    #[test]
+    fn a_record_is_asked_for_by_its_own_uri_and_nothing_else_is_a_record() {
+        let note = RecordId::for_file("/home/you/Notes.note");
+        assert_eq!(
+            record(note.as_str()),
+            Some(Open::Uri(format!("tilo-record:{}", note.as_str()))),
+            "the app is asked for the record, not for the file it is kept in"
+        );
+        let minted = RecordId::minted();
+        assert_eq!(
+            record(minted.as_str()),
+            Some(Open::Uri(minted.uri())),
+            "a record with no file of its own opens the same way"
+        );
+        assert_eq!(record(""), None, "an empty record names nothing");
+        assert_eq!(record("not a record"), None);
+        assert_eq!(
+            record("file:relative/path"),
+            None,
+            "a record id names an absolute path or a minted id"
         );
     }
 

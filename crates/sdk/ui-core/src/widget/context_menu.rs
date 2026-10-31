@@ -438,6 +438,10 @@ pub fn note_input(event: &WindowEvent) {
     }
 }
 
+#[crate::component::not_a_component(
+    part,
+    "opened by the `ui.ContextMenu` attachment and a row's menu"
+)]
 pub struct ContextMenu {
     items: Vec<MenuItem>,
     open: bool,
@@ -1972,9 +1976,20 @@ impl Widget for ContextMenu {
                 button: MouseButton::Left,
                 ..
             } => {
-                // A press on the bar grabs or pages it and takes no row.
-                self.scroll_event(event, ctx);
-                if *ctx.handled {
+                // A press on the bar grabs or pages it and takes no row. The
+                // region answers in its own flag: the host that routed the
+                // press here may have marked it handled already.
+                let mut on_bar = false;
+                self.place_scroll();
+                self.scroll.handle_window_event(
+                    event,
+                    ctx.scale_factor,
+                    ctx.modifiers.state(),
+                    &mut on_bar,
+                    &self.theme,
+                );
+                if on_bar {
+                    *ctx.handled = true;
                     return;
                 }
                 if self.place_query_caret(self.last_cursor) {

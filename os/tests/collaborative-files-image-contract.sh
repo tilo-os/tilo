@@ -89,9 +89,9 @@ require_file /usr/lib/systemd/user/tilo-graphical-session.target
 require_file /usr/share/tilo/selinux/tilo-base.cil
 require_file /usr/share/wayland-sessions/shell.desktop
 require_file /usr/share/wayland-sessions/tilo-session.desktop
-# The greeter offers the shell and the native session that replaces it. Any
-# other entry, from a package the base pulls in, would be offered at every
-# login too.
+# The greeter offers the native session a login starts and the shell it
+# replaces. Any other entry, from a package the base pulls in, would be
+# offered at every login too.
 sessions="$(cd "$(at /usr/share)" && find wayland-sessions xsessions -name '*.desktop' 2>/dev/null | sort | tr '\n' ' ')"
 [ "$sessions" = "wayland-sessions/shell.desktop wayland-sessions/tilo-session.desktop " ] \
   || die "login sessions are not exactly the shell and native sessions: ${sessions:-none}"
@@ -171,8 +171,9 @@ require_line /usr/lib/systemd/user/tilo-fs-recipient.socket "SocketMode=0600"
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "Requires=graphical-session-pre.target graphical-session.target"
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "PropagatesStopTo=graphical-session.target graphical-session-pre.target"
 require_text /usr/share/tilo/selinux/tilo-base.cil "(allow init_t tilo_fs_t (process2 (nnp_transition nosuid_transition)))"
-require_line /usr/share/wayland-sessions/shell.desktop "Exec=/usr/libexec/tilo-session --backend drm"
-require_line /usr/share/wayland-sessions/tilo-session.desktop "Exec=/usr/libexec/tilo-session --native --backend drm"
+require_line /usr/share/wayland-sessions/tilo-session.desktop "Exec=/usr/libexec/tilo-session --backend drm"
+require_line /usr/share/wayland-sessions/tilo-session.desktop "X-Tilo-Session-Default=true"
+require_line /usr/share/wayland-sessions/shell.desktop "Exec=/usr/libexec/tilo-session --shell --backend drm"
 require_text /usr/libexec/tilo-session '"$SYSTEMCTL" --user start "$SESSION_TARGET"'
 require_text /usr/libexec/tilo-session 'readonly NATIVE_SESSION_BIN=/usr/bin/tilo-session'
 require_text /usr/libexec/tilo-session 'run_managed "$compositor_bin" "$@"'
@@ -226,7 +227,7 @@ require_exec "$payload/bin/file-explorer"
 # The packer serializes a normalized manifest rather than preserving authoring
 # whitespace. Validate the installed TOML values, not one formatter's spacing.
 require_toml_string "$manifest" package.id "so.tilo.file-explorer"
-require_toml_string "$manifest" sandbox.services.tilo-fs "optional@11"
+require_toml_string "$manifest" sandbox.services.tilo-fs "optional@12"
 # The package names the exact runtime build it links, and the image ships it.
 runtime_version="$(python3 - "$(at "$manifest")" <<'PY'
 import pathlib, re, sys, tomllib

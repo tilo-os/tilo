@@ -11,8 +11,8 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::time::SystemTime;
 use tilo_automerge::ApplyIncoming as _;
-use tilo_joined_room::testing as internals;
-use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_peer_state::owner::testing as internals;
+use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::{StatePeer, TransportOrigin};
 
 /// A signed document edit in `room`, as the owner commits a local change.
@@ -329,7 +329,7 @@ fn native_outgoing_capacity_refuses_new_success_and_inbound_ack_can_release_spac
     );
     let governor_key = SigningKey::from_bytes(&[61; 32]);
     let mut revoked = tilo_user_identity::RevocationEntry {
-        user_public_key: remote.authority().user_public_key,
+        user_public_key: remote.owner(),
         revoked_device_public_key: [98; 32],
         revoked_at_ns: 10,
         reason: tilo_user_identity::RevocationReason::Retired,
@@ -940,18 +940,18 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
     internals::seal(&mut candidate).unwrap();
     let mut prospective = tree_of(&owner).read().clone();
     internals::insert_room(&mut prospective.native_authority, room, candidate);
-    tilo_joined_room::preflight(
+    tilo_peer_state::owner::preflight(
         &prospective.native_authority,
-        tilo_joined_room::MAX_AUTHORITY_BYTES,
+        tilo_peer_state::owner::MAX_AUTHORITY_BYTES,
     )
     .unwrap();
     assert!(
-        tilo_joined_room::preflight_storage(&prospective.native_authority).is_err(),
+        tilo_peer_state::owner::preflight_storage(&prospective.native_authority).is_err(),
         "the refusal must come from the required recovery reserve: encoded={}, allowed={:?}",
         serde_json::to_vec_pretty(&prospective.native_authority)
             .unwrap()
             .len(),
-        tilo_joined_room::authority_limit(&prospective.native_authority),
+        tilo_peer_state::owner::authority_limit(&prospective.native_authority),
     );
     let path = directory.path().join("state.json");
     let before = std::fs::read(owner_file(&path)).unwrap();

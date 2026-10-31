@@ -713,7 +713,10 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::FeedbackRequest { .. }
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationRequest { .. }
-        | RemoteActionMessage::ConfirmationResponse { .. } => None,
+        | RemoteActionMessage::ConfirmationResponse { .. }
+        // Retired verbs: nothing sends them, and nothing answers.
+        | RemoteActionMessage::RetiredResourceWatch { .. }
+        | RemoteActionMessage::RetiredResourceReading { .. } => None,
     }
 }
 

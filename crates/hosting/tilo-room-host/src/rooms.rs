@@ -34,6 +34,7 @@ pub mod fixtures;
 pub(crate) use content::lacks_answer;
 pub use content::{ContentKeeper, RoomContent};
 mod desktop_writes;
+mod device_keys;
 #[cfg(test)]
 mod device_rejoin_tests;
 #[cfg(test)]
@@ -56,8 +57,8 @@ mod revocations;
 pub(crate) mod sealed_records;
 #[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
 pub use sealed_records::fixtures as sealed_fixtures;
-mod own_keys;
 mod participation;
+pub use device_keys::{ChannelKeys, DeviceKeys};
 mod shares;
 #[cfg(feature = "web")]
 mod spectator_keys;
@@ -199,21 +200,21 @@ fn readers(
 /// This host's part in `room`'s channels, under `dir`, when `authority`
 /// (this host, a relay or a person's device) takes part in the channels of
 /// the rooms it governs
-/// ([`tilo_user_identity::DeviceCapabilities::takes_part_in_room_channels`]).
+/// ([`tilo_user_identity::DeviceCapabilities::takes_part_in_room_channels`])
+/// and runs no channel service beside the host: a host told of its device's
+/// channel service ([`DeviceKeys`]) is not that device's peer.
 fn participation(
     dir: &Path,
     room: &str,
     authority: &DeviceCert,
     key: &SigningKey,
+    device: Option<&DeviceKeys>,
 ) -> Option<Arc<participation::Participant>> {
-    authority
-        .capabilities
-        .takes_part_in_room_channels()
-        .then(|| {
-            Arc::new(participation::Participant::new(
-                participation::Participation::new(room, dir.join(format!("{room}.channels")), key),
-            ))
-        })
+    (device.is_none() && authority.capabilities.takes_part_in_room_channels()).then(|| {
+        Arc::new(participation::Participant::new(
+            participation::Participation::new(room, dir.join(format!("{room}.channels")), key),
+        ))
+    })
 }
 
 /// What taking a member's write into the governor's copy did.
@@ -233,12 +234,15 @@ struct GovernedRoom {
     path: PathBuf,
     /// The files of `record.peer`'s large parts.
     parts: peer_parts::PeerParts,
-    /// Its part in the room's channels, when this relay is a node that may
-    /// own workspaces ([`participation`]). Locked apart from the room: admitting
+    /// Its part in the room's channels, when this host is its device's
+    /// channel peer ([`participation`]). Locked apart from the room: admitting
     /// a crowd's devices to the channels held the room for an MLS change
     /// and its writes per batch, and every join queued behind them. Taken
     /// after the room by whoever holds both.
     participation: Option<Arc<participation::Participant>>,
+    /// The channel keys of the device this host runs on
+    /// ([`DeviceKeys`]), asked for the records of the rooms it holds.
+    device: Option<DeviceKeys>,
     /// The owner's pre-admissions and notices.
     admissions: admissions::Admissions,
     /// The requests of people who asked at its door without an invitation.
@@ -302,11 +306,19 @@ fn member_roots(peer: &StatePeer, now: SystemTime) -> std::collections::BTreeSet
 }
 
 impl GovernedRoom {
+    /// Whether this room's records are sealed channels its device holds the
+    /// keys of: from the moment the device this host runs on takes part in
+    /// the room's channels.
+    fn seals(&self) -> bool {
+        self.participation.is_some() || self.device.is_some()
+    }
+
     fn create(
         dir: &Path,
         name: &str,
         authority: &DeviceCert,
         key: &SigningKey,
+        device: Option<&DeviceKeys>,
         now: SystemTime,
     ) -> Result<Self, String> {
         Self::create_in(
@@ -314,6 +326,7 @@ impl GovernedRoom {
             &uuid::Uuid::new_v4().to_string(),
             name,
             (authority, key),
+            device,
             now,
         )
     }
@@ -327,6 +340,7 @@ impl GovernedRoom {
         room: &str,
         name: &str,
         (authority, key): (&DeviceCert, &SigningKey),
+        device: Option<&DeviceKeys>,
         now: SystemTime,
     ) -> Result<Self, String> {
         let name = valid_name(name)?;
@@ -346,9 +360,9 @@ impl GovernedRoom {
             now,
         )?;
         select_exact_admission(&mut peer)?;
-        let participation = participation(dir, &room, authority, key);
+        let participation = participation(dir, &room, authority, key, device);
         let mut seed = tilo_peer_state::workspace_seed(&room, authority, &roster, name)?;
-        if participation.is_some() {
+        if participation.is_some() || device.is_some() {
             // The room's records are sealed channels this node opens on
             // first use: a seed record would go out in the clear before its
             // channel exists, and every member who joins after the channel
@@ -385,6 +399,7 @@ impl GovernedRoom {
             parts,
             path,
             participation,
+            device: device.cloned(),
             record,
             peer,
             publisher: Arc::default(),
@@ -402,7 +417,12 @@ impl GovernedRoom {
         Ok(this)
     }
 
-    fn open(path: PathBuf, authority: &DeviceCert, key: &SigningKey) -> Result<Self, String> {
+    fn open(
+        path: PathBuf,
+        authority: &DeviceCert,
+        key: &SigningKey,
+        device: Option<&DeviceKeys>,
+    ) -> Result<Self, String> {
         let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
         let (version, _) =
             postcard::take_from_bytes::<u32>(&bytes).map_err(|error| error.to_string())?;
@@ -435,7 +455,7 @@ impl GovernedRoom {
         parts.collect(&record.peer);
         let participation = path
             .parent()
-            .and_then(|dir| participation(dir, &record.room, authority, key));
+            .and_then(|dir| participation(dir, &record.room, authority, key, device));
         Ok(Self {
             admissions: admissions::Admissions::open(&path)?,
             wait_list: wait_list::WaitList::open(&path)?,
@@ -444,6 +464,7 @@ impl GovernedRoom {
             parts,
             path,
             participation,
+            device: device.cloned(),
             publisher: Arc::default(),
             #[cfg(any(feature = "agents", feature = "web"))]
             compaction_wait: 0,
@@ -650,7 +671,7 @@ impl GovernedRoom {
         state: impl FnOnce(&RoomRecord, &StatePeer) -> Result<collaboration::CollaborationState, String>,
     ) -> Result<u64, String> {
         let committing = crate::timing::start();
-        if candidate.room() != self.peer.room() || candidate.authority() != self.peer.authority() {
+        if candidate.room() != self.peer.room() || candidate.owner() != self.peer.owner() {
             return Err("a room change cannot replace the room".into());
         }
         // A member admitted from now on is given the room as it stands, not
@@ -850,7 +871,12 @@ pub(crate) struct RoomServices {
     pub(crate) metrics: Arc<crate::metrics::Metrics>,
     /// Pre-admissions each room keeps, spent ones included.
     pub(crate) max_pre_admissions: usize,
-    /// The live handshake trust policy, for [`crate::room_access::decide`].
+    /// The live handshake trust policy, for [`crate::room_access::decide`],
+    /// which a host with app surfaces or bots of its own decides with.
+    #[cfg_attr(
+        not(any(feature = "agents", feature = "web")),
+        expect(dead_code, reason = "only such a host asks for its own keys")
+    )]
     pub(crate) trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     /// Agent delegations, for [`crate::room_access::decide`] and for
     /// refusing an agent the administration only a person holds.
@@ -860,7 +886,12 @@ pub(crate) struct RoomServices {
     pub(crate) mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode,
     /// Each device whose session to this host authenticated: a host it
     /// dials and could not reach is dialled again then.
-    pub(crate) arrivals: crate::federation::Arrivals,
+    pub(crate) arrivals: crate::attach::Arrivals,
+    /// The channel keys of the device this host runs on, when the embedder
+    /// runs that device's channel service beside it: the host seals and
+    /// opens the records of the rooms it governs with them and admits
+    /// nobody. `None` makes the host its device's own channel peer.
+    pub(crate) keys: Option<DeviceKeys>,
 }
 
 /// The rooms this relay governs.
@@ -929,6 +960,12 @@ struct RoomsInner {
     /// Where invitations to mail to wait-list addresses go, once whoever
     /// runs the relay sends mail ([`Rooms::mail_wait_list`]).
     wait_list_mail: std::sync::OnceLock<(String, tokio::sync::mpsc::UnboundedSender<WaitListMail>)>,
+    /// The channel keys of the device this host runs on: handed over by an
+    /// embedder that runs the device's channel service beside the host, or
+    /// the host's own participation when it is its device's one peer.
+    device: std::sync::OnceLock<DeviceKeys>,
+    /// Whether this host is that peer ([`Rooms::holds_channels`]).
+    holds_channels: std::sync::atomic::AtomicBool,
 }
 
 /// What a member sent a room's channels.
@@ -1021,6 +1058,55 @@ impl std::fmt::Debug for Rooms {
 }
 
 impl Rooms {
+    /// The channel keys of the device this host runs on, when it takes part
+    /// in the rooms' channels: the handle its embedder handed it at open, or
+    /// its own participation when the host is that device's one peer.
+    #[must_use]
+    pub fn device_keys(&self) -> Option<DeviceKeys> {
+        self.inner.device.get().cloned()
+    }
+
+    /// Take the device's channel keys: `RoomServices::keys` when the
+    /// embedder runs the device's channel service beside this host, else
+    /// this host's participation when its certificate takes part in the
+    /// rooms' channels and its device runs no other service.
+    fn install_device_keys(&self) {
+        if let Some(keys) = self.inner.host.keys.clone() {
+            let _ = self.inner.device.set(keys);
+        } else if self
+            .inner
+            .host
+            .cert
+            .capabilities
+            .takes_part_in_room_channels()
+        {
+            self.inner
+                .holds_channels
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = self
+                .inner
+                .device
+                .set(participation::Custody::of(&self.inner));
+        }
+    }
+
+    /// The channel keys an embedder handed over because it runs the device's
+    /// channel service beside this host: then the rooms keep no
+    /// participation, asking the device for keys instead.
+    fn injected_keys(&self) -> Option<DeviceKeys> {
+        self.inner.host.keys.clone()
+    }
+
+    /// Whether this host is its device's own channel peer, holding the
+    /// leaf in its participation: then it admits the members who ask and
+    /// commits the channels itself. A host told of its device's channel
+    /// service keeps no channels of its own.
+    fn holds_channels(&self) -> bool {
+        self.inner
+            .holds_channels
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// These rooms, held without keeping them alive.
     #[cfg(feature = "web")]
     #[must_use]
@@ -1033,26 +1119,11 @@ impl Rooms {
     /// unpublished governance retained, its members' new records created.
     pub(crate) async fn open(host: RoomServices, dir: PathBuf) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-        let mut rooms = BTreeMap::new();
-        let entries = std::fs::read_dir(&dir).map_err(|error| error.to_string())?;
-        for entry in entries {
-            let path = entry.map_err(|error| error.to_string())?.path();
-            if path.extension().is_none_or(|extension| extension != "room") {
-                continue;
-            }
-            // A room this host released stays on disk, unserved.
-            if path.with_extension(RELEASED).exists() {
-                continue;
-            }
-            let room = GovernedRoom::open(path.clone(), &host.cert, &host.key)
-                .map_err(|error| format!("{}: {error}", path.display()))?;
-            rooms.insert(room.room().to_owned(), Arc::new(AsyncMutex::new(room)));
-        }
         let listings = listing::Listings::open(&dir);
         let this = Self {
             inner: Arc::new(RoomsInner {
-                dir,
-                rooms: AsyncMutex::new(rooms),
+                dir: dir.clone(),
+                rooms: AsyncMutex::new(BTreeMap::new()),
                 calls: Arc::default(),
                 creating: AsyncMutex::new(()),
                 page_joins: std::sync::Mutex::default(),
@@ -1069,10 +1140,35 @@ impl Rooms {
                 #[cfg(feature = "agents")]
                 resealing: std::sync::atomic::AtomicBool::new(false),
                 hosting: crate::hosted::Hosting::new(host.clone()),
+                device: std::sync::OnceLock::new(),
+                holds_channels: std::sync::atomic::AtomicBool::new(false),
                 host,
                 wait_list_mail: std::sync::OnceLock::new(),
             }),
         };
+        this.install_device_keys();
+        let device = this.injected_keys();
+        let mut rooms = BTreeMap::new();
+        let entries = std::fs::read_dir(&dir).map_err(|error| error.to_string())?;
+        for entry in entries {
+            let path = entry.map_err(|error| error.to_string())?.path();
+            if path.extension().is_none_or(|extension| extension != "room") {
+                continue;
+            }
+            // A room this host released stays on disk, unserved.
+            if path.with_extension(RELEASED).exists() {
+                continue;
+            }
+            let room = GovernedRoom::open(
+                path.clone(),
+                &this.inner.host.cert,
+                &this.inner.host.key,
+                device.as_ref(),
+            )
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+            rooms.insert(room.room().to_owned(), Arc::new(AsyncMutex::new(room)));
+        }
+        *this.inner.rooms.lock().await = rooms;
         this.learn_layouts().await;
         let rooms = this
             .inner
@@ -1145,12 +1241,14 @@ impl Rooms {
                 return Err("this host has that room already".into());
             }
         }
+        let device = self.injected_keys();
         let room = match room {
             Some(room) => GovernedRoom::create_in(
                 &self.inner.dir,
                 room,
                 name,
                 (&self.inner.host.cert, &self.inner.host.key),
+                device.as_ref(),
                 SystemTime::now(),
             )?,
             None => GovernedRoom::create(
@@ -1158,6 +1256,7 @@ impl Rooms {
                 name,
                 &self.inner.host.cert,
                 &self.inner.host.key,
+                device.as_ref(),
                 SystemTime::now(),
             )?,
         };
@@ -1299,8 +1398,8 @@ impl Rooms {
 
     /// The governor answering the workspace-join exchange for these rooms.
     #[must_use]
-    pub fn join_service(&self) -> tilo_governor::Governor<Self> {
-        tilo_governor::Governor(self.clone())
+    pub fn join_service(&self) -> tilo_peer_state::join_answer::JoinAnswer<Self> {
+        tilo_peer_state::join_answer::JoinAnswer(self.clone())
     }
 
     /// The current role of `device` only when room Write permission is allowed,
@@ -1397,7 +1496,7 @@ impl Rooms {
         let state = self.room(room).await?;
         let governed = state.lock().await;
         let mut routes = governed.peer().plaintext_routes();
-        if governed.participation.is_some() {
+        if governed.seals() {
             routes.extend(governed.peer().sealed_routes());
         }
         drop(governed);
@@ -1450,8 +1549,7 @@ impl Rooms {
         let governed = state.lock().await;
         let policy = governed
             .peer()
-            .permissions(self.inner.host.cert.device_public_key, now)
-            .map_err(CollaborationError::new)?
+            .permissions(self.inner.host.cert.device_public_key, now)?
             .policy;
         let owner = self.inner.host.cert.user_public_key;
         let marks = governed
@@ -1501,8 +1599,7 @@ impl Rooms {
             .lock()
             .await
             .peer()
-            .permissions(self.inner.host.cert.device_public_key, now)
-            .map_err(CollaborationError::new)?
+            .permissions(self.inner.host.cert.device_public_key, now)?
             .policy;
         let cx = tilo_action_policy::Context::at_time(now);
         Ok(policy
@@ -1527,6 +1624,7 @@ impl Rooms {
         let room = room.lock().await;
         member_bootstrap(
             room.peer(),
+            &room.record.authority,
             room.workspace_id(),
             room.record.generation,
             device,
@@ -1691,6 +1789,40 @@ impl Rooms {
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
     ) -> Result<Option<neighbour_wire::NeighbourMsg>, String> {
+        if matches!(
+            message,
+            neighbour_wire::NeighbourMsg::MlsAccessRequest { .. }
+                | neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest { .. }
+                | neighbour_wire::NeighbourMsg::MlsGovernance { .. }
+        ) && !self.holds_channels()
+        {
+            if self.device_keys().is_some() {
+                // The device's own channel service takes these in from its
+                // own sessions; this host keeps no channels of its own.
+                return Ok(None);
+            }
+            // A host that is no device's peer keeps what the room's channels
+            // are made of like any other governance, for whoever takes part:
+            // what a governed member device sent, and only that.
+            let state = self.room(room).await.map_err(|error| error.to_string())?;
+            let (workspace_id, member) = {
+                let governed = state.lock().await;
+                (
+                    governed.workspace_id(),
+                    governed
+                        .peer()
+                        .governance()
+                        .governed_access(SystemTime::now())
+                        .is_ok_and(|access| access.member_devices.contains(&author)),
+                )
+            };
+            if !member {
+                return Ok(None);
+            }
+            self.publish_channel_governance(workspace_id, vec![message])
+                .await?;
+            return Ok(None);
+        }
         match message {
             neighbour_wire::NeighbourMsg::MlsAccessRequest {
                 room: named,
@@ -1750,11 +1882,17 @@ impl Rooms {
         // hosting its own rooms is also their member under the same key, and
         // that member's windows (its topology) are its own to send: those
         // are taken in like any member's.
+        // A host told of its device's channel service retains its own
+        // device's channel governance like any member's, for the other
+        // participants: the host keeps no channels to have it already.
         if author == host.cert.device_public_key
             && !matches!(
                 message,
                 neighbour_wire::NeighbourMsg::AppDocument { .. }
                     | neighbour_wire::NeighbourMsg::SyncResp { .. }
+                    | neighbour_wire::NeighbourMsg::MlsAccessRequest { .. }
+                    | neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest { .. }
+                    | neighbour_wire::NeighbourMsg::MlsGovernance { .. }
             )
         {
             return Ok(());
@@ -1794,7 +1932,10 @@ impl Rooms {
             return Ok(());
         }
         let now = SystemTime::now();
-        let member = room.peer().permissions(author, now)?;
+        let member = room
+            .peer()
+            .permissions(author, now)
+            .map_err(|error| error.to_string())?;
         let node = collab_types::validator::document_node(&member.policy.room, &app_id, &record_id);
         if !member.allows(&node, tilo_action_policy::ActionKind::Undoable, now) {
             return Err(format!(
@@ -2358,7 +2499,6 @@ impl Rooms {
             mode: host.mode,
             room: room.room().to_owned(),
             workspace_id: room.workspace_id(),
-            governing_authority: room.peer().authority().clone(),
             endpoint_addr,
             host_user_public_key: host.cert.user_public_key,
             host_device_certificate: host.cert.clone(),
@@ -2446,6 +2586,7 @@ fn system_time(now_ns: u64) -> SystemTime {
 /// records stay out: the replay that follows carries them.
 pub(crate) fn member_bootstrap(
     peer: &StatePeer,
+    host: &DeviceCert,
     workspace_id: u64,
     generation: u64,
     device: &DeviceCert,
@@ -2463,7 +2604,7 @@ pub(crate) fn member_bootstrap(
                 device_cert: device.clone(),
                 room: peer.room().to_owned(),
                 workspace_id,
-                authority: peer.authority().clone(),
+                host: host.clone(),
                 certified_roster: peer.certificates(),
                 revocations: peer.revocations(),
                 records: Vec::new(),
@@ -2483,7 +2624,7 @@ pub(crate) fn member_bootstrap(
             },
             room: peer.room().to_owned(),
             workspace_id,
-            authority: peer.authority().clone(),
+            host: host.clone(),
             certified_roster: peer.certificates(),
             revocations: peer.revocations(),
             records: Vec::new(),

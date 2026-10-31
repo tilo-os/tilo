@@ -176,19 +176,14 @@ async fn an_invocation_an_app_made_of_itself_opens_nothing_without_a_press() {
             let room = env.route.cluster_id.clone();
             let app = rig.worker.handle.clone();
             let own = id(0xa0d1);
-            invoke(&app, &rig.binding, own).await.unwrap();
+            invoke(&app, own).await.unwrap();
             rig.delivered_effect(&env, own).await;
 
             let laundered =
                 app_asks(&app, open_app_request(&room, "so.tilo.chat", Some(own))).await;
             assert!(refused(&laundered), "{laundered:?}");
             let launch = app
-                .launch_installed_application_for(
-                    "so.tilo.chat",
-                    None,
-                    None,
-                    Some(*own.0.as_bytes()),
-                )
+                .launch_installed_application_for("so.tilo.chat", None, Some(*own.0.as_bytes()))
                 .await;
             assert!(launch.is_err(), "{launch:?}");
             assert!(launcher.opened().is_empty());
@@ -219,7 +214,7 @@ async fn an_agents_invocation_opens_what_the_agent_may_open() {
             let app = rig.worker.handle.clone();
             let agent = rig.caller(&env, 905, Some("scribe")).await;
             let asked = id(0xa0d2);
-            invoke(&agent.handle, &rig.binding, asked).await.unwrap();
+            invoke(&agent.handle, asked).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
             assert_eq!(delivered.actor, "agent:scribe");
 
@@ -272,7 +267,7 @@ async fn an_app_launches_an_installed_app_only_for_a_press_or_an_invocation_it_r
             .await;
             let app = rig.worker.handle.clone();
             let unasked = app
-                .launch_installed_application("so.tilo.word-processor", None, None)
+                .launch_installed_application("so.tilo.word-processor", None)
                 .await;
             assert!(unasked.is_err(), "{unasked:?}");
             assert!(launcher.requests.lock().unwrap().is_empty());
@@ -282,7 +277,7 @@ async fn an_app_launches_an_installed_app_only_for_a_press_or_an_invocation_it_r
                 .pressed
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             let pending = tokio::task::spawn_local(async move {
-                app.launch_installed_application("so.tilo.word-processor", None, None)
+                app.launch_installed_application("so.tilo.word-processor", None)
                     .await
             });
             certified_launch_wait(&started_rx).await;

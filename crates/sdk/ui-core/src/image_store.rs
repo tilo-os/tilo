@@ -270,7 +270,7 @@ impl HostImageLoader {
     /// Unknown, settled, closed-owner or already reserved requests are rejected.
     pub fn reserve(&mut self, url: &str) -> Option<ImageCompletionTicket> {
         let request = self.in_flight.get(url)?.clone();
-        let cache = self.shared.slots.lock().ok()?;
+        let cache = self.shared.slots.lock_recover();
         if !cache.slots.get(url).is_some_and(
             |entry| matches!(&entry.slot, Slot::Loading(current) if Arc::ptr_eq(current, &request)),
         ) {
@@ -337,7 +337,7 @@ impl HostImageLoader {
     pub fn next_request(&mut self) -> Option<String> {
         loop {
             let url = self.requests.as_ref()?.try_recv().ok()?;
-            let slots = self.shared.slots.lock().ok()?;
+            let slots = self.shared.slots.lock_recover();
             let Some(SlotEntry {
                 slot: Slot::Loading(request),
                 ..
@@ -392,12 +392,12 @@ impl HostImageLoader {
 
     /// Whether `url` has settled with a decoded image.
     pub fn loaded(&self, url: &str) -> bool {
-        self.shared.slots.lock().ok().is_some_and(|slots| {
-            slots
-                .slots
-                .get(url)
-                .is_some_and(|entry| matches!(entry.slot, Slot::Ready(_)))
-        })
+        self.shared
+            .slots
+            .lock_recover()
+            .slots
+            .get(url)
+            .is_some_and(|entry| matches!(entry.slot, Slot::Ready(_)))
     }
 
     fn settle(&mut self, url: &str, request: &Arc<RequestIdentity>, slot: Slot) -> bool {

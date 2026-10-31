@@ -18,7 +18,7 @@ fn fixture() -> (
     governor.select_admission_v5().unwrap();
     let mut member = StatePeer::new(
         governor.room(),
-        governor.authority().clone(),
+        governor.owner_certificates()[0].clone(),
         vec![cert.clone()],
         RevocationList::new(),
         now,
@@ -149,7 +149,7 @@ fn local_outbox_revoked_custody_survives_restore_but_signing_and_current_lookup_
             TransportOrigin::UntrustedPresence(governor_key.verifying_key().to_bytes()),
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                cert: Box::new(governor.authority().clone()),
+                cert: Box::new(governor.owner_certificates()[0].clone()),
                 revocations: vec![revocation],
             },
             later,
@@ -159,7 +159,7 @@ fn local_outbox_revoked_custody_survives_restore_but_signing_and_current_lookup_
     let mut member = StatePeer::restore(
         &member.durable().unwrap(),
         member.room(),
-        member.authority().clone(),
+        member.owner_certificates()[0].clone(),
         vec![cert],
         RevocationList::new(),
         later,

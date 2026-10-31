@@ -493,6 +493,8 @@ pub struct FrameHarness {
     dispatching_touch_pointer: bool,
     viewport: (u32, u32),
     last_layout_viewport: Option<(u32, u32)>,
+    /// The display scale the last complete layout rounded its edges for.
+    last_layout_scale: Option<f64>,
     input_scale: f64,
     /// As the live host: where the pointer last moved, replayed before a
     /// press or release that follows a rebuild under a still pointer.
@@ -1591,6 +1593,7 @@ impl FrameHarness {
             dispatching_touch_pointer: false,
             viewport,
             last_layout_viewport: None,
+            last_layout_scale: None,
             input_scale: 1.0,
             pointer_replay: crate::pointer_replay::PointerReplay::default(),
             focused: None,
@@ -2952,7 +2955,9 @@ impl FrameHarness {
         self.invalidate_local();
         self.pump_component_wakes();
         if let Some(wake) = &self.component_wake {
-            wake.binding.records.tick();
+            if let Err(error) = wake.binding.records.tick() {
+                tracing::error!(%error, "headless record persistence failed");
+            }
             return true;
         }
         match self.records.as_mut() {
@@ -3036,7 +3041,9 @@ impl FrameHarness {
         let before = crate::doc::settle_mark(&self.state.doc);
         self.idle_control_tick();
         if let Some(wake) = &self.component_wake {
-            wake.binding.records.tick();
+            if let Err(error) = wake.binding.records.tick() {
+                tracing::error!(%error, "headless record persistence failed");
+            }
         } else if let Some(set) = self.records.as_mut() {
             set.tick(&mut self.state.doc);
         }
@@ -3235,6 +3242,9 @@ impl FrameHarness {
         use crate::widget::layout::{
             CompositionFocus, composition_geometry, settle_widget_composition,
         };
+        // Every edge laid out lands on one of the display's pixels, as in the
+        // live host's pass.
+        let _grid = crate::widget::layout::enter_device_scale(self.input_scale);
         // A pointer at rest sees no event when a relayout moves a control
         // under it; compare the geometry to replay it, as the live host does.
         let resting_geometry = (self.pointer_replay.is_resting() && self.layout_built)
@@ -3447,8 +3457,13 @@ impl FrameHarness {
                     None,
                 )
             };
-        let must_compute =
-            structure || viewport_changed || self.remount || self.root.layout_needs_measure();
+        // Another display scale is another pixel grid to round the edges onto.
+        let grid_changed = self.last_layout_scale != Some(self.input_scale);
+        let must_compute = structure
+            || viewport_changed
+            || grid_changed
+            || self.remount
+            || self.root.layout_needs_measure();
         let mut stats = RelayoutStats::default();
         // Captured lazily, immediately before a build replaces controls.
         let mut view = None;
@@ -3508,6 +3523,9 @@ impl FrameHarness {
                 if self.slot_row.is_some() {
                     crate::widget::window_header::offer_window_search(self.root.as_mut(), true);
                 }
+                // What the rebuild builds hears how the person reaches the
+                // window, as the live app's rebuild tells it.
+                self.root.set_interaction_environment(self.interaction);
                 self.child_node = if let Some(history) = &mut self.history {
                     history.build_composition(
                         self.root.as_mut(),
@@ -3670,6 +3688,7 @@ impl FrameHarness {
             Ok((Some(geometry), dirty || remount_next))
         })?;
         self.last_layout_viewport = Some(self.viewport);
+        self.last_layout_scale = Some(self.input_scale);
         self.last_relayout = stats;
         if stats.rebuilt
             || stats.remounted
@@ -5261,12 +5280,12 @@ impl FrameHarness {
             .copied()
             .ok_or_else(|| format!("no addressable widget named {name:?}"))?;
         if self.tree().history_owns(node) {
-            let _framework_frame = FrameworkInputFrame::new(&self.framework_input, true);
-            if matches!(action, SemanticAction::Focus | SemanticAction::Activate) {
-                self.set_focused(Some(node));
-            }
-            let handled = self
-                .dispatch_node(node, |widget, doc, root| {
+            let handled = {
+                let _framework_frame = FrameworkInputFrame::new(&self.framework_input, true);
+                if matches!(action, SemanticAction::Focus | SemanticAction::Activate) {
+                    self.set_focused(Some(node));
+                }
+                self.dispatch_node(node, |widget, doc, root| {
                     if let Some(target) = semantic_target {
                         let mut edits = crate::widget::Edits::lend(doc);
                         crate::a11y_child_route::perform(widget, target, action, &mut edits, root)
@@ -5280,11 +5299,15 @@ impl FrameHarness {
                         )
                     }
                 })
-                .map_err(|error| format!("History input refused: {error:?}"))?;
+                .map_err(|error| format!("History input refused: {error:?}"))?
+            };
             if !handled && !matches!(action, SemanticAction::Focus) {
                 return Err("History control does not support this action".into());
             }
             self.poll_control_invocations();
+            // History hosts the chrome it presents: answer the press it just
+            // queued before presenting what that press asked for.
+            self.service_pending_history_commands();
             self.relayout();
             return Ok(());
         }
@@ -5765,11 +5788,6 @@ impl FrameHarness {
                 }
                 ControlBindingKind::CollaborativeDocument(_)
                 | ControlBindingKind::SemanticAction(_) => None,
-                ControlBindingKind::LegacyCallback => Some(NativeAppIssue {
-                    control: binding.control_id,
-                    code: "legacy-callback".into(),
-                    message: "imperative callback bypasses the resource/action door".into(),
-                }),
             })
             .collect::<Vec<_>>();
         if !has_semantics && inventoried_controls.is_empty() {
@@ -7740,7 +7758,10 @@ impl FrameHarness {
         self.send(&WindowEvent::Ime(winit::event::Ime::Commit(text.into())));
     }
 
-    /// Set the physical-to-logical input scale; layout and capture remain logical pixels.
+    /// Set the display's scale: device pixels per logical pixel, by which input
+    /// is scaled. Layout and capture remain in logical pixels, with every edge
+    /// on a device pixel: the next frame solves the layout again on the new
+    /// grid.
     /// # Errors
     /// Rejects a non-finite or non-positive scale.
     pub fn set_input_scale(&mut self, scale: f64) -> Result<(), String> {
@@ -8603,6 +8624,7 @@ impl crate::host_core::HostCore for FrameHarness {
             node_map: &mut self.node_map,
             bindings: &mut self.bindings,
             close_reports: &mut self.component_close_reports,
+            interaction: self.interaction,
         }
     }
 
@@ -8638,6 +8660,14 @@ impl crate::host_core::HostCore for FrameHarness {
 
     fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome> {
         self.history.as_mut()
+    }
+
+    fn service_history_own_controls(&mut self) -> bool {
+        let Some(history) = self.history.as_mut() else {
+            return false;
+        };
+        let path = &self.state.root;
+        history.answer_own_controls(&mut crate::widget::Edits::lend(&mut self.state.doc), path) > 0
     }
 
     fn acting_for_mut(
@@ -10086,7 +10116,7 @@ mod tests {
             let activations: std::rc::Rc<std::cell::Cell<usize>> =
                 std::rc::Rc::new(std::cell::Cell::new(0));
             let observed = std::rc::Rc::clone(&activations);
-            let button = Button::new("save", "Save").on_click(move || {
+            let button = Button::new("save", "Save").on_effect(move || {
                 observed.set(observed.get().saturating_add(1));
             });
             let mut driver = FrameHarness::new(State::new(), Box::new(button), (400, 200));
@@ -10889,15 +10919,6 @@ mod tests {
                 .expect("bound control dispatches through the headless host");
             assert_eq!(calls.get(), 1);
 
-            let legacy = FrameHarness::new(
-                State::new(),
-                Box::new(Button::new("legacy", "Legacy").on_click(|| {})),
-                (320, 160),
-            );
-            let audit = legacy.native_app_audit();
-            assert!(!audit.is_certified());
-            assert_eq!(audit.issues[0].code, "legacy-callback");
-
             let omitted = FrameHarness::new(
                 State::new(),
                 Box::new(Button::new("omitted", "Omitted")),
@@ -11168,7 +11189,7 @@ mod tests {
             let fired = Rc::new(Cell::new(0));
             let fired_by_button = Rc::clone(&fired);
             let button = Button::new("save", "Save")
-                .on_click(move || fired_by_button.set(fired_by_button.get() + 1));
+                .on_effect(move || fired_by_button.set(fired_by_button.get() + 1));
             let mut driver = FrameHarness::new(State::new(), Box::new(button), (400, 200));
 
             let pointer_rect = driver.targets()["save"];
@@ -11398,7 +11419,7 @@ mod tests {
 
             let fired = Rc::new(Cell::new(0));
             let observed = Rc::clone(&fired);
-            let button = Button::new("save", "Save").on_click(move || {
+            let button = Button::new("save", "Save").on_effect(move || {
                 observed.set(observed.get() + 1);
             });
             let mut driver = FrameHarness::new_with_controlled_inputs(

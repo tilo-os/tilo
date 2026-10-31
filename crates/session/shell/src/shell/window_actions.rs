@@ -1073,15 +1073,30 @@ mod tests {
             let second = duplicate_active_tab(&mut st)
                 .unwrap()
                 .expect("hosted duplicate");
+            assert_ne!(first, second);
             for id in [first, second] {
+                assert!(
+                    st.tree()
+                        .desktop
+                        .workspaces
+                        .iter()
+                        .any(|workspace| workspace
+                            .strips
+                            .iter()
+                            .flat_map(|strip| strip.window_groups.iter())
+                            .flat_map(|group| group.tabs.iter())
+                            .any(|tab| tab.id == id)),
+                    "the creating action places its tab before presentation"
+                );
+                // The app makes its own record on the tab's id when it
+                // mounts; opening the tab keeps no scratch document for it.
                 assert!(
                     st.records()
                         .read(&ui::RecordId::for_tab(id), |_| ())
-                        .is_some(),
-                    "the creating action must establish its new record before presentation"
+                        .is_none(),
+                    "a hosted tab holds no scratch record of the shell's"
                 );
             }
-            assert_ne!(first, second);
         }
 
         {

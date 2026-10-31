@@ -68,7 +68,8 @@ impl NativeBrowserServiceSessions {
             }
             let member = view
                 .peer()
-                .permissions(certificate.device_public_key, now)?;
+                .permissions(certificate.device_public_key, now)
+                .map_err(|error| error.to_string())?;
             if member.person != context.person() {
                 return Err("Selected Browser person changed".into());
             }

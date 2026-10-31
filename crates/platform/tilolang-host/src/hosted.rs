@@ -420,17 +420,21 @@ impl Hosted {
             .receive_and(&mut self.instance, |event| events.push(event));
         self.instance.sync(Some(self.record.doc()));
         changed |= self.instance.update();
-        if self.instance.take_undo() {
+        changed |= self.commit();
+        // After what the person did before asking is committed: an undo takes back their last
+        // step, typing they did just before it included.
+        for asked in self.instance.take_history() {
             let (resource, kind) = &self.resource;
-            match self.record.undo(&mut self.instance, resource, kind) {
-                Ok(undone) => changed |= undone,
-                Err(error) => tracing::warn!(%error, "the undo did not reach the room"),
-            }
-        }
-        match self.record.commit(&mut self.instance) {
-            Ok(committed) => changed |= !committed.is_empty(),
-            Err(error) => {
-                tracing::warn!(app = self.spec.app, %error, "a change did not reach the room");
+            let done = self
+                .record
+                .asked(&mut self.instance, &asked, resource, kind);
+            match done {
+                Ok(done) => changed |= done,
+                Err(error) => {
+                    tracing::warn!(app = self.spec.app, ?asked, %error, "an undo or redo failed");
+                    self.instance.history_failed(error.to_string());
+                    changed = true;
+                }
             }
         }
         for event in events {
@@ -439,6 +443,17 @@ impl Hosted {
         self.publish();
         self.answer_directory();
         changed
+    }
+
+    /// Commit what the runtime planned and send it on the route. Whether anything was.
+    fn commit(&mut self) -> bool {
+        match self.record.commit(&mut self.instance) {
+            Ok(committed) => !committed.is_empty(),
+            Err(error) => {
+                tracing::warn!(app = self.spec.app, %error, "a change did not reach the room");
+                false
+            }
+        }
     }
 
     /// Offer the instance's action directory on its connection, once it is connected, and
@@ -582,12 +597,10 @@ impl Hosted {
             }
             HandoffRequest::OwnerView { .. } => return,
         };
-        let app_id = self.record.route().app_id.clone();
         if let Err(error) = self
             .record
             .manager_mut()
             .try_send(CollabRequest::ReportHandoff {
-                app_id,
                 message: report.encode(),
             })
         {
@@ -679,7 +692,7 @@ impl Hosted {
             && encoded.type_id == <HostEffect as tilo_resource::Effect>::OPERATION
         {
             let effect = <HostEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
-                .map_err(|error| Refused::new("action_invalid_arguments", error))?;
+                .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
             let first = host.next_ticket();
             let output = host
                 .answer(effect, Some(&caller))
@@ -700,7 +713,7 @@ impl Hosted {
             // A search hit, or an agent's `open`: the window shows what it names.
             let OpenEffect::Open { anchor } =
                 <OpenEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
-                    .map_err(|error| Refused::new("action_invalid_arguments", error))?;
+                    .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
             self.instance.open_requests().borrow_mut().push(anchor);
             return Ok(tilo_actions::ActionOutput::default());
         }
@@ -807,10 +820,7 @@ impl Hosted {
                 if self
                     .record
                     .manager_mut()
-                    .send(CollabRequest::PublishActionSurface {
-                        app_id: self.spec.app.clone(),
-                        delta,
-                    })
+                    .send(CollabRequest::PublishActionSurface { delta })
                 {
                     self.published = Some((Vec::new(), state));
                     self.published_from = None;
@@ -839,10 +849,7 @@ impl Hosted {
             || self
                 .record
                 .manager_mut()
-                .send(CollabRequest::PublishActionSurface {
-                    app_id: self.spec.app.clone(),
-                    delta,
-                })
+                .send(CollabRequest::PublishActionSurface { delta })
         {
             self.published = Some((descriptors, state));
             self.published_from = Some((surface, inputs));
@@ -895,10 +902,7 @@ impl Hosted {
             && !self
                 .record
                 .manager_mut()
-                .send(CollabRequest::PublishActionSurface {
-                    app_id: self.spec.app.clone(),
-                    delta,
-                })
+                .send(CollabRequest::PublishActionSurface { delta })
         {
             // What the broker holds is no longer what was patched: a later turn sends the
             // surface whole, as a reset.
@@ -978,5 +982,343 @@ fn returned(host: &tilolang_tilo::host::Host, action: &DynAction) -> tilo_action
     tilo_actions::ActionOutput {
         value: None,
         resources: returned.into_iter().collect(),
+    }
+}
+
+/// What an [`Applier`] has done with its change so far.
+enum Applying {
+    /// The change has not arrived on its connection yet.
+    Awaiting(Vec<u8>),
+    /// It arrived; it runs once what the record publishes is built.
+    Arrived(Box<runtime_portal::tilolang_host::Change>),
+    /// It ran: its answer, sent once the room was handed what it wrote.
+    Ran(serde_json::Value),
+    /// The answer was sent.
+    Answered,
+}
+
+/// The origin of one record applying one change: an agent task's invocation the broker
+/// admitted (`docs/designs/app-language/agents.md`, "Reading records outside their app"). No
+/// window and no instance: the record on its connection, which holds the app's custody as an
+/// instance's does, and the app's package in a runtime of its own. The action's code runs
+/// against the record as it is when the change is applied, so its requirements are decided on
+/// what others wrote since the task read it; what it wrote is applied as the invoker's step
+/// and handed to the room, and the answer says how it differed from the task's preview.
+pub struct Applier {
+    spec: Spec,
+    record: RoomRecord,
+    host: Host,
+    surface: Rc<Surface>,
+    /// The app's resource, by its id and kind: where its history verbs are published.
+    resource: (String, String),
+    connection: std::os::unix::net::UnixStream,
+    applying: Applying,
+    /// Whether the answer carries the whole record: the root this change needed was made for
+    /// it.
+    whole: bool,
+}
+
+impl Applier {
+    /// The origin of `record` for `bundle`'s app, taking its change on `connection`.
+    ///
+    /// # Errors
+    /// The runtime cannot be set up, the package does not load, or the connection is unusable.
+    pub fn open(
+        spec: Spec,
+        record: RoomRecord,
+        bundle: &Bundle,
+        phrases: &Phrases,
+        wake: Waker,
+        connection: std::os::fd::OwnedFd,
+    ) -> Result<Self, String> {
+        let host = Host::new(
+            record.doc(),
+            tilolang_tilo::runtime::Principal::new(spec.person.clone()),
+            || None,
+        )
+        .map_err(|error| error.to_string())?;
+        host.set_clock(tilolang_tilo::host::system_time);
+        host.load_bundle(bundle)
+            .map_err(|error| error.to_string())?;
+        let activate = tilo_actions::remote::activate_spec(
+            phrases.say("app-activate-window", &[]),
+            phrases.say("app-activate-window-description", &[]),
+        );
+        let surface = Rc::new(Surface::new(&bundle.meta.app, activate, &host, wake));
+        let connection = std::os::unix::net::UnixStream::from(connection);
+        connection
+            .set_nonblocking(true)
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            resource: (
+                package_resource_id(&bundle.meta.app),
+                bundle.meta.package_kind(),
+            ),
+            spec,
+            record,
+            host,
+            surface,
+            connection,
+            applying: Applying::Awaiting(Vec::new()),
+            whole: false,
+        })
+    }
+
+    /// What the applier is.
+    #[must_use]
+    pub fn spec(&self) -> &Spec {
+        &self.spec
+    }
+
+    /// The record it changes, as it holds it.
+    #[must_use]
+    pub fn record(&self) -> &RoomRecord {
+        &self.record
+    }
+
+    /// The change's connection, to wait on.
+    pub fn connection(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd as _;
+        self.connection.as_fd()
+    }
+
+    /// Whether the change was answered: the applier has nothing left to do.
+    #[must_use]
+    pub fn answered(&self) -> bool {
+        matches!(self.applying, Applying::Answered)
+    }
+
+    /// One step: take in what the room sent and what came on the connection, run the change
+    /// once it can, and answer once the room was handed what it wrote. Whether anything changed.
+    pub fn turn(&mut self) -> bool {
+        let mut changed = self.record.take_in_room();
+        if changed {
+            self.host.sync_from(self.record.doc());
+        }
+        self.surface.update();
+        let state = std::mem::replace(&mut self.applying, Applying::Answered);
+        self.applying = match state {
+            Applying::Awaiting(mut read) => match self.read_change(&mut read) {
+                Ok(Some(change)) => {
+                    changed = true;
+                    Applying::Arrived(Box::new(change))
+                }
+                Ok(None) => Applying::Awaiting(read),
+                Err(why) => {
+                    changed = true;
+                    Applying::Ran(serde_json::json!({ "failed": why }))
+                }
+            },
+            Applying::Arrived(change) if self.surface.publications.borrow().is_building() => {
+                Applying::Arrived(change)
+            }
+            Applying::Arrived(change) => {
+                changed = true;
+                match self.make_root(&change) {
+                    // The root it made publishes first; the change resolves against it then.
+                    Ok(true) => Applying::Arrived(change),
+                    Ok(false) => Applying::Ran(self.apply(&change)),
+                    Err(why) => Applying::Ran(serde_json::json!({ "failed": why })),
+                }
+            }
+            other => other,
+        };
+        if let Applying::Ran(answer) = &self.applying
+            && (self.record.share().is_some() || !self.record.unsent())
+        {
+            use std::io::Write as _;
+            let mut line = answer.to_string().into_bytes();
+            line.push(b'\n');
+            if let Err(error) = (&self.connection).write_all(&line) {
+                tracing::warn!(app = self.spec.app, %error, "a change's answer did not reach the session");
+            }
+            self.applying = Applying::Answered;
+            changed = true;
+        }
+        changed
+    }
+
+    /// The change, once its whole line arrived on the connection.
+    fn read_change(
+        &self,
+        read: &mut Vec<u8>,
+    ) -> Result<Option<runtime_portal::tilolang_host::Change>, String> {
+        use std::io::Read as _;
+        let mut chunk = [0_u8; 4096];
+        loop {
+            match (&self.connection).read(&mut chunk) {
+                Ok(0) => return Err("the session left before it said the change".to_owned()),
+                Ok(n) => read.extend_from_slice(chunk.get(..n).unwrap_or_default()),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(format!("the change's connection failed: {error}")),
+            }
+        }
+        let Some(end) = read.iter().position(|byte| *byte == b'\n') else {
+            return Ok(None);
+        };
+        let line = read.get(..end).unwrap_or_default();
+        serde_json::from_slice(line)
+            .map(Some)
+            .map_err(|error| format!("the session said a change that does not decode: {error}"))
+    }
+
+    /// Make the app's root when `change` addresses it and the record does not hold it yet: the
+    /// one per-room resource of the package's root type is made the first time it is wanted,
+    /// here as in a window that opens it, and a task reads it from the package whether or not
+    /// any window ever made it. It is applied as the change's invoker's step, before the
+    /// change. Whether it made it.
+    fn make_root(
+        &mut self,
+        change: &runtime_portal::tilolang_host::Change,
+    ) -> Result<bool, String> {
+        let prefix = tilolang_tilo::publish::resource_id(&self.spec.app, "");
+        // The resource's record: an item's path starts with it.
+        let Some(doc) = change
+            .resource
+            .strip_prefix(&prefix)
+            .and_then(|path| path.split('/').next())
+        else {
+            return Ok(false);
+        };
+        if !doc.starts_with("root-") || self.host.store().contains(doc) {
+            return Ok(false);
+        }
+        let made = self
+            .host
+            .root_of(&self.spec.app)
+            .map_err(|error| error.to_string())?;
+        if made.doc != doc {
+            return Err(format!(
+                "{} is not the root of {}",
+                change.resource, self.spec.app
+            ));
+        }
+        let invoker: ActionInvoker = serde_json::from_value(change.invoker.clone())
+            .map_err(|error| format!("the change's invoker does not decode: {error}"))?;
+        let ambient: Option<ActionContext> = change
+            .context
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| format!("the change's context does not decode: {error}"))?;
+        let ambient = ambient.map(|context| context.with_invoker(invoker.clone()));
+        // A record without its root is one the task read as none, or as what an app's window
+        // never shared: the answer carries the whole record, which is small then.
+        self.whole = true;
+        for committed in self.host.take_committed() {
+            self.record
+                .apply_change(&committed.action, invoker.clone(), ambient.as_ref())
+                .map_err(|error| error.to_string())?;
+        }
+        self.host.sync_from(self.record.doc());
+        self.surface.update();
+        Ok(true)
+    }
+
+    /// Run `change` against the record as it is now and apply what it wrote: its answer.
+    fn apply(&mut self, change: &runtime_portal::tilolang_host::Change) -> serde_json::Value {
+        let invoker: ActionInvoker = match serde_json::from_value(change.invoker.clone()) {
+            Ok(invoker) => invoker,
+            Err(error) => {
+                return serde_json::json!({"failed": format!("the change's invoker does not decode: {error}")});
+            }
+        };
+        let ambient: Option<ActionContext> = match change
+            .context
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()
+        {
+            Ok(ambient) => ambient,
+            Err(error) => {
+                return serde_json::json!({"failed": format!("the change's context does not decode: {error}")});
+            }
+        };
+        // The record as the room holds it now: requirements are decided on what others wrote.
+        self.host.sync_from(self.record.doc());
+        let address = ActionAddress::new(change.resource.clone(), change.action.clone());
+        let resources = self.surface.resources();
+        let caller = caller_of(&invoker);
+        CALLER.with(|slot| *slot.borrow_mut() = Some(caller));
+        let encoded = tilo_actions::door::encode_json(&resources, &address, &change.arguments);
+        CALLER.with(|slot| *slot.borrow_mut() = None);
+        let encoded = match encoded {
+            Ok(encoded) if encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE => {
+                return serde_json::json!({"failed": String::from_utf8_lossy(&encoded.payload)});
+            }
+            Ok(encoded) => encoded,
+            Err(error) => {
+                tracing::warn!(
+                    app = self.spec.app,
+                    resource = address.resource,
+                    action = address.action,
+                    offered = resources.len(),
+                    %error,
+                    "the record's origin does not offer the change it was handed"
+                );
+                return serde_json::json!({"failed": error.to_string()});
+            }
+        };
+        let ambient = ambient.map(|context| context.with_invoker(invoker.clone()));
+        if encoded.type_id == EDIT_TYPE {
+            let edit: HistoryEdit = match serde_json::from_slice(&encoded.payload) {
+                Ok(edit) => edit,
+                Err(error) => return serde_json::json!({"failed": error.to_string()}),
+            };
+            let before = self.record.heads();
+            return match self.record.history_at_origin(
+                &edit,
+                &address.resource,
+                &self.resource.1,
+                invoker,
+                ambient.as_ref(),
+            ) {
+                Ok(value) => {
+                    self.host.sync_from(self.record.doc());
+                    // What it wrote, for the task to read back at once, as a change's answer.
+                    let wrote = {
+                        use base64::Engine as _;
+                        base64::engine::general_purpose::STANDARD
+                            .encode(self.record.changes_since(&before))
+                    };
+                    serde_json::json!({"ok": {"value": value, "resources": []}, "change": wrote})
+                }
+                Err(error) => serde_json::json!({"failed": error.to_string()}),
+            };
+        }
+        if encoded.type_id != ACTION_TYPE {
+            return serde_json::json!({"failed": format!(
+                "{} is no change of the record",
+                address.action
+            )});
+        }
+        let action: DynAction = match serde_json::from_slice(&encoded.payload) {
+            Ok(action) => action,
+            Err(error) => return serde_json::json!({"failed": error.to_string()}),
+        };
+        // What it wrote includes the root it made for it, which the task's read lacks.
+        let before = if std::mem::take(&mut self.whole) {
+            Vec::new()
+        } else {
+            self.record.heads()
+        };
+        if let Err(error) = self.record.apply_change(&action, invoker, ambient.as_ref()) {
+            return serde_json::json!({"failed": error.to_string()});
+        }
+        self.host.sync_from(self.record.doc());
+        let output = returned(&self.host, &action);
+        let differs = change.preview.as_ref().is_some_and(|preview| {
+            serde_json::to_value(&action).is_ok_and(|applied| applied != *preview)
+        });
+        // What it wrote, for the task to read back at once: the room takes it in its own time.
+        let wrote = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(self.record.changes_since(&before))
+        };
+        serde_json::json!({
+            "ok": {"value": output.value, "resources": output.resources},
+            "differs": differs,
+            "change": wrote,
+        })
     }
 }

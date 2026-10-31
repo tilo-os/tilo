@@ -102,7 +102,7 @@ pub(super) fn register(
 
 #[allow(
     clippy::future_not_send,
-    reason = "the broker worker owns Rc-based Cap'n Proto handles on its LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 pub(super) async fn execute(
     channel: &runtime_collab::ChannelHandle,

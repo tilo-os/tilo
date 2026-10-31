@@ -48,7 +48,8 @@ use tilo_agent_participant::{
     AgentControl, AgentIdentity, AgentParticipant, ModelPlanner, ParticipantConfig, Replica, Seed,
     StepAction, record_provider,
 };
-use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerHandle};
+use tilo_browser_peer::{Host, PeerEvent, PeerHandle};
+use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_relay_protocol::live::{LiveFrame, ParticipantKind, PresenceFrame};
@@ -89,7 +90,7 @@ async fn ask(
     agent: &mut AgentParticipant,
     agent_key: [u8; 32],
     message: RemoteActionMessage,
-    documents: &mut Vec<tilo_browser_peer::OpenedDocument>,
+    documents: &mut Vec<tilo_peer_state::document_frame::OpenedDocument>,
 ) -> RemoteActionMessage {
     browser
         .send_remote_action(
@@ -315,11 +316,13 @@ async fn every_web_app_over_the_session() {
             agent.pump();
             for event in browser_events.drain() {
                 if let PeerEvent::Document(document) = event {
-                    // The host writes the first state of each record itself
-                    // before anyone opens it; the rest is the agent's.
-                    if document.author != host_device.cert.device_public_key {
-                        assert_eq!(document.author, agent_key, "only the agent edits here");
-                    }
+                    // The governed room's host takes part too: it checkpoints
+                    // what the agent wrote.
+                    assert!(
+                        document.author == agent_key
+                            || document.author == host_device.cert.device_public_key,
+                        "only the agent and the room's host write here"
+                    );
                     if let Some(
                         collab_types::DocumentMutation::Snapshot(bytes)
                         | collab_types::DocumentMutation::Incremental(bytes),

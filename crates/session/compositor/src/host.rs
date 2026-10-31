@@ -174,6 +174,16 @@ pub trait SurfaceHost {
         false
     }
 
+    /// Whether a capture may not show what this surface draws now: it shows
+    /// a secret, such as what the person typed into a password field. Every
+    /// copy of the desktop's pixels — a screenshot, a recording, a share
+    /// stream, the portal's screenshot — draws its layers as the
+    /// placeholder instead, while the person's own display keeps showing
+    /// them (see [`crate::capture::protect`]).
+    fn withholds_captures(&self) -> bool {
+        false
+    }
+
     /// Whether the pointer at this logical point belongs to this surface
     /// rather than to what lies beneath it.
     fn accepts_pointer(&self, x: f64, y: f64) -> bool;
@@ -208,14 +218,19 @@ pub trait SurfaceHost {
     /// topmost surface first: a desktop chord or a hardware key this
     /// surface answers wherever the keyboard is. `locked` while the session
     /// is locked, when only keys that reveal nothing (volume, brightness)
-    /// may be taken.
-    fn claim_key(&mut self, _key: &HostKey, _locked: bool) -> KeyClaim {
+    /// may be taken. `inhibited` while a focused client holds the desktop's
+    /// shortcuts, when only what must never be given up (hardware keys,
+    /// locking the session) may be taken.
+    fn claim_key(&mut self, _key: &HostKey, _locked: bool, _inhibited: bool) -> KeyClaim {
         KeyClaim::Pass
     }
 
     /// Other clients' windows this surface pictures (thumbnails, cards),
     /// bottom first: the compositor draws their live buffers there, in
-    /// front of this surface's layers.
+    /// front of this surface's layers. A window the session keeps private
+    /// ([`crate::capture::protect`]) is drawn as the placeholder a capture
+    /// of it shows instead, since the desk a picture stands on is what a
+    /// screenshot, a recording and a share show.
     fn window_pictures(&self) -> Vec<crate::WindowPicture> {
         Vec::new()
     }

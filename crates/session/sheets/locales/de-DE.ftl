@@ -23,18 +23,72 @@ power-not-offered-power = Dieses Fenster kann die Energieverwaltung des Rechners
 
 display-confirm-keep = Behalten
 display-confirm-revert = Zurücksetzen
+display-confirm-countdown = Wird in { $seconds } s zurückgesetzt
+display-confirm-applying = Wird angewendet …
+display-confirm-answer-pending = Die Antwort zur Anzeige wird gespeichert…
 display-confirm-tool-title = Die Anzeigeänderung von { $tool } behalten?
 display-confirm-tool-unknown-title = Diese Anzeigeänderung behalten?
 display-confirm-always = Behalten und bei { $tool } nicht mehr fragen
 display-confirm-a11y-description = Ein Anzeigewerkzeug hat einen Bildschirm geändert, den du gerade benutzt, oder einen Modus gewählt, den er noch nie gezeigt hat. Dabei kann er schwarz bleiben. Eingabe behält die Änderung; Escape oder Abwarten stellt die vorherige Anordnung wieder her.
+
+## Dictation
+
+dictation-title = Diktat
+dictation-ask-title = In dieses Feld diktieren?
+dictation-ask-body = Tilo hört einmal über das Mikrofon zu, nur bis du aufhörst, und lässt das Audio auf diesem Gerät. Vorher wird nichts aufgenommen.
+dictation-ask-caption = Deine Wörter gehen in das Feld, in dem du warst.
+dictation-allow = Erlauben
+dictation-deny = Jetzt nicht
+dictation-preparing = Das fokussierte bearbeitbare Feld wird geprüft…
+dictation-loading = Lokale Erkennung wird geladen. Das Mikrofon ist aus.
+dictation-listening = Mikrofon an. Sprich, dann setze ein.
+dictation-live-preview = Vorschau: { $text }
+dictation-stopping-microphone = Mikrofon wird gestoppt…
+dictation-finishing = Mikrofon aus. Dein Text wird fertiggestellt…
+dictation-stopping = Diktat wird beendet…
+dictation-finish = Einsetzen
+dictation-cancel = Abbrechen
+dictation-recovery-title = Das Feld hat keine Wörter angenommen
+dictation-recovery-too-long = Mikrofon aus · Der Text ist zu lang, um ihn in einem Schritt einzusetzen. Er bleibt 10 Minuten privat aufbewahrt. Kopieren legt ihn in deine Zwischenablage; Verwerfen löscht ihn.
+dictation-recovery-vocabulary = Mikrofon aus · Dein persönliches Wörterbuch hat sich geändert. Beginne ein neues Diktat, um die neuen Wörter zu nutzen. Das Gehörte bleibt 10 Minuten privat aufbewahrt; Kopieren legt es in deine Zwischenablage, Verwerfen löscht es.
+dictation-recovery-kept = 10 Minuten privat aufbewahrt.
+dictation-copied = Kopiert. Füge es in das Feld deiner Wahl ein; der private Entwurf bleibt, bis du ihn verwirfst oder 10 Minuten vergehen.
+dictation-copy-failed = Die Zwischenablage ist nicht verfügbar. Dein Transkript bleibt weiterhin privat aufbewahrt; versuche es noch einmal oder verwirf es.
+dictation-copy = Kopieren
+dictation-discard = Verwerfen
+dictation-unavailable-title = Diktieren ist nicht möglich
+dictation-unavailable = Lokales Diktieren ist nicht verfügbar. Es wurde kein Text eingesetzt.
+dictation-editable-required = Fokussiere ein bearbeitbares Feld. Passwörter nehmen kein Diktat an.
+dictation-unsupported-field = Diktieren wird in Terminal-Feldern noch nicht unterstützt. Fokussiere ein anderes bearbeitbares Feld.
+dictation-busy = Das vorige Diktat wird noch beendet. Versuche es gleich noch einmal.
+dictation-target-changed = Das Feld hat gewechselt. Das Diktat wurde ohne Einsetzen von Text abgebrochen.
+dictation-timeout = Das Diktat ist abgelaufen. Es wurde kein Text eingesetzt.
+dictation-model-required = Installiere ein freigegebenes lokales Sprachmodell, bevor du diktierst.
+dictation-language-unavailable = Dieses Sprachmodell unterstützt die gewünschte Sprache nicht.
+dictation-microphone-unavailable = Kein Zugriff auf das Mikrofon. Prüfe dein Eingabegerät.
+dictation-vocabulary-unavailable = Dein persönliches Wörterbuch hat sich geändert oder ist nicht verfügbar. Das Diktat wurde beendet; beginne ein neues.
+dictation-audio-interrupted = Das Mikrofon-Audio wurde unterbrochen. Es wurde kein Text eingesetzt.
+dictation-close = Schließen
+dictation-open-settings = Einrichten
 
 ## Shortcut guide
 
 guide-title = Tastenkürzel
 guide-reopen-hint = Wähle ein Navigationskürzel, um es zu ändern
 guide-done = Fertig
-guide-press-new-shortcut = Neues Tastenkürzel für „{ $action }“ drücken; Esc bricht ab
+guide-press-new-shortcut = Neues Tastenkürzel für „{ $action }“ drücken
+guide-listening-cancel = Abbrechen
 guide-message-esc-cancels = { $message }; Esc bricht ab
+guide-rebind-needs-modifier = Füge druckbaren Tasten Super, Strg, Alt oder Umschalt hinzu.
+guide-rebind-in-use = Wird bereits für „{ $action }“ verwendet. Drücke ein anderes Tastenkürzel.
+guide-rebind-reserved = F1 und Drucken sind vom Desktop reserviert.
+guide-rebind-unsupported = Dieses Tastenkürzel wird nicht unterstützt. Drücke ein anderes.
+guide-rebind-taken-by-action = Wird bereits zum Ausführen einer Aktion verwendet. Drücke ein anderes Tastenkürzel.
+guide-rebind-save-failed = Das Tastenkürzel konnte nicht gespeichert werden. Drücke ein anderes.
+guide-reset-in-use = Ein Standardwert wird bereits für „{ $action }“ verwendet. Ändere zuerst dieses Tastenkürzel.
+guide-reset-taken-by-action = Ein Standardwert führt jetzt eine Aktion aus. Ändere zuerst dieses Tastenkürzel.
+guide-reset-invalid = Die Standard-Tastenkürzel konnten nicht wiederhergestellt werden.
+guide-reset-save-failed = Die Standardwerte konnten nicht wiederhergestellt werden.
 guide-navigation-heading = Navigationskürzel bearbeiten
 guide-essentials-heading = Desktop-Grundlagen
 guide-group-windows = Fenster und Arbeitsbereiche
@@ -66,6 +120,55 @@ guide-touch-open-overview = Übersicht öffnen
 guide-touch-close-overview = Übersicht schließen
 guide-reset = Auf Standard zurücksetzen
 
+## Was die Navigationszeilen der Tastatur bewegen, und was sonst zu den Tasten zu wissen ist: Fenster, Tabs, Leisten und Arbeitsbereiche heißen wie in den Controller-Zeilen oben
+guide-row-move-tab = Tab verschieben
+guide-row-maximize = Maximieren oder wiederherstellen
+guide-row-move-group = Gruppe verschieben
+guide-row-resize = Größe ändern
+guide-row-move-group-strip = Gruppe in Leiste verschieben
+guide-unassigned = Nicht belegt
+guide-unassigned-inline = nicht belegt
+guide-strip-jump = Direkt zu einer Leiste mit { $first } … { $last }; Leiste 1 ist die oberste
+guide-app-tab-chords = { $next }, { $previous } und { $reopen } gehen zuerst an die App; die Tab-Kürzel des Desktops hier wirken immer
+guide-your-shortcuts = Deine Tastenkürzel: { $shortcuts }
+
+## Die Kürzelnamen des Katalogs, die der Leitfaden auflistet
+shortcut-name-focus-previous-window = Vorheriges Fenster fokussieren
+shortcut-name-focus-next-window = Nächstes Fenster fokussieren
+shortcut-name-previous-tab = Vorheriger Tab
+shortcut-name-next-tab = Nächster Tab
+shortcut-name-attach-tab-left = Tab in die Gruppe links verschieben
+shortcut-name-attach-tab-right = Tab in die Gruppe rechts verschieben
+shortcut-name-maximize-window = Fenster maximieren
+shortcut-name-restore-window = Fenster wiederherstellen
+shortcut-name-previous-strip = Leiste darüber
+shortcut-name-next-strip = Leiste darunter
+shortcut-name-previous-workspace = Vorheriger Arbeitsbereich
+shortcut-name-next-workspace = Nächster Arbeitsbereich
+shortcut-name-move-group-left = Gruppe nach links verschieben
+shortcut-name-move-group-right = Gruppe nach rechts verschieben
+shortcut-name-resize-narrower = Fenster schmaler machen
+shortcut-name-resize-wider = Fenster breiter machen
+shortcut-name-move-group-to-previous-strip = Gruppe in die Leiste darüber verschieben
+shortcut-name-move-group-to-next-strip = Gruppe in die Leiste darunter verschieben
+shortcut-name-reopen-closed-tab = Geschlossenen Tab wieder öffnen
+shortcut-name-search = Überall suchen
+shortcut-name-emoji-picker = Emoji
+shortcut-name-workspace-overview = Übersicht
+shortcut-name-quick-settings = Schnelleinstellungen
+shortcut-name-lock = Bildschirm sperren
+shortcut-switch-windows = Fenster wechseln
+shortcut-close-tab = Tab schließen
+shortcut-new-window = Neues Fenster
+shortcut-duplicate-tab = Neuer Tab dieser App
+shortcut-strip-switcher = Leistenwechsler
+shortcut-screenshot = Bildschirmfoto
+shortcut-display-layout = Anzeigeanordnung
+shortcut-capture-screenshot = Bildschirmfoto aufnehmen
+shortcut-open-terminal = Terminal öffnen
+shortcut-picture-in-picture = Bild im Bild
+shortcut-save-recent-replay = Letzte Aufnahme speichern
+
 ## Public workspaces
 
 directory-title = Einem Arbeitsbereich beitreten
@@ -81,6 +184,25 @@ directory-joining = Wird beigetreten…
 directory-join-named = { $name } beitreten
 directory-open-named = { $name } öffnen
 directory-try-again = Erneut versuchen
+directory-community-tag = von { $host }
+directory-already-joining = Du trittst { $name } bereits bei. Es öffnet sich, sobald es bereit ist.
+directory-join-failed = { $name } konnte nicht beigetreten werden: { $error }
+directory-code-failed = Mit diesem Link oder Code konnte nicht beigetreten werden: { $error }
+directory-joined-name = Beigetretenes Workspace
+directory-join-failed-line = Nicht beigetreten: { $error }
+directory-here-now = { $count } gerade hier
+directory-active-today = Heute aktiv
+directory-active-week = Diese Woche aktiv
+directory-quiet = Zuletzt ruhig
+directory-members = { $count ->
+    [one] 1 Mitglied
+   *[other] { $count } Mitglieder
+}
+directory-joins-as = Du trittst als { $role } bei
+directory-role-viewer = Betrachter
+directory-role-commenter = Kommentierende
+directory-role-editor = Bearbeitende
+directory-role-moderator = Moderierende
 
 ## Display sheet
 display-sheet-title = Anzeige
@@ -195,13 +317,6 @@ portal-print-print = Drucken
 portal-screenshot-title = { $app } einen Bildschirmausschnitt geben?
 portal-screenshot-detail = Es bekommt ein Bild des Bildschirms, wie er jetzt ist.
 portal-screenshot-take = Bildschirmausschnitt geben
-portal-pick-color-title = Eine Farbe wählen
-portal-pick-color-detail = Rot, Grün und Blau, jeweils von 0 bis 1.
-portal-pick-color-red = Rot
-portal-pick-color-green = Grün
-portal-pick-color-blue = Blau
-portal-pick-color-use = Farbe verwenden
-portal-pick-color-incomplete = Jeder Teil ist eine Zahl von 0 bis 1.
 portal-usb-title = { $app } USB-Geräte geben?
 portal-usb-detail = { $app } bekommt die angehakten Geräte, bis es nicht mehr fragt oder eins abgezogen wird.
 portal-usb-allow = Ausgewählte geben
@@ -349,3 +464,38 @@ portal-allowed-title = Dauerhaft erlaubt
 portal-allowed-detail = { $app } darf { $what } jetzt ohne Nachfrage nutzen. Widerrufe es, damit Tilo beim nächsten Mal wieder fragt.
 portal-revoke = Widerrufen
 portal-keep = Behalten
+
+## Adding a program the person downloaded to their apps, and uninstalling an app
+add-app-title = { $name } zu den Apps hinzufügen?
+add-app-add = Zu den Apps hinzufügen
+add-app-decline = Nicht hinzufügen
+add-app-move = In „Programme“ verschieben
+add-app-move-detail = Bewahrt sie im Ordner „Programme“ in deinen Dateien auf
+uninstall-title = { $name } deinstallieren?
+uninstall-action = Deinstallieren
+uninstall-cancel = Abbrechen
+uninstall-remove-data = Ihre Daten entfernen
+uninstall-remove-data-detail = Deine Einstellungen und gespeicherten Dateien kommen in den Papierkorb, wo du sie wiederherstellen kannst.
+uninstall-device-body = Sie wird für alle auf diesem Computer entfernt.
+uninstall-files = { $count ->
+    [one] Ihre Datei kommt in den Papierkorb, wo du sie wiederherstellen kannst.
+   *[other] Alle { $count } Kopien kommen in den Papierkorb, wo du sie wiederherstellen kannst.
+}
+uninstall-home-folder = Persönlicher Ordner
+uninstall-documents-body = Deine Dokumente bleiben in deinen Arbeitsbereichen.
+uninstall-from-apps-title = { $name } aus den Apps entfernen?
+uninstall-from-apps-action = Aus Apps entfernen
+uninstall-entry-body = Sie gehört zum System, bleibt also auf diesem Computer und erscheint nicht mehr unter deinen Apps.
+
+## Der Agenten-Zugang: ein Programm dieser Anmeldung (ein KI-Agent in einem
+## Terminal) bittet darum, in einem Arbeitsbereich als Agenten-Mitglied zu
+## arbeiten.
+agent-door-client = { $client } ({ $program })
+agent-door-client-in-app = { $who } in { $app }
+agent-door-admission = In „{ $workspace }“ als Agent { $agent } arbeiten
+agent-door-admission-detail = Er tritt diesem Arbeitsbereich als Beobachter bei: er liest, was der Arbeitsbereich enthält, und führt die Aktionen aus, die ihm gewährt sind; in den Einstellungen des Arbeitsbereichs kannst du ihn jederzeit entfernen.
+agent-door-no-workspace = Hier gibt es keinen Arbeitsbereich zum Arbeiten.
+agent-door-workspace-gone = Der Arbeitsbereich, in dem dieses Programm arbeiten wollte, existiert nicht mehr.
+agent-door-not-administrator = Du verwaltest diesen Arbeitsbereich nicht, daher wurde { $agent } nicht hinzugefügt.
+agent-door-withdrawn = Die Anfrage wurde zurückgezogen, bevor jemand sie beantwortet hat.
+agent-door-declined = Du hast dieses Programm nicht als Agenten hier arbeiten lassen.

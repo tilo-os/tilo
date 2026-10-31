@@ -232,9 +232,12 @@ use crate::presence::{PresenceCtx, PresenceKey};
 use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::time::{Duration, Instant};
+#[cfg(any(feature = "native", test))]
+use crate::time::Duration;
+use crate::time::Instant;
 use crate::widget::Widget;
 use taffy::{NodeId, TaffyTree};
+#[cfg(feature = "native")]
 use vello::kurbo::Rect as KurboRect;
 
 /// Cached [`crate::host::RunnerDiagnostics::perf_log`] check
@@ -269,25 +272,21 @@ mod continuation_tests {
     #[test]
     fn vanished_continuations_clear_the_durable_projection() {
         {
-            let request = continuation_publication("ebook".into(), None, true);
-            assert!(matches!(
-                request,
-                Some(CollabRequest::ClearContinuation { app_id }) if app_id == "ebook"
-            ));
+            let request = continuation_publication(None, true);
+            assert!(matches!(request, Some(CollabRequest::ClearContinuation)));
 
-            assert!(continuation_publication("ebook".into(), None, false).is_none());
+            assert!(continuation_publication(None, false).is_none());
 
             let metadata = ContinuationMetadata {
                 schema_version: 3,
                 bytes: vec![1, 2, 3],
             };
             assert!(matches!(
-                continuation_publication("ebook".into(), Some(&metadata), false),
+                continuation_publication(Some(&metadata), false),
                 Some(CollabRequest::ReportContinuation {
-                    app_id,
                     schema_version: 3,
                     metadata,
-                }) if app_id == "ebook" && metadata == vec![1, 2, 3]
+                }) if metadata == vec![1, 2, 3]
             ));
         }
     }
@@ -479,7 +478,6 @@ pub enum ControlBindingStatus {
     /// Multiple affordances intentionally invoke the same operation.
     SharedAddress,
     StaleAddress,
-    ExplicitLegacy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -581,8 +579,6 @@ pub struct App {
     continuation: ContinuationRuntime,
     /// A failed pre-terminal handoff must not re-enter directed effects.
     action_publication_failure: Option<String>,
-    last_published_playback: Option<Vec<media::handoff::PlaybackReport>>,
-    last_playback_publish: Option<Instant>,
     profiler: Option<crate::profiling::FrameProfiler>,
     native_input_probe: Option<Box<dyn Fn() -> serde_json::Value>>,
 
@@ -1641,43 +1637,6 @@ impl App {
 }
 
 impl App {
-    /// Publish private source descriptors over the authenticated local app
-    /// broker. Public cross-device state is derived by the shell and remains
-    /// path/URL-free; this report never enters the room document.
-    fn publish_playback_handoff(&mut self) {
-        let Some(route) = self.private_continuity_route() else {
-            return;
-        };
-        let now = crate::time::now();
-        if self
-            .last_playback_publish
-            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(500))
-        {
-            return;
-        }
-        let app_id = route.app_id;
-        let workspace_id = route.cluster_id.to_string();
-        let reports = media::handoff::playback_reports(&app_id, &workspace_id);
-        if self.last_published_playback.as_ref() == Some(&reports) {
-            return;
-        }
-        if reports.is_empty() && self.last_published_playback.is_none() {
-            self.last_published_playback = Some(reports);
-            return;
-        }
-        let Ok(reports_json) = serde_json::to_vec(&reports) else {
-            return;
-        };
-        self.collaboration
-            .manager
-            .send(crate::collaboration::CollabRequest::ReportPlayback {
-                app_id,
-                reports_json,
-            });
-        self.last_published_playback = Some(reports);
-        self.last_playback_publish = Some(now);
-    }
-
     /// Publish what this window's search finds to the session's persistent
     /// search index, over the certified primary route: only what changed
     /// since the last publication on that route, and nothing while the
@@ -1703,7 +1662,6 @@ impl App {
             self.continuation.search_index.reset();
             self.continuation.search_index_route = Some(witness.clone());
         }
-        let route = witness.route();
         if !self.continuation.search_index.wants(state) {
             return;
         }
@@ -1713,12 +1671,9 @@ impl App {
             let Some(delta_json) = delta.encode() else {
                 continue;
             };
-            self.collaboration.manager.send(
-                crate::collaboration::CollabRequest::PublishSearchIndex {
-                    app_id: route.app_id.clone(),
-                    delta_json,
-                },
-            );
+            self.collaboration
+                .manager
+                .send(crate::collaboration::CollabRequest::PublishSearchIndex { delta_json });
         }
     }
 
@@ -1742,8 +1697,6 @@ impl App {
             }
             self.continuation.last_published = None;
             self.continuation.publication_initialized = false;
-            self.last_published_playback = None;
-            self.last_playback_publish = None;
             self.continuation.last_private_route = Some(witness.clone());
             self.continuation.private_instance = Some(instance);
         }
@@ -2356,11 +2309,26 @@ impl App {
     /// with no caret restore, since the field legitimately changed.
     #[doc(hidden)]
     pub fn rebuild_structure(&mut self) {
+        self.rebuild_structure_placing_focus();
+    }
+
+    /// [`Self::rebuild_structure`]: whether a control asked for the keyboard in the tree it
+    /// built ([`Widget::take_focus_request`]) and has it. That request is where the keyboard
+    /// goes, over where it was before the rebuild: a caller restoring the focus it captured
+    /// before must leave it.
+    pub(crate) fn rebuild_structure_placing_focus(&mut self) -> bool {
+        let mut requested = false;
         let _entry = self.enter_wake_scope();
         let _phase = tilo_resource::profiling::Phase::start("ui.rebuild_structure");
         // The header the rebuild builds hears whether the window's bar
         // presents search, so it never shows a second search control.
         self.offer_window_bar_to_header();
+        // What the rebuild builds hears how the person reaches the window: a
+        // control made since the input last changed (a view a press opened)
+        // is sized for a finger as the others are. A widget that already has
+        // it keeps it.
+        self.root_widget
+            .set_interaction_environment(self.input.interaction);
         // A reported mutation can already have invalidated old widget pointers.
         // Always take the widgets' report, so it is not mistaken later for a
         // change after the map this rebuild makes.
@@ -2501,13 +2469,14 @@ impl App {
                 };
             }
             // The tree this rebuild made is the one a control asked focus in.
-            self.apply_focus_request();
+            requested = self.apply_focus_request();
         }
         self.invalidate_widget_resource_cache();
         // What the window's layout needs follows the tree and the theme it
         // was built with; asked once per build, not per frame.
         self.window.minimum_width = crate::widget::minimum_window_width(self.root_widget.as_ref());
         self.window.preferred_size = self.root_widget.preferred_window_size();
+        requested
     }
 
     /// The narrowest the window's layout works at, in logical pixels, as of
@@ -3004,93 +2973,25 @@ mod private_continuity_route_tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn private_reports_use_each_acknowledged_continuation_route() {
-        let previous_app = std::env::var_os("TILO_PACKAGE_ID");
-        let previous_room = std::env::var_os("TILO_WORKSPACE_ID");
-        let ambient_room = uuid::Uuid::new_v4();
-        // SAFETY: guarded by the process_env serial group and restored below.
-        unsafe {
-            std::env::set_var("TILO_PACKAGE_ID", "ambient.app");
-            std::env::set_var("TILO_WORKSPACE_ID", ambient_room.to_string());
-        }
-        let playback = media::handoff::AppPlaybackHandle::new();
-        playback.publish(media::handoff::AppPlayback {
-            resource_uri: "music://track/route-fixture",
-            title: "Route fixture",
-            position_ms: 7,
-            duration_ms: Some(30),
-            playing: true,
-            has_video: false,
-            audible: true,
-            controller_bus_name: None,
-        });
-
+    fn each_acknowledged_continuation_route_reports_once() {
         let routes = [
             RouteSpec::record("dev.tilo.notes", uuid::Uuid::new_v4(), "continuation:7"),
             RouteSpec::record("dev.tilo.browser", uuid::Uuid::new_v4(), "continuation:91"),
         ];
-        let observed = routes
-            .iter()
-            .cloned()
-            .map(|route| {
-                let (_app, requests) = app_for_acknowledged_route(route);
-                requests.borrow().clone()
-            })
-            .collect::<Vec<_>>();
-        drop(playback);
-
-        // Restore before asserting so a failure does not leak process state.
-        unsafe {
-            match previous_app {
-                Some(value) => std::env::set_var("TILO_PACKAGE_ID", value),
-                None => std::env::remove_var("TILO_PACKAGE_ID"),
-            }
-            match previous_room {
-                Some(value) => std::env::set_var("TILO_WORKSPACE_ID", value),
-                None => std::env::remove_var("TILO_WORKSPACE_ID"),
-            }
-        }
-
-        for (requests, expected) in observed.iter().zip(routes.iter()) {
-            let reported_apps = requests
-                .iter()
-                .filter_map(|request| match request {
-                    CollabRequest::ReportContinuation { app_id, .. }
-                    | CollabRequest::ClearContinuation { app_id } => Some(app_id.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(reported_apps, vec![expected.app_id.as_str()]);
-            let playback = requests
-                .iter()
-                .find_map(|request| match request {
-                    CollabRequest::ReportPlayback {
-                        app_id,
-                        reports_json,
-                    } => Some((app_id, reports_json)),
-                    _ => None,
-                })
-                .expect("eligible route reports live playback");
-            assert_eq!(playback.0, &expected.app_id);
-            let reports = serde_json::from_slice::<Vec<media::handoff::PlaybackReport>>(playback.1)
-                .expect("playback report JSON");
-            assert_eq!(reports.len(), 1);
-            assert_eq!(reports[0].session.app_id, expected.app_id);
-            assert_eq!(reports[0].workspace_id, expected.cluster_id.to_string());
-        }
-    }
-
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn initial_empty_playback_is_suppressed() {
-        let route = RouteSpec::record("dev.tilo.music", uuid::Uuid::new_v4(), "continuation:8");
-        let (_app, requests) = app_for_acknowledged_route(route);
-        assert!(
-            requests
+        for route in routes {
+            let (_app, requests) = app_for_acknowledged_route(route);
+            let reports = requests
                 .borrow()
                 .iter()
-                .all(|request| !matches!(request, CollabRequest::ReportPlayback { .. }))
-        );
+                .filter(|request| {
+                    matches!(
+                        request,
+                        CollabRequest::ReportContinuation { .. } | CollabRequest::ClearContinuation
+                    )
+                })
+                .count();
+            assert_eq!(reports, 1);
+        }
     }
 
     #[test]
@@ -3100,9 +3001,7 @@ mod private_continuity_route_tests {
         let (_app, requests) = app_for_acknowledged_route(route);
         assert!(requests.borrow().iter().all(|request| !matches!(
             request,
-            CollabRequest::ReportContinuation { .. }
-                | CollabRequest::ClearContinuation { .. }
-                | CollabRequest::ReportPlayback { .. }
+            CollabRequest::ReportContinuation { .. } | CollabRequest::ClearContinuation
         )));
     }
 
@@ -3121,8 +3020,6 @@ mod private_continuity_route_tests {
             manager,
         );
         assert!(app.continuation.last_published.is_none());
-        assert!(app.last_published_playback.is_none());
-        assert!(app.last_playback_publish.is_none());
 
         let route = RouteSpec::record("dev.tilo.notes", uuid::Uuid::new_v4(), "continuation:42");
         assert!(app.collaboration.manager.send(CollabRequest::Hello {
@@ -3135,17 +3032,12 @@ mod private_continuity_route_tests {
         app.collaboration.manager.poll();
         requests.borrow_mut().clear();
         app.publish_continuation_metadata();
-        app.publish_playback_handoff();
 
-        assert!(requests.borrow().iter().any(|request| matches!(
-            request,
-            CollabRequest::ReportContinuation { app_id, .. } if app_id == &route.app_id
-        )));
         assert!(
             requests
                 .borrow()
                 .iter()
-                .all(|request| !matches!(request, CollabRequest::ReportPlayback { .. }))
+                .any(|request| matches!(request, CollabRequest::ReportContinuation { .. }))
         );
     }
 
@@ -3167,56 +3059,11 @@ mod private_continuity_route_tests {
         requests.borrow_mut().clear();
         app.publish_continuation_metadata();
 
-        assert!(requests.borrow().iter().any(|request| matches!(
-            request,
-            CollabRequest::ReportContinuation { app_id, .. } if app_id == &route.app_id
-        )));
-    }
-
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn eligible_nonempty_to_empty_playback_publishes_a_clear() {
-        let route = RouteSpec::record("dev.tilo.music", uuid::Uuid::new_v4(), "continuation:8");
-        let (mut app, requests) = app_for_acknowledged_route(route.clone());
-        app.last_published_playback = Some(vec![media::handoff::PlaybackReport {
-            session: media::handoff::PlaybackSession {
-                id: "dev.tilo.music:media".into(),
-                app_id: route.app_id.clone(),
-                title: "Previous".into(),
-                content_id: format!("blake3:{}", "0".repeat(64)),
-                position_ms: 0,
-                duration_ms: None,
-                playing: false,
-                has_video: false,
-            },
-            workspace_id: route.cluster_id.to_string(),
-            source: media::handoff::HandoffSource::AppResource {
-                uri: "music://track/previous".into(),
-            },
-            controller_bus_name: None,
-            accepted_handoff_request: None,
-        }]);
-        app.last_playback_publish = None;
-        requests.borrow_mut().clear();
-
-        app.publish_playback_handoff();
-
-        let clears = requests
-            .borrow()
-            .iter()
-            .filter_map(|request| match request {
-                CollabRequest::ReportPlayback {
-                    app_id,
-                    reports_json,
-                } => Some((app_id.clone(), reports_json.clone())),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(clears.len(), 1);
-        assert_eq!(clears[0].0, route.app_id);
-        assert_eq!(
-            serde_json::from_slice::<Vec<media::handoff::PlaybackReport>>(&clears[0].1).unwrap(),
-            Vec::new()
+        assert!(
+            requests
+                .borrow()
+                .iter()
+                .any(|request| matches!(request, CollabRequest::ReportContinuation { .. }))
         );
     }
 }

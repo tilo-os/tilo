@@ -236,7 +236,7 @@ fn assert_press_carries(build: Build, locate: impl Fn(&mut FrameHarness) -> Poin
 fn a_button_carries_its_press_across_a_rebuild() {
     assert_press_carries(
         |clicks, generation| {
-            Box::new(crate::widget::Button::new("save", "Save").on_click(log(clicks, generation)))
+            Box::new(crate::widget::Button::new("save", "Save").on_effect(log(clicks, generation)))
         },
         |h| centre_of(h, "save"),
     );
@@ -246,9 +246,7 @@ fn a_button_carries_its_press_across_a_rebuild() {
 fn a_list_row_carries_its_press_across_a_rebuild() {
     assert_press_carries(
         |clicks, generation| {
-            Box::new(
-                crate::widget::ListRow::new("inbox", "Inbox").on_activate(log(clicks, generation)),
-            )
+            Box::new(crate::widget::ListRow::new("inbox", "Inbox").on_view(log(clicks, generation)))
         },
         |h| centre_of(h, "inbox"),
     );
@@ -278,7 +276,9 @@ fn a_list_row_checkbox_carries_its_press_across_a_rebuild() {
     assert_press_carries(
         |clicks, generation| {
             let mut ran = log(clicks, generation);
-            Box::new(crate::widget::ListRow::new("inbox", "Inbox").checkbox(false, move |_| ran()))
+            Box::new(
+                crate::widget::ListRow::new("inbox", "Inbox").checkbox_view(false, move |_| ran()),
+            )
         },
         |h| pressable_centre(h),
     );
@@ -291,7 +291,7 @@ fn a_chip_carries_its_press_across_a_rebuild() {
             Box::new(
                 crate::widget::Chip::new("Urgent")
                     .with_id("urgent")
-                    .on_click(log(clicks, generation)),
+                    .on_view(log(clicks, generation)),
             )
         },
         |h| centre_of(h, "urgent"),
@@ -331,7 +331,7 @@ fn a_stat_tile_carries_its_press_across_a_rebuild() {
         |clicks, generation| {
             Box::new(
                 crate::widget::StatTile::new("Revenue", "1,204")
-                    .on_activate("revenue", log(clicks, generation)),
+                    .on_view("revenue", log(clicks, generation)),
             )
         },
         |h| centre_of(h, "revenue"),
@@ -345,7 +345,7 @@ fn a_media_card_and_its_hover_action_carry_their_press_across_a_rebuild() {
         |clicks, generation| {
             Box::new(
                 MediaCard::new("album", MediaSource::Kind(Icon::Music))
-                    .on_activate(log(clicks, generation)),
+                    .on_view(log(clicks, generation)),
             )
         },
         |h| centre_of(h, "album"),
@@ -521,7 +521,7 @@ fn a_painted_target_carries_its_press_across_a_rebuild() {
 #[test]
 fn a_control_a_relayout_slides_under_a_still_pointer_takes_the_click() {
     let mut scene = Stage::new(|clicks, generation| {
-        Box::new(crate::widget::Button::new("save", "Save").on_click(log(clicks, generation)))
+        Box::new(crate::widget::Button::new("save", "Save").on_effect(log(clicks, generation)))
     });
     let button_at = scene.harness.targets()["save"];
     // The pointer rests below the button, where the relayout will put it.

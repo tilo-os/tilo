@@ -1795,7 +1795,9 @@ fn is_action_cx(ty: &Type) -> bool {
 /// name), `initialize = path` (`fn() -> Self`, the deterministic genesis),
 /// `seed = path` (`fn(&mut Self, &mut ActionCx)`, the creator's first
 /// content), `available = path` (`fn(&Self, module::Verb) -> Availability`),
-/// `children = path` (`fn(&Self) -> Vec<Derived<Self>>`), `search = path`,
+/// `children = path` (`fn(&Self) -> Vec<Derived<Self>>`), `child = path`
+/// (`fn(&Self, &str) -> Option<ResourceSpec>`, a child the published page of
+/// `children` leaves out), `search = path`,
 /// `scopes = path`, `read_content = path` (`fn(&Self, Option<&Id>) ->
 /// Result<serde_json::Value, String>`), `read_content_in_doc = path` (the same
 /// read, `fn(&Self, &Doc, Option<&Id>) -> ...`, for one that needs the

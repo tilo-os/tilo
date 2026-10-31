@@ -118,6 +118,27 @@ impl BooksApp {
         match effect {
             BooksEffect::OpenBook => Ok(self.choose_book(cx)),
             BooksEffect::OpenStored { content, name } => self.open_stored(content, name, cx),
+            BooksEffect::ReadSettings => Ok(Effected::value(cx.live().with(Ebook::read_settings))),
+            BooksEffect::ReadFont { font } => cx
+                .live()
+                .with(|library| library.read_font(&font))
+                .map(Effected::value),
+            BooksEffect::ReadScheme { scheme } => cx
+                .live()
+                .with(|library| library.read_scheme(&scheme))
+                .map(Effected::value),
+            BooksEffect::ReadBook { book } => cx
+                .live()
+                .with(|library| library.read_book(&book))
+                .map(Effected::value),
+            BooksEffect::ReadHighlight { highlight } => cx
+                .live()
+                .with(|library| library.read_highlight(highlight))
+                .map(Effected::value),
+            BooksEffect::ReadAnnotation { annotation } => cx
+                .live()
+                .with(|library| library.read_annotation(annotation))
+                .map(Effected::value),
             effect => {
                 let invocation = cx.invocation().unwrap_or_default();
                 let entries: Vec<LibraryEntry> = cx

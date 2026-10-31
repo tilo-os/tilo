@@ -40,16 +40,15 @@ fn fixture() -> Fixture {
     tree.seed_doc_from_cache();
     let chrome = crate::shell::chrome_state::ChromeState::new(tree);
     let handle = chrome.borrow().tree_handle();
-    let broker =
-        tilo_action_broker::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
-            Arc::new(crate::shell::broker_services::NativeWorkspaceAuthority(
-                handle,
-            )),
-            tilo_action_broker::services::HostServices {
-                host_steps: vec![super::broker_door()],
-                ..Default::default()
-            },
-        );
+    let broker = tilo_action_broker::collab_app_broker::AppBrokerState::test_broker_with_authority(
+        Arc::new(crate::shell::broker_services::NativeWorkspaceAuthority(
+            handle,
+        )),
+        tilo_action_broker::services::HostServices {
+            host_steps: vec![super::broker_door()],
+            ..Default::default()
+        },
+    );
     let (ask, asked) = tokio::sync::mpsc::unbounded_channel();
     super::wake_with(Arc::new(move || {
         let _ = ask.send(());

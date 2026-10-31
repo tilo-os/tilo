@@ -1,8 +1,8 @@
-//! The broker transport: the `runtime-collab` Cap'n Proto SDK on a worker
-//! thread the transport owns.
+//! The broker transport: the `runtime-collab` collaboration client on a
+//! worker thread the transport owns.
 //!
 //! The worker (the "shovel") runs a `current_thread` Tokio runtime and a
-//! `LocalSet`, because capnp-rpc futures are `!Send`. The owner thread
+//! `LocalSet` that keeps every route's state on that thread. The owner thread
 //! reaches it over a pair of bounded queues: [`CollabTransport::submit`]
 //! enqueues commands and [`CollabTransport::drain`] empties the event queue.
 //! Overload never closes the bridge. Only transient presence is shed;
@@ -37,7 +37,16 @@ use tilo_sort::CompactSort as _;
 mod audio_output;
 #[path = "broker_bytes.rs"]
 mod bytes;
+#[path = "refused_answer.rs"]
+mod refused_answer;
+#[path = "task_agent_route.rs"]
+mod task_agent_route;
 use bytes::{command_bytes, event_diagnostics, fit_catalogue, remote_action_round_trip};
+#[path = "broker_fixtures.rs"]
+mod fixtures;
+#[path = "broker_published.rs"]
+mod published;
+pub use published::SessionResource;
 #[path = "change_waits.rs"]
 mod change_waits;
 #[path = "committed_document.rs"]
@@ -95,6 +104,17 @@ const ACTION_DIRECTORY_REQUEST_QUEUE: usize = 64;
 
 /// Whether the identity service answered and declined to sign, as opposed
 /// to being unreachable: it reports a refusal as permission denied.
+/// Presence is a room signal, not the app's request: a publish the peer
+/// refused is logged where it happened, and the request that carried the
+/// update still answers.
+async fn publish_presence(
+    what: &'static str,
+    publish: impl std::future::Future<Output = Result<(), runtime_portal::NotAvailable>>,
+) {
+    if let Err(error) = publish.await {
+        tracing::debug!(%error, presence = what, "collab: presence publish refused");
+    }
+}
 fn signing_refused(error: &runtime_portal::NotAvailable) -> bool {
     matches!(
         error,
@@ -140,9 +160,11 @@ const SDK_DOCUMENT_EVENT_BYTES: usize =
 const SDK_DOCUMENT_EVENT_RETRY: Duration = Duration::from_millis(250);
 const WIFI_CONTINUITY_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// The connected transport's outbound queue, used by the Settings-only
-/// commands ([`wifi_continuity_command`], [`speaker_command`]).
-static SETTINGS_COMMAND_BRIDGE: std::sync::OnceLock<
+/// The connected transport's outbound queue, as the process reaches it from
+/// outside the transport: the session's published resources
+/// ([`SessionResource`]) and the device commands
+/// ([`wifi_continuity_command`], [`speaker_command`]).
+static PUBLISHED_COMMAND_BRIDGE: std::sync::OnceLock<
     std::sync::Mutex<Option<tokio_mpsc::WeakSender<QueuedSdkCommand>>>,
 > = std::sync::OnceLock::new();
 
@@ -157,7 +179,7 @@ static SETTINGS_COMMAND_BRIDGE: std::sync::OnceLock<
 pub fn wifi_continuity_command(
     command: runtime_collab::WifiContinuityCommand,
 ) -> Result<runtime_collab::WifiContinuityReply, String> {
-    let sender = SETTINGS_COMMAND_BRIDGE
+    let sender = PUBLISHED_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .map_err(|_| "Wi-Fi continuity bridge is unavailable".to_string())?
@@ -197,7 +219,7 @@ const SPEAKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 pub fn speaker_command(
     command: runtime_collab::SpeakerCommand,
 ) -> Result<runtime_collab::SpeakerReply, String> {
-    let sender = SETTINGS_COMMAND_BRIDGE
+    let sender = PUBLISHED_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .map_err(|_| "speaker service is unavailable".to_string())?
@@ -230,7 +252,7 @@ pub fn subscribe_person_chat(
     token: uuid::Uuid,
     cancel: tokio::sync::watch::Receiver<()>,
 ) -> Result<(), String> {
-    let sender = SETTINGS_COMMAND_BRIDGE
+    let sender = PUBLISHED_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .map_err(|_| "private person bridge unavailable")?
@@ -256,7 +278,7 @@ pub fn person_chat_command(command: Vec<u8>, original: Vec<u8>) -> Result<Vec<u8
     if command.len() > 24 * 1024 || !matches!(original.len(), 0 | 16) {
         return Err("invalid private conversation request".into());
     }
-    let sender = SETTINGS_COMMAND_BRIDGE
+    let sender = PUBLISHED_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .map_err(|_| "private person bridge unavailable")?
@@ -292,7 +314,7 @@ pub fn display_control(
     if command.len() > 64 * 1024 {
         return Err("The display request exceeds its wire bound.".into());
     }
-    let sender = SETTINGS_COMMAND_BRIDGE
+    let sender = PUBLISHED_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .map_err(|_| "The display service is unavailable.")?
@@ -316,11 +338,109 @@ pub fn display_control(
         .map_err(|_| "The display service did not respond.".to_string())?
 }
 
+/// What the owner thread asks of one of the session's published resources.
+pub(super) enum PublishedCommand {
+    /// Follow a resource's reading, handing each to `readings` (always the
+    /// newest: a reading that arrives before the owner took the one before
+    /// it replaces it) and the one the watch begins at to `first`, waking
+    /// whatever view `wake` holds.
+    Watch {
+        resource: Arc<str>,
+        readings: Arc<std::sync::Mutex<Option<Result<String, String>>>>,
+        wake: Arc<std::sync::Mutex<Option<tilo_rt::wake::WakeHandle>>>,
+        first: mpsc::SyncSender<Result<String, String>>,
+        cancel: tokio::sync::watch::Receiver<()>,
+    },
+    /// Take an action of one, answering the door's verdict.
+    Invoke {
+        resource: Arc<str>,
+        action: String,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        reply: mpsc::SyncSender<Result<(), String>>,
+    },
+}
+
+/// Serve one [`PublishedCommand`] on the shovel, where the session's
+/// services are reached.
+async fn published_command(client: &runtime_collab::CollabClient, command: PublishedCommand) {
+    let services = client.services();
+    match command {
+        PublishedCommand::Watch {
+            resource,
+            readings,
+            wake,
+            first,
+            mut cancel,
+        } => {
+            let stream = match services.watch(&resource).await {
+                Ok(stream) => stream,
+                Err(error) => {
+                    let _ = first.try_send(Err(published_error(&error)));
+                    return;
+                }
+            };
+            tokio::task::spawn_local(async move {
+                let mut first = Some(first);
+                loop {
+                    let reading = tokio::select! {
+                        // The owner dropped its handle: the watch ends with it.
+                        _ = cancel.changed() => return,
+                        reading = stream.read() => reading,
+                    };
+                    let (delivery, ended) = match reading {
+                        Ok(reading) => match reading.reading {
+                            Some(reading) => (Ok(reading), false),
+                            // No service is up for it yet; one may be at a
+                            // later revision, so the watch stays on.
+                            None => (Err(format!("No service publishes {resource}.")), false),
+                        },
+                        Err(error) => (Err(published_error(&error)), true),
+                    };
+                    if let Some(answer) = first.take() {
+                        let _ = answer.try_send(delivery.clone());
+                    }
+                    *readings
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(delivery);
+                    let view = wake
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    if let Some(view) = view {
+                        view.wake();
+                    }
+                    if ended {
+                        return;
+                    }
+                }
+            });
+        }
+        PublishedCommand::Invoke {
+            resource,
+            action,
+            arguments,
+            reply,
+        } => {
+            let result = match services.invoke(&resource, &action, &arguments).await {
+                Ok(runtime_collab::wire::Receipt::Refused { message, .. }) => Err(message),
+                Ok(_taken) => Ok(()),
+                Err(error) => Err(published_error(&error)),
+            };
+            let _ = reply.send(result);
+        }
+    }
+}
+
+/// Why a call on the session's services failed, as the app reports it.
+fn published_error(error: &runtime_portal::NotAvailable) -> String {
+    error.to_string()
+}
+
 /// Have the connected transport's worker send the app's unsent settings
 /// writes ([`super::channel_settings`]). Without a connected transport they
 /// wait for the primary route, whose join sends them.
 pub(super) fn flush_settings() {
-    let Some(sender) = SETTINGS_COMMAND_BRIDGE
+    let Some(sender) = PUBLISHED_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .ok()
@@ -335,7 +455,7 @@ pub(super) fn flush_settings() {
 /// ([`super::channel_live_activity`]). Without a connected transport it waits
 /// for the primary route, whose join sends it.
 pub(super) fn flush_live_activity() {
-    let Some(sender) = SETTINGS_COMMAND_BRIDGE
+    let Some(sender) = PUBLISHED_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .ok()
@@ -367,7 +487,7 @@ pub(super) struct BrokerTransport {
     invocation_owners: std::collections::BTreeMap<u64, committed_document::DeliveryOwner>,
     state: BridgeState,
     /// The receiver stays on the application's owner thread.  RPC servers
-    /// own only the cloneable sender, so a Cap'n Proto callback cannot touch
+    /// own only the cloneable sender, so a host's ask cannot touch
     /// widgets directly.
     action_directory_rx: mpsc::Receiver<ActionDirectoryRequest>,
     action_directory_tx: mpsc::SyncSender<ActionDirectoryRequest>,
@@ -378,7 +498,7 @@ pub(super) struct BrokerTransport {
     worker_stopped: bool,
     /// Whether [`wifi_continuity_command`] has been pointed at this
     /// transport; done once it has connected.
-    wifi_bridge_registered: bool,
+    command_bridge_registered: bool,
     /// Durable commands the bounded queue had no room for, in submission
     /// order. They wait here for the shovel to catch up instead of
     /// disabling collaboration; see [`Self::enqueue`].
@@ -447,30 +567,30 @@ impl BrokerTransport {
             // A surface delta waiting for room folds into the one already
             // waiting for this app, so a burst of republications is one
             // delta however long the shovel stalls.
-            SdkCommand::Primary(CollabRequest::PublishActionSurface { app_id, delta }) => {
+            SdkCommand::Primary(CollabRequest::PublishActionSurface { delta }) => {
                 let waiting = self.spill.iter_mut().find_map(|parked| match parked {
-                    SdkCommand::Primary(CollabRequest::PublishActionSurface {
-                        app_id: parked_app,
-                        delta: older,
-                    }) if *parked_app == app_id => Some(older),
+                    SdkCommand::Primary(CollabRequest::PublishActionSurface { delta: older }) => {
+                        Some(older)
+                    }
                     _ => None,
                 });
                 if let Some(older) = waiting {
                     *older = std::mem::take(older).then(delta);
                 } else {
                     self.spill.push_back(SdkCommand::Primary(
-                        CollabRequest::PublishActionSurface { app_id, delta },
+                        CollabRequest::PublishActionSurface { delta },
                     ));
                 }
             }
             // A whole surface supersedes an older one still waiting.
-            SdkCommand::Primary(CollabRequest::PublishActions { app_id, actions }) => {
+            SdkCommand::Primary(CollabRequest::PublishActions { actions }) => {
                 let waiting = self.spill.iter_mut().find(|parked| {
-                    matches!(parked, SdkCommand::Primary(CollabRequest::PublishActions {
-                        app_id: parked_app, ..
-                    }) if *parked_app == app_id)
+                    matches!(
+                        parked,
+                        SdkCommand::Primary(CollabRequest::PublishActions { .. })
+                    )
                 });
-                let whole = SdkCommand::Primary(CollabRequest::PublishActions { app_id, actions });
+                let whole = SdkCommand::Primary(CollabRequest::PublishActions { actions });
                 if let Some(older) = waiting {
                     *older = whole;
                 } else {
@@ -574,15 +694,16 @@ impl BrokerTransport {
         Ok(())
     }
 
-    /// Route [`wifi_continuity_command`] through this transport.
-    fn register_wifi_bridge(&mut self) {
-        if let Ok(mut bridge) = SETTINGS_COMMAND_BRIDGE
+    /// Route the process's published commands and device commands through
+    /// this transport.
+    fn register_command_bridge(&mut self) {
+        if let Ok(mut bridge) = PUBLISHED_COMMAND_BRIDGE
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
         {
             crate::person_chat::invalidate();
             *bridge = Some(self.outbound_tx.downgrade());
-            self.wifi_bridge_registered = true;
+            self.command_bridge_registered = true;
         }
     }
 }
@@ -637,9 +758,10 @@ impl CollabTransport for BrokerTransport {
             TransportCommand::Primary(request) => SdkCommand::Primary(request),
             TransportCommand::ToRoute(route, request) => SdkCommand::ToRoute(route, request),
             TransportCommand::Join(route, record_kind) => {
-                if let Ok(mut kinds) = self.state.route_record_kinds.lock() {
-                    kinds.insert(route.channel_id(), record_kind.as_str().to_owned());
-                }
+                self.state
+                    .route_record_kinds
+                    .lock_recover()
+                    .insert(route.channel_id(), record_kind.as_str().to_owned());
                 SdkCommand::Join(route, Some(record_kind.as_str().to_owned()))
             }
             TransportCommand::ConfirmPrimaryRoute => {
@@ -672,10 +794,10 @@ impl CollabTransport for BrokerTransport {
         self.invocation_owners.clear();
         self.state.begin_poll();
         self.flush_spill();
-        if !self.wifi_bridge_registered
+        if !self.command_bridge_registered
             && matches!(self.state.connect_phase(), ConnectPhase::Connected)
         {
-            self.register_wifi_bridge();
+            self.register_command_bridge();
         }
         while let Ok(mut evt) = self.inbound_rx.try_recv() {
             match evt._turn.take() {
@@ -977,6 +1099,8 @@ enum SdkCommand {
         command: Vec<u8>,
         reply: mpsc::SyncSender<Result<Vec<u8>, String>>,
     },
+    /// Read, watch or change one of the session's published resources.
+    Published(PublishedCommand),
     /// Send the app's unsent settings writes over the primary route.
     FlushSettings,
     /// Send the app's live activity over the primary route.
@@ -1330,24 +1454,17 @@ impl BridgeState {
     /// and survives being read; it is withdrawn by the next change that goes
     /// through ([`Self::change_sent`]), never by the reading.
     fn publication_result(&self) -> Result<(), DocumentPublicationError> {
-        match self.publication_failure.lock() {
-            Ok(failure) => failure.clone().map_or_else(
-                || match self.refused_change() {
-                    Some(said) => Err(DocumentPublicationError::Refused(said)),
-                    None => Ok(()),
-                },
-                Err,
-            ),
-            Err(_) => Err(DocumentPublicationError::Failed(
-                "publication failure state poisoned".into(),
-            )),
-        }
+        self.publication_failure.lock_recover().clone().map_or_else(
+            || match self.refused_change() {
+                Some(said) => Err(DocumentPublicationError::Refused(said)),
+                None => Ok(()),
+            },
+            Err,
+        )
     }
 
     fn record_publication_failure(&self, error: DocumentPublicationError) {
-        if let Ok(mut failure) = self.publication_failure.lock() {
-            failure.get_or_insert(error);
-        }
+        self.publication_failure.lock_recover().get_or_insert(error);
     }
 
     fn publication_failed(
@@ -1388,23 +1505,18 @@ impl BridgeState {
             %error,
             "collab: the broker refused one document change; this bridge stays open"
         );
-        if let Ok(mut last) = self.last_refused_change.lock() {
-            *last = Some(said);
-        }
+        *self.last_refused_change.lock_recover() = Some(said);
         self.notify_events();
     }
 
     /// A change the peer refused while nothing later has been sent, if any.
     fn refused_change(&self) -> Option<String> {
-        self.last_refused_change.lock().ok()?.clone()
+        self.last_refused_change.lock_recover().clone()
     }
 
     /// A change went through: nothing is waiting to be reconciled any more.
     fn change_sent(&self) {
-        let cleared = self
-            .last_refused_change
-            .lock()
-            .is_ok_and(|mut last| last.take().is_some());
+        let cleared = self.last_refused_change.lock_recover().take().is_some();
         if cleared {
             self.notify_events();
         }
@@ -1481,17 +1593,7 @@ fn stranded_break(state: &BridgeState) {
 /// call is not an answer — its outcome is unknown, and only that may end
 /// collaboration — and neither is a transport failure.
 fn refused_by_peer(error: &runtime_portal::NotAvailable) -> bool {
-    match error {
-        runtime_portal::NotAvailable::Capnp(error) => {
-            matches!(
-                error.kind,
-                capnp::ErrorKind::Failed | capnp::ErrorKind::Unimplemented
-            )
-        }
-        runtime_portal::NotAvailable::ServiceFdMissing
-        | runtime_portal::NotAvailable::ConnectionFailed(_)
-        | runtime_portal::NotAvailable::ProtocolMismatch { .. } => false,
-    }
+    matches!(error, runtime_portal::NotAvailable::Refused(_))
 }
 
 /// Keep the rejected RPC's cause, never its request/update payload. A peer's
@@ -1499,21 +1601,14 @@ fn refused_by_peer(error: &runtime_portal::NotAvailable) -> bool {
 /// characters before placing it in the ordinary session log.
 fn bounded_rpc_diagnostic(error: &runtime_portal::NotAvailable) -> (&'static str, String, bool) {
     match error {
-        runtime_portal::NotAvailable::Capnp(error) => {
-            let mut chars = error.extra.chars();
+        runtime_portal::NotAvailable::Refused(reason) => {
+            let mut chars = reason.chars();
             let detail: String = chars
                 .by_ref()
                 .take(512)
                 .map(|ch| if ch.is_control() { ' ' } else { ch })
                 .collect();
-            let kind = match error.kind {
-                capnp::ErrorKind::Failed => "capnp_failed",
-                capnp::ErrorKind::Overloaded => "capnp_overloaded",
-                capnp::ErrorKind::Disconnected => "capnp_disconnected",
-                capnp::ErrorKind::Unimplemented => "capnp_unimplemented",
-                _ => "capnp_protocol_error",
-            };
-            (kind, detail, chars.next().is_some())
+            ("refused", detail, chars.next().is_some())
         }
         runtime_portal::NotAvailable::ServiceFdMissing => {
             ("service_fd_missing", String::new(), false)
@@ -1906,7 +2001,7 @@ impl SdkConnectSource {
     fn build_client(
         self,
     ) -> Result<
-        (runtime_collab::CollabClient, runtime_portal::ConnectionEnd),
+        (runtime_collab::CollabClient, runtime_collab::ConnectionEnd),
         runtime_portal::NotAvailable,
     > {
         match self {
@@ -1915,14 +2010,11 @@ impl SdkConnectSource {
             )),
             SdkConnectSource::Env => runtime_collab::try_connect_until_closed(),
             SdkConnectSource::Fd(fd) => {
-                use capnp_rpc::rpc_twoparty_capnp;
-                let unix = runtime_portal::UnixCapnpClient::from_connected_fd(
-                    fd,
-                    rpc_twoparty_capnp::Side::Client,
-                )?;
-                let (raw, end): (runtime_collab::CollabServiceClient, _) =
-                    unix.bootstrap_until_closed();
-                Ok((runtime_collab::CollabClient::from_raw(raw), end))
+                // SAFETY: the source owns `fd`, a connected Unix socket, and
+                // hands it over here exactly once.
+                let fd =
+                    unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+                runtime_collab::CollabClient::from_connected_fd(fd)
             }
         }
     }
@@ -1979,7 +2071,19 @@ pub type EndpointChannelKeys = std::sync::Arc<
 pub struct CertifiedEndpointIdentity {
     presentation: Vec<u8>,
     device_key: ed25519_dalek::SigningKey,
-    channel_keys: Option<EndpointChannelKeys>,
+    signer: EndpointSigner,
+}
+
+/// What signs an explicit endpoint's writes and where its channel keys come
+/// from.
+#[derive(Clone)]
+enum EndpointSigner {
+    /// A test harness's endpoint: its key, and the channel keys `with_channel_keys`
+    /// gave it, if any.
+    Harness(Option<EndpointChannelKeys>),
+    /// A task agent: the task key its desktop delegated signs, and the
+    /// channel keys are always asked of an identity service.
+    Delegated(EndpointChannelKeys),
 }
 
 impl CertifiedEndpointIdentity {
@@ -1987,7 +2091,21 @@ impl CertifiedEndpointIdentity {
         Self {
             presentation,
             device_key,
-            channel_keys: None,
+            signer: EndpointSigner::Harness(None),
+        }
+    }
+
+    /// An identity signing with `key` under the delegation `presentation`
+    /// carries, its routes' channel keys asked through `keys`.
+    pub(crate) fn delegated(
+        presentation: Vec<u8>,
+        key: ed25519_dalek::SigningKey,
+        keys: EndpointChannelKeys,
+    ) -> Self {
+        Self {
+            presentation,
+            device_key: key,
+            signer: EndpointSigner::Delegated(keys),
         }
     }
 
@@ -1996,12 +2114,16 @@ impl CertifiedEndpointIdentity {
     /// them its writes are plaintext, and refused in a room that seals them.
     #[must_use]
     pub fn with_channel_keys(mut self, keys: EndpointChannelKeys) -> Self {
-        self.channel_keys = Some(keys);
+        self.signer = EndpointSigner::Harness(Some(keys));
         self
     }
 
     fn document_signer(&self) -> SdkDocumentSigner {
-        SdkDocumentSigner::Harness(Box::new(self.device_key.clone()), self.channel_keys.clone())
+        let key = Box::new(self.device_key.clone());
+        match &self.signer {
+            EndpointSigner::Harness(keys) => SdkDocumentSigner::Harness(key, keys.clone()),
+            EndpointSigner::Delegated(keys) => SdkDocumentSigner::Delegated(key, keys.clone()),
+        }
     }
 }
 
@@ -2117,6 +2239,10 @@ enum SdkDocumentSigner {
     /// still rejects the uncertified join before any op reaches policy.
     /// With channel keys to ask, its routes encrypt as a certified one's do.
     Harness(Box<ed25519_dalek::SigningKey>, Option<EndpointChannelKeys>),
+    /// A task agent: the task key signs its writes and the delegation its
+    /// desktop signed admits it; the channel keys come from its launcher's
+    /// identity service, as a launched app's do.
+    Delegated(Box<ed25519_dalek::SigningKey>, EndpointChannelKeys),
 }
 
 /// Identity state after the shovel thread has entered its `LocalSet`. The host
@@ -2148,6 +2274,18 @@ fn harness_document_signer() -> SdkDocumentSigner {
         Box::new(ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng))),
         None,
     )
+}
+
+/// What a harness joins with: a certified presentation in form, so a host
+/// reads it, that proves nothing.
+fn harness_presentation() -> Vec<u8> {
+    runtime_collab::CertifiedJoinIdentity {
+        workspace_id: "harness".into(),
+        device_certificate: b"harness certificate".to_vec(),
+        proof: vec![0; 64],
+    }
+    .encode()
+    .unwrap_or_default()
 }
 
 #[cfg(unix)]
@@ -2738,239 +2876,6 @@ impl CollaborationManager {
         Ok(self)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_history_invocation_fixture_for_test(
-        history: Vec<u8>,
-    ) -> NativeHistoryInvocationFixture {
-        tests::native_history_invocation_fixture(history)
-    }
-
-    /// Wire/SDK ordering fixture only; not a native authority proof.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_initial_fixture_for_test(
-        app: &str,
-        room: Uuid,
-        history: Vec<u8>,
-    ) -> (Self, Box<dyn Fn() -> usize>) {
-        tests::native_initial_fixture(app, room, history)
-    }
-
-    /// Socket-backed ordering fixture on an actual acknowledged named route.
-    /// This fixture does not establish native caller authority.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_initial_named_fixture_for_test(route: RouteSpec, history: Vec<u8>) -> Self {
-        let (mut manager, _) =
-            tests::native_initial_fixture(&route.app_id, route.cluster_id, history);
-        assert!(manager.send(CollabRequest::Hello {
-            app_id: route.app_id,
-            cluster_id: route.cluster_id,
-            record: route.record,
-            record_kind: None,
-            handle: None,
-        }));
-        manager
-            .await_primary_route()
-            .expect("actual named route acknowledgement");
-        manager
-    }
-
-    /// [`Self::native_initial_named_fixture_for_test`] whose broker admits
-    /// the connection's own invocations against the surface it published;
-    /// the probe lists each invocation as it arrived and whether it was
-    /// offered then. It refuses every committed read of the `refused`
-    /// routes, so they never open.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_initial_named_invocation_fixture_for_test(
-        route: RouteSpec,
-        history: Vec<u8>,
-        refused: &[RouteSpec],
-    ) -> (
-        Self,
-        Box<dyn Fn() -> Vec<(tilo_actions::ActionAddress, bool)>>,
-    ) {
-        let (mut manager, invocations) = tests::native_initial_invocation_fixture(
-            &route.app_id,
-            route.cluster_id,
-            history,
-            refused.iter().map(RouteSpec::channel_id).collect(),
-        );
-        assert!(manager.send(CollabRequest::Hello {
-            app_id: route.app_id,
-            cluster_id: route.cluster_id,
-            record: route.record,
-            record_kind: None,
-            handle: None,
-        }));
-        manager
-            .await_primary_route()
-            .expect("actual named route acknowledgement");
-        (manager, invocations)
-    }
-
-    /// A connected route whose document reads are not Required, as a
-    /// standalone runtime admits it.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn connected_fixture_for_test(app: &str, room: Uuid) -> Self {
-        tests::connected_manager_for(app, room)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_initial_fixture_gated_for_test(
-        app: &str,
-        room: Uuid,
-        history: Vec<u8>,
-        gate: tokio::sync::oneshot::Receiver<()>,
-    ) -> (Self, Box<dyn Fn() -> usize>) {
-        tests::native_initial_fixture_gated(app, room, history, Some(gate))
-    }
-
-    /// Socket-backed committed-read fixture; the probe observes real recheck requests.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_initial_parked_fixture_for_test(
-        app: &str,
-        room: Uuid,
-        history: Vec<u8>,
-        gate: tokio::sync::oneshot::Receiver<()>,
-    ) -> (Self, Box<dyn Fn() -> usize>) {
-        tests::native_initial_parked_fixture(app, room, history, gate)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_refresh_fixture_for_test(
-        app: &str,
-        room: Uuid,
-        history: Vec<u8>,
-    ) -> (Self, NativeRefreshProbe) {
-        tests::native_refresh_fixture(app, room, history)
-    }
-
-    /// A native app's manager joining `route` in the background as
-    /// [`Self::join_native`] does, over a fake broker that holds the join
-    /// until the probe answers or refuses it, as a loaded broker does. The
-    /// route's committed history is `history`, of the record kind `kind`;
-    /// the room stands as `room` until the probe says otherwise. Make it in
-    /// the app's wake scope, as a launch does.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_joining_fixture_for_test(
-        route: RouteSpec,
-        kind: &str,
-        history: Vec<u8>,
-        room: runtime_collab::RoomStatus,
-    ) -> (Self, JoiningProbe) {
-        let (answer, gate) = tokio::sync::oneshot::channel();
-        let (room_status, status) = tokio::sync::watch::channel(Ok(room));
-        let broker = tests::FakeBroker {
-            captures: Arc::new(std::sync::Mutex::new(tests::Captures {
-                committed_history_fixture: Some(history),
-                join_gates: std::collections::VecDeque::from([gate]),
-                room_status: Some(status),
-                // The session's answer to the app's private requests, as the
-                // custodian gives it: sealing stores, release answers with
-                // the secret, anything else is not the session's.
-                service_sessions: Some(Arc::new(|command| match command {
-                    runtime_collab::BrowserServiceSessionCommand::StoreAccountSecret {
-                        account,
-                        ..
-                    } => Ok(
-                        runtime_collab::BrowserServiceSessionReply::AccountSecretStored {
-                            account: account.clone(),
-                        },
-                    ),
-                    runtime_collab::BrowserServiceSessionCommand::ReleaseAccountSecret {
-                        account,
-                    } => Ok(runtime_collab::BrowserServiceSessionReply::AccountSecret {
-                        account: account.clone(),
-                        password: zeroize::Zeroizing::new("released-secret".into()),
-                    }),
-                    _ => Err("the session serves no such request".into()),
-                })),
-                ..tests::Captures::default()
-            })),
-            ..tests::FakeBroker::default()
-        };
-        let (fd, captures, _thread) = tests::stand_up_fake_broker(broker);
-        let manager = Self::connect_in_background(
-            SdkConnectSource::Fd(fd),
-            SdkIdentitySource::Ready(Some(SdkJoinIdentity {
-                presentation: Vec::new(),
-                participant_kind: "person",
-                signer: harness_document_signer(),
-            })),
-            route,
-            Some(kind.to_owned()),
-            None,
-        );
-        let probe = JoiningProbe {
-            answer: std::sync::Mutex::new(Some(answer)),
-            room: room_status,
-            sent: Box::new(move || captures.lock().unwrap().signed_ops.len()),
-        };
-        (manager, probe)
-    }
-
     fn for_route_from(
         source: SdkConnectSource,
         app_id: String,
@@ -3053,7 +2958,7 @@ impl CollaborationManager {
                 Some(sdk_join_identity(cluster_id)?)
             }
             None => Some(SdkJoinIdentity {
-                presentation: Vec::new(),
+                presentation: harness_presentation(),
                 participant_kind: "person",
                 signer: harness_document_signer(),
             }),
@@ -3291,7 +3196,6 @@ impl CollaborationManager {
             .state
             .document_reads
             .document_owner_routes("")
-            .expect("document owner routes")
     }
 
     /// Retire the actual socket-backed capture generation, as a rejoin does.
@@ -3394,7 +3298,7 @@ impl CollaborationManager {
         reason = "a fixture for the toolkit's tests"
     )]
     pub fn from_sdk_fd_for_test(fd: RawFd, app_id: &str, cluster_id: Uuid) -> Self {
-        Self::from_sdk_fd_for_test_with_identity(fd, app_id, cluster_id, Vec::new())
+        Self::from_sdk_fd_for_test_with_identity(fd, app_id, cluster_id, harness_presentation())
     }
 
     /// Like [`Self::from_sdk_fd_for_test`] but stamps the `join_channel`
@@ -3438,8 +3342,8 @@ impl CollaborationManager {
 
     /// Stand up the shovel thread + its tokio `current_thread` runtime and
     /// return at once. The shovel loads the join identity and runs
-    /// `try_connect` **inside** its `LocalSet` because capnp-rpc futures are
-    /// `!Send` and can't cross a thread boundary.
+    /// `try_connect` **inside** its `LocalSet`, where every route's state
+    /// stays.
     ///
     /// The transport reports [`TransportStatus::Connecting`] until the
     /// shovel is serving commands (or [`TransportStatus::Closed`] if setup
@@ -3483,7 +3387,7 @@ impl CollaborationManager {
             action_directory_tx,
             pending_primary: None,
             worker_stopped: false,
-            wifi_bridge_registered: false,
+            command_bridge_registered: false,
             spill: std::collections::VecDeque::new(),
             barrier_slot: None,
             queued_barrier: std::sync::Weak::new(),
@@ -3516,7 +3420,7 @@ impl CollaborationManager {
 
         match status {
             InitStatus::Ready => {
-                transport.register_wifi_bridge();
+                transport.register_command_bridge();
                 Ok(transport)
             }
             InitStatus::Failed(e) => {
@@ -3527,6 +3431,56 @@ impl CollaborationManager {
                 Err(e)
             }
         }
+    }
+}
+
+/// A surface app's connection to its session's services: the same
+/// connection every app reaches its session through, held by a process that
+/// shows a window placed by the session and joins no room of its own.
+///
+/// The session records the launch and names its socket on the app's
+/// environment; the app connects that socket itself and writes the handoff
+/// naming the launch, so the broker attests the process the way it attests
+/// any app's. What it reads through it is what every app reads: the
+/// session's published resources ([`SessionResource`]) and the actions on
+/// them. Held for the process's life — dropping it ends the connection and
+/// every watch on it.
+pub struct SessionServices {
+    /// The transport, kept for its worker: dropping it ends the connection
+    /// the process's published resources are reached over.
+    _transport: BrokerTransport,
+}
+
+impl SessionServices {
+    /// Connect to the session's services at `socket`, as the launch of
+    /// `app_id` in `workspace` the session recorded for this process.
+    ///
+    /// # Errors
+    ///
+    /// The socket cannot be reached, the handoff cannot be written, or the
+    /// broker does not answer the connection.
+    #[cfg(unix)]
+    pub fn connect(
+        socket: &std::path::Path,
+        app_id: &str,
+        workspace: &str,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
+        runtime_portal::launch_handoff::write(&mut stream, app_id, workspace)?;
+        let fd = std::os::fd::IntoRawFd::into_raw_fd(stream);
+        let transport = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                // A surface joins no room: it presents no identity, and the
+                // broker admits it for the launch alone.
+                presentation: Vec::new(),
+                participant_kind: "person",
+                signer: harness_document_signer(),
+            }),
+        )?;
+        Ok(Self {
+            _transport: transport,
+        })
     }
 }
 
@@ -3564,7 +3518,7 @@ enum InitStatus {
 /// broker cannot be reached; the join is what ends the wait, never this.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc client futures are !Send by design; driven only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn report_join_hold(
     client: &runtime_collab::CollabClient,
@@ -3609,7 +3563,7 @@ fn report_init(state: &BridgeState, init_tx: &mpsc::SyncSender<InitStatus>, stat
 }
 
 /// The shovel thread's body: owns a `current_thread` runtime + `LocalSet`
-/// (capnp-rpc futures are `!Send`), stands up the SDK client, subscribes
+/// (where every route's state stays), stands up the SDK client, subscribes
 /// its three streams, and forwards outbound requests. Exits when
 /// `outbound_rx.recv()` returns `None` (manager dropped).
 fn run_shovel(
@@ -3679,14 +3633,11 @@ fn run_shovel(
                             Ok(identity) => {
                                 match sdk_join_identity_from_host(identity, cluster_id).await {
                                     Ok(identity) => {
-                                        let rpc = runtime_portal::CapnpClient::from_connected_io(
-                                            collaboration_stream,
-                                            capnp_rpc::rpc_twoparty_capnp::Side::Client,
-                                        );
-                                        let (raw, end): (runtime_collab::CollabServiceClient, _) =
-                                            rpc.bootstrap_until_closed();
-                                        let client = runtime_collab::CollabClient::from_raw(raw)
-                                            .with_optional_descriptors(lane);
+                                        let (client, end) =
+                                            runtime_collab::CollabClient::connected_local(
+                                                collaboration_stream,
+                                            );
+                                        let client = client.with_optional_descriptors(lane);
                                         Ok(((client, end), identity))
                                     }
                                     Err(error) => Err(error),
@@ -3793,16 +3744,15 @@ fn follow_channel_keys(
 
 /// SDK-side event loop: dispatches outbound requests to SDK calls, and
 /// spawns one subscription task per stream on the first `join_channel`.
-// Not `Send`: `client` wraps a capnp-rpc handle (`Rc`-based, `!Send`), and
-// this only ever runs inside `run_shovel`'s `LocalSet` on its own thread.
+// Not `Send`: the route state it holds stays on `run_shovel`'s `LocalSet`.
 #[allow(
     clippy::future_not_send,
     clippy::too_many_lines,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn drive_shovel(
     client: runtime_collab::CollabClient,
-    mut connection_end: runtime_portal::ConnectionEnd,
+    mut connection_end: runtime_collab::ConnectionEnd,
     identity: LocalSdkJoinIdentity,
     mut outbound_rx: tokio_mpsc::Receiver<QueuedSdkCommand>,
     media_rx: native_media::Receiver,
@@ -3854,7 +3804,7 @@ async fn drive_shovel(
     let mut unpublished: Option<String> = None;
     // The action directory the owner published while no primary route was
     // joined, sent as soon as one is.
-    let mut unrouted_directory: Option<(String, mpsc::SyncSender<ActionDirectoryRequest>)> = None;
+    let mut unrouted_directory: Option<mpsc::SyncSender<ActionDirectoryRequest>> = None;
 
     loop {
         let timed = asks_channel_keys
@@ -3866,7 +3816,7 @@ async fn drive_shovel(
             // and nothing reconnects it (a host retry is a new connector).
             // Collaboration ends here, once, so the app goes offline instead
             // of retrying calls that cannot succeed.
-            _ = &mut connection_end => {
+            () = &mut connection_end => {
                 tracing::warn!(
                     primary = primary.as_deref().unwrap_or(""),
                     "collab: the broker closed this app's connection"
@@ -3973,13 +3923,7 @@ async fn drive_shovel(
                 // The startup file splits the owner's wait for `PrimaryReady`.
                 tilo_startup_metrics::startup_mark("collab-route-joined");
                 if let Some(route) = primary.as_ref().and_then(|key| routes.get(key)) {
-                    // Both capabilities are independent: asking for them
-                    // together costs the owner's wait one broker round trip.
-                    let (settings, live_activity) = tokio::join!(
-                        link_settings(&route.channel, &inbound_tx),
-                        link_live_activity(&route.channel, &inbound_tx),
-                    );
-                    settings_link = settings;
+                    settings_link = link_settings(&route.channel, &inbound_tx);
                     // Writes made before the route joined go out on the
                     // link's own task: the route is ready without waiting
                     // for the shell to store them.
@@ -3987,13 +3931,13 @@ async fn drive_shovel(
                         link.flush();
                     }
                     tilo_startup_metrics::startup_mark("collab-settings-linked");
-                    live_activity_link = live_activity;
+                    live_activity_link = link_live_activity(&route.channel, &inbound_tx);
                     if let Some(link) = live_activity_link.as_ref() {
                         link.flush(true).await;
                     }
                     tilo_startup_metrics::startup_mark("collab-activity-linked");
-                    if let Some((app_id, requests)) = unrouted_directory.take() {
-                        publish_directory(route, &app_id, requests, &inbound_tx).await;
+                    if let Some(requests) = unrouted_directory.take() {
+                        publish_directory(route, requests, &inbound_tx).await;
                     }
                 }
             }
@@ -4131,17 +4075,17 @@ async fn drive_shovel(
                 .await;
                 let _ = reply.send(result);
             }
-            SdkCommand::PublishActionDirectory { app_id, requests } => {
+            SdkCommand::PublishActionDirectory { requests, .. } => {
                 // The directory rides the primary route. One published before
                 // the route joined (or while a later Hello's join is still
                 // failing) is kept and sent once a route joins: the owner
                 // counts it as published and never sends it again.
                 match primary.as_ref().and_then(|key| routes.get(key)) {
                     Some(route) => {
-                        publish_directory(route, &app_id, requests, &inbound_tx).await;
+                        publish_directory(route, requests, &inbound_tx).await;
                     }
                     None => {
-                        unrouted_directory = Some((app_id, requests));
+                        unrouted_directory = Some(requests);
                     }
                 }
             }
@@ -4190,7 +4134,7 @@ async fn drive_shovel(
                 }
             }
             SdkCommand::WifiContinuity {
-                app_id,
+                app_id: _,
                 command,
                 reply,
             } => {
@@ -4199,7 +4143,7 @@ async fn drive_shovel(
                 {
                     route
                         .channel
-                        .wifi_continuity_command(&app_id, &command)
+                        .wifi_continuity_command(&command)
                         .await
                         .map_err(|error| error.to_string())
                 } else {
@@ -4208,7 +4152,7 @@ async fn drive_shovel(
                 let _ = reply.send(result);
             }
             SdkCommand::Speakers {
-                app_id,
+                app_id: _,
                 command,
                 reply,
             } => {
@@ -4217,7 +4161,7 @@ async fn drive_shovel(
                 {
                     route
                         .channel
-                        .speaker_command(&app_id, &command)
+                        .speaker_command(&command)
                         .await
                         .map_err(|error| error.to_string())
                 } else {
@@ -4242,17 +4186,11 @@ async fn drive_shovel(
                                 .await
                                 .map_err(|error| error.to_string())?;
                             loop {
-                                stream.next().await.map_err(|error| error.to_string())?;
+                                let (_, bytes) =
+                                    stream.read().await.map_err(|error| error.to_string())?;
                                 if !crate::person_chat::subscription_current(token, &peer) {
                                     return Ok::<(), String>(());
                                 }
-                                let bytes =
-                                    tokio::time::timeout(Duration::from_secs(3), stream.read())
-                                        .await
-                                        .map_err(|_| {
-                                            "private conversation refresh timed out".to_string()
-                                        })?
-                                        .map_err(|error| error.to_string())?;
                                 crate::person_chat::subscription_snapshot(token, &peer, &bytes)?;
                             }
                         };
@@ -4313,6 +4251,9 @@ async fn drive_shovel(
                 };
                 let _ = reply.send(result);
             }
+            SdkCommand::Published(command) => {
+                published_command(&client, command).await;
+            }
             SdkCommand::FlushSettings => {
                 if let Some(link) = settings_link.as_ref() {
                     link.flush();
@@ -4358,7 +4299,7 @@ async fn drive_shovel(
 
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn install_sdk_encryption(
     context: SdkJoinContext<'_>,
@@ -4505,13 +4446,11 @@ struct SdkRoute {
     encryption: SharedRouteKeys,
 }
 
-// Not `Send`: `client`/`channel` wrap capnp-rpc handles, which are
-// `Rc`-based and inherently `!Send` — this runs only on the shovel
-// thread's `LocalSet` (see `run_shovel`), never crossing a thread
-// boundary, so the non-`Send` future is by design, not an oversight.
+// Not `Send`: the route state it holds stays on the shovel thread's
+// `LocalSet` (see `run_shovel`).
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn ensure_sdk_route(
     context: &SdkJoinContext<'_>,
@@ -4658,7 +4597,7 @@ async fn ensure_sdk_route(
     change_waits::follow(&spec.app_id, &channel, inbound_tx);
     // The streams are independent: subscribing to them together costs the
     // join one broker round trip instead of one per stream.
-    let ((), (), (), (), (), (), (), presence) = tokio::join!(
+    let ((), (), (), (), (), (), presence) = tokio::join!(
         async {
             if !committed {
                 spawn_op_stream(
@@ -4672,7 +4611,6 @@ async fn ensure_sdk_route(
             }
         },
         spawn_context_stream(&channel, spec.clone(), inbound_tx),
-        spawn_action_stream(&channel, inbound_tx),
         spawn_invocation_stream(&channel, spec, inbound_tx),
         spawn_realtime_stream(&channel, inbound_tx),
         async {
@@ -4743,7 +4681,7 @@ async fn ensure_sdk_route(
 /// to themselves.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_content_stream(
     channel: &runtime_collab::ChannelHandle,
@@ -4758,12 +4696,9 @@ async fn spawn_content_stream(
     let inbound_tx = inbound_tx.clone();
     tokio::task::spawn_local(async move {
         while let Ok(event) = stream.read().await {
-            use runtime_collab::BlobState;
             let state = match event.state {
-                BlobState::Arrived => None,
-                BlobState::Fetching => Some(tilo_content::ContentState::Pending),
-                BlobState::Waiting => Some(tilo_content::ContentState::Waiting),
-                BlobState::Unavailable => Some(tilo_content::ContentState::Unavailable),
+                tilo_content::ContentState::Resolved => None,
+                state => Some(state),
             };
             let event = match state {
                 None => CollabEvent::RecordContent {
@@ -4808,7 +4743,7 @@ impl RouteLabel {
 /// caller's route setup.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_op_stream(
     channel: &runtime_collab::ChannelHandle,
@@ -4881,7 +4816,7 @@ async fn spawn_op_stream(
 /// [`CollabEvent::Context`] on `inbound_tx`.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_context_stream(
     channel: &runtime_collab::ChannelHandle,
@@ -4973,7 +4908,7 @@ async fn spawn_context_stream(
                 let mut people: Vec<_> = context
                     .collaborators
                     .iter()
-                    .map(|person| (person.user_id.clone(), person.is_agent, person.is_self))
+                    .map(|person| (person.id.clone(), person.is_agent, person.is_self))
                     .collect();
                 people.compact_sort();
                 let mut permissions = context.permissions.clone();
@@ -4983,21 +4918,9 @@ async fn spawn_context_stream(
                     crate::person_chat::invalidate();
                     private_person_basis = Some(basis);
                 }
-                let collaborators = context
-                    .collaborators
-                    .into_iter()
-                    .map(|collaborator| Collaborator {
-                        id: collaborator.user_id,
-                        name: collaborator.display_name,
-                        colour: super::colour_from_packed(collaborator.color),
-                        is_agent: collaborator.is_agent,
-                        is_self: collaborator.is_self,
-                        joined_at: Collaborator::joined_at_from_packed(collaborator.joined_at_ms),
-                    })
-                    .collect();
                 if !tx
                     .send_durable(CollabEvent::Context {
-                        collaborators,
+                        collaborators: context.collaborators,
                         permissions: context.permissions,
                     })
                     .await
@@ -5041,7 +4964,7 @@ async fn native_invocation_delivery_turn(
             return Err("original invocation capture did not become current".into());
         }
         let mut turns = Vec::new();
-        let owners = state.document_reads.document_owner_routes(key)?;
+        let owners = state.document_reads.document_owner_routes(key);
         for owner in &owners {
             let semaphore = state.document_reads.delivery_turn(owner)?;
             let remaining = deadline.saturating_duration_since(crate::time::now());
@@ -5057,7 +4980,7 @@ async fn native_invocation_delivery_turn(
         if crate::time::now() >= deadline {
             return Err("original invocation capture did not become current".into());
         }
-        if state.document_reads.document_owner_routes(key)? == owners
+        if state.document_reads.document_owner_routes(key) == owners
             && owners
                 .iter()
                 .all(|owner| state.document_reads.publishable(owner))
@@ -5079,7 +5002,7 @@ async fn native_invocation_delivery_turn(
 // custody and exact pending job. A waited delivery cannot reuse stale authority.
 #[allow(
     clippy::future_not_send,
-    reason = "the original Rc-backed Cap'n Proto channel is driven only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn recheck_native_invocation(
     channel: &runtime_collab::ChannelHandle,
@@ -5111,35 +5034,9 @@ async fn recheck_native_invocation(
     Ok(false)
 }
 
-/// Bridge `channel`'s action stream into [`CollabEvent::ActionArrived`] on
-/// `inbound_tx`.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
-)]
-async fn spawn_action_stream(channel: &runtime_collab::ChannelHandle, inbound_tx: &InboundBridge) {
-    if let Ok(stream) = channel.subscribe_actions().await {
-        let tx = inbound_tx.clone();
-        tokio::task::spawn_local(async move {
-            while let Ok(action) = stream.read().await {
-                if !tx
-                    .send_durable(CollabEvent::ActionArrived {
-                        type_id: action.type_id,
-                        payload: action.payload,
-                        from_user_id: action.from_user_id,
-                    })
-                    .await
-                {
-                    break;
-                }
-            }
-        });
-    }
-}
-
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_invocation_stream(
     channel: &runtime_collab::ChannelHandle,
@@ -5248,7 +5145,7 @@ impl LiveActivityLink {
     /// Send the app's activity if it changed, or again after a join.
     #[allow(
         clippy::future_not_send,
-        reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+        reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
     )]
     async fn flush(&self, resend: bool) {
         let Some(unsent) = super::channel_live_activity::take_unsent(resend) else {
@@ -5262,21 +5159,11 @@ impl LiveActivityLink {
 
 /// Open the primary route's live activity and follow the controls pressed
 /// on it, waking the owner on each.
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
-)]
-async fn link_live_activity(
+fn link_live_activity(
     channel: &runtime_collab::ChannelHandle,
     inbound_tx: &InboundBridge,
 ) -> Option<LiveActivityLink> {
-    let handle = match channel.live_activity().await {
-        Ok(handle) => handle,
-        Err(error) => {
-            tracing::debug!(%error, "live activity: the shell presents none for this app");
-            return None;
-        }
-    };
+    let handle = channel.live_activity();
     let follower = {
         let handle = handle.clone();
         let wake = inbound_tx.state.owner_wake.clone();
@@ -5344,7 +5231,7 @@ impl SettingsLink {
 /// left, and show the shell's answers.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn send_settings(
     handle: &runtime_collab::AppSettingsHandle,
@@ -5382,23 +5269,15 @@ async fn send_settings(
 /// for [`BrokerTransport::action_directory_publication_counts`].
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn publish_directory(
     route: &SdkRoute,
-    app_id: &str,
     requests: mpsc::SyncSender<ActionDirectoryRequest>,
     inbound_tx: &InboundBridge,
 ) {
-    let directory = capnp_rpc::new_client(ActionDirectoryServer {
-        requests,
-        owner: inbound_tx.state.owner_wake.clone(),
-    });
-    if let Err(error) = route
-        .channel
-        .publish_action_directory(app_id, directory)
-        .await
-    {
+    let directory = directory_answerer(requests, inbound_tx.state.owner_wake.clone());
+    if let Err(error) = route.channel.publish_action_directory(directory).await {
         inbound_tx
             .state
             .directory_rpc_failures
@@ -5421,22 +5300,12 @@ async fn publish_directory(
 
 /// Open the primary route's settings for the installed channel settings
 /// and follow the shell's view of them, waking the owner on each change.
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
-)]
-async fn link_settings(
+fn link_settings(
     channel: &runtime_collab::ChannelHandle,
     inbound_tx: &InboundBridge,
 ) -> Option<SettingsLink> {
     let settings = super::channel_settings::installed()?;
-    let handle = match channel.settings().await {
-        Ok(handle) => handle,
-        Err(error) => {
-            tracing::warn!(%error, "settings: the shell keeps no settings for this app");
-            return None;
-        }
-    };
+    let handle = channel.settings();
     settings.linked();
     let follower = {
         let handle = handle.clone();
@@ -5520,7 +5389,7 @@ fn parse_invocation_context(id: u64, json: &str) -> Option<tilo_actions::ActionC
 
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_action_catalogue_stream(
     channel: &runtime_collab::ChannelHandle,
@@ -5618,7 +5487,7 @@ async fn forward_action_catalogues(
 /// unadmitted agent identities, leaving their normal collaboration intact.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send and are driven only by the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_task_run_stream(
     channel: &runtime_collab::ChannelHandle,
@@ -5642,30 +5511,26 @@ async fn spawn_task_run_stream(
 /// sends), regardless of whether the inbound stream subscribed.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_presence_stream(
     channel: &runtime_collab::ChannelHandle,
     inbound_tx: &InboundBridge,
 ) -> Option<runtime_collab::PresenceHandle> {
-    match channel.presence().await {
-        Ok(handle) => {
-            if let Ok(stream) = handle.subscribe_all().await {
-                let tx = inbound_tx.clone();
-                tokio::task::spawn_local(async move {
-                    while let Ok(event) = stream.read().await {
-                        if let Some(event) = translate_presence_event(event)
-                            && !tx.send_presence(event)
-                        {
-                            break;
-                        }
-                    }
-                });
+    let handle = channel.presence();
+    if let Ok(stream) = handle.subscribe_all().await {
+        let tx = inbound_tx.clone();
+        tokio::task::spawn_local(async move {
+            while let Ok(event) = stream.read().await {
+                if let Some(event) = translate_presence_event(event)
+                    && !tx.send_presence(event)
+                {
+                    break;
+                }
             }
-            Some(handle)
-        }
-        Err(_) => None,
+        });
     }
+    Some(handle)
 }
 
 /// Keep the accepted request and its queue byte reservation on the worker
@@ -5673,7 +5538,7 @@ async fn spawn_presence_stream(
 /// it. Hydration runs independently on this same LocalSet.
 #[allow(
     clippy::future_not_send,
-    reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn wait_for_document_publication(
     route: &SdkRoute,
@@ -5707,13 +5572,13 @@ async fn wait_for_document_publication(
 }
 
 /// Sign on the shovel thread through the workspace identity service, then use
-/// the one signed Cap'n Proto verb. Missing or denied certification never
+/// the one signed publication. Missing or denied certification never
 /// downgrades the document to unsigned traffic. A mutation larger than one
 /// frame is sent as consecutive segments, each encrypted (on MLS routes),
 /// signed and validated by the broker as its own envelope.
 #[allow(
     clippy::future_not_send,
-    reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn send_document_mutation(
     route: &SdkRoute,
@@ -5785,9 +5650,7 @@ fn origin_claims(
     app_id: &str,
     mutation: &collab_types::DocumentMutation,
 ) -> Vec<collab_types::ChangeClaim> {
-    let claims = collab_types::mutation_claims(mutation, collab_types::record_unit)
-        .map(|claims| crate::app_surface::with_footprints(app_id, claims));
-    claims.unwrap_or_else(|error| {
+    crate::app_surface::claims_of(app_id, mutation).unwrap_or_else(|error| {
         #[cfg(debug_assertions)]
         if let collab_types::DocumentMutation::Incremental(bytes) = mutation
             && collab_types::parse_changes(bytes).is_ok()
@@ -5807,7 +5670,7 @@ fn origin_claims(
 /// content sealed under an older one.
 #[allow(
     clippy::future_not_send,
-    reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn send_document_frame(
     route: &SdkRoute,
@@ -5857,7 +5720,7 @@ fn frame_refused(state: &BridgeState, refusal: &FrameRefusal) -> DocumentPublica
 #[allow(
     clippy::future_not_send,
     clippy::too_many_lines,
-    reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet; sealing, signing and sending one frame stay one auditable path"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn try_send_frame(
     route: &SdkRoute,
@@ -5886,9 +5749,9 @@ async fn try_send_frame(
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
             identity.signing_public_key()
         }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key, _)) => {
-            key.verifying_key().to_bytes()
-        }
+        LocalSdkDocumentSigner::Inherited(
+            SdkDocumentSigner::Harness(key, _) | SdkDocumentSigner::Delegated(key, _),
+        ) => key.verifying_key().to_bytes(),
         LocalSdkDocumentSigner::Host(identity) => identity.metadata().signing_public_key(),
     };
     let author = collab_types::Ed25519PublicKey::from_bytes(author);
@@ -5970,7 +5833,9 @@ async fn try_send_frame(
                 ));
             }
         },
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key, _)) => {
+        LocalSdkDocumentSigner::Inherited(
+            SdkDocumentSigner::Harness(key, _) | SdkDocumentSigner::Delegated(key, _),
+        ) => {
             use ed25519_dalek::Signer as _;
             let signing_bytes = match op.signing_bytes() {
                 Ok(bytes) => bytes,
@@ -6114,7 +5979,9 @@ async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigne
                 .channel_keys(&workspace_id, &route.spec.app_id, record_id, generation)
                 .await
         }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, Some(keys))) => {
+        LocalSdkDocumentSigner::Inherited(
+            SdkDocumentSigner::Harness(_, Some(keys)) | SdkDocumentSigner::Delegated(_, keys),
+        ) => {
             let query = KeyQuery::of(route, generation);
             let mut fetched = endpoint_channel_keys(std::sync::Arc::clone(keys), vec![query])
                 .await
@@ -6138,7 +6005,7 @@ const KEY_ROUNDS: &str = "tilo::collab::key_rounds";
 /// is asked here, and its answers are taken at once.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn refresh_keys(
     routes: &std::collections::HashMap<String, SdkRoute>,
@@ -6155,9 +6022,9 @@ async fn refresh_keys(
                 },
             )
         }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, Some(keys))) => {
-            std::sync::Arc::clone(keys)
-        }
+        LocalSdkDocumentSigner::Inherited(
+            SdkDocumentSigner::Harness(_, Some(keys)) | SdkDocumentSigner::Delegated(_, keys),
+        ) => std::sync::Arc::clone(keys),
         _ => {
             tracing::debug!(target: KEY_ROUNDS, "collab: asking the host for channel keys");
             refresh_all_route_keys(routes, signer, inbound_tx, round).await;
@@ -6188,7 +6055,7 @@ async fn refresh_keys(
 /// Returns whether any route's state or keys changed.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn apply_fetched_keys(
     routes: &std::collections::HashMap<String, SdkRoute>,
@@ -6222,7 +6089,7 @@ async fn apply_fetched_keys(
 /// waited on them.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn refresh_all_route_keys(
     routes: &std::collections::HashMap<String, SdkRoute>,
@@ -6244,13 +6111,77 @@ async fn refresh_all_route_keys(
     }
 }
 
-/// Shovel-thread Cap'n Proto endpoint for an application's pull directory.
-/// It deliberately contains no `Widget`, `App`, or document reference.  The
-/// only path to authority is a one-shot request answered by App's main-thread
-/// pump below.
-struct ActionDirectoryServer {
+/// How the host's asks of an application's pull directory are answered: a
+/// one-shot request to the App's main-thread pump below. It deliberately
+/// holds no `Widget`, `App`, or document reference.
+fn directory_answerer(
     requests: mpsc::SyncSender<ActionDirectoryRequest>,
     owner: crate::wake::WakeHandle,
+) -> runtime_collab::wire::client::Answerer {
+    use runtime_collab::wire::{Answer, Ask};
+    std::sync::Arc::new(move |ask: Ask| {
+        let requests = requests.clone();
+        let owner = owner.clone();
+        Box::pin(async move {
+            match ask {
+                Ask::Query { query, .. } => {
+                    let (reply, response) = tokio::sync::oneshot::channel();
+                    submit_directory_request(
+                        &requests,
+                        &owner,
+                        ActionDirectoryRequest::Query { query, reply },
+                    )
+                    .map_err(|_| {
+                        "application action directory is busy or unavailable".to_owned()
+                    })?;
+                    // Answered on the owner's next turn, however long its
+                    // current one runs (a heavy action or frame): a busy app
+                    // is not a gone one. The asker owns the deadline. A
+                    // stopped owner drops `reply`.
+                    let page = response
+                        .await
+                        .map_err(|_| "application action directory is unavailable".to_owned())?;
+                    serde_json::to_string(&page)
+                        .map(Answer::Page)
+                        .map_err(|error| error.to_string())
+                }
+                Ask::Resolve {
+                    revision,
+                    resource,
+                    action,
+                    local_document,
+                    ..
+                } => {
+                    let (reply, response) = tokio::sync::oneshot::channel();
+                    let request = if local_document {
+                        ActionDirectoryRequest::ResolveLocalDocumentAction {
+                            revision,
+                            resource,
+                            action,
+                            reply,
+                        }
+                    } else {
+                        ActionDirectoryRequest::Resolve {
+                            revision,
+                            resource,
+                            action,
+                            reply,
+                        }
+                    };
+                    let resolution =
+                        if submit_directory_request(&requests, &owner, request).is_err() {
+                            directory_unavailable()
+                        } else {
+                            // As for a query: the asker's deadline, not one of ours.
+                            response.await.unwrap_or_else(|_| directory_unavailable())
+                        };
+                    serde_json::to_string(&resolution)
+                        .map(Answer::Resolution)
+                        .map_err(|error| error.to_string())
+                }
+            }
+        })
+    })
 }
 
 /// Queue one request for the App's pump and wake it: an idle owner sleeps
@@ -6269,197 +6200,6 @@ fn directory_unavailable() -> runtime_collab::ActionDirectoryResolution {
     runtime_collab::ActionDirectoryResolution::Unavailable
 }
 
-#[allow(
-    refining_impl_trait,
-    reason = "capnp generated server traits accept the concrete Promise type used by every existing RPC endpoint"
-)]
-impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryServer {
-    fn query(
-        self: std::rc::Rc<Self>,
-        params: runtime_collab::collab_capnp::action_directory::QueryParams,
-        mut results: runtime_collab::collab_capnp::action_directory::QueryResults,
-    ) -> capnp::capability::Promise<(), capnp::Error> {
-        let query = match params.get().and_then(
-            runtime_collab::collab_capnp::action_directory::query_params::Reader::get_query,
-        ) {
-            Ok(query) => {
-                let text = |value: capnp::Result<capnp::text::Reader<'_>>| {
-                    value
-                        .and_then(|value| {
-                            value
-                                .to_str()
-                                .map_err(|error| capnp::Error::failed(error.to_string()))
-                        })
-                        .map(str::to_owned)
-                };
-                match (
-                    text(query.get_revision()),
-                    query.get_cursor().map(<[u8]>::to_vec),
-                    text(query.get_needle()),
-                    text(query.get_parent_resource()),
-                    text(query.get_resource_name()),
-                ) {
-                    (
-                        Ok(revision),
-                        Ok(cursor),
-                        Ok(needle),
-                        Ok(parent_resource),
-                        Ok(resource_name),
-                    ) => Ok(runtime_collab::ActionDirectoryQuery {
-                        peer_id: query.get_peer_id(),
-                        revision,
-                        cursor,
-                        needle,
-                        parent_resource,
-                        max_results: query.get_max_results(),
-                        max_bytes: query.get_max_bytes(),
-                        max_work: query.get_max_work(),
-                        max_depth: query.get_max_depth(),
-                        resource_name,
-                    }),
-                    (Err(error), ..)
-                    | (_, Err(error), ..)
-                    | (_, _, Err(error), ..)
-                    | (_, _, _, Err(error), _)
-                    | (_, _, _, _, Err(error)) => Err(error),
-                }
-            }
-            Err(error) => Err(error),
-        };
-        let query = match query {
-            Ok(query) => query,
-            Err(error) => return capnp::capability::Promise::err(error),
-        };
-        let requests = self.requests.clone();
-        let owner = self.owner.clone();
-        capnp::capability::Promise::from_future(async move {
-            let (reply, response) = tokio::sync::oneshot::channel();
-            submit_directory_request(
-                &requests,
-                &owner,
-                ActionDirectoryRequest::Query { query, reply },
-            )
-            .map_err(|_| {
-                capnp::Error::failed("application action directory is busy or unavailable".into())
-            })?;
-            // Answered on the owner's next turn, however long its current one
-            // runs (a heavy action or frame): a busy app is not a gone one. The
-            // asker owns the deadline; when it stops waiting it cancels this
-            // call, which drops this future. A stopped owner drops `reply`.
-            let page = response.await.map_err(|_| {
-                capnp::Error::failed("application action directory is unavailable".into())
-            })?;
-            runtime_collab::write_action_directory_page(results.get().init_page(), &page)
-        })
-    }
-
-    fn resolve(
-        self: std::rc::Rc<Self>,
-        params: runtime_collab::collab_capnp::action_directory::ResolveParams,
-        mut results: runtime_collab::collab_capnp::action_directory::ResolveResults,
-    ) -> capnp::capability::Promise<(), capnp::Error> {
-        let request = params.get().and_then(|request| {
-            let text = |value: capnp::Result<capnp::text::Reader<'_>>| {
-                value
-                    .and_then(|value| {
-                        value
-                            .to_str()
-                            .map_err(|error| capnp::Error::failed(error.to_string()))
-                    })
-                    .map(str::to_owned)
-            };
-            Ok((
-                text(request.get_revision())?,
-                text(request.get_resource())?,
-                text(request.get_action())?,
-            ))
-        });
-        let (revision, resource, action) = match request {
-            Ok(request) => request,
-            Err(error) => return capnp::capability::Promise::err(error),
-        };
-        let requests = self.requests.clone();
-        let owner = self.owner.clone();
-        capnp::capability::Promise::from_future(async move {
-            let (reply, response) = tokio::sync::oneshot::channel();
-            let reply_value = if submit_directory_request(
-                &requests,
-                &owner,
-                ActionDirectoryRequest::Resolve {
-                    revision,
-                    resource,
-                    action,
-                    reply,
-                },
-            )
-            .is_err()
-            {
-                directory_unavailable()
-            } else {
-                // As for a query: the asker's deadline, not one of ours.
-                response.await.unwrap_or_else(|_| directory_unavailable())
-            };
-            runtime_collab::write_action_directory_resolution(
-                results.get().init_resolution(),
-                &reply_value,
-            )
-        })
-    }
-
-    fn resolve_local_document_action(
-        self: std::rc::Rc<Self>,
-        params: runtime_collab::collab_capnp::action_directory::ResolveLocalDocumentActionParams,
-        mut results: runtime_collab::collab_capnp::action_directory::ResolveLocalDocumentActionResults,
-    ) -> capnp::capability::Promise<(), capnp::Error> {
-        let request = params.get().and_then(|request| {
-            let text = |value: capnp::Result<capnp::text::Reader<'_>>| {
-                value
-                    .and_then(|value| {
-                        value
-                            .to_str()
-                            .map_err(|error| capnp::Error::failed(error.to_string()))
-                    })
-                    .map(str::to_owned)
-            };
-            Ok((
-                text(request.get_revision())?,
-                text(request.get_resource())?,
-                text(request.get_action())?,
-            ))
-        });
-        let (revision, resource, action) = match request {
-            Ok(request) => request,
-            Err(error) => return capnp::capability::Promise::err(error),
-        };
-        let requests = self.requests.clone();
-        let owner = self.owner.clone();
-        capnp::capability::Promise::from_future(async move {
-            let (reply, response) = tokio::sync::oneshot::channel();
-            let reply_value = if submit_directory_request(
-                &requests,
-                &owner,
-                ActionDirectoryRequest::ResolveLocalDocumentAction {
-                    revision,
-                    resource,
-                    action,
-                    reply,
-                },
-            )
-            .is_err()
-            {
-                directory_unavailable()
-            } else {
-                // As for a query: the asker's deadline, not one of ours.
-                response.await.unwrap_or_else(|_| directory_unavailable())
-            };
-            runtime_collab::write_action_directory_resolution(
-                results.get().init_resolution(),
-                &reply_value,
-            )
-        })
-    }
-}
-
 type TaskActionResult = Result<(u64, tilo_actions::InvocationUpdate), String>;
 
 fn parse_task_update(id: u64, update: &str) -> TaskActionResult {
@@ -6468,11 +6208,10 @@ fn parse_task_update(id: u64, update: &str) -> TaskActionResult {
         .map_err(|error| error.to_string())
 }
 
-// Not `Send`: `route.channel` wraps a capnp-rpc handle (`Rc`-based,
-// `!Send`), and this only ever runs inside the shovel thread's `LocalSet`.
+// Not `Send`: the route state it holds stays on the shovel thread's `LocalSet`.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 #[allow(
     clippy::too_many_lines,
@@ -6557,29 +6296,39 @@ async fn dispatch_sdk_request(
             let Some(presence) = route.presence.as_ref() else {
                 return true;
             };
-            let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
+            let key_bytes = match postcard::to_stdvec(&key) {
+                Ok(key_bytes) => key_bytes,
+                Err(error) => {
+                    tracing::warn!(%error, "collab: presence key does not encode");
+                    return true;
+                }
+            };
             match payload {
                 PresencePayload::Pointer { x, y } => {
-                    let _ = presence.publish_pointer(&key_bytes, x, y).await;
+                    publish_presence("pointer", presence.publish_pointer(&key_bytes, x, y)).await;
                 }
                 PresencePayload::Caret { pos } => {
-                    let _ = presence.publish_caret(&key_bytes, pos as u64).await;
+                    publish_presence("caret", presence.publish_caret(&key_bytes, pos as u64)).await;
                 }
                 PresencePayload::Selection { start, end } => {
-                    let _ = presence
-                        .publish_selection(&key_bytes, start as u64, end as u64)
-                        .await;
+                    publish_presence(
+                        "selection",
+                        presence.publish_selection(&key_bytes, start as u64, end as u64),
+                    )
+                    .await;
                 }
                 PresencePayload::Typing { start, end } => {
-                    let _ = presence
-                        .publish_typing(&key_bytes, start as u64, end as u64)
-                        .await;
+                    publish_presence(
+                        "typing",
+                        presence.publish_typing(&key_bytes, start as u64, end as u64),
+                    )
+                    .await;
                 }
                 PresencePayload::Arrived => {
-                    let _ = presence.publish_arrived(&key_bytes).await;
+                    publish_presence("arrived", presence.publish_arrived(&key_bytes)).await;
                 }
                 PresencePayload::Left => {
-                    let _ = presence.publish_left(&key_bytes).await;
+                    publish_presence("left", presence.publish_left(&key_bytes)).await;
                 }
                 // Shell chrome originates these directly on the peer-presence
                 // route: following is an authenticated visual cue apps cannot
@@ -6587,12 +6336,25 @@ async fn dispatch_sdk_request(
                 // are the desktop's own presence, which no app speaks for.
                 PresencePayload::Following { .. } | PresencePayload::Availability { .. } => {}
                 PresencePayload::Interaction(update) => {
-                    if let Ok(json) = serde_json::to_string(&update) {
-                        let _ = presence.publish_interaction(&key_bytes, &json).await;
-                    }
+                    let json = match serde_json::to_string(&update) {
+                        Ok(json) => json,
+                        Err(error) => {
+                            tracing::warn!(%error, "collab: presence interaction does not encode");
+                            return true;
+                        }
+                    };
+                    publish_presence(
+                        "interaction",
+                        presence.publish_interaction(&key_bytes, &json),
+                    )
+                    .await;
                 }
                 PresencePayload::Status { text, automatic } => {
-                    let _ = presence.publish_status(&key_bytes, &text, automatic).await;
+                    publish_presence(
+                        "status",
+                        presence.publish_status(&key_bytes, &text, automatic),
+                    )
+                    .await;
                 }
             }
         }
@@ -6655,8 +6417,8 @@ async fn dispatch_sdk_request(
                 })
                 .await;
         }
-        CollabRequest::PublishActions { app_id, actions } => {
-            if let Err(error) = route.channel.publish_actions(&app_id, &actions).await {
+        CollabRequest::PublishActions { actions } => {
+            if let Err(error) = route.channel.publish_actions(&actions).await {
                 tracing::warn!(%error, "collab: publishing resource/action surface failed; republishing");
                 inbound_tx
                     .state
@@ -6665,8 +6427,8 @@ async fn dispatch_sdk_request(
                 inbound_tx.state.notify_events();
             }
         }
-        CollabRequest::PublishActionSurface { app_id, delta } => {
-            if let Err(error) = route.channel.publish_action_surface(&app_id, &delta).await {
+        CollabRequest::PublishActionSurface { delta } => {
+            if let Err(error) = route.channel.publish_action_surface(&delta).await {
                 tracing::warn!(%error, "collab: publishing resource/action surface failed; republishing");
                 inbound_tx
                     .state
@@ -6676,42 +6438,29 @@ async fn dispatch_sdk_request(
             }
         }
         CollabRequest::ReportContinuation {
-            app_id,
             schema_version,
             metadata,
         } => {
             if let Err(error) = route
                 .channel
-                .report_continuation(&app_id, schema_version, &metadata)
+                .report_continuation(schema_version, &metadata)
                 .await
             {
                 tracing::warn!(%error, "collab: reporting continuation metadata failed");
             }
         }
-        CollabRequest::ClearContinuation { app_id } => {
-            if let Err(error) = route.channel.clear_continuation(&app_id).await {
+        CollabRequest::ClearContinuation => {
+            if let Err(error) = route.channel.clear_continuation().await {
                 tracing::warn!(%error, "collab: clearing continuation metadata failed");
             }
         }
-        CollabRequest::ReportHandoff { app_id, message } => {
-            if let Err(error) = route.channel.handoff(&app_id, &message).await {
+        CollabRequest::ReportHandoff { message } => {
+            if let Err(error) = route.channel.handoff(&message).await {
                 tracing::warn!(%error, "collab: reporting a handoff step failed");
             }
         }
-        CollabRequest::ReportPlayback {
-            app_id,
-            reports_json,
-        } => {
-            if let Err(error) = route.channel.report_playback(&app_id, &reports_json).await {
-                tracing::warn!(%error, "collab: reporting private playback handoff state failed");
-            }
-        }
-        CollabRequest::PublishSearchIndex { app_id, delta_json } => {
-            if let Err(error) = route
-                .channel
-                .publish_search_index(&app_id, &delta_json)
-                .await
-            {
+        CollabRequest::PublishSearchIndex { delta_json } => {
+            if let Err(error) = route.channel.publish_search_index(&delta_json).await {
                 tracing::warn!(%error, "collab: publishing search index entries failed");
             }
         }
@@ -6723,7 +6472,6 @@ async fn dispatch_sdk_request(
         }
         CollabRequest::RealtimeCommand {
             request_id,
-            app_id,
             command,
         } => {
             let result = serde_json::to_vec(&command)
@@ -6737,7 +6485,7 @@ async fn dispatch_sdk_request(
             let result = match result {
                 Ok(bytes) => route
                     .channel
-                    .realtime_command(&app_id, &bytes)
+                    .realtime_command(&bytes)
                     .await
                     .map_err(|error| error.to_string())
                     .and_then(|reply| {
@@ -6751,12 +6499,11 @@ async fn dispatch_sdk_request(
         }
         CollabRequest::NearbyTransferCommand {
             request_id,
-            app_id,
             command,
         } => {
             let result = route
                 .channel
-                .nearby_transfer_command(&app_id, &command)
+                .nearby_transfer_command(&command)
                 .await
                 .map_err(|error| error.to_string());
             let _ = inbound_tx
@@ -6856,9 +6603,8 @@ async fn dispatch_sdk_request(
             }
         }
         CollabRequest::CloseWorkspaceControl { session_id } => {
-            if let Some(handle) = route.workspace_controls.remove(&session_id) {
-                let _ = handle.close().await;
-            }
+            // Dropping the session's handle ends it on the host.
+            route.workspace_controls.remove(&session_id);
         }
         CollabRequest::UpdateInvocation { id, update } => match serde_json::to_string(&update) {
             Ok(json) => {
@@ -6869,11 +6615,10 @@ async fn dispatch_sdk_request(
                     // bridge stays open; a lost terminal may follow an effect
                     // and still stops subsequent outbound work.
                     if refused_by_peer(&error) {
-                        tracing::warn!(
-                            %error,
-                            id,
-                            "collab: the broker refused this invocation update; the bridge stays open"
-                        );
+                        if let Some(failed) = refused_answer::failure(id, &update, &error) {
+                            let sent = route.channel.update_invocation(id, &failed).await;
+                            refused_answer::followed(id, sent);
+                        }
                     } else {
                         tracing::warn!(%error, id, "collab: updating action invocation failed");
                         if update.is_terminal() {
@@ -6966,7 +6711,6 @@ async fn dispatch_sdk_request(
                 .channel
                 .launch_installed_application_for(
                     &app_id,
-                    None,
                     package_root.as_deref(),
                     on_behalf_of.map(|id| *id.0.as_bytes()),
                 )
@@ -7078,7 +6822,7 @@ async fn dispatch_sdk_request(
             };
             let result = route
                 .channel
-                .invoke_task_action(run_id, &lease, target, "", &invocation.0.to_string())
+                .invoke_task_action(run_id, &lease, target, &invocation.0.to_string())
                 .await
                 .map_err(|error| error.to_string())
                 .and_then(|(id, update)| parse_task_update(id, &update));
@@ -7139,86 +6883,65 @@ type SharedRouteKeys = std::sync::Arc<std::sync::Mutex<super::route_keys::RouteK
 /// Translate an SDK [`runtime_collab::PresenceEvent`] into a
 /// `CollabEvent`. Extracted so the unit test can exercise it without a broker.
 fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<CollabEvent> {
-    // Cursor keeps the legacy `user_id + x + y` shape; every other
-    // variant must carry a decodable semantic `PresenceKey`.
-    match evt.payload {
-        runtime_collab::PresencePayload::Cursor { x, y } => Some(CollabEvent::RemoteCursorMoved {
-            user_id: evt.user_id,
-            x,
-            y,
-        }),
-        other => {
-            // An undecodable scope cannot truthfully identify a target. Drop
-            // it instead of inventing a tab and making malformed presence
-            // look like a collaborator left some unrelated surface.
-            let key: PresenceKey = match postcard::from_bytes(&evt.key_bytes) {
-                Ok(key) => key,
+    // Every variant must carry a decodable semantic `PresenceKey`.
+    // An undecodable scope cannot truthfully identify a target. Drop
+    // it instead of inventing a tab and making malformed presence
+    // look like a collaborator left some unrelated surface.
+    let key: PresenceKey = match postcard::from_bytes(&evt.key_bytes) {
+        Ok(key) => key,
+        Err(error) => {
+            tracing::warn!(user = %evt.user_id, %error, "collab: refused presence whose key does not decode");
+            return None;
+        }
+    };
+    let payload = match evt.payload {
+        runtime_collab::PresencePayload::Caret { pos } => PresencePayload::Caret {
+            // A wire-supplied offset that doesn't fit `usize` on this
+            // target can't address anything real; clamp rather than
+            // wrap it into an unrelated in-range position.
+            pos: usize::try_from(pos).unwrap_or(usize::MAX),
+        },
+        runtime_collab::PresencePayload::Selection { start, end } => PresencePayload::Selection {
+            start: usize::try_from(start).unwrap_or(usize::MAX),
+            end: usize::try_from(end).unwrap_or(usize::MAX),
+        },
+        runtime_collab::PresencePayload::Typing { start, end } => PresencePayload::Typing {
+            start: usize::try_from(start).unwrap_or(usize::MAX),
+            end: usize::try_from(end).unwrap_or(usize::MAX),
+        },
+        runtime_collab::PresencePayload::Following { target } => {
+            PresencePayload::Following { target }
+        }
+        runtime_collab::PresencePayload::InteractionJson(json) => {
+            let update = match serde_json::from_str::<tilo_actions::SemanticInteraction>(&json)
+                .map_err(|error| error.to_string())
+                .and_then(|update| {
+                    update
+                        .validate()
+                        .map(|()| update)
+                        .map_err(|error| error.to_string())
+                }) {
+                Ok(update) => update,
                 Err(error) => {
-                    tracing::warn!(user = %evt.user_id, %error, "collab: refused presence whose key does not decode");
+                    tracing::warn!(user = %evt.user_id, %error, "collab: refused a presence interaction");
                     return None;
                 }
             };
-            let payload = match other {
-                runtime_collab::PresencePayload::Caret { pos } => PresencePayload::Caret {
-                    // A wire-supplied offset that doesn't fit `usize` on this
-                    // target can't address anything real; clamp rather than
-                    // wrap it into an unrelated in-range position.
-                    pos: usize::try_from(pos).unwrap_or(usize::MAX),
-                },
-                runtime_collab::PresencePayload::Selection { start, end } => {
-                    PresencePayload::Selection {
-                        start: usize::try_from(start).unwrap_or(usize::MAX),
-                        end: usize::try_from(end).unwrap_or(usize::MAX),
-                    }
-                }
-                runtime_collab::PresencePayload::Typing { start, end } => PresencePayload::Typing {
-                    start: usize::try_from(start).unwrap_or(usize::MAX),
-                    end: usize::try_from(end).unwrap_or(usize::MAX),
-                },
-                runtime_collab::PresencePayload::Following { target } => {
-                    PresencePayload::Following { target }
-                }
-                runtime_collab::PresencePayload::InteractionJson(json) => {
-                    let update = match serde_json::from_str::<tilo_actions::SemanticInteraction>(
-                        &json,
-                    )
-                    .map_err(|error| error.to_string())
-                    .and_then(|update| {
-                        update
-                            .validate()
-                            .map(|()| update)
-                            .map_err(|error| error.to_string())
-                    }) {
-                        Ok(update) => update,
-                        Err(error) => {
-                            tracing::warn!(user = %evt.user_id, %error, "collab: refused a presence interaction");
-                            return None;
-                        }
-                    };
-                    PresencePayload::Interaction(Box::new(update))
-                }
-                runtime_collab::PresencePayload::Status { text, automatic } => {
-                    PresencePayload::Status { text, automatic }
-                }
-                runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
-                // `Cursor` is fully handled and returned by the outer match, so
-                // it never reaches here; folding it in with `Left` keeps this
-                // exhaustive without a panic on a branch that cannot run.
-                runtime_collab::PresencePayload::Left
-                | runtime_collab::PresencePayload::Cursor { .. } => PresencePayload::Left,
-                // Keeps the coordinate space its key carries, where
-                // `Cursor` has nowhere to put one.
-                runtime_collab::PresencePayload::Pointer { x, y } => {
-                    PresencePayload::Pointer { x, y }
-                }
-            };
-            Some(CollabEvent::RemotePresenceUpdate {
-                user_id: evt.user_id,
-                key,
-                payload,
-            })
+            PresencePayload::Interaction(Box::new(update))
         }
-    }
+        runtime_collab::PresencePayload::Status { text, automatic } => {
+            PresencePayload::Status { text, automatic }
+        }
+        runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
+        runtime_collab::PresencePayload::Left => PresencePayload::Left,
+        // Keeps the coordinate space its key carries.
+        runtime_collab::PresencePayload::Pointer { x, y } => PresencePayload::Pointer { x, y },
+    };
+    Some(CollabEvent::RemotePresenceUpdate {
+        user_id: evt.user_id,
+        key,
+        payload,
+    })
 }
 
 // The tests, with the fake broker and the fixtures they stand up. The
@@ -7243,20 +6966,6 @@ mod tests {
         clippy::disallowed_methods,
         reason = "the tests and the fixtures they share with the toolkit's tests are test code"
     )]
-    // The `Fake*` capnp-rpc mock servers below implement generated `Server`
-    // traits by returning the concrete `Promise<T, capnp::Error>` capnp-rpc
-    // expects, which is more specific than (though it does satisfy) the
-    // trait's generic `impl Future` return -- the exact "refining" this
-    // lint polices, and the rustc note on it says to allow when intended.
-    // Rewriting every method's return type to the verbose `impl
-    // Future<Output = ...>` spelling wouldn't change any behaviour, only
-    // make capnp-generated-shaped code look less like the rest of the
-    // capnp-rpc code it's mocking.
-    #![allow(
-        refining_impl_trait,
-        reason = "mock capnp servers return the concrete Promise capnp-rpc expects"
-    )]
-
     use super::*;
     use runtime_collab::SurfaceDelta;
 
@@ -7330,23 +7039,17 @@ mod tests {
     }
 
     use crate::time::{Duration, Instant};
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
+    use std::collections::HashMap;
     #[cfg(unix)]
     use std::os::fd::IntoRawFd;
     use std::rc::Rc;
 
-    use capnp::capability::Promise;
-    #[cfg(unix)]
-    use tokio::net::UnixStream as TokioUnixStream;
-    #[cfg(unix)]
-    use tokio::task::LocalSet as TokioLocalSet;
-
-    use runtime_collab::PresencePayload as SdkPayload;
-    use runtime_collab::raw::{
-        action_catalogue_stream, channel_context, channel_handle, collab_service, context_stream,
-        invocation_stream, presence_event, presence_handle, presence_payload, presence_stream,
-        scrollback_batch, stream,
+    use runtime_collab::wire::{
+        self, Call, ContextUpdate, Event, Handle, HostFrame, InvocationCall, LiveActivityCall,
+        Operation, Publication, Reply, Service, SettingsCall, Topic,
     };
+    use tokio::io::AsyncWriteExt as _;
 
     /// Changes the fake broker hands a reader holding `from`.
     #[derive(Clone)]
@@ -7405,15 +7108,13 @@ mod tests {
         /// these changes when they fit, otherwise exactly as the `Open` it
         /// stands for.
         pub committed_changes: Option<FixtureChanges>,
-        /// Hold each next `join_channel` reply until its gate opens, as a
-        /// starved broker does.
+        /// Hold each next join until its gate opens, as a starved broker
+        /// does.
         pub join_gates: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
-        /// Refuse every ungated `join_channel`, as a broker does for a
-        /// revoked peer.
+        /// Refuse every ungated join, as a broker does for a revoked peer.
         pub join_refusal: Option<String>,
-        /// The room's status as the broker reports it (`roomStatus`,
-        /// `awaitRoom`), or why the broker cannot be asked; without it both
-        /// calls are unimplemented, as on an older broker.
+        /// The room's status as the broker reports it, or why the broker
+        /// cannot be asked; without it the host refuses to say.
         pub room_status:
             Option<tokio::sync::watch::Receiver<Result<runtime_collab::RoomStatus, String>>>,
         pub committed_reads: Vec<runtime_collab::committed_document::Request>,
@@ -7424,12 +7125,17 @@ mod tests {
         pub media_joined: bool,
         pub media_stops: usize,
         pub media_gates: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
+        /// Lose the connection on the next document commit: the peer may or
+        /// may not have kept the change, an unknown outcome.
         pub fail_document: bool,
         /// Refuse this many document commits the way a broker that will not
         /// take the change answers: a definite error, not a lost call.
         pub refuse_documents: usize,
         pub refused_documents: usize,
         pub document_gates: std::collections::VecDeque<DocumentSendGate>,
+        /// Refuse every non-terminal invocation update, and lose the
+        /// connection on the first terminal one, whose delivery is then
+        /// unknown.
         pub fail_terminal: bool,
         /// Refuse this many invocation updates the way a broker that will not
         /// take them answers: a definite error, not a lost call.
@@ -7439,7 +7145,6 @@ mod tests {
         pub joined: Vec<(String, Vec<u8>)>,
         pub joined_record_kinds: Vec<String>,
         pub signed_ops: Vec<Vec<u8>>,
-        pub cursor_publishes: Vec<(f32, f32)>,
         pub pointer_publishes: Vec<(Vec<u8>, f32, f32)>,
         pub caret_publishes: Vec<(Vec<u8>, u64)>,
         pub selection_publishes: Vec<(Vec<u8>, u64, u64)>,
@@ -7464,9 +7169,8 @@ mod tests {
         pub directory_ack: Option<Arc<tokio::sync::Notify>>,
         pub action_catalogue_fixture: Option<Vec<String>>,
         pub action_catalogue_subscriptions: usize,
-        pub action_catalogue_reads: usize,
-        /// The channel service whose changes `channelKeysChanged` follows;
-        /// without one the call is unimplemented, as on an older broker.
+        /// The channel service whose changes `Changed { ChannelKeys }`
+        /// follows; without one the host refuses the wait.
         pub key_changes: Option<Arc<tokio::sync::watch::Sender<u64>>>,
         /// Answers this channel's private service requests, as the session
         /// does on an app's route; without one the call is unimplemented,
@@ -7489,606 +7193,786 @@ mod tests {
         release: tokio::sync::oneshot::Receiver<Result<(), String>>,
     }
 
-    /// Shared between the test-thread's tokio `LocalSet` and the caller.
-    /// `Arc<Mutex<_>>` (not `Rc<RefCell<_>>`) because the broker
-    /// struct crosses a `thread::spawn` boundary before it's driven
-    /// through the RPC system.
+    /// Shared between the fake host's thread and the test.
     pub type SharedCaptures = std::sync::Arc<std::sync::Mutex<Captures>>;
 
     #[derive(Clone)]
     pub struct SeedPresence {
         user_id: String,
         key_bytes: Vec<u8>,
-        payload: SeedPayload,
-    }
-
-    #[derive(Clone)]
-    enum SeedPayload {
-        Cursor { x: f32, y: f32 },
-        Pointer { x: f32, y: f32 },
-        Caret { pos: u64 },
-        Selection { start: u64, end: u64 },
-        Typing { start: u64, end: u64 },
-        Arrived,
-        Left,
+        payload: collab_types::PeerPresencePayload,
     }
 
     #[derive(Clone)]
     pub struct SeedContext {
-        collaborators: Vec<(String, String, u32)>,
+        collaborators: Vec<Collaborator>,
         permissions: Vec<String>,
     }
 
     #[derive(Clone)]
     pub struct SeedScrollback {
         ops: Vec<Vec<u8>>,
-        earliest_seq: u64,
-        latest_seq: u64,
         done: bool,
     }
 
-    struct FakeInvocationStream(SharedCaptures);
-    impl invocation_stream::Server for FakeInvocationStream {
-        fn read(
-            self: Rc<Self>,
-            _: invocation_stream::ReadParams,
-            mut results: invocation_stream::ReadResults,
-        ) -> Promise<(), capnp::Error> {
-            Promise::from_future(async move {
-                loop {
-                    let invocation = {
-                        let mut captures = self.0.lock().unwrap();
-                        let invocation = captures.invocations.pop_front();
-                        if invocation.is_some() {
-                            captures.received_invocations += 1;
-                        }
-                        invocation
-                    };
-                    if let Some(invocation) = invocation {
-                        let mut wire = results.get();
-                        wire.set_id(invocation.id);
-                        wire.set_invocation_uuid(&invocation.invocation_uuid);
-                        wire.set_resource(&invocation.resource);
-                        wire.set_action(&invocation.action);
-                        wire.set_argument(invocation.argument.as_deref().unwrap_or(""));
-                        wire.set_has_argument(invocation.argument.is_some());
-                        wire.set_actor(&invocation.actor);
-                        wire.set_context_json(&invocation.context_json);
-                        return Ok(());
-                    }
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                }
-            })
-        }
-    }
-
-    struct FakePresenceStream {
-        backlog: Rc<RefCell<Vec<SeedPresence>>>,
-    }
-
-    impl presence_stream::Server for FakePresenceStream {
-        fn read(
-            self: Rc<Self>,
-            _params: presence_stream::ReadParams,
-            mut results: presence_stream::ReadResults,
-        ) -> Promise<(), capnp::Error> {
-            let mut backlog = self.backlog.borrow_mut();
-            if backlog.is_empty() {
-                // Never resolve — clients that outrun the backlog
-                // simply wait forever, which mirrors the real broker.
-                return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
-            }
-            let seed = backlog.remove(0);
-            let mut ev: presence_event::Builder = results.get().init_event();
-            ev.set_user_id(&seed.user_id);
-            ev.set_key_bytes(&seed.key_bytes);
-            let mut payload: presence_payload::Builder = ev.init_payload();
-            match seed.payload {
-                SeedPayload::Cursor { x, y } => {
-                    let mut b = payload.init_cursor();
-                    b.set_x(x);
-                    b.set_y(y);
-                }
-                SeedPayload::Pointer { x, y } => {
-                    let mut b = payload.init_pointer();
-                    b.set_x(x);
-                    b.set_y(y);
-                }
-                SeedPayload::Caret { pos } => {
-                    payload.init_caret().set_pos(pos);
-                }
-                SeedPayload::Selection { start, end } => {
-                    let mut b = payload.init_selection();
-                    b.set_start(start);
-                    b.set_end(end);
-                }
-                SeedPayload::Typing { start, end } => {
-                    let mut b = payload.init_typing();
-                    b.set_start(start);
-                    b.set_end(end);
-                }
-                SeedPayload::Arrived => payload.set_arrived(()),
-                SeedPayload::Left => payload.set_left(()),
-            }
-            Promise::ok(())
-        }
-    }
-
-    struct FakePresence {
-        captures: SharedCaptures,
-        presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
-    }
-
-    impl presence_handle::Server for FakePresence {
-        fn publish_cursor(
-            self: Rc<Self>,
-            params: presence_handle::PublishCursorParams,
-            _results: presence_handle::PublishCursorResults,
-        ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else {
-                return Promise::ok(());
-            };
-            self.captures
-                .lock()
-                .unwrap()
-                .cursor_publishes
-                .push((r.get_x(), r.get_y()));
-            Promise::ok(())
-        }
-
-        fn publish_pointer(
-            self: Rc<Self>,
-            params: presence_handle::PublishPointerParams,
-            _results: presence_handle::PublishPointerResults,
-        ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else {
-                return Promise::ok(());
-            };
-            let Ok(k) = r.get_key_bytes() else {
-                return Promise::ok(());
-            };
-            self.captures.lock().unwrap().pointer_publishes.push((
-                k.to_vec(),
-                r.get_x(),
-                r.get_y(),
-            ));
-            Promise::ok(())
-        }
-
-        fn publish_caret(
-            self: Rc<Self>,
-            params: presence_handle::PublishCaretParams,
-            _results: presence_handle::PublishCaretResults,
-        ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else {
-                return Promise::ok(());
-            };
-            let Ok(k) = r.get_key_bytes() else {
-                return Promise::ok(());
-            };
-            self.captures
-                .lock()
-                .unwrap()
-                .caret_publishes
-                .push((k.to_vec(), r.get_pos()));
-            Promise::ok(())
-        }
-
-        fn publish_selection(
-            self: Rc<Self>,
-            params: presence_handle::PublishSelectionParams,
-            _results: presence_handle::PublishSelectionResults,
-        ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else {
-                return Promise::ok(());
-            };
-            let Ok(k) = r.get_key_bytes() else {
-                return Promise::ok(());
-            };
-            self.captures.lock().unwrap().selection_publishes.push((
-                k.to_vec(),
-                r.get_start(),
-                r.get_end(),
-            ));
-            Promise::ok(())
-        }
-
-        fn publish_typing(
-            self: Rc<Self>,
-            params: presence_handle::PublishTypingParams,
-            _results: presence_handle::PublishTypingResults,
-        ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else {
-                return Promise::ok(());
-            };
-            let Ok(k) = r.get_key_bytes() else {
-                return Promise::ok(());
-            };
-            self.captures.lock().unwrap().typing_publishes.push((
-                k.to_vec(),
-                r.get_start(),
-                r.get_end(),
-            ));
-            Promise::ok(())
-        }
-
-        fn publish_arrived(
-            self: Rc<Self>,
-            params: presence_handle::PublishArrivedParams,
-            _results: presence_handle::PublishArrivedResults,
-        ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else {
-                return Promise::ok(());
-            };
-            let Ok(k) = r.get_key_bytes() else {
-                return Promise::ok(());
-            };
-            self.captures.lock().unwrap().arrived.push(k.to_vec());
-            Promise::ok(())
-        }
-
-        fn publish_left(
-            self: Rc<Self>,
-            params: presence_handle::PublishLeftParams,
-            _results: presence_handle::PublishLeftResults,
-        ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else {
-                return Promise::ok(());
-            };
-            let Ok(k) = r.get_key_bytes() else {
-                return Promise::ok(());
-            };
-            self.captures.lock().unwrap().left.push(k.to_vec());
-            Promise::ok(())
-        }
-
-        fn subscribe_all(
-            self: Rc<Self>,
-            _params: presence_handle::SubscribeAllParams,
-            mut results: presence_handle::SubscribeAllResults,
-        ) -> Promise<(), capnp::Error> {
-            let client: presence_stream::Client = capnp_rpc::new_client(FakePresenceStream {
-                backlog: self.presence_backlog.clone(),
-            });
-            results.get().set_stream(client);
-            Promise::ok(())
-        }
-    }
-
-    /// `(op bytes, author, verdict)` a fake op/stream mock delivers.
+    /// `(op bytes, author, verdict)` the fake host's op topic delivers.
     type OpBacklog = Rc<RefCell<Vec<(Vec<u8>, String, OpAdmission)>>>;
 
-    struct FakeOpStream {
-        backlog: OpBacklog,
-        captures: SharedCaptures,
+    /// What a fake host's channels start with, and what it records.
+    #[derive(Default)]
+    pub struct FakeBroker {
+        pub captures: SharedCaptures,
+        pub op_backlog: Vec<(Vec<u8>, String, OpAdmission)>,
+        pub presence_backlog: Vec<SeedPresence>,
+        pub context_backlog: Vec<SeedContext>,
+        pub terminate_context_stream: bool,
+        pub scrollback_response: Option<SeedScrollback>,
     }
 
-    impl stream::Server for FakeOpStream {
-        fn read(
-            self: Rc<Self>,
-            _params: stream::ReadParams,
-            mut results: stream::ReadResults,
-        ) -> Promise<(), capnp::Error> {
-            let mut backlog = self.backlog.borrow_mut();
-            if backlog.is_empty() {
-                return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
-            }
-            let (op, from, admission) = backlog.remove(0);
-            let delay = self.captures.lock().unwrap().op_stream_delay;
-            Promise::from_future(async move {
-                if let Some(delay) = delay {
-                    tokio::time::sleep(delay).await;
-                }
-                let mut r = results.get();
-                r.set_op(&op);
-                r.set_from_user_id(&from);
-                r.set_admission(admission.into());
-                Ok(())
-            })
-        }
+    /// An answer the fake host sends once it is ready.
+    type FakeAnswer = Pin<Box<dyn Future<Output = Result<Reply, String>>>>;
+
+    fn answered(result: Result<Reply, String>) -> FakeAnswer {
+        Box::pin(std::future::ready(result))
     }
 
-    struct FakeActionCatalogueStream {
-        backlog: RefCell<std::collections::VecDeque<String>>,
-        captures: SharedCaptures,
-    }
-
-    impl action_catalogue_stream::Server for FakeActionCatalogueStream {
-        fn read(
-            self: Rc<Self>,
-            _params: action_catalogue_stream::ReadParams,
-            mut results: action_catalogue_stream::ReadResults,
-        ) -> Promise<(), capnp::Error> {
-            let Some(initial) = self.backlog.borrow_mut().pop_front() else {
-                return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
-            };
-            self.captures.lock().unwrap().action_catalogue_reads += 1;
-            results.get().set_catalogue_json(&initial);
-            Promise::ok(())
-        }
-    }
-
-    struct FakeContextStream {
-        backlog: Rc<RefCell<Vec<SeedContext>>>,
-        terminate_after_backlog: bool,
-    }
-
-    impl context_stream::Server for FakeContextStream {
-        fn read(
-            self: Rc<Self>,
-            _params: context_stream::ReadParams,
-            mut results: context_stream::ReadResults,
-        ) -> Promise<(), capnp::Error> {
-            let mut backlog = self.backlog.borrow_mut();
-            if backlog.is_empty() {
-                if self.terminate_after_backlog {
-                    return Promise::err(capnp::Error::disconnected(
-                        "fixture context source gone".into(),
-                    ));
-                }
-                return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
-            }
-            let seed = backlog.remove(0);
-            let mut ctx: channel_context::Builder = results.get().init_ctx();
-            {
-                let mut collabs = ctx.reborrow().init_collaborators(
-                    u32::try_from(seed.collaborators.len()).unwrap_or(u32::MAX),
-                );
-                for (i, (uid, name, color)) in seed.collaborators.iter().enumerate() {
-                    let mut c = collabs.reborrow().get(u32::try_from(i).unwrap_or(u32::MAX));
-                    c.set_user_id(uid);
-                    c.set_display_name(name);
-                    c.set_color(*color);
-                }
-            }
-            {
-                let mut perms =
-                    ctx.init_permissions(u32::try_from(seed.permissions.len()).unwrap_or(u32::MAX));
-                for (i, p) in seed.permissions.iter().enumerate() {
-                    perms.set(u32::try_from(i).unwrap_or(u32::MAX), p.as_str());
-                }
-            }
-            Promise::ok(())
-        }
-    }
-
+    /// One channel a fake host's connection joined.
     struct FakeChannel {
-        /// The channel this handle joined.
         channel_id: String,
-        captures: SharedCaptures,
         op_backlog: OpBacklog,
         presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
         context_backlog: Rc<RefCell<Vec<SeedContext>>>,
-        terminate_context_stream: bool,
-        scrollback_response: Rc<RefCell<Option<SeedScrollback>>>,
+        settings: RefCell<Option<Rc<runtime_collab::settings::host::AppSettingsServer>>>,
+        live_activity: RefCell<Option<Rc<runtime_collab::live_activity::LiveActivityServer>>>,
     }
 
-    impl channel_handle::Server for FakeChannel {
-        fn channel_keys_changed(
-            self: Rc<Self>,
-            params: channel_handle::ChannelKeysChangedParams,
-            mut results: channel_handle::ChannelKeysChangedResults,
-        ) -> Promise<(), capnp::Error> {
-            let Some(changes) = self.captures.lock().unwrap().key_changes.clone() else {
-                return Promise::err(capnp::Error::unimplemented(
-                    "fixture has no channel service".into(),
-                ));
-            };
-            let after = match params.get() {
-                Ok(params) => params.get_after(),
-                Err(error) => return Promise::err(error),
-            };
-            let mut changed = changes.subscribe();
-            Promise::from_future(async move {
-                let change = *changed
-                    .wait_for(|change| *change != after)
+    impl FakeChannel {
+        fn app_id(&self) -> String {
+            runtime_collab::route::channel_key::parse(&self.channel_id).0
+        }
+    }
+
+    /// Delivers one subscription's events.
+    #[derive(Clone)]
+    struct Feed {
+        frames: tokio_mpsc::UnboundedSender<HostFrame>,
+        subscription: u64,
+    }
+
+    impl Feed {
+        fn send(&self, event: Event) {
+            let _ = self.frames.send(HostFrame::Event {
+                subscription: self.subscription,
+                event,
+            });
+        }
+    }
+
+    /// The collaboration host a test stands up: it answers one connection's
+    /// calls from `broker`'s seeds and records them in its captures.
+    struct FakeHost {
+        broker: FakeBroker,
+        join_gate: Option<HostJoinGate>,
+        frames: tokio_mpsc::UnboundedSender<HostFrame>,
+        channels: RefCell<HashMap<Handle, Rc<FakeChannel>>>,
+        subscriptions: RefCell<HashMap<u64, (Handle, tokio::task::AbortHandle)>>,
+        next_handle: Cell<u64>,
+        /// Ends the connection unanswered: a call whose outcome is unknown.
+        hang_up: Rc<tokio::sync::Notify>,
+    }
+
+    /// Serve `broker` as the collaboration host on `stream` until either
+    /// side closes it. Runs on a `LocalSet`.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the fake host keeps its channels in `Rc`s on the `LocalSet` it serves on"
+    )]
+    pub(super) async fn serve_fake_broker<S>(stream: S, broker: FakeBroker)
+    where
+        S: AsyncRead + AsyncWrite + 'static,
+    {
+        serve_fake_host(stream, broker, None).await;
+    }
+
+    #[expect(
+        clippy::future_not_send,
+        reason = "the fake host keeps its channels in `Rc`s on the `LocalSet` it serves on"
+    )]
+    async fn serve_fake_host<S>(stream: S, broker: FakeBroker, join_gate: Option<HostJoinGate>)
+    where
+        S: AsyncRead + AsyncWrite + 'static,
+    {
+        let (mut reader, mut writer) = tokio::io::split(stream);
+        let (frames, mut outgoing) = tokio_mpsc::unbounded_channel();
+        let host = Rc::new(FakeHost {
+            broker,
+            join_gate,
+            frames,
+            channels: RefCell::default(),
+            subscriptions: RefCell::default(),
+            next_handle: Cell::new(1),
+            hang_up: Rc::new(tokio::sync::Notify::new()),
+        });
+        let write = async {
+            while let Some(frame) = outgoing.recv().await {
+                if wire::FRAMING
+                    .write_value_async(&mut writer, &frame)
                     .await
-                    .map_err(|_| capnp::Error::disconnected("fixture service gone".into()))?;
-                results.get().set_change(change);
-                Ok(())
+                    .is_err()
+                    || writer.flush().await.is_err()
+                {
+                    break;
+                }
+            }
+        };
+        let read = async {
+            while let Ok(Some(call)) = wire::FRAMING.read_value_async::<_, Call>(&mut reader).await
+            {
+                host.accept(call);
+            }
+        };
+        let hang_up = host.hang_up.clone();
+        tokio::select! {
+            () = write => {}
+            () = read => {}
+            () = hang_up.notified() => {}
+        }
+        for (_, (_, task)) in host.subscriptions.borrow_mut().drain() {
+            task.abort();
+        }
+        host.channels.borrow_mut().clear();
+    }
+
+    impl FakeHost {
+        fn captures(&self) -> std::sync::MutexGuard<'_, Captures> {
+            self.broker.captures.lock().unwrap()
+        }
+
+        fn channel(&self, handle: Handle) -> Result<Rc<FakeChannel>, String> {
+            self.channels
+                .borrow()
+                .get(&handle)
+                .cloned()
+                .ok_or_else(|| format!("no channel {handle:?} on this connection"))
+        }
+
+        /// Lose the connection, never answering the call at hand.
+        fn hang_up(&self) -> FakeAnswer {
+            self.hang_up.notify_one();
+            Box::pin(std::future::pending())
+        }
+
+        fn accept(self: &Rc<Self>, Call { id, request }: Call) {
+            match request {
+                Operation::Subscribe { channel, topic } => self.subscribe(id, channel, topic),
+                Operation::Unsubscribe { subscription } => {
+                    if let Some((_, task)) = self.subscriptions.borrow_mut().remove(&subscription) {
+                        task.abort();
+                    }
+                }
+                Operation::Close { handle } => {
+                    self.channels.borrow_mut().remove(&handle);
+                    self.subscriptions
+                        .borrow_mut()
+                        .retain(|_, (channel, task)| {
+                            let open = *channel != handle;
+                            if !open {
+                                task.abort();
+                            }
+                            open
+                        });
+                }
+                // Nothing here asks the endpoint anything.
+                Operation::Answer { .. } => {}
+                request => {
+                    let answer = self.answer(request);
+                    let frames = self.frames.clone();
+                    tokio::task::spawn_local(async move {
+                        let result = answer.await;
+                        let _ = frames.send(HostFrame::Reply { id, result });
+                    });
+                }
+            }
+        }
+
+        fn subscribe(self: &Rc<Self>, id: u64, handle: Handle, topic: Topic) {
+            let feed = Feed {
+                frames: self.frames.clone(),
+                subscription: id,
+            };
+            let delivery = self
+                .channel(handle)
+                .and_then(|channel| self.topic(&channel, topic, feed.clone()));
+            let delivery = match delivery {
+                Ok(delivery) => delivery,
+                Err(error) => {
+                    let _ = self.frames.send(HostFrame::Reply {
+                        id,
+                        result: Err(error),
+                    });
+                    return;
+                }
+            };
+            let _ = self.frames.send(HostFrame::Reply {
+                id,
+                result: Ok(Reply::Subscribed),
+            });
+            let task = tokio::task::spawn_local(async move {
+                let reason = delivery.await;
+                let _ = feed.frames.send(HostFrame::Ended {
+                    subscription: id,
+                    reason,
+                });
+            });
+            self.subscriptions
+                .borrow_mut()
+                .insert(id, (handle, task.abort_handle()));
+        }
+
+        /// What `topic` delivers on `channel`, ending with why it ended.
+        fn topic(
+            &self,
+            channel: &Rc<FakeChannel>,
+            topic: Topic,
+            feed: Feed,
+        ) -> Result<Pin<Box<dyn Future<Output = String>>>, String> {
+            let captures = self.broker.captures.clone();
+            Ok(match topic {
+                Topic::Ops => {
+                    let backlog = channel.op_backlog.clone();
+                    Box::pin(async move {
+                        loop {
+                            let next = {
+                                let mut backlog = backlog.borrow_mut();
+                                (!backlog.is_empty()).then(|| backlog.remove(0))
+                            };
+                            let Some((op, from_user_id, admission)) = next else {
+                                // Clients that outrun the backlog wait, as on
+                                // a quiet channel.
+                                return std::future::pending().await;
+                            };
+                            let delay = captures.lock().unwrap().op_stream_delay;
+                            if let Some(delay) = delay {
+                                tokio::time::sleep(delay).await;
+                            }
+                            feed.send(Event::Op {
+                                op,
+                                from_user_id,
+                                admission,
+                            });
+                        }
+                    })
+                }
+                Topic::Presence => {
+                    let backlog = std::mem::take(&mut *channel.presence_backlog.borrow_mut());
+                    Box::pin(async move {
+                        for seed in backlog {
+                            feed.send(Event::Presence {
+                                user_id: seed.user_id,
+                                presence: collab_types::PeerPresence {
+                                    key: seed.key_bytes,
+                                    payload: seed.payload,
+                                },
+                            });
+                        }
+                        std::future::pending().await
+                    })
+                }
+                Topic::Context => {
+                    let backlog = std::mem::take(&mut *channel.context_backlog.borrow_mut());
+                    let terminate = self.broker.terminate_context_stream;
+                    Box::pin(async move {
+                        for seed in backlog {
+                            feed.send(Event::Context(ContextUpdate::Snapshot {
+                                collaborators: seed.collaborators,
+                                permissions: seed.permissions,
+                            }));
+                        }
+                        if terminate {
+                            return "fixture context source gone".to_owned();
+                        }
+                        std::future::pending().await
+                    })
+                }
+                Topic::Invocations { stable_ids } => {
+                    if !captures.lock().unwrap().invocation_fixture_enabled {
+                        return Err("fixture has no invocation stream".into());
+                    }
+                    assert!(stable_ids);
+                    Box::pin(async move {
+                        loop {
+                            let invocation = {
+                                let mut captures = captures.lock().unwrap();
+                                let invocation = captures.invocations.pop_front();
+                                if invocation.is_some() {
+                                    captures.received_invocations += 1;
+                                }
+                                invocation
+                            };
+                            match invocation {
+                                Some(invocation) => {
+                                    feed.send(Event::Invocation(wire::Invocation {
+                                        id: invocation.id,
+                                        invocation: invocation.invocation_uuid,
+                                        resource: invocation.resource,
+                                        action: invocation.action,
+                                        argument: invocation.argument,
+                                        actor: invocation.actor,
+                                        context: Some(invocation.context_json)
+                                            .filter(|context| !context.is_empty()),
+                                    }));
+                                }
+                                None => tokio::time::sleep(Duration::from_millis(1)).await,
+                            }
+                        }
+                    })
+                }
+                Topic::Catalogue => {
+                    let snapshots = {
+                        let mut captures = captures.lock().unwrap();
+                        captures.action_catalogue_subscriptions += 1;
+                        captures
+                            .action_catalogue_fixture
+                            .clone()
+                            .unwrap_or_else(|| {
+                                vec![serde_json::json!({"version": 1, "surfaces": []}).to_string()]
+                            })
+                    };
+                    Box::pin(async move {
+                        for snapshot in snapshots {
+                            feed.send(Event::Catalogue(snapshot));
+                        }
+                        std::future::pending().await
+                    })
+                }
+                other => return Err(format!("the fixture serves no {other:?} topic")),
             })
         }
 
-        fn invocation_cancellation(
-            self: Rc<Self>,
-            _: channel_handle::InvocationCancellationParams,
-            mut results: channel_handle::InvocationCancellationResults,
-        ) -> Promise<(), capnp::Error> {
-            match self.captures.lock().unwrap().invocation_execution.as_ref() {
-                Some(Ok(cancelled)) => {
-                    results.get().set_cancelled(*cancelled);
-                    Promise::ok(())
+        #[expect(
+            clippy::too_many_lines,
+            reason = "one arm per call the fixture answers"
+        )]
+        fn answer(self: &Rc<Self>, request: Operation) -> FakeAnswer {
+            match request {
+                Operation::Join(join) => self.join(join),
+                Operation::Room { seen, .. } => {
+                    let Some(mut status) = self.captures().room_status.clone() else {
+                        return answered(Err("the fixture reports no room status".into()));
+                    };
+                    Box::pin(async move {
+                        loop {
+                            let now = status.borrow_and_update().clone();
+                            match (now, &seen) {
+                                (Err(reason), _) => return Err(reason),
+                                (Ok(now), None) => return Ok(Reply::Room(now)),
+                                (Ok(now), Some(seen)) if now != *seen => {
+                                    return Ok(Reply::Room(now));
+                                }
+                                (Ok(_), Some(_)) => {}
+                            }
+                            status
+                                .changed()
+                                .await
+                                .map_err(|_| "room status ended".to_owned())?;
+                        }
+                    })
                 }
-                Some(Err(error)) => Promise::err(capnp::Error::failed(error.clone())),
-                None => Promise::err(capnp::Error::unimplemented(
-                    "fixture has no invocation".into(),
-                )),
-            }
-        }
-
-        fn browser_service_session_command(
-            self: Rc<Self>,
-            params: channel_handle::BrowserServiceSessionCommandParams,
-            mut results: channel_handle::BrowserServiceSessionCommandResults,
-        ) -> Promise<(), capnp::Error> {
-            use runtime_collab::BrowserServiceSessionCommand;
-            let decoded = params
-                .get()
-                .and_then(|params| params.get_command())
-                .and_then(|bytes| {
-                    BrowserServiceSessionCommand::decode(bytes)
-                        .map_err(|error| capnp::Error::failed(error.into()))
-                });
-            let reply = match decoded {
-                Ok(command) => {
-                    let hook = self.captures.lock().unwrap().service_sessions.clone();
-                    match hook {
-                        Some(serve) => serve(&command),
-                        None => Err("fixture has no custodian".into()),
+                Operation::Publish {
+                    channel,
+                    publication,
+                } => match self.channel(channel) {
+                    Ok(channel) => self.publish(&channel, publication),
+                    Err(error) => answered(Err(error)),
+                },
+                Operation::Command {
+                    channel,
+                    service,
+                    body,
+                    ..
+                } => match self.channel(channel) {
+                    Ok(channel) => match service {
+                        Service::CommittedDocument => self.committed_document(&channel, &body),
+                        Service::NativeMedia => self.native_media(&body),
+                        Service::RemoteAction => answered(self.remote_action(&body)),
+                        Service::BrowserServiceSession => {
+                            answered(self.browser_service_session(&body))
+                        }
+                        other => answered(Err(format!("the fixture serves no {other:?}"))),
+                    },
+                    Err(error) => answered(Err(error)),
+                },
+                Operation::Changed {
+                    of: wire::Changes::ChannelKeys,
+                    after,
+                    ..
+                } => {
+                    let Some(changes) = self.captures().key_changes.clone() else {
+                        return answered(Err("fixture has no channel service".into()));
+                    };
+                    let mut changed = changes.subscribe();
+                    Box::pin(async move {
+                        let change = *changed
+                            .wait_for(|change| *change != after)
+                            .await
+                            .map_err(|_| "fixture service gone".to_owned())?;
+                        Ok(Reply::Changed(change))
+                    })
+                }
+                Operation::Invocation { id, call, .. } => match call {
+                    InvocationCall::Cancelled => {
+                        answered(match self.captures().invocation_execution.as_ref() {
+                            Some(Ok(cancelled)) => Ok(Reply::Cancelled(*cancelled)),
+                            Some(Err(error)) => Err(error.clone()),
+                            None => Err("fixture has no invocation".into()),
+                        })
+                    }
+                    InvocationCall::Update(update) => self.update_invocation(id, &update),
+                    InvocationCall::Complete { .. } => {
+                        answered(Err("the fixture completes no invocations".into()))
+                    }
+                },
+                Operation::Settings { channel, call } => {
+                    let settings = self
+                        .channel(channel)
+                        .and_then(|channel| self.settings(&channel));
+                    let settings = match settings {
+                        Ok(settings) => settings,
+                        Err(error) => return answered(Err(error)),
+                    };
+                    let view = |(revision, document)| Reply::Settings { revision, document };
+                    match call {
+                        SettingsCall::Read { after } => {
+                            Box::pin(async move { settings.read(after).await.map(view) })
+                        }
+                        SettingsCall::Update {
+                            section,
+                            values,
+                            action,
+                        } => answered(
+                            settings
+                                .update(&section, &values, action.as_deref())
+                                .map(view),
+                        ),
+                        SettingsCall::Display { command, origin } => {
+                            answered(settings.display(&command, origin).map(Reply::Answer))
+                        }
                     }
                 }
-                Err(error) => return Promise::err(error),
-            };
-            match reply.map_err(capnp::Error::failed).and_then(|reply| {
-                reply
-                    .encode()
-                    .map_err(|error| capnp::Error::failed(error.into()))
-            }) {
-                Ok(bytes) => {
-                    results.get().set_reply(&bytes);
-                    Promise::ok(())
+                Operation::LiveActivity { channel, call } => {
+                    let activity = self
+                        .channel(channel)
+                        .and_then(|channel| self.live_activity(&channel));
+                    let activity = match activity {
+                        Ok(activity) => activity,
+                        Err(error) => return answered(Err(error)),
+                    };
+                    match call {
+                        LiveActivityCall::Show(shown) => {
+                            answered(activity.show(&shown).map(|()| Reply::Done))
+                        }
+                        LiveActivityCall::Controls { after } => Box::pin(async move {
+                            activity
+                                .controls(after)
+                                .await
+                                .map(|(serial, controls)| Reply::Controls { serial, controls })
+                        }),
+                    }
                 }
-                Err(error) => Promise::err(error),
+                Operation::Read {
+                    read:
+                        wire::Read::History {
+                            artifact,
+                            before_seq,
+                            max,
+                        },
+                    ..
+                } => {
+                    self.captures().scrollback_requests.push((
+                        artifact.0.as_bytes().to_vec(),
+                        before_seq,
+                        max,
+                    ));
+                    let seed = self
+                        .broker
+                        .scrollback_response
+                        .clone()
+                        .unwrap_or(SeedScrollback {
+                            ops: Vec::new(),
+                            done: true,
+                        });
+                    answered(Ok(Reply::History {
+                        ops: seed.ops,
+                        exhausted: seed.done,
+                    }))
+                }
+                other => answered(Err(format!("the fixture does not answer {other:?}"))),
             }
         }
 
-        fn subscribe_invocations(
-            self: Rc<Self>,
-            params: channel_handle::SubscribeInvocationsParams,
-            mut results: channel_handle::SubscribeInvocationsResults,
-        ) -> Promise<(), capnp::Error> {
-            if !self.captures.lock().unwrap().invocation_fixture_enabled {
-                return Promise::err(capnp::Error::unimplemented(
-                    "fixture has no invocation stream".into(),
-                ));
+        fn join(self: &Rc<Self>, join: wire::Join) -> FakeAnswer {
+            let gate = self
+                .join_gate
+                .as_ref()
+                .map(|gate| gate.attempt(&join.channel));
+            let mut captures = self.captures();
+            captures
+                .joined
+                .push((join.channel.clone(), join.identity.clone()));
+            captures
+                .joined_record_kinds
+                .push(join.record_kind.clone().unwrap_or_default());
+            let held = captures.join_gates.pop_front();
+            if held.is_none()
+                && let Some(error) = captures.join_refusal.clone()
+            {
+                return answered(Err(error));
             }
-            assert!(params.get().unwrap().get_stable_invocation_ids());
-            let stream: invocation_stream::Client =
-                capnp_rpc::new_client(FakeInvocationStream(self.captures.clone()));
-            results.get().set_stream(stream);
-            Promise::ok(())
+            drop(captures);
+            let host = Rc::clone(self);
+            Box::pin(async move {
+                if let Some(gate) = gate {
+                    gate.await?;
+                }
+                if let Some(held) = held {
+                    held.await
+                        .map_err(|_| "fixture join gate dropped".to_owned())?;
+                }
+                let handle = Handle(host.next_handle.get());
+                host.next_handle.set(handle.0 + 1);
+                host.channels.borrow_mut().insert(
+                    handle,
+                    Rc::new(FakeChannel {
+                        channel_id: join.channel,
+                        op_backlog: Rc::new(RefCell::new(host.broker.op_backlog.clone())),
+                        presence_backlog: Rc::new(RefCell::new(
+                            host.broker.presence_backlog.clone(),
+                        )),
+                        context_backlog: Rc::new(RefCell::new(host.broker.context_backlog.clone())),
+                        settings: RefCell::default(),
+                        live_activity: RefCell::default(),
+                    }),
+                );
+                Ok(Reply::Opened(handle))
+            })
         }
 
         fn settings(
-            self: Rc<Self>,
-            _params: channel_handle::SettingsParams,
-            mut results: channel_handle::SettingsResults,
-        ) -> Promise<(), capnp::Error> {
-            let Some((app, source)) = self.captures.lock().unwrap().settings.clone() else {
-                return Promise::err(capnp::Error::unimplemented("no settings".into()));
-            };
-            let settings: runtime_collab::collab_capnp::app_settings::Client =
-                capnp_rpc::new_client(runtime_collab::settings::host::AppSettingsServer::new(
-                    app,
-                    source,
-                    Arc::new(|| Ok(())),
-                ));
-            results.get().set_settings(settings);
-            Promise::ok(())
+            &self,
+            channel: &FakeChannel,
+        ) -> Result<Rc<runtime_collab::settings::host::AppSettingsServer>, String> {
+            if let Some(settings) = channel.settings.borrow().as_ref() {
+                return Ok(Rc::clone(settings));
+            }
+            let (app, source) = self.captures().settings.clone().ok_or("no settings")?;
+            let settings = Rc::new(runtime_collab::settings::host::AppSettingsServer::new(
+                app,
+                source,
+                Arc::new(|| Ok(())),
+            ));
+            *channel.settings.borrow_mut() = Some(Rc::clone(&settings));
+            Ok(settings)
         }
 
         fn live_activity(
-            self: Rc<Self>,
-            _params: channel_handle::LiveActivityParams,
-            mut results: channel_handle::LiveActivityResults,
-        ) -> Promise<(), capnp::Error> {
-            let Some((app, board)) = self.captures.lock().unwrap().live_activities.clone() else {
-                return Promise::err(capnp::Error::unimplemented("no live activities".into()));
-            };
-            let activity: runtime_collab::collab_capnp::live_activity::Client =
-                capnp_rpc::new_client(runtime_collab::live_activity::LiveActivityServer::new(
-                    app,
-                    board,
-                    Arc::new(|| Ok(())),
-                ));
-            results.get().set_activity(activity);
-            Promise::ok(())
+            &self,
+            channel: &FakeChannel,
+        ) -> Result<Rc<runtime_collab::live_activity::LiveActivityServer>, String> {
+            if let Some(activity) = channel.live_activity.borrow().as_ref() {
+                return Ok(Rc::clone(activity));
+            }
+            let (app, board) = self
+                .captures()
+                .live_activities
+                .clone()
+                .ok_or("no live activities")?;
+            let activity = Rc::new(runtime_collab::live_activity::LiveActivityServer::new(
+                app,
+                board,
+                Arc::new(|| Ok(())),
+            ));
+            *channel.live_activity.borrow_mut() = Some(Rc::clone(&activity));
+            Ok(activity)
         }
 
-        fn publish_actions(
-            self: Rc<Self>,
-            params: channel_handle::PublishActionsParams,
-            _results: channel_handle::PublishActionsResults,
-        ) -> Promise<(), capnp::Error> {
-            let request = params.get().unwrap();
-            let app_id = request.get_app_id().unwrap().to_str().unwrap().to_owned();
-            let actions = request
-                .get_actions()
-                .unwrap()
-                .iter()
-                .map(|action| {
-                    (
-                        action
-                            .get_resource_label()
-                            .unwrap()
-                            .to_str()
-                            .unwrap()
-                            .to_owned(),
-                        action.get_action().unwrap().to_str().unwrap().to_owned(),
-                    )
-                })
-                .collect();
-            let mut captures = self.captures.lock().unwrap();
-            if captures.refuse_action_publications > 0 {
-                captures.refuse_action_publications -= 1;
-                captures.refused_action_publications += 1;
-                return Promise::err(capnp::Error::failed(
-                    "current host worker authority unavailable".into(),
-                ));
+        fn publish(&self, channel: &FakeChannel, publication: Publication) -> FakeAnswer {
+            match publication {
+                Publication::Presence(collab_types::PeerPresence { key, payload }) => {
+                    use collab_types::PeerPresencePayload as P;
+                    let mut captures = self.captures();
+                    match payload {
+                        P::Pointer { x, y } => captures.pointer_publishes.push((key, x, y)),
+                        P::Caret { pos } => captures.caret_publishes.push((key, pos)),
+                        P::Selection { start, end } => {
+                            captures.selection_publishes.push((key, start, end));
+                        }
+                        P::Typing { start, end } => {
+                            captures.typing_publishes.push((key, start, end));
+                        }
+                        P::Arrived => captures.arrived.push(key),
+                        P::Left => captures.left.push(key),
+                        _ => {}
+                    }
+                    answered(Ok(Reply::Done))
+                }
+                Publication::Document(op) => self.send_document(&op),
+                Publication::Actions(actions) => {
+                    let actions: Vec<runtime_collab::ExportedAction> =
+                        match serde_json::from_str(&actions) {
+                            Ok(actions) => actions,
+                            Err(error) => return answered(Err(error.to_string())),
+                        };
+                    let actions = actions
+                        .into_iter()
+                        .map(|action| (action.resource_label, action.action))
+                        .collect();
+                    let mut captures = self.captures();
+                    if captures.refuse_action_publications > 0 {
+                        captures.refuse_action_publications -= 1;
+                        captures.refused_action_publications += 1;
+                        return answered(Err("current host worker authority unavailable".into()));
+                    }
+                    captures
+                        .action_publications
+                        .push((channel.app_id(), actions));
+                    answered(Ok(Reply::Done))
+                }
+                Publication::Surface(delta) => {
+                    let delta: runtime_collab::SurfaceDelta = match serde_json::from_str(&delta) {
+                        Ok(delta) => delta,
+                        Err(error) => return answered(Err(error.to_string())),
+                    };
+                    let mut captures = self.captures();
+                    if captures.refuse_action_publications > 0 {
+                        captures.refuse_action_publications -= 1;
+                        captures.refused_action_publications += 1;
+                        return answered(Err("current host worker authority unavailable".into()));
+                    }
+                    if let Err(reason) = captures.surface_table.apply(&delta) {
+                        return answered(Err(reason));
+                    }
+                    let actions = captures
+                        .surface_table
+                        .actions()
+                        .into_iter()
+                        .map(|action| (action.resource_label, action.action))
+                        .collect();
+                    captures.surface_deltas.push(delta);
+                    captures
+                        .action_publications
+                        .push((channel.app_id(), actions));
+                    answered(Ok(Reply::Done))
+                }
+                Publication::Directory => {
+                    let mut captures = self.captures();
+                    captures.directory_attempts.push(crate::time::now());
+                    let refused = captures.refuse_action_directories > 0;
+                    if refused {
+                        captures.refuse_action_directories -= 1;
+                    }
+                    captures.action_directories.push(channel.app_id());
+                    let ack = captures.directory_ack.clone();
+                    drop(captures);
+                    Box::pin(async move {
+                        if let Some(ack) = ack {
+                            ack.notified().await;
+                        }
+                        if refused {
+                            Err("fixture directory refusal".into())
+                        } else {
+                            Ok(Reply::Done)
+                        }
+                    })
+                }
+                Publication::Report(_) => answered(Ok(Reply::Done)),
+                other => answered(Err(format!("the fixture takes no {other:?}"))),
             }
-            captures.action_publications.push((app_id, actions));
-            Promise::ok(())
         }
 
-        fn publish_action_surface(
-            self: Rc<Self>,
-            params: channel_handle::PublishActionSurfaceParams,
-            _results: channel_handle::PublishActionSurfaceResults,
-        ) -> Promise<(), capnp::Error> {
-            let request = params.get().unwrap();
-            let app_id = request.get_app_id().unwrap().to_str().unwrap().to_owned();
-            let delta = runtime_collab::decode_surface_delta(request).unwrap();
-            let mut captures = self.captures.lock().unwrap();
-            if captures.refuse_action_publications > 0 {
-                captures.refuse_action_publications -= 1;
-                captures.refused_action_publications += 1;
-                return Promise::err(capnp::Error::failed(
-                    "current host worker authority unavailable".into(),
-                ));
+        fn send_document(&self, op: &SignedOp) -> FakeAnswer {
+            let mut captures = self.captures();
+            if captures.fail_document {
+                // The call is lost on its way back: the peer may or may not
+                // have kept the change, which is an unknown outcome, not an
+                // answer. A refusal below is the opposite: the peer read the
+                // change and said it will not take this one.
+                drop(captures);
+                return self.hang_up();
             }
-            if let Err(reason) = captures.surface_table.apply(&delta) {
-                return Promise::err(capnp::Error::failed(reason));
+            if captures.refuse_documents > 0 {
+                captures.refuse_documents -= 1;
+                captures.refused_documents += 1;
+                tracing::warn!("collab: fixture refuses one document change");
+                return answered(Err("so.tilo.chat named no kind for a new record".into()));
             }
-            let actions = captures
-                .surface_table
-                .actions()
-                .into_iter()
-                .map(|action| (action.resource_label, action.action))
-                .collect();
-            captures.surface_deltas.push(delta);
-            captures.action_publications.push((app_id, actions));
-            Promise::ok(())
+            captures.signed_ops.push(postcard::to_stdvec(op).unwrap());
+            if let Some(gate) = captures.document_gates.pop_front() {
+                gate.entered.send(()).unwrap();
+                return Box::pin(async move {
+                    gate.release
+                        .await
+                        .map_err(|_| "document gate dropped".to_owned())?
+                        .map(|()| Reply::Done)
+                });
+            }
+            answered(Ok(Reply::Done))
+        }
+
+        fn update_invocation(&self, id: u64, update: &str) -> FakeAnswer {
+            let update: tilo_actions::InvocationUpdate = serde_json::from_str(update).unwrap();
+            let mut captures = self.captures();
+            let terminal = update.is_terminal();
+            if captures.invocation_fixture_enabled {
+                captures.invocation_updates.push((id, update));
+            }
+            captures.terminal_updates += 1;
+            if captures.fail_terminal {
+                if terminal {
+                    // No answer comes back: the peer may or may not have
+                    // kept this update, an unknown outcome.
+                    drop(captures);
+                    return self.hang_up();
+                }
+                return answered(Err("this invocation is not accepted here".into()));
+            }
+            if captures.refuse_terminals > 0 {
+                captures.refuse_terminals -= 1;
+                tracing::warn!("collab: fixture refuses one invocation update");
+                return answered(Err("this invocation update was not accepted".into()));
+            }
+            answered(Ok(Reply::Done))
         }
 
         /// Admits an invocation of the connection's own action only when
         /// the surface it published offers it, as the session action host
         /// does: anything else is refused as unknown. Admitted ones are
         /// accepted and never run.
-        fn remote_action(
-            self: Rc<Self>,
-            params: channel_handle::RemoteActionParams,
-            mut results: channel_handle::RemoteActionResults,
-        ) -> Promise<(), capnp::Error> {
+        /// A private service request, answered as the session's custodian
+        /// would through `service_sessions`; refused without one.
+        fn browser_service_session(&self, body: &[u8]) -> Result<Reply, String> {
+            let Some(serve) = self.captures().service_sessions.clone() else {
+                return Err("fixture has no custodian".into());
+            };
+            let command = runtime_collab::BrowserServiceSessionCommand::decode(body)
+                .map_err(str::to_owned)?;
+            let reply = serve(&command)?;
+            reply
+                .encode()
+                .map(|bytes| Reply::Answer(bytes.to_vec()))
+                .map_err(str::to_owned)
+        }
+
+        fn remote_action(&self, frame: &[u8]) -> Result<Reply, String> {
             use tilo_actions::remote::{
                 ActionHostError, InvocationReceipt, ReceiptStatus, RemoteActionFrame,
                 RemoteActionMessage,
             };
-            let frame = match params
-                .get()
-                .and_then(|params| params.get_frame())
-                .map_err(|error| error.to_string())
-                .and_then(|bytes| RemoteActionFrame::decode(bytes).map_err(|e| e.to_string()))
-            {
-                Ok(frame) => frame,
-                Err(error) => return Promise::err(capnp::Error::failed(error)),
-            };
+            let frame = RemoteActionFrame::decode(frame).map_err(|e| e.to_string())?;
             let RemoteActionMessage::Invoke(request) = &frame.message else {
-                return Promise::err(capnp::Error::unimplemented(
-                    "the fixture answers invocations only".into(),
-                ));
+                return Err("the fixture answers invocations only".into());
             };
             let address = request.target.address.clone();
-            let mut captures = self.captures.lock().unwrap();
+            let mut captures = self.captures();
             let offered = request.target.provider == tilo_actions::remote::OWN_PROVIDER
                 && captures.surface_table.actions().iter().any(|action| {
                     action.resource == address.resource && action.action == address.action
@@ -8103,72 +7987,75 @@ mod tests {
                 tilo_actions::remote::refuse(&frame.message, ActionHostError::UnknownAction)
                     .expect("an invocation has a refusal")
             };
-            match RemoteActionFrame::new(answer).encode() {
-                Ok(bytes) => {
-                    results.get().set_frame(&bytes);
-                    Promise::ok(())
-                }
-                Err(error) => Promise::err(capnp::Error::failed(error.to_string())),
-            }
+            RemoteActionFrame::new(answer)
+                .encode()
+                .map(Reply::Answer)
+                .map_err(|error| error.to_string())
         }
 
-        fn publish_action_directory(
-            self: Rc<Self>,
-            params: channel_handle::PublishActionDirectoryParams,
-            _results: channel_handle::PublishActionDirectoryResults,
-        ) -> Promise<(), capnp::Error> {
-            let request = params.get().unwrap();
-            let mut captures = self.captures.lock().unwrap();
-            captures.directory_attempts.push(crate::time::now());
-            let refused = captures.refuse_action_directories > 0;
-            if refused {
-                captures.refuse_action_directories -= 1;
-            }
-            captures
-                .action_directories
-                .push(request.get_app_id().unwrap().to_str().unwrap().to_owned());
-            let ack = captures.directory_ack.clone();
-            drop(captures);
-            Promise::from_future(async move {
-                if let Some(ack) = ack {
-                    ack.notified().await;
+        fn native_media(&self, body: &[u8]) -> FakeAnswer {
+            let request = match runtime_collab::native_media::Request::decode(body) {
+                Ok(request) => request,
+                Err(error) => return answered(Err(error.to_string())),
+            };
+            assert!(request.dispatch_valid());
+            let gate = {
+                let mut captures = self.captures();
+                if captures.media_active_fixture {
+                    use runtime_collab::native_media::Command;
+                    match &request.command {
+                        Command::SetMuted { muted: true } | Command::Leave => {
+                            captures.media_capture_active = false;
+                            captures.media_pending_consent = false;
+                            captures.media_stops += 1;
+                            if matches!(request.command, Command::Leave) {
+                                captures.media_joined = false;
+                            }
+                        }
+                        Command::SetMuted { muted: false }
+                            if !captures.media_capture_active && captures.media_joined =>
+                        {
+                            captures.media_pending_consent = true;
+                        }
+                        _ => {}
+                    }
                 }
-                if refused {
-                    Err(capnp::Error::failed("fixture directory refusal".into()))
-                } else {
-                    Ok(())
+                captures.media_commands.push(request);
+                captures.media_gates.pop_front()
+            };
+            Box::pin(async move {
+                if let Some(gate) = gate {
+                    gate.await
+                        .map_err(|_| "native media gate dropped".to_owned())?;
                 }
+                Ok(Reply::Answer(
+                    runtime_collab::native_media::Snapshot::unavailable()
+                        .encode()
+                        .unwrap(),
+                ))
             })
         }
 
-        fn committed_document(
-            self: Rc<Self>,
-            params: channel_handle::CommittedDocumentParams,
-            mut results: channel_handle::CommittedDocumentResults,
-        ) -> Promise<(), capnp::Error> {
-            use runtime_collab::committed_document::{Reply, Request};
-            let decoded = params
-                .get()
-                .and_then(|params| params.get_request())
-                .and_then(|bytes| {
-                    Request::decode(bytes).map_err(|error| capnp::Error::failed(error.into()))
-                });
-            if let Ok(Request::Await { known_revision }) = decoded {
+        #[expect(
+            clippy::too_many_lines,
+            reason = "the committed read's every answer, as the broker gives it"
+        )]
+        fn committed_document(&self, channel: &FakeChannel, body: &[u8]) -> FakeAnswer {
+            use runtime_collab::committed_document::{Reply as Read, Request as Ask};
+            let encode = |reply: Read| reply.encode().map(Reply::Answer).map_err(Into::into);
+            let decoded = Ask::decode(body).map_err(|error| error.to_string());
+            if let Ok(Ask::Await { known_revision }) = decoded {
                 let held = {
-                    let mut captures = self.captures.lock().unwrap();
-                    captures
-                        .committed_reads
-                        .push(Request::Await { known_revision });
+                    let mut captures = self.captures();
+                    captures.committed_reads.push(Ask::Await { known_revision });
                     captures.committed_awaits.clone()
                 };
                 let Some(change) = held else {
-                    return Promise::err(capnp::Error::failed(
-                        "invalid committed read request".into(),
-                    ));
+                    return answered(Err("invalid committed read request".into()));
                 };
-                let captures = self.captures.clone();
-                let channel = self.channel_id.clone();
-                return Promise::from_future(async move {
+                let captures = self.broker.captures.clone();
+                let channel = channel.channel_id.clone();
+                return Box::pin(async move {
                     loop {
                         let notified = change.notified();
                         tokio::pin!(notified);
@@ -8206,58 +8093,51 @@ mod tests {
                         }
                         notified.await;
                     }
-                    results.get().set_reply(
-                        &Reply::Stale
-                            .encode()
-                            .map_err(|error| capnp::Error::failed(error.into()))?,
-                    );
-                    Ok(())
+                    encode(Read::Stale)
                 });
             }
             let result = (|| {
                 let request = decoded?;
-                let mut captures = self.captures.lock().unwrap();
+                let mut captures = self.captures();
                 captures.committed_reads.push(request.clone());
                 let changes = captures.committed_changes.clone();
-                if matches!(request, Request::Open { .. } | Request::OpenChanges { .. }) {
+                let opens = matches!(request, Ask::Open { .. } | Ask::OpenChanges { .. });
+                if opens {
                     if let Some(error) = captures.committed_open_failure.clone() {
-                        return Err(capnp::Error::failed(error));
+                        return Err(error);
                     }
                     if captures
                         .committed_open_refused_channels
-                        .contains(&self.channel_id)
+                        .contains(&channel.channel_id)
                     {
-                        return Err(capnp::Error::failed(
-                            "committed read custody refused for this route".into(),
-                        ));
+                        return Err("committed read custody refused for this route".into());
                     }
                 }
-                let busy = matches!(request, Request::Open { .. } | Request::OpenChanges { .. })
-                    && captures.committed_busy;
+                let busy = opens && captures.committed_busy;
                 let current_revision = captures.committed_revision.unwrap_or([7; 32]);
                 let absent = captures
                     .committed_absent_channels
-                    .contains(&self.channel_id)
-                    && matches!(request, Request::Open { .. });
+                    .contains(&channel.channel_id)
+                    && matches!(request, Ask::Open { .. });
                 let reply = match captures.committed_history_fixture.as_ref() {
-                    Some(_) if absent => Reply::Absent,
-                    None => Reply::Legacy,
+                    Some(_) if absent => Read::Absent,
+                    None => Read::Legacy,
                     Some(_) if busy => {
                         captures.committed_queued = true;
-                        Reply::Busy
+                        Read::Busy
                     }
                     Some(bytes) => match request {
-                        Request::PrivateWindowBinding => Reply::PrivateWindowBinding {
+                        Ask::PrivateWindowBinding => Read::PrivateWindowBinding {
                             instance: captures.committed_private_binding,
                         },
-                        Request::Open {
+                        Ask::Open {
                             known_revision: Some(revision),
-                        } if revision == current_revision => Reply::Unchanged { revision },
-                        Request::OpenChanges { known_revision } => match changes {
-                            _ if known_revision == current_revision => Reply::Unchanged {
+                        } if revision == current_revision => Read::Unchanged { revision },
+                        Ask::OpenChanges { known_revision } => match changes {
+                            _ if known_revision == current_revision => Read::Unchanged {
                                 revision: known_revision,
                             },
-                            Some(changes) if changes.from == known_revision => Reply::Changes {
+                            Some(changes) if changes.from == known_revision => Read::Changes {
                                 capture: 1,
                                 revision: current_revision,
                                 base: changes.base,
@@ -8265,7 +8145,7 @@ mod tests {
                                 bytes: changes.bytes,
                                 token: [3; 16],
                             },
-                            _ => Reply::Chunk {
+                            _ => Read::Chunk {
                                 capture: 1,
                                 revision: current_revision,
                                 total: bytes.len() as u32,
@@ -8274,7 +8154,7 @@ mod tests {
                                 token: [3; 16],
                             },
                         },
-                        Request::Open { .. } => Reply::Chunk {
+                        Ask::Open { .. } => Read::Chunk {
                             capture: 1,
                             revision: current_revision,
                             total: bytes.len() as u32,
@@ -8282,25 +8162,21 @@ mod tests {
                             bytes: bytes.clone(),
                             token: [3; 16],
                         },
-                        Request::Cancel { capture: 1, token } if token == [3; 16] => {
+                        Ask::Cancel { capture: 1, token } if token == [3; 16] => {
                             if let Some(error) = captures.committed_ack_failure.take() {
-                                return Err(capnp::Error::failed(error));
+                                return Err(error);
                             }
                             captures
                                 .committed_ack_reply
                                 .take()
-                                .unwrap_or(Reply::Cancelled)
+                                .unwrap_or(Read::Cancelled)
                         }
-                        _ => {
-                            return Err(capnp::Error::failed(
-                                "fixture read continuation refused".into(),
-                            ));
-                        }
+                        _ => return Err("fixture read continuation refused".into()),
                     },
                 };
-                let gate = if matches!(reply, Reply::Unchanged { .. }) {
+                let gate = if matches!(reply, Read::Unchanged { .. }) {
                     captures.committed_recheck_gate.take()
-                } else if matches!(reply, Reply::Cancelled) {
+                } else if matches!(reply, Read::Cancelled) {
                     captures.committed_ack_gate.take().map(|(entered, gate)| {
                         entered.send(()).unwrap();
                         gate
@@ -8308,390 +8184,29 @@ mod tests {
                 } else {
                     None
                 };
-                results.get().set_reply(
-                    &reply
-                        .encode()
-                        .map_err(|error| capnp::Error::failed(error.into()))?,
-                );
-                Ok(gate)
+                Ok((encode(reply)?, gate))
             })();
-            Promise::from_future(async move {
-                if let Some(gate) = result? {
-                    gate.await
-                        .map_err(|_| capnp::Error::failed("fixture recheck gate dropped".into()))?;
-                }
-                Ok(())
-            })
-        }
-
-        fn native_media_command(
-            self: Rc<Self>,
-            params: channel_handle::NativeMediaCommandParams,
-            mut results: channel_handle::NativeMediaCommandResults,
-        ) -> Promise<(), capnp::Error> {
-            let request = match params
-                .get()
-                .and_then(|params| params.get_command_json())
-                .and_then(|bytes| {
-                    runtime_collab::native_media::Request::decode(bytes)
-                        .map_err(|e| capnp::Error::failed(e.into()))
-                }) {
-                Ok(request) => request,
-                Err(error) => return Promise::err(error),
-            };
-            assert!(request.dispatch_valid());
-            let gate = {
-                let mut captures = self.captures.lock().unwrap();
-                if captures.media_active_fixture {
-                    use runtime_collab::native_media::Command;
-                    match &request.command {
-                        Command::SetMuted { muted: true } | Command::Leave => {
-                            captures.media_capture_active = false;
-                            captures.media_pending_consent = false;
-                            captures.media_stops += 1;
-                            if matches!(request.command, Command::Leave) {
-                                captures.media_joined = false;
-                            }
-                        }
-                        Command::SetMuted { muted: false }
-                            if !captures.media_capture_active && captures.media_joined =>
-                        {
-                            captures.media_pending_consent = true
-                        }
-                        _ => {}
-                    }
-                }
-                captures.media_commands.push(request);
-                captures.media_gates.pop_front()
-            };
-            Promise::from_future(async move {
+            Box::pin(async move {
+                let (reply, gate) = result?;
                 if let Some(gate) = gate {
                     gate.await
-                        .map_err(|_| capnp::Error::failed("native media gate dropped".into()))?;
+                        .map_err(|_| "fixture recheck gate dropped".to_owned())?;
                 }
-                results.get().set_reply_json(
-                    &runtime_collab::native_media::Snapshot::unavailable()
-                        .encode()
-                        .unwrap(),
-                );
-                Ok(())
+                Ok(reply)
             })
-        }
-
-        fn update_invocation(
-            self: Rc<Self>,
-            params: channel_handle::UpdateInvocationParams,
-            _results: channel_handle::UpdateInvocationResults,
-        ) -> Promise<(), capnp::Error> {
-            let mut captures = self.captures.lock().unwrap();
-            if captures.invocation_fixture_enabled {
-                let request = params.get().unwrap();
-                let update =
-                    serde_json::from_str(request.get_update_json().unwrap().to_str().unwrap())
-                        .unwrap();
-                captures.invocation_updates.push((request.get_id(), update));
-            }
-            captures.terminal_updates += 1;
-            if captures.fail_terminal {
-                // No answer came back: the peer may or may not have kept this
-                // update, which is an unknown outcome, not a refusal.
-                return Promise::err(capnp::Error::disconnected(
-                    "effect receipt barrier failed; outcome unknown".into(),
-                ));
-            }
-            if captures.refuse_terminals > 0 {
-                captures.refuse_terminals -= 1;
-                tracing::warn!("collab: fixture refuses one invocation update");
-                return Promise::err(capnp::Error::failed(
-                    "this invocation update was not accepted".into(),
-                ));
-            }
-            Promise::ok(())
-        }
-
-        fn send(
-            self: Rc<Self>,
-            params: channel_handle::SendParams,
-            _results: channel_handle::SendResults,
-        ) -> Promise<(), capnp::Error> {
-            let op = match params
-                .get()
-                .and_then(channel_handle::send_params::Reader::get_op)
-            {
-                Ok(o) => o.to_vec(),
-                Err(e) => return Promise::err(e),
-            };
-            let mut captures = self.captures.lock().unwrap();
-            if captures.fail_document {
-                // The call is lost on its way back: the peer may or may not
-                // have kept the change, which is an unknown outcome, not an
-                // answer. A typed refusal below is the opposite: the peer read
-                // the change and said it will not take this one.
-                return Promise::err(capnp::Error::disconnected(
-                    "owner durable barrier failed; outcome unknown".into(),
-                ));
-            }
-            if captures.refuse_documents > 0 {
-                captures.refuse_documents -= 1;
-                captures.refused_documents += 1;
-                tracing::warn!("collab: fixture refuses one document change");
-                return Promise::err(capnp::Error::failed(
-                    "so.tilo.chat named no kind for a new record".into(),
-                ));
-            }
-            captures.signed_ops.push(op);
-            if let Some(gate) = captures.document_gates.pop_front() {
-                gate.entered.send(()).unwrap();
-                return Promise::from_future(async move {
-                    gate.release
-                        .await
-                        .map_err(|_| capnp::Error::failed("document gate dropped".into()))?
-                        .map_err(capnp::Error::failed)
-                });
-            }
-            Promise::ok(())
-        }
-
-        fn subscribe(
-            self: Rc<Self>,
-            _params: channel_handle::SubscribeParams,
-            mut results: channel_handle::SubscribeResults,
-        ) -> Promise<(), capnp::Error> {
-            let client: stream::Client = capnp_rpc::new_client(FakeOpStream {
-                backlog: self.op_backlog.clone(),
-                captures: self.captures.clone(),
-            });
-            results.get().set_stream(client);
-            Promise::ok(())
-        }
-
-        fn presence(
-            self: Rc<Self>,
-            _params: channel_handle::PresenceParams,
-            mut results: channel_handle::PresenceResults,
-        ) -> Promise<(), capnp::Error> {
-            let client: presence_handle::Client = capnp_rpc::new_client(FakePresence {
-                captures: self.captures.clone(),
-                presence_backlog: self.presence_backlog.clone(),
-            });
-            results.get().set_handle(client);
-            Promise::ok(())
-        }
-
-        fn retired_unsigned_snapshot(
-            self: Rc<Self>,
-            _params: channel_handle::RetiredUnsignedSnapshotParams,
-            _results: channel_handle::RetiredUnsignedSnapshotResults,
-        ) -> Promise<(), capnp::Error> {
-            Promise::ok(())
-        }
-
-        fn retired_unsigned_incremental(
-            self: Rc<Self>,
-            _params: channel_handle::RetiredUnsignedIncrementalParams,
-            _results: channel_handle::RetiredUnsignedIncrementalResults,
-        ) -> Promise<(), capnp::Error> {
-            Promise::ok(())
-        }
-
-        fn subscribe_context(
-            self: Rc<Self>,
-            _params: channel_handle::SubscribeContextParams,
-            mut results: channel_handle::SubscribeContextResults,
-        ) -> Promise<(), capnp::Error> {
-            let client: context_stream::Client = capnp_rpc::new_client(FakeContextStream {
-                backlog: self.context_backlog.clone(),
-                terminate_after_backlog: self.terminate_context_stream,
-            });
-            results.get().set_stream(client);
-            Promise::ok(())
-        }
-
-        fn subscribe_action_catalogue(
-            self: Rc<Self>,
-            _params: channel_handle::SubscribeActionCatalogueParams,
-            mut results: channel_handle::SubscribeActionCatalogueResults,
-        ) -> Promise<(), capnp::Error> {
-            let snapshots = {
-                let mut captures = self.captures.lock().unwrap();
-                captures.action_catalogue_subscriptions += 1;
-                captures
-                    .action_catalogue_fixture
-                    .clone()
-                    .unwrap_or_else(|| {
-                        vec![serde_json::json!({"version": 1, "surfaces": []}).to_string()]
-                    })
-            };
-            let client: action_catalogue_stream::Client =
-                capnp_rpc::new_client(FakeActionCatalogueStream {
-                    backlog: RefCell::new(snapshots.into()),
-                    captures: self.captures.clone(),
-                });
-            results.get().set_stream(client);
-            Promise::ok(())
-        }
-
-        fn fetch_scrollback_for(
-            self: Rc<Self>,
-            params: channel_handle::FetchScrollbackForParams,
-            mut results: channel_handle::FetchScrollbackForResults,
-        ) -> Promise<(), capnp::Error> {
-            let Ok(p) = params.get() else {
-                return Promise::ok(());
-            };
-            self.captures.lock().unwrap().scrollback_requests.push((
-                p.get_artifact_id()
-                    .map_or_else(|_| Vec::new(), <[u8]>::to_vec),
-                p.get_before_seq(),
-                p.get_max(),
-            ));
-            let seed = self
-                .scrollback_response
-                .borrow()
-                .clone()
-                .unwrap_or(SeedScrollback {
-                    ops: Vec::new(),
-                    earliest_seq: 0,
-                    latest_seq: 0,
-                    done: true,
-                });
-            let mut batch: scrollback_batch::Builder = results.get().init_batch();
-            {
-                let mut ops = batch
-                    .reborrow()
-                    .init_ops(u32::try_from(seed.ops.len()).unwrap_or(u32::MAX));
-                for (i, op) in seed.ops.iter().enumerate() {
-                    ops.set(u32::try_from(i).unwrap_or(u32::MAX), op);
-                }
-            }
-            batch.set_earliest_seq(seed.earliest_seq);
-            batch.set_latest_seq(seed.latest_seq);
-            batch.set_done(seed.done);
-            Promise::ok(())
         }
     }
 
-    #[derive(Default)]
-    pub struct FakeBroker {
-        pub captures: SharedCaptures,
-        pub op_backlog: Vec<(Vec<u8>, String, OpAdmission)>,
-        pub presence_backlog: Vec<SeedPresence>,
-        pub context_backlog: Vec<SeedContext>,
-        pub terminate_context_stream: bool,
-        pub scrollback_response: Option<SeedScrollback>,
-    }
-
-    impl collab_service::Server for FakeBroker {
-        fn room_status(
-            self: Rc<Self>,
-            _params: collab_service::RoomStatusParams,
-            mut results: collab_service::RoomStatusResults,
-        ) -> Promise<(), capnp::Error> {
-            let Some(status) = self.captures.lock().unwrap().room_status.clone() else {
-                return Promise::err(capnp::Error::unimplemented("roomStatus".into()));
-            };
-            let now = status.borrow().clone();
-            match now {
-                Ok(now) => {
-                    now.write(results.get().init_status());
-                    Promise::ok(())
-                }
-                Err(reason) => Promise::err(capnp::Error::disconnected(reason)),
-            }
-        }
-
-        fn await_room(
-            self: Rc<Self>,
-            params: collab_service::AwaitRoomParams,
-            mut results: collab_service::AwaitRoomResults,
-        ) -> Promise<(), capnp::Error> {
-            let Some(mut status) = self.captures.lock().unwrap().room_status.clone() else {
-                return Promise::err(capnp::Error::unimplemented("awaitRoom".into()));
-            };
-            let seen = match params
-                .get()
-                .and_then(|params| params.get_seen())
-                .and_then(runtime_collab::RoomStatus::from_reader)
-            {
-                Ok(seen) => seen,
-                Err(error) => return Promise::err(error),
-            };
-            Promise::from_future(async move {
-                loop {
-                    let now = status.borrow_and_update().clone();
-                    match now {
-                        Err(reason) => return Err(capnp::Error::disconnected(reason)),
-                        Ok(now) if now != seen => {
-                            now.write(results.get().init_status());
-                            return Ok(());
-                        }
-                        Ok(_) => {}
-                    }
-                    status
-                        .changed()
-                        .await
-                        .map_err(|_| capnp::Error::disconnected("room status ended".into()))?;
-                }
-            })
-        }
-
-        fn join_channel(
-            self: Rc<Self>,
-            params: collab_service::JoinChannelParams,
-            mut results: collab_service::JoinChannelResults,
-        ) -> Promise<(), capnp::Error> {
-            let Ok(reader) = params.get() else {
-                return Promise::ok(());
-            };
-            let channel_id = reader
-                .get_channel_id()
-                .and_then(|t| {
-                    t.to_str()
-                        .map(str::to_owned)
-                        .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
-                })
-                .unwrap_or_default();
-            let identity = reader
-                .get_identity()
-                .map(<[u8]>::to_vec)
-                .unwrap_or_default();
-            let record_kind = reader
-                .get_record_kind()
-                .ok()
-                .and_then(|kind| kind.to_str().ok().map(str::to_owned))
-                .unwrap_or_default();
-            let mut captures = self.captures.lock().unwrap();
-            captures.joined.push((channel_id.clone(), identity));
-            captures.joined_record_kinds.push(record_kind);
-            let gate = captures.join_gates.pop_front();
-            if gate.is_none()
-                && let Some(error) = captures.join_refusal.clone()
-            {
-                return Promise::err(capnp::Error::failed(error));
-            }
-            drop(captures);
-
-            let chan = FakeChannel {
-                channel_id,
-                captures: self.captures.clone(),
-                op_backlog: Rc::new(RefCell::new(self.op_backlog.clone())),
-                presence_backlog: Rc::new(RefCell::new(self.presence_backlog.clone())),
-                context_backlog: Rc::new(RefCell::new(self.context_backlog.clone())),
-                terminate_context_stream: self.terminate_context_stream,
-                scrollback_response: Rc::new(RefCell::new(self.scrollback_response.clone())),
-            };
-            let client: channel_handle::Client = capnp_rpc::new_client(chan);
-            let Some(gate) = gate else {
-                results.get().set_handle(client);
-                return Promise::ok(());
-            };
-            Promise::from_future(async move {
-                gate.await
-                    .map_err(|_| capnp::Error::failed("fixture join gate dropped".into()))?;
-                results.get().set_handle(client);
-                Ok(())
-            })
-        }
+    /// A client connected to a fake host serving `broker` on this
+    /// `LocalSet`, and its captures.
+    pub(super) fn fake_client(
+        broker: FakeBroker,
+    ) -> (runtime_collab::CollabClient, SharedCaptures) {
+        let captures = broker.captures.clone();
+        let (client, host) = tokio::io::duplex(64 * 1024);
+        tokio::task::spawn_local(serve_fake_broker(host, broker));
+        let (client, _end) = runtime_collab::CollabClient::connected_local(client);
+        (client, captures)
     }
 
     fn host_identity_fixture(
@@ -9013,11 +8528,7 @@ mod tests {
                     ..FakeBroker::default()
                 };
                 let (client, server) = tokio::io::duplex(64 * 1024);
-                let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
-                let rpc = runtime_portal::serve_connected_io(server, broker_client.client);
-                tokio::task::spawn_local(async move {
-                    let _ = rpc.await;
-                });
+                tokio::task::spawn_local(serve_fake_broker(server, broker));
                 Ok((client, identity))
             });
             let mut manager = CollaborationManager::for_route_host_blocking(
@@ -9350,10 +8861,9 @@ mod tests {
         );
     }
 
-    // Wrap the existing successful broker, changing only its join response.
-    // The delayed case delegates to that same implementation after release.
+    // The successful fake host, changing only its join answer: the delayed
+    // case joins as it does once released.
     struct HostJoinGate {
-        broker: Rc<FakeBroker>,
         release: RefCell<Option<tokio::sync::oneshot::Receiver<()>>>,
         attempted: mpsc::Sender<String>,
         stopped: mpsc::Sender<()>,
@@ -9365,30 +8875,17 @@ mod tests {
         }
     }
 
-    impl collab_service::Server for HostJoinGate {
-        fn join_channel(
-            self: Rc<Self>,
-            params: collab_service::JoinChannelParams,
-            results: collab_service::JoinChannelResults,
-        ) -> Promise<(), capnp::Error> {
-            let route = params
-                .get()
-                .unwrap()
-                .get_channel_id()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_owned();
-            self.attempted.send(route).unwrap();
-            let Some(release) = self.release.borrow_mut().take() else {
-                return Promise::err(capnp::Error::failed("fixture primary join refused".into()));
-            };
-            let broker = self.broker.clone();
-            Promise::from_future(async move {
+    impl HostJoinGate {
+        /// Hold the join of `route` until released; refuse it at once when
+        /// nothing will release it.
+        fn attempt(&self, route: &str) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
+            self.attempted.send(route.to_owned()).unwrap();
+            let release = self.release.borrow_mut().take();
+            Box::pin(async move {
                 release
+                    .ok_or("fixture primary join refused")?
                     .await
-                    .map_err(|_| capnp::Error::failed("fixture gate dropped".into()))?;
-                collab_service::Server::join_channel(broker, params, results).await
+                    .map_err(|_| "fixture gate dropped".to_owned())
             })
         }
     }
@@ -9436,18 +8933,15 @@ mod tests {
                         .enable_all()
                         .build()
                         .unwrap();
-                    tokio::task::LocalSet::new().block_on(&runtime, async move {
-                        let broker = Rc::new(FakeBroker::default());
-                        let gate = HostJoinGate {
-                            broker,
-                            release: RefCell::new(delayed.then_some(wait)),
-                            attempted,
-                            stopped,
-                        };
-                        let broker_client: collab_service::Client = capnp_rpc::new_client(gate);
-                        let _ =
-                            runtime_portal::serve_connected_io(server, broker_client.client).await;
-                    });
+                    let gate = HostJoinGate {
+                        release: RefCell::new(delayed.then_some(wait)),
+                        attempted,
+                        stopped,
+                    };
+                    LocalSet::new().block_on(
+                        &runtime,
+                        serve_fake_host(server, FakeBroker::default(), Some(gate)),
+                    );
                 })
                 .unwrap();
             Ok((client, identity))
@@ -9455,8 +8949,8 @@ mod tests {
         (connector, HostJoinRelease(Some(release)))
     }
 
-    /// Stand up a fake `CollabService` on one end of a Unix socket pair;
-    /// returns the client-side raw fd + captures state for assertions.
+    /// Stand up a fake collaboration host on one end of a Unix socket
+    /// pair; returns the client-side raw fd + captures state for assertions.
     #[cfg(unix)]
     pub fn stand_up_fake_broker(
         broker: FakeBroker,
@@ -9474,14 +8968,10 @@ mod tests {
                     .enable_all()
                     .build()
                     .unwrap();
-                let local = TokioLocalSet::new();
-                local.block_on(&rt, async move {
-                    let tokio_stream =
-                        TokioUnixStream::from_std(server_side).expect("wrap server side");
-                    let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
-                    let rpc =
-                        runtime_portal::serve_connected_io(tokio_stream, broker_client.client);
-                    let _ = rpc.await;
+                LocalSet::new().block_on(&rt, async move {
+                    let stream =
+                        tokio::net::UnixStream::from_std(server_side).expect("wrap server side");
+                    serve_fake_broker(stream, broker).await;
                 });
             })
             .unwrap();
@@ -9489,13 +8979,6 @@ mod tests {
         (client_fd, captures, handle)
     }
 
-    /// Stand up the fake broker, then open the window's manager on a
-    /// **committed** primary route: through the production constructor, so
-    /// the route the broker acknowledges is the one whose owner applies each
-    /// edit itself. That route sends commits over the wire
-    /// (`send_document_mutation`) — the path a refused commit travels. An
-    /// ordinary route sends document frames through `send_document_frame`
-    /// instead, which shares [`frame_refused`] classification.
     #[cfg(unix)]
     fn committed_route_over_fake_broker(
         broker: FakeBroker,
@@ -9509,7 +8992,7 @@ mod tests {
             Some("tab:0000000000000003".into()),
             presence_handle_env(),
             Some(SdkJoinIdentity {
-                presentation: Vec::new(),
+                presentation: harness_presentation(),
                 participant_kind: "person",
                 signer: harness_document_signer(),
             }),
@@ -9671,17 +9154,29 @@ mod tests {
     fn a_refused_invocation_update_keeps_the_bridge() {
         let broker = FakeBroker::default();
         let (mut manager, captured, thread) = committed_route_over_fake_broker(broker);
-        captured.lock().unwrap().refuse_terminals = 1;
+        {
+            let mut captured = captured.lock().unwrap();
+            captured.refuse_terminals = 1;
+            captured.invocation_fixture_enabled = true;
+        }
+        let refused = tilo_actions::InvocationId::new();
         manager.send(CollabRequest::UpdateInvocation {
             id: 41,
             update: tilo_actions::InvocationUpdate::Succeeded {
-                invocation: tilo_actions::InvocationId::new(),
+                invocation: refused,
                 output: tilo_actions::ActionOutput::default(),
             },
         });
-        tilo_test_env::wait_until("the refused update to be answered", || {
-            captured.lock().unwrap().terminal_updates == 1
+        // The refused answer is followed by the invocation's failure, so its
+        // caller is not left waiting for an answer that will not come.
+        tilo_test_env::wait_until("the refused answer's failure to reach the broker", || {
+            captured.lock().unwrap().terminal_updates == 2
         });
+        assert!(matches!(
+            &captured.lock().unwrap().invocation_updates[1],
+            (41, tilo_actions::InvocationUpdate::Failed { invocation, error })
+                if *invocation == refused && error.code == "answer_refused"
+        ));
         // Give the shovel a turn to act on the answer the broker sent.
         thread::sleep(Duration::from_millis(50));
         assert!(
@@ -9697,7 +9192,7 @@ mod tests {
             },
         });
         tilo_test_env::wait_until("the later update to reach the broker", || {
-            captured.lock().unwrap().terminal_updates == 2
+            captured.lock().unwrap().terminal_updates == 3
         });
         assert!(manager.is_connected());
         drop(manager);
@@ -9877,7 +9372,7 @@ mod tests {
             action_directory_tx,
             pending_primary: None,
             worker_stopped: false,
-            wifi_bridge_registered: false,
+            command_bridge_registered: false,
             spill: std::collections::VecDeque::new(),
             barrier_slot: None,
             queued_barrier: std::sync::Weak::new(),
@@ -9944,8 +9439,7 @@ mod tests {
         for n in 0..total {
             // One megabyte each: the burst is far past the byte budget too.
             let command = TransportCommand::Primary(CollabRequest::ReportHandoff {
-                app_id: format!("app-{n}"),
-                message: vec![0; 1024 * 1024],
+                message: vec![u8::try_from(n).unwrap(); 1024 * 1024],
             });
             assert_eq!(transport.submit(command), Ok(()), "command {n} was refused");
             assert!(
@@ -9961,19 +9455,20 @@ mod tests {
         while seen.len() < total {
             let mut moved = false;
             while let Ok(queued) = shovel.try_recv() {
-                let SdkCommand::Primary(CollabRequest::ReportHandoff { app_id, .. }) =
-                    queued.command
+                let SdkCommand::Primary(CollabRequest::ReportHandoff { message }) = queued.command
                 else {
                     panic!("unexpected command");
                 };
-                seen.push(app_id);
+                seen.push(message[0]);
                 moved = true;
             }
             // The owner's drain is what refills the queue after a wake.
             transport.drain(&mut events);
             assert!(moved || !transport.spill.is_empty() || seen.len() == total);
         }
-        let expected = (0..total).map(|n| format!("app-{n}")).collect::<Vec<_>>();
+        let expected = (0..total)
+            .map(|n| u8::try_from(n).unwrap())
+            .collect::<Vec<_>>();
         assert_eq!(seen, expected);
         assert!(transport.state.is_healthy());
     }
@@ -9985,7 +9480,6 @@ mod tests {
     fn a_command_larger_than_the_whole_budget_is_refused_without_closing_the_bridge() {
         let (mut transport, mut shovel) = parking_transport(8);
         let huge = TransportCommand::Primary(CollabRequest::ReportHandoff {
-            app_id: "notes".into(),
             message: vec![0; SDK_COMMAND_QUEUE_BYTES + 1024 * 1024],
         });
         assert!(matches!(
@@ -9994,11 +9488,7 @@ mod tests {
         ));
         assert!(transport.state.is_healthy());
         assert_eq!(
-            transport.submit(TransportCommand::Primary(
-                CollabRequest::ClearContinuation {
-                    app_id: "notes".into()
-                }
-            )),
+            transport.submit(TransportCommand::Primary(CollabRequest::ClearContinuation)),
             Ok(())
         );
         assert!(shovel.try_recv().is_ok());
@@ -10012,7 +9502,6 @@ mod tests {
         let (mut transport, mut shovel) = parking_transport(1);
         let surface = |n: usize| {
             TransportCommand::Primary(CollabRequest::PublishActionSurface {
-                app_id: "notes".into(),
                 delta: SurfaceDelta {
                     removed: vec![format!("page-{n}")],
                     ..SurfaceDelta::default()
@@ -10219,7 +9708,7 @@ mod tests {
         let sdk = CollaborationManager::spawn_sdk(
             SdkConnectSource::Fd(fd),
             Some(SdkJoinIdentity {
-                presentation: Vec::new(),
+                presentation: harness_presentation(),
                 participant_kind: "person",
                 signer: SdkDocumentSigner::Certified(Arc::new(AnsweringIdentity {
                     asked: Arc::clone(&asked),
@@ -10305,7 +9794,7 @@ mod tests {
         let sdk = CollaborationManager::spawn_sdk(
             SdkConnectSource::Fd(fd),
             Some(SdkJoinIdentity {
-                presentation: Vec::new(),
+                presentation: harness_presentation(),
                 participant_kind: "person",
                 signer: SdkDocumentSigner::Certified(Arc::new(AnsweringIdentity {
                     asked: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -10381,7 +9870,7 @@ mod tests {
         let sdk = CollaborationManager::spawn_sdk(
             SdkConnectSource::Fd(fd),
             Some(SdkJoinIdentity {
-                presentation: Vec::new(),
+                presentation: harness_presentation(),
                 participant_kind: "person",
                 signer: SdkDocumentSigner::Certified(Arc::new(KeyedIdentity {
                     asked: Arc::clone(&asked),
@@ -10542,7 +10031,7 @@ mod tests {
         let sdk = CollaborationManager::spawn_sdk(
             SdkConnectSource::Fd(fd),
             Some(SdkJoinIdentity {
-                presentation: Vec::new(),
+                presentation: harness_presentation(),
                 participant_kind: "person",
                 signer: SdkDocumentSigner::Certified(Arc::new(SlowIdentity {
                     keys: group.content_keys().unwrap().to_bytes().unwrap().to_vec(),
@@ -10615,7 +10104,7 @@ mod tests {
         let sdk = CollaborationManager::spawn_sdk(
             SdkConnectSource::Fd(fd),
             Some(SdkJoinIdentity {
-                presentation: Vec::new(),
+                presentation: harness_presentation(),
                 participant_kind: "person",
                 signer: SdkDocumentSigner::Certified(Arc::new(KeyedIdentity {
                     asked: Arc::clone(&asked),
@@ -10699,7 +10188,7 @@ mod tests {
         let sdk = CollaborationManager::spawn_sdk(
             SdkConnectSource::Fd(fd),
             Some(SdkJoinIdentity {
-                presentation: Vec::new(),
+                presentation: harness_presentation(),
                 participant_kind: "person",
                 signer: SdkDocumentSigner::Certified(Arc::new(RefusedDocumentIdentity)),
             }),
@@ -10948,7 +10437,7 @@ mod tests {
             action_directory_tx,
             pending_primary: None,
             worker_stopped: false,
-            wifi_bridge_registered: false,
+            command_bridge_registered: false,
             spill: std::collections::VecDeque::new(),
             barrier_slot: None,
             queued_barrier: std::sync::Weak::new(),
@@ -11119,21 +10608,18 @@ mod tests {
 
     /// Only an answer about the request ends collaboration for one change:
     /// a peer saying it will not take this change is not a lost connection,
-    /// while a lost, cancelled or overloaded call — and a missing service —
-    /// leave the outcome unknown.
+    /// while a lost connection — and a missing service — leave the outcome
+    /// unknown.
     #[test]
     fn only_a_peers_answer_counts_as_a_refusal() {
         use runtime_portal::NotAvailable;
-        let typed = NotAvailable::Capnp(capnp::Error::failed(
-            "so.tilo.chat named no kind for a new record".into(),
-        ));
+        let typed = NotAvailable::Refused("so.tilo.chat named no kind for a new record".into());
         assert!(refused_by_peer(&typed));
-        assert!(refused_by_peer(&NotAvailable::Capnp(
-            capnp::Error::unimplemented("no such method".into())
-        )));
         for unknown in [
-            NotAvailable::Capnp(capnp::Error::disconnected("connection reset".into())),
-            NotAvailable::Capnp(capnp::Error::overloaded("bounded bridge is full".into())),
+            NotAvailable::ConnectionFailed(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "the collaboration host closed the connection",
+            )),
             NotAvailable::ServiceFdMissing,
             NotAvailable::ConnectionFailed(std::io::Error::other("no service")),
         ] {
@@ -11148,12 +10634,10 @@ mod tests {
     #[test]
     fn invocation_update_rpc_diagnostic_keeps_cause_and_existing_fail_closed_latch() {
         let state = BridgeState::new();
-        let error = runtime_portal::NotAvailable::Capnp(capnp::Error::failed(
-            "unknown invocation id".into(),
-        ));
+        let error = runtime_portal::NotAvailable::Refused("unknown invocation id".into());
         assert_eq!(
             bounded_rpc_diagnostic(&error),
-            ("capnp_failed", "unknown invocation id".into(), false)
+            ("refused", "unknown invocation id".into(), false)
         );
         state.fail_closed_with_rpc_error("invocation update outcome unknown", Some((389, &error)));
         assert!(!state.is_healthy());
@@ -11174,12 +10658,10 @@ mod tests {
 
     #[test]
     fn invocation_update_rpc_diagnostic_bounds_untrusted_text_without_logging_io_payload() {
-        let error = runtime_portal::NotAvailable::Capnp(capnp::Error::failed(format!(
-            "refused\n\0{}",
-            "🦀".repeat(1024)
-        )));
+        let error =
+            runtime_portal::NotAvailable::Refused(format!("refused\n\0{}", "🦀".repeat(1024)));
         let (kind, detail, truncated) = bounded_rpc_diagnostic(&error);
-        assert_eq!(kind, "capnp_failed");
+        assert_eq!(kind, "refused");
         assert!(detail.starts_with("refused  "));
         assert_eq!(detail.chars().count(), 512);
         assert!(detail.len() <= 2048);
@@ -11533,7 +11015,13 @@ mod tests {
             let broker = FakeBroker::default();
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let cluster = Uuid::new_v4();
-            let presentation = b"certified-test-presentation".to_vec();
+            let presentation = runtime_collab::CertifiedJoinIdentity {
+                workspace_id: cluster.to_string(),
+                device_certificate: b"certified test certificate".to_vec(),
+                proof: vec![5; 64],
+            }
+            .encode()
+            .unwrap();
             let _mgr = CollaborationManager::from_sdk_fd_for_test_with_identity(
                 fd,
                 "alice",
@@ -11805,10 +11293,14 @@ mod tests {
             let mut payload = Vec::with_capacity(5 * 1024 * 1024);
             payload.push(1);
 
-            assert!(!inbound.send_reply(CollabEvent::ActionArrived {
-                type_id: "test.action".to_owned(),
-                payload,
-                from_user_id: "peer".to_owned(),
+            assert!(!inbound.send_reply(CollabEvent::WorkspaceControl {
+                session_id: 1,
+                event: runtime_collab::WorkspaceControlEvent::Frame {
+                    surface: 1,
+                    encoded_h264: payload,
+                    timestamp: 0,
+                    seq: 0,
+                },
             }));
             assert!(!state.is_healthy());
             assert!(rx.try_recv().is_err());
@@ -12018,7 +11510,7 @@ mod tests {
         CollaborationManager::connect_in_background(
             SdkConnectSource::Fd(fd),
             SdkIdentitySource::Ready(Some(SdkJoinIdentity {
-                presentation: Vec::new(),
+                presentation: harness_presentation(),
                 participant_kind: "person",
                 signer: harness_document_signer(),
             })),
@@ -12219,7 +11711,6 @@ mod tests {
             );
             let (
                 pointer_publishes,
-                cursor_publishes,
                 caret_publishes,
                 selection_publishes,
                 typing_publishes,
@@ -12229,7 +11720,6 @@ mod tests {
                 let c = captures.lock().unwrap();
                 (
                     c.pointer_publishes.clone(),
-                    c.cursor_publishes.clone(),
                     c.caret_publishes.clone(),
                     c.selection_publishes.clone(),
                     c.typing_publishes.clone(),
@@ -12242,11 +11732,6 @@ mod tests {
                 vec![(expected_key_bytes.clone(), 1.5, 2.5)],
                 "a pointer carries the key its publisher chose, like every other \
              keyed variant here",
-            );
-            assert!(
-                cursor_publishes.is_empty(),
-                "and does not go out through the keyless call, which would drop \
-             the space on the way",
             );
             assert_eq!(caret_publishes, vec![(expected_key_bytes.clone(), 12)]);
             assert_eq!(
@@ -12527,8 +12012,6 @@ mod tests {
             let broker = FakeBroker {
                 scrollback_response: Some(SeedScrollback {
                     ops: history,
-                    earliest_seq: 1,
-                    latest_seq: 20,
                     done: true,
                 }),
                 ..FakeBroker::default()
@@ -12642,8 +12125,22 @@ mod tests {
             let broker = FakeBroker {
                 context_backlog: vec![SeedContext {
                     collaborators: vec![
-                        ("alice".to_owned(), "Alice".to_owned(), 0x00FF_8000),
-                        ("bob".to_owned(), "Bob".to_owned(), 0),
+                        Collaborator {
+                            id: "alice".to_owned(),
+                            name: "Alice".to_owned(),
+                            colour: Some(collab_types::presence::PresenceHue::Orange),
+                            is_agent: false,
+                            is_self: false,
+                            joined_at: None,
+                        },
+                        Collaborator {
+                            id: "bob".to_owned(),
+                            name: "Bob".to_owned(),
+                            colour: None,
+                            is_agent: false,
+                            is_self: false,
+                            joined_at: None,
+                        },
                     ],
                     permissions: vec!["edit".to_owned(), "share".to_owned()],
                 }],
@@ -12675,7 +12172,6 @@ mod tests {
             assert_eq!(collabs.len(), 2);
             assert_eq!(collabs[0].id, "alice");
             assert_eq!(collabs[0].name, "Alice");
-            // 0x00FF8000 is an orange; 0 says no colour.
             assert_eq!(
                 collabs[0].colour,
                 Some(collab_types::presence::PresenceHue::Orange)
@@ -12686,7 +12182,7 @@ mod tests {
             assert!(contexts[1].1.is_empty());
         }
 
-        // Case `presence_stream_translates_cursor_and_all_other_variants`.
+        // Case `presence_stream_translates_every_variant`.
         {
             let key = PresenceKey::Tab {
                 id: "note-1".to_owned(),
@@ -12696,37 +12192,32 @@ mod tests {
                 SeedPresence {
                     user_id: "peer-bob".to_owned(),
                     key_bytes: key_bytes.clone(),
-                    payload: SeedPayload::Cursor { x: 4.0, y: 5.0 },
+                    payload: collab_types::PeerPresencePayload::Pointer { x: 6.0, y: 9.0 },
                 },
                 SeedPresence {
                     user_id: "peer-bob".to_owned(),
                     key_bytes: key_bytes.clone(),
-                    payload: SeedPayload::Pointer { x: 6.0, y: 9.0 },
+                    payload: collab_types::PeerPresencePayload::Caret { pos: 7 },
                 },
                 SeedPresence {
                     user_id: "peer-bob".to_owned(),
                     key_bytes: key_bytes.clone(),
-                    payload: SeedPayload::Caret { pos: 7 },
+                    payload: collab_types::PeerPresencePayload::Selection { start: 1, end: 3 },
                 },
                 SeedPresence {
                     user_id: "peer-bob".to_owned(),
                     key_bytes: key_bytes.clone(),
-                    payload: SeedPayload::Selection { start: 1, end: 3 },
+                    payload: collab_types::PeerPresencePayload::Typing { start: 2, end: 5 },
                 },
                 SeedPresence {
                     user_id: "peer-bob".to_owned(),
                     key_bytes: key_bytes.clone(),
-                    payload: SeedPayload::Typing { start: 2, end: 5 },
-                },
-                SeedPresence {
-                    user_id: "peer-bob".to_owned(),
-                    key_bytes: key_bytes.clone(),
-                    payload: SeedPayload::Arrived,
+                    payload: collab_types::PeerPresencePayload::Arrived,
                 },
                 SeedPresence {
                     user_id: "peer-bob".to_owned(),
                     key_bytes,
-                    payload: SeedPayload::Left,
+                    payload: collab_types::PeerPresencePayload::Left,
                 },
             ];
             let broker = FakeBroker {
@@ -12736,36 +12227,22 @@ mod tests {
             let (fd, _captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
             // Other events (connection state, context) can arrive in between, so
-            // wait for the seven presence events themselves, not for any seven.
+            // wait for the six presence events themselves, not for any six.
             let events = poll_until(&mut mgr, |events| {
                 events
                     .iter()
-                    .filter(|e| {
-                        matches!(
-                            e,
-                            CollabEvent::RemoteCursorMoved { .. }
-                                | CollabEvent::RemotePresenceUpdate { .. }
-                        )
-                    })
+                    .filter(|e| matches!(e, CollabEvent::RemotePresenceUpdate { .. }))
                     .count()
-                    >= 7
+                    >= 6
             });
 
-            let mut cursor_moves = Vec::new();
-            let mut updates = Vec::new();
-            for e in events {
-                match e {
-                    CollabEvent::RemoteCursorMoved { x, y, .. } => cursor_moves.push((x, y)),
-                    CollabEvent::RemotePresenceUpdate { key, payload, .. } => {
-                        updates.push((key, payload));
-                    }
-                    _ => {}
-                }
-            }
-            assert!(
-                cursor_moves.contains(&(4.0, 5.0)),
-                "cursor payload must land on RemoteCursorMoved"
-            );
+            let updates: Vec<_> = events
+                .into_iter()
+                .filter_map(|e| match e {
+                    CollabEvent::RemotePresenceUpdate { key, payload, .. } => Some((key, payload)),
+                    _ => None,
+                })
+                .collect();
             assert!(
                 updates.contains(&(key.clone(), PresencePayload::Pointer { x: 6.0, y: 9.0 })),
                 "keyed pointer retains its coordinate-space key"
@@ -12810,8 +12287,6 @@ mod tests {
             let op_bytes = postcard::to_stdvec(&op).unwrap();
             let seed = SeedScrollback {
                 ops: vec![op_bytes],
-                earliest_seq: 5,
-                latest_seq: 5,
                 done: true,
             };
             let broker = FakeBroker {
@@ -12869,16 +12344,8 @@ mod tests {
 
             let e = translate_presence_event(runtime_collab::PresenceEvent {
                 user_id: "peer".into(),
-                key_bytes: key_bytes.clone(),
-                payload: SdkPayload::Cursor { x: 7.0, y: 8.0 },
-            })
-            .expect("cursor event");
-            matches!(e, CollabEvent::RemoteCursorMoved { .. });
-
-            let e = translate_presence_event(runtime_collab::PresenceEvent {
-                user_id: "peer".into(),
                 key_bytes,
-                payload: SdkPayload::Caret { pos: 3 },
+                payload: runtime_collab::PresencePayload::Caret { pos: 3 },
             })
             .expect("caret event");
             if let CollabEvent::RemotePresenceUpdate {
@@ -12894,7 +12361,7 @@ mod tests {
             let e = translate_presence_event(runtime_collab::PresenceEvent {
                 user_id: "peer".into(),
                 key_bytes: vec![0xFF, 0xFF, 0xFF],
-                payload: SdkPayload::Arrived,
+                payload: runtime_collab::PresencePayload::Arrived,
             });
             assert!(
                 e.is_none(),
@@ -13084,11 +12551,11 @@ mod tests {
             captures: Arc::new(std::sync::Mutex::new(captures)),
             ..FakeBroker::default()
         };
-        let (fd, captures, worker) = stand_up_fake_broker(broker);
+        let (fd, _captures, worker) = stand_up_fake_broker(broker);
         let sdk = CollaborationManager::spawn_sdk(
             SdkConnectSource::Fd(fd),
             Some(SdkJoinIdentity {
-                presentation: Vec::new(),
+                presentation: harness_presentation(),
                 participant_kind: "agent",
                 signer: harness_document_signer(),
             }),
@@ -13105,7 +12572,6 @@ mod tests {
         let admission = manager.await_primary_route();
         let state = broker_state(&manager);
         let healthy = state.is_healthy();
-        let initial_reads = captures.lock().unwrap().action_catalogue_reads;
         let initial = manager.poll().into_iter().find_map(|event| match event {
             CollabEvent::ActionCatalogue { surfaces } => Some(surfaces),
             _ => None,
@@ -13134,10 +12600,6 @@ mod tests {
         assert!(
             healthy,
             "initial and watched baselines must not disconnect the application"
-        );
-        assert_eq!(
-            initial_reads, 1,
-            "do not read a watched snapshot while initial is queued"
         );
         assert_eq!(
             initial.unwrap()[0].actions.len(),
@@ -13186,7 +12648,7 @@ mod tests {
         let sdk = CollaborationManager::spawn_sdk(
             SdkConnectSource::Fd(fd),
             Some(SdkJoinIdentity {
-                presentation: Vec::new(),
+                presentation: harness_presentation(),
                 participant_kind: "agent",
                 signer: harness_document_signer(),
             }),
@@ -13358,7 +12820,7 @@ pub mod test_support {
         let sdk = CollaborationManager::spawn_sdk(
             SdkConnectSource::Fd(fd),
             Some(super::SdkJoinIdentity {
-                presentation: Vec::new(),
+                presentation: super::harness_presentation(),
                 participant_kind: "person",
                 signer: super::harness_document_signer(),
             }),

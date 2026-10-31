@@ -215,6 +215,7 @@ pub use tilo_desktop_model::GroupShape as GroupTopology;
               combinatorial config API — folding them into an enum or bitflags would not make \
               any call site clearer"
 )]
+#[crate::component::not_a_component(shell, "the strip of window groups")]
 pub struct GroupRow {
     external_navigation: bool,
     close_reports: Vec<crate::application::ComponentCloseReport>,
@@ -5110,9 +5111,17 @@ impl Widget for GroupRow {
             }
             // The stretch of the canvas this draw's pan shows: the
             // viewport, moved by the shift that took the groups there.
+            // On a canvas, windows stand anywhere, panned past the deck's
+            // edges too: what is drawn stops at the deck, never over the
+            // top bar above it.
+            let bounds = if self.canvas.is_some() {
+                viewport
+            } else {
+                Self::drawn_bounds(viewport)
+            };
             let clip = Rect {
                 x1: clip_right,
-                ..Self::drawn_bounds(viewport)
+                ..bounds
             };
             self.apart_window =
                 unbake.then(|| self.apart_window_of_lane(k, viewport, shift, (clip.y0, clip.y1)));

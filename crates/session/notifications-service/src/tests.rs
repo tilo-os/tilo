@@ -6,6 +6,7 @@ use std::time::Duration;
 use futures_util::StreamExt as _;
 use serde_json::json;
 use tilo_service::{Service, Services};
+use tilo_test_env::PrivateBus;
 use tokio::net::UnixStream;
 use zbus::connection::Builder;
 use zbus::zvariant::{OwnedValue, Str};
@@ -606,50 +607,19 @@ async fn capabilities_and_server_information_are_reported() {
 }
 
 /// A private session bus for the test's life.
-struct SessionBus {
-    daemon: std::process::Child,
-    address: String,
-    _directory: tempfile::TempDir,
-}
+struct SessionBus(PrivateBus);
 
 impl SessionBus {
     fn start() -> Self {
-        use std::io::BufRead as _;
-        let directory = tempfile::tempdir().expect("tempdir");
-        let mut daemon = std::process::Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .arg(format!(
-                "--address=unix:path={}",
-                directory.path().join("bus").display()
-            ))
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("the session bus needs dbus-daemon");
-        let mut address = String::new();
-        std::io::BufReader::new(daemon.stdout.take().expect("stdout"))
-            .read_line(&mut address)
-            .expect("the bus address");
-        assert!(!address.trim().is_empty(), "dbus-daemon printed no address");
-        Self {
-            daemon,
-            address: address.trim().to_owned(),
-            _directory: directory,
-        }
+        Self(PrivateBus::start())
     }
 
     async fn connect(&self) -> zbus::Connection {
-        Builder::address(self.address.as_str())
+        Builder::address(self.0.address())
             .expect("address")
             .build()
             .await
             .expect("connected")
-    }
-}
-
-impl Drop for SessionBus {
-    fn drop(&mut self) {
-        let _ = self.daemon.kill();
-        let _ = self.daemon.wait();
     }
 }
 

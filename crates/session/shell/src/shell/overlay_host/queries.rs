@@ -57,7 +57,11 @@ impl ShellOverlayHost {
             } else {
                 resource_label
             };
-            return format!("‹ {label}");
+            // The token reads as where the search stands, in words.
+            return crate::shell::i18n::t_args(
+                "search-scope-in-resource",
+                &[("resource", label.into())],
+            );
         }
         match scope {
             SearchScope::ActiveApp => {

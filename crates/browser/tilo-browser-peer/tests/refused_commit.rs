@@ -20,7 +20,8 @@ tilo_automerge_isolate::test_worker!();
 
 use collab_types::{DocumentMutation, document_channel_id};
 use tilo_app::prelude::*;
-use tilo_browser_peer::{ContentCipher, PeerEvent, PeerHandle};
+use tilo_browser_peer::{PeerEvent, PeerHandle};
+use tilo_peer_state::document_frame::ContentCipher;
 use tilo_relay::member_limits::MemberLimitsConfig;
 use tilo_relay_protocol::refusal::{PLAIN_TOO_FAST, plain_reason};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};

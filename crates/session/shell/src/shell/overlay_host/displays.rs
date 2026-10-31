@@ -100,6 +100,8 @@ fn displays_of(outputs: &[OutputGeometry]) -> Vec<Display> {
             y: o.y,
             width: o.width,
             height: o.height,
+            // This list already leads with the primary display.
+            primary: false,
         })
         .collect()
 }

@@ -622,6 +622,9 @@ fn agent_models(
             profile
                 .models
                 .iter()
+                // An agent plans by calling tools: a model that calls none
+                // is not offered (`ProviderConfig::set_agent_model`).
+                .filter(|model| model.tool_calling)
                 .map(move |model| option(profile, model))
         })
         .collect();

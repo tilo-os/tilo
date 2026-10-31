@@ -2,7 +2,7 @@
 use automerge::{ROOT, ReadDoc as _};
 use std::{io::Read as _, path::PathBuf, sync::Arc, time::SystemTime};
 use tilo_desktop_model::{RoomId, WorkspaceId};
-use tilo_joined_room::{Change, NativeAuthorityStorage, NativeWorkspaceOwner, Store};
+use tilo_peer_state::owner::{Change, NativeAuthorityStorage, NativeWorkspaceOwner, Store};
 
 struct ReadOnlyStore;
 
@@ -55,7 +55,7 @@ fn matches_category(bytes: &[u8], room: &str, name: &str) -> Result<bool, String
 }
 
 fn check_retained_publication(
-    outgoing: &tilo_joined_room::NativeOutgoing<'_>,
+    outgoing: &tilo_peer_state::owner::NativeOutgoing<'_>,
     document: &[u8],
     room: &str,
     record: &str,
@@ -93,13 +93,13 @@ fn check_retained_publication(
 fn read_owner(path: &std::path::Path) -> Result<NativeWorkspaceOwner, Box<dyn std::error::Error>> {
     // The record the owner keeps in a file of its own beside the state file,
     // or, for a state file from before it had one, the record inside it.
-    let beside = tilo_joined_room::owner_file_of(path);
-    let bound = u64::try_from(tilo_joined_room::MAX_STATE_BYTES)?.saturating_add(1);
+    let beside = tilo_peer_state::owner::owner_file_of(path);
+    let bound = u64::try_from(tilo_peer_state::owner::MAX_STATE_BYTES)?.saturating_add(1);
     let authority: NativeAuthorityStorage = match std::fs::File::open(&beside) {
         Ok(file) => {
             let mut bytes = Vec::new();
             file.take(bound).read_to_end(&mut bytes)?;
-            if bytes.len() > tilo_joined_room::MAX_STATE_BYTES {
+            if bytes.len() > tilo_peer_state::owner::MAX_STATE_BYTES {
                 return Err("scratch owner record exceeds normal bound".into());
             }
             serde_json::from_slice(&bytes)?
@@ -109,7 +109,7 @@ fn read_owner(path: &std::path::Path) -> Result<NativeWorkspaceOwner, Box<dyn st
             std::fs::File::open(path)?
                 .take(bound)
                 .read_to_end(&mut bytes)?;
-            if bytes.len() > tilo_joined_room::MAX_STATE_BYTES {
+            if bytes.len() > tilo_peer_state::owner::MAX_STATE_BYTES {
                 return Err("scratch state exceeds normal owner bound".into());
             }
             let mut state: serde_json::Value = serde_json::from_slice(&bytes)?;
@@ -192,7 +192,8 @@ fn check_agent_membership(
     let generation = owner.with_outgoing(room, now, |view, _| {
         let member = view
             .peer()
-            .permissions(view.device().device_public_key, now)?;
+            .permissions(view.device().device_public_key, now)
+            .map_err(|error| error.to_string())?;
         let seconds = now
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|_| "owner policy clock is unavailable")?
@@ -229,7 +230,8 @@ fn native_record_observation(
         )?;
         let member = view
             .peer()
-            .permissions(view.device().device_public_key, now)?;
+            .permissions(view.device().device_public_key, now)
+            .map_err(|error| error.to_string())?;
         let app_write_permitted = member
             .policy
             .app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now));
@@ -296,8 +298,7 @@ pub(super) fn check() -> Result<(), Box<dyn std::error::Error>> {
         if enrollment {
             if view.peer().room() != room_text
                 || view.peer().admitted_room().is_none()
-                || view.host().is_some()
-                || view.governor().device_public_key != view.device().device_public_key
+                || !view.hosted_here()
             {
                 return Err("exact current-device native owner is not admitted".into());
             }
@@ -306,7 +307,7 @@ pub(super) fn check() -> Result<(), Box<dyn std::error::Error>> {
                 .check_workspace_administration(view.device().device_public_key, now)?;
             return Ok(view.generation());
         }
-        let tilo_joined_room::DocumentRead::Captured(document) = view.read_document(
+        let tilo_peer_state::owner::DocumentRead::Captured(document) = view.read_document(
             view.device().device_public_key,
             "so.tilo.chat",
             &record,
@@ -344,7 +345,7 @@ pub(super) fn check() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::{ReadOnlyStore, exact_agent_membership, matches_category};
     use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable as _};
-    use tilo_joined_room::{Change, NativeAuthorityStorage, Store as _};
+    use tilo_peer_state::owner::{Change, NativeAuthorityStorage, Store as _};
 
     #[test]
     fn membership_requires_live_exact_room_subject_and_restriction() {

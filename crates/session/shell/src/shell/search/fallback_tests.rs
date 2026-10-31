@@ -67,16 +67,13 @@ impl SearchProvider for Notes {
     }
 }
 
-/// The desktop in front: one workspace, with the agent `tide` when `agent`.
-fn desktop(agent: bool) -> Chrome {
+/// The desktop in front: one workspace, with no agent admitted to it:
+/// asking makes a new agent for the task.
+fn desktop() -> Chrome {
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::new();
     let mut workspace = Workspace::new(id, "Plans");
     workspace.set_owner("shell-fixture");
-    if agent {
-        use tilo_action_broker::test_support::{Grants as _, KindSet};
-        workspace.admit_agent("tide", KindSet::READ);
-    }
     tree.desktop.workspaces.push(workspace);
     tree.desktop.active = id;
     ChromeState::new_with_fixture_handle(
@@ -93,14 +90,17 @@ fn offline(chrome: &Chrome) {
     });
 }
 
-/// Search with the notes, an agent whose model is at `model` (none without)
-/// and the web.
-fn search(model: Option<EndpointLocation>) -> SearchRegistry {
+/// Search with the notes, agents whose model is at `model` (none without),
+/// an agent runtime when `runtime`, and the web.
+fn search(runtime: bool, model: Option<EndpointLocation>) -> SearchRegistry {
     let mut registry = SearchRegistry::new();
     registry.register(Rc::new(Notes {
         kinds: vec![ResourceKind::Note],
     }));
-    registry.register(Rc::new(AskAgentProvider::with_models(move |_| model)));
+    registry.register(Rc::new(AskAgentProvider::with_runtime_and_models(
+        move || runtime,
+        move |_| model,
+    )));
     registry.register(Rc::new(WebProvider::with_installed(|_| None)));
     registry
 }
@@ -148,9 +148,9 @@ fn web_row(query: &str) -> String {
 
 #[test]
 fn a_direct_match_leads_and_enter_runs_it_with_asking_and_the_web_after() {
-    let chrome = desktop(true);
+    let chrome = desktop();
     let found = rows(
-        &search(Some(EndpointLocation::Hosted)),
+        &search(true, Some(EndpointLocation::Hosted)),
         &chrome,
         "quarterly report",
     );
@@ -171,9 +171,13 @@ fn a_direct_match_leads_and_enter_runs_it_with_asking_and_the_web_after() {
 
 #[test]
 fn with_only_a_weak_match_enter_hands_the_query_to_the_agent() {
-    let chrome = desktop(true);
+    let chrome = desktop();
     let query = "budget for the offsite";
-    let found = rows(&search(Some(EndpointLocation::Hosted)), &chrome, query);
+    let found = rows(
+        &search(true, Some(EndpointLocation::Hosted)),
+        &chrome,
+        query,
+    );
     assert_eq!(
         order(&found),
         [
@@ -185,7 +189,13 @@ fn with_only_a_weak_match_enter_hands_the_query_to_the_agent() {
     );
     assert_eq!(
         found[0].subtitle.as_deref(),
-        Some(t_args("search-ask-agent-subtitle", &[("agent", "tide".into())]).as_str())
+        Some(
+            t_args(
+                "search-ask-agent-subtitle",
+                &[("agent", t("agent-quick-new-agent").into())]
+            )
+            .as_str()
+        )
     );
     enter(&found, &chrome);
     assert_eq!(
@@ -201,8 +211,12 @@ fn with_only_a_weak_match_enter_hands_the_query_to_the_agent() {
 
 #[test]
 fn with_no_match_asking_the_agent_leads_and_the_web_follows() {
-    let chrome = desktop(true);
-    let found = rows(&search(Some(EndpointLocation::ThisDevice)), &chrome, "zzqx");
+    let chrome = desktop();
+    let found = rows(
+        &search(true, Some(EndpointLocation::ThisDevice)),
+        &chrome,
+        "zzqx",
+    );
     assert_eq!(
         order(&found),
         [
@@ -216,24 +230,26 @@ fn with_no_match_asking_the_agent_leads_and_the_web_follows() {
 
 #[test]
 fn an_agent_that_cannot_take_it_says_why_and_the_web_moves_up() {
-    for (chrome, model, why) in [
+    for (chrome, runtime, model, why) in [
         (
-            desktop(false),
+            desktop(),
+            false,
             Some(EndpointLocation::Hosted),
             "search-ask-agent-no-agent",
         ),
-        (desktop(true), None, "search-ask-agent-no-model"),
+        (desktop(), true, None, "search-ask-agent-no-model"),
         (
             {
-                let chrome = desktop(true);
+                let chrome = desktop();
                 offline(&chrome);
                 chrome
             },
+            true,
             Some(EndpointLocation::Hosted),
             "search-ask-agent-offline",
         ),
     ] {
-        let found = rows(&search(model), &chrome, "zzqx");
+        let found = rows(&search(runtime, model), &chrome, "zzqx");
         assert_eq!(
             order(&found),
             [
@@ -244,7 +260,7 @@ fn an_agent_that_cannot_take_it_says_why_and_the_web_moves_up() {
         );
         assert_eq!(found[1].subtitle.as_deref(), Some(t(why).as_str()));
         // And after a direct match too.
-        let found = rows(&search(model), &chrome, "offsite plan");
+        let found = rows(&search(runtime, model), &chrome, "offsite plan");
         assert_eq!(
             order(&found),
             [
@@ -259,16 +275,24 @@ fn an_agent_that_cannot_take_it_says_why_and_the_web_moves_up() {
 
 #[test]
 fn a_model_on_this_device_answers_offline() {
-    let chrome = desktop(true);
+    let chrome = desktop();
     offline(&chrome);
-    let found = rows(&search(Some(EndpointLocation::ThisDevice)), &chrome, "zzqx");
+    let found = rows(
+        &search(true, Some(EndpointLocation::ThisDevice)),
+        &chrome,
+        "zzqx",
+    );
     assert_eq!(found[0].provider_id, ASK, "{:?}", order(&found));
 }
 
 #[test]
 fn with_no_agent_the_row_opens_where_one_is_added() {
-    let chrome = desktop(false);
-    let found = rows(&search(Some(EndpointLocation::Hosted)), &chrome, "zzqx");
+    let chrome = desktop();
+    let found = rows(
+        &search(false, Some(EndpointLocation::Hosted)),
+        &chrome,
+        "zzqx",
+    );
     let ask = found
         .iter()
         .find(|row| row.provider_id == ASK)

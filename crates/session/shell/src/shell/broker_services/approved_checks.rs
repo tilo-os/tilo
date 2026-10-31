@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use tilo_action_broker::collab_broker_capnp::{ApprovedCheckContext, ApprovedCheckServices};
+use tilo_action_broker::collab_app_broker::{ApprovedCheckContext, ApprovedCheckServices};
 use ush::approved_checks::{ApprovedCheck, ApprovedChecks, CheckOutcome, ProjectBinding};
 
 const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
@@ -226,8 +226,7 @@ impl NativeChecks {
         self.owner
             .opened_owner("committed project host unavailable")?
             .with_current(room, |view| {
-                let host = view.host().unwrap_or_else(|| view.governor());
-                if host.device_public_key != binding.host {
+                if view.room_host().device_public_key != binding.host {
                     return Err("approved project is governed by a different host".into());
                 }
                 Ok(())

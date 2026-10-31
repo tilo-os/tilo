@@ -1,10 +1,12 @@
-//! Explicit connected-service fixtures, with an owned and joined RPC driver.
+//! Explicit connected-service fixtures, with an owned and joined driver.
 
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::thread::JoinHandle;
 
-use crate::app_host_capnp::app_host;
+use std::rc::Rc;
+
+use crate::wire::{Answer, Host, Operation};
 
 /// A test's server transport. Dropping it stops and joins only its own driver.
 pub struct ConnectedService {
@@ -16,7 +18,7 @@ impl ConnectedService {
     /// Supply an explicit service dependency without mutating process environment.
     pub fn start<S>(server: S) -> Result<(Self, OwnedFd), String>
     where
-        S: app_host::Server + Send + 'static,
+        S: Host + Send,
     {
         let (client, connection) = UnixStream::pair().map_err(|error| error.to_string())?;
         connection
@@ -65,33 +67,27 @@ fn serve<S>(
     mut shutdown: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), String>
 where
-    S: app_host::Server + 'static,
+    S: Host,
 {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
-    // Shutdown the owned socket, then keep driving RPC long enough to retire
-    // its pending server calls. Dropping RpcSystem alone can retain call cycles.
+    // Shutdown the owned socket, then keep driving the connection until it
+    // sees the hang-up, which retires its pending calls.
     let disconnect = connection.try_clone().map_err(|error| error.to_string())?;
     tokio::task::LocalSet::new().block_on(&runtime, async move {
         let connection =
             tokio::net::UnixStream::from_std(connection).map_err(|error| error.to_string())?;
-        let service: app_host::Client = capnp_rpc::new_client(server);
-        let mut rpc = Box::pin(runtime_portal::serve_connected_io(
-            connection,
-            service.client,
-        ));
+        let (reader, writer) = connection.into_split();
+        let mut driver = Box::pin(crate::wire::serve(Rc::new(server), reader, writer));
         tokio::select! {
             biased;
-            result = &mut rpc => driver_result(result),
+            result = &mut driver => driver_result(result),
             _ = &mut shutdown => {
-                // EOF takes the ordinary connection-disconnect path, canceling
-                // pending server calls before we join. A separate Capnp
-                // disconnector can release state ahead of the message loop.
                 disconnect.shutdown(std::net::Shutdown::Both)
                     .map_err(|error| error.to_string())?;
-                let result = tokio::time::timeout(tilo_test_env::hang_bound(), &mut rpc)
+                let result = tokio::time::timeout(tilo_test_env::hang_bound(), &mut driver)
                     .await.map_err(|_| "app-host test transport did not disconnect".to_owned())?;
                 driver_result(result)
             },
@@ -99,12 +95,26 @@ where
     })
 }
 
-fn driver_result(result: Result<(), capnp::Error>) -> Result<(), String> {
+fn driver_result(result: Result<(), wire_frame::FrameError>) -> Result<(), String> {
     match result {
         Ok(()) => Ok(()),
-        Err(error) if error.kind == capnp::ErrorKind::Disconnected => Ok(()),
+        Err(wire_frame::FrameError::Io(error))
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::NotConnected
+            ) =>
+        {
+            Ok(())
+        }
         Err(error) => Err(error.to_string()),
     }
+}
+
+/// A host answering one request kind; anything else fails as unimplemented.
+pub fn refuse(request: &Operation) -> Result<Answer, String> {
+    Err(format!("unimplemented: {request:?}"))
 }
 
 #[cfg(test)]
@@ -113,14 +123,12 @@ mod tests {
 
     struct EmptyHost;
 
-    impl app_host::Server for EmptyHost {
-        fn list(
-            self: capnp::capability::Rc<Self>,
-            _params: app_host::ListParams,
-            mut results: app_host::ListResults,
-        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            results.get().init_entries(0);
-            std::future::ready(Ok(()))
+    impl Host for EmptyHost {
+        fn handle(
+            self: Rc<Self>,
+            _request: Operation,
+        ) -> impl core::future::Future<Output = Result<Answer, String>> + 'static {
+            std::future::ready(Ok(Answer::Packages(Vec::new())))
         }
     }
 
@@ -185,20 +193,21 @@ mod tests {
         "[sandbox.net]\nmode = \"off\"\n[entrypoint]\nbin = \"bin/mail\"\n",
     );
 
-    impl app_host::Server for ListingHost {
-        fn list(
-            self: capnp::capability::Rc<Self>,
-            _params: app_host::ListParams,
-            mut results: app_host::ListResults,
-        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            let mut entry = results.get().init_entries(1).get(0);
-            entry.set_id(&[7; 32]);
-            entry.set_payload_root("/usr/share/tilo-apps/payloads/so.tilo.mail");
-            entry.set_manifest_path("/usr/share/tilo-apps/payloads/so.tilo.mail/manifest.toml");
-            entry.set_manifest_text(MAIL_MANIFEST);
-            entry.set_size_bytes(2_400_000);
-            entry.set_user_managed(false);
-            std::future::ready(Ok(()))
+    impl Host for ListingHost {
+        fn handle(
+            self: Rc<Self>,
+            _request: Operation,
+        ) -> impl core::future::Future<Output = Result<Answer, String>> + 'static {
+            std::future::ready(Ok(Answer::Packages(vec![crate::wire::PackageEntry {
+                id: [7; 32],
+                pinning: crate::wire::WirePinning::Tried,
+                payload_root: "/usr/share/tilo-apps/payloads/so.tilo.mail".into(),
+                manifest_path: "/usr/share/tilo-apps/payloads/so.tilo.mail/manifest.toml".into(),
+                manifest_text: MAIL_MANIFEST.into(),
+                size_bytes: 2_400_000,
+                last_used_unix: 0,
+                user_managed: false,
+            }])))
         }
     }
 
@@ -223,12 +232,11 @@ mod tests {
     }
 
     struct PanickingHost;
-    impl app_host::Server for PanickingHost {
-        fn list(
-            self: capnp::capability::Rc<Self>,
-            _params: app_host::ListParams,
-            _results: app_host::ListResults,
-        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+    impl Host for PanickingHost {
+        fn handle(
+            self: Rc<Self>,
+            _request: Operation,
+        ) -> impl core::future::Future<Output = Result<Answer, String>> + 'static {
             std::future::poll_fn(|_| panic!("injected owned service failure"))
         }
     }
@@ -258,12 +266,11 @@ mod tests {
         waiter: std::sync::Arc<std::sync::Mutex<Option<std::task::Waker>>>,
     }
 
-    impl app_host::Server for PendingHost {
-        fn list(
-            self: capnp::capability::Rc<Self>,
-            _params: app_host::ListParams,
-            _results: app_host::ListResults,
-        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+    impl Host for PendingHost {
+        fn handle(
+            self: Rc<Self>,
+            _request: Operation,
+        ) -> impl core::future::Future<Output = Result<Answer, String>> + 'static {
             let pending = PendingCall(std::sync::Arc::clone(&self.canceled));
             let entered = self.entered.clone();
             let waiter = std::sync::Arc::clone(&self.waiter);
@@ -275,7 +282,7 @@ mod tests {
                     std::task::Poll::<()>::Pending
                 })
                 .await;
-                Ok(())
+                Ok(Answer::Done)
             }
         }
     }

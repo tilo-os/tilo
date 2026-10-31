@@ -402,6 +402,8 @@ pub(crate) struct HostRemount<'a> {
     pub(crate) node_map: &'a mut HashMap<NodeId, *mut dyn Widget>,
     pub(crate) bindings: &'a mut crate::bound_dispatch::BoundNodeMap,
     pub(crate) close_reports: &'a mut Vec<crate::application::ComponentCloseReport>,
+    /// How the person reaches the window: what the remount mounts hears it.
+    pub(crate) interaction: crate::interaction::InteractionEnvironment,
 }
 
 pub(crate) trait HostCore {
@@ -565,6 +567,10 @@ pub(crate) trait HostCore {
             .extend(crate::component_lifecycle::take_component_close_reports(
                 parts.root,
             ));
+        // What a widget made since the input last changed (a view a press
+        // opened) hears how the person reaches the window before it is laid
+        // out; a widget that already has it keeps it.
+        parts.root.set_interaction_environment(parts.interaction);
         let mapped = parts.node_map.len();
         let mut remount = crate::widget::Remount::new(parts.taffy, parts.theme, parts.node_map);
         let applied = parts.root.remount_children(&mut remount);
@@ -927,16 +933,22 @@ pub(crate) trait HostCore {
     /// about to change under the host's maps.
     fn history_commands_arrived(&mut self);
 
+    /// Answer presses the registered History's own controls queued: History
+    /// hosts the chrome it presents, and a press reaches it as an accepted
+    /// control intent. Whether any ran.
+    fn service_history_own_controls(&mut self) -> bool;
+
     /// Carry out what the registered History and the History surfaces
     /// embedded in the app asked of their held-back controls: review,
     /// confirm or cancel each, while History still holds input. Whether
     /// anything asked.
     fn service_pending_history_commands(&mut self) -> bool {
+        let answered = self.service_history_own_controls();
         let commands = self
             .registered_history_mut()
             .map_or_else(Vec::new, |history| history.drain_pending_control_commands());
         let embedded = crate::history_mode::embedded::drain_pending_commands(self.host_root_mut());
-        let asked = !commands.is_empty() || !embedded.is_empty();
+        let asked = answered || !commands.is_empty() || !embedded.is_empty();
         if asked {
             self.history_commands_arrived();
         }

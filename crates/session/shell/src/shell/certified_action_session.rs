@@ -14,6 +14,53 @@ use tilo_actions::remote::{
 
 use super::collab_broker::AppActionBroker;
 
+/// Whether this device's identity in a room is settled, so a session bound
+/// to it can be opened ([`ActionSessionSource::identity_gate`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IdentityGate {
+    /// Settled: the revision a session opened now is bound to.
+    Settled(u64),
+    /// Just changed: it settles at this moment, when whatever waits for it
+    /// goes on.
+    SettlesAt(std::time::Instant),
+    /// It cannot be known: a file cannot be examined, or the device key has
+    /// no file. Nothing settles it on its own.
+    Unknown,
+}
+
+impl IdentityGate {
+    /// The gate `stamp`, read at `now`, sets.
+    pub(crate) fn of(
+        stamp: Option<&tilo_identity_host::join_proof::CurrentDeviceStamp>,
+        now: std::time::Instant,
+    ) -> Self {
+        use std::hash::{Hash as _, Hasher as _};
+        let Some(stamp) = stamp else {
+            return Self::Unknown;
+        };
+        if stamp.settled() {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            stamp.hash(&mut hasher);
+            return Self::Settled(hasher.finish());
+        }
+        // An unsettled stamp holds a file, so it names when it settles; the
+        // wall clock's wait is carried onto the monotonic `now`.
+        let wait = stamp
+            .settles_at()
+            .and_then(|at| at.duration_since(std::time::SystemTime::now()).ok())
+            .unwrap_or_default();
+        Self::SettlesAt(now.checked_add(wait).unwrap_or(now))
+    }
+
+    /// The settled revision; `None` while it is not settled.
+    pub(crate) const fn revision(self) -> Option<u64> {
+        match self {
+            Self::Settled(revision) => Some(revision),
+            Self::SettlesAt(_) | Self::Unknown => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct CertifiedActionSession {
     broker: AppActionBroker,
@@ -115,6 +162,15 @@ impl ActionSessionSource {
     /// no session. `None` while that can't be known (a file can't be
     /// examined, or was written too recently to trust its stamp): the caller
     /// must assume it changed.
+    pub(crate) fn identity_revision(&self, room: &str) -> Option<u64> {
+        self.identity_gate(room, std::time::Instant::now())
+            .revision()
+    }
+
+    /// Whether a session for `room` can be opened at `now`, bound to this
+    /// device's settled identity there, or when it can. Every path that
+    /// asks an agent from the desktop (the chord, the palette, the work the
+    /// chrome hands over) waits on this one answer.
     #[cfg_attr(
         not(test),
         expect(
@@ -122,17 +178,15 @@ impl ActionSessionSource {
             reason = "a test fixture source answers without identity files"
         )
     )]
-    pub(crate) fn identity_revision(&self, room: &str) -> Option<u64> {
-        use std::hash::{Hash as _, Hasher as _};
+    pub(crate) fn identity_gate(&self, room: &str, now: std::time::Instant) -> IdentityGate {
         #[cfg(test)]
         if self.fixture.is_some() || self.mock.is_some() {
-            return Some(0);
+            return IdentityGate::Settled(0);
         }
-        let stamp = tilo_identity_host::join_proof::current_device_stamp(room)
-            .filter(tilo_identity_host::join_proof::CurrentDeviceStamp::settled)?;
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        stamp.hash(&mut hasher);
-        Some(hasher.finish())
+        IdentityGate::of(
+            tilo_identity_host::join_proof::current_device_stamp(room).as_ref(),
+            now,
+        )
     }
 
     pub(crate) fn open(
@@ -165,7 +219,7 @@ impl ActionSessionSource {
 
 #[derive(Clone)]
 pub(crate) enum ActionLifecycle {
-    Certified(tilo_action_broker::collab_broker_capnp::CertifiedActionLifecycle),
+    Certified(tilo_action_broker::collab_app_broker::CertifiedActionLifecycle),
     /// Compatibility for rows admitted without certificate custody. Never
     /// reinterpret these as a certified person's jobs or issue evidence.
     Uncertified {
@@ -341,7 +395,7 @@ impl CertifiedActionSession {
         let joined = tilo_identity_host::join_proof::trusted_current_join_proof(room)
             .map_err(|error| format!("selected workspace identity unavailable: {error}"))?;
         let certificate = &joined.certificate;
-        let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        let person = tilo_action_broker::collab_app_broker::principal_id_for_root(
             certificate.user_public_key,
         );
         if expected_person.is_some_and(|expected| expected != person) {

@@ -507,7 +507,7 @@ fn building_the_session_brokers_owner_services_never_waits_for_the_open() {
     use crate::shell::broker_services::{NATIVE_OWNER_OPENING, NativeOwnerCommitService};
     use std::sync::Arc;
     use tilo_action_broker::services::WorkspaceMemberships;
-    use tilo_owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
+    use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
     let directory = tempfile::tempdir().expect("a directory for the state file");
     let path = directory.path().join("state.json");
     let tree = tree_at(&path);

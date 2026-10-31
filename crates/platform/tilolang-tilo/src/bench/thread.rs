@@ -192,6 +192,7 @@ pub(super) fn run(sized: &Sized<'_>, list: &List, nested: &Nested) -> Result<Vec
         return Ok(out);
     }
     let mut room = sized.open()?;
+    super::engines::settle(sized.packages.iter().map(|p| &p.wasm))?;
     room.settle();
     let mut thread = Thread::open(&room, &item)?;
     room.frame(&mut [&mut thread.view])?;
@@ -208,7 +209,7 @@ fn open(sized: &Sized<'_>, item: &ResourceRef) -> Result<Record, String> {
     let mut samples = Vec::new();
     let mut nodes = 0;
     let mut work = None;
-    for _ in 0..sized.config.samples {
+    for _ in 0..sized.config.open_samples() {
         let room = sized.open()?;
         let before = Work::of(&room, &[]);
         let start = Instant::now();

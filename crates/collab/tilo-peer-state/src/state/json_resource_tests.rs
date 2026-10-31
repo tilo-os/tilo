@@ -8,11 +8,14 @@ use super::*;
     reason = "`root` and `room` are the domain's own names"
 )]
 pub(crate) fn identity_fixture() -> (GovernedIdentity, SystemTime) {
-    let (peer, owner_key, _, delegate, now) = crate::admission_tests::seeded();
+    let (peer, _, _, _, now) = crate::admission_tests::seeded();
     let room = peer.admitted_room().unwrap();
     let identities = room.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
     let (value, _) = room
-        .get(&identities, hex::encode(peer.authority().device_public_key))
+        .get(
+            &identities,
+            hex::encode(peer.owner_certificates()[0].device_public_key),
+        )
         .unwrap()
         .unwrap();
     let automerge::Value::Scalar(value) = value else {
@@ -35,22 +38,6 @@ pub(crate) fn identity_fixture() -> (GovernedIdentity, SystemTime) {
     };
     tilo_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
     identity.revocations.push(revocation);
-    identity.workspace_delegations.push(
-        crate::join::sign_workspace_delegation(
-            peer.room(),
-            u64::MAX,
-            &identity.device_cert,
-            delegate,
-            crate::join::WorkspaceDelegationPermissions {
-                issue_invitations: true,
-                admit_invited_members: true,
-            },
-            [6; 16],
-            Some(u64::MAX),
-            &owner_key,
-        )
-        .unwrap(),
-    );
     (identity, now)
 }
 
@@ -74,15 +61,6 @@ fn verify_identity(identity: &GovernedIdentity, now: SystemTime) {
     tilo_user_identity::verify_device_cert_at(&identity.device_cert, now_ns(now)).unwrap();
     for entry in &identity.revocations {
         tilo_user_identity::verify_revocation_entry(entry).unwrap();
-    }
-    for delegation in &identity.workspace_delegations {
-        crate::join::verify_workspace_delegation(
-            delegation,
-            &identity.device_cert,
-            &RevocationList::new(),
-            now_ns(now),
-        )
-        .unwrap();
     }
 }
 

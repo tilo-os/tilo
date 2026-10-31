@@ -37,6 +37,11 @@ pub const LANGUAGE: Key<Option<String>> = Key::new(SECTION, "language", || None)
 /// theme's own face.
 pub const UI_FACE: Key<Option<String>> = Key::new(SECTION, "ui_face", || None);
 
+/// The accent the person chose, by any name the presence palette gives a hue
+/// (`violet`, `teal`). Unset follows the theme's own accent. A high-contrast
+/// theme keeps its colourless accent whatever this says.
+pub const ACCENT: Key<Option<String>> = Key::new(SECTION, "accent", || None);
+
 /// How much of the theme's translucency the person keeps: `1` as the theme
 /// sets it, `0` floating chrome opaque. Unset follows the theme. The
 /// accessibility switch that makes every panel opaque (`reduce_transparency`)
@@ -69,6 +74,7 @@ mod tests {
                 "language": "de-DE",
                 "wallpaper": "custom",
                 "ui_face": "Hyperlegible",
+                "accent": "violet",
                 "translucency": 0.4,
             },
         }));
@@ -83,12 +89,14 @@ mod tests {
             UI_FACE.from_document(&document).as_deref(),
             Some("Hyperlegible")
         );
+        assert_eq!(ACCENT.from_document(&document).as_deref(), Some("violet"));
         assert_eq!(TRANSLUCENCY.from_document(&document), Some(0.4));
         let empty = Map::new();
         assert_eq!(MODE.from_document(&empty), None);
         assert!(!HIGH_CONTRAST.from_document(&empty));
         assert_eq!(WALLPAPER.from_document(&empty), None);
         assert_eq!(UI_FACE.from_document(&empty), None);
+        assert_eq!(ACCENT.from_document(&empty), None);
         assert_eq!(TRANSLUCENCY.from_document(&empty), None);
     }
 }

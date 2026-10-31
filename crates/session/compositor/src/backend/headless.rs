@@ -6,13 +6,15 @@
 //! asked ([`Compositor::render`](crate::Compositor::render)), each drawing
 //! only what changed since the last.
 
+use std::collections::HashMap;
+
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::pixman::PixmanRenderer;
 use smithay::backend::renderer::{Bind, ExportMem, ImportDma as _, Offscreen};
 use smithay::output::Output;
 use smithay::reexports::pixman::Image;
-use smithay::utils::{Buffer, Rectangle, Size};
+use smithay::utils::{Buffer, Point, Rectangle, Size};
 
 use super::{Backend, BackendError, Screenshot, failed};
 use crate::output::{OutputChange, OutputConfig, apply_placement};
@@ -21,6 +23,9 @@ use crate::state::State;
 
 struct HeadlessOutput {
     output: Output,
+    /// The place its configuration asked for; `None` while the layout puts
+    /// it beside the others.
+    place: Option<(i32, i32)>,
     damage: OutputDamageTracker,
     target: Image<'static, 'static>,
     /// Whether the target holds the previous frame (the damage tracker's
@@ -53,6 +58,50 @@ impl HeadlessBackend {
             outputs: Vec::new(),
         })
     }
+
+    /// Place every output that is on: where its configuration asked for,
+    /// the rest packed left to right after those, so one plugged in appears
+    /// beside the others instead of on top of one, and one unplugged leaves
+    /// no hole behind. An output someone turned off keeps no place.
+    fn arrange_outputs(&self, state: &mut State) {
+        let mut shown: Vec<&HeadlessOutput> = self
+            .outputs
+            .iter()
+            .filter(|output| !state.disabled_outputs.contains(&output.output))
+            .collect();
+        shown.sort_by_key(|output| (output.output.current_location().x, output.output.name()));
+        let outputs: Vec<(String, i32)> = shown
+            .iter()
+            .map(|output| {
+                (
+                    output.output.name(),
+                    crate::output::logical_width(&output.output),
+                )
+            })
+            .collect();
+        let fixed: HashMap<String, (i32, i32)> = shown
+            .iter()
+            .filter_map(|output| output.place.map(|place| (output.output.name(), place)))
+            .collect();
+        let positions = crate::output::arrange(&outputs, &fixed);
+        let mut moved = false;
+        for (output, position) in shown.into_iter().zip(positions) {
+            let known = state.space.outputs().any(|mapped| mapped == &output.output);
+            if !known || output.output.current_location() != Point::from(position) {
+                output
+                    .output
+                    .change_current_state(None, None, None, Some(position.into()));
+                state.mark_redraw(&output.output);
+                moved = true;
+            }
+            state.space.map_output(&output.output, position);
+        }
+        if moved {
+            // What an output carries (panels, backgrounds) follows it.
+            state.place_layers();
+        }
+        state.rearrange();
+    }
 }
 
 impl Backend for HeadlessBackend {
@@ -61,23 +110,54 @@ impl Backend for HeadlessBackend {
     }
 
     fn add_output(&mut self, state: &mut State, config: &OutputConfig) -> Result<(), BackendError> {
-        let output = config.create(&state.display, "headless");
+        // Right of the outputs already here until the layout places it: a
+        // connector lit for the first time never lands on one showing.
+        let beside = self
+            .outputs
+            .iter()
+            .filter(|output| !state.disabled_outputs.contains(&output.output))
+            .map(|output| {
+                output
+                    .output
+                    .current_location()
+                    .x
+                    .saturating_add(crate::output::logical_width(&output.output))
+            })
+            .max()
+            .unwrap_or(0);
+        let location = Point::from(config.position.unwrap_or((beside, 0)));
+        let output = config.create(&state.display, "headless", location);
         let size = Size::<i32, Buffer>::from(config.size);
         let target = self
             .renderer
             .create_buffer(Fourcc::Argb8888, size)
             .map_err(|error| failed("output image", error))?;
-        state.add_output(&output, config.location());
         state.gamma.set_size(&config.name, Some(GAMMA_SIZE));
         let damage = OutputDamageTracker::from_output(&output);
         self.outputs.push(HeadlessOutput {
             output,
+            place: config.position,
             damage,
             target,
             drawn: false,
             dark: false,
             gamma: None,
         });
+        self.arrange_outputs(state);
+        Ok(())
+    }
+
+    fn remove_output(&mut self, state: &mut State, name: &str) -> Result<(), BackendError> {
+        let Some(index) = self
+            .outputs
+            .iter()
+            .position(|output| output.output.name() == name)
+        else {
+            return Err(BackendError(format!("no output named {name}")));
+        };
+        let output = self.outputs.remove(index).output;
+        state.remove_output(&output);
+        self.arrange_outputs(state);
         Ok(())
     }
 
@@ -115,6 +195,9 @@ impl Backend for HeadlessBackend {
                 output.drawn = false;
             }
             apply_placement(state, &output.output, change);
+            if change.position.is_some() {
+                output.place = change.position;
+            }
             output.damage = OutputDamageTracker::from_output(&output.output);
         }
         Ok(())
@@ -233,6 +316,20 @@ impl Backend for HeadlessBackend {
         target: &crate::capture::Target,
     ) -> Result<Screenshot, crate::capture::CaptureError> {
         crate::capture::read_back::<_, Image<'static, 'static>>(&mut self.renderer, state, target)
+    }
+
+    fn read_back_scaled(
+        &mut self,
+        state: &mut State,
+        target: &crate::capture::Target,
+        max: (u32, u32),
+    ) -> Result<Screenshot, crate::capture::CaptureError> {
+        crate::capture::read_back_scaled::<_, Image<'static, 'static>>(
+            &mut self.renderer,
+            state,
+            target,
+            max,
+        )
     }
 
     fn screenshot(&mut self, _state: &mut State, name: &str) -> Result<Screenshot, BackendError> {

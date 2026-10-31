@@ -47,14 +47,12 @@ fn admit(
     at: SystemTime,
 ) {
     let at_ns = ns(at);
-    let owner = peer.authority().clone();
+    let owner = peer.owner_certificates()[0].clone();
     let signed = issue_invitation(
         InviteGrant {
             workspace_id: 7,
             room: peer.room().into(),
-            authority: owner.clone(),
             issuer: owner,
-            delegation: None,
             role: MemberRole::Editor,
             nonce: [53; 16],
             recipient_user_public_key: Some(member.user_public_key),
@@ -249,8 +247,10 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
     let messages = || vec![b"governance".to_vec()];
     let mut ledger = JoinLedger::default();
     let challenge = {
+        let host_cert = peer.owner_certificates()[0].clone();
         let room = Governed {
             peer: &peer,
+            host: &host_cert,
             workspace_id: 7,
             generation: 1,
             governance_messages: &messages,
@@ -274,8 +274,10 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
         proof: sign_membership_proof(challenge, &device).unwrap(),
     };
     let renewal = {
+        let host_cert = peer.owner_certificates()[0].clone();
         let room = Governed {
             peer: &peer,
+            host: &host_cert,
             workspace_id: 7,
             generation: 1,
             governance_messages: &messages,
@@ -288,8 +290,10 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
     peer.governance_mut()
         .renew_member_certificate(&renewed, &authority, now)
         .unwrap();
+    let host_cert = peer.owner_certificates()[0].clone();
     let room = Governed {
         peer: &peer,
+        host: &host_cert,
         workspace_id: 7,
         generation: 2,
         governance_messages: &messages,

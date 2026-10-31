@@ -1004,7 +1004,7 @@ impl ShellOverlayHost {
             && !self.choosing_app()
         {
             e = e.alternate(
-                ui::widget::command_palette::ActivationModifier::Shift,
+                ui::search::ActivationModifier::Shift,
                 t("palette-open-new-window"),
             );
         }
@@ -1015,7 +1015,7 @@ impl ShellOverlayHost {
             && !self.choosing_app()
             && r.provider_id != crate::shell::search::providers::focused_window::PROVIDER_ID
         {
-            use ui::widget::command_palette::ActivationModifier;
+            use ui::search::ActivationModifier;
             e = e
                 .alternate(
                     ActivationModifier::Shift,

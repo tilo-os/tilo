@@ -5481,6 +5481,14 @@ impl BooksApp {
             BooksEffect::OpenBook | BooksEffect::OpenStored { .. } => {
                 return Err("opening a book is the view's".into());
             }
+            BooksEffect::ReadSettings
+            | BooksEffect::ReadFont { .. }
+            | BooksEffect::ReadScheme { .. }
+            | BooksEffect::ReadBook { .. }
+            | BooksEffect::ReadHighlight { .. }
+            | BooksEffect::ReadAnnotation { .. } => {
+                return Err("a read answers from the library record, which the view has".into());
+            }
         }
         self.record_progress();
         Ok(ui::framework::Effected::done())
@@ -5496,7 +5504,8 @@ impl BooksApp {
         doc: &AutoCommit,
     ) -> Result<ui::framework::Effected, String> {
         let effect =
-            <crate::resource::BooksEffect as ui::tilo_resource::Effect>::from_payload(payload)?;
+            <crate::resource::BooksEffect as ui::tilo_resource::Effect>::from_payload(payload)
+                .map_err(|error| error.to_string())?;
         let entries: Vec<crate::model::LibraryEntry> =
             <Ebook as ui::tilo_resource::Resource>::read(doc)
                 .map(|record| record.entries.values().cloned().collect())

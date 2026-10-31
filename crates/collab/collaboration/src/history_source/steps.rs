@@ -41,7 +41,7 @@ pub const MAX_CHECKPOINT_NAME: usize = 80;
 pub const AGENT_RUN: &str = "agent-run";
 /// The group kind of a workspace task's invocations: an agent working a
 /// native task stamps its steps with the task, so that is the run undo names.
-pub const TASK_RUN: &str = "task";
+pub const TASK_RUN: &str = tilo_actions::context::TASK_RUN_GROUP;
 /// The group kind of one command line a shell ran: every file action it and
 /// the commands it dispatched carried out, undone as one.
 pub const COMMAND_RUN: &str = "command-run";
@@ -927,6 +927,9 @@ pub fn short(hash: &ChangeHash) -> String {
     hash.to_string().chars().take(12).collect()
 }
 
+/// Take back `targets`' patches: each step's own change goes, and what
+/// somebody else set since stays theirs ([`revert_changes`]), so the step
+/// counts as undone either way.
 fn revert(
     doc: &mut AutoCommit,
     targets: &[Version],
@@ -937,32 +940,9 @@ fn revert(
         .iter()
         .map(|version| (version.hash, version.actor.clone()))
         .collect();
-    let outcomes = revert_changes(doc, &changes, words)
-        .map_err(|error| format!("could not {verb}: {error:?}"))?;
-    let kept: Vec<String> = targets
-        .iter()
-        .zip(&outcomes)
-        .filter(|(_, outcome)| !outcome.is_complete())
-        .map(|(version, outcome)| {
-            let by: Vec<String> = outcome
-                .blocked_by()
-                .into_iter()
-                .map(|author| author.name)
-                .collect();
-            format!(
-                "{} (changed since by {})",
-                step_label(version, words),
-                by.join(", ")
-            )
-        })
-        .collect();
-    if !kept.is_empty() {
-        return Err(format!(
-            "Nothing was {verb}ne: somebody else changed what {} touched. Restore the items you mean from a version instead.",
-            kept.join("; ")
-        ));
-    }
-    Ok(())
+    revert_changes(doc, &changes, words)
+        .map(drop)
+        .map_err(|error| format!("could not {verb}: {error:?}"))
 }
 
 /// The verified inverse action of a step, when it has one (it queued an
@@ -979,8 +959,8 @@ pub type Inverse = Box<dyn tilo_actions::Action>;
 ///
 /// # Errors
 /// Says why nothing was undone, in `words`: there is nothing of the scope's
-/// to undo, somebody else has since changed what a step touched, or an
-/// inverse cannot be applied.
+/// to undo, or an inverse cannot be applied. What somebody else changed
+/// since is never a reason: their newer value stays and the step is undone.
 pub fn undo(
     doc: &mut AutoCommit,
     scope: &Scope,
@@ -1040,6 +1020,34 @@ pub fn undo_since(
         .collect::<Vec<_>>();
     if targets.is_empty() {
         return Err(nothing_to_undo(doc, scope));
+    }
+    take_back(doc, targets, compensate, words)
+}
+
+/// Take back the one step of `scope`'s in effect that the change `hash` is
+/// part of (with the rest of its gesture), wherever it stands in history, as
+/// one new change: a step a history list names. Returns the step's changes,
+/// newest first.
+///
+/// # Errors
+/// As [`undo`], and when the change is no step of `scope`'s in effect.
+pub fn undo_step(
+    doc: &mut AutoCommit,
+    scope: &Scope,
+    hash: &ChangeHash,
+    compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    words: &dyn HistoryWords,
+) -> Result<Vec<Version>, String> {
+    doc.get_heads();
+    let targets = steps_in_effect(doc, &|version| scope.owns(version), usize::MAX)
+        .into_iter()
+        .find(|step| step.iter().any(|version| version.hash == *hash))
+        .unwrap_or_default();
+    if targets.is_empty() {
+        return Err(format!(
+            "The step {} is undone already, or is not one this undo may take back.",
+            short(hash)
+        ));
     }
     take_back(doc, targets, compensate, words)
 }
@@ -1650,3 +1658,7 @@ pub fn changed_items(
 #[cfg(test)]
 #[path = "steps_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "steps_undo_tests.rs"]
+mod undo_tests;

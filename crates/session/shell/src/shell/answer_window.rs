@@ -1,9 +1,9 @@
-//! Where an agent's answer opens: a view answer is a resource (the Views app keeps it), opened
-//! as a window beside what the person asked about (agent-ux.md, "Answers as views"; canvas.md,
-//! "Answers"). This is the one interface a surface implements to place it. The strip places by
-//! window, so it opens the answer beside the window the anchor lies in; a 2D canvas places by
-//! position and takes free space near the anchor itself. Either way the answer never covers its
-//! subject and nothing already there moves.
+//! Where an agent's answer opens: a view answer is one of the person's own views (a resource in
+//! their own record of Views), opened as a window beside what the person asked about
+//! (agent-ux.md, "Answers as views"; canvas.md, "Answers"). This is the one interface a surface
+//! implements to place it. The strip places by window, so it opens the answer beside the window
+//! the anchor lies in; a 2D canvas places by position and takes free space near the anchor
+//! itself. Either way the answer never covers its subject and nothing already there moves.
 
 use vello::kurbo::Rect;
 
@@ -67,7 +67,7 @@ mod tests {
                 app: "so.tilo.lang.views".into(),
                 record: None,
                 reference: tilo_reference::ResourceRef::whole(
-                    "tl.so.tilo.lang.views.Answer",
+                    "tl.so.tilo.lang.views.WrittenView",
                     "tl:so.tilo.lang.views:a1",
                     "What is left for the release",
                 ),

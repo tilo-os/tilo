@@ -8,6 +8,7 @@
 //! composer, post an engine request, …).
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 #[cfg(test)]
@@ -289,6 +290,11 @@ pub struct MailState {
     /// from the server it comes from. The list shows the rows that are
     /// coming, not an empty mailbox.
     pub first_fetch: Option<ui::arriving::ArrivalClock>,
+    /// The part of each `(account, folder)` this device fetched but keeps
+    /// nothing of: the copies servers keep of drafts, each of which is the
+    /// draft itself. A sync asks only for what is newer, so they are not
+    /// fetched again.
+    pub passed_over: HashMap<(String, Folder), crate::sync::Window>,
     /// The senders (lower-case addresses) whose remote images the person
     /// allowed: the trusted senders record ([`crate::trusted_senders`]),
     /// synced with the workspace.
@@ -477,6 +483,7 @@ impl MailState {
             sync_error: None,
             wants_older: std::cell::Cell::new(false),
             first_fetch: None,
+            passed_over: HashMap::new(),
             avatars,
             narrow: false,
             detail_pushed: false,

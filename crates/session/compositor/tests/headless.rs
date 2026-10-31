@@ -12,9 +12,16 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+#[path = "headless/harness.rs"]
+mod harness;
+#[path = "headless/session_follow.rs"]
+mod session_follow;
+#[path = "headless/window_icons.rs"]
+mod window_icons;
+
+use harness::{Seen, TestClient, headless, mapped_client, pump};
+
 use std::cell::RefCell;
-use std::io::{Read as _, Write as _};
-use std::os::fd::AsFd as _;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -23,308 +30,24 @@ use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
     Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostDrag, HostFrame,
-    HostKey, HostLayer, InputEvent, KeyboardLayout, OutputConfig, PadAction, StackPolicy,
-    SurfaceHost, Switch, TabletEvent, TabletPadEvent, TabletPhase, WindowEffect, WindowFrame,
-    WindowInfo, WindowPicture, WindowPolicy,
+    HostKey, HostLayer, IconArtwork, InputEvent, KeyClaim, KeyboardLayout, OutputConfig, PadAction,
+    StackPolicy, SurfaceHost, Switch, TabletEvent, TabletPadEvent, TabletPhase, TextField,
+    TextFieldRefusal, TextInsertion, WindowEffect, WindowFrame, WindowIcon, WindowInfo,
+    WindowPicture, WindowPolicy,
 };
-use wayland_client::protocol::{
-    wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
-    wl_keyboard::WlKeyboard, wl_pointer, wl_pointer::WlPointer, wl_registry,
-    wl_registry::WlRegistry, wl_seat, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
-    wl_shm_pool::WlShmPool, wl_surface::WlSurface, wl_touch, wl_touch::WlTouch,
-};
-use wayland_client::{
-    Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop, event_created_child,
-};
-use wayland_protocols::ext::session_lock::v1::client::{
-    ext_session_lock_manager_v1::ExtSessionLockManagerV1, ext_session_lock_v1,
-    ext_session_lock_v1::ExtSessionLockV1,
-};
-use wayland_protocols::wp::tablet::zv2::client::{
-    zwp_tablet_manager_v2::ZwpTabletManagerV2,
-    zwp_tablet_pad_group_v2::{self, ZwpTabletPadGroupV2},
-    zwp_tablet_pad_ring_v2::{self, ZwpTabletPadRingV2},
-    zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2,
-    zwp_tablet_pad_v2::{self, ZwpTabletPadV2},
-    zwp_tablet_seat_v2::{self, ZwpTabletSeatV2},
-    zwp_tablet_tool_v2::ZwpTabletToolV2,
-    zwp_tablet_v2::ZwpTabletV2,
-};
-use wayland_protocols::wp::text_input::zv3::client::{
-    zwp_text_input_manager_v3::ZwpTextInputManagerV3, zwp_text_input_v3,
-    zwp_text_input_v3::ZwpTextInputV3,
-};
-use wayland_protocols::xdg::dialog::v1::client::{
-    xdg_dialog_v1::XdgDialogV1, xdg_wm_dialog_v1::XdgWmDialogV1,
-};
-use wayland_protocols::xdg::shell::client::{
-    xdg_surface, xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
-    xdg_wm_base::XdgWmBase,
-};
-use wayland_protocols_misc::zwp_input_method_v2::client::{
-    zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2,
-    zwp_input_method_manager_v2::ZwpInputMethodManagerV2, zwp_input_method_v2,
-    zwp_input_method_v2::ZwpInputMethodV2,
+use wayland_client::Connection;
+use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
+    ContentHint, ContentPurpose,
 };
 
 const BTN_LEFT: u32 = 0x110;
 const KEY_A: u32 = 30;
+const KEY_ESCAPE: u32 = 1;
+const KEY_LEFTCTRL: u32 = 29;
+const KEY_LEFTALT: u32 = 56;
+const KEY_LEFTMETA: u32 = 125;
+const KEY_X: u32 = 45;
 const BACKGROUND: [u8; 4] = [26, 27, 38, 255];
-
-#[derive(Default)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "one flag per event a test client waits for"
-)]
-struct Seen {
-    globals: Vec<String>,
-    lock_manager: Option<ExtSessionLockManagerV1>,
-    locked: bool,
-    compositor: Option<WlCompositor>,
-    shm: Option<WlShm>,
-    wm_base: Option<XdgWmBase>,
-    seat: Option<WlSeat>,
-    text_input_manager: Option<ZwpTextInputManagerV3>,
-    text_input: Option<ZwpTextInputV3>,
-    /// Whether the field has the focus and has asked for typing, as the
-    /// compositor told it.
-    field_entered: bool,
-    /// The strings the field was made to contain.
-    committed: Vec<String>,
-    input_method_manager: Option<ZwpInputMethodManagerV2>,
-    input_method: Option<ZwpInputMethodV2>,
-    /// How many times the compositor applied the input method's state: what
-    /// its next commit is numbered.
-    ime_done: u32,
-    /// Whether the compositor asked the input method to type.
-    ime_activated: bool,
-    pointer: Option<WlPointer>,
-    keyboard: Option<WlKeyboard>,
-    touch: Option<WlTouch>,
-    /// Touch events as `down id x y`, `motion id x y`, `up id`, `frame`.
-    touches: Vec<String>,
-    configured: bool,
-    pointer_inside: bool,
-    buttons: Vec<(u32, bool)>,
-    keyboard_focused: bool,
-    keys: Vec<(u32, bool)>,
-    /// The keymap the keyboard sent, as XKB text: the client's own answer to
-    /// which characters its keys type.
-    keymap: Option<String>,
-    frames_done: u32,
-    closed: bool,
-    tablet_manager: Option<ZwpTabletManagerV2>,
-    wm_dialog: Option<XdgWmDialogV1>,
-    /// Tablet pad events as `added`, `group`, `buttons 4`, `done`,
-    /// `enter`, `mode 1`, `button 2 pressed`, `ring 90`, `ring stop`,
-    /// `removed`.
-    pad: Vec<String>,
-    /// The surface the pad entered.
-    pad_surface: Option<WlSurface>,
-}
-
-/// One client with one toplevel of a solid colour.
-struct TestClient {
-    connection: Connection,
-    queue: EventQueue<Seen>,
-    seen: Seen,
-    surface: Option<WlSurface>,
-    toplevel: Option<XdgToplevel>,
-}
-
-impl TestClient {
-    fn connect(compositor: &mut Compositor) -> Self {
-        Self::connect_as(compositor, false)
-    }
-
-    /// Connect as a client the session started, which may be its input
-    /// method.
-    fn connect_trusted(compositor: &mut Compositor) -> Self {
-        Self::connect_as(compositor, true)
-    }
-
-    fn connect_as(compositor: &mut Compositor, trusted: bool) -> Self {
-        let socket = if trusted {
-            compositor.connect_trusted_client().expect("client socket")
-        } else {
-            compositor.connect_client().expect("client socket")
-        };
-        let connection = Connection::from_socket(socket).expect("connection");
-        let queue = connection.new_event_queue();
-        connection.display().get_registry(&queue.handle(), ());
-        Self {
-            connection,
-            queue,
-            seen: Seen::default(),
-            surface: None,
-            toplevel: None,
-        }
-    }
-
-    /// Send what is queued, read what arrived, without blocking.
-    fn exchange(&mut self) {
-        self.connection.flush().expect("flush");
-        if let Some(guard) = self.connection.prepare_read() {
-            // Nothing to read is fine: WouldBlock.
-            let _ = guard.read();
-        }
-        self.queue
-            .dispatch_pending(&mut self.seen)
-            .expect("dispatch");
-        self.connection.flush().expect("flush");
-    }
-
-    fn open_window(&mut self, app_id: &str) {
-        let qh = self.queue.handle();
-        let surface = self
-            .seen
-            .compositor
-            .as_ref()
-            .expect("wl_compositor")
-            .create_surface(&qh, ());
-        let xdg = self
-            .seen
-            .wm_base
-            .as_ref()
-            .expect("xdg_wm_base")
-            .get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg.get_toplevel(&qh, ());
-        toplevel.set_app_id(app_id.into());
-        surface.commit();
-        self.surface = Some(surface);
-        self.toplevel = Some(toplevel);
-    }
-
-    /// Attach a buffer of one colour (RGBA) and commit it with a frame
-    /// callback.
-    fn show(&self, width: i32, height: i32, rgba: [u8; 4]) {
-        let qh = self.queue.handle();
-        let stride = width * 4;
-        let len = usize::try_from(stride * height).unwrap();
-        let fd = rustix::fs::memfd_create("tilo-compositor-test", rustix::fs::MemfdFlags::CLOEXEC)
-            .unwrap();
-        let mut file = std::fs::File::from(fd);
-        // ARGB8888 is B, G, R, A in memory.
-        let pixel = [rgba[2], rgba[1], rgba[0], rgba[3]];
-        file.write_all(&pixel.repeat(len / 4)).unwrap();
-        let pool = self.seen.shm.as_ref().expect("wl_shm").create_pool(
-            file.as_fd(),
-            stride * height,
-            &qh,
-            (),
-        );
-        let buffer =
-            pool.create_buffer(0, width, height, stride, wl_shm::Format::Argb8888, &qh, ());
-        let surface = self.surface.as_ref().expect("surface");
-        surface.attach(Some(&buffer), 0, 0);
-        surface.damage_buffer(0, 0, width, height);
-        surface.frame(&qh, ());
-        surface.commit();
-        pool.destroy();
-    }
-
-    /// Give the window a text field: a `text-input-v3` object on its
-    /// surface, waiting for typing.
-    fn own_text_field(&mut self) {
-        let qh = self.queue.handle();
-        let manager = self
-            .seen
-            .text_input_manager
-            .as_ref()
-            .expect("zwp_text_input_manager_v3");
-        let seat = self.seen.seat.as_ref().expect("wl_seat");
-        let field = manager.get_text_input(seat, &qh, ());
-        field.enable();
-        field.commit();
-        self.seen.text_input = Some(field);
-    }
-
-    /// Stop the field from asking for typing.
-    fn release_text_field(&self) {
-        if let Some(field) = self.seen.text_input.as_ref() {
-            field.disable();
-            field.commit();
-        }
-        self.connection.flush().expect("flush");
-    }
-
-    /// Serve the seat as its input method (the on-screen keyboard).
-    fn own_input_method(&mut self) {
-        let qh = self.queue.handle();
-        let manager = self
-            .seen
-            .input_method_manager
-            .as_ref()
-            .expect("zwp_input_method_manager_v2");
-        let seat = self.seen.seat.as_ref().expect("wl_seat");
-        self.seen.input_method = Some(manager.get_input_method(seat, &qh, ()));
-    }
-
-    /// Type `text` into the field the input method serves.
-    fn type_with_input_method(&self, text: &str) {
-        let method = self.seen.input_method.as_ref().expect("input method");
-        method.commit_string(text.to_owned());
-        method.commit(self.seen.ime_done);
-        self.connection.flush().expect("flush");
-    }
-}
-
-/// Let compositor and clients talk until `done` holds.
-fn pump(
-    compositor: &mut Compositor,
-    clients: &mut [&mut TestClient],
-    mut done: impl FnMut(&Compositor, &[&mut TestClient]) -> bool,
-) {
-    for _ in 0..500 {
-        for client in clients.iter_mut() {
-            client.exchange();
-        }
-        compositor
-            .dispatch(Duration::from_millis(2))
-            .expect("dispatch");
-        for client in clients.iter_mut() {
-            client.exchange();
-        }
-        if done(compositor, clients) {
-            return;
-        }
-    }
-    panic!("condition not reached");
-}
-
-fn headless(policy: Box<dyn WindowPolicy>) -> Compositor {
-    let mut compositor = Compositor::headless(policy).expect("compositor");
-    compositor
-        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
-        .expect("output");
-    compositor
-}
-
-/// Open a toplevel of `size` and colour, and wait until it is mapped.
-fn mapped_client(
-    compositor: &mut Compositor,
-    app_id: &str,
-    size: (i32, i32),
-    rgba: [u8; 4],
-) -> TestClient {
-    let mut client = TestClient::connect(compositor);
-    pump(compositor, &mut [&mut client], |_, clients| {
-        clients[0].seen.wm_base.is_some() && clients[0].seen.seat.is_some()
-    });
-    client.open_window(app_id);
-    pump(compositor, &mut [&mut client], |_, clients| {
-        clients[0].seen.configured
-    });
-    client.show(size.0, size.1, rgba);
-    let app = app_id.to_owned();
-    pump(compositor, &mut [&mut client], |compositor, _| {
-        compositor
-            .windows()
-            .iter()
-            .any(|(info, _)| info.app_id.as_deref() == Some(app.as_str()))
-    });
-    client
-}
 
 #[test]
 fn a_window_is_composited_where_the_policy_places_it() {
@@ -540,6 +263,7 @@ fn clients_find_the_protocols_they_expect() {
         "zwp_keyboard_shortcuts_inhibit_manager_v1",
         "wp_content_type_manager_v1",
         "zwp_text_input_manager_v3",
+        "wp_color_manager_v1",
     ] {
         assert!(
             client.seen.globals.iter().any(|global| global == interface),
@@ -731,6 +455,9 @@ struct HostLog {
     left: u32,
     keys: Vec<HostKey>,
     wants_keyboard: bool,
+    /// Each Super+X the surface was offered, and whether it was told a client
+    /// holds the desktop's shortcuts.
+    taken: Vec<(u32, bool)>,
 }
 
 /// A hosted surface: one square of one colour.
@@ -806,6 +533,42 @@ impl SurfaceHost for Square {
 
     fn wants_keyboard(&self) -> bool {
         self.log.borrow().wants_keyboard
+    }
+
+    fn key(&mut self, key: &HostKey) {
+        self.log.borrow_mut().keys.push(key.clone());
+    }
+}
+
+/// The desktop's own key surface, as the session's is: it answers Super+X
+/// wherever the keyboard is, unless a client holds the desktop's shortcuts.
+struct Chords {
+    log: Rc<RefCell<HostLog>>,
+}
+
+impl SurfaceHost for Chords {
+    fn layers(&self) -> Vec<HostLayer> {
+        Vec::new()
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+    fn claim_key(&mut self, key: &HostKey, _locked: bool, inhibited: bool) -> KeyClaim {
+        if key.keycode != KEY_X || !key.modifiers.logo {
+            return KeyClaim::Pass;
+        }
+        self.log.borrow_mut().taken.push((key.keycode, inhibited));
+        if inhibited {
+            KeyClaim::Pass
+        } else {
+            KeyClaim::Take
+        }
     }
 
     fn key(&mut self, key: &HostKey) {
@@ -1294,376 +1057,6 @@ fn a_tablet_pad_follows_the_keyboard_focus_to_a_client_that_takes_tablets() {
         clients[0].seen.pad.last().map(String::as_str) == Some("removed")
     });
 }
-
-impl Dispatch<WlRegistry, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        registry: &WlRegistry,
-        event: wl_registry::Event,
-        (): &(),
-        _: &Connection,
-        qh: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            seen.globals.push(interface.clone());
-            match interface.as_str() {
-                "wl_compositor" => {
-                    seen.compositor = Some(registry.bind(name, version.min(5), qh, ()));
-                }
-                "ext_session_lock_manager_v1" => {
-                    seen.lock_manager = Some(registry.bind(name, 1, qh, ()));
-                }
-                "wl_shm" => seen.shm = Some(registry.bind(name, 1, qh, ())),
-                "xdg_wm_base" => seen.wm_base = Some(registry.bind(name, 1, qh, ())),
-                "wl_seat" => seen.seat = Some(registry.bind(name, version.min(7), qh, ())),
-                "zwp_tablet_manager_v2" => {
-                    seen.tablet_manager = Some(registry.bind(name, 1, qh, ()));
-                }
-                "xdg_wm_dialog_v1" => seen.wm_dialog = Some(registry.bind(name, 1, qh, ())),
-                "zwp_text_input_manager_v3" => {
-                    seen.text_input_manager = Some(registry.bind(name, 1, qh, ()));
-                }
-                "zwp_input_method_manager_v2" => {
-                    seen.input_method_manager = Some(registry.bind(name, 1, qh, ()));
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-impl Dispatch<XdgWmBase, ()> for Seen {
-    fn event(
-        _: &mut Self,
-        base: &XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
-
-impl Dispatch<XdgSurface, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        surface: &XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
-            seen.configured = true;
-        }
-    }
-}
-
-impl Dispatch<XdgToplevel, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &XdgToplevel,
-        event: xdg_toplevel::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if matches!(event, xdg_toplevel::Event::Close) {
-            seen.closed = true;
-        }
-    }
-}
-
-impl Dispatch<WlSeat, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        seat: &WlSeat,
-        event: wl_seat::Event,
-        (): &(),
-        _: &Connection,
-        qh: &QueueHandle<Self>,
-    ) {
-        if let wl_seat::Event::Capabilities {
-            capabilities: WEnum::Value(capabilities),
-        } = event
-        {
-            if capabilities.contains(wl_seat::Capability::Pointer) && seen.pointer.is_none() {
-                seen.pointer = Some(seat.get_pointer(qh, ()));
-            }
-            if capabilities.contains(wl_seat::Capability::Keyboard) && seen.keyboard.is_none() {
-                seen.keyboard = Some(seat.get_keyboard(qh, ()));
-            }
-            if capabilities.contains(wl_seat::Capability::Touch) && seen.touch.is_none() {
-                seen.touch = Some(seat.get_touch(qh, ()));
-            }
-        }
-    }
-}
-
-impl Dispatch<WlPointer, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &WlPointer,
-        event: wl_pointer::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            wl_pointer::Event::Enter { .. } => seen.pointer_inside = true,
-            wl_pointer::Event::Leave { .. } => seen.pointer_inside = false,
-            wl_pointer::Event::Button { button, state, .. } => {
-                seen.buttons.push((
-                    button,
-                    state == WEnum::Value(wl_pointer::ButtonState::Pressed),
-                ));
-            }
-            _ => {}
-        }
-    }
-}
-
-impl Dispatch<WlTouch, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &WlTouch,
-        event: wl_touch::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            wl_touch::Event::Down { id, x, y, .. } => {
-                seen.touches.push(format!("down {id} {x} {y}"));
-            }
-            wl_touch::Event::Motion { id, x, y, .. } => {
-                seen.touches.push(format!("motion {id} {x} {y}"));
-            }
-            wl_touch::Event::Up { id, .. } => seen.touches.push(format!("up {id}")),
-            wl_touch::Event::Frame => seen.touches.push("frame".into()),
-            wl_touch::Event::Cancel => seen.touches.push("cancel".into()),
-            _ => {}
-        }
-    }
-}
-
-impl Dispatch<WlKeyboard, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &WlKeyboard,
-        event: wl_keyboard::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            wl_keyboard::Event::Enter { .. } => seen.keyboard_focused = true,
-            wl_keyboard::Event::Leave { .. } => seen.keyboard_focused = false,
-            wl_keyboard::Event::Key { key, state, .. } => {
-                seen.keys
-                    .push((key, state == WEnum::Value(wl_keyboard::KeyState::Pressed)));
-            }
-            wl_keyboard::Event::Keymap { fd, size, .. } => {
-                let mut text = Vec::new();
-                if std::fs::File::from(fd)
-                    .take(u64::from(size))
-                    .read_to_end(&mut text)
-                    .is_ok()
-                {
-                    seen.keymap = Some(String::from_utf8_lossy(&text).into_owned());
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-impl Dispatch<WlCallback, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &WlCallback,
-        _: wayland_client::protocol::wl_callback::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        seen.frames_done += 1;
-    }
-}
-
-impl Dispatch<ExtSessionLockV1, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &ExtSessionLockV1,
-        event: ext_session_lock_v1::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if matches!(event, ext_session_lock_v1::Event::Locked) {
-            seen.locked = true;
-        }
-    }
-}
-
-impl Dispatch<ZwpTabletSeatV2, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &ZwpTabletSeatV2,
-        event: zwp_tablet_seat_v2::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let zwp_tablet_seat_v2::Event::PadAdded { .. } = event {
-            seen.pad.push("added".into());
-        }
-    }
-
-    event_created_child!(Seen, ZwpTabletSeatV2, [
-        zwp_tablet_seat_v2::EVT_TABLET_ADDED_OPCODE => (ZwpTabletV2, ()),
-        zwp_tablet_seat_v2::EVT_TOOL_ADDED_OPCODE => (ZwpTabletToolV2, ()),
-        zwp_tablet_seat_v2::EVT_PAD_ADDED_OPCODE => (ZwpTabletPadV2, ()),
-    ]);
-}
-
-impl Dispatch<ZwpTabletPadV2, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &ZwpTabletPadV2,
-        event: zwp_tablet_pad_v2::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        let line = match event {
-            zwp_tablet_pad_v2::Event::Group { .. } => "group".into(),
-            zwp_tablet_pad_v2::Event::Buttons { buttons } => format!("buttons {buttons}"),
-            zwp_tablet_pad_v2::Event::Done => "done".into(),
-            zwp_tablet_pad_v2::Event::Enter { surface, .. } => {
-                seen.pad_surface = Some(surface);
-                "enter".into()
-            }
-            zwp_tablet_pad_v2::Event::Leave { .. } => "leave".into(),
-            zwp_tablet_pad_v2::Event::Button { button, state, .. } => {
-                let pressed = state == WEnum::Value(zwp_tablet_pad_v2::ButtonState::Pressed);
-                format!(
-                    "button {button} {}",
-                    if pressed { "pressed" } else { "released" }
-                )
-            }
-            zwp_tablet_pad_v2::Event::Removed => "removed".into(),
-            _ => return,
-        };
-        seen.pad.push(line);
-    }
-
-    event_created_child!(Seen, ZwpTabletPadV2, [
-        zwp_tablet_pad_v2::EVT_GROUP_OPCODE => (ZwpTabletPadGroupV2, ()),
-    ]);
-}
-
-impl Dispatch<ZwpTextInputV3, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &ZwpTextInputV3,
-        event: zwp_text_input_v3::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            zwp_text_input_v3::Event::Enter { .. } => seen.field_entered = true,
-            zwp_text_input_v3::Event::Leave { .. } => seen.field_entered = false,
-            zwp_text_input_v3::Event::CommitString { text: Some(text) } => {
-                seen.committed.push(text);
-            }
-            _ => {}
-        }
-    }
-}
-
-impl Dispatch<ZwpInputMethodV2, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &ZwpInputMethodV2,
-        event: zwp_input_method_v2::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            zwp_input_method_v2::Event::Activate => seen.ime_activated = true,
-            zwp_input_method_v2::Event::Deactivate => seen.ime_activated = false,
-            zwp_input_method_v2::Event::Done => seen.ime_done += 1,
-            _ => {}
-        }
-    }
-}
-
-impl Dispatch<ZwpTabletPadGroupV2, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &ZwpTabletPadGroupV2,
-        event: zwp_tablet_pad_group_v2::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let zwp_tablet_pad_group_v2::Event::ModeSwitch { mode, .. } = event {
-            seen.pad.push(format!("mode {mode}"));
-        }
-    }
-
-    event_created_child!(Seen, ZwpTabletPadGroupV2, [
-        zwp_tablet_pad_group_v2::EVT_RING_OPCODE => (ZwpTabletPadRingV2, ()),
-        zwp_tablet_pad_group_v2::EVT_STRIP_OPCODE => (ZwpTabletPadStripV2, ()),
-    ]);
-}
-
-impl Dispatch<ZwpTabletPadRingV2, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &ZwpTabletPadRingV2,
-        event: zwp_tablet_pad_ring_v2::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            zwp_tablet_pad_ring_v2::Event::Angle { degrees } => {
-                seen.pad.push(format!("ring {degrees}"));
-            }
-            zwp_tablet_pad_ring_v2::Event::Stop => seen.pad.push("ring stop".into()),
-            _ => {}
-        }
-    }
-}
-
-delegate_noop!(Seen: ignore ZwpTabletManagerV2);
-delegate_noop!(Seen: ignore ZwpTabletV2);
-delegate_noop!(Seen: ignore ZwpTabletToolV2);
-delegate_noop!(Seen: ignore ZwpTabletPadStripV2);
-delegate_noop!(Seen: ignore ExtSessionLockManagerV1);
-delegate_noop!(Seen: ignore WlCompositor);
-delegate_noop!(Seen: ignore XdgWmDialogV1);
-delegate_noop!(Seen: ignore ZwpTextInputManagerV3);
-delegate_noop!(Seen: ignore ZwpInputMethodManagerV2);
-delegate_noop!(Seen: ignore ZwpInputMethodKeyboardGrabV2);
-delegate_noop!(Seen: ignore XdgDialogV1);
-delegate_noop!(Seen: ignore WlShm);
-delegate_noop!(Seen: ignore WlShmPool);
-delegate_noop!(Seen: ignore WlBuffer);
-delegate_noop!(Seen: ignore WlSurface);
 
 #[test]
 fn a_surface_below_the_windows_shows_and_takes_the_pointer_only_around_them() {
@@ -2162,6 +1555,190 @@ fn a_picture_of_a_window_carries_its_corners_and_its_lift() {
     );
 }
 
+/// The pixels of a picture's rect (fits 200 x 100 into 100 x 100: 100 x 50
+/// at 10, 35) and of the window itself (centred: 220, 190 to 420, 290).
+const IN_PICTURE: [(u32, u32); 4] = [(15, 40), (60, 60), (105, 40), (60, 80)];
+const IN_WINDOW: (u32, u32) = (320, 240);
+
+/// A window the session keeps private is a placeholder wherever a hosted
+/// surface pictures it, on the person's own display too: the desk a
+/// picture stands on is what a screenshot, a recording and a share show.
+#[test]
+fn a_private_window_is_pictured_as_the_placeholder_its_captures_show() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(
+        &mut compositor,
+        "org.example.shared",
+        (200, 100),
+        [255, 0, 0, 255],
+    );
+    let (info, _) = compositor.windows()[0].clone();
+    compositor.add_host(Box::new(Pictures(WindowPicture {
+        window: info.id,
+        rect: (10.0, 10.0, 100.0, 100.0),
+        opacity: 1.0,
+        clip: None,
+    })));
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(
+        frame.pixel(60, 60),
+        Some([255, 0, 0, 255]),
+        "nobody has marked it private yet: the picture is live"
+    );
+
+    compositor.protect_app("org.example.shared", true);
+    compositor.render().unwrap();
+    let display = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(
+        display.pixel(IN_WINDOW.0, IN_WINDOW.1),
+        Some([255, 0, 0, 255]),
+        "the person's own display still shows the window"
+    );
+    let placeholder = display
+        .pixel(IN_PICTURE[0].0, IN_PICTURE[0].1)
+        .expect("on the output");
+    assert_ne!(
+        placeholder,
+        [255, 0, 0, 255],
+        "the picture carries none of the window"
+    );
+    for (x, y) in IN_PICTURE {
+        assert_eq!(
+            display.pixel(x, y),
+            Some(placeholder),
+            "the whole picture is one flat placeholder at ({x}, {y})"
+        );
+    }
+
+    // A copy of the desk shows the window and its picture as that same
+    // placeholder: no secret leaves with it.
+    let copy = compositor
+        .read_back_region("HEADLESS-1", (0, 0, 640, 480))
+        .expect("a capture of the output");
+    assert_eq!(copy.pixel(IN_WINDOW.0, IN_WINDOW.1), Some(placeholder));
+    for (x, y) in IN_PICTURE {
+        assert_eq!(
+            copy.pixel(x, y),
+            Some(placeholder),
+            "the picture at ({x}, {y})"
+        );
+    }
+    let red = |pixel: [u8; 4]| pixel[0] > 128 && pixel[1] < 64 && pixel[2] < 64;
+    for y in 0..copy.height {
+        for x in 0..copy.width {
+            assert!(
+                !red(copy.pixel(x, y).expect("on the capture")),
+                "no secret of the window at ({x}, {y})"
+            );
+        }
+    }
+
+    // Shown again once the session no longer marks it private.
+    compositor.protect_app("org.example.shared", false);
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(frame.pixel(60, 60), Some([255, 0, 0, 255]), "pictured live");
+}
+
+/// An app known to hold secrets is private without asking, and its picture
+/// is the placeholder its captures are.
+#[test]
+fn a_picture_of_an_app_that_holds_secrets_is_its_placeholder() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(
+        &mut compositor,
+        "so.tilo.passwords",
+        (200, 100),
+        [255, 0, 0, 255],
+    );
+    let (info, _) = compositor.windows()[0].clone();
+    compositor.add_host(Box::new(Pictures(WindowPicture {
+        window: info.id,
+        rect: (10.0, 10.0, 100.0, 100.0),
+        opacity: 1.0,
+        clip: None,
+    })));
+    compositor.render().unwrap();
+    let display = compositor.screenshot("HEADLESS-1").unwrap();
+    let placeholder = display
+        .pixel(IN_PICTURE[0].0, IN_PICTURE[0].1)
+        .expect("on the output");
+    assert_ne!(placeholder, [255, 0, 0, 255]);
+    for (x, y) in IN_PICTURE {
+        assert_eq!(display.pixel(x, y), Some(placeholder), "at ({x}, {y})");
+    }
+    let copy = compositor
+        .read_back_region("HEADLESS-1", (0, 0, 640, 480))
+        .expect("a capture of the output");
+    for (x, y) in IN_PICTURE {
+        assert_eq!(
+            copy.pixel(x, y),
+            Some(placeholder),
+            "captured at ({x}, {y})"
+        );
+    }
+    assert_eq!(copy.pixel(IN_WINDOW.0, IN_WINDOW.1), Some(placeholder));
+}
+
+/// A private window that closed still stands on the desk while the desktop
+/// animates it away: a copy of the desk shows its placeholder until then,
+/// never the frame it drew last.
+#[test]
+fn a_private_window_that_closed_is_a_placeholder_in_copies() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(
+        &mut compositor,
+        "org.example.shared",
+        (200, 100),
+        [255, 0, 0, 255],
+    );
+    compositor.protect_app("org.example.shared", true);
+    // The frame it drew last is kept for its close.
+    compositor.render().unwrap();
+    client.toplevel.as_ref().unwrap().destroy();
+    client.surface.as_ref().unwrap().destroy();
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        compositor.windows().is_empty()
+    });
+    assert_eq!(
+        compositor.closing_windows().len(),
+        1,
+        "its last frame is kept"
+    );
+    compositor.render().unwrap();
+    let display = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(
+        display.pixel(IN_WINDOW.0, IN_WINDOW.1),
+        Some([255, 0, 0, 255]),
+        "the person's own display shows it closing"
+    );
+    let copy = compositor
+        .read_back_region("HEADLESS-1", (0, 0, 640, 480))
+        .expect("a capture of the output");
+    let placeholder = copy
+        .pixel(IN_WINDOW.0, IN_WINDOW.1)
+        .expect("on the capture");
+    assert_ne!(
+        placeholder,
+        [255, 0, 0, 255],
+        "none of the frame it drew last"
+    );
+    assert_ne!(
+        placeholder, BACKGROUND,
+        "not what it stands on either: a capture says something is withheld"
+    );
+
+    // Once the desktop lets it go, nothing of it is on the desk at all.
+    let info = compositor.closing_windows()[0].0.id;
+    compositor.release_snapshot(info);
+    compositor.render().unwrap();
+    let copy = compositor
+        .read_back_region("HEADLESS-1", (0, 0, 640, 480))
+        .expect("a capture of the output");
+    assert_eq!(copy.pixel(IN_WINDOW.0, IN_WINDOW.1), Some(BACKGROUND));
+}
+
 /// A hosted surface of translucent material over (200, 180, 80, 40),
 /// keeping the backdrops it is handed.
 struct Frosted(Rc<RefCell<Vec<Option<BackdropImage>>>>);
@@ -2395,7 +1972,7 @@ impl WindowPolicy for Monitors {
         Point::from((0, 0))
     }
 
-    fn monitors(&mut self, monitors: &[(Rectangle<i32, Logical>, String)]) {
+    fn monitors(&mut self, monitors: &[(Rectangle<i32, Logical>, String)], _primary: Option<&str>) {
         *self.0.borrow_mut() = monitors.to_vec();
     }
 }
@@ -2499,12 +2076,368 @@ fn a_text_field_waiting_for_typing_is_told_apart_from_the_way_it_is_typed() {
     );
 }
 
+/// A focused window that has no text field yet, and the on-screen keyboard
+/// serving the seat.
+fn window_and_keyboard() -> (Compositor, TestClient, TestClient) {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "form", (200, 100), [0, 255, 0, 255]);
+    // The window takes the keyboard with a click on it.
+    click(&mut compositor, 320.0, 240.0);
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.keyboard_focused
+    });
+    let mut keyboard = TestClient::connect_trusted(&mut compositor);
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |_, clients| {
+            clients[1].seen.input_method_manager.is_some() && clients[1].seen.seat.is_some()
+        },
+    );
+    keyboard.own_input_method();
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |_, clients| clients[1].seen.input_method.is_some(),
+    );
+    (compositor, client, keyboard)
+}
+
+/// Let both sides catch up on what was just sent.
+fn settle(compositor: &mut Compositor, client: &mut TestClient, keyboard: &mut TestClient) {
+    pump(compositor, &mut [client, keyboard], |_, _| true);
+}
+
+/// Wait until the compositor has taken the field's last commit: it tells the
+/// input method so.
+fn committed(
+    compositor: &mut Compositor,
+    client: &mut TestClient,
+    keyboard: &mut TestClient,
+    since: u32,
+) {
+    pump(compositor, &mut [client, keyboard], move |_, clients| {
+        clients[1].seen.ime_done > since
+    });
+}
+
+#[test]
+fn a_field_that_commits_again_is_no_longer_the_one_dictation_bound() {
+    let (mut compositor, mut client, mut keyboard) = window_and_keyboard();
+    assert_eq!(
+        compositor.dictation_field(),
+        Err(TextFieldRefusal::NoField),
+        "no field has the focus"
+    );
+
+    client.own_text_field();
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, clients| {
+            clients[0].seen.field_entered
+                && clients[1].seen.ime_activated
+                && compositor.dictation_field().is_ok()
+        },
+    );
+    let field = compositor
+        .dictation_field()
+        .expect("a field to dictate into");
+    assert!(!field.multiline, "an ordinary text box takes one line");
+
+    // The caret moves: still the same field, but another revision of what
+    // its client committed.
+    let done = keyboard.seen.ime_done;
+    client.move_caret(3);
+    committed(&mut compositor, &mut client, &mut keyboard, done);
+    assert!(
+        compositor
+            .dictation_field()
+            .is_ok_and(|now| now.revision != field.revision),
+        "a commit moves the field's revision"
+    );
+    assert_eq!(
+        compositor.insert_dictation(field, "spoken words"),
+        TextInsertion::Changed
+    );
+    settle(&mut compositor, &mut client, &mut keyboard);
+    assert!(
+        client.seen.committed.is_empty(),
+        "a field that moved takes nothing"
+    );
+
+    // Another field of the same window enables the object again: the same
+    // object on the same surface, so the same identity, and a new revision.
+    let field = compositor
+        .dictation_field()
+        .expect("a field to dictate into");
+    client.focus_another_field(ContentHint::empty(), ContentPurpose::Normal);
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, _| compositor.dictation_field().is_ok_and(|now| now != field),
+    );
+    assert_eq!(
+        compositor.dictation_field().map(|now| now.id),
+        Ok(field.id),
+        "one text-input object on one surface names one field"
+    );
+    assert_eq!(
+        compositor.insert_dictation(field, "spoken words"),
+        TextInsertion::Changed
+    );
+
+    settle(&mut compositor, &mut client, &mut keyboard);
+    assert!(
+        client.seen.committed.is_empty(),
+        "neither field took anything dictation bound before it"
+    );
+}
+
+#[test]
+fn a_field_that_stops_asking_for_typing_takes_no_dictated_text() {
+    let (mut compositor, mut client, mut keyboard) = window_and_keyboard();
+    client.own_text_field();
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, clients| {
+            clients[0].seen.field_entered
+                && clients[1].seen.ime_activated
+                && compositor.dictation_field().is_ok()
+        },
+    );
+    let field = compositor
+        .dictation_field()
+        .expect("a field to dictate into");
+
+    client.release_text_field();
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, _| compositor.dictation_field().is_err(),
+    );
+    assert_eq!(
+        compositor.dictation_field(),
+        Err(TextFieldRefusal::NoField),
+        "the field stopped asking for typing"
+    );
+    assert_eq!(
+        compositor.insert_dictation(field, "spoken words"),
+        TextInsertion::Refused(TextFieldRefusal::NoField)
+    );
+
+    settle(&mut compositor, &mut client, &mut keyboard);
+    assert!(
+        client.seen.committed.is_empty(),
+        "a released field takes nothing"
+    );
+}
+
+#[test]
+fn dictation_keeps_out_of_secret_and_terminal_fields() {
+    let (mut compositor, mut client, mut keyboard) = window_and_keyboard();
+    client.own_text_field_as(
+        ContentHint::HiddenText | ContentHint::SensitiveData,
+        ContentPurpose::Password,
+    );
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, clients| {
+            clients[0].seen.field_entered
+                && clients[1].seen.ime_activated
+                && compositor.dictation_field().is_err()
+        },
+    );
+    assert_eq!(compositor.dictation_field(), Err(TextFieldRefusal::Secret));
+
+    // A password field takes no dictated text, and nothing reaches it.
+    let no_field = TextField {
+        id: 0,
+        revision: 0,
+        multiline: false,
+    };
+    assert_eq!(
+        compositor.insert_dictation(no_field, "spoken words"),
+        TextInsertion::Refused(TextFieldRefusal::Secret)
+    );
+    settle(&mut compositor, &mut client, &mut keyboard);
+    assert!(
+        client.seen.committed.is_empty(),
+        "a password field takes nothing"
+    );
+
+    // Digits are a PIN pad: the on-screen keyboard treats them as secret
+    // too.
+    let done = keyboard.seen.ime_done;
+    client.set_content_type(ContentHint::empty(), ContentPurpose::Digits);
+    committed(&mut compositor, &mut client, &mut keyboard, done);
+    assert_eq!(compositor.dictation_field(), Err(TextFieldRefusal::Secret));
+
+    // A terminal's text is commands.
+    let done = keyboard.seen.ime_done;
+    client.set_content_type(ContentHint::empty(), ContentPurpose::Terminal);
+    committed(&mut compositor, &mut client, &mut keyboard, done);
+    assert_eq!(
+        compositor.dictation_field(),
+        Err(TextFieldRefusal::Unsupported)
+    );
+}
+
+#[test]
+fn dictation_tells_a_multiline_field_from_a_one_line_one() {
+    let (mut compositor, mut client, mut keyboard) = window_and_keyboard();
+    client.own_text_field_as(ContentHint::Multiline, ContentPurpose::Normal);
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, clients| {
+            clients[0].seen.field_entered
+                && clients[1].seen.ime_activated
+                && compositor.dictation_field().is_ok()
+        },
+    );
+    assert!(
+        compositor
+            .dictation_field()
+            .expect("a field to dictate into")
+            .multiline,
+        "the field takes more than one line"
+    );
+
+    let done = keyboard.seen.ime_done;
+    client.set_content_type(ContentHint::empty(), ContentPurpose::Normal);
+    committed(&mut compositor, &mut client, &mut keyboard, done);
+    assert!(
+        !compositor
+            .dictation_field()
+            .expect("a field to dictate into")
+            .multiline,
+        "a one-line field is not multiline"
+    );
+}
+
+#[test]
+fn dictation_writes_once_into_the_field_it_bound() {
+    let (mut compositor, mut client, mut keyboard) = window_and_keyboard();
+    client.own_text_field();
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, clients| {
+            clients[0].seen.field_entered
+                && clients[1].seen.ime_activated
+                && compositor.dictation_field().is_ok()
+        },
+    );
+    let field = compositor
+        .dictation_field()
+        .expect("a field to dictate into");
+
+    let done = client.seen.field_done;
+    assert_eq!(
+        compositor.insert_dictation(field, "spoken words"),
+        TextInsertion::Inserted
+    );
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |_, clients| clients[0].seen.field_done > done,
+    );
+    assert_eq!(
+        client.seen.committed,
+        vec!["spoken words".to_owned()],
+        "the field took exactly the committed text"
+    );
+}
+
+/// The emoji picker goes where the person types: the caret its card opens at
+/// is the one the field reports on the window it is in, and a pick reaches
+/// the field even when the field keeps its content secret — it is only not
+/// remembered then.
+#[test]
+fn a_pick_opens_at_the_caret_and_reaches_even_a_secret_field() {
+    let (mut compositor, mut client, mut keyboard) = window_and_keyboard();
+    assert_eq!(
+        compositor.text_caret(),
+        None,
+        "no field takes text: there is no caret"
+    );
+
+    client.own_text_field();
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, clients| {
+            clients[0].seen.field_entered
+                && clients[1].seen.ime_activated
+                && compositor.dictation_field().is_ok()
+        },
+    );
+    assert_eq!(
+        compositor.text_caret(),
+        None,
+        "a field that never reported its caret leaves the card centred"
+    );
+
+    client.move_caret(7);
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, _| compositor.text_caret().is_some(),
+    );
+    let (_, (x, y, ..)) = compositor.windows()[0];
+    let caret = compositor.text_caret().expect("a caret");
+    assert_eq!(
+        (caret.x, caret.y, caret.width, caret.height),
+        (f64::from(x + 7), f64::from(y), 1.0, 20.0),
+        "the caret stands inside its window as the field reported it"
+    );
+
+    let done = client.seen.field_done;
+    assert_eq!(
+        compositor.insert_active_text("🎉"),
+        Some(false),
+        "an ordinary field takes the emoji and is remembered"
+    );
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |_, clients| clients[0].seen.field_done > done,
+    );
+    assert_eq!(client.seen.committed, vec!["🎉".to_owned()]);
+
+    // A password field takes it too, and says so: what it holds is never
+    // remembered.
+    let done = keyboard.seen.ime_done;
+    client.focus_another_field(ContentHint::empty(), ContentPurpose::Password);
+    committed(&mut compositor, &mut client, &mut keyboard, done);
+    assert_eq!(compositor.dictation_field(), Err(TextFieldRefusal::Secret));
+    assert_eq!(
+        compositor.insert_active_text("👍"),
+        Some(true),
+        "a secret field takes the emoji without being remembered"
+    );
+    let done = client.seen.field_done;
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |_, clients| clients[0].seen.field_done > done,
+    );
+    assert_eq!(
+        client.seen.committed,
+        vec!["🎉".to_owned(), "👍".to_owned()],
+        "the secret field took the second emoji"
+    );
+}
+
 #[test]
 fn the_policy_knows_each_output_by_the_monitor_on_it() {
     let told = Rc::new(RefCell::new(Vec::new()));
     let mut compositor = Compositor::headless(Box::new(Monitors(Rc::clone(&told)))).unwrap();
     compositor
-        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480).at(0, 0))
         .unwrap();
     compositor
         .add_output(&OutputConfig::new("HEADLESS-2", 320, 240).at(640, 0))
@@ -2807,5 +2740,223 @@ fn the_lens_magnifies_the_scene_around_the_pointer() {
     assert!(
         full_green > lensed_green,
         "the whole screen is magnified, past the lens's edges: {lensed_green} then {full_green}"
+    );
+}
+
+fn press_button(compositor: &mut Compositor, button: u32) {
+    for pressed in [true, false] {
+        compositor
+            .input(InputEvent::PointerButton { button, pressed })
+            .expect("input");
+    }
+}
+
+/// A press and its release of `keys`, in order, as fingers type a chord.
+fn press_keys(compositor: &mut Compositor, keys: &[u32]) {
+    for &keycode in keys {
+        compositor
+            .input(InputEvent::Key {
+                keycode,
+                pressed: true,
+            })
+            .expect("input");
+    }
+    for &keycode in keys.iter().rev() {
+        compositor
+            .input(InputEvent::Key {
+                keycode,
+                pressed: false,
+            })
+            .expect("input");
+    }
+}
+
+#[test]
+fn a_locked_pointer_only_moves_its_client_by_deltas_and_follows_focus() {
+    let mut compositor = headless(Box::<Columns>::default());
+    let mut game = mapped_client(&mut compositor, "game", (250, 200), [255, 0, 0, 255]);
+    let mut other = mapped_client(&mut compositor, "other", (250, 200), [0, 0, 255, 255]);
+    game.lock_pointer();
+    game.own_relative_pointer();
+    pump(&mut compositor, &mut [&mut game, &mut other], |_, _| true);
+    assert!(
+        !game.seen.pointer_locked,
+        "the window mapped last has the keyboard, not this one"
+    );
+
+    // Under the pointer is not enough: the lock takes hold with the keyboard
+    // focus, and only then.
+    compositor
+        .input(InputEvent::PointerMotion { x: 100.0, y: 100.0 })
+        .expect("input");
+    pump(&mut compositor, &mut [&mut game, &mut other], |_, _| true);
+    assert!(!game.seen.pointer_locked, "under the pointer, not focused");
+    press_button(&mut compositor, BTN_LEFT);
+    pump(
+        &mut compositor,
+        &mut [&mut game, &mut other],
+        |_, clients| clients[0].seen.pointer_locked,
+    );
+
+    // Absolute motion is dropped; the deltas still reach the game.
+    compositor
+        .input(InputEvent::PointerMotion { x: 400.0, y: 100.0 })
+        .expect("input");
+    compositor
+        .input(InputEvent::PointerMotionRelative { dx: 6.0, dy: -4.0 })
+        .expect("input");
+    pump(
+        &mut compositor,
+        &mut [&mut game, &mut other],
+        |_, clients| !clients[0].seen.relative.is_empty(),
+    );
+    assert_eq!(compositor.pointer_location(), (100.0, 100.0));
+    assert_eq!(game.seen.relative, vec![(6.0, -4.0)]);
+    assert!(
+        game.seen.pointer_positions.is_empty(),
+        "a locked pointer sends no absolute motion: {:?}",
+        game.seen.pointer_positions
+    );
+
+    // Losing the keyboard releases it: the person is looking at a new window.
+    let mut newest = mapped_client(&mut compositor, "newest", (40, 40), [0, 255, 0, 255]);
+    pump(
+        &mut compositor,
+        &mut [&mut game, &mut other, &mut newest],
+        |_, clients| !clients[0].seen.pointer_locked,
+    );
+    // Coming back grants it again: the client asked for it for good.
+    click(&mut compositor, 100.0, 100.0);
+    pump(
+        &mut compositor,
+        &mut [&mut game, &mut other, &mut newest],
+        |_, clients| clients[0].seen.pointer_locked,
+    );
+
+    // Ctrl+Alt+Escape gives the pointer back, and keeps it back while the
+    // game keeps the focus.
+    press_keys(&mut compositor, &[KEY_LEFTCTRL, KEY_LEFTALT, KEY_ESCAPE]);
+    pump(
+        &mut compositor,
+        &mut [&mut game, &mut other, &mut newest],
+        |_, clients| !clients[0].seen.pointer_locked,
+    );
+    assert_eq!(
+        compositor.pointer_location(),
+        (100.0, 100.0),
+        "the release moves no pointer of its own"
+    );
+    for _ in 0..3 {
+        pump(&mut compositor, &mut [&mut game, &mut other], |_, _| true);
+    }
+    assert!(
+        !game.seen.pointer_locked,
+        "the released lock does not come back by itself"
+    );
+    // Focus moving on and back is what makes it the game's again.
+    click(&mut compositor, 400.0, 100.0);
+    pump(&mut compositor, &mut [&mut game, &mut other], |_, _| true);
+    click(&mut compositor, 100.0, 100.0);
+    pump(
+        &mut compositor,
+        &mut [&mut game, &mut other],
+        |_, clients| clients[0].seen.pointer_locked,
+    );
+}
+
+#[test]
+fn a_confined_pointer_stops_at_the_edge_of_its_region() {
+    let mut compositor = headless(Box::<Columns>::default());
+    let mut client = mapped_client(&mut compositor, "editor", (250, 200), [255, 0, 0, 255]);
+    compositor
+        .input(InputEvent::PointerMotion { x: 20.0, y: 20.0 })
+        .expect("input");
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    client.confine_pointer((0, 0, 40, 40));
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.pointer_confined
+    });
+
+    // Past the region the pointer stops at its edge, on the client's own
+    // surface coordinates.
+    compositor
+        .input(InputEvent::PointerMotion { x: 200.0, y: 150.0 })
+        .expect("input");
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    assert_eq!(compositor.pointer_location(), (39.0, 39.0));
+    assert_eq!(client.seen.pointer_positions.last(), Some(&(39.0, 39.0)));
+    // Inside it moves as it always does.
+    compositor
+        .input(InputEvent::PointerMotion { x: 10.0, y: 30.0 })
+        .expect("input");
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    assert_eq!(compositor.pointer_location(), (10.0, 30.0));
+}
+
+#[test]
+fn an_inhibiting_client_keeps_the_desktops_chords_until_focus_or_the_release_chord() {
+    let log = Rc::new(RefCell::new(HostLog::default()));
+    let mut compositor = headless(Box::<Columns>::default());
+    compositor.add_host(Box::new(Chords {
+        log: Rc::clone(&log),
+    }));
+    let mut vm = mapped_client(&mut compositor, "vm", (250, 200), [255, 0, 0, 255]);
+
+    // The desktop's own key surface answers Super+X wherever the keyboard is.
+    press_keys(&mut compositor, &[KEY_LEFTMETA, KEY_X]);
+    pump(&mut compositor, &mut [&mut vm], |_, _| true);
+    assert_eq!(log.borrow().taken, vec![(KEY_X, false)]);
+    assert!(
+        !vm.seen.keys.iter().any(|(key, _)| *key == KEY_X),
+        "the desktop took the chord: {:?}",
+        vm.seen.keys
+    );
+
+    vm.inhibit_shortcuts();
+    pump(&mut compositor, &mut [&mut vm], |_, clients| {
+        clients[0].seen.shortcuts_inhibited
+    });
+    press_keys(&mut compositor, &[KEY_LEFTMETA, KEY_X]);
+    pump(&mut compositor, &mut [&mut vm], |_, clients| {
+        clients[0].seen.keys.iter().any(|(key, _)| *key == KEY_X)
+    });
+    assert_eq!(
+        log.borrow().taken,
+        vec![(KEY_X, false), (KEY_X, true)],
+        "the second press was offered with the client's hold on the shortcuts"
+    );
+
+    // Losing the focus hands them back, and taking it again takes them.
+    let mut other = mapped_client(&mut compositor, "other", (250, 200), [0, 0, 255, 255]);
+    pump(&mut compositor, &mut [&mut vm, &mut other], |_, clients| {
+        !clients[0].seen.shortcuts_inhibited
+    });
+    click(&mut compositor, 100.0, 100.0);
+    pump(&mut compositor, &mut [&mut vm, &mut other], |_, clients| {
+        clients[0].seen.shortcuts_inhibited
+    });
+
+    // A locked session hands them back too: the lock screen is the
+    // desktop's.
+    compositor.lock_now().expect("lock");
+    pump(&mut compositor, &mut [&mut vm, &mut other], |_, clients| {
+        !clients[0].seen.shortcuts_inhibited
+    });
+    compositor.unlock().expect("unlock");
+    pump(&mut compositor, &mut [&mut vm, &mut other], |_, clients| {
+        clients[0].seen.shortcuts_inhibited
+    });
+
+    // The release chord hands them back until focus moves on.
+    press_keys(&mut compositor, &[KEY_LEFTCTRL, KEY_LEFTALT, KEY_ESCAPE]);
+    pump(&mut compositor, &mut [&mut vm, &mut other], |_, clients| {
+        !clients[0].seen.shortcuts_inhibited
+    });
+    press_keys(&mut compositor, &[KEY_LEFTMETA, KEY_X]);
+    pump(&mut compositor, &mut [&mut vm, &mut other], |_, _| true);
+    assert_eq!(
+        log.borrow().taken.last(),
+        Some(&(KEY_X, false)),
+        "the desktop answers its own chord again"
     );
 }

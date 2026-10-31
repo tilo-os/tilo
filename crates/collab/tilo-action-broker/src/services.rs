@@ -1,14 +1,17 @@
 //! Explicit host services. These are process-owned capabilities, never wire flags.
 mod own_device;
 pub mod person_chat;
+mod published;
 mod room_nodes;
 mod task_execution;
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
+pub use published::{Caller, PublishedResources, Reading, ResourceWatch};
 pub use room_nodes::{RoomNodeActions, RoomNodeAsk, RoomNodeOutcome};
 pub use task_execution::{
     NativeTaskActionRequirement, NativeTaskBinding, Preview, PreviewSide, TRACKER_APP,
-    TRACKER_ISSUE_PREFIX, TRACKER_RESOURCE, TrackerAnswer, TrackerDirection, TrackerQuestion,
-    TrackerRun, TrackerRuns, confirmation_preview, is_tracker_issue,
+    TRACKER_ISSUE_PREFIX, TRACKER_RECORD, TRACKER_RESOURCE, TrackerAnswer, TrackerDirection,
+    TrackerQuestion, TrackerRun, TrackerRuns, confirmation_preview, is_tracker_issue,
+    tracker_written,
 };
 
 use std::sync::Arc;
@@ -29,10 +32,26 @@ pub trait LocalPersonServices: Send + Sync {
     ) -> Result<tilo_user_identity::DeviceCert, String>;
 }
 
+/// The origin of a room's records on this device: it applies an agent task's change the broker
+/// admitted, running the action against the record as it is then.
+pub trait RecordChangeServices: Send + Sync {
+    /// Apply `change` in `room` as `invoker`'s step: the origin's answer.
+    ///
+    /// # Errors
+    ///
+    /// The origin cannot be reached or did not answer.
+    fn apply(
+        &self,
+        room: &str,
+        change: &tilo_actions::remote::RecordChange,
+        invoker: &tilo_actions::ActionInvoker,
+    ) -> Result<serde_json::Value, String>;
+}
+
 /// The normal desktop opening deadline, shared with placement retirement.
 pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-pub use crate::collab_broker_capnp::{
+pub use crate::collab_app_broker::{
     AudioOutputFuture, AudioOutputServices, AwaitingHistory, CertifiedPersonContext, DocumentBytes,
     HeldRevision, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
     NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices, PreparedElsewhere,
@@ -317,8 +336,8 @@ pub trait WorkspaceMemberships: Send + Sync {
 
     fn execute(
         &self,
-        request: tilo_owner_commit::OwnerCommitRequest,
-    ) -> tilo_owner_commit::CommitFuture;
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> tilo_peer_state::owner_commit::CommitFuture;
 }
 
 /// Where the view of a launched app opens: next to where the actor that
@@ -473,6 +492,20 @@ impl LaunchReadiness {
         self
     }
 
+    /// How the startup ended, once it has, without waiting: `None` while it
+    /// runs. Asked again after it answered, it answers that the observer
+    /// stopped.
+    pub fn try_settled(&mut self) -> Option<Result<(), LaunchReadinessError>> {
+        match self.receiver.try_recv() {
+            Ok(Ok(())) => Some(Ok(())),
+            Ok(Err(detail)) => Some(Err(LaunchReadinessError::Failed(detail))),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                Some(Err(LaunchReadinessError::ObserverStopped))
+            }
+        }
+    }
+
     /// Wait for an adopted window or a terminal startup failure.
     pub async fn wait(self) -> Result<(), String> {
         self.wait_with_adoption()
@@ -555,7 +588,7 @@ pub struct ObservedApplicationLaunch {
     grant: Arc<ObservedAuthorshipGrant>,
 }
 
-type ObservedAuthorshipGrant = dyn Fn(&tilo_user_identity::DeviceCert) -> Result<crate::collab_broker_capnp::InvocationJob, String>
+type ObservedAuthorshipGrant = dyn Fn(&tilo_user_identity::DeviceCert) -> Result<crate::collab_app_broker::InvocationJob, String>
     + Send
     + Sync;
 
@@ -592,7 +625,7 @@ impl ObservedApplicationLaunch {
     /// Submit this bound app's authorship through the normal published door.
     /// # Errors
     /// Refuses missing custody or unavailable/ambiguous membership publication.
-    pub fn delegate_authorship(&self) -> Result<crate::collab_broker_capnp::InvocationJob, String> {
+    pub fn delegate_authorship(&self) -> Result<crate::collab_app_broker::InvocationJob, String> {
         (self.grant)(&self.certificate()?)
     }
 }
@@ -606,6 +639,10 @@ pub struct AuthenticatedApplicationLaunch {
     /// launch that started this process ([`Launched::Started`]), read from
     /// the host's own launch record. Correlation only, never authority.
     pub launch_ticket: Option<u64>,
+    /// The host made this connection for an instance of the app with no
+    /// window ([`LauncherServices::windowless`]): it takes the app's actions
+    /// on its records, and never an `open`, which shows something.
+    pub windowless: bool,
 }
 
 /// What [`LauncherServices::launch_content`] started.
@@ -634,6 +671,11 @@ pub enum ExecutingBindingPhase {
     /// answer, not for a clock, so this is how an unanswered binding ends.
     Abandoned,
 }
+
+/// How the start of an instance of an app with no window ends
+/// ([`LauncherServices::windowless`]): `Ok` once it runs, why it could not
+/// otherwise. Its sender dropped unsent is a host that stopped starting it.
+pub type WindowlessStart = tokio::sync::oneshot::Receiver<Result<(), String>>;
 
 pub trait LauncherServices: Send + Sync {
     /// Bind an optional diagnostic observation to the host's current exact
@@ -739,6 +781,20 @@ pub trait LauncherServices: Send + Sync {
         }
     }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool;
+    /// Have an instance of `app` with no window run in `room`, started now
+    /// unless one runs there already, to take an invocation of the app's
+    /// actions on its records: what a closed app gets in place of a window
+    /// for an action that shows nothing. `Some` when this host runs one
+    /// there: how its start ends, which the action waits on with its
+    /// delivery; `None` when it runs none of `app` (its actions then launch
+    /// it as before). It ends with the session.
+    ///
+    /// # Errors
+    /// Why the instance this host runs of `app` there failed.
+    fn windowless(&self, app: &str, room: &str) -> Result<Option<WindowlessStart>, String> {
+        let _ = (app, room);
+        Ok(None)
+    }
     /// Snapshot the original launch facts while admitting this connection.
     /// Unsupported launchers retain no private window-instance authority.
     /// `window_instance` is the window the connection says it was made for:
@@ -762,6 +818,7 @@ pub trait LauncherServices: Send + Sync {
             creation: self.application_creation_evidence(pid, app, room)?,
             continuation_instance: None,
             launch_ticket: None,
+            windowless: false,
         }))
     }
 
@@ -827,7 +884,7 @@ pub struct WorkspaceGovernanceRequest<'a> {
     /// The original run's live custody, when the caller belongs to a run.
     pub execution_lease: Option<tilo_actions::remote::ExecutionLease>,
     pub room: &'a str,
-    pub actor: &'a crate::collab_broker_capnp::BrokerActor,
+    pub actor: &'a crate::collab_app_broker::BrokerActor,
     pub resource: &'a str,
     pub action: &'a str,
     pub argument: Option<&'a str>,
@@ -963,9 +1020,13 @@ pub trait KeyboardShortcutServices: Send + Sync {
 /// for `actor` in `room`, with `argument` in its slot form.
 pub struct HostStepRequest<'a> {
     pub room: &'a str,
-    pub actor: &'a crate::collab_broker_capnp::BrokerActor,
+    pub actor: &'a crate::collab_app_broker::BrokerActor,
     pub address: &'a tilo_actions::ActionAddress,
     pub argument: Option<&'a str>,
+    /// The task run the step is taken in, when it is one of a run's steps
+    /// (a task's program): what the step does in turn goes through it, so it
+    /// is admitted by the run too.
+    pub task_run: Option<&'a crate::collab_app_broker::TaskRunHost>,
 }
 
 /// How a host step ended.
@@ -987,6 +1048,12 @@ pub trait HostStepServices: Send + Sync {
     fn app_id(&self) -> &str;
     /// Every step, described.
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor>;
+    /// Whether its steps are steps a task agent takes in its run (a task's
+    /// programs): offered in a task agent's catalogue and admitted by its
+    /// run. No other host step is a task agent's.
+    fn for_tasks(&self) -> bool {
+        false
+    }
     /// The step at `address` as one invocation with `argument` (its slot
     /// form) is: by default as described, or, for a setting, as risky as
     /// the value it carries makes it.
@@ -1142,19 +1209,38 @@ pub trait ContentSink: Send {
     fn finish(self: Box<Self>) -> Result<(String, u64), String>;
 }
 
-/// Called on the broker `LocalSet`; returned Cap'n Proto clients never cross threads.
+/// What a workspace control session's calls answer.
+pub type ControlAnswer<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + 'a>>;
+
+/// One open workspace control session; it lives on the broker `LocalSet`.
+pub trait WorkspaceControlSession {
+    /// The session's next event.
+    fn read(&self) -> ControlAnswer<'_, runtime_collab::WorkspaceControlEvent>;
+
+    /// Send the controlled device `input`.
+    fn send_input(&self, input: runtime_collab::WorkspaceControlInput) -> ControlAnswer<'_, ()>;
+
+    /// End the session.
+    fn close(&self) -> ControlAnswer<'_, ()>;
+}
+
+/// Asked before each step of a workspace control session; an error ends it.
+pub type ControlRevalidate = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+
+/// Opens workspace control sessions; called on the broker `LocalSet`.
 pub trait WorkspaceControlServices: Send + Sync {
-    /// Opens the workspace control handle of `room` for `target`.
+    /// Opens the workspace control session of `room` with `target`.
     ///
     /// # Errors
     ///
-    /// Returns a Cap'n Proto error when the handle cannot be opened.
+    /// Why the session cannot be opened.
     fn open(
         &self,
         room: RoomId,
         target: [u8; 32],
-        revalidate: Arc<dyn Fn() -> Result<(), capnp::Error> + Send + Sync>,
-    ) -> Result<runtime_collab::raw::workspace_control_handle::Client, capnp::Error>;
+        revalidate: ControlRevalidate,
+    ) -> Result<std::rc::Rc<dyn WorkspaceControlSession>, String>;
 }
 
 /// The broker-authenticated identity passed to native realtime continuity.
@@ -1381,13 +1467,13 @@ pub trait NearbyTransferServices: Send + Sync {
 pub struct BrowserServiceSessionRequestContext {
     peer_id: u64,
     person: String,
-    read: crate::collab_broker_capnp::NativeDocumentReadContext,
+    read: crate::collab_app_broker::NativeDocumentReadContext,
 }
 impl BrowserServiceSessionRequestContext {
     pub(crate) fn authenticated(
         peer_id: u64,
         person: String,
-        read: crate::collab_broker_capnp::NativeDocumentReadContext,
+        read: crate::collab_app_broker::NativeDocumentReadContext,
     ) -> Self {
         Self {
             peer_id,
@@ -1413,7 +1499,7 @@ impl BrowserServiceSessionRequestContext {
     pub fn identity_public_key(&self) -> [u8; 32] {
         self.read.certificate().user_public_key
     }
-    pub fn read_context(&self) -> &crate::collab_broker_capnp::NativeDocumentReadContext {
+    pub fn read_context(&self) -> &crate::collab_app_broker::NativeDocumentReadContext {
         &self.read
     }
     /// # Errors
@@ -1740,7 +1826,7 @@ pub trait DisplayControlServices: Send + Sync {
 #[derive(Clone, Default)]
 pub struct HostServices {
     /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
-    pub approved_checks: Option<Arc<dyn crate::collab_broker_capnp::ApprovedCheckServices>>,
+    pub approved_checks: Option<Arc<dyn crate::collab_app_broker::ApprovedCheckServices>>,
     /// Read-only existing-resource discovery, absent unless the native host
     /// can carry it over its current authenticated room connection.
     pub resource_views: Option<Arc<dyn NativeResourceViews>>,
@@ -1754,8 +1840,13 @@ pub struct HostServices {
     pub person_chat: Option<person_chat::PersonChatService>,
     pub native_certificates: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
+    pub record_changes: Option<Arc<dyn RecordChangeServices>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
     pub launcher: Option<Arc<dyn LauncherServices>>,
+    /// The resources this session's services publish, which the apps it
+    /// admits read, watch and invoke. Without it those calls are refused:
+    /// a host that publishes nothing serves its apps no resources.
+    pub published: Option<Arc<dyn PublishedResources>>,
     pub workspace_governance: Option<Arc<dyn WorkspaceGovernanceServices>>,
     pub shortcut_library: Option<Arc<dyn ShortcutLibraryServices>>,
     /// The device's keyboard shortcuts on the action door. Without it

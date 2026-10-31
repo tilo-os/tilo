@@ -480,10 +480,12 @@ impl<R: FileRow> FileTable<R> {
             .with_row_key(row_key::<R>)
             .selectable(true)
             .on_header_click(move |index| header.header_click.set(Some(index)))
-            .on_activate(move |index| activate.activate.set(Some(index)));
+            .on_activate_view(format!("{}.open", self.id), move |index| {
+                activate.activate.set(Some(index));
+            });
         if self.clicks {
             let click = Rc::clone(&self.mailbox);
-            table.on_row_click(move |index, ctrl, shift| {
+            table.on_row_click_view(format!("{}.click", self.id), move |index, ctrl, shift| {
                 click.click.set(Some((index, ctrl, shift)));
             })
         } else {

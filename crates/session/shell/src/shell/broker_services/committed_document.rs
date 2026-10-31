@@ -2,7 +2,7 @@
 //! Whole captures come from a bounded restore of the room's committed state,
 //! never from the live peer. The changes since a revision this owner handed
 //! a reader come from the committed view's own document
-//! ([`tilo_joined_room::NativeCommittedView::read_changes`]), which is what
+//! ([`tilo_peer_state::owner::NativeCommittedView::read_changes`]), which is what
 //! the room durably committed; anything only a restore can decide is read
 //! whole.
 use super::{
@@ -96,7 +96,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         if context.record_kind() != Some(kind) {
             return Err("application initialization kind changed".into());
         }
-        let declared = tilo_joined_room::ApplicationRecord::declared(
+        let declared = tilo_peer_state::owner::ApplicationRecord::declared(
             &route.app_id,
             &route.record_id,
             kind,
@@ -110,7 +110,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
                 &self.opened_owner("native document owner unavailable")?,
                 room,
                 context.certificate(),
-                tilo_joined_room::ApplicationInitialization {
+                tilo_peer_state::owner::ApplicationInitialization {
                     route: &declared,
                     revision,
                     document,
@@ -159,6 +159,17 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         } else {
             RecordRead::Own
         }
+    }
+    fn holds_record(&self, room: &str, app: &str, record: &str) -> bool {
+        use tilo_action_broker::services::RecordRead;
+        if self.record_read(room, app, record) != RecordRead::Own {
+            return true;
+        }
+        let Some(room_id) = super::super::state::RoomId::parse(room) else {
+            return false;
+        };
+        let route = tilo_action_broker::route::CrdtRoute::record(app, room.to_owned(), record);
+        self.owner_holds(room_id, app, record) || self.holds_sealed_writes(&route)
     }
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
         context.revalidate()?;
@@ -255,7 +266,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         held: &HeldRevision,
         maximum: usize,
     ) -> Result<NativeDocumentRead, String> {
-        use tilo_joined_room::ChangesRead;
+        use tilo_peer_state::owner::ChangesRead;
         self.authorize(context)?;
         let route = context.route();
         let room = super::super::state::RoomId::parse(&route.cluster_id)
@@ -328,7 +339,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         // The room's own governance (its grants' and capabilities' expiries)
         // and this host's custody certificate (`check_native_custody`).
         let committed = owner.with_current(room, |view| {
-            let grants = tilo_owner_commit::PrivatePolicyBasis::from_peer(view.peer())?
+            let grants = tilo_peer_state::owner_commit::PrivatePolicyBasis::from_peer(view.peer())?
                 .next_expiry_after(after);
             let custody = view
                 .device()
@@ -374,7 +385,7 @@ impl NativeOwnerCommitService {
     /// the channel. A read of those would wait for the missing changes
     /// forever, so the record is the app's own to open, from the copy it
     /// keeps, as a new one is; it then hands its channel what it holds.
-    fn reads_sealed_writes(
+    pub(super) fn reads_sealed_writes(
         &self,
         room: super::super::state::RoomId,
         route: &tilo_action_broker::route::CrdtRoute,
@@ -405,7 +416,7 @@ impl NativeOwnerCommitService {
     /// What the sealed writes this device holds of `route`'s record in
     /// `room` make, opened with the keys of the record's channel, within
     /// `maximum` bytes.
-    fn held_sealed_record(
+    pub(super) fn held_sealed_record(
         &self,
         room: super::super::state::RoomId,
         route: &tilo_action_broker::route::CrdtRoute,
@@ -527,7 +538,7 @@ impl NativeOwnerCommitService {
                 view.peer()
                     .document(&route.app_id, &route.record_id)
                     .is_none(),
-                view.governor().capabilities.can_act_as_host,
+                view.room_host().capabilities.can_act_as_host,
             ))
         }) else {
             return;
@@ -638,7 +649,7 @@ async fn prepare_here(
         .application_creation()
         .filter(|evidence| evidence.valid())
         .ok_or("application creation requires original signed launch declarations")?;
-    let record = tilo_joined_room::ApplicationRecord::declared(
+    let record = tilo_peer_state::owner::ApplicationRecord::declared(
         &route.app_id,
         &route.record_id,
         context
@@ -694,7 +705,7 @@ async fn prepare_here(
 /// a mutation reassembled from its segments. `None` while a write builds on
 /// one that has not arrived. At most `maximum` bytes are opened.
 /// What the sealed writes of one record this device holds make.
-enum HeldSealed {
+pub(super) enum HeldSealed {
     /// Nothing to read yet: no write, or the channel's keys are on their way.
     Waiting,
     /// The record, whole.

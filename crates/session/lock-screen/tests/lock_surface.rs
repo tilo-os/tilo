@@ -44,7 +44,7 @@ fn the_lock_screen_shows_on_the_output_when_its_process_asks_for_the_lock() {
         &mut compositor,
         &mut screen,
         "the session is locked",
-        |session| session.locked(),
+        Compositor::locked,
     );
 
     // The lock screen's own frame, drawn by its process and composited like
@@ -74,12 +74,7 @@ fn the_lock_screen_shows_on_the_output_when_its_process_asks_for_the_lock() {
     // was before the lock.
     screen.kill().expect("stop the lock screen");
     screen.wait().expect("the lock screen is gone");
-    wait_for(
-        &mut compositor,
-        &mut screen,
-        "the lock is lifted",
-        |session| !session.locked(),
-    );
+    wait_lifted(&mut compositor);
     let after = compositor.screenshot("HEADLESS-1").expect("screenshot");
     assert_eq!(
         after.rgba, desktop.rgba,
@@ -96,19 +91,19 @@ fn wait_for_frame(compositor: &mut Compositor, screen: &mut Child, was: &Screens
         if frame.rgba != was.rgba {
             return frame;
         }
-        if Instant::now() >= deadline {
-            panic!(
-                "the lock screen never drew (locked: {})\n{}",
-                compositor.locked(),
-                stderr_of(screen)
-            );
-        }
+        assert!(
+            Instant::now() < deadline,
+            "the lock screen never drew (locked: {})\n{}",
+            compositor.locked(),
+            stderr_of(screen)
+        );
         pumped(compositor, screen, "the lock screen drew");
     }
 }
 
 /// Wait for the session to be in the state `done` asks for, dispatching to
-/// its clients and drawing what they drew meanwhile.
+/// its clients and drawing what they drew meanwhile, while the lock screen is
+/// still there to report on.
 fn wait_for(
     compositor: &mut Compositor,
     screen: &mut Child,
@@ -119,6 +114,19 @@ fn wait_for(
     while !done(compositor) {
         assert!(Instant::now() < deadline, "the session never was {what}");
         pumped(compositor, screen, what);
+    }
+}
+
+/// Wait for the lock to lift once its client is gone: the display runs on
+/// without the screen it was showing, so only the session is watched.
+fn wait_lifted(compositor: &mut Compositor) {
+    let deadline = Instant::now() + OPENING;
+    while compositor.locked() {
+        assert!(
+            Instant::now() < deadline,
+            "the session never lifted the lock"
+        );
+        pumped_display(compositor);
     }
 }
 
@@ -133,6 +141,12 @@ fn pumped(compositor: &mut Compositor, screen: &mut Child, what: &str) {
             stderr_of(screen)
         );
     }
+    pumped_display(compositor);
+}
+
+/// One round of the display's loop: dispatch to its clients, and draw what
+/// they drew.
+fn pumped_display(compositor: &mut Compositor) {
     compositor.dispatch(REFRESH).expect("dispatch");
     compositor.render().expect("render");
 }

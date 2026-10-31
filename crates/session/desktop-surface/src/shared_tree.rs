@@ -53,6 +53,10 @@ pub(crate) fn receive(
         else {
             continue; // A removed workspace must not retain access to its streams.
         };
+        // A close is this device's own history, so the workspace it happened
+        // in keeps it: a peer's change is no reason for the person's last
+        // close to stop being undoable here.
+        target.keep_closed_tabs(workspace);
         for strip in &workspace.strips {
             let Some(target) = target.strips.iter_mut().find(|s| s.id == strip.id) else {
                 continue;

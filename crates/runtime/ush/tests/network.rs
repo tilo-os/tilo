@@ -220,6 +220,11 @@ fn a_guest_reaches_its_granted_host_and_nothing_else() {
 #[test]
 fn a_guest_whose_hosts_cannot_be_enforced_does_not_start() {
     tilo_test_env::require_capability!(
+        UserNamespace,
+        tilo_test_env::bubblewrap(),
+        "the guest's sandbox"
+    );
+    tilo_test_env::require_capability!(
         NamespaceEntry,
         namespace_entry(),
         "the guest's network namespace"

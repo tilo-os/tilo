@@ -139,7 +139,7 @@ impl EmojiPickerButton {
         let pressed = Rc::new(Cell::new(false));
         let press = Rc::clone(&pressed);
         let button = Button::icon_only(key, crate::icons::Icon::SmilePlus, label)
-            .on_click(move || press.set(true));
+            .on_view(move || press.set(true));
         Self {
             button,
             picker: Popover::with_content(EmojiPicker::new())
@@ -197,6 +197,14 @@ impl Decorator for EmojiPickerButton {
             return;
         }
         self.button.handle_event(event, ctx);
+        // The button publishes its press; this widget hosts it, so the
+        // press is answered here, before the picker is opened from it.
+        let path = ctx.path;
+        crate::widget::controls::start_pending_control_invocations(
+            &mut self.button,
+            &mut ctx.edits(),
+            path,
+        );
         if self.pressed.replace(false) {
             let anchor: Rect = self.button.get_rect();
             self.picker.set_anchor(anchor);
@@ -292,7 +300,7 @@ impl Described for Quote {
                     crate::icons::Icon::X,
                     &label,
                 )
-                .on_click(move || close()),
+                .on_effect(move || close()),
             ));
         }
         Self {

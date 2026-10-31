@@ -61,7 +61,9 @@ use smithay::utils::{DeviceFd, Point, Transform};
 use settings_store::hardware::{AdaptiveSyncUnavailable, HdrUnavailable};
 
 use super::{Backend, BackendError, failed};
-use crate::output::{ModeRequest, OutputChange, apply_placement, find_mode, refresh_interval};
+use crate::output::{
+    ModeRequest, OutputChange, apply_placement, find_mode, logical_width, refresh_interval,
+};
 use crate::pacing::Pacing;
 use crate::present::{Presentation, Shown};
 use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
@@ -409,6 +411,17 @@ impl Backend for DrmBackend {
             .collect()
     }
 
+    fn output_hdr(&self, output: &smithay::output::Output) -> Option<crate::config::Hdr> {
+        let inner = self.inner.borrow();
+        inner
+            .gpus
+            .values()
+            .flat_map(|gpu| gpu.outputs.values())
+            .find(|lit| lit.output == *output && lit.color.hdr_on)
+            .and_then(|lit| lit.color.pass.as_ref())
+            .and_then(|pass| pass.wanted().hdr.clone())
+    }
+
     fn backdrop(
         &mut self,
         state: &mut State,
@@ -473,6 +486,30 @@ impl Backend for DrmBackend {
             &mut renderer,
             state,
             target,
+        )
+    }
+
+    fn read_back_scaled(
+        &mut self,
+        state: &mut State,
+        target: &crate::capture::Target,
+        max: (u32, u32),
+    ) -> Result<crate::backend::Screenshot, crate::capture::CaptureError> {
+        let mut inner = self.inner.borrow_mut();
+        if !inner.active {
+            // Another session has the GPU.
+            return Err(BackendError("the session is not active".into()).into());
+        }
+        let primary = inner.primary.ok_or_else(|| BackendError("no GPU".into()))?;
+        let mut renderer = inner
+            .renderers
+            .single_renderer(&primary)
+            .map_err(|error| failed("renderer", error))?;
+        crate::capture::read_back_scaled::<_, smithay::backend::renderer::gles::GlesTexture>(
+            &mut renderer,
+            state,
+            target,
+            max,
         )
     }
 
@@ -1566,19 +1603,6 @@ fn arrange_outputs(gpus: &HashMap<u64, Gpu>, config: &DisplayConfig, state: &mut
         }
     }
     state.rearrange();
-}
-
-/// An output's width in the logical layout: its mode over its scale,
-/// turned.
-fn logical_width(output: &Output) -> i32 {
-    let size = output
-        .current_mode()
-        .map(|mode| output.current_transform().transform_size(mode.size))
-        .unwrap_or_default();
-    size.to_f64()
-        .to_logical(output.current_scale().fractional_scale())
-        .to_i32_round::<i32>()
-        .w
 }
 
 /// Drive `info`'s connector from `crtc` in `mode` and make it an output

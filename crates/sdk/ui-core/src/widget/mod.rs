@@ -87,7 +87,6 @@ pub enum ControlBindingKind {
     /// through the normal action door; useful for custom-painted controls and
     /// process-local editing state that does not belong in document history.
     SemanticAction(String),
-    LegacyCallback,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -675,10 +674,10 @@ pub(crate) fn humanize_control_id(id: &str) -> String {
 }
 
 /// A reusable action-intent queue for controls, including custom widgets.
-/// Widgets call [`emit`](Self::emit) from any interaction path. Mounted shared
-/// controls install independent host custody; custom producers should use
-/// [`new_in`](Self::new_in) with their actual owner domain. The private `take`
-/// path remains only as explicitly unqualified migration compatibility.
+/// Widgets call [`emit`](Self::emit) from any interaction path. A control a
+/// host mounts is adopted by the host's custody, which keeps the same queue;
+/// custom producers bound to an owner from the start use
+/// [`new_in`](Self::new_in).
 pub struct ActionEmitter<I> {
     binding: tilo_actions::ActionBinding<I>,
     pending: crate::control_custody::ControlHolder,
@@ -691,7 +690,7 @@ impl<I> ActionEmitter<I> {
     pub fn new(binding: tilo_actions::ActionBinding<I>) -> Self {
         Self {
             binding,
-            pending: crate::control_custody::ControlHolder::new(
+            pending: crate::control_custody::ControlHolder::unowned(
                 crate::control_custody::ControlProducerDiscipline::Fifo {
                     limit: ACTION_EMITTER_QUEUE_LIMIT,
                 },
@@ -706,23 +705,25 @@ impl<I> ActionEmitter<I> {
     pub fn new_replace_one(binding: tilo_actions::ActionBinding<I>) -> Self {
         Self {
             binding,
-            pending: crate::control_custody::ControlHolder::new(
+            pending: crate::control_custody::ControlHolder::unowned(
                 crate::control_custody::ControlProducerDiscipline::ReplaceOne,
             ),
             available: true,
         }
     }
 
-    /// Construct already registered, including for emitting inside a builder.
+    /// Construct on a host's domain, including for emitting inside a builder.
     pub fn new_in(binding: tilo_actions::ActionBinding<I>, domain: &crate::ControlDomain) -> Self {
-        let mut emitter = Self::new(binding);
-        emitter.pending = crate::control_custody::ControlHolder::registered(
-            domain,
-            crate::control_custody::ControlProducerDiscipline::Fifo {
-                limit: ACTION_EMITTER_QUEUE_LIMIT,
-            },
-        );
-        emitter
+        Self {
+            binding,
+            pending: crate::control_custody::ControlHolder::in_domain(
+                domain,
+                crate::control_custody::ControlProducerDiscipline::Fifo {
+                    limit: ACTION_EMITTER_QUEUE_LIMIT,
+                },
+            ),
+            available: true,
+        }
     }
     pub fn install_custody(
         &mut self,
@@ -741,7 +742,7 @@ impl<I> ActionEmitter<I> {
     pub fn emit(&mut self, input: I) -> Result<(), tilo_actions::ActionBindingError> {
         if self.available {
             let invocation = self.binding.invoke(input)?;
-            self.pending.emit(invocation);
+            let _ = self.pending.emit(invocation);
         }
         Ok(())
     }
@@ -1396,14 +1397,17 @@ pub trait Widget {
         std::any::type_name::<Self>()
     }
 
-    /// Structural chrome can explicitly leave an inherited document callback.
+    /// Structural chrome can opt out of the component binding it would
+    /// otherwise inherit from its parent.
     #[doc(hidden)]
-    fn resets_callback_binding(&self) -> bool {
+    fn resets_binding_inheritance(&self) -> bool {
         false
     }
-    /// Drawn live content whose input is suspended by a framework surface.
+    /// Drawn live content whose input and bound dispatch a framework surface
+    /// suspends: it stays visible and keeps its state, but takes no events and
+    /// opens no records.
     #[doc(hidden)]
-    fn inactive_callback_boundary(&self) -> Option<NodeId> {
+    fn inactive_bound_dispatch_boundary(&self) -> Option<NodeId> {
         None
     }
 
@@ -2341,20 +2345,6 @@ pub trait Widget {
         false
     }
 
-    /// Apply an action another app in this room published, if this app owns
-    /// the document — lets an app address a document it doesn't hold by
-    /// saying what should happen instead of writing bytes directly, keeping
-    /// each document to one writer. An unrecognised `type_id` is silently
-    /// declined, not an error.
-    fn apply_room_action(
-        &mut self,
-        _doc: &mut crate::widget::Edits<'_>,
-        _type_id: &str,
-        _payload: &[u8],
-    ) -> bool {
-        false
-    }
-
     fn wants_pointer_capture(&self) -> bool {
         false
     }
@@ -3081,8 +3071,9 @@ pub use remount::Remount;
 #[cfg(test)]
 pub(crate) mod replaced_tripwire;
 pub use layout::{
-    AuthoredExtent, ExtentSizing, SkippedFrames, WidgetLayoutError, compute_widget_layout, insets,
-    insets_all, insets_xy, layout_clip, placing_again, text_control_height, with_layout_clip,
+    AuthoredExtent, DeviceScaleGuard, ExtentSizing, SkippedFrames, WidgetLayoutError,
+    compute_widget_layout, device_scale, enter_device_scale, insets, insets_all, insets_xy,
+    layout_clip, placing_again, text_control_height, with_layout_clip,
 };
 
 mod cached_paint;
@@ -3110,7 +3101,7 @@ pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
 pub use form_composition::{Field, Form, FormPage, FormSection, Page};
 pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, LabelPlacement, LayoutInfo, LayoutOrigin,
-    ManualConflict, ManualLayout, PageLayout, SectionLayout,
+    ManualConflict, ManualLayout, PageLayout, ScrollDirection, ScrollLayout, SectionLayout,
 };
 mod embedded;
 pub use embedded::Embedded;
@@ -3200,6 +3191,8 @@ mod floating_window;
 pub use floating_window::{FloatingWindow, MIN_HEIGHT, MIN_WIDTH, TITLE_BAR_HEIGHT};
 mod text;
 pub use text::{Text, TextProps};
+mod relative_time;
+pub use relative_time::{RelativeTime, TimeProps, next_change, relative_text};
 mod spacer;
 pub use spacer::Spacer;
 mod when;
@@ -3304,10 +3297,9 @@ pub use app_widget::{
     AppCommand, AppHostIntent, AppWidget, DeviceDisplayMoveReply, DocumentOpenCapability,
     DocumentOpenOutcome, DocumentOpenReply, HostShellAllow, IconDescriptor, WindowPublication,
 };
-pub mod command_palette;
 pub mod input_hint;
 pub mod shortcut_recorder;
-pub use input_hint::{InputDeviceGlyph, InputHint, LegendConventions};
+pub use input_hint::{InputDeviceGlyph, InputHint, InputHintProps, LegendConventions};
 pub mod canvas_navigation_hint;
 pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
 pub use shortcut_recorder::ShortcutRecorder;
@@ -3320,10 +3312,11 @@ pub use context_menu::{
 };
 mod row_menu;
 pub use primitives::{
-    BarControlFace, DensityRegion, DisclosureGroup, DisclosureRow, DisclosureState, Fact, Facts,
-    FactsFace, FloatingPanel, FloatingPanelFace, FloatingPanelLayout, IconButton, KeyHint,
-    KeyHints, KeyHintsFace, Surface, SurfaceLevel, TextStack, TextStackFace, paint_see_through,
-    paint_surface,
+    BarControlFace, DensityRegion, DisclosureGroup, DisclosureRow, DisclosureRowProps,
+    DisclosureState, Fact, FactProps, Facts, FactsFace, FactsProps, FloatingPanel,
+    FloatingPanelFace, FloatingPanelLayout, IconButton, KeyHint, KeyHintProps, KeyHints,
+    KeyHintsFace, KeyHintsProps, Surface, SurfaceLevel, TextStack, TextStackFace, TextStackProps,
+    paint_see_through, paint_surface,
 };
 pub use row_menu::RowMenu;
 pub mod context_menu_area;
@@ -3387,11 +3380,11 @@ pub mod file_table;
 pub use file_picker::{FilePicker, FilePickerEntry, FilePickerMode, FilePickerOutcome};
 
 pub mod progress_bar;
-pub use progress_bar::{ProgressBar, ProgressBarFace};
+pub use progress_bar::{ProgressBar, ProgressBarFace, ProgressBarProps};
 pub mod page_preview;
 pub use page_preview::PagePreview;
 pub mod spinner;
-pub use spinner::Spinner;
+pub use spinner::{Spinner, SpinnerProps};
 pub mod program_step;
 pub use program_step::{ProgramStepView, StepAnswer};
 pub mod date_field;
@@ -3433,19 +3426,22 @@ pub use secret_prompt::{
     SecretPrompt,
 };
 pub mod toolbar;
-pub use toolbar::Toolbar;
+pub use toolbar::{
+    Toolbar, ToolbarButtonProps, ToolbarPart, ToolbarProps, ToolbarSeparatorProps,
+    ToolbarSpacerProps,
+};
 pub mod undo_button;
 pub use undo_button::UndoButton;
 pub mod breadcrumb;
-pub use breadcrumb::Breadcrumb;
+pub use breadcrumb::{Breadcrumb, BreadcrumbProps, BreadcrumbSegmentProps};
 pub mod avatar;
 pub use avatar::{Avatar, AvatarFace, AvatarProps, AvatarSize, PresenceStatus, initials_for_name};
 pub mod badge;
-pub use badge::{Badge, BadgeContent, BadgeFace};
+pub use badge::{Badge, BadgeContent, BadgeFace, BadgeProps};
 pub mod icon;
-pub use icon::{IconSize, IconWidget};
+pub use icon::{IconProps, IconSize, IconWidget};
 pub mod signal_meter;
-pub use signal_meter::{SIGNAL_BARS, SignalLevel, SignalMeter, SignalMeterFace};
+pub use signal_meter::{SIGNAL_BARS, SignalLevel, SignalMeter, SignalMeterFace, SignalMeterProps};
 pub mod chart;
 pub use chart::{
     Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,
@@ -3504,8 +3500,8 @@ pub mod funnel_chart;
 pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStyle};
 pub mod gauge;
 pub use gauge::{
-    BarGauge, GaugeReading, GaugeStyle, GaugeThresholds, ProgressRing, ProgressRingFace,
-    ProgressRingSize, RingReading,
+    BarGauge, BarGaugeProps, GaugeReading, GaugeStyle, GaugeThresholds, ProgressRing,
+    ProgressRingFace, ProgressRingProps, ProgressRingSize, RingReading,
 };
 pub mod function_plane;
 pub use function_plane::FunctionPlane;
@@ -3530,8 +3526,11 @@ pub use virtual_list::{
     RowSelection, VecListModel, VirtualList, VirtualListProps,
 };
 mod activation;
+pub(crate) mod control_verb;
 mod dismissal;
 pub(crate) mod view_choice;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use activation::NATIVE_INVOKE;
 pub(crate) use activation::take_presses;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
 pub mod media_card;
@@ -3555,7 +3554,9 @@ pub use drop_zone::{DropZone, DropZoneFace};
 pub mod file_open;
 pub use file_open::{FileOpenEvent, FileOpenSurface};
 pub mod skeleton;
-pub use skeleton::{Skeleton, SkeletonFace, SkeletonShape, skeleton_tone};
+pub use skeleton::{
+    Skeleton, SkeletonFace, SkeletonForm, SkeletonProps, SkeletonShape, skeleton_tone,
+};
 pub mod arrival_failure;
 pub use arrival_failure::{WindowFailure, arrival_failure};
 pub mod arriving_rows;
@@ -3608,15 +3609,17 @@ pub use window_search::{
 pub mod search_results;
 pub use search_results::SearchResultsView;
 pub mod stat_tile;
-pub use stat_tile::{StatGroup, StatTile, StatTileFace, Trend};
+pub use stat_tile::{StatGroup, StatGroupProps, StatTile, StatTileFace, StatTileProps, Trend};
 pub mod banner;
-pub use banner::{Banner, BannerContent, BannerHit, BannerKind, BannerNotice};
+pub use banner::{Banner, BannerContent, BannerHit, BannerKind, BannerNotice, BannerProps};
 mod disclosure_band;
-pub use disclosure_band::DisclosureBand;
+pub use disclosure_band::{DisclosureBand, DisclosureBandProps};
 pub mod chip;
 mod chip_component;
 pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle, REFERENCE_LEAD};
 pub use chip_component::ChipProps;
+pub mod change_mark;
+pub use change_mark::ChangeMarkProps;
 pub mod conversation;
 pub use conversation::{
     AttachmentAction, AttachmentFace, AttachmentKind, AttachmentSummary, ComposerIntent,
@@ -3632,7 +3635,8 @@ pub use card::{
 pub use tone::Tone;
 mod section;
 pub use section::{
-    ObjectHeader, Section, SectionHeader, SectionHeaderFace, SectionProps, StatusLine,
+    ObjectHeader, ObjectHeaderProps, Section, SectionHeader, SectionHeaderFace, SectionProps,
+    StatusLine, StatusLineProps,
 };
 pub mod capture_studio;
 pub use capture_studio::{

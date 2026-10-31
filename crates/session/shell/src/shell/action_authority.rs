@@ -1331,10 +1331,10 @@ mod tests {
         assert!(!running(&children[1]), "a withdrawn grant interrupts");
         assert!(running(&children[0]));
 
-        // An export of the record the writer then holds; a later commit's
-        // export never arrives (its queued publication is replaced by
-        // nothing), so the writer moves past that record with nothing newer
-        // on the way.
+        // An export of the record the writer then holds; the next commit's
+        // own export never arrives (its queued publication is replaced by
+        // nothing). The save that commit queued carries its record all the
+        // same, so the older export, arriving last, is ignored.
         let moved_past = Export::of(&tree.read());
         let (release, held) = std::sync::mpsc::channel::<()>();
         let (started, starting) = std::sync::mpsc::channel();
@@ -1349,12 +1349,224 @@ mod tests {
         writer.submit(authority.job_key("publication"), || {});
         drop(release);
         writer.flush();
+        crate::shell::persist::wait_for_saves();
         moved_past.publish();
+        authority.judge();
         assert!(
-            !running(&children[0]),
-            "an export of a record the writer moved past, with nothing newer pending, is stale"
+            running(&children[0]),
+            "the commit's save carried its record; the late export withdrew nothing"
         );
         for child in &mut children {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    /// A sandbox under `binding` that captured `grants`, kept by the
+    /// returned lease, judged as a launch is: once the policy reaches
+    /// `revision`.
+    #[cfg(target_os = "linux")]
+    fn launch(
+        authority: Arc<Authority>,
+        binding: Binding,
+        grants: Vec<CapOverride>,
+        revision: u64,
+    ) -> (std::process::Child, std::io::Result<Lease>) {
+        let child = live_child();
+        let mut lease = Lease {
+            authority,
+            binding,
+            capabilities: grants,
+            pid: None,
+            capabilities_file: None,
+            retained_projection: None,
+            selected_target: None,
+            revision: Some(revision),
+        };
+        let registered = lease.register_sandbox(child.id()).map(|()| lease);
+        (child, registered)
+    }
+
+    /// A save of the tree taken before the owner's latest record reached
+    /// it is published after that record's own export: the published policy
+    /// is behind the owner with nothing on its way. That withdraws nothing:
+    /// the sandboxes keep running, and a launch is admitted, until the
+    /// export of the owner's record lands and judges them. A grant the
+    /// lagging policy no longer holds is still withdrawn at once.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_policy_behind_the_owners_record_waits_for_its_export_and_revocation_still_interrupts() {
+        let (_directory, owner, room, now, key) =
+            crate::shell::native_workspace_owner::test_enrolled_owner();
+        let tree = crate::shell::native_workspace_owner::tree_of(&owner);
+        let authority = tree.read().native_runtime.action_authority();
+        let kept = grant("so.tilo.kept", "/disposable/kept");
+        let withdrawn = grant("so.tilo.withdrawn", "/disposable/withdrawn");
+        let mut write = tree.write();
+        write.create_hosted_workspace("Ordinary room");
+        let workspace = write.desktop.workspaces.last_mut().unwrap();
+        workspace.sandbox.extend([kept.clone(), withdrawn.clone()]);
+        let ordinary = workspace.room();
+        drop(write);
+        crate::shell::persist::wait_for_saves();
+        let revision = tree.policy_revision();
+        let mut children = Vec::new();
+        let mut leases = Vec::new();
+        for grant in [&kept, &withdrawn] {
+            let (child, lease) = launch(
+                authority.clone(),
+                (ordinary, grant.id.clone(), "person".into()),
+                vec![grant.clone()],
+                revision,
+            );
+            children.push(child);
+            leases.push(lease.expect("the current policy admits the launch"));
+        }
+        let running = |child: &std::process::Child| {
+            lock(&authority.published)
+                .sandboxes
+                .contains_key(&child.id())
+                && crate::shell::host_runtime::proc_stat(child.id()).is_some()
+        };
+
+        // Taken before the commit, so it holds the earlier record; exported
+        // after it, so it is the newest snapshot and the commit's own
+        // export, older, can no longer replace it.
+        let behind = tree.read().clone();
+        let (request, _) =
+            crate::shell::native_workspace_owner::test_document_edit(&owner, room, &key, now, 1);
+        owner.commit_document(request, now).unwrap();
+        crate::shell::persist::wait_for_saves();
+        Export::of(&behind).publish();
+        authority.judge();
+        assert!(
+            children.iter().all(running),
+            "a policy behind the owner's record withdraws nothing by itself"
+        );
+        let witness = sandbox_revocation::Sandbox::capture(
+            children[0].id(),
+            (ordinary, kept.id.clone(), "person".into()),
+            std::slice::from_ref(&kept),
+        )
+        .unwrap();
+        let status = witness.authorization_status(&lock(&authority.published));
+        assert_eq!(status, Ok(sandbox_revocation::Standing::Awaiting));
+        let (mut late, admitted) = launch(
+            authority.clone(),
+            (ordinary, kept.id.clone(), "person".into()),
+            vec![kept],
+            revision,
+        );
+        let admitted = admitted.expect("a launch is admitted while the export is on its way");
+        assert!(running(&late));
+
+        // The lagging policy withdraws a grant: interrupted at once.
+        let mut revoked = behind;
+        revoked
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room() == ordinary)
+            .unwrap()
+            .sandbox
+            .retain(|cap| cap.id != withdrawn.id);
+        Export::of(&revoked).publish();
+        assert!(
+            !running(&children[1]),
+            "a withdrawn grant interrupts at once"
+        );
+        assert!(running(&children[0]));
+        assert!(running(&late));
+
+        // The export of the owner's record lands and judges them again.
+        Export::of(&tree.read()).publish();
+        assert!(running(&children[0]));
+        assert!(running(&late));
+        drop(admitted);
+        drop(leases);
+        let _ = late.kill();
+        let _ = late.wait();
+        for child in &mut children {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    /// Documents opened one after another in a room this device holds,
+    /// while that room's record moves on with every commit: each open
+    /// grants its app a read and launches it, and the commits and saves
+    /// interleave on the state writer. No app is interrupted.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_burst_of_document_opens_amid_owner_commits_interrupts_nothing() {
+        let (_directory, owner, room, now, key) =
+            crate::shell::native_workspace_owner::test_enrolled_owner();
+        let tree = crate::shell::native_workspace_owner::tree_of(&owner);
+        let authority = tree.read().native_runtime.action_authority();
+        let workspace = tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .unwrap()
+            .id;
+        let app = "so.tilo.word-processor";
+        let mut opened = Vec::new();
+        for document in 0..12_u64 {
+            {
+                let mut write = tree.write();
+                crate::shell::doc_open::grant_document_read(
+                    &mut write,
+                    workspace,
+                    app,
+                    std::path::Path::new(&format!("/disposable/burst-{document}")),
+                )
+                .unwrap();
+            }
+            let revision = tree.policy_revision();
+            let grants: Vec<CapOverride> = tree
+                .read()
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room() == room)
+                .unwrap()
+                .sandbox
+                .iter()
+                .filter(|cap| cap.subject == collab_types::caps::Subject::app(app))
+                .cloned()
+                .collect();
+            let (request, _) = crate::shell::native_workspace_owner::test_document_edit(
+                &owner,
+                room,
+                &key,
+                now,
+                document + 1,
+            );
+            owner.commit_document(request, now).unwrap();
+            let (child, lease) = launch(
+                authority.clone(),
+                (room, app.into(), "person".into()),
+                grants,
+                revision,
+            );
+            opened.push((child, lease.expect("each opened document's app launches")));
+        }
+        crate::shell::persist::wait_for_saves();
+        authority.judge();
+        let published = lock(&authority.published);
+        let interrupted = opened
+            .iter()
+            .filter(|(child, _)| {
+                !published.sandboxes.contains_key(&child.id())
+                    || crate::shell::host_runtime::proc_stat(child.id()).is_none()
+            })
+            .count();
+        drop(published);
+        assert_eq!(interrupted, 0, "no opened document's app is interrupted");
+        for (mut child, lease) in opened {
+            drop(lease);
             let _ = child.kill();
             let _ = child.wait();
         }

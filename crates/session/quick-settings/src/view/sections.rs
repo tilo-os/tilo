@@ -10,15 +10,15 @@ use ui::icons::Icon;
 use ui::tokens::Rhythm;
 use ui::widget::{
     Button, ButtonRole, Column, Container, DisclosureBand, Element, ListRow, ProgressBar, Row,
-    Scrollable, Section, Segment, SignalLevel, Text, TextInput, Toggle, ToggleGroup,
+    Scrollable, Section, Segment, SignalLevel, Slider, Text, TextInput, Toggle, ToggleGroup,
 };
 
 use super::Parts;
 use crate::QsSection;
 use crate::effect::QsEffect;
-use crate::faces::{Item, NetworkFace};
+use crate::faces::{Item, NetworkFace, StreamFace};
 use crate::hosted::{HostedActions, HostedRow};
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 use crate::resource::QuickSettings;
 
 /// `section` open in place under the control that opens it: it opens and
@@ -305,6 +305,8 @@ fn item_rows(cx: &ViewCx<QuickSettings>, section: QsSection, item: &Item) -> Vec
                 actions.bind_effect_invocation(row, &QsEffect::RouteSound { node: output.node })
             })]
         }
+        Item::Microphone(microphone) => microphone_rows(cx, microphone),
+        Item::Stream(stream) => stream_rows(cx, stream),
         Item::Device(row) => vec![device_row(cx, row)],
         Item::Copies(_) => Vec::new(),
         Item::Settings { label, link } => vec![Box::new(
@@ -318,6 +320,131 @@ fn item_rows(cx: &ViewCx<QuickSettings>, section: QsSection, item: &Item) -> Vec
             ),
         )],
     }
+}
+
+/// The microphone that records: its name and the button that mutes it, and
+/// its level under them.
+fn microphone_rows(cx: &ViewCx<QuickSettings>, microphone: &crate::SoundInput) -> Vec<Element> {
+    let actions = cx.actions();
+    let mute = Button::icon_only(
+        "qs-input-mute",
+        if microphone.muted {
+            Icon::MicOff
+        } else {
+            Icon::Mic
+        },
+        &t("qs-microphone-mute"),
+    )
+    .role(ButtonRole::Plain)
+    .toggled(microphone.muted);
+    let row = ListRow::new(format!("qs-input-{}", microphone.node), &microphone.name)
+        .icon(Icon::Mic)
+        .trailing(Box::new(
+            actions.bind_effect_invocation(mute, &QsEffect::ToggleInputMuted),
+        ));
+    vec![
+        Box::new(row),
+        Box::new(actions.bind_effect(
+            level_slider(
+                "qs-input-level",
+                &t("qs-microphone-level"),
+                microphone.muted,
+                f64::from(microphone.level),
+            ),
+            QsEffect::SET_INPUT_VOLUME,
+        )),
+    ]
+}
+
+/// One application's stream: what it plays and where, the button that mutes
+/// it, its gain under them, and the outputs it can move to.
+fn stream_rows(cx: &ViewCx<QuickSettings>, face: &StreamFace) -> Vec<Element> {
+    let actions = cx.actions();
+    let stream = &face.stream;
+    let app = stream.label.as_str();
+    let shown = if stream.muted {
+        Icon::VolumeX
+    } else if stream.playback {
+        Icon::Speaker
+    } else {
+        Icon::Mic
+    };
+    let mute = Button::icon_only(
+        &format!("qs-stream-{}-mute", stream.node),
+        shown,
+        &t_args("qs-stream-mute", &[("app", app.into())]),
+    )
+    .role(ButtonRole::Plain)
+    .toggled(stream.muted);
+    let row = ListRow::new(format!("qs-stream-{}", stream.node), &stream.label)
+        .icon(shown)
+        .secondary(&face.goes)
+        .trailing(Box::new(actions.bind_effect_invocation(
+            mute,
+            &QsEffect::SetStreamMuted {
+                stream: stream.node,
+                muted: !stream.muted,
+            },
+        )));
+    let mut rows: Vec<Element> = vec![
+        Box::new(row),
+        Box::new(actions.bind_effect(
+            level_slider(
+                &format!("qs-stream-{}-gain", stream.node),
+                &t_args("qs-stream-level", &[("app", app.into())]),
+                stream.muted,
+                f64::from(stream.level),
+            ),
+            QsEffect::SET_STREAM_VOLUME.map({
+                let node = stream.node;
+                move |level: f64| (node, level)
+            }),
+        )),
+    ];
+    // Where it can go, once there is more than one place: the output it
+    // plays on is marked, a press on another moves it there.
+    if face.outputs.len() > 1 {
+        let mut choices = Row::new().with_rhythm(Rhythm::Related);
+        for output in &face.outputs {
+            let name = t_args(
+                "qs-stream-output",
+                &[("app", app.into()), ("output", output.name.as_str().into())],
+            );
+            let button = Button::new(
+                &format!("qs-stream-{}-output-{}", stream.node, output.node),
+                &output.name,
+            )
+            .control_size(ui::widget::ControlSize::Small)
+            .role(ButtonRole::Plain)
+            .toggled(output.current)
+            .with_accessible_name(&name);
+            choices = choices.push(Box::new(if output.current {
+                button
+            } else {
+                actions.bind_effect_invocation(
+                    button,
+                    &QsEffect::RouteStream {
+                        stream: stream.node,
+                        device: Some(output.node),
+                    },
+                )
+            }));
+        }
+        rows.push(Box::new(choices));
+    }
+    rows
+}
+
+/// A level from 0 to 1 in steps of a twentieth: the slider of a control
+/// that has a level, empty while it is muted as the volume's is.
+fn level_slider(id: &str, name: &str, muted: bool, level: f64) -> Slider {
+    let level = LocalState::new(if muted { 0.0 } else { level });
+    Slider::from_state(&level)
+        .with_id(id)
+        .with_accessible_name(name)
+        .range(0.0, 1.0)
+        .step(0.05)
+        .commits_on_release()
 }
 
 /// A network, and the password prompt under it while it asks for one.

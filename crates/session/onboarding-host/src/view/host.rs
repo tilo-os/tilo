@@ -206,9 +206,28 @@ impl Hosted {
             .downcast_mut::<ui::app::EmbeddedApp>()?
             .component_root_mut()
     }
+
+    /// Where the app's control `id` is in the host's space, as its last frame
+    /// laid it out: what a pointer presses to reach it.
+    pub(super) fn control_rect(&mut self, id: &str) -> Option<vello::kurbo::Rect> {
+        let app = self
+            .app
+            .as_mut()?
+            .as_any_mut()?
+            .downcast_mut::<ui::app::EmbeddedApp>()?;
+        let place = vello::kurbo::Affine::translate(Widget::get_rect(app).origin().to_vec2());
+        let control = ui::widget::find_test_id(app.component_root_mut()?, id)?;
+        Some(place.transform_rect_bbox(control.get_rect()))
+    }
 }
 
 impl OnboardingView {
+    /// Where setup's control `id` is in the host's space, as its last frame
+    /// laid it out: what a pointer presses to reach it.
+    pub fn control_rect(&mut self, id: &str) -> Option<vello::kurbo::Rect> {
+        self.app.control_rect(id)
+    }
+
     /// The secret buffers the app's fields write into: this view's own.
     pub(super) fn secrets(&self) -> Secrets {
         Secrets {

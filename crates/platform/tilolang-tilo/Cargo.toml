@@ -51,9 +51,6 @@ room = [
     "dep:collab-types",
     "dep:tilo-history",
 ]
-# Lets `tilolang bench --engine cranelift|winch` run on wasmtime (docs/tilolang-engines.md).
-wasmtime = ["tilolang-runtime/wasmtime"]
-
 [dev-dependencies]
 # The system's mention notices, read from a room holding tilolang rich text.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }

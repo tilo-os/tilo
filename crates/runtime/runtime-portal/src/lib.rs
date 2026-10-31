@@ -24,6 +24,8 @@
 pub mod agent_transport;
 #[cfg(target_os = "linux")]
 pub mod jobs;
+#[cfg(unix)]
+pub mod launch_handoff;
 pub mod local_socket;
 pub mod origin_connector;
 pub mod pending_connection;
@@ -45,7 +47,7 @@ pub mod windows;
 /// this version (docs/architecture/compatibility.md); `interface.toml`
 /// holds the schema, and the repository policy fails a change to it that
 /// keeps the number.
-pub const RUNTIME_INTERFACE_VERSION: u32 = 11;
+pub const RUNTIME_INTERFACE_VERSION: u32 = 12;
 
 use std::env;
 use std::io;
@@ -91,10 +93,25 @@ pub enum NotAvailable {
     /// The service responded but its protocol version doesn't match this client's.
     #[error("protocol mismatch: expected {expected}, got {got}")]
     ProtocolMismatch { expected: u32, got: u32 },
-    /// Capability error talking to the service (rejected request, malformed reply).
-    #[cfg(feature = "rpc")]
-    #[error("capnp error: {0}")]
-    Capnp(#[from] capnp::Error),
+    /// The service read the request and refused it, saying why.
+    #[error("refused: {0}")]
+    Refused(String),
+}
+
+/// A Cap'n Proto service's failure, in the terms every service shares: a
+/// connection that went away is a failed connection, anything else the
+/// service said is its refusal.
+#[cfg(feature = "rpc")]
+impl From<capnp::Error> for NotAvailable {
+    fn from(error: capnp::Error) -> Self {
+        match error.kind {
+            capnp::ErrorKind::Disconnected => Self::ConnectionFailed(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                error.extra,
+            )),
+            _ => Self::Refused(error.extra),
+        }
+    }
 }
 
 /// True iff we appear to be running inside a Tilo session. Heuristic only —

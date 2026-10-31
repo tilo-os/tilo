@@ -530,7 +530,7 @@ impl Device {
         // The tree is let go first: a publication takes the writer, then
         // the tree.
         let writer = self.tree.read().native_runtime.clone();
-        writer.close_for_shutdown();
+        writer.close();
     }
 
     /// Start this device again from what it kept on disk, as booting it
@@ -648,6 +648,11 @@ impl Device {
         keys: fn(collab_types::ChannelId) -> channel_crypto::ChannelContentKeys,
     ) {
         drop(self.channels.take().expect("the device is online"));
+        // The channel service the network holds carries the directory that
+        // refers back to the network weakly: letting go of it before the
+        // service is opened again leaves the one strong reference a new
+        // live-key source is installed through.
+        self.net().channel_keys().set(None);
         let net = self.net.as_mut().expect("the device is online");
         Arc::get_mut(net)
             .expect("nothing else holds the device's network")
@@ -1053,8 +1058,8 @@ impl Device {
                 .with_current(room, |view| {
                     Ok(format!(
                         "{:?} {:?}",
-                        view.governor().device_label,
-                        view.governor().capabilities
+                        view.room_host().device_label,
+                        view.room_host().capabilities
                     ))
                 })
                 .ok()
@@ -1084,14 +1089,18 @@ impl Device {
                     channel_crypto::ChannelContentKeys::from_bytes(&reply.keys?).ok()
                 }
                 runtime_identity::wire::ChannelAccess::Waiting
-                | runtime_identity::wire::ChannelAccess::Unavailable => None,
-                other => panic!("{} cannot open the note's channel: {other:?}", self.label),
+                | runtime_identity::wire::ChannelAccess::Unavailable
+                | runtime_identity::wire::ChannelAccess::NoSecretStore => None,
+                runtime_identity::wire::ChannelAccess::Removed => {
+                    panic!("{} is removed from the note's channel", self.label)
+                }
             };
         };
         let route = collab_types::ChannelRoute::new(NOTES, NOTE_RECORD);
         match channels.access_record(room, &route).0 {
             ChannelAccess::Ready(keys) => Some(keys),
-            ChannelAccess::Waiting => None,
+            // A device with no secret store holds no keys to open it with.
+            ChannelAccess::Waiting | ChannelAccess::NoSecretStore => None,
             other => panic!("{} cannot open the note's channel: {other:?}", self.label),
         }
     }
@@ -1386,7 +1395,8 @@ impl Device {
             .with_current(room, |view| {
                 Ok(view
                     .peer()
-                    .permissions(view.device().device_public_key, SystemTime::now())?
+                    .permissions(view.device().device_public_key, SystemTime::now())
+                    .map_err(|error| error.to_string())?
                     .policy)
             })
             .ok()

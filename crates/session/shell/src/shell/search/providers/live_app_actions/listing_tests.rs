@@ -11,7 +11,7 @@ use tilo_actions::remote::{CatalogueResource, CatalogueRow, pending};
 
 use super::tests::{chrome, exported, page};
 use super::{LiveAppActionsProvider, directory_pages};
-use crate::shell::collab_broker_capnp::ActionDirectoryRoot;
+use crate::shell::collab_app_broker::ActionDirectoryRoot;
 
 /// An enumeration of every action reads each connection's listing; the
 /// palette and agents search in between. However many searches come and
@@ -39,10 +39,9 @@ fn assert_listings_survive_searches() {
     const CONNECTIONS: usize = 20;
     const SEARCHES: usize = 10;
     let chrome = chrome();
-    let directory =
-        crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
-            chrome.borrow().tree_handle(),
-        );
+    let directory = crate::shell::collab_app_broker::tests::local_directory_fixture_with_membership(
+        chrome.borrow().tree_handle(),
+    );
     let broker = directory.broker.clone();
     let template = broker
         .action_directory_root_page(None, 256)

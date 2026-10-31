@@ -9,7 +9,7 @@ use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, Effect, Invoke, Model, resource};
 use ui::widget::Element;
 
-use crate::app::{ContainersApp, ContainersState};
+use crate::app::{Confirm, ConfirmTarget, ContainersApp, ContainersState, Prompt, PromptKind};
 use crate::draft::{CreateDraft, CreateField};
 use crate::model::{DetailTab, Engine, Section};
 
@@ -60,6 +60,19 @@ pub enum ContainersEffect {
     /// Create container.
     #[effect(kind = "read")]
     Create,
+    /// Read container
+    ///
+    /// Answers what one container is and how it stands: its name and
+    /// image, its state, the command it runs, when it was created, its
+    /// published ports, its mounts, the names of its environment variables,
+    /// its labels and its latest resource use. It is the container row's
+    /// read: what discloses the row, so starting, stopping and its other
+    /// verbs are offered to whoever may read it, an agent too.
+    #[effect(view, row, returns, idempotent, label = "Read container")]
+    ReadContainer {
+        #[param("Container id")]
+        container: String,
+    },
     /// Open logs.
     #[effect(view, row)]
     OpenLogs {
@@ -108,9 +121,19 @@ pub enum ContainersEffect {
         #[param("Container id")]
         container: String,
     },
-    /// Show image.
+    /// Pull image.
+    ///
+    /// Pulls the image's reference from its registry again.
+    #[effect(row, idempotent)]
+    PullImage {
+        #[param("Image reference")]
+        image: String,
+    },
+    /// Add a tag to image.
+    ///
+    /// Asks which tag to give the image.
     #[effect(view, row)]
-    ShowImage {
+    TagImage {
         #[param("Image reference")]
         image: String,
     },
@@ -120,11 +143,14 @@ pub enum ContainersEffect {
         #[param("Image reference")]
         image: String,
     },
-    /// Show volume.
+    /// Remove image, asking first.
+    ///
+    /// The image rows' remove control: it opens the confirmation the person
+    /// answers before [`Self::RemoveImage`] runs.
     #[effect(view, row)]
-    ShowVolume {
-        #[param("Volume name")]
-        volume: String,
+    AskToRemoveImage {
+        #[param("Image reference")]
+        image: String,
     },
     /// Remove volume.
     #[effect(row, destructive)]
@@ -132,11 +158,14 @@ pub enum ContainersEffect {
         #[param("Volume name")]
         volume: String,
     },
-    /// Show distrobox.
+    /// Remove volume, asking first.
+    ///
+    /// The volume rows' remove control: it opens the confirmation the person
+    /// answers before [`Self::RemoveVolume`] runs.
     #[effect(view, row)]
-    ShowDistrobox {
-        #[param("Distrobox name")]
-        distrobox: String,
+    AskToRemoveVolume {
+        #[param("Volume name")]
+        volume: String,
     },
     /// Enter distrobox.
     #[effect(row, privileged)]
@@ -238,6 +267,35 @@ impl ResourceApp for ContainersShell {
 }
 
 impl ContainersState {
+    /// What the container `id` is and how it stands, its row's read.
+    ///
+    /// # Errors
+    /// When the engine has no such container.
+    pub(crate) fn read_container(&self, id: &str) -> Result<serde_json::Value, String> {
+        let container = self
+            .engine
+            .find(id)
+            .ok_or_else(|| format!("there is no container `{id}`"))?;
+        Ok(serde_json::json!({
+            "id": container.id,
+            "name": container.name,
+            "image": container.image,
+            "status": container.status.label(),
+            "status_detail": container.status_detail,
+            "command": container.command,
+            "created": container.created,
+            "ports": container.ports,
+            "mounts": container.mounts,
+            "env": container.env.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            "labels": container
+                .labels
+                .iter()
+                .map(|(key, value)| (key.clone(), serde_json::Value::from(value.clone())))
+                .collect::<serde_json::Map<_, _>>(),
+            "stats": container.stats,
+        }))
+    }
+
     /// Do what `effect` asks, for any caller: the rows, the palette, an
     /// agent.
     ///
@@ -267,13 +325,36 @@ impl ContainersState {
                 self.show_tab(tab);
             }
             ContainersEffect::Create => self.open_create(),
+            ContainersEffect::ReadContainer { container } => {
+                self.read_container(&container)?;
+            }
             ContainersEffect::OpenLogs { container } => {
                 self.select_container(Some(container));
                 self.show_tab(DetailTab::Logs);
             }
-            ContainersEffect::ShowImage { .. } => self.show_section(Section::Images),
-            ContainersEffect::ShowVolume { .. } => self.show_section(Section::Volumes),
-            ContainersEffect::ShowDistrobox { .. } => self.show_section(Section::Distrobox),
+            ContainersEffect::PullImage { image } => self.start_pull(&image),
+            ContainersEffect::TagImage { image } => self.ask_prompt(Prompt {
+                kind: PromptKind::TagImage,
+                value: String::new(),
+                context: image,
+            }),
+            ContainersEffect::AskToRemoveImage { image } => self.ask_confirm(Confirm {
+                name: image.clone(),
+                target: ConfirmTarget::Image { reference: image },
+            }),
+            ContainersEffect::AskToRemoveVolume { volume } => self.ask_confirm(Confirm {
+                name: volume.clone(),
+                target: ConfirmTarget::Volume { name: volume },
+            }),
+            ContainersEffect::EnterDistrobox { distrobox } => {
+                if self.engine.live {
+                    self.run_engine_operation("containers.distrobox", "enter", &distrobox)?;
+                } else if self.live {
+                    return Err("Podman isn't running".into());
+                } else {
+                    self.show_toast(format!("Entered {distrobox}"), false);
+                }
+            }
             engine => {
                 if let Some((kind, verb, target)) = engine.engine_operation() {
                     self.run_engine_operation(kind, verb, target)?;
@@ -452,3 +533,46 @@ mod tests {
 }
 
 ui::reach_tests!(ContainersShell);
+
+#[cfg(test)]
+mod agent_disclosure_tests {
+    #[test]
+    fn every_scenario_shows_an_agent_its_actions() {
+        if let Err(failures) =
+            ui::framework::testing::check_agents_are_shown_every_action::<super::ContainersShell>()
+        {
+            panic!("{failures}");
+        }
+    }
+
+    /// A container's row is disclosed through its read, which answers the
+    /// container as the engine reports it.
+    #[test]
+    fn a_containers_read_answers_it() {
+        use crate::app::ContainersApp;
+        let mut host = ui::prelude::TestApp::<super::ContainersShell>::new().unwrap();
+        host.with_surface::<ContainersApp, _>(ContainersApp::stage_sample_engine)
+            .unwrap();
+        host.settle();
+        let (id, name) = host
+            .with_widget::<ContainersApp, _>(|app| {
+                let state = app.state();
+                let container = &state.engine.containers[0];
+                (container.id.clone(), container.name.clone())
+            })
+            .unwrap();
+        let read = host
+            .effect_on(
+                &format!("container:{id}"),
+                &super::ContainersEffect::ReadContainer {
+                    container: id.clone(),
+                },
+            )
+            .unwrap()
+            .value
+            .expect("a container's read answers it");
+        assert_eq!(read["id"], id, "{read:#}");
+        assert_eq!(read["name"], name, "{read:#}");
+        assert!(read["status"].is_string(), "{read:#}");
+    }
+}

@@ -58,14 +58,13 @@ def example_apps(packages: dict[str, dict], root: Path) -> set[str]:
 # that build each as tilo-browser-runtime's dependency on it does. channel-crypto
 # is here for its own wasm target table: the getrandom backend that makes a peer
 # built without tilo-ui compile belongs to it, so it is built alone to hold that.
-# tilo-peer-state and tilo-joined-room are the peer core a page holds its
-# workspaces through, as native devices do: their admission and replica core
-# keep building for the browser.
+# tilo-peer-state is the peer core a page holds its workspaces through, as
+# native devices do: its admission and replica core keep building for the
+# browser.
 WASM_ALSO = {
     "tilo-browser-peer": ("--no-default-features", "--features", "toolkit"),
     "channel-crypto": (),
     "tilo-peer-state": (),
-    "tilo-joined-room": (),
 }
 # Lints that misfire on wasm32 alone: browser handles are neither Send nor
 # Sync, and std::fs::File there holds nothing to drop.

@@ -27,7 +27,7 @@
 
 mod activity;
 
-pub use activity::{ActivityAsk, ActivityReads, ActivityRequests};
+pub use activity::{ActivityAsk, ActivityReads, ActivityRequests, activity_requests};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

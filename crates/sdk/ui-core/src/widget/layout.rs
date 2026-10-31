@@ -175,6 +175,46 @@ pub fn with_layout_clip<T>(clip: vello::kurbo::Rect, place: impl FnOnce() -> T) 
 }
 
 thread_local! {
+    static DEVICE_SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
+
+/// The device pixels per logical pixel of the display a layout is for: every
+/// tree the toolkit solves rounds its edges onto that grid
+/// ([`solve_layout`]), so an edge lands on a device pixel at 1.5 as at 2.
+/// 1 outside a host's layout pass.
+#[must_use]
+pub fn device_scale() -> f32 {
+    DEVICE_SCALE.with(std::cell::Cell::get)
+}
+
+/// Lay out at `scale` device pixels per logical pixel until the guard is
+/// dropped: a host enters it around its whole layout pass (solving and
+/// placing, with every tree a widget solves of its own), with its display's
+/// scale. A scale that is not a finite positive number is 1.
+#[must_use = "the scale holds while the guard lives"]
+pub fn enter_device_scale(scale: f64) -> DeviceScaleGuard {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a display scale is a small positive number"
+    )]
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale as f32
+    } else {
+        1.0
+    };
+    DeviceScaleGuard(DEVICE_SCALE.with(|cell| cell.replace(scale)))
+}
+
+/// Restores the device scale in effect before [`enter_device_scale`].
+pub struct DeviceScaleGuard(f32);
+
+impl Drop for DeviceScaleGuard {
+    fn drop(&mut self) {
+        DEVICE_SCALE.with(|cell| cell.set(self.0));
+    }
+}
+
+thread_local! {
     /// The tree whose widgets are being placed again from the layout they
     /// were last placed from ([`placing_again`]), by address.
     static PLACING_AGAIN: std::cell::Cell<Option<*const ()>> = const { std::cell::Cell::new(None) };
@@ -360,6 +400,9 @@ pub(crate) type MeasureNode<'a> =
 /// grid and block solver again (about 200 KB of WebAssembly each). Toolkit
 /// code solves through this one function instead, so the solver is compiled
 /// once.
+///
+/// The solved edges round onto the display's device pixels
+/// ([`device_scale`]), not merely whole logical pixels.
 #[inline(never)]
 pub(crate) fn solve_layout(
     taffy: &mut TaffyTree<()>,
@@ -367,6 +410,7 @@ pub(crate) fn solve_layout(
     available: Size<AvailableSpace>,
     measure: &mut MeasureNode<'_>,
 ) -> taffy::TaffyResult<()> {
+    taffy.set_rounding_scale(device_scale());
     taffy.compute_layout_with_measure(root, available, |known, available, node, _, _| {
         measure(known, available, node)
     })
@@ -396,9 +440,6 @@ pub(super) unsafe fn compute_widget_layout_depth(
             policies.push((node, policy));
         }
         pending.extend(taffy.children(node)?.into_iter().rev());
-    }
-    if !policies.is_empty() {
-        taffy.disable_rounding();
     }
     // Intrinsic content can change without changing a Taffy style or topology.
     // Invalidate the measured node itself: marking only the root leaves cached
@@ -669,7 +710,7 @@ impl CompositionFocus {
             let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
                 return;
             };
-            let reset = widget.resets_callback_binding();
+            let reset = widget.resets_binding_inheritance();
             let own_binding = widget.callback_binding();
             let binding = if reset {
                 own_binding
@@ -1268,7 +1309,9 @@ mod tests {
             );
         }
 
-        fn manual_fractional_allocation_contract() {
+        /// A manual region's fractional allocation, laid out at `scale` device pixels per
+        /// logical pixel.
+        fn manual_allocation_at(scale: f64) -> Rect {
             use crate::widget::{Button, Manual};
             let mut widget = Manual::new(|ctx| {
                 ctx.place(0, Rect::new(10.25, 20.75, 130.75, 61.0))?;
@@ -1278,6 +1321,7 @@ mod tests {
                 })
             })
             .child(Box::new(Button::new("action", "Action")));
+            let _grid = enter_device_scale(scale);
             let mut tree = TaffyTree::new();
             let mut nodes = HashMap::new();
             let root = widget.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
@@ -1301,16 +1345,39 @@ mod tests {
                 .unwrap();
             }
             widget.apply_layout(&tree, root, Point::ZERO);
-            assert_eq!(
-                widget.children()[0].get_rect(),
-                Rect::new(10.25, 20.75, 130.75, 61.0)
+            assert!(
+                widget
+                    .effective_layout()
+                    .is_some_and(|info| info.first_conflict.is_none()),
+                "the allocation is the policy's, unrounded: no conflict"
             );
+            widget.children()[0].get_rect()
         }
 
-        fn ordinary_hosts_keep_default_pixel_rounding() {
+        fn manual_fractional_allocation_lands_on_device_pixels() {
+            assert_eq!(
+                manual_allocation_at(4.0),
+                Rect::new(10.25, 20.75, 130.75, 61.0),
+                "quarter pixels are device pixels at 4x"
+            );
+            assert_eq!(
+                manual_allocation_at(1.0),
+                Rect::new(10.0, 21.0, 131.0, 61.0)
+            );
+            let third = manual_allocation_at(1.5);
+            for edge in [third.x0, third.y0, third.x1, third.y1] {
+                assert!(
+                    ((edge * 1.5) - (edge * 1.5).round()).abs() < 1e-3,
+                    "{edge} is a device pixel at 1.5x: {third:?}"
+                );
+            }
+        }
+
+        fn pixel_rounding_at(scale: f64) -> Rect {
             let mut widget = crate::widget::Container::new()
                 .with_no_padding()
                 .with_size(100.25, 40.25);
+            let _grid = enter_device_scale(scale);
             let mut tree = TaffyTree::new();
             let mut nodes = HashMap::new();
             let root = widget.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
@@ -1333,13 +1400,18 @@ mod tests {
                 .unwrap();
             }
             widget.apply_layout(&tree, root, Point::ZERO);
-            assert_eq!(widget.get_rect(), Rect::new(0.0, 0.0, 100.0, 40.0));
+            widget.get_rect()
+        }
+
+        fn ordinary_hosts_round_to_the_display_pixels() {
+            assert_eq!(pixel_rounding_at(1.0), Rect::new(0.0, 0.0, 100.0, 40.0));
+            assert_eq!(pixel_rounding_at(2.0), Rect::new(0.0, 0.0, 100.5, 40.5));
         }
 
         authored_extents_resolve_by_their_sizing();
         text_control_height_keeps_the_authored_height_until_the_line_outgrows_it();
-        manual_fractional_allocation_contract();
-        ordinary_hosts_keep_default_pixel_rounding();
+        manual_fractional_allocation_lands_on_device_pixels();
+        ordinary_hosts_round_to_the_display_pixels();
     }
 
     #[test]

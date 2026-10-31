@@ -1012,7 +1012,7 @@ pub fn load_device_tree_from(path: &Path, salt: u16) -> std::io::Result<Workspac
     // What the owner holds, projected for the repairs below; the owner,
     // once open, keeps it current.
     tree.native_authority =
-        tilo_joined_room::read_file(&super::native_workspace_owner::owner_file(path))
+        tilo_peer_state::owner::read_file(&super::native_workspace_owner::owner_file(path))
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     // The file envelope's version is stamped on write; in memory the tree
     // carries the portable desktop schema.
@@ -1084,12 +1084,12 @@ fn hand_over_embedded_owner_record(path: &Path, file: &str) {
 /// a record: that file is the one that counts, the copy in the state file
 /// being from before it existed.
 fn hand_over_record(owner_path: &Path, embedded: &serde_json::Value) -> Result<(), String> {
-    let record: tilo_joined_room::NativeAuthorityStorage =
+    let record: tilo_peer_state::owner::NativeAuthorityStorage =
         serde_json::from_value(embedded.clone()).map_err(|error| error.to_string())?;
-    if record.is_empty() || !tilo_joined_room::read_file(owner_path)?.is_empty() {
+    if record.is_empty() || !tilo_peer_state::owner::read_file(owner_path)?.is_empty() {
         return Ok(());
     }
-    tilo_joined_room::write_file(owner_path, &record)
+    tilo_peer_state::owner::write_file(owner_path, &record)
 }
 
 /// A field the desktop writes but never reads back (its presence cache)
@@ -1383,7 +1383,7 @@ mod tests {
             tree.native_authority.holds(room),
             "the room the device held came with the record"
         );
-        let moved: tilo_joined_room::NativeAuthorityStorage =
+        let moved: tilo_peer_state::owner::NativeAuthorityStorage =
             serde_json::from_slice(&std::fs::read(&beside).expect("the record moved beside it"))
                 .expect("the record beside the file reads");
         assert!(

@@ -151,6 +151,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         CollabRequest::FetchScrollback { .. }
         | CollabRequest::OpenWorkspaceControl { .. }
         | CollabRequest::CloseWorkspaceControl { .. }
+        | CollabRequest::ClearContinuation
         | CollabRequest::RequestDocumentSnapshot => {}
         CollabRequest::LaunchInstalledApplication {
             app_id,
@@ -173,15 +174,13 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.bytes(bytes);
         }
         CollabRequest::WantContent { hash } => meter.string_capacity(hash),
-        CollabRequest::PublishActions { app_id, actions } => {
-            meter.string_capacity(app_id);
+        CollabRequest::PublishActions { actions } => {
             meter.add_product(actions.capacity(), std::mem::size_of::<ExportedAction>());
             for action in actions {
                 exported_action_bytes(action, &mut meter);
             }
         }
-        CollabRequest::PublishActionSurface { app_id, delta } => {
-            meter.string_capacity(app_id);
+        CollabRequest::PublishActionSurface { delta } => {
             meter.add_product(
                 delta.shapes.capacity(),
                 std::mem::size_of::<(runtime_collab::ShapeId, ExportedAction)>(),
@@ -211,39 +210,20 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
                 meter.string_capacity(resource);
             }
         }
-        CollabRequest::ReportContinuation {
-            app_id, metadata, ..
-        } => {
-            meter.string_capacity(app_id);
+        CollabRequest::ReportContinuation { metadata, .. } => {
             meter.bytes(metadata);
         }
-        CollabRequest::ReportPlayback {
-            app_id,
-            reports_json,
-        } => {
-            meter.string_capacity(app_id);
-            meter.bytes(reports_json);
-        }
-        CollabRequest::PublishSearchIndex { app_id, delta_json } => {
-            meter.string_capacity(app_id);
+        CollabRequest::PublishSearchIndex { delta_json } => {
             meter.bytes(delta_json);
         }
         CollabRequest::NativeMediaCommand { command, .. } => serialized_bytes(command, &mut meter),
-        CollabRequest::RealtimeCommand {
-            app_id, command, ..
-        } => {
-            meter.string_capacity(app_id);
+        CollabRequest::RealtimeCommand { command, .. } => {
             serialized_bytes(command, &mut meter);
         }
-        CollabRequest::NearbyTransferCommand {
-            app_id, command, ..
-        } => {
-            meter.string_capacity(app_id);
+        CollabRequest::NearbyTransferCommand { command, .. } => {
             serialized_bytes(command, &mut meter);
         }
-        CollabRequest::ClearContinuation { app_id } => meter.string_capacity(app_id),
-        CollabRequest::ReportHandoff { app_id, message } => {
-            meter.string_capacity(app_id);
+        CollabRequest::ReportHandoff { message } => {
             meter.bytes(message);
         }
         CollabRequest::WorkspaceControlInput { event, .. } => serialized_bytes(event, &mut meter),
@@ -394,6 +374,23 @@ pub(super) fn command_bytes(command: &SdkCommand) -> Option<usize> {
         } => std::mem::size_of::<SdkCommand>()
             .checked_add(command.capacity())?
             .checked_add(original.capacity()),
+        SdkCommand::Published(command) => match command {
+            super::PublishedCommand::Watch { resource, .. } => {
+                std::mem::size_of::<SdkCommand>().checked_add(resource.len())
+            }
+            super::PublishedCommand::Invoke {
+                resource,
+                action,
+                arguments,
+                ..
+            } => {
+                let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
+                meter.add(resource.len());
+                meter.string_capacity(action);
+                json_map_bytes(arguments, &mut meter);
+                meter.finish()
+            }
+        },
         SdkCommand::Speakers {
             app_id, command, ..
         } => {
@@ -461,7 +458,7 @@ fn context_event_bytes(
 /// invocation id or correlation always hears back.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 pub(super) async fn remote_action_round_trip(
     channel: &runtime_collab::ChannelHandle,
@@ -666,16 +663,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             serialized_bytes(key, &mut meter);
             presence_payload_bytes(payload, &mut meter);
             "RemotePresenceUpdate"
-        }
-        CollabEvent::ActionArrived {
-            type_id,
-            payload,
-            from_user_id,
-        } => {
-            meter.string_capacity(type_id);
-            meter.bytes(payload);
-            meter.string_capacity(from_user_id);
-            "ActionArrived"
         }
         CollabEvent::Document {
             envelope,

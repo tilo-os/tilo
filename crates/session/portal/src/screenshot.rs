@@ -6,6 +6,9 @@
 //! ([`crate::consent`]), unless the frontend already checked its
 //! permission store. Either way the picture is the session's capture of
 //! what the displays show ([`crate::Capture`]), handed back as a file URI.
+//!
+//! A colour pick asks the same session for the pixel under the pointer
+//! ([`Capture::color_at_pointer`]), answered as red, green and blue.
 
 use std::collections::HashMap;
 
@@ -15,16 +18,17 @@ use zbus::interface;
 use zbus::zvariant::{ObjectPath, OwnedValue};
 
 use crate::consent::AccessQuestion;
+use crate::doc_store;
 use crate::file_chooser::file_uri;
 use crate::reply::{Ended, OrFail, Outcome, Reply, Results, answer};
-use crate::{CaptureTarget, Portal, PortalCaller, lockdown, option, question_handle};
+use crate::{
+    Capture, CaptureError, CaptureTarget, Portal, PortalCaller, lockdown, option, question_handle,
+};
 
 /// The kind of the question an interactive screenshot asks.
 pub const SCREENSHOT_QUESTION: &str = "portal.screenshot";
 /// The capability a non-interactive screenshot needs.
 pub const SCREENSHOT_CAPABILITY: &str = "screenshot";
-/// The kind of the question picking a colour off the screen asks.
-pub const PICK_COLOR_QUESTION: &str = "portal.pick-color";
 
 /// What the sheet shows for an interactive screenshot.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,11 +137,31 @@ async fn take(
         }
         Decision::Granted => {}
     }
-    let picture = portal.capture.screenshot(target).await.map_err(|error| {
-        tracing::warn!(%error, "screenshot not captured");
-        Ended::Failed
-    })?;
-    let uri = file_uri(&picture).or_fail()?;
+    let picture = portal
+        .capture
+        .screenshot(target)
+        .await
+        .map_err(|error| match error {
+            // The person closed the selector without taking anything: a cancel,
+            // as it is for every other selection an app asks for.
+            CaptureError::Cancelled => Ended::Cancelled,
+            CaptureError::Failed(error) => {
+                tracing::warn!(%error, "screenshot not captured");
+                Ended::Failed
+            }
+        })?;
+    // The picture is handed out as the person's picks are: what the app
+    // opens is its own path in the store its launcher bound, never a file
+    // in the person's folders.
+    let export = doc_store::exports(
+        portal.documents(),
+        caller,
+        &[picture],
+        tilo_documents::Kind::Read,
+    )
+    .pop()
+    .ok_or(Ended::Failed)?;
+    let uri = file_uri(&export.app_path).or_fail()?;
     let mut results = Results::new();
     results.insert(
         "uri".into(),
@@ -191,9 +215,9 @@ impl Screenshot {
         .await
     }
 
-    /// The person picks a colour off the screen: a question of kind
-    /// [`PICK_COLOR_QUESTION`], which the session's picker answers with the
-    /// colour's red, green and blue, each from 0 to 1, as its typed values.
+    /// The pixel under the pointer, answered as red, green and blue, each
+    /// from 0 to 1: the session takes it when the app asks, so the person
+    /// moves the pointer over the colour and the app has it.
     async fn pick_color(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -209,49 +233,50 @@ impl Screenshot {
                 .portal
                 .authenticate(&header, path, &app_id, Some(&parent_window))
                 .await?;
-            let question = ScreenshotQuestion {
-                parent_window: Some(parent_window.trim())
-                    .filter(|window| !window.is_empty())
-                    .map(str::to_owned),
-                modal: true,
-            };
-            let asked = self
-                .portal
-                .ask(&auth.caller, path, PICK_COLOR_QUESTION, question);
-            let answered = self
-                .portal
+            self.portal
                 .requests
-                .run(connection, path, auth.owner.as_str(), asked)
-                .await?;
-            let color = color_of(&answered.values).ok_or(Ended::Failed)?;
-            let mut results = Results::new();
-            results.insert(
-                "color".into(),
-                OwnedValue::try_from(zbus::zvariant::Value::new(color)).or_fail()?,
-            );
-            Ok(results)
+                .run(
+                    connection,
+                    path,
+                    auth.owner.as_str(),
+                    pick(&*self.portal.capture),
+                )
+                .await
         })
         .await
     }
 }
 
-/// Red, green and blue from three typed values, each a number from 0 to 1.
-fn color_of(values: &[zeroize::Zeroizing<String>]) -> Option<(f64, f64, f64)> {
-    let channel = |index: usize| {
-        values
-            .get(index)?
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .filter(|value| (0.0..=1.0).contains(value))
-    };
-    (values.len() == 3).then_some(())?;
-    Some((channel(0)?, channel(1)?, channel(2)?))
+/// The colour the session picks, as the interface's answer.
+async fn pick(capture: &dyn Capture) -> Outcome {
+    let (red, green, blue) = capture
+        .color_at_pointer()
+        .await
+        .map_err(|error| match error {
+            CaptureError::Cancelled => Ended::Cancelled,
+            CaptureError::Failed(error) => {
+                tracing::warn!(%error, "no colour picked");
+                Ended::Failed
+            }
+        })?;
+    let mut results = Results::new();
+    results.insert(
+        "color".into(),
+        OwnedValue::try_from(zbus::zvariant::Value::new((red, green, blue))).or_fail()?,
+    );
+    Ok(results)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use tilo_documents::Documents;
+    use tilo_service::Questions;
+
     use super::*;
+    use crate::reply::reply;
 
     #[test]
     fn interactive_asks_checked_skips_and_otherwise_access_decides() {
@@ -284,25 +309,237 @@ mod tests {
         assert_eq!(target(&HashMap::new(), offered), Ok(CaptureTarget::Screen));
         assert_eq!(target(&with(1), offered), Ok(CaptureTarget::Screen));
         assert_eq!(target(&with(8), offered), Ok(CaptureTarget::ActiveWindow));
-        // Nobody picks a window or draws an area in this session: both are
-        // refused, as is a bit that stands for no target at all.
+        // A bit this session does not offer is refused, as is one that
+        // stands for no target at all.
         assert_eq!(target(&with(2), offered), Err(Ended::Failed));
         assert_eq!(target(&with(4), offered), Err(Ended::Failed));
         assert_eq!(target(&with(16), offered), Err(Ended::Failed));
         assert_eq!(target(&with(0), offered), Err(Ended::Failed));
+        // A session that takes what the person picks or draws answers all
+        // four.
+        let every = offered | CaptureTarget::Window.bit() | CaptureTarget::Area.bit();
+        assert_eq!(target(&with(2), every), Ok(CaptureTarget::Window));
+        assert_eq!(target(&with(4), every), Ok(CaptureTarget::Area));
+        assert_eq!(target(&with(16), every), Err(Ended::Failed));
     }
 
-    #[test]
-    fn a_picked_colour_is_three_channels_from_zero_to_one() {
-        let typed = |values: &[&str]| {
-            values
-                .iter()
-                .map(|value| zeroize::Zeroizing::new((*value).to_owned()))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(color_of(&typed(&["1", "0.5", "0"])), Some((1.0, 0.5, 0.0)));
-        assert_eq!(color_of(&typed(&["1", "0.5"])), None);
-        assert_eq!(color_of(&typed(&["1", "2", "0"])), None);
-        assert_eq!(color_of(&typed(&["1", "NaN", "0"])), None);
+    /// A session that answers a screenshot with `answer` rather than
+    /// capturing one, and picks no colour.
+    struct Picture(Result<PathBuf, CaptureError>);
+
+    impl crate::Capture for Picture {
+        fn screenshot(
+            &self,
+            _target: CaptureTarget,
+        ) -> crate::Pending<Result<PathBuf, CaptureError>> {
+            let answer = self.0.clone();
+            Box::pin(async move { answer })
+        }
+
+        fn color_at_pointer(&self) -> crate::Pending<Result<(f64, f64, f64), CaptureError>> {
+            Box::pin(async {
+                Err(CaptureError::Failed(
+                    crate::NO_COLOUR_UNDER_POINTER.to_owned(),
+                ))
+            })
+        }
+
+        fn targets(&self) -> u32 {
+            CaptureTarget::Screen.bit()
+                | CaptureTarget::Window.bit()
+                | CaptureTarget::Area.bit()
+                | CaptureTarget::ActiveWindow.bit()
+        }
+    }
+
+    /// A session that answers a pick with `answer` rather than picking one.
+    struct Palette(Result<(f64, f64, f64), CaptureError>);
+
+    impl crate::Capture for Palette {
+        fn screenshot(
+            &self,
+            _target: CaptureTarget,
+        ) -> crate::Pending<Result<PathBuf, CaptureError>> {
+            Box::pin(async { Err(CaptureError::Failed("nothing to screenshot".to_owned())) })
+        }
+
+        fn color_at_pointer(&self) -> crate::Pending<Result<(f64, f64, f64), CaptureError>> {
+            let answer = self.0.clone();
+            Box::pin(async move { answer })
+        }
+
+        fn targets(&self) -> u32 {
+            0
+        }
+    }
+
+    /// What a pick for `answer` is answered with.
+    async fn picked(answer: Result<(f64, f64, f64), CaptureError>) -> Reply {
+        let questions = Questions::new();
+        let portal = crate::tests::portal_with(&questions, Documents::new())
+            .with_capture(Arc::new(Palette(answer)));
+        reply(pick(&*portal.capture).await)
+    }
+
+    #[tokio::test]
+    async fn a_pick_is_the_colour_the_session_reads_off_the_screen() {
+        let (code, results) = picked(Ok((1.0, 0.5, 0.0))).await;
+        assert_eq!(code, 0);
+        let (red, green, blue): (f64, f64, f64) = results["color"]
+            .try_clone()
+            .unwrap()
+            .try_into()
+            .expect("three channels");
+        assert_eq!((red, green, blue), (1.0, 0.5, 0.0));
+    }
+
+    #[tokio::test]
+    async fn a_pick_with_nothing_under_the_pointer_fails_rather_than_cancels() {
+        let questions = Questions::new();
+        let portal = crate::tests::portal_with(&questions, Documents::new()).with_capture(
+            Arc::new(Palette(Err(CaptureError::Failed(
+                crate::NO_COLOUR_UNDER_POINTER.to_owned(),
+            )))),
+        );
+        let (code, results) = reply(pick(&*portal.capture).await);
+        assert_eq!(code, 2, "the request fails");
+        assert!(results.is_empty());
+        assert!(
+            questions.pending().is_empty(),
+            "the person was asked nothing"
+        );
+    }
+
+    /// A caller in `room`, sandboxed or not.
+    fn caller(room: Option<&str>, sandboxed: bool) -> PortalCaller {
+        PortalCaller {
+            sandboxed,
+            workspace: room.map(str::to_owned),
+            ..PortalCaller::new("so.tilo.shots")
+        }
+    }
+
+    /// The picture `capture` writes, in `folder`.
+    fn picture(folder: &std::path::Path) -> PathBuf {
+        let path = folder.join("screenshot-1.png");
+        std::fs::write(&path, b"what the app asked for").unwrap();
+        path
+    }
+
+    /// `take` for `caller`, with `capture` answering for the session and
+    /// `documents` the store it hands files out of. The frontend checked
+    /// its permission store, so the person is asked nothing before the
+    /// selection.
+    async fn taken(
+        caller: &PortalCaller,
+        capture: Result<PathBuf, CaptureError>,
+        documents: &Documents,
+    ) -> Reply {
+        let questions = Questions::new();
+        let portal = crate::tests::portal_with(&questions, documents.clone())
+            .with_capture(Arc::new(Picture(capture)));
+        let options = HashMap::from([
+            (
+                "permission_store_checked".to_owned(),
+                OwnedValue::from(true),
+            ),
+            (
+                "target".to_owned(),
+                OwnedValue::from(CaptureTarget::Area.bit()),
+            ),
+        ]);
+        reply(
+            take(
+                &portal,
+                caller,
+                "/org/freedesktop/portal/desktop/request/1_2/t",
+                "",
+                &options,
+            )
+            .await,
+        )
+    }
+
+    /// The URI a granted screenshot answers with, as a path.
+    fn picture_of(results: &Results) -> PathBuf {
+        let uri = String::try_from(results["uri"].try_clone().unwrap()).unwrap();
+        let url = url::Url::parse(&uri).expect("a URI");
+        url.to_file_path().expect("a file URI")
+    }
+
+    #[tokio::test]
+    async fn a_sandboxed_app_asks_for_the_drawn_area_and_is_handed_its_own_path_to_it() {
+        let folder = tempfile::tempdir().unwrap();
+        let kept = picture(folder.path());
+        let documents = Documents::new();
+        let caller = caller(Some("studio"), true);
+
+        let (code, results) = taken(&caller, Ok(kept.clone()), &documents).await;
+        assert_eq!(code, 0);
+        let answered = picture_of(&results);
+        assert!(
+            answered.starts_with(tilo_documents::SANDBOX_DIR),
+            "the app is handed a path in the store it has bound, not {}",
+            answered.display()
+        );
+        assert_eq!(
+            answered.file_name(),
+            Some(kept.file_name().unwrap()),
+            "the picture keeps the name the session wrote"
+        );
+
+        // What the app opens is the picture: the store keeps it for that
+        // app, to read.
+        let key = crate::doc_store::key_of(&caller).expect("a sandboxed caller in a room");
+        let target = tilo_documents::host::resolve(&documents, &key, &answered)
+            .expect("the answer names a document of the app");
+        assert_eq!(
+            std::fs::read(target.host_path()).unwrap(),
+            b"what the app asked for"
+        );
+        let (token, _) = tilo_documents::split_sandbox_path(&answered).unwrap();
+        assert_eq!(
+            documents
+                .document(&key, &token)
+                .map(|document| document.kind),
+            Some(tilo_documents::Kind::Read),
+            "the app may read it, not write it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_host_app_is_answered_with_the_picture_itself() {
+        let folder = tempfile::tempdir().unwrap();
+        let kept = picture(folder.path());
+        let (code, results) = taken(
+            &caller(Some("studio"), false),
+            Ok(kept.clone()),
+            &Documents::new(),
+        )
+        .await;
+        assert_eq!(code, 0);
+        assert_eq!(picture_of(&results), kept);
+    }
+
+    #[tokio::test]
+    async fn a_selection_the_person_closed_is_a_cancel_and_a_capture_that_failed_is_a_failure() {
+        let documents = Documents::new();
+        let caller = caller(Some("studio"), true);
+        assert_eq!(
+            taken(&caller, Err(CaptureError::Cancelled), &documents)
+                .await
+                .0,
+            1
+        );
+        assert_eq!(
+            taken(
+                &caller,
+                Err(CaptureError::Failed("no display is on".to_owned())),
+                &documents
+            )
+            .await
+            .0,
+            2
+        );
     }
 }

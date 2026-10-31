@@ -163,10 +163,6 @@ pub struct Relay {
     compute_ready: Arc<AtomicBool>,
     /// The rooms this relay governs; absent when it hosts no room authority.
     rooms: Option<crate::rooms::Rooms>,
-    /// Sealing what the rooms whose channels it takes part in hold in the clear, started when
-    /// its operator decided it ([`crate::reseal`]).
-    #[cfg(feature = "agents")]
-    resealing: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// The relay state the browser carriers serve sessions with.
@@ -194,7 +190,7 @@ impl Relay {
 }
 
 /// A tokio `JoinHandle` that aborts on drop — used so that dropping
-/// `Relay` tears down every outbound peer-relay reconnect task.
+/// `Relay` tears down every outbound attach reconnect task.
 struct AbortOnDrop(JoinHandle<()>);
 
 impl Drop for AbortOnDrop {
@@ -293,8 +289,8 @@ impl Relay {
     /// Start relay services on an already-bound endpoint and compose any
     /// number of caller-owned protocols into the same router. This is the
     /// production shell path: relay state/action traffic, workspace joining,
-    /// surfaces, gossip, and personal-fabric protocols retain one stable node
-    /// address and one shutdown lifecycle.
+    /// surfaces, and personal-fabric protocols retain one stable node address
+    /// and one shutdown lifecycle.
     ///
     /// Ownership of `endpoint` transfers to the returned relay. Calling
     /// [`Self::shutdown`] closes the router and invokes every additional
@@ -437,15 +433,6 @@ impl Relay {
             shell_payloads,
         } = planes;
         validate_additional_protocols(&additional_protocols)?;
-        if cfg.retired_peer_relays.take().is_some() {
-            tracing::warn!("the relay configuration's peer_relays are ignored");
-        }
-        if cfg.retired_workspaces.take().is_some() {
-            tracing::warn!(
-                "the relay configuration's [[workspace]] tables are ignored: the rooms this relay \
-                 holds are those whose governance makes it one of their hosts"
-            );
-        }
         import_home_peer(&mut cfg)?;
         validate_relay_identity(&identity)?;
         if !cfg.device_role.can_serve() {
@@ -517,6 +504,7 @@ impl Relay {
             identity.clone(),
             endpoint.clone(),
             governs_rooms,
+            None,
             |workspaces, rest| {
                 Some(Arc::new(crate::compute_actions::ComputePlane {
                     compute: crate::compute_actions::ComputeActions::new(owner, workspaces.clone()),
@@ -568,21 +556,6 @@ impl Relay {
             certification: certification.clone(),
             node_session: Arc::default(),
         });
-        #[cfg(feature = "agents")]
-        let mut resealing = None;
-        // What the rooms whose channels it takes part in hold in the clear is sealed only once
-        // its operator decided it, recorded in its state.
-        #[cfg(feature = "agents")]
-        if let Some(rooms) = &rooms
-            && crate::reseal::decided(&cfg.state_root)
-        {
-            let (rooms, compactor) = (rooms.clone(), handler.compactor.clone());
-            rooms.reseal_existing();
-            compactor.reseal_existing();
-            resealing = Some(tokio::spawn(async move {
-                rooms.reseal_own_channels(&compactor).await;
-            }));
-        }
         let mut router = Router::builder(endpoint.clone())
             .accept(ALPN, handler)
             .accept(crate::certify::CERTIFY_ALPN, certification)
@@ -641,8 +614,6 @@ impl Relay {
             endpoint,
             router,
             sessions,
-            #[cfg(feature = "agents")]
-            resealing: std::sync::Mutex::new(resealing),
             #[cfg(feature = "web")]
             browser_origin: Arc::new(std::sync::RwLock::new(None)),
             background_tasks,
@@ -697,16 +668,25 @@ impl Relay {
         }
     }
 
-    /// Tell the host that `cert`'s device is an agent: verify its root-signed
-    /// delegation against this relay's user, confine the device to the
-    /// delegated rooms from its next envelope on, and put it on the roster of
-    /// every governed room the delegation names, as the supervisor does when
-    /// a person approves one ([`crate::agents::RelayAgentLink`]). Replaces an
-    /// earlier delegation of the same device.
+    /// Tell the host that the device `cert` certifies is an agent: verify
+    /// its root-signed delegation against this relay's user and confine the
+    /// device to the delegated rooms from its next envelope on, then put it
+    /// on the roster of each room this relay governs that the delegation
+    /// names, as an approved grant does ([`crate::rooms::Rooms::reconcile_agent`]).
+    /// Once this returns, those rooms admit it. Replaces an earlier
+    /// delegation of the same device.
     ///
     /// # Errors
     ///
-    /// The delegation is not this relay's user's, or names another device.
+    /// The delegation is not this relay's user's, names another device, or
+    /// does not verify.
+    #[cfg_attr(
+        not(feature = "agents"),
+        allow(
+            clippy::unused_async,
+            reason = "only a build with agents keeps them on governed rosters, which it awaits"
+        )
+    )]
     pub async fn register_agent(
         &self,
         cert: &tilo_user_identity::DeviceCert,
@@ -732,21 +712,6 @@ impl Relay {
     /// what a peer needs to dial this relay.
     pub fn node_addr(&self) -> EndpointAddr {
         self.endpoint.addr()
-    }
-
-    /// Wait until the relay has sealed what the rooms whose channels it takes part in held in
-    /// the clear when it started, if its operator decided it
-    /// ([`crate::reseal`]).
-    #[cfg(feature = "agents")]
-    pub async fn resealed(&self) {
-        let task = self
-            .resealing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if let Some(task) = task {
-            let _ = task.await;
-        }
     }
 
     /// The compactor keeping this relay's retained document channels short.
@@ -1140,7 +1105,7 @@ fn spawn_metrics_persist_task(state_root: PathBuf, live_metrics: Arc<Metrics>) -
     })
 }
 
-/// Lock the peer-relay task list, recovering the inner `Vec` if the
+/// Lock the attach task list, recovering the inner `Vec` if the
 /// mutex was poisoned by an earlier panic rather than propagating one
 /// here — losing track of a reconnect task would leak it past the
 /// owning `Relay`'s lifetime.
@@ -1150,7 +1115,7 @@ fn lock_background_tasks(
     tasks.lock_recover()
 }
 
-/// Register a spawned task on the peer-relay task list (see
+/// Register a spawned task on the attach task list (see
 /// [`lock_background_tasks`]).
 fn push_background_task(tasks: &Arc<std::sync::Mutex<Vec<AbortOnDrop>>>, task: JoinHandle<()>) {
     lock_background_tasks(tasks).push(AbortOnDrop(task));

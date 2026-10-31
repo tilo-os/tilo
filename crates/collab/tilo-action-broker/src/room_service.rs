@@ -2,7 +2,7 @@
 //! surface, answered invocation by invocation from the durable stream.
 use std::future::Future;
 
-use super::{Arc, CapnpBrokerState, InvocationEnvelope, PublishedSurface};
+use super::{AppBrokerState, Arc, InvocationEnvelope, PublishedSurface};
 
 /// How one invocation of a broker room service ended.
 pub(super) enum ServiceOutcome {
@@ -20,12 +20,15 @@ pub(super) fn refused(code: &str, message: String) -> ServiceOutcome {
     })
 }
 
-impl CapnpBrokerState {
+impl AppBrokerState {
     /// Publish `surface` for its service peer and answer every invocation
-    /// addressed to it with `serve`. An update that cannot be recorded stops
-    /// the service; it then unpublishes the surface, answers what was still
-    /// pending on it as a peer that went away is answered, and runs
-    /// `stopped` with whether the surface was still published.
+    /// addressed to it with `serve`. An invocation whose outcome cannot be
+    /// recorded is answered with why, and the service goes on with the next:
+    /// one invocation's failure never fails the others queued behind it. The
+    /// service stops only when its stream ends (the broker withdrew it); it
+    /// then unpublishes the surface, answers what was still pending on it as
+    /// a peer that went away is answered, and runs `stopped` with whether
+    /// the surface was still published.
     pub(super) fn serve_room<S, F>(
         self: &Arc<Self>,
         surface: PublishedSurface,
@@ -70,8 +73,13 @@ impl CapnpBrokerState {
                     .apply_invocation_update(peer_id, id, update, None)
                     .await
                 {
-                    state.record_owner_commit_failure(error.to_string());
-                    break;
+                    tracing::error!(
+                        peer_id,
+                        id,
+                        %error,
+                        "a room service's answer could not be recorded; its asker is told why"
+                    );
+                    state.fail_unrecorded_invocation(peer_id, id, &error.to_string());
                 }
             }
             let removed = state
@@ -102,11 +110,5 @@ impl CapnpBrokerState {
             self.invocation_streams_changed();
         }
         self.fail_pending_invocations_of(peer_id);
-    }
-
-    fn record_owner_commit_failure(&self, reason: String) {
-        if let Ok(mut failure) = self.owner_commit_failure.lock() {
-            failure.get_or_insert(reason);
-        }
     }
 }

@@ -15,7 +15,16 @@ vello.workspace = true
 winit.workspace = true
 # The buffers the compositor shows (memory render buffers).
 serde_json.workspace = true
+serde.workspace = true
 tracing.workspace = true
+# A tilolang shell's parts: its views run in an instance, drawn through the UI host's half
+# of a window, over a record of the shell's own (`shell_part`).
+tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+tilo-ui-host = { path = "../../platform/tilo-ui-host" }
+tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-action-policy = { path = "../../collab/action-policy" }
+chrono = { workspace = true, features = ["std"] }
 # Files dropped on an app arrive as `file:` URIs.
 url.workspace = true
 workspace-hack = { version = "0.1" }

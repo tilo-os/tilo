@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn a_painted_surfaces_retained_button_is_operated_through_the_walk() {
         let pressed = Rc::new(Cell::new(0));
-        let button = Button::new("play", "Play").on_click({
+        let button = Button::new("play", "Play").on_view({
             let pressed = Rc::clone(&pressed);
             move || pressed.set(pressed.get() + 1)
         });

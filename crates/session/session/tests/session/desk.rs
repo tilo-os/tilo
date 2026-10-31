@@ -582,6 +582,55 @@ fn the_overview_pictures_the_desks_windows() {
     );
 }
 
+/// A window the session keeps private is pictured as the placeholder a
+/// capture draws of it: the desk the picture stands on is what a
+/// screenshot, a recording and a share of the overview show.
+#[test]
+fn the_overview_pictures_a_private_window_as_its_placeholder() {
+    let _settled = ui::motion::testing::settled();
+    let _clock = held_clock();
+    let mut session = session();
+    let _client = mapped(&mut session, "so.tilo.passwords");
+    settle(&mut session, 4);
+    invoke(&mut session, CHROME_RESOURCE, "toggle-overview");
+    settle(&mut session, 4);
+    let pictures = session.overview_pictures();
+    let (_, rect) = pictures
+        .first()
+        .copied()
+        .unwrap_or_else(|| panic!("the private window is pictured: {pictures:?}"));
+
+    let shot = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("screenshot");
+    assert_eq!(
+        red_pixels(
+            &shot.rgba,
+            (shot.width, shot.height),
+            (rect.0, rect.1, rect.2, rect.3)
+        ),
+        0,
+        "the picture carries none of the window: {rect:?}"
+    );
+
+    // A copy of the overview, taken through the capture path, shows the
+    // same placeholder.
+    let copy = session
+        .compositor()
+        .read_back_region("HEADLESS-1", (0, 0, WIDTH, HEIGHT))
+        .expect("a capture of the output");
+    assert_eq!(
+        red_pixels(
+            &copy.rgba,
+            (copy.width, copy.height),
+            (rect.0, rect.1, rect.2, rect.3)
+        ),
+        0,
+        "captured, the picture is the placeholder: {rect:?}"
+    );
+}
+
 /// The person's theme reaches the desk, its bar and the overview, not only
 /// the apps.
 #[test]

@@ -1,4 +1,5 @@
-//! Downloading one page and reducing it to readable text.
+//! Downloading one page: text reduced to readable text, anything else
+//! handed back whole for the caller to keep.
 
 use std::fmt;
 use std::time::Duration;
@@ -38,13 +39,53 @@ pub struct FetchedPage {
     pub url: String,
     pub status: u16,
     pub content_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    /// Whether the download stopped at [`FetchLimits::max_bytes`].
+    /// Whether the download stopped at [`FetchLimits::max_bytes`]. Only a
+    /// text body is ever cut: a binary one that does not fit is refused
+    /// ([`FetchError::TooLarge`]).
     pub truncated: bool,
-    /// The page as Markdown-flavoured text: HTML reduced to its main content,
-    /// plain text and JSON as sent.
-    pub text: String,
+    #[serde(flatten)]
+    pub body: FetchedBody,
+}
+
+/// What a fetched address held.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum FetchedBody {
+    /// A page as Markdown-flavoured text: HTML reduced to its main content,
+    /// JSON pretty-printed, other text as sent.
+    Text {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        text: String,
+    },
+    /// Anything else (a PDF, an image, an archive), whole, as the server
+    /// sent it. Never interpreted here: the caller stores it as content.
+    Binary {
+        #[serde(skip)]
+        bytes: Vec<u8>,
+        /// How many bytes it is.
+        len: usize,
+    },
+}
+
+impl FetchedPage {
+    /// The page's text, when it is text.
+    #[must_use]
+    pub fn text(&self) -> Option<&str> {
+        match &self.body {
+            FetchedBody::Text { text, .. } => Some(text),
+            FetchedBody::Binary { .. } => None,
+        }
+    }
+
+    /// The page's title, when it is text that has one.
+    #[must_use]
+    pub fn title(&self) -> Option<&str> {
+        match &self.body {
+            FetchedBody::Text { title, .. } => title.as_deref(),
+            FetchedBody::Binary { .. } => None,
+        }
+    }
 }
 
 /// Why a page could not be fetched.
@@ -56,8 +97,9 @@ pub enum FetchError {
     Refused(Refusal),
     /// The server answered with an error status.
     Status(u16),
-    /// The page is not text: an image, a PDF, an archive.
-    NotText(String),
+    /// The body is not text and larger than [`FetchLimits::max_bytes`], so
+    /// it cannot be kept whole.
+    TooLarge(usize),
     /// More redirects than [`FetchLimits::max_redirects`], or one without a
     /// usable address.
     Redirects,
@@ -74,7 +116,7 @@ impl FetchError {
         match self {
             Self::Timeout | Self::Network(_) => true,
             Self::Status(status) => *status == 429 || *status >= 500,
-            Self::InvalidUrl(_) | Self::Refused(_) | Self::NotText(_) | Self::Redirects => false,
+            Self::InvalidUrl(_) | Self::Refused(_) | Self::TooLarge(_) | Self::Redirects => false,
         }
     }
 }
@@ -84,8 +126,20 @@ impl fmt::Display for FetchError {
         match self {
             Self::InvalidUrl(reason) => write!(f, "not a web address: {reason}"),
             Self::Refused(refusal) => refusal.fmt(f),
+            Self::Status(429) => f.write_str(
+                "the server is limiting how often it answers (HTTP 429): try again later",
+            ),
+            Self::Status(status @ (401 | 403)) => write!(
+                f,
+                "the server refused to show this without signing in (HTTP {status})"
+            ),
+            Self::Status(404) => f.write_str("there is no page at this address (HTTP 404)"),
             Self::Status(status) => write!(f, "the server answered HTTP {status}"),
-            Self::NotText(kind) => write!(f, "the page is {kind}, not text"),
+            Self::TooLarge(limit) => write!(
+                f,
+                "the file is larger than {}, the most one fetch keeps",
+                size(*limit)
+            ),
             Self::Redirects => f.write_str("too many redirects, or one to an unusable address"),
             Self::Timeout => f.write_str("the page took too long"),
             Self::Network(reason) => write!(f, "could not download the page: {reason}"),
@@ -95,7 +149,19 @@ impl fmt::Display for FetchError {
 
 impl std::error::Error for FetchError {}
 
-/// Download `url` and reduce it to readable text.
+/// `bytes` as a person reads a size.
+fn size(bytes: usize) -> String {
+    const MIB: usize = 1024 * 1024;
+    if bytes >= MIB && bytes.is_multiple_of(MIB) {
+        format!("{} MB", bytes / MIB)
+    } else if bytes >= 1024 && bytes.is_multiple_of(1024) {
+        format!("{} KB", bytes / 1024)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+/// Download `url`: text reduced to readable text, anything else whole.
 ///
 /// Every hop, the first and each redirect, is checked by [`check_url`], and
 /// where the name resolves here by [`check_address`], before a request goes
@@ -105,8 +171,42 @@ pub async fn fetch(
     url: &str,
     limits: &FetchLimits,
 ) -> Result<FetchedPage, FetchError> {
+    fetch_reaching(client, url, limits, Reach::Web).await
+}
+
+/// [`fetch`] from a fixture server on this machine, which [`fetch`] refuses
+/// to reach: for tests of what a fetch makes of a body, never for a service.
+///
+/// # Errors
+///
+/// As [`fetch`], without its refusal of local addresses.
+#[cfg(feature = "fixture-servers")]
+pub async fn fetch_fixture(
+    client: &tilo_net::Client,
+    url: &str,
+    limits: &FetchLimits,
+) -> Result<FetchedPage, FetchError> {
+    fetch_reaching(client, url, limits, Reach::Fixture).await
+}
+
+/// Which addresses a fetch may reach.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// Public web addresses only.
+    Web,
+    /// Any address: a test's fixture server.
+    #[cfg_attr(not(feature = "fixture-servers"), allow(dead_code))]
+    Fixture,
+}
+
+async fn fetch_reaching(
+    client: &tilo_net::Client,
+    url: &str,
+    limits: &FetchLimits,
+    reach: Reach,
+) -> Result<FetchedPage, FetchError> {
     let url = Url::parse(url.trim()).map_err(|e| FetchError::InvalidUrl(e.to_string()))?;
-    tokio::time::timeout(limits.timeout, fetch_from(client, url, limits))
+    tokio::time::timeout(limits.timeout, fetch_from(client, url, limits, reach))
         .await
         .unwrap_or(Err(FetchError::Timeout))
 }
@@ -115,12 +215,15 @@ async fn fetch_from(
     client: &tilo_net::Client,
     mut url: Url,
     limits: &FetchLimits,
+    reach: Reach,
 ) -> Result<FetchedPage, FetchError> {
     url.set_fragment(None);
     let mut hops = 0u8;
     let mut response = loop {
-        check_url(&url).map_err(FetchError::Refused)?;
-        check_resolved(&url).await?;
+        if reach == Reach::Web {
+            check_url(&url).map_err(FetchError::Refused)?;
+            check_resolved(&url).await?;
+        }
         let response = client
             .get(url.as_str())
             .header(
@@ -155,32 +258,59 @@ async fn fetch_from(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_owned();
-    let kind = Kind::of(&content_type)
-        .ok_or_else(|| FetchError::NotText(media_type(&content_type).to_owned()))?;
     let (bytes, truncated) = read_bytes_capped(&mut response, limits.max_bytes)
         .await
         .map_err(|e| FetchError::Network(e.to_string()))?;
-    let body = String::from_utf8_lossy(&bytes);
-    let kind = if kind == Kind::Unlabelled {
-        Kind::sniff(&body)
-    } else {
-        kind
+    let kind = match Kind::of(&content_type) {
+        Kind::Unlabelled => Kind::sniff(&bytes),
+        kind => kind,
     };
-    let (title, text) = match kind {
-        Kind::Html | Kind::Unlabelled => {
-            let page = readable::extract(&body, &url);
-            (page.title, page.text)
+    let body = match kind {
+        Kind::Binary => {
+            if truncated {
+                return Err(FetchError::TooLarge(limits.max_bytes));
+            }
+            FetchedBody::Binary {
+                len: bytes.len(),
+                bytes,
+            }
         }
-        Kind::Text => (None, body.trim().to_owned()),
+        Kind::Html | Kind::Unlabelled => {
+            let page = readable::extract(&String::from_utf8_lossy(&bytes), &url);
+            FetchedBody::Text {
+                title: page.title,
+                text: page.text,
+            }
+        }
+        Kind::Json => FetchedBody::Text {
+            title: None,
+            text: pretty_json(&bytes, truncated),
+        },
+        Kind::Text => FetchedBody::Text {
+            title: None,
+            text: String::from_utf8_lossy(&bytes).trim().to_owned(),
+        },
     };
     Ok(FetchedPage {
         url: url.into(),
         status,
         content_type: media_type(&content_type).to_owned(),
-        title,
         truncated,
-        text,
+        body,
     })
+}
+
+/// JSON as indented text, so a reader sees its structure; a body cut short
+/// or not valid JSON stays as sent.
+fn pretty_json(bytes: &[u8], truncated: bool) -> String {
+    let sent = || String::from_utf8_lossy(bytes).trim().to_owned();
+    if truncated {
+        return sent();
+    }
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|value| serde_json::to_string_pretty(&value).ok())
+        .unwrap_or_else(sent)
 }
 
 /// Refuse a name that resolves to this device or its network.
@@ -207,37 +337,58 @@ async fn check_resolved(url: &Url) -> Result<(), FetchError> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Html,
+    Json,
     Text,
+    /// Not text: kept whole.
+    Binary,
     /// No content type: decided by looking at the body.
     Unlabelled,
 }
 
 impl Kind {
-    fn of(content_type: &str) -> Option<Self> {
+    fn of(content_type: &str) -> Self {
         let media = media_type(content_type).to_ascii_lowercase();
         match media.as_str() {
-            "" => Some(Self::Unlabelled),
-            "text/html" | "application/xhtml+xml" => Some(Self::Html),
-            "application/json"
-            | "application/xml"
+            "" | "application/octet-stream" => Self::Unlabelled,
+            "text/html" | "application/xhtml+xml" => Self::Html,
+            "application/json" => Self::Json,
+            _ if media.ends_with("+json") => Self::Json,
+            "application/xml"
             | "application/rss+xml"
             | "application/atom+xml"
-            | "application/javascript" => Some(Self::Text),
-            _ if media.ends_with("+json") || media.ends_with("+xml") => Some(Self::Text),
-            _ if media.starts_with("text/") => Some(Self::Text),
-            _ => None,
+            | "application/javascript" => Self::Text,
+            _ if media.ends_with("+xml") => Self::Text,
+            _ if media.starts_with("text/") => Self::Text,
+            _ => Self::Binary,
         }
     }
 
-    fn sniff(body: &str) -> Self {
-        let head: String = body
+    /// What an unlabelled body is, from its first bytes: text is valid
+    /// UTF-8 without NUL bytes, HTML text that says so.
+    fn sniff(bytes: &[u8]) -> Self {
+        let head = bytes.get(..bytes.len().min(1024)).unwrap_or_default();
+        let text = match std::str::from_utf8(head) {
+            Ok(text) => text,
+            // A multi-byte character cut by the 1 KiB window is still text.
+            Err(error) if error.error_len().is_none() => head
+                .get(..error.valid_up_to())
+                .and_then(|valid| std::str::from_utf8(valid).ok())
+                .unwrap_or_default(),
+            Err(_) => return Self::Binary,
+        };
+        if text.contains('\0') {
+            return Self::Binary;
+        }
+        let start: String = text
             .trim_start()
             .chars()
             .take(256)
             .collect::<String>()
             .to_ascii_lowercase();
-        if head.starts_with("<!doctype html") || head.contains("<html") {
+        if start.starts_with("<!doctype html") || start.contains("<html") {
             Self::Html
+        } else if start.starts_with('{') || start.starts_with('[') {
+            Self::Json
         } else {
             Self::Text
         }
@@ -254,16 +405,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn text_kinds_are_read_and_binary_ones_refused() {
-        assert_eq!(Kind::of("text/html; charset=utf-8"), Some(Kind::Html));
-        assert_eq!(Kind::of("application/xhtml+xml"), Some(Kind::Html));
-        assert_eq!(Kind::of("text/plain"), Some(Kind::Text));
-        assert_eq!(Kind::of("application/ld+json"), Some(Kind::Text));
-        assert_eq!(Kind::of(""), Some(Kind::Unlabelled));
-        assert_eq!(Kind::of("application/pdf"), None);
-        assert_eq!(Kind::of("image/png"), None);
-        assert_eq!(Kind::sniff("  <!DOCTYPE html><p>x"), Kind::Html);
-        assert_eq!(Kind::sniff("just words"), Kind::Text);
+    fn text_kinds_are_read_and_binary_ones_kept_whole() {
+        assert_eq!(Kind::of("text/html; charset=utf-8"), Kind::Html);
+        assert_eq!(Kind::of("application/xhtml+xml"), Kind::Html);
+        assert_eq!(Kind::of("text/plain"), Kind::Text);
+        assert_eq!(Kind::of("application/json; charset=utf-8"), Kind::Json);
+        assert_eq!(Kind::of("application/ld+json"), Kind::Json);
+        assert_eq!(Kind::of(""), Kind::Unlabelled);
+        assert_eq!(Kind::of("application/pdf"), Kind::Binary);
+        assert_eq!(Kind::of("image/png"), Kind::Binary);
+        assert_eq!(Kind::sniff(b"  <!DOCTYPE html><p>x"), Kind::Html);
+        assert_eq!(Kind::sniff(b"just words"), Kind::Text);
+        assert_eq!(Kind::sniff(b"{\"a\": 1}"), Kind::Json);
+        assert_eq!(Kind::sniff(b"%PDF-1.7\n\x00\xff\xfe"), Kind::Binary);
+        assert_eq!(Kind::sniff(b"\x89PNG\r\n\x1a\n"), Kind::Binary);
+    }
+
+    #[test]
+    fn json_is_indented_unless_cut_or_malformed() {
+        assert_eq!(
+            pretty_json(br#"{"name":"tilo","stars":[1,2]}"#, false),
+            "{\n  \"name\": \"tilo\",\n  \"stars\": [\n    1,\n    2\n  ]\n}"
+        );
+        assert_eq!(pretty_json(br#"{"name":"ti"#, true), r#"{"name":"ti"#);
+        assert_eq!(pretty_json(b"not json", false), "not json");
     }
 
     #[test]

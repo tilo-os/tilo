@@ -346,7 +346,7 @@ impl Rooms {
             let policy = governed
                 .peer()
                 .permissions(self.inner.host.cert.device_public_key, SystemTime::now())
-                .map_err(CollaborationError::new)?
+                .map_err(|error| CollaborationError::new(error.to_string()))?
                 .policy;
             if policy.is_blocked(&hex::encode(user)) {
                 return Err(CollaborationError::new(
@@ -497,6 +497,10 @@ mod tests {
 
 #[cfg(test)]
 mod door_tests {
+    #![expect(
+        clippy::significant_drop_tightening,
+        reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+    )]
     use ed25519_dalek::Signer as _;
     use tilo_actions::remote::{
         ActionHost as _, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,

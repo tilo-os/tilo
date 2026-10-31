@@ -9,6 +9,10 @@ use tilo_desktop_model::{
 /// workspace, one strip, and a window group per tab in `tabs`.
 pub fn seed_tree(minter: &mut IdMinter, workspace_name: &str, tabs: Vec<Tab>) -> DesktopTree {
     let mut workspace = Workspace::new(WorkspaceId(minter.mint()), workspace_name);
+    // A workspace is its room on every device: the one the person starts
+    // from is opened again by the room this device minted for it, not by an
+    // id only this desk knows.
+    workspace.id = WorkspaceId::of_room(workspace.room());
     let mut strip = tilo_desktop_model::Strip::new(StripId(minter.mint()), "Main");
     strip.window_groups = tabs
         .into_iter()

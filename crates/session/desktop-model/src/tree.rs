@@ -52,6 +52,15 @@ pub struct DesktopTree {
     /// layout: persisted with this device's desktop, never replicated.
     #[serde(default, skip_serializing_if = "OutputPartition::is_empty")]
     pub outputs: OutputPartition,
+    /// The window group covering its display on this device, with the bar
+    /// stepped aside, while the strip it stands in is the one shown. What
+    /// the person is looking at rather than part of the desktop: persisted
+    /// with this device's desk, so a session starts where the person left
+    /// it, and never sent to the workspace's peers, whose windows lie
+    /// elsewhere.
+    /// Written only by [`DesktopTree::set_fullscreen`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fullscreen: Option<GroupId>,
     /// Legacy session-wide presence cache. Ordinary chrome must read the
     /// active workspace's roster instead: a person present elsewhere is not
     /// present here. Never deserialized, so no stale presence survives a
@@ -85,6 +94,7 @@ impl Default for DesktopTree {
             active_strip: HashMap::new(),
             active_group: HashMap::new(),
             outputs: OutputPartition::default(),
+            fullscreen: None,
             collaborators: Vec::new(),
             room_records_held: HashMap::new(),
             room_records_inbound: Vec::new(),
@@ -325,6 +335,52 @@ impl DesktopTree {
     /// expected to be the sole writer.
     pub fn set_active_group(&mut self, strip_id: StripId, group_id: GroupId) {
         self.active_group.insert(strip_id, group_id);
+    }
+
+    /// The window group covering the display the person works on, if one
+    /// is: the window taken full screen there. A window covers the display
+    /// it stands on and is out of sight on any other, so it covers nothing
+    /// while the person is on another strip. `None` when no window covers
+    /// its display, or when the one that did has since gone.
+    pub fn fullscreen_group(&self) -> Option<GroupId> {
+        let group = self.fullscreen?;
+        let strip = self.active_strip_id()?;
+        self.active_workspace()?
+            .strips
+            .iter()
+            .find(|candidate| candidate.id == strip)?
+            .window_groups
+            .iter()
+            .any(|candidate| candidate.id == group)
+            .then_some(group)
+    }
+
+    /// Cover the display with the window group `group` of `strip`, or give
+    /// it back. One window covers a display, so covering gives the display
+    /// back from any other one first. Whether anything changed; false for a
+    /// group the tree does not hold or one that was not covering the
+    /// display, which leave the desktop as it was.
+    pub fn set_fullscreen(&mut self, strip: StripId, group: GroupId, fullscreen: bool) -> bool {
+        let held = self
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .find(|candidate| candidate.id == strip)
+            .is_some_and(|held| {
+                held.window_groups
+                    .iter()
+                    .any(|candidate| candidate.id == group)
+            });
+        let next = if fullscreen && held {
+            Some(group)
+        } else if !fullscreen && self.fullscreen == Some(group) {
+            None
+        } else {
+            return false;
+        };
+        let changed = self.fullscreen != next;
+        self.fullscreen = next;
+        changed
     }
 
     /// Resolve the active group on `strip_id` under `is_closing`: if

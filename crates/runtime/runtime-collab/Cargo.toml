@@ -1,6 +1,4 @@
 [package]
-# tests/*.rs are modules of tests/it.rs, not separate binaries
-autotests = false
 name = "runtime-collab"
 version = "0.1.0"
 edition = "2024"
@@ -8,10 +6,10 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "Cap'n Proto client for the Tilo collaboration service."
+description = "The Tilo collaboration wire and the client that speaks it."
 
-# Tilo runtime collaboration-broker client. Connects to the session broker
-# over the Unix-socket Cap'n Proto channel passed in as TILO_SVC_COLLAB_FD.
+# Tilo runtime collaboration client. Speaks the collaboration wire to the
+# session over the Unix socket passed in as TILO_SVC_COLLAB_FD.
 
 [lib]
 name = "runtime_collab"
@@ -19,13 +17,12 @@ path = "src/lib.rs"
 
 [features]
 default = ["client"]
-# The Cap'n Proto broker client: generated bindings, the RPC runtime and the
-# Unix-socket transport. Without it only the portable vocabulary compiles
-# (action directory, nearby transfer, Wi-Fi continuity, task runs, presence
-# and workspace-control types), for code that speaks the broker's language
-# through some other transport.
-client = ["dep:runtime-portal", "dep:capnp", "dep:capnp-rpc", "dep:tokio", "dep:ed25519-dalek"]
-# The `AppSettings` capability over a `settings_store::SettingsSource`, for
+# The wire client and the Unix-socket transport. Without it only the
+# portable vocabulary compiles (the wire's messages, action directory, nearby
+# transfer, Wi-Fi continuity, task runs, presence and workspace-control
+# types).
+client = ["dep:runtime-portal", "dep:tokio", "dep:ed25519-dalek", "wire-frame/tokio"]
+# An app's settings calls answered from a `settings_store::SettingsSource`, for
 # the hosts that hand one to each app.
 settings-host = ["client", "dep:settings-store"]
 # Explicit root-only kernel/certificate qualification fixtures.
@@ -54,8 +51,6 @@ tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 # Where content a record references has got to, as collaboration events say.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 runtime-portal = { version = "0.1.0", path = "../runtime-portal", optional = true }
-capnp = { workspace = true, optional = true }
-capnp-rpc = { workspace = true, optional = true }
 # `net` (the Unix-socket transport) is added for non-WASM targets below.
 tokio = { workspace = true, optional = true, features = ["rt", "io-util", "macros", "sync"] }
 settings-store = { version = "0.1.0", path = "../../system/settings-store", optional = true }
@@ -64,6 +59,8 @@ serde_json.workspace = true
 # A call's pictures travel in the local media lane's JSON as base64.
 base64.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
+# The collaboration wire's framing (`wire`).
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
@@ -75,11 +72,6 @@ libc.workspace = true
 [target.'cfg(windows)'.dev-dependencies]
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
-[[test]]
-name = "it"
-path = "tests/it.rs"
-required-features = ["client"]
-
 [lints]
 workspace = true
 
@@ -87,6 +79,10 @@ workspace = true
 tokio = { workspace = true, optional = true, features = ["net"] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+
+[target.'cfg(unix)'.dependencies]
+# Marks the inherited connection close-on-exec.
+rustix = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true

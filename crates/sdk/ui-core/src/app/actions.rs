@@ -345,9 +345,6 @@ impl App {
                     crate::widget::ControlBindingKind::SemanticAction(_) => {
                         ControlBindingStatus::SemanticAction
                     }
-                    crate::widget::ControlBindingKind::LegacyCallback => {
-                        ControlBindingStatus::ExplicitLegacy
-                    }
                 };
                 ControlBindingCoverage { binding, status }
             })
@@ -625,12 +622,11 @@ impl App {
     }
 
     /// Withdraw everything this app published: a reset delta with nothing in it.
-    fn withdraw_action_surface(&mut self, app_id: String) -> bool {
+    fn withdraw_action_surface(&mut self) -> bool {
         let withdrawn = self
             .collaboration
             .manager
             .send(CollabRequest::PublishActionSurface {
-                app_id,
                 delta: crate::collaboration::SurfaceDelta {
                     reset: true,
                     ..crate::collaboration::SurfaceDelta::default()

@@ -56,6 +56,35 @@ pub enum NetworkAction {
         #[param(secret, "The network's password; nothing for an open network")]
         password: Option<String>,
     },
+    /// Join an enterprise (802.1X) Wi-Fi network with the identity and the
+    /// organization's certificates, and connect.
+    #[effect(
+        own_device,
+        icon = "wifi",
+        keywords = "802.1x, eap, enterprise, peap, ttls, tls, university, work"
+    )]
+    ConnectEnterpriseWifi {
+        #[param("The profile's name")]
+        profile: Option<String>,
+        #[param("The network's name (SSID)")]
+        ssid: Option<String>,
+        #[param("The identity the network knows you by")]
+        identity: Option<String>,
+        #[param("The identity to send before the real one")]
+        anonymous_identity: Option<String>,
+        #[param("The organization's CA certificate path")]
+        ca_certificate: Option<String>,
+        #[param("PEAP, TTLS or TLS")]
+        method: Option<String>,
+        #[param("MSCHAPv2, PAP or CHAP")]
+        inner_auth: Option<String>,
+        #[param("The client certificate path")]
+        client_certificate: Option<String>,
+        #[param("The client key path")]
+        private_key: Option<String>,
+        #[param(secret, "The password")]
+        password: Option<String>,
+    },
     /// Leave the Wi-Fi network this device is connected to.
     #[effect(own_device, row, icon = "wifi-off")]
     DisconnectWifi {

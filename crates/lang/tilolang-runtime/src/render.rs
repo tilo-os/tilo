@@ -59,6 +59,9 @@ pub struct Rendered {
     pub state_reads: Vec<(StateKey, u64)>,
     /// The value each slot read had, its default included.
     pub state_seen: Vec<(StateKey, Value)>,
+    /// When the time it read next reads differently (seconds since 1970, UTC); `None` when it
+    /// read no time.
+    pub changes_at: Option<i64>,
 }
 
 pub(crate) struct Acc {
@@ -68,6 +71,15 @@ pub(crate) struct Acc {
     pub retained: Vec<Retained>,
     pub state_reads: Vec<(StateKey, u64)>,
     pub state_seen: Vec<(StateKey, Value)>,
+    pub changes_at: Option<i64>,
+}
+
+/// The earlier of two instants at which something read changes; `None` stands for never.
+pub(crate) fn earliest(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 /// What a view boundary is offered: its space, the window and the person looking at it, and
@@ -185,6 +197,7 @@ impl Acc {
         self.retained.extend(nested.retained);
         self.state_reads.extend(nested.state_reads);
         self.state_seen.extend(nested.state_seen);
+        self.changes_at = earliest(self.changes_at, nested.changes_at);
         nested.root
     }
 }
@@ -247,8 +260,14 @@ impl Core {
             .borrow()
             .package(&target.module)
             .ok_or_else(|| RuntimeError::NotFound(format!("module {}", target.module)))?;
+        // A written view's module is its writer's code wherever it renders: at its root, in the
+        // rows its loops render, in whatever view of its own it calls.
+        let author = author
+            .cloned()
+            .or_else(|| self.written_author(&pkg.hash))
+            .unwrap_or_else(|| pkg.hash.clone());
         self.frames.borrow_mut().push(
-            author.unwrap_or(&pkg.hash).clone(),
+            author,
             FrameKind::View(ViewState {
                 space,
                 window: offer.window.to_owned(),
@@ -271,6 +290,7 @@ impl Core {
             retained: Vec::new(),
             state_reads: state.state_reads,
             state_seen: state.state_seen,
+            changes_at: state.changes_at,
         };
         let cx = Build {
             nodes: &state.nodes,
@@ -295,6 +315,7 @@ impl Core {
             retained: acc.retained,
             state_reads: acc.state_reads,
             state_seen: acc.state_seen,
+            changes_at: acc.changes_at,
         })
     }
 
@@ -386,6 +407,23 @@ impl Core {
             self.resolve_foreign(cx, target, &mut node, acc)?;
         } else if n.kind == EMBED {
             self.resolve_embed(cx, &mut node, acc);
+        } else {
+            // The collection a loop of the node lists, whose removed items it may stand in for.
+            let listed = n.children.iter().find_map(|c| {
+                let child = cx.nodes.get(*c)?;
+                match child.props.get(ITEMS) {
+                    Some(Value::Coll(coll)) if child.kind.starts_with(FOR_EACH) => {
+                        Some(Rc::clone(coll))
+                    }
+                    _ => None,
+                }
+            });
+            self.mark_unseen(
+                &mut node,
+                (cx.offer.viewer, cx.offer.window),
+                listed.as_deref(),
+                acc,
+            )?;
         }
         Ok(node)
     }

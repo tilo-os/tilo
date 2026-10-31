@@ -18,7 +18,7 @@ fn sample_app() -> (PdfApp, ui::State) {
 }
 
 /// A ctrl-held `Modifiers`, mirroring the workspace convention (see
-/// `ui::widget::command_palette`'s `ctrl_a_selects_query`).
+/// `ui::ActionPalette`'s `ctrl_a_selects_query`).
 fn ctrl_mods() -> Modifiers {
     let mut s = winit::keyboard::ModifiersState::empty();
     s.set(winit::keyboard::ModifiersState::CONTROL, true);
@@ -418,7 +418,8 @@ fn sidebar_hits_toggle_delete_clip_to_the_body_and_draw_every_tab() {
             .iter()
             .find(|c| c.id == id)
             .unwrap()
-            .comment.resolved;
+            .comment
+            .resolved;
         assert!(
             rig.app
                 .apply_sidebar(centre(r), &mut Edits::lend(&mut rig.st.doc))
@@ -429,7 +430,8 @@ fn sidebar_hits_toggle_delete_clip_to_the_body_and_draw_every_tab() {
             .iter()
             .find(|c| c.id == id)
             .unwrap()
-            .comment.resolved;
+            .comment
+            .resolved;
         assert_ne!(
             before, after,
             "resolve chip should toggle, not open the card"
@@ -621,7 +623,10 @@ fn canvas_tools_highlight_note_pan_select_and_dismiss_through_the_event_path() {
     assert!(
         saved.iter().any(|c| c.comment.text == "Relay path"),
         "the typed comment body landed in the shared document: {:?}",
-        saved.iter().map(|c| c.comment.text.clone()).collect::<Vec<_>>()
+        saved
+            .iter()
+            .map(|c| c.comment.text.clone())
+            .collect::<Vec<_>>()
     );
 
     // A Select-tool press-move-release past `PAN_SLOP` pans the canvas and
@@ -753,7 +758,10 @@ fn inline_editor_commits_replies_discards_empty_notes_and_handles_clipboard_chor
         replies_before + 1,
         "reply landed in the thread"
     );
-    assert_eq!(after.comment.replies.values().last().unwrap().text, "Looks good");
+    assert_eq!(
+        after.comment.replies.values().last().unwrap().text,
+        "Looks good"
+    );
 
     // Select the whole field first (Ctrl+A) so copy/cut act on the text —
     // the shared TextInput has a real selection model. The cut's
@@ -985,8 +993,9 @@ fn delete_affordances_and_the_context_menu_dispatch_the_palette_action() {
     let ids = |annotations: Vec<Annotation>| -> Vec<String> {
         annotations.into_iter().map(|a| a.id).collect()
     };
-    let comment_ids =
-        |comments: Vec<crate::model::Thread>| -> Vec<String> { comments.into_iter().map(|c| c.id).collect() };
+    let comment_ids = |comments: Vec<crate::model::Thread>| -> Vec<String> {
+        comments.into_iter().map(|c| c.id).collect()
+    };
     assert_eq!(
         ids(crate::markup::PdfMarkup::of(&st.doc).list_annotations()),
         ids(crate::markup::PdfMarkup::of(&palette).list_annotations()),

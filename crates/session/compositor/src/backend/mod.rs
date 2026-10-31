@@ -60,6 +60,14 @@ pub trait Backend {
         Vec::new()
     }
 
+    /// The HDR signal `output` is being driven with, or `None` for an
+    /// ordinary SDR one: colour-managed clients learn it through
+    /// `wp_color_management_output_v1`, so an HDR app knows the volume it
+    /// renders into. Backends that drive no HDR signal have none.
+    fn output_hdr(&self, _output: &smithay::output::Output) -> Option<crate::config::Hdr> {
+        None
+    }
+
     /// How this backend drives its outputs (`drm-kms`, `headless`), as
     /// Settings names it when it explains a display.
     fn describe(&self) -> &'static str {
@@ -76,6 +84,15 @@ pub trait Backend {
         Err(BackendError(format!(
             "{}: this backend's outputs are its devices",
             config.name
+        )))
+    }
+
+    /// Drop the output named `name` the backend simulates, as pulling its
+    /// cable does: it leaves the layout and clients stop seeing it.
+    /// Backends with real outputs watch for that themselves and refuse.
+    fn remove_output(&mut self, _state: &mut State, name: &str) -> Result<(), BackendError> {
+        Err(BackendError(format!(
+            "{name}: this backend's outputs are its devices"
         )))
     }
 
@@ -155,6 +172,20 @@ pub trait Backend {
         &mut self,
         _state: &mut State,
         _target: &crate::capture::Target,
+    ) -> Result<Screenshot, crate::capture::CaptureError> {
+        Err(crate::capture::CaptureError::Backend(BackendError(
+            "this backend does not read frames back".into(),
+        )))
+    }
+
+    /// What `target` shows now, drawn to fit `max` and read back as rows of
+    /// R, G, B, A (see [`crate::capture::read_back_scaled`]): a frame of the
+    /// stream a wireless display is sent.
+    fn read_back_scaled(
+        &mut self,
+        _state: &mut State,
+        _target: &crate::capture::Target,
+        _max: (u32, u32),
     ) -> Result<Screenshot, crate::capture::CaptureError> {
         Err(crate::capture::CaptureError::Backend(BackendError(
             "this backend does not read frames back".into(),

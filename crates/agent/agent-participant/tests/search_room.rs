@@ -18,7 +18,7 @@ use tilo_agent_participant::search::{self, SearchDoc};
 use tilo_agent_participant::{
     Briefing, ModelPlanner, PlanContext, PlanModel, Planner, ReadView, StepAction,
 };
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 const SLIDES: &str = "so.tilo.slides";
 const WRITER: &str = "so.tilo.word-processor";

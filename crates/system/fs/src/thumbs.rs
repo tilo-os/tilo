@@ -3,7 +3,7 @@
 //! A thumbnail is metadata generated ahead of (or independent of) the content
 //! bytes: a small PNG preview kept in the shared preview cache under
 //! `<cache-dir>/thumbs`, served through the `user.tilo.thumb` xattr and
-//! gossiped via the namespace node.
+//! replicated through the namespace node.
 //!
 //! Only light, pure-Rust preview types are host-generated (raster images,
 //! EPUB covers) — `thumbnail` uses default features so the daemon never

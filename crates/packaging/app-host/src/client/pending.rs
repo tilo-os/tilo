@@ -6,8 +6,9 @@ use std::task::Poll;
 
 use super::{
     BlockingClient, CatalogueError, FlatpakStatus, InstalledPackage, ListedPackage, PackageAbout,
-    WirePinning, catalogue_refusal, parse_id, text_result,
+    catalogue, text, unexpected,
 };
+use crate::wire::{Answer, Operation, Resource, WirePinning};
 
 type ReadFuture<T, E> = Pin<Box<dyn Future<Output = Result<T, E>>>>;
 
@@ -65,174 +66,123 @@ impl BlockingClient {
         })
     }
 
+    #[allow(
+        clippy::future_not_send,
+        reason = "the connection is shared by Rc on its current-thread runtime"
+    )]
+    fn begin_read(
+        &self,
+        resource: Resource,
+    ) -> impl Future<Output = Result<Answer, String>> + use<> {
+        self.connection.call(Operation::Read(resource))
+    }
+
     /// Begin the same typed list read without waiting for its response.
     pub fn begin_list(&self) -> PendingRead<Vec<ListedPackage>> {
-        let client = self.client.clone();
+        let answer = self.begin_read(Resource::Packages);
         PendingRead::new(async move {
-            let response = client
-                .list_request()
-                .send()
-                .promise
-                .await
-                .map_err(|error| error.to_string())?;
-            let result = response.get().map_err(|e| e.to_string())?;
-            let entries = result.get_entries().map_err(|e| e.to_string())?;
-            let mut out = Vec::with_capacity(entries.len() as usize);
+            let entries = match answer.await? {
+                Answer::Packages(entries) => entries,
+                other => return Err(unexpected(&other)),
+            };
+            let mut out = Vec::with_capacity(entries.len());
             for entry in entries {
-                let manifest_text = entry
-                    .get_manifest_text()
-                    .map_err(|e| e.to_string())?
-                    .to_string()
-                    .map_err(|e| e.to_string())?;
-                let manifest = tilo_app_package::Manifest::from_toml_str(&manifest_text)
+                let manifest = tilo_app_package::Manifest::from_toml_str(&entry.manifest_text)
                     .map_err(|e| format!("installed manifest: {e}"))?;
-                let text = |value: Result<capnp::text::Reader<'_>, capnp::Error>| {
-                    text_result(value).map(std::path::PathBuf::from)
-                };
-                let id = parse_id(entry.get_id().map_err(|e| e.to_string())?)?;
+                let id = tilo_app_package::PackageId::from_bytes(entry.id);
                 let about = PackageAbout::from_full_manifest(&manifest);
                 let package = InstalledPackage {
                     id: manifest.package.id,
                     version: manifest.package.version,
                     package_id_hex: id.to_hex(),
-                    payload_root: text(entry.get_payload_root())?,
-                    manifest_path: text(entry.get_manifest_path())?,
+                    payload_root: entry.payload_root.into(),
+                    manifest_path: entry.manifest_path.into(),
                     publisher_key_hex: manifest
                         .publisher
                         .identity_bytes()
                         .map(hex::encode)
                         .unwrap_or_default(),
-                    pinned: entry.get_pinning().map_err(|e| e.to_string())? == WirePinning::Pinned,
+                    pinned: entry.pinning == WirePinning::Pinned,
                     installed_at: 0,
-                    last_used: entry.get_last_used_unix(),
+                    last_used: entry.last_used_unix,
                     attested_by: String::new(),
                     cli_commands: manifest.cli.map(|cli| cli.commands).unwrap_or_default(),
                     runtime: manifest.package.runtime.unwrap_or_default(),
                     source: String::new(),
                     held: false,
-                    payload_bytes: entry.get_size_bytes(),
-                    system: !entry.get_user_managed(),
+                    payload_bytes: entry.size_bytes,
+                    system: !entry.user_managed,
                 };
                 out.push(ListedPackage { package, about });
             }
             Ok(out)
         })
     }
+
     /// Begin the same typed repositories read without waiting for its response.
     pub fn begin_repositories(&self) -> PendingRead<String> {
-        let client = self.client.clone();
-        PendingRead::new(async move {
-            let request = client.repositories_request();
-            text_result(
-                request
-                    .send()
-                    .promise
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .get()
-                    .map_err(|e| e.to_string())?
-                    .get_json(),
-            )
-        })
+        let answer = self.begin_read(Resource::Repositories);
+        PendingRead::new(async move { text(answer.await?) })
     }
+
     /// Begin the same typed registry catalogue read without waiting for its response.
     pub fn begin_registry_catalogue(&self, registry: &str) -> PendingRead<String, CatalogueError> {
-        let client = self.client.clone();
-        let registry = registry.to_owned();
-        PendingRead::new(async move {
-            let mut request = client.registry_catalogue_request();
-            request.get().set_registry(&registry);
-            let response = request
-                .send()
-                .promise
-                .await
-                .map_err(|error| failed(&error))?;
-            let results = response.get().map_err(|error| failed(&error))?;
-            if let Some(refused) = catalogue_refusal(results.get_refusal(), results.get_detail()) {
-                return Err(refused);
-            }
-            let entries = text_result(results.get_entries())?;
-            if entries.len() > 4 * 1024 * 1024 {
-                return Err(CatalogueError::Failed(
-                    "verified repository catalogue exceeds the response limit".into(),
-                ));
-            }
-            Ok(entries)
-        })
+        let answer = self.begin_read(Resource::RegistryCatalogue {
+            registry: registry.to_owned(),
+        });
+        PendingRead::new(async move { bounded_registry(catalogue(answer.await)?) })
     }
+
     /// Begin reading the catalogue the host last verified from `registry`,
     /// which needs no network and so answers while a fresh read is pending.
     pub fn begin_last_verified_catalogue(
         &self,
         registry: &str,
     ) -> PendingRead<String, CatalogueError> {
-        let client = self.client.clone();
-        let registry = registry.to_owned();
-        PendingRead::new(async move {
-            let mut request = client.last_verified_catalogue_request();
-            request.get().set_registry(&registry);
-            let response = request
-                .send()
-                .promise
-                .await
-                .map_err(|error| failed(&error))?;
-            let results = response.get().map_err(|error| failed(&error))?;
-            if let Some(refused) = catalogue_refusal(results.get_refusal(), results.get_detail()) {
-                return Err(refused);
-            }
-            let entries = text_result(results.get_entries())?;
-            if entries.len() > 4 * 1024 * 1024 {
-                return Err(CatalogueError::Failed(
-                    "verified repository catalogue exceeds the response limit".into(),
-                ));
-            }
-            Ok(entries)
-        })
+        let answer = self.begin_read(Resource::LastVerifiedCatalogue {
+            registry: registry.to_owned(),
+        });
+        PendingRead::new(async move { bounded_registry(catalogue(answer.await)?) })
     }
+
     /// Begin the same typed flatpak catalogue read without waiting for its response.
     pub fn begin_flatpak_catalogue(
         &self,
         remote: &str,
         user_managed: bool,
     ) -> PendingRead<String, CatalogueError> {
-        let client = self.client.clone();
-        let remote = remote.to_owned();
-        PendingRead::new(async move {
-            let mut request = client.flatpak_catalogue_request();
-            request.get().set_remote(&remote);
-            request.get().set_user_managed(user_managed);
-            let response = request
-                .send()
-                .promise
-                .await
-                .map_err(|error| failed(&error))?;
-            let results = response.get().map_err(|error| failed(&error))?;
-            if let Some(refused) = catalogue_refusal(results.get_refusal(), results.get_detail()) {
-                return Err(refused);
-            }
-            Ok(text_result(results.get_rows())?)
-        })
+        let answer = self.begin_read(Resource::FlatpakCatalogue {
+            remote: remote.to_owned(),
+            user_managed,
+        });
+        PendingRead::new(async move { catalogue(answer.await) })
     }
+
     /// Begin the same typed flatpak status read without waiting for its response.
     pub fn begin_flatpak_status(&self) -> PendingRead<FlatpakStatus> {
-        let client = self.client.clone();
+        let answer = self.begin_read(Resource::FlatpakStatus);
         PendingRead::new(async move {
-            let response = client
-                .flatpak_status_request()
-                .send()
-                .promise
-                .await
-                .map_err(|error| error.to_string())?;
-            let result = response.get().map_err(|e| e.to_string())?;
-            Ok(FlatpakStatus {
-                available: result.get_available(),
-                installed: text_result(result.get_installed())?,
-                remotes: text_result(result.get_remotes())?,
-            })
+            match answer.await? {
+                Answer::FlatpakStatus {
+                    available,
+                    installed,
+                    remotes,
+                } => Ok(FlatpakStatus {
+                    available,
+                    installed,
+                    remotes,
+                }),
+                other => Err(unexpected(&other)),
+            }
         })
     }
 }
 
-fn failed(error: &capnp::Error) -> CatalogueError {
-    CatalogueError::Failed(error.to_string())
+fn bounded_registry(entries: String) -> Result<String, CatalogueError> {
+    if entries.len() > 4 * 1024 * 1024 {
+        return Err(CatalogueError::Failed(
+            "verified repository catalogue exceeds the response limit".into(),
+        ));
+    }
+    Ok(entries)
 }

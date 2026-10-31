@@ -21,7 +21,7 @@ use smithay::backend::renderer::{Bind as _, ExportMem as _, ImportDma as _, Offs
 use smithay::backend::winit::{WinitEvent, WinitGraphicsBackend, init_from_attributes};
 use smithay::output::{Mode, Output};
 use smithay::reexports::calloop::LoopHandle;
-use smithay::utils::{Buffer, Physical, Rectangle, Size};
+use smithay::utils::{Buffer, Physical, Point, Rectangle, Size, Transform};
 use winit::dpi::PhysicalSize;
 use winit::window::{Window as WinitWindow, WindowAttributes};
 
@@ -142,9 +142,9 @@ impl NestedBackend {
                 config.output_scale(),
             );
         output_config.refresh_mhz = REFRESH_MHZ;
-        let output = output_config.create(&state.display, "nested");
-        state.add_output(&output, output_config.location());
-        let damage = OutputDamageTracker::from_output(&output);
+        let output = output_config.create(&state.display, "nested", Point::from((0, 0)));
+        state.add_output(&output, Point::from((0, 0)));
+        let damage = window_damage(&output);
         // The compositor draws the pointer: clients' cursor shapes show.
         window.window().set_cursor_visible(false);
 
@@ -163,6 +163,36 @@ impl NestedBackend {
             })
             .map_err(|error| failed("window events", error.error))?;
         Ok(Self { inner })
+    }
+}
+
+/// The tracker drawing the scene into the window.
+///
+/// A window's framebuffer is counted from its bottom edge, the opposite of
+/// the physical space the scene is laid out in, so the scene goes into it
+/// flipped: a window rendering its output turned by `transform` is drawn as
+/// [`flip`]`(transform)`. Smithay's own window example draws the same way.
+fn window_damage(output: &Output) -> OutputDamageTracker {
+    let Some(mode) = output.current_mode() else {
+        return OutputDamageTracker::from_output(output);
+    };
+    let scale = output.current_scale().fractional_scale();
+    let transform = flip(output.current_transform());
+    OutputDamageTracker::new(mode.size, scale, transform)
+}
+
+/// The same turn of the output with one more flip: what drawing into the
+/// window adds to the scene.
+const fn flip(transform: Transform) -> Transform {
+    match transform {
+        Transform::Normal => Transform::Flipped180,
+        Transform::Flipped180 => Transform::Normal,
+        Transform::_90 => Transform::Flipped90,
+        Transform::Flipped90 => Transform::_90,
+        Transform::_180 => Transform::Flipped,
+        Transform::Flipped => Transform::_180,
+        Transform::_270 => Transform::Flipped270,
+        Transform::Flipped270 => Transform::_270,
     }
 }
 
@@ -186,7 +216,7 @@ fn handle_event(inner: &Rc<RefCell<Inner>>, state: &mut State, event: WinitEvent
                 .output
                 .change_current_state(Some(mode), None, None, None);
             inner.output.set_preferred(mode);
-            inner.damage = OutputDamageTracker::from_output(&inner.output);
+            inner.damage = window_damage(&inner.output);
             inner.next_frame = Instant::now();
             let output = inner.output.clone();
             drop(inner);
@@ -350,7 +380,7 @@ impl Backend for NestedBackend {
         for change in changes {
             apply_placement(state, &inner.output, change);
         }
-        inner.damage = OutputDamageTracker::from_output(&inner.output);
+        inner.damage = window_damage(&inner.output);
         Ok(())
     }
 
@@ -365,7 +395,7 @@ impl Backend for NestedBackend {
         inner.dark = !on;
         if on {
             inner.next_frame = Instant::now();
-            inner.damage = OutputDamageTracker::from_output(&inner.output);
+            inner.damage = window_damage(&inner.output);
             state.mark_redraw(&inner.output);
         }
         Ok(())
@@ -399,5 +429,39 @@ mod tests {
         assert_eq!(mode.refresh, REFRESH_MHZ);
         assert!(window_mode((0, 900).into()).is_none());
         assert!(window_mode((1600, 0).into()).is_none());
+    }
+
+    /// The flip a framebuffer adds to the scene, taken back out for the
+    /// window, whatever the output's own turn: the window shows the scene as
+    /// the output is turned.
+    #[test]
+    fn the_window_draws_the_scene_as_the_output_is_turned() {
+        const TURNS: [Transform; 8] = [
+            Transform::Normal,
+            Transform::_90,
+            Transform::_180,
+            Transform::_270,
+            Transform::Flipped,
+            Transform::Flipped90,
+            Transform::Flipped180,
+            Transform::Flipped270,
+        ];
+        for turn in TURNS {
+            // What the renderer is given is the tracker's transform, inverted;
+            // on top of that it flips the scene, as it does for any buffer.
+            let drawn =
+                |candidate: Transform| Transform::Flipped180.matrix() * candidate.invert().matrix();
+            assert_eq!(
+                drawn(flip(turn)),
+                turn.invert().matrix(),
+                "the window draws {turn:?}"
+            );
+            // One transform brings the scene back the way the output turns it.
+            let cancels = TURNS
+                .into_iter()
+                .filter(|candidate| drawn(*candidate) == turn.invert().matrix())
+                .count();
+            assert_eq!(cancels, 1, "{turn:?} is drawn back the way it is turned");
+        }
     }
 }

@@ -566,6 +566,8 @@ pub struct SlashRequest {
     reason = "independent editor interaction and lifecycle flags"
 )]
 pub struct BlockEditor {
+    /// What it answers to ([`Widget::test_id`]): `block_editor` unless its owner names it.
+    id: Option<String>,
     blocks: Vec<Block>,
     focused: Option<usize>,
     /// Decoupled from `focused` so the index survives blur/refocus.
@@ -609,6 +611,9 @@ pub struct BlockEditor {
     read_only: bool,
     /// Whether blocks show a drag handle beside them (off in a composer).
     block_handles: bool,
+    /// Text set flush with the editor's edge, without the document's inset: a message's body
+    /// lining up with its author's name.
+    flush: bool,
     /// When the drag handles show: while the pointer moves, gone once it
     /// rests or the person types.
     handle_reveal: handle_reveal::HandleReveal,
@@ -891,6 +896,7 @@ impl BlockEditor {
     pub fn new() -> Self {
         crate::i18n::I18nManager::register_widget_messages();
         let mut s = Self {
+            id: None,
             blocks: Vec::new(),
             focused: None,
             is_focused: false,
@@ -917,6 +923,7 @@ impl BlockEditor {
             stack_measures: 0,
             read_only: false,
             block_handles: true,
+            flush: false,
             handle_reveal: handle_reveal::HandleReveal::default(),
             mention_paint: None,
             text_align: crate::richtext::TextAlign::Left,
@@ -1011,6 +1018,14 @@ impl BlockEditor {
         };
         s.blocks.push(Block::paragraph(""));
         s
+    }
+
+    /// Answer to `id` ([`Widget::test_id`]): the key of the field it edits, by which its window
+    /// gives it the keyboard.
+    #[must_use]
+    pub fn with_id(mut self, id: &str) -> Self {
+        self.id = Some(id.to_owned());
+        self
     }
 
     #[must_use]
@@ -1531,6 +1546,14 @@ impl BlockEditor {
     #[must_use]
     pub fn with_block_handles(mut self, shown: bool) -> Self {
         self.block_handles = shown;
+        self
+    }
+
+    /// Set the text flush with the editor's edge, without the document's inset: a read-only
+    /// body under a name, a quote or chips, all starting at one edge.
+    #[must_use]
+    pub fn with_flush_text(mut self) -> Self {
+        self.flush = true;
         self
     }
 
@@ -5603,16 +5626,16 @@ impl TableModeControl {
                 "table-edit-visual"
             },
         )
-        .on_click(move || clicked.set(true));
+        .on_view(move || clicked.set(true));
         let structure = std::rc::Rc::new(std::cell::Cell::new(None));
         let row_request = structure.clone();
         let column_request = structure.clone();
         let add_row =
             crate::widget::Button::new(&format!("notes.table-add-row:{id}"), "table-add-row")
-                .on_click(move || row_request.set(Some(true)));
+                .on_view(move || row_request.set(Some(true)));
         let add_column =
             crate::widget::Button::new(&format!("notes.table-add-column:{id}"), "table-add-column")
-                .on_click(move || column_request.set(Some(false)));
+                .on_view(move || column_request.set(Some(false)));
         Self {
             button,
             requested,
@@ -8819,6 +8842,11 @@ impl Widget for BlockEditor {
         };
         self.text_scale = f64::from(theme.text_scale);
         self.handle = HandleMetrics::from_tokens(&theme.tokens.spacing, &theme.tokens.metrics);
+        if self.flush {
+            for block in &mut self.blocks {
+                block.line.set_flush();
+            }
+        }
         self.prepare_blocks(theme);
         // One measured leaf stands for the whole block stack. The editor
         // places its blocks itself from per-line cached heights, so an edit
@@ -9937,7 +9965,7 @@ impl Widget for BlockEditor {
     }
 
     fn test_id(&self) -> Option<&str> {
-        Some("block_editor")
+        Some(self.id.as_deref().unwrap_or("block_editor"))
     }
 
     fn get_rect(&self) -> Rect {
@@ -12386,11 +12414,26 @@ impl BlockEditor {
         let mut structural = None;
         for (id, control) in &mut self.table_mode_controls {
             control.button.handle_event(event, ctx);
+            control.add_row.handle_event(event, ctx);
+            control.add_column.handle_event(event, ctx);
+            // These controls publish their press; the editor hosts them,
+            // so the presses are answered here, before the toggle and the
+            // structure they ask for are taken.
+            let path = ctx.path;
+            for button in [
+                &mut control.button,
+                &mut control.add_row,
+                &mut control.add_column,
+            ] {
+                crate::widget::controls::start_pending_control_invocations(
+                    button,
+                    &mut ctx.edits(),
+                    path,
+                );
+            }
             if control.requested.replace(false) {
                 toggle = Some(id.clone());
             }
-            control.add_row.handle_event(event, ctx);
-            control.add_column.handle_event(event, ctx);
             if let Some(row) = control.structure.take() {
                 structural = Some((id.clone(), row));
             }

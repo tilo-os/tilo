@@ -4,12 +4,15 @@
 A key with no message renders as the key itself, so a missing entry ships an
 untranslatable identifier to the screen. Keys passed straight to a resolver
 (`t`, `t_args`, `tr`, `tr_args`) are checked in every crate with a
-`locales/en-US.ftl`; Settings also routes keys through conditionals and
-tables, so its key-shaped literals in a known namespace are checked too.
+`locales/en-US.ftl`, and in a crate that re-exports another's `i18n` without
+shipping a catalogue of its own. Settings, and the desktop surface with the
+desktop that draws it, also route keys through conditionals and tables, so
+their key-shaped literals in a known namespace are checked too.
 Lookups fall back to the toolkit's catalogue, so its messages count for all.
 A key passed to another crate's resolver (`tilo_desktop::i18n::t_args`, or
-`tilo_onboarding::t` for a crate that resolves at its root) is checked in that
-crate's catalogue, the one it is looked up in.
+`tilo_onboarding::t` from a crate whose root declares
+`ui::embedded_catalog!(pub fn, ..)`) is checked in that crate's catalogue, the
+one it is looked up in.
 """
 
 from __future__ import annotations
@@ -31,11 +34,12 @@ KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)+\Z")
 # next; one that starts with `\b` or an alternation is tried at every offset of some 100 MB of
 # source. A leading `\b` is checked by `starts_word` instead.
 RESOLVER = re.compile(r"t(?:_args|r|r_args)?\s*\(")
-# `<crate>::i18n::t(`, or `<crate>::t(` for a crate whose catalogue resolves at its root
-# (`ui::embedded_catalog!(pub fn, ..)`): found by its literal part, then the crate name read
-# backwards (`\b([A-Za-z_]\w*)` before it), which a search from every position took seconds per
-# tree for.
-QUALIFIED = re.compile(r"::(?:i18n::)?(?:t|t_args|tr|tr_args)\s*\(")
+# `<path>::t(`: found by its literal part, then the path (`tilo_desktop::i18n`, `tilo_onboarding`)
+# read backwards, which a search from every position took seconds per tree for.
+QUALIFIED = re.compile(r"::(?:t|t_args|tr|tr_args)\s*\(")
+# A crate root that declares its own lookups (`ui::embedded_catalog!(pub fn, ..)`) resolves
+# `<crate>::t(` as well as `<crate>::i18n::t(`.
+ROOT_CATALOGUE = re.compile(r"\bembedded_catalog!\s*\(\s*pub\s+fn\b")
 # These argument positions are stable machine identifiers, never Fluent IDs.
 MACHINE_CALLS = (re.compile(r"Button::new\s*\("), re.compile(r"device_read::thread\s*\("))
 MACHINE_METHOD = re.compile(r"\.(?:with_id|thread_name|name|start_job)\s*\(")
@@ -138,8 +142,8 @@ def contains(ranges: list[tuple[int, int]] | Spans, offset: int) -> bool:
 
 
 class Qualified:
-    """A resolver call qualified with a crate's `i18n` module: the crate's library name
-    (`group(1)`) and where the call's arguments start (`end()`)."""
+    """A resolver call qualified with a path: the path (`group(1)`, `tilo_desktop::i18n`) and
+    where the call's arguments start (`end()`)."""
 
     def __init__(self, crate: str, end: int):
         self.crate, self._end = crate, end
@@ -156,16 +160,23 @@ def qualified_calls(code: str) -> list[Qualified]:
     calls = []
     for call in QUALIFIED.finditer(code):
         start = call.start()
-        while start > 0 and (code[start - 1].isalnum() or code[start - 1] == "_"):
-            start -= 1
-        name = code[start:call.start()]
-        if IDENT.fullmatch(name):
-            calls.append(Qualified(name, call.end()))
+        while True:
+            segment = start
+            while segment > 0 and (code[segment - 1].isalnum() or code[segment - 1] == "_"):
+                segment -= 1
+            if not IDENT.fullmatch(code[segment:start]):
+                break
+            start = segment
+            if not code.endswith("::", 0, start):
+                break
+            start -= 2
+        if start < call.start() and IDENT.match(code, start):
+            calls.append(Qualified(code[start:call.start()], call.end()))
     return calls
 
 
 def foreign_calls(code: str, modules: dict[str, Path]) -> list[tuple[Qualified, Path]]:
-    """Resolver calls qualified with another crate's `i18n` module."""
+    """Resolver calls qualified with another crate's `i18n` module or catalogue root."""
     return [(call, modules[call.group(1)]) for call in qualified_calls(code)
             if call.group(1) in modules]
 
@@ -187,18 +198,9 @@ def used_keys(text: str, namespaces: set[str],
     resolved_spans = Spans(resolved)
     machine = [first_argument(pruned.code, call.end())
                for call in machine_calls(pruned.code)]
-    # Navigation slugs and control-ID pairs are passed separately from copy.
+    # Navigation slugs are passed separately from copy.
     for function in (f for f in SLUG.finditer(pruned.code) if starts_word(pruned.code, f.start())):
         machine.append((function.end(), rust.matching(pruned.code, function.end() - 1)))
-    # A confirmation's control IDs travel as a tuple argument of `push_confirm`.
-    for call in re.finditer(r"(?:\.|::)push_confirm\s*\(", pruned.code):
-        limit = rust.matching(pruned.code, call.end() - 1) - 1
-        position = call.end()
-        while position < limit:
-            start, end = first_argument(pruned.code, position, limit)
-            if pruned.code[start:end].lstrip().startswith("("):
-                machine.append((start, end))
-            position = end + 1
     found = []
     elsewhere_spans, machine_spans = Spans(elsewhere), Spans(machine)
     for literal in literals:
@@ -242,33 +244,70 @@ def foreign_keys(text: str, modules: dict[str, Path]) -> list[tuple[Path, str, i
     return found
 
 
+def library(crate: Path) -> str | None:
+    """The library name a crate's manifest gives, as Rust spells it."""
+    manifest = crate / "Cargo.toml"
+    if not manifest.is_file():
+        return None
+    found = re.search(r'^name\s*=\s*"([^"]+)"', manifest.read_text(), re.MULTILINE)
+    return found.group(1).replace("-", "_") if found else None
+
+
 def i18n_modules(root: Path, crates: list[Path]) -> dict[str, Path]:
-    """Each crate whose `i18n` module resolves a catalogue, by library name.
+    """Each path whose resolvers look up a crate's catalogue: `<lib>::i18n`, and `<lib>`
+    when the crate's root declares its lookups (`embedded_catalog!(pub fn, ..)`).
 
     A crate that re-exports another's `i18n` (`pub use other::{i18n, ..}`)
     resolves through that crate's catalogue.
     """
-    def library(crate: Path) -> str | None:
-        manifest = crate / "Cargo.toml"
-        if not manifest.is_file():
-            return None
-        found = re.search(r'^name\s*=\s*"([^"]+)"', manifest.read_text(), re.MULTILINE)
-        return found.group(1).replace("-", "_") if found else None
-
-    modules = {name: crate for crate in crates if (name := library(crate))}
+    owners = {name: crate for crate in crates if (name := library(crate))}
+    modules: dict[str, Path] = {}
+    for name, crate in owners.items():
+        modules[f"{name}::i18n"] = crate
+        lib = crate / "src" / "lib.rs"
+        if lib.is_file() and ROOT_CATALOGUE.search(lib.read_text()):
+            modules[name] = crate
     for lib in sorted(root.glob("crates/*/*/src/lib.rs")) + sorted(root.glob("apps/*/src/lib.rs")):
         name = library(lib.parents[1])
-        if name is None or name in modules:
+        if name is None or name in owners:
             continue
         for use in re.finditer(r"\bpub use (\w+)::\{?([^;]*);", lib.read_text()):
-            if use.group(1) in modules and re.search(r"\bi18n\b", use.group(2)):
-                modules[name] = modules[use.group(1)]
+            if use.group(1) in owners and re.search(r"\bi18n\b", use.group(2)):
+                modules[f"{name}::i18n"] = owners[use.group(1)]
     return modules
 
 
+def copy_readers(root: Path, modules: dict[str, Path], crates: list[Path]) -> list[tuple[Path, Path]]:
+    """Each crate that resolves copy, with the crate whose catalogue it resolves in.
+
+    That is the crates shipping a catalogue, plus a crate that re-exports
+    another's `i18n` and ships none: `crates/session/desktop` reads the
+    desktop surface's.
+    """
+    directories = {}
+    for pattern in ("apps/*", "crates/*/*"):
+        for manifest in root.glob(f"{pattern}/Cargo.toml"):
+            name = library(manifest.parent)
+            if name is not None:
+                directories.setdefault(name, manifest.parent)
+    readers = [(crate, crate) for crate in crates]
+    readers.extend(
+        (directories[name], crate) for name, crate in sorted(modules.items())
+        if name in directories and directories[name] not in crates
+    )
+    return readers
+
+
 TOOLKIT = "crates/sdk/ui-core"
-# Crates whose copy keys also travel through conditionals and tables.
-INDIRECT = {"apps/settings"}
+# Crates whose copy keys also travel through conditionals and tables, by the
+# namespaces their code picks keys in (`None`: every namespace of their own
+# catalogue). Settings picks across its whole catalogue; the desktop surface
+# picks `activity-` keys in a `match` and in its word builders.
+INDIRECT = {
+    "apps/settings": None,
+    "crates/session/desktop": {"activity"},
+    "crates/session/desktop-surface": {"activity"},
+}
 # Catalogues a crate's resolver falls back to after its own: Settings' `t`
 # resolves the shared provider administration copy it embeds
 # (apps/settings/src/i18n.rs).
@@ -285,23 +324,31 @@ def copy_crates(root: Path) -> list[Path]:
                   for ftl in root.glob(f"{pattern}/locales/en-US.ftl"))
 
 
+def indirect_namespaces(name: str, own: dict[str, set[str]]) -> set[str]:
+    """The namespaces whose key-shaped literals in `name` are keys even where no resolver
+    call takes them directly."""
+    if name not in INDIRECT:
+        return set()
+    prefixes = INDIRECT[name]
+    return {key.partition("-")[0] for key in own["en-US"]} if prefixes is None else set(prefixes)
+
+
 def missing_copy(root: Path) -> list[str]:
     toolkit = catalogues(root / TOOLKIT)
     errors = []
     crates = copy_crates(root)
     modules = i18n_modules(root, crates)
-    for crate in crates:
+    for source, crate in copy_readers(root, modules, crates):
         own = catalogues(crate)
-        name = crate.relative_to(root).as_posix()
+        name = source.relative_to(root).as_posix()
         shared = [catalogues(root / fallback) for fallback in FALLBACK.get(name, [])]
-        indirect = name in INDIRECT
-        namespaces = {key.partition("-")[0] for key in own["en-US"]} if indirect else set()
-        for path in sorted((crate / "src").rglob("*.rs")):
+        namespaces = indirect_namespaces(name, own)
+        for path in sorted((source / "src").rglob("*.rs")):
             # Settings' scenarios name capture-only states, not live panes.
-            if indirect and path.name == "scenarios.rs":
+            if name == "apps/settings" and path.name == "scenarios.rs":
                 continue
             text = path.read_text()
-            foreign = {name: other for name, other in modules.items() if other != crate}
+            foreign = {module: other for module, other in modules.items() if other != crate}
             for key, line in used_keys(text, namespaces, foreign):
                 for locale, keys in own.items():
                     if key in keys or key in toolkit.get(locale, toolkit["en-US"]):

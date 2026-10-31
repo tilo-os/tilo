@@ -13,6 +13,8 @@
 //! The crate is pure data plus pure helpers ([`mod@retention`]); it owns no
 //! transport, runtime or state machine.
 
+/// One action sent to another device of the workspace, signed by its sender.
+pub mod actions;
 pub mod colorimetry;
 pub mod hdr_metadata;
 pub mod presence_slot;
@@ -37,7 +39,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 23;
+pub const PEER_PROTOCOL_VERSION: u32 = 24;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -383,7 +385,7 @@ pub enum NeighbourMsg {
     /// invoke, observe or cancel its actions, or the answer to one.
     ///
     /// It travels only on an exact-target route, never workspace-wide
-    /// gossip, so arguments and results are not disclosed to the rest of
+    /// fan-out, so arguments and results are not disclosed to the rest of
     /// the room. The receiver takes the caller from the authenticated
     /// transport; nothing in the frame names it. Appended to preserve all
     /// existing Postcard discriminants.
@@ -1187,7 +1189,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b17",
+                "0b18",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",

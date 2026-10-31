@@ -308,8 +308,16 @@ fn opened_from_own_copy(
     person: &str,
     documents: &Rc<dyn durable_store::DurableStore>,
 ) -> (TilolangHost, Window, Sent, RouteSpec) {
+    opened_from_own_copy_in(person, documents, RouteSpec::app(APP, uuid::Uuid::new_v4()))
+}
+
+/// [`opened_from_own_copy`], on `route`.
+fn opened_from_own_copy_in(
+    person: &str,
+    documents: &Rc<dyn durable_store::DurableStore>,
+    route: RouteSpec,
+) -> (TilolangHost, Window, Sent, RouteSpec) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
     let sent: Sent = Rc::default();
     let mut manager = CollaborationManager::with_peer_transport(Broker {
         route: route.clone(),
@@ -433,8 +441,8 @@ fn a_press_in_the_window_is_a_step_on_the_instances_connection_and_undo_takes_it
     assert!(
         sent.borrow()
             .iter()
-            .any(|request| matches!(request, CollabRequest::PublishActionSurface { app_id, .. } if app_id == APP)),
-        "published on its own connection, under its app"
+            .any(|request| matches!(request, CollabRequest::PublishActionSurface { .. })),
+        "published on its own connection"
     );
 
     // The person presses + in the window: the instance runs it and commits it as their step.
@@ -472,6 +480,22 @@ fn a_press_in_the_window_is_a_step_on_the_instances_connection_and_undo_takes_it
     assert!(
         hosted.record().can_undo().1,
         "the window's Undo is ada's history undo: she can redo it"
+    );
+
+    // Redo from the window brings it back, the same way.
+    let before = documents_sent(&sent);
+    window.send(&[ToApp::Redo]);
+    settle(&mut host, &mut window);
+    let hosted = host.instances().next().unwrap();
+    assert_eq!(value_of(hosted), 1, "redo brought the press back");
+    assert!(
+        documents_sent(&sent) > before,
+        "the redo went out on the connection"
+    );
+    assert_eq!(
+        hosted.record().can_undo(),
+        (true, false),
+        "and it is ada's to undo again"
     );
 }
 
@@ -611,18 +635,27 @@ fn the_instance_publishes_and_answers_the_history_verbs_every_app_does() {
     }
     assert_eq!(hosted.record().can_undo_as("grace"), (false, true));
 
-    // Ada has nothing of hers to undo: her Undo is refused, saying so.
+    // Ada's one step is the counter she created, which Grace has since counted in: her Undo
+    // takes that step back without taking Grace's work with it, so the counter stays.
     deliver(&inbox, 3, &undo, "ada");
     settle(&mut host, &mut window);
-    assert!(
-        matches!(
-            answered(&sent, 3),
-            Some(tilo_actions::InvocationUpdate::Failed { .. })
-        ),
-        "ada's undo is refused: {:?}",
-        answered(&sent, 3)
-    );
+    match answered(&sent, 3) {
+        Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+            let value = output.value.expect("undo says what it took back");
+            assert_eq!(value["undone"][0]["sentence"], "Created Counter", "{value}");
+        }
+        other => panic!("ada's undo is never refused: {other:?}"),
+    }
     assert_eq!(value_of(host.instances().next().unwrap()), 0);
+    assert!(
+        !host
+            .instances()
+            .next()
+            .unwrap()
+            .record()
+            .can_undo_as("ada")
+            .0
+    );
 
     // Grace's redo brings it back, and History lists all three steps as hers.
     deliver(&inbox, 4, &redo, "grace");
@@ -1449,4 +1482,306 @@ fn the_instance_answers_every_handoff_step_the_shell_asks() {
         )),
         "a retirement is refused with why: {reports:?}"
     );
+}
+
+/// The origin of a counter's record for `person`, on a broker the test plays, taking its
+/// change on the far end of the returned connection.
+fn applier(
+    person: &str,
+    doc: automerge::AutoCommit,
+) -> (
+    tilolang_host::hosted::Applier,
+    std::os::unix::net::UnixStream,
+    Sent,
+) {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let sent: Sent = Rc::default();
+    let mut manager = CollaborationManager::with_peer_transport(Broker {
+        route: route.clone(),
+        sent: Rc::clone(&sent),
+        inbox: Rc::default(),
+        joined: None,
+        directory: Rc::default(),
+    });
+    assert!(manager.send(CollabRequest::Hello {
+        app_id: route.app_id.clone(),
+        cluster_id: route.cluster_id,
+        record: None,
+        record_kind: None,
+        handle: Some(person.to_owned()),
+    }));
+    let _ = manager.poll();
+    let record = RoomRecord::new(doc, manager, route.clone(), person);
+    let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+    let applier = tilolang_host::hosted::Applier::open(
+        Spec {
+            app: APP.to_owned(),
+            room: route.cluster_id.to_string(),
+            instance: 1 << 62,
+            person: person.to_owned(),
+        },
+        record,
+        &counter(),
+        &Phrases::new("en-US"),
+        wake(),
+        theirs.into(),
+    )
+    .unwrap();
+    (applier, ours, sent)
+}
+
+/// Where the counter's Increment is published on a record of the room, and that record: the
+/// one a task read, whose resources its change names.
+fn increment() -> (tilo_actions::ActionAddress, automerge::AutoCommit) {
+    let (mut host, mut window, _sent, _inbox, _route) = running("ada");
+    settle(&mut host, &mut window);
+    let hosted = host.instances().next().unwrap();
+    let address = hosted
+        .published()
+        .iter()
+        .find(|action| {
+            action.address.resource.starts_with("tl:") && action.action_label == "Increment"
+        })
+        .unwrap()
+        .address
+        .clone();
+    (address, hosted.record().doc().clone())
+}
+
+/// Hand `applier` `change` and run it until it answers: the answer.
+fn apply(
+    applier: &mut tilolang_host::hosted::Applier,
+    connection: &std::os::unix::net::UnixStream,
+    change: &runtime_portal::tilolang_host::Change,
+) -> serde_json::Value {
+    use std::io::{BufRead as _, Write as _};
+    let mut line = serde_json::to_vec(change).unwrap();
+    line.push(b'\n');
+    (&*connection).write_all(&line).unwrap();
+    for _ in 0..200 {
+        applier.turn();
+        if applier.answered() {
+            let mut answer = String::new();
+            std::io::BufReader::new(connection)
+                .read_line(&mut answer)
+                .unwrap();
+            return serde_json::from_str(&answer).unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the change was never answered");
+}
+
+/// An agent task acting for ada, as the broker admitted it.
+fn task_invoker() -> serde_json::Value {
+    serde_json::to_value(
+        tilo_actions::ActionInvoker::actor("agent:scribe")
+            .with_kind(tilo_actions::ActorKind::Agent)
+            .acting_for("ada"),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_tasks_change_runs_at_the_records_origin_as_its_step_with_no_instance() {
+    let (address, doc) = increment();
+    let (mut applier, connection, sent) = applier("ada", doc);
+    let answer = apply(
+        &mut applier,
+        &connection,
+        &runtime_portal::tilolang_host::Change {
+            resource: address.resource,
+            action: address.action,
+            arguments: serde_json::Map::new(),
+            invoker: task_invoker(),
+            context: None,
+            preview: None,
+        },
+    );
+    assert!(answer.get("ok").is_some(), "{answer}");
+    assert_eq!(answer["differs"], false, "{answer}");
+    assert!(
+        answer["change"]
+            .as_str()
+            .is_some_and(|change| !change.is_empty()),
+        "it says what it wrote, for the task to read back: {answer}"
+    );
+    assert!(
+        documents_sent(&sent) > 0,
+        "what it wrote was handed to the room"
+    );
+    // A preview made from an earlier read that no longer holds is applied as the record is
+    // now, and the answer says it differed.
+    let (address, doc) = increment();
+    let (mut applier, connection, _sent) = self::applier("ada", doc);
+    let answer = apply(
+        &mut applier,
+        &connection,
+        &runtime_portal::tilolang_host::Change {
+            resource: address.resource,
+            action: address.action,
+            arguments: serde_json::Map::new(),
+            invoker: task_invoker(),
+            context: None,
+            preview: Some(serde_json::json!({"planned": "from an earlier read"})),
+        },
+    );
+    assert!(answer.get("ok").is_some(), "{answer}");
+    assert_eq!(answer["differs"], true, "{answer}");
+}
+
+#[test]
+fn a_change_the_record_cannot_take_is_refused_with_why() {
+    let (mut applier, connection, sent) = applier("ada", automerge::AutoCommit::new());
+    let answer = apply(
+        &mut applier,
+        &connection,
+        &runtime_portal::tilolang_host::Change {
+            resource: "tl:so.tilo.lang.counter".to_owned(),
+            action: "no-such-action".to_owned(),
+            arguments: serde_json::Map::new(),
+            invoker: task_invoker(),
+            context: None,
+            preview: None,
+        },
+    );
+    let why = answer["failed"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{answer}"));
+    assert!(!why.is_empty());
+    assert_eq!(documents_sent(&sent), 0, "nothing was written");
+}
+
+#[test]
+fn a_change_of_the_root_no_window_made_yet_makes_it_first() {
+    let (address, _window_record) = increment();
+    assert!(address.resource.contains(":root-"), "{}", address.resource);
+    // No window ever opened the app here: its record holds no root.
+    let (mut applier, connection, sent) = applier("ada", automerge::AutoCommit::new());
+    let answer = apply(
+        &mut applier,
+        &connection,
+        &runtime_portal::tilolang_host::Change {
+            resource: address.resource,
+            action: address.action,
+            arguments: serde_json::Map::new(),
+            invoker: task_invoker(),
+            context: None,
+            preview: None,
+        },
+    );
+    assert!(answer.get("ok").is_some(), "{answer}");
+    let wrote = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(answer["change"].as_str().unwrap())
+            .unwrap()
+    };
+    let mut read = automerge::AutoCommit::new();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut read, &wrote).unwrap();
+    assert!(
+        read.get_missing_deps(&[]).is_empty(),
+        "what it says it wrote holds the root it made, for a task that read no record"
+    );
+    assert!(
+        documents_sent(&sent) > 0,
+        "the root and the change went to the room"
+    );
+}
+
+/// A change its room refuses is taken back out of the record at its origin, and the task is
+/// answered why: the record is never left holding, building on and keeping a change the room
+/// has none of. Here the surface the room decides the record's changes by publishes the
+/// counter's record but none of its actions.
+#[test]
+fn a_change_the_room_refuses_is_never_kept() {
+    let (address, doc) = increment();
+    collaboration::app_surface::register_package(
+        APP,
+        b"[[resources]]\nkind = \"tl.so.tilo.lang.counter.Counter\"\nlabel = \"Counter\"\nversion = 1\n",
+    );
+    let before = doc.clone().get_heads();
+    let (mut applier, connection, sent) = applier("ada", doc);
+    let answer = apply(
+        &mut applier,
+        &connection,
+        &runtime_portal::tilolang_host::Change {
+            resource: address.resource,
+            action: address.action,
+            arguments: serde_json::Map::new(),
+            invoker: task_invoker(),
+            context: None,
+            preview: None,
+        },
+    );
+    let why = answer["failed"]
+        .as_str()
+        .unwrap_or_else(|| panic!("refused, with why: {answer}"));
+    assert!(why.contains("publishes no"), "{why}");
+    assert_eq!(
+        applier.record().doc().clone().get_heads(),
+        before,
+        "the record holds nothing of the refused change"
+    );
+    assert_eq!(documents_sent(&sent), 0, "nothing was handed to the room");
+}
+
+/// A record an older store wrote, whose first change is its schema stamp committed with no
+/// message, is handed to its room whole on the next send, every change of it claimed: the
+/// stamp, a root change with no deps that only sets the schema version, as the record's
+/// genesis. No change is rewritten and no id changes.
+#[test]
+fn a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_room_whole() {
+    let documents: Rc<dyn durable_store::DurableStore> =
+        Rc::new(durable_store::MemoryStore::default());
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    // The record as the store wrote it before a record's first change named itself.
+    let stamp = {
+        let mut store = collaboration::record::save::room_document(
+            &documents,
+            APP,
+            &route.cluster_id.to_string(),
+        )
+        .unwrap();
+        let mut doc = store.new_document();
+        let stamp = doc.commit().unwrap();
+        store.save(&mut doc).unwrap();
+        stamp
+    };
+    let (mut host, mut window, sent, _route) = opened_from_own_copy_in("ada", &documents, route);
+    settle(&mut host, &mut window);
+    let (key, event) = window.increment();
+    window.send(&[ToApp::Fire {
+        lane: Lane::Root,
+        key,
+        event,
+        value: None,
+    }]);
+    settle(&mut host, &mut window);
+    assert_eq!(value_of(host.instances().next().unwrap()), 1);
+    let room = room_copy(&sent);
+    assert!(
+        automerge::ReadDoc::get_change_by_hash(&room, &stamp).is_some(),
+        "the stamp, unchanged, reached the room"
+    );
+    assert_eq!(
+        automerge::ReadDoc::get_missing_deps(&room, &[]),
+        Vec::new(),
+        "the room holds the whole record"
+    );
+    for request in sent.borrow().iter() {
+        if let CollabRequest::Document { mutation, .. } = request {
+            let claims =
+                collaboration::app_surface::claims_of(APP, mutation).unwrap_or_else(|error| {
+                    panic!("every change the room is handed is claimed: {error}")
+                });
+            if let Some(claim) = claims.iter().find(|claim| claim.change == stamp.0) {
+                assert_eq!(
+                    claim.action,
+                    collab_types::ClaimedAction::Framework(collab_types::FrameworkChange::Genesis)
+                );
+            }
+        }
+    }
 }

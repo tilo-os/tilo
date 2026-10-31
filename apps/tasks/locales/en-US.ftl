@@ -130,6 +130,16 @@ tasks-message-lookup = Looked up
 tasks-message-answer = Answered with a view
 tasks-message-step = Ran
 
+## An issue as a chat with its agent
+tasks-open-chat = Open as chat
+tasks-chat-conversation = Conversation
+tasks-chat-looked-up = Looked up
+tasks-chat-placeholder = Tell the agent
+tasks-chat-asks = { $agent } waits for your answer
+tasks-chat-asks-in = { $action } in { $place }
+tasks-chat-used = Used { $tokens } tokens
+tasks-chat-model = On { $model }
+
 ## History
 
 tasks-create = Created { $title }
@@ -145,6 +155,7 @@ tasks-pause-run = Paused the agent on { $item }
 tasks-resume-run = Let the agent go on with { $item }
 tasks-set-execution-budget = Changed how long the agent may work on { $item }
 tasks-send-message = Sent the agent a message on { $item }
+tasks-tell-agent = Told the agent on { $item }
 tasks-report-run = Reported progress on { $item }
 tasks-record-read = Read { $label } for { $item }
 tasks-incorporate = Read the messages on { $item }

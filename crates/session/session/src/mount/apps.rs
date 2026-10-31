@@ -19,6 +19,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::rc::{Rc, Weak};
 
 use tilo_actions::DoorError;
 use tilo_actions::remote::{
@@ -27,10 +28,12 @@ use tilo_actions::remote::{
 };
 use tilo_app_launch::routing;
 use tilo_app_launch::{
-    Answer, Instance, Launch, PlanContext, Planned, Room, SessionEnvironment, Shown, Spawner,
+    Answer, Cause, Doors as WindowDoors, HeldDoor, Instance, Kind, Launch, PlanContext, Planned,
+    Room, Routed, SessionEnvironment, Shown, Spawner, StartAlone,
 };
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
+use tilo_desktop_surface::crashed_app::Closed;
 use tilo_surface_host::{DesktopHost, WidgetHost};
 
 use crate::search::AppActions;
@@ -59,6 +62,20 @@ struct State {
     identity: Option<PathBuf>,
     /// The GPU the compositor renders on, for an app to render on the same.
     render_node: Option<PathBuf>,
+    /// The session's launch records, once it has lent them: what its broker
+    /// admits a connection by, and so what each launch it makes is written
+    /// into.
+    launches: Option<std::sync::Arc<crate::Launches>>,
+    /// The window doors of the apps this session starts, once it lent them:
+    /// one process per app per room opens that app's later windows itself.
+    doors: Option<Rc<WindowDoors>>,
+    /// This session, while the doors are lent: a window that must start a
+    /// process of its own starts it here.
+    me: Weak<Apps>,
+    /// The door of each launch still running, by the launch's id: the end of
+    /// the launch retires it, so the app's next window there starts a process
+    /// again.
+    held: BTreeMap<u64, HeldDoor>,
 }
 
 impl Apps {
@@ -89,6 +106,10 @@ impl Apps {
                 launcher,
                 identity: None,
                 render_node: None,
+                launches: None,
+                doors: None,
+                me: Weak::new(),
+                held: BTreeMap::new(),
             }),
         }
     }
@@ -107,6 +128,22 @@ impl Apps {
         state.environment.x11_display = x11.as_ref().map(|(display, _)| display.clone());
         state.environment.x11_authority = x11.and_then(|(_, authority)| authority);
         state.environment.session_bus = session_bus;
+    }
+
+    /// The session's launch records: each app started from here on is
+    /// written into them, so its connection to the session's services is
+    /// admitted for the launch that made it.
+    pub fn lend_launches(&self, launches: std::sync::Arc<crate::Launches>) {
+        self.state.borrow_mut().launches = Some(launches);
+    }
+
+    /// The window doors the session keeps for the apps it starts: from here
+    /// on the first launch of an app in a room hands its process the door,
+    /// and every later window of that app there opens in that process.
+    pub fn lend_doors(self: &Rc<Self>, doors: Rc<WindowDoors>) {
+        let mut state = self.state.borrow_mut();
+        state.me = Rc::downgrade(self);
+        state.doors = Some(doors);
     }
 
     /// The desktop the person works on, which the launches come from.
@@ -131,7 +168,6 @@ impl Apps {
         if asked.is_empty() {
             return;
         }
-        let room = self.active_room();
         for asked in asked {
             let Some(launch) = Launch::parse(&asked) else {
                 tracing::warn!(%asked, "not a launch this session knows");
@@ -142,10 +178,20 @@ impl Apps {
             if matches!(launch, Launch::Window { .. } | Launch::Crashed { .. }) {
                 continue;
             }
-            if let Err(error) = self.start(&launch, &room) {
+            if let Err(error) = self.open(&launch) {
                 tracing::warn!(%asked, %error, "an app did not start");
             }
         }
+    }
+
+    /// Start `launch` on the workspace in front, which is where what the
+    /// session itself opens belongs.
+    ///
+    /// # Errors
+    /// The launch starts nothing, or the process could not be started.
+    pub fn open(&self, launch: &Launch) -> Result<(), DoorError> {
+        let room = self.active_room();
+        self.start(launch, &room)
     }
 
     /// The apps that ended since the last pass: one that chose to end leaves
@@ -154,6 +200,9 @@ impl Apps {
     fn follow_ended(&self) {
         let ended = self.state.borrow().spawner.events();
         for event in ended {
+            // The launch is over: its door retires with it, so the app's next
+            // window there starts a process again.
+            self.state.borrow_mut().held.remove(&event.id);
             if !event.end.crashed() {
                 self.state.borrow_mut().running.remove(&event.id);
                 tracing::info!(app = %event.app, "an app closed");
@@ -166,9 +215,17 @@ impl Apps {
             if asked.is_none() {
                 tracing::warn!(app = %event.app, "a stopped app this session did not start");
             }
+            // An app the session closed for memory did not stop working:
+            // the notice says which it was, so the person does not read a
+            // closing they caused as a crash.
+            let closed = match event.end.memory() {
+                Some(Cause::Kernel) => Closed::Memory,
+                Some(Cause::Runaway) => Closed::Runaway,
+                None => Closed::Crashed,
+            };
             if let Some(desktop) = self.desktop.borrow().clone() {
                 let notice = desktop.with_policy(|policy| {
-                    policy.crashed(asked.as_deref().unwrap_or(&event.app), &event.title)
+                    policy.stopped(asked.as_deref().unwrap_or(&event.app), &event.title, closed)
                 });
                 if let Err(error) = notice {
                     tracing::warn!(%error, app = %event.app, "no notice for the app");
@@ -239,7 +296,8 @@ impl Apps {
     /// The room named `room`, with its grants when the desktop holds it and
     /// none when it does not: a launch into a room this device does not show
     /// gets the app's manifest permissions alone.
-    fn room_named(&self, room: &str) -> Room {
+    #[must_use]
+    pub fn room_named(&self, room: &str) -> Room {
         self.desktop.borrow().clone().map_or_else(
             || Room::under(&runtime_dir(), room.to_owned()),
             |desktop| {
@@ -268,6 +326,28 @@ impl Apps {
         let Some(new_window) = self.starting(launch, room) else {
             return Ok(());
         };
+        self.start_window(launch, room, new_window)
+    }
+
+    /// Start `launch` as a window of its own, beside the tab its app already
+    /// has: what the app's own ask for another window does. A window the app
+    /// has is never raised instead, since this window is meant to be new.
+    ///
+    /// # Errors
+    /// The launch starts nothing, or the process could not be started.
+    pub fn start_beside(&self, launch: &Launch, room: &Room) -> Result<(), DoorError> {
+        self.start_window(launch, room, true)
+    }
+
+    /// Start `launch` in `room`: in the process the app already runs there
+    /// when that one opens the app's windows, and otherwise in a process of
+    /// its own, which holds the app's door for its room until it ends.
+    fn start_window(
+        &self,
+        launch: &Launch,
+        room: &Room,
+        new_window: bool,
+    ) -> Result<(), DoorError> {
         let planned = {
             let state = self.state.borrow();
             let context = PlanContext {
@@ -282,23 +362,95 @@ impl Apps {
         };
         let planned =
             planned.map_err(|error| DoorError::Failed(format!("{}: {error}", launch.id())))?;
-        let started = self.state.borrow_mut().spawner.start(&planned);
-        match started {
-            Ok(started) => {
-                self.state
-                    .borrow_mut()
-                    .running
-                    .insert(started.id, launch.id());
-                tracing::info!(
-                    app = %planned.app,
-                    pid = started.pid,
-                    "started {}",
-                    planned.describe()
-                );
-                Ok(())
+        let asked = launch.id();
+        let Some(doors) = self.state.borrow().doors.clone() else {
+            return self.spawn(&planned, &asked, &room.id, None);
+        };
+        // The app's own window with nothing named to open is the one its
+        // running process opens itself, as it opens any later one.
+        let routable =
+            planned.kind == Kind::Package && matches!(launch, Launch::Package { open: None, .. });
+        let alone = self.start_alone(&planned, &asked, &room.id);
+        let reserved = doors.route_or_reserve(&planned.app, &room.id, routable, &alone);
+        let reservation = match reserved {
+            // The process running the app opens this window itself: nothing
+            // starts.
+            Err(Routed::Opened) => {
+                tracing::info!(app = %planned.app, "the app's running process opens the window");
+                return Ok(());
             }
-            Err(error) => Err(DoorError::Failed(error.to_string())),
+            // No process of the app serves the room: this launch starts one.
+            Err(Routed::NotRunning) | Ok(None) => None,
+            Ok(reservation) => reservation,
+        };
+        let door = doors.hold(&planned.app, &room.id);
+        let started = self.spawn(&planned, &asked, &room.id, door);
+        if started.is_ok()
+            && let Some(reservation) = reservation
+        {
+            // The launch holds its door from its start: the reservation is
+            // spent, not given up.
+            reservation.launched();
         }
+        started
+    }
+
+    /// How a window that must start a process of its own starts it: what a
+    /// window asked of a process gone to sleep or built before the door does.
+    fn start_alone(&self, planned: &Planned, asked: &str, room: &str) -> impl Fn() -> StartAlone {
+        let me = self.state.borrow().me.clone();
+        let (planned, asked, room) = (planned.clone(), asked.to_owned(), room.to_owned());
+        move || {
+            let (me, planned, asked, room) =
+                (me.clone(), planned.clone(), asked.clone(), room.clone());
+            Box::new(move || {
+                let Some(apps) = me.upgrade() else {
+                    return;
+                };
+                if let Err(error) = apps.spawn(&planned, &asked, &room, None) {
+                    tracing::warn!(%error, app = %planned.app, "an app did not start");
+                }
+            })
+        }
+    }
+
+    /// Start `planned` with the door `door`, which the launch holds until it
+    /// ends, and write it down as a launch of this session before the app can
+    /// reach a service of it.
+    fn spawn(
+        &self,
+        planned: &Planned,
+        asked: &str,
+        room: &str,
+        door: Option<HeldDoor>,
+    ) -> Result<(), DoorError> {
+        let launches = self.state.borrow().launches.clone();
+        let mut state = self.state.borrow_mut();
+        let started = state.spawner.start_with(planned, door, &|pid| {
+            if let Some(launches) = &launches {
+                // The launcher binds the session's documents store into a
+                // package's sandbox and into nothing else, so a package is
+                // the launch whose files are answered with paths in the store.
+                launches.started(pid, &planned.app, room, !planned.kind.is_host());
+            }
+        });
+        let started = match started {
+            Ok(started) => started,
+            Err(error) => return Err(DoorError::Failed(error.to_string())),
+        };
+        let (started, door) = started;
+        state.running.insert(started.id, asked.to_owned());
+        if let Some(door) = door {
+            state.held.insert(started.id, door);
+        }
+        drop(state);
+        tracing::info!(
+            app = %planned.app,
+            pid = started.pid,
+            "started {}",
+            planned.describe()
+        );
+        Ok(())
     }
 }
 
@@ -401,4 +553,82 @@ fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_app_launch::{End, Event};
+
+    /// The desktop the apps are started from, laid out as wide as an output:
+    /// what its notice tabs draw on.
+    fn desk() -> DesktopHost {
+        let (desktop, _strips) = tilo_surface_host::desktop(7, 1.0);
+        desktop.with_widgets(|widgets| {
+            widgets.set_placement(tilo_surface_host::Placement {
+                origin: (0, 0),
+                size: (1200, 800),
+                scale: 1.0,
+            });
+        });
+        desktop
+    }
+
+    /// What the desktop shows after `end` ended the app `asked`, which this
+    /// session started as `running`.
+    fn showed_after(end: End) -> Vec<String> {
+        let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
+        let desktop = desk();
+        apps.attach(desktop.clone());
+        apps.state
+            .borrow_mut()
+            .running
+            .insert(1, "example.Canvas".to_owned());
+        apps.state.borrow().spawner.report(Event {
+            id: 1,
+            app: "example.Canvas".to_owned(),
+            title: "Canvas".to_owned(),
+            end,
+        });
+        apps.follow();
+        desktop.with_widgets(|widgets| {
+            widgets.relayout();
+            ui::a11y::texts(widgets.host_mut().root_widget())
+        })
+    }
+
+    #[test]
+    fn an_app_closed_for_memory_says_so_instead_of_crashing() {
+        let closed = showed_after(End::signalled(9).remembering(Cause::Kernel));
+        assert!(
+            closed
+                .iter()
+                .any(|text| text.contains("was closed to free memory")),
+            "the notice says the session ended it: {closed:?}"
+        );
+        assert!(
+            !closed.iter().any(|text| text.contains("stopped working")),
+            "a closing the session did is not a crash: {closed:?}"
+        );
+        assert!(
+            closed.iter().any(|text| text == "Reopen"),
+            "the notice offers a way back: {closed:?}"
+        );
+
+        let runaway = showed_after(End::signalled(9).remembering(Cause::Runaway));
+        assert!(
+            runaway
+                .iter()
+                .any(|text| text.contains("was using too much memory")),
+            "a runaway app is told apart: {runaway:?}"
+        );
+
+        let crashed = showed_after(End::signalled(9));
+        assert!(
+            crashed
+                .iter()
+                .any(|text| text.starts_with("Canvas stopped working")),
+            "without a cause the same end is still a crash: {crashed:?}"
+        );
+    }
 }

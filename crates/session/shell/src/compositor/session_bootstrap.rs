@@ -199,13 +199,13 @@ fn bind_session_collab_broker(
         return Err(BrokerStartFailure::ServicesRoot(e.to_string()));
     }
 
-    let capnp_path = launcher::services::collab_socket();
-    if service_socket_is_live(&capnp_path) {
+    let app_socket_path = launcher::services::collab_socket();
+    if service_socket_is_live(&app_socket_path) {
         tracing::error!(
             "collab: {} already has a live listener — another session is using this \
              XDG_RUNTIME_DIR; refusing to take its socket. Apps will start without \
              collaboration.",
-            capnp_path.display()
+            app_socket_path.display()
         );
         return Err(BrokerStartFailure::SocketTaken);
     }
@@ -219,7 +219,7 @@ fn bind_session_collab_broker(
     let network = peer_sync.cloned();
     let action_offload = session_action_offload(&membership);
     let spawned = crate::shell::collab_broker::spawn_native_offloading(
-        capnp_path.clone(),
+        app_socket_path.clone(),
         &network,
         membership,
         action_offload,
@@ -229,7 +229,7 @@ fn bind_session_collab_broker(
         Ok(handle) => {
             tracing::info!(
                 "collab: typed broker listening on {} — peer_sync={}",
-                capnp_path.display(),
+                app_socket_path.display(),
                 peer_sync.is_some()
             );
             Ok(handle)
@@ -237,7 +237,7 @@ fn bind_session_collab_broker(
         Err(e) => {
             tracing::error!(
                 "collab: bind {} failed ({e}); apps will start without collaboration",
-                capnp_path.display()
+                app_socket_path.display()
             );
             Err(BrokerStartFailure::Broker(e.to_string()))
         }
@@ -527,7 +527,7 @@ mod tests {
     )]
     fn native_consent_the_desktop_broker_holds_the_route_its_home_relay_configures() {
         const TEST: &str = "compositor::session_bootstrap::tests::native_consent_the_desktop_broker_holds_the_route_its_home_relay_configures";
-        crate::shell::collab_broker_capnp::run_isolated_native_consent_test(TEST, || {
+        crate::shell::collab_app_broker::run_isolated_native_consent_test(TEST, || {
             let config =
                 std::path::PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").expect("config"));
             let identity_root = std::path::PathBuf::from(

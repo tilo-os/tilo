@@ -22,6 +22,15 @@ pub const OPEN_ACTION: &str = "$open";
 /// The action of `a.then(b)`: its arguments are `a` and `b`, run in turn.
 pub const THEN_ACTION: &str = "$then";
 
+/// The action of a change mark (`ui.ChangeMark`, and those the host places): show what the
+/// task run that made the change did. Its arguments are the run (its group) and the resource.
+pub const REVIEW_ACTION: &str = "$review";
+
+/// The action of `undo(v)` and `undo(run)`: take the step back, or every step of the run,
+/// through the platform's history. Its arguments are what it takes back (`step` or `run`), the
+/// change or the run, and the resource the version is of (`Unit` for a run).
+pub const UNDO_ACTION: &str = "$undo";
+
 impl Core {
     fn with_view<R>(&self, f: impl FnOnce(&mut ViewState) -> Result<R, String>) -> HResult<R> {
         let mut frames = self.frames.borrow_mut();
@@ -242,6 +251,80 @@ impl Core {
         }))
     }
 
+    /// `undo(v)` of a `host.Version` (`a.h(1) == 0`) or `undo(run)` of a `host.TaskRun`.
+    fn act_undo(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let held = self.val(a.h(0)?)?;
+        let run = a.h(1)? != 0;
+        let Value::Tuple(fields) = held else {
+            return trap("undo: expected a version or a task run");
+        };
+        let args = if run {
+            let Some(Value::Text(id)) = fields.first() else {
+                return trap("undo: a task run names its group first");
+            };
+            vec![
+                Value::Text("run".to_owned()),
+                Value::Text(id.clone()),
+                Value::Unit,
+            ]
+        } else {
+            let of = tilolang::host::value_field("Version", "of").and_then(|at| fields.get(at));
+            // The change is held after the action's id, past the fields code reads by name.
+            let change = tilolang::host::action_id_at("Version")
+                .and_then(|at| fields.get(at.checked_add(1)?));
+            let (Some(Value::Text(change)), Some(of)) = (change, of) else {
+                return trap("undo: a version names its change and its resource");
+            };
+            if change.is_empty() {
+                return trap("undo: a version not committed yet names no change");
+            }
+            vec![
+                Value::Text("step".to_owned()),
+                Value::Text(change.clone()),
+                of.clone(),
+            ]
+        };
+        self.with_view(|_| Ok(()))?;
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::Action(ActionRef {
+            action: UNDO_ACTION.to_owned(),
+            args,
+            author,
+        }))
+    }
+
+    /// `c.before` (`a.h(1) == 0`) or `c.after` of a `host.Change`, keyed `a.h(2)`: a node
+    /// showing what the field held as its type shows it.
+    fn change_view(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let Value::Tuple(change) = self.val(a.h(0)?)? else {
+            return trap("expected a change");
+        };
+        let side = if a.h(1)? == 0 { "before" } else { "after" };
+        let key = self.text(a.h(2)?)?;
+        let Some(shown) = tilolang::host::value_field("Change", side)
+            .and_then(|at| change.get(at))
+            .cloned()
+        else {
+            return trap("a change holds what it was before and after");
+        };
+        let phrase = |id: &str| match self.phrases.borrow().as_ref() {
+            Some(phrases) => phrases(id, &[]),
+            None => id.to_owned(),
+        };
+        let root = self.with_view(|vs| {
+            let root = shown_nodes(vs, &key, &shown, &phrase);
+            // What a field held before reads quieter than what it holds now.
+            if side == "before"
+                && let Some(node) = vs.nodes.get_mut(root)
+                && node.kind == "ui.Text"
+            {
+                node.props.insert("secondary".to_owned(), Value::Bool(true));
+            }
+            Ok(root)
+        })?;
+        self.ret_h(Value::Node(root))
+    }
+
     fn space_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let name = self.text(a.h(0)?)?;
         let size = Space::is_size(&name);
@@ -360,6 +443,8 @@ impl Core {
             Imp::ActSet => self.act_set(a),
             Imp::ActThen => self.act_then(a),
             Imp::ActOpen => self.act_open(a),
+            Imp::ActUndo => self.act_undo(a),
+            Imp::ChangeView => self.change_view(a),
             _ => trap("not a ui import"),
         }
     }
@@ -377,4 +462,166 @@ fn float_to_class(v: f64) -> i64 {
 /// host's validator takes the same form (`tilo_render_protocol::patch::validate::offered_event`).
 fn offered_event(prop: &str, index: usize) -> String {
     format!("{prop}.{index}")
+}
+
+/// A node `shown_nodes` makes: its kind, key, props and children.
+struct Made<'a> {
+    kind: &'a str,
+    key: String,
+    props: Vec<(&'a str, Value)>,
+    children: Vec<usize>,
+}
+
+fn push_node(vs: &mut ViewState, made: Made<'_>) -> usize {
+    vs.nodes.push(NodeBuild {
+        kind: made.kind.to_owned(),
+        key: made.key,
+        props: made
+            .props
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect(),
+        children: made.children,
+        binding: None,
+        events: BTreeMap::default(),
+        anchor: None,
+    });
+    vs.nodes.len().saturating_sub(1)
+}
+
+/// A text node saying `value`, quietly (in secondary ink) when `quiet`.
+fn text_node(vs: &mut ViewState, key: &str, value: Value, quiet: bool) -> usize {
+    let mut props = vec![("value", value)];
+    if quiet {
+        props.push(("secondary", Value::Bool(true)));
+    }
+    push_node(
+        vs,
+        Made {
+            kind: "ui.Text",
+            key: key.to_owned(),
+            props,
+            children: Vec::new(),
+        },
+    )
+}
+
+/// A chip naming `label`, with `icon` before it when there is one.
+fn chip_node(vs: &mut ViewState, key: String, label: Value, icon: Option<Value>) -> usize {
+    let mut props = vec![("label", label)];
+    if let Some(icon) = icon {
+        props.push(("icon", icon));
+    }
+    push_node(
+        vs,
+        Made {
+            kind: "ui.Chip",
+            key,
+            props,
+            children: Vec::new(),
+        },
+    )
+}
+
+/// The node of `vs` showing `shown` (`Core::shown`): a day as a day and a moment as a moment
+/// in the person's format, a person as their avatar and name, a case of an enum as its label
+/// and icon, a resource as its title, a flag as yes or no, nothing as a quiet "None", and the
+/// elements of a set side by side. Returns its index.
+fn shown_nodes(
+    vs: &mut ViewState,
+    key: &str,
+    shown: &Value,
+    phrase: &dyn Fn(&str) -> String,
+) -> usize {
+    let parts = match shown {
+        Value::List(items) if !items.is_empty() => {
+            let children = items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let (label, icon) = match item {
+                        Value::Tuple(parts) => (
+                            parts.get(1).cloned().unwrap_or(Value::Unit),
+                            match parts.get(2) {
+                                Some(Value::Opt(Some(icon))) => Some((**icon).clone()),
+                                _ => None,
+                            },
+                        ),
+                        other => (other.clone(), None),
+                    };
+                    chip_node(vs, format!("{key}/{index}"), label, icon)
+                })
+                .collect();
+            return push_node(
+                vs,
+                Made {
+                    kind: "row",
+                    key: key.to_owned(),
+                    props: vec![("wrap", Value::Bool(true))],
+                    children,
+                },
+            );
+        }
+        Value::Tuple(parts) => parts,
+        _ => {
+            return text_node(vs, key, Value::Text(phrase("tilolang-none-value")), true);
+        }
+    };
+    let kind = parts.first().and_then(Value::as_text).unwrap_or("text");
+    let value = parts.get(1).cloned().unwrap_or(Value::Unit);
+    let extra = match parts.get(2) {
+        Some(Value::Opt(Some(extra))) => Some((**extra).clone()),
+        _ => None,
+    };
+    match kind {
+        "none" => text_node(vs, key, Value::Text(phrase("tilolang-none-value")), true),
+        "date" | "time" => push_node(
+            vs,
+            Made {
+                kind: "ui.Text",
+                key: key.to_owned(),
+                props: vec![("value", value), ("value:as", Value::Text(kind.to_owned()))],
+                children: Vec::new(),
+            },
+        ),
+        "principal" => {
+            let avatar = push_node(
+                vs,
+                Made {
+                    kind: "ui.Avatar",
+                    key: format!("{key}/who"),
+                    props: vec![("who", value)],
+                    children: Vec::new(),
+                },
+            );
+            let name = text_node(
+                vs,
+                &format!("{key}/name"),
+                extra.unwrap_or(Value::Unit),
+                false,
+            );
+            push_node(
+                vs,
+                Made {
+                    kind: "row",
+                    key: key.to_owned(),
+                    props: Vec::new(),
+                    children: vec![avatar, name],
+                },
+            )
+        }
+        "bool" => {
+            let id = if matches!(value, Value::Bool(true)) {
+                "tilolang-yes"
+            } else {
+                "tilolang-no"
+            };
+            text_node(vs, key, Value::Text(phrase(id)), false)
+        }
+        "case" => chip_node(vs, key.to_owned(), value, extra),
+        "text" if value.as_text().is_some_and(str::is_empty) => {
+            text_node(vs, key, Value::Text(phrase("tilolang-empty-value")), true)
+        }
+        _ => text_node(vs, key, value, false),
+    }
 }

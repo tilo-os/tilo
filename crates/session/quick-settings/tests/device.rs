@@ -11,14 +11,19 @@
 )]
 
 use std::io::{BufReader, Write};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use tilo_quick_settings::device::testing::{Kept, Machine};
 use tilo_quick_settings::device::{Device, DeviceHost, PlayerLink, SessionRequest};
-use tilo_quick_settings::host::Lent;
+use tilo_quick_settings::host::{FixtureHost, Lent};
+use tilo_quick_settings::hosted::{
+    PersonalDevice, SendableSound, SoundAsk, SoundRoute, device_rows, remote_audio_rows,
+};
 use tilo_quick_settings::{
-    PowerProfile, QsEffect, QsSection, QuickSettings, QuickSettingsApp, QuickSettingsState,
+    MediaOffer, PowerProfile, QsEffect, QsSection, QuickSettings, QuickSettingsApp,
+    QuickSettingsState, RowPart,
 };
 use ui::framework::testing::HeadlessApp;
 
@@ -228,6 +233,110 @@ fn the_sound_is_what_the_audio_service_reads_and_it_leaves_the_panel() {
     assert!(!desk.host.state().volume_muted());
 }
 
+#[test]
+fn the_microphone_row_mutes_and_sets_its_level() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
+    let machine = Machine::laptop();
+    let mut desk = Desk::on(&machine);
+    desk.until("the first reading", |state| state.bluetooth);
+    desk.host.sound(&sound());
+    desk.app
+        .invoke(QuickSettings::OPEN_SECTION.with(QsSection::Sound))
+        .unwrap();
+    desk.app.settle();
+    assert!(desk.has("qs-input-50"), "the microphone that records");
+    assert!(desk.has("qs-input-mute"), "the button that mutes it");
+    assert!(desk.has("qs-input-level"), "and its level");
+
+    desk.app
+        .effect(&QsEffect::SetInputVolume { level: 0.6 })
+        .unwrap();
+    desk.app.harness().click_named("qs-input-mute").unwrap();
+    desk.app.settle();
+    let microphone = desk.host.state().microphone.expect("still recording");
+    assert_eq!(microphone.level, 0.6, "the slider moved");
+    assert!(!microphone.muted, "a press unmuted it");
+
+    // Both are the audio service's to carry out: the panel asks the
+    // session and never writes the graph itself.
+    assert_eq!(
+        desk.host.take_requests(),
+        [
+            SessionRequest::Effect(QsEffect::SetInputVolume { level: 0.6 }),
+            SessionRequest::Effect(QsEffect::ToggleInputMuted),
+        ]
+    );
+    assert!(
+        machine.calls().is_empty(),
+        "the panel never writes the microphone itself: {:?}",
+        machine.calls()
+    );
+}
+
+#[test]
+fn an_apps_stream_is_moved_and_its_gain_set() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
+    let machine = Machine::laptop();
+    let mut desk = Desk::on(&machine);
+    desk.until("the first reading", |state| state.bluetooth);
+    desk.host.sound(&playing());
+    desk.app
+        .invoke(QuickSettings::OPEN_SECTION.with(QsSection::Sound))
+        .unwrap();
+    desk.app.settle();
+    assert!(desk.has("qs-stream-60"), "the application's stream");
+    assert!(desk.has("qs-stream-60-mute"), "the button that mutes it");
+    assert!(desk.has("qs-stream-60-gain"), "its gain");
+    assert!(desk.has("qs-stream-60-output-40"), "where it plays now");
+    assert!(desk.has("qs-stream-60-output-41"), "and where it can go");
+    assert!(
+        desk.app.harness().a11y_nodes().iter().any(|(_, node)| node
+            .value()
+            .is_some_and(|value| value.contains("Playing on Speakers"))),
+        "the row says where the stream goes"
+    );
+
+    desk.app
+        .harness()
+        .click_named("qs-stream-60-output-41")
+        .unwrap();
+    desk.app
+        .effect(&QsEffect::SetStreamVolume {
+            stream: 60,
+            level: 0.4,
+        })
+        .unwrap();
+    desk.app.settle();
+    assert_eq!(
+        desk.host.state().sound_streams[0].level,
+        0.4,
+        "the gain moved"
+    );
+
+    // Moving it and setting its gain are the audio service's: the panel
+    // asks the session for both and leaves the graph alone.
+    assert_eq!(
+        desk.host.take_requests(),
+        [
+            SessionRequest::Effect(QsEffect::RouteStream {
+                stream: 60,
+                device: Some(41),
+            }),
+            SessionRequest::Effect(QsEffect::SetStreamVolume {
+                stream: 60,
+                level: 0.4,
+            }),
+        ]
+    );
+    assert!(
+        machine.calls().is_empty(),
+        "the panel never writes the stream itself: {:?}",
+        machine.calls()
+    );
+}
+
 /// A reading like the audio service publishes: speakers playing quietly
 /// and muted, headphones to switch to, a muted microphone.
 fn sound() -> audio::sound::Sound {
@@ -241,27 +350,53 @@ fn sound() -> audio::sound::Sound {
         outputs: vec![
             Device {
                 node: 40,
+                name: "node-40".into(),
                 label: "Speakers".into(),
                 chosen: true,
                 volume: Some(0.25),
                 muted: true,
+                channels: 2,
+                codec: None,
             },
             Device {
                 node: 41,
+                name: "node-41".into(),
                 label: "Headphones".into(),
                 chosen: false,
                 volume: None,
                 muted: false,
+                channels: 2,
+                codec: None,
             },
         ],
         inputs: vec![Device {
             node: 50,
+            name: "node-50".into(),
             label: "Microphone".into(),
             chosen: true,
             volume: None,
             muted: true,
+            channels: 1,
+            codec: None,
         }],
         ..audio::sound::Sound::default()
+    }
+}
+
+/// The same reading with an application playing: its stream on the
+/// speakers, with a gain of its own.
+fn playing() -> audio::sound::Sound {
+    audio::sound::Sound {
+        streams: vec![audio::sound::Stream {
+            node: 60,
+            app: "Music".into(),
+            media: Some("Clair de lune".into()),
+            playback: true,
+            target: Some(40),
+            volume: Some(0.3),
+            muted: false,
+        }],
+        ..sound()
     }
 }
 
@@ -635,6 +770,187 @@ impl std::io::Read for Said {
     }
 }
 
+/// A press on one of the person's devices is the session's to answer: the
+/// panel names the row's key and which part of it was pressed, and holds no
+/// device fabric of its own.
+#[test]
+fn a_device_row_press_asks_the_session_for_that_row_and_part() {
+    let _settled = ui::motion::testing::settled();
+    let mut state = tilo_quick_settings::scenarios::readings(Some("devices"));
+    state.personal_devices = Some(2);
+    state.device_rows = device_rows(
+        &[
+            PersonalDevice {
+                id: "this-pc".into(),
+                label: "This computer".into(),
+                online: true,
+                local: true,
+                display: true,
+                wakeable: false,
+                audio_output: true,
+            },
+            PersonalDevice {
+                id: "laptop".into(),
+                label: "Laptop".into(),
+                online: true,
+                local: false,
+                display: true,
+                wakeable: false,
+                audio_output: true,
+            },
+        ],
+        Some("Clair de lune"),
+        false,
+    );
+    let host = Rc::new(FixtureHost::new(state));
+    let lent: Rc<dyn tilo_quick_settings::host::PanelHost> = host.clone();
+    let mut app =
+        HeadlessApp::<QuickSettingsApp>::for_person_with_lent("person", Lent(lent)).unwrap();
+    for invoke in tilo_quick_settings::scenarios::actions(Some("devices")) {
+        app.invoke(invoke).unwrap();
+    }
+    app.harness().resize((360, 900)).unwrap();
+    app.settle();
+    let targets = app.harness().targets();
+    assert!(
+        targets.contains_key("qs-device-laptop"),
+        "the other device is a row"
+    );
+    assert!(
+        !targets.contains_key("qs-device-this-pc"),
+        "this machine's own device is not a row"
+    );
+
+    app.harness()
+        .click_named("qs-device-laptop-action")
+        .unwrap();
+    app.settle();
+    app.harness().click_named("qs-device-laptop").unwrap();
+    app.settle();
+    assert_eq!(
+        host.ran(),
+        [
+            QsEffect::PressDevice {
+                row: "laptop".into(),
+                part: RowPart::Action,
+            },
+            QsEffect::PressDevice {
+                row: "laptop".into(),
+                part: RowPart::Row,
+            },
+        ]
+    );
+}
+
+/// The Devices section lists the sounds this device can send, the routes of
+/// the sounds that travel, and the devices asking for this one's sound above
+/// the person's devices: a sound is picked by pressing its row, a route is
+/// stopped, and an ask is answered with its two buttons.
+#[test]
+fn the_devices_section_lists_the_sounds_that_travel_and_what_asks_for_one() {
+    let _settled = ui::motion::testing::settled();
+    let mut state = tilo_quick_settings::scenarios::readings(Some("devices"));
+    state.personal_devices = Some(2);
+    let mut rows = remote_audio_rows(
+        &[
+            SendableSound {
+                token: 7,
+                label: "All system audio".into(),
+                application: false,
+            },
+            SendableSound {
+                token: 8,
+                label: "Music".into(),
+                application: true,
+            },
+        ],
+        &[SoundRoute {
+            id: "aa".repeat(16),
+            label: "All system audio".into(),
+            detail: "Waiting for Laptop to allow it".into(),
+            stopped: false,
+        }],
+        &[SoundAsk {
+            id: "bb".repeat(16),
+            media: "All system audio".into(),
+            source: "Laptop".into(),
+        }],
+        Some(8),
+    );
+    rows.extend(device_rows(
+        &[PersonalDevice {
+            id: "laptop".into(),
+            label: "Laptop".into(),
+            online: true,
+            local: false,
+            display: false,
+            wakeable: false,
+            audio_output: true,
+        }],
+        None,
+        true,
+    ));
+    state.device_rows = rows;
+    let host = Rc::new(FixtureHost::new(state));
+    let lent: Rc<dyn tilo_quick_settings::host::PanelHost> = host.clone();
+    let mut app =
+        HeadlessApp::<QuickSettingsApp>::for_person_with_lent("person", Lent(lent)).unwrap();
+    for invoke in tilo_quick_settings::scenarios::actions(Some("devices")) {
+        app.invoke(invoke).unwrap();
+    }
+    app.harness().resize((360, 900)).unwrap();
+    app.settle();
+    let sound = format!("qs-device-{}7", tilo_quick_settings::hosted::SOUND_KEY);
+    let route = format!(
+        "qs-device-{}{}",
+        tilo_quick_settings::hosted::ROUTE_KEY,
+        "a".repeat(32)
+    );
+    let ask = format!(
+        "qs-device-{}{}",
+        tilo_quick_settings::hosted::ASK_KEY,
+        "b".repeat(32)
+    );
+    let targets = app.harness().targets();
+    assert!(
+        targets.contains_key(&sound),
+        "a sound is a row: {targets:?}"
+    );
+    assert!(targets.contains_key(&route), "a route is a row");
+    assert!(
+        targets.contains_key(&format!("{ask}-allow")),
+        "an ask offers its allowance"
+    );
+    assert!(
+        targets.contains_key(&format!("{ask}-decline")),
+        "an ask offers its refusal"
+    );
+    assert!(
+        targets.contains_key("qs-device-laptop-action"),
+        "the device row offers the send"
+    );
+
+    app.harness().click_named(&sound).unwrap();
+    app.settle();
+    app.harness()
+        .click_named(&format!("{ask}-decline"))
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        host.ran(),
+        [
+            QsEffect::PressDevice {
+                row: format!("{}7", tilo_quick_settings::hosted::SOUND_KEY),
+                part: RowPart::Row,
+            },
+            QsEffect::PressDevice {
+                row: format!("{}{}", tilo_quick_settings::hosted::ASK_KEY, "b".repeat(32)),
+                part: RowPart::Decline,
+            },
+        ]
+    );
+}
+
 fn player(bus: &str, identity: &str, status: audio::Status) -> audio::Player {
     audio::Player {
         bus_name: format!("org.mpris.MediaPlayer2.{bus}"),
@@ -788,5 +1104,65 @@ fn the_cards_destinations_are_the_machines_outputs_and_choosing_one_is_the_sessi
     assert!(
         helper.heard.try_recv().is_err(),
         "and never the players' helper"
+    );
+}
+
+#[test]
+fn resuming_the_other_device_s_playhead_is_asked_from_the_card() {
+    let machine = Machine::laptop();
+    let mut desk = Desk::on(&machine);
+    let (link, helper) = Helper::link();
+    desk.host.follow_players(link);
+
+    // Another of the person's devices hands this one what it played, while
+    // nothing plays here: the card is that offer, saying what it is.
+    desk.host.handoff(Some(MediaOffer {
+        request_id: "00112233445566778899aabbccddeeff".into(),
+        package_id: "so.tilo.music".into(),
+        title: "Clair de lune".into(),
+        source_label: "Studio".into(),
+        source: media::handoff::HandoffSource::RemoteStream {
+            url: "https://media.example/clair.flac".into(),
+        },
+        position_ms: 83_000.0,
+        playing: true,
+    }));
+    desk.app.settle();
+    assert!(
+        desk.has("qs-now-playing-resume"),
+        "the card offers to continue it here"
+    );
+    let said = "From Studio: Clair de lune, resumes at 1:23";
+    assert!(
+        desk.app.harness().a11y_node_named(said).is_some(),
+        "the row is read as the session another device hands over: {said:?}"
+    );
+
+    // Pressing it is the helper's to carry out, with the session's exact
+    // request, app, source and playhead.
+    desk.app
+        .harness()
+        .click_named("qs-now-playing-resume")
+        .unwrap();
+    desk.app.settle();
+    assert_eq!(
+        helper.request(),
+        audio::Request::Resume {
+            request: audio::ResumeRequest {
+                request_id: [
+                    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
+                    0xdd, 0xee, 0xff,
+                ],
+                package_id: "so.tilo.music".into(),
+                source: audio::ResumeSource::Uri("https://media.example/clair.flac".into()),
+                position_ms: 83_000,
+                playing: true,
+            }
+        }
+    );
+    assert!(helper.heard.try_recv().is_err(), "a resume is one request");
+    assert!(
+        !desk.has("qs-now-playing-resume"),
+        "continued, nothing is left to offer"
     );
 }

@@ -17,6 +17,18 @@ pub struct Shadow {
     pub offset_y: f32,
     pub blur: f32,
     pub color: Color,
+    /// The line a surface is outlined with in place of this shadow, where
+    /// the theme's depth is an outline (`crate::tokens::Depth::Outline`):
+    /// drawn along the surface's own outline by [`crate::surface::shadow`].
+    pub outline: Option<Outline>,
+}
+
+/// An outline standing in for a shadow.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Outline {
+    /// Its width, logical pixels, drawn wholly outside the surface.
+    pub width: f32,
+    pub color: Color,
 }
 
 impl Shadow {
@@ -28,6 +40,10 @@ impl Shadow {
             offset_y: self.offset_y,
             blur: self.blur,
             color: self.color.multiply_alpha(factor),
+            outline: self.outline.map(|outline| Outline {
+                color: outline.color.multiply_alpha(factor),
+                ..outline
+            }),
         }
     }
 }
@@ -46,6 +62,7 @@ const fn black(offset_y: f32, blur: f32, alpha: u8) -> Shadow {
         offset_y,
         blur,
         color: Color::from_rgba8(0, 0, 0, alpha),
+        outline: None,
     }
 }
 
@@ -92,6 +109,7 @@ impl Elevation {
                 offset_y: 0.0,
                 blur: 1.0,
                 color: Color::from_rgba8(255, 255, 255, 20),
+                outline: None,
             },
             glass_outer: black(12.0, 32.0, 120),
             shadow_scale: 1.0,
@@ -113,6 +131,34 @@ impl Elevation {
             glass_outer: d.glass_outer,
             shadow_scale: LIGHT_SHADOW_SCALE,
         }
+    }
+}
+
+impl Elevation {
+    /// This elevation under a theme's depth: shadows at `strength`; for an
+    /// outline, no shadows and the window's and a floating thing's outline
+    /// in `outline`; for none, nothing at all. The glass rim and bloom are
+    /// the wheel's own vocabulary and stay.
+    #[must_use]
+    pub fn with_depth(self, depth: crate::tokens::Depth, outline: Outline) -> Self {
+        let strength = depth.shadow_strength();
+        let scale = |shadow: Shadow| Shadow {
+            color: shadow
+                .color
+                .with_alpha((shadow.color.components[3] * strength).clamp(0.0, 1.0)),
+            ..shadow
+        };
+        let mut next = Self {
+            window: scale(self.window),
+            floating: scale(self.floating),
+            contact: scale(self.contact),
+            ..self
+        };
+        if depth == crate::tokens::Depth::Outline {
+            next.window.outline = Some(outline);
+            next.floating.outline = Some(outline);
+        }
+        next
     }
 }
 

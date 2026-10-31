@@ -23,6 +23,12 @@ use super::root::ResourceRoot;
 
 pub use super::headless::{HeadlessApp, HostedApp, surface_in};
 
+/// The hang bound and bounded waits a test uses, re-exported from the
+/// toolkit's `test-support` so an app's tests reach them through `ui`
+/// rather than depending on the test environment's own crate.
+#[cfg(feature = "test-support")]
+pub use ui_core::testing::{hang_bound, hang_deadline, wait_for, wait_until};
+
 /// What interactions cost an app on the UI thread, phase by phase.
 #[cfg(feature = "test-support")]
 pub mod perf;
@@ -32,7 +38,8 @@ pub mod perf;
 mod reach;
 #[cfg(feature = "test-support")]
 pub use reach::{
-    check_scenarios_reach_every_action, unreachable_actions, unreachable_actions_in_share,
+    check_agents_are_shown_every_action, check_scenarios_reach_every_action, unreachable_actions,
+    unreachable_actions_in_share,
 };
 
 /// The name tests use for [`HeadlessApp`].

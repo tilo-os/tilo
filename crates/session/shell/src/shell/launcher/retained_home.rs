@@ -388,7 +388,8 @@ fn require_history_read(
                 .check_document_read(certificate.device_public_key, package, "", now)?;
             let member = view
                 .peer()
-                .permissions(certificate.device_public_key, now)?;
+                .permissions(certificate.device_public_key, now)
+                .map_err(|error| error.to_string())?;
             let node = member.policy.node();
             let application = tilo_action_policy::Authority::person(
                 member
@@ -661,7 +662,7 @@ impl Registration {
 mod tests {
     use super::*;
     use crate::shell::{
-        collab_broker::NativePersonalSource, collab_broker_capnp::LocalSessionAuthority,
+        collab_app_broker::LocalSessionAuthority, collab_broker::NativePersonalSource,
         native_workspace_owner::test_enrolled_owner,
     };
     use ed25519_dalek::{Signer, SigningKey};
@@ -794,7 +795,8 @@ mod tests {
             .with_current(room, |view| {
                 let member = view
                     .peer()
-                    .permissions(view.device().device_public_key, SystemTime::now())?;
+                    .permissions(view.device().device_public_key, SystemTime::now())
+                    .map_err(|error| error.to_string())?;
                 Ok((view.device().clone(), member.person))
             })
             .unwrap();
@@ -882,7 +884,8 @@ mod tests {
             .with_current(room, |view| {
                 let member = view
                     .peer()
-                    .permissions(view.device().device_public_key, SystemTime::now())?;
+                    .permissions(view.device().device_public_key, SystemTime::now())
+                    .map_err(|error| error.to_string())?;
                 Ok((view.device().clone(), member.person))
             })
             .unwrap();
@@ -943,7 +946,7 @@ mod tests {
         reason = "test fixtures transitively own long-lived permits and lock guards by design"
     )]
     fn retained_certificate_rechecks_genuine_native_session_and_never_revives_old_epoch() {
-        let fixture = tilo_action_broker::collab_broker_capnp::tests::certified_person_fixture();
+        let fixture = tilo_action_broker::collab_app_broker::tests::certified_person_fixture();
         let lifecycle = LocalSessionAuthority::new();
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("broker.sock");
@@ -992,7 +995,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_RUNTIME_DIR", directory.path());
-        let fixture = tilo_action_broker::collab_broker_capnp::tests::certified_person_fixture();
+        let fixture = tilo_action_broker::collab_app_broker::tests::certified_person_fixture();
         let lifecycle = LocalSessionAuthority::new();
         lifecycle.lifecycle().publish_native_state(false, false);
         let socket = launcher::services::collab_socket();
@@ -1024,6 +1027,7 @@ mod tests {
             opens_mime_types: vec![],
             opens_uri_schemes: vec![],
             opens_secondary: false,
+            opens_resource_kinds: Vec::new(),
             offers: vec![],
         };
         super::super::lock(&super::super::RETAINED_FILES).insert(

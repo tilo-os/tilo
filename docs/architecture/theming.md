@@ -1,28 +1,39 @@
-# Theming — a token contract the OS owns
+# Theming: how every part looks, moves and responds
 
-Tilo applications do not own their pixels. An app declares its interface
-through `ui`, and the toolkit and compositor draw it. Theming follows from that
-one decision: a theme is a **typed, validated set of tokens owned by the OS**,
-not a stylesheet an application author writes and a user overrides.
+Tilo applications do not own their pixels. An app (and the shell) declares its
+interface through `ui` components; the toolkit and compositor draw it. A theme
+decides how those components look, move and respond, for every app and the
+shell at once. It can be as small as an accent colour or as large as a
+playful, dithered, pixel-edged desktop with Bauhaus-shaped buttons that squish
+when pressed.
 
-Four rules generate the rest of this document:
+The rules:
 
-1. **Themes target semantic roles, never implementation.** A theme says what
-   "the raised surface", "secondary text" or "danger" look like. It never says
-   what a `Button`'s third child looks like, and there is no selector language
-   in which it could.
-2. **Themes are data, never code.** A theme is a document of numbers and
-   strings that the OS validates and then applies. Nothing in it executes.
-3. **A theme that passes validation cannot break an app.** Validation covers
-   legibility, not only ranges, so "this theme broke my app" is not a bug class
-   an app developer can receive.
-4. **Expressiveness grows by adding roles to a versioned schema.** When a theme
-   needs to say something new, the schema (`ThemeDocument`,
-   `THEME_SCHEMA_VERSION` in `crates/sdk/ui-core/src/theme_document.rs`) gains
-   a role and a version. It never grows CSS-like access to widget internals.
+1. **Views say what is there; the theme says how it looks and behaves.**
+   Structure (which components, where, the shell's arrangement) belongs to
+   views, chosen by the person separately from the theme. A theme reaches
+   every component *part* a component declares, never an app's view tree,
+   and there is no selector language over app structure.
+2. **Two levels.** Most people stay at the **token level**: data
+   (`ThemeDocument`, `THEME_SCHEMA_VERSION` in
+   `crates/sdk/ui-core/src/theme_document.rs`): roles, density, motion
+   presets, built-in painter sets (Default, Glass, Block). The **full level**
+   adds programs: part painters, state transitions, scroll feel and assets
+   (§ "Part painters").
+3. **Safety comes from the sandbox, not from being data.** A theme's
+   programs run as wasm in the UI host with no I/O, no secrets and a measured
+   frame budget; they draw parts and nothing else. The danger KDE's 2024
+   store theme showed was authority (a script that deleted files), which a
+   painter never holds.
+4. **A theme that passes validation cannot break an app.** Legibility is
+   checked on rendered output, for every material a painter draws, so "this
+   theme broke my app" is not a bug class an app developer receives.
 
-It builds on the HIG (`crates/sdk/ui-core/HIG.md`, §7 and §9: "roles, not
-pixels").
+Live surfaces (an interactive background, a lock-screen animation) are a third
+kind, beside views and themes: a program of its own the person chooses. A
+theme may ship one in the same bundle; it is not part of the theme.
+
+It builds on the HIG (`crates/sdk/ui-core/HIG.md`, §7 and §9).
 
 ## What other platforms teach
 
@@ -181,6 +192,46 @@ rise to AAA on a high-contrast palette:
   no findings at all (`every_preset_keeps_every_floor_at_every_temperature_for_everyone`,
   `every_tinted_emphasis_hue_keeps_every_floor_on_every_preset`).
 
+## Part painters
+
+Every `ui` component declares its **parts** (a `Button`: container, label,
+icon, focus ring; a `Tab`: container, label, close, indicator; a scroll
+container: track, thumb, edge) and their **states** (rest, hover, pressed,
+focused, selected, disabled, dragging, changed-by-someone).
+
+- **A painter** is Rust compiled to wasm against the theme SDK. It is a pure
+  function `(part, size, state, progress, tokens) -> scene`: a vello scene of
+  kurbo paths and peniko brushes (the renderer already draws with them), plus
+  an optional WGSL fill shader for materials such as ordered dithering,
+  pixelation, hatching or refractive glass.
+- **The painted shape is the hit area.** A triangle button takes clicks inside
+  the triangle only; focus rings and accessibility bounds follow the shape.
+- **Motion** belongs to the UI host's clock. A theme declares how each state
+  changes (spring, stepped, duration, curve, or none); the painter only draws
+  a given moment. Reduce motion replaces every transition with its end state.
+- **Scroll feel** is a part too: overscroll (rubber band or hard stop), snapping,
+  momentum, parallax of nested layers, the edge effect and the indicator.
+- **Assets**: fonts (a bitmap font draws unhinted at integer scale), an icon
+  set covering every semantic icon name, cursors, system sounds.
+- **Cost**: painted parts are cached by part, size and state; only animating
+  parts repaint. Each painter's time is measured; one that exceeds the frame
+  budget is reported to the theme's author and drawn by the built-in painter
+  for that part until its author fixes it.
+- **Window effects** (open, close, minimise, focus) and window frames use the
+  same painter interface in the compositor (`WindowEffect`, `WindowFrame`).
+
+Glass and Block are built-in painter sets, written against the same SDK as any
+third-party theme.
+
+## Live surfaces
+
+A live surface is a program that draws a layer the shell places: the desk
+background below the windows, the lock screen's backdrop. It uses the same kit
+(Rust compiled to wasm, vello and wgpu) and gets read-only inputs: time, the
+pointer, the windows' rectangles and motion, notifications, the audio level. It
+does no work while nothing it reads moves, and pauses when covered or on
+battery. It holds no authority and cannot read window content.
+
 ## Layers and precedence
 
 The theme a person sees is resolved from layers, lowest to highest:
@@ -189,7 +240,7 @@ The theme a person sees is resolved from layers, lowest to highest:
 |---|---|---|---|
 | 1 | Built-in defaults | the toolkit, in code | `Preset::Dark` |
 | 2 | **Distribution defaults** (`appearance_device.distribution_defaults` / `appearance_device.distribution`) | whoever ships the OS image | a preset id or a whole document, and pins |
-| 3 | User theme | the person, through Settings and Theme Studio, or an agent through the same actions | the theme for the current mode, the person's density, and their finish over it (`FinishLayer`: the interface face and how much of the theme's translucency they keep) |
+| 3 | User theme | the person, through Settings and Theme Studio, or an agent through the same actions | the theme for the current mode, the person's density, and their finish over it (`FinishLayer`: the interface face, the accent and how much of the theme's translucency they keep) |
 | 4 | Window | the shell, per window | the neutral hue of the workspace the window is in, and the person's colour (`WindowAppearance`) |
 | 5 | Accessibility | the person or assistive policy | high contrast / forced colours, text scale, UI scale, reduce motion, reduce transparency, thick caret, the Hyperlegible face |
 
@@ -215,14 +266,16 @@ section (`theme_layers::user_document`):
 | `custom_themes` | the documents a `custom:<id>` names (Theme Studio writes them when it applies one) |
 | `density` | the person's spacing over whichever theme is shown (Compact 0.85, Regular 1, Roomy 1.2) |
 | `ui_face` | the face the person reads best, over the theme's (`Default`, `Hyperlegible`, any family name); absent or `null` follows the theme |
+| `accent` | the accent they chose, by a name the presence palette gives a hue (`violet`, `teal`); absent or `null` follows the theme's emphasis |
 | `translucency` | how much of the theme's translucency they keep: 1 as the theme sets it, 0 opaque floating chrome; absent or `null` follows the theme |
 
-Neither `ui_face` nor `translucency` is a new role: both name a role the
-theme already has (`type`, `material`), so a person who cannot read the
-theme's face or wants menus opaque need not write a theme of their own.
-A distribution that pins `type` or `material` keeps its choice, and the
-accessibility layer is applied after both (high contrast and "make panels
-opaque" still win).
+None of `ui_face`, `accent` or `translucency` is a new role: each names a
+role the theme already has (`type`, `emphasis`, `material`), so a person who
+cannot read the theme's face, wants their own accent colour or wants menus
+opaque need not write a theme of their own. A distribution that pins `type`,
+`emphasis` or `material` keeps its choice, a high-contrast palette has no
+accent to give, and the accessibility layer is applied after all three (high
+contrast and "make panels opaque" still win).
 
 A section with none of `mode`, `dark_theme`, `light_theme` is no user
 theme, so distribution defaults still show.
@@ -391,7 +444,7 @@ Verified against the code at the time of writing:
   make the tab strip solid and drop the rim.
 - **Theme Studio** (`apps/themes`) edits the document role by role with
   live findings and applies or exports only legible themes. Settings'
-  Appearance page offers the theme, density, interface size, face,
+  Appearance page offers the theme, density, interface size, face, accent,
   translucency and colour; none of them needs a theme of one's own.
 - **Hard-coded colours in apps.** The HIG §9.13 `theme` and `app-paint`
   ratchets count literal colours, `Color::WHITE`/`BLACK`, ramp slots and
@@ -407,6 +460,11 @@ Verified against the code at the time of writing:
   indicators do not carry the frame yet.
 
 ## Roadmap
+
+0. **Part painters and live surfaces**: the theme SDK, the part and state
+   declarations of every `ui` component, Glass and Block as built-in painter
+   sets, and a full-level reference theme (dithered, pixel-edged, Bauhaus
+   shapes, the brand palette) across every app and the shell at native refresh.
 
 1. **Hard-coded chrome colours onto tokens**, one app per change, following
    the appendix and the ratchet shards under

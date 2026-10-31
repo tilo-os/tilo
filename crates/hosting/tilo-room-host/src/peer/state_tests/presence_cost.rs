@@ -53,6 +53,7 @@ async fn cost(fixture: &Fixture) -> (usize, u64, u64) {
         own_user_public_key: &fixture.source.own_user,
         own_device_cert: &fixture.source.peer.cert,
         own_device_public_key: &fixture.source.peer.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: None,
         metrics: &metrics,
         trust_policy: &fixture.source.policy,

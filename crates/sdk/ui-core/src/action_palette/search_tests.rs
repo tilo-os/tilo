@@ -141,3 +141,126 @@ fn progressive_palette_reaches_exact_match_beyond_one_hundred_thousand_candidate
     assert_eq!(restarted.generation, palette.search_generation);
     assert!(restarted.inspected <= PROVIDER_HIT_BUDGET);
 }
+
+#[test]
+fn committed_text_goes_into_the_query_field_at_the_caret() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
+    let key = [7u8; 32];
+    let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        SearchField::with_language("en_US")
+    });
+    assert!(
+        palette.query_field(&key).is_none(),
+        "a closed palette has no field to write into"
+    );
+    assert!(!palette.commit_query_text("nobody"), "and takes nothing");
+
+    palette.open();
+    palette.set_query("hello");
+    let field = palette
+        .query_field(&key)
+        .expect("the open palette's query field takes committed text");
+    assert!(!field.secret);
+    assert!(palette.commit_query_text(" world"));
+    assert_eq!(palette.query(), "hello world");
+
+    let moved = palette.query_field(&key).expect("still the field");
+    assert_ne!(
+        moved.fingerprint, field.fingerprint,
+        "the field's text changed, so its revision did"
+    );
+
+    palette.close();
+    assert!(palette.query_field(&key).is_none());
+    assert!(!palette.commit_query_text("late"), "it closed meanwhile");
+}
+
+#[test]
+fn committed_text_narrows_the_rows_a_host_fed() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
+    let key = [7u8; 32];
+    let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        SearchField::with_language("en_US")
+    });
+    palette.set_entries(vec![
+        CommandEntry::new("sheets", "Sheets"),
+        CommandEntry::new("notes", "Notes"),
+        CommandEntry::new("sheet music", "Sheet music"),
+    ]);
+    palette.open();
+    assert!(
+        palette.query_field(&key).is_some(),
+        "a palette over a host's rows has its own query field"
+    );
+
+    assert!(palette.commit_query_text("sheets"));
+    assert_eq!(palette.query(), "sheets");
+    let shown: Vec<&str> = palette
+        .visible_entries()
+        .iter()
+        .map(|entry| entry.id.as_str())
+        .collect();
+    assert!(
+        !shown.contains(&"notes"),
+        "the rows narrowed by what was committed: {shown:?}"
+    );
+
+    let moved = palette.query_field(&key).expect("still the field");
+    assert!(palette.commit_query_text(" notes"));
+    assert_eq!(palette.query(), "sheets notes");
+    assert_ne!(palette.query_field(&key), Some(moved));
+}
+
+/// A query nothing matches leaves a line that names what was typed, and says
+/// what to try instead — never a bare "no matches", and never that hint on a
+/// card where nothing has been typed yet.
+#[test]
+fn a_query_that_matches_nothing_is_named_in_the_empty_list() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
+    // A palette searching its own providers.
+    let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        SearchField::with_language("en_US")
+    });
+    palette.open();
+    assert_eq!(
+        palette.empty_text(),
+        "Nothing to show",
+        "nothing typed yet, and nothing to show for it"
+    );
+    assert_eq!(
+        palette.empty_hint(),
+        None,
+        "a card with nothing typed does not talk about spelling"
+    );
+    palette.set_query("zzzz");
+    assert!(palette.is_empty());
+    assert_eq!(
+        palette.empty_text(),
+        "No results for \u{201c}zzzz\u{201d}",
+        "the line names the query"
+    );
+    assert_eq!(
+        palette.empty_hint(),
+        Some("Check the spelling, or try another word")
+    );
+
+    // A palette over the rows its host searched, as desktop search is.
+    let mut fed = ActionPalette::rows(vec![
+        CommandEntry::new("sheets", "Sheets").group("Apps"),
+        CommandEntry::new("notes", "Notes").group("Apps"),
+    ]);
+    fed.open();
+    fed.set_query("zzzz");
+    assert!(fed.visible_entries().is_empty());
+    assert_eq!(fed.empty_text(), "No results for \u{201c}zzzz\u{201d}");
+    assert_eq!(
+        fed.empty_hint(),
+        Some("Check the spelling, or try another word")
+    );
+    fed.set_query("");
+    assert_eq!(fed.empty_text(), "Nothing to show");
+    assert_eq!(fed.empty_hint(), None);
+}

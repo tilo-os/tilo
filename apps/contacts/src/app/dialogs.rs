@@ -386,7 +386,7 @@ impl ContactsApp {
         .with_id("contacts.export.selection")
         .with_accessible_name("Contacts to export")
         .selectable(true)
-        .on_check(move |index, checked| {
+        .on_check_view("contacts.export.selection", move |index, checked| {
             if let Some(id) = toggled_ids.get(index) {
                 selected.update(|set| {
                     if checked {

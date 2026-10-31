@@ -15,12 +15,12 @@ usage:
                  [--tilo-runtime tilo-runtime/<release>] [--version V]
       compile the package in DIR (default: .) and the packages it uses, and write each as a
       signed Tilo app: OUT/<name>.tapp (default OUT: DIR/target)
-  tilolang run [DIR] [--search DIR]... [--peers N] [--headless] [--software] [--state DIR]
+  tilolang run [DIR] [--search DIR]... [--headless] [--software] [--state DIR]
                [--repo DIR]
       build the package, install it into a locally built nested Tilo session
       (dist/dev/nested-session-build.sh target/nested-session) and open it there; from then on
-      as `tilolang dev`. --peers N runs N sessions in one workspace; --software renders with
-      lavapipe only and never opens this machine's GPU.
+      as `tilolang dev`. --software renders with lavapipe only and never opens this machine's
+      GPU.
   tilolang dev [DIR] --session SESSION [--search DIR]... [--runtime BIN | --build-runtime]
                [--runtime-identity FILE] [--repo DIR]
       develop the package in a running nested session (SESSION: its --ready file, runtime
@@ -39,14 +39,17 @@ usage:
       door, or the person's own session (--real), where the person admits it. Each entry is a
       program for the door's `tilo` tool, run as the REPL's task: lets are kept, refs (n3) name
       what answers showed, a bulk change previews until `confirm`, `undo` takes a step back.
-  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--json] [--dump WxH]
+  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--json] [--dump WxH [--shots DIR [--theme NAME]...]]
       lay out every view of each app headlessly, staged from each of its scenarios, at window
       sizes from 320x568 to 3440x1440, display scales 1 and 2 and text scales 1 and 1.5, and
       report overflow, clipped text, overlapping siblings, hit targets below the minimum and
       pages that scroll sideways, each at its view's node in the source. Exits 1 on a finding
       the allow-list (one finding id per line) does not name; --json prints the report as JSON;
       --dump prints each layout at that window size as the check reads it (boxes, clips and
-      semantics of every widget) to stderr.
+      semantics of every widget) to stderr, and --shots writes the window at that size (display
+      and text scale 1) as each stage leaves it, light and dark, to PNGs in DIR. --theme takes
+      them in that shipped theme (default, glass, block, ...) instead of the stock pair, light and
+      dark each.
   tilolang check|fmt|ids ...
       the compiler's commands (tilolangc --help); `use` also finds native apps in --path";
 
@@ -138,6 +141,8 @@ fn layout_check_command(args: &[String]) -> ExitCode {
                 "--search" | "--path" => options.search.push(value(&mut iter, arg)?.into()),
                 "--allow" => options.allow = Some(value(&mut iter, arg)?.into()),
                 "--json" => json = true,
+                "--shots" => options.shots = Some(value(&mut iter, arg)?.into()),
+                "--theme" => options.themes.push(value(&mut iter, arg)?),
                 "--dump" => {
                     let size = value(&mut iter, arg)?;
                     options.dump = size
@@ -205,7 +210,6 @@ fn run_command(args: &[String]) -> Result<(), String> {
     let mut options = RunOptions {
         dir: PathBuf::from("."),
         search: Vec::new(),
-        peers: 1,
         headless: false,
         software: false,
         state: None,
@@ -215,14 +219,6 @@ fn run_command(args: &[String]) -> Result<(), String> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--search" => options.search.push(value(&mut iter, arg)?.into()),
-            "--peers" => {
-                let peers = value(&mut iter, arg)?;
-                options.peers = peers
-                    .parse()
-                    .ok()
-                    .filter(|peers| (1..=26).contains(peers))
-                    .ok_or_else(|| format!("--peers {peers}: a number of sessions from 1 to 26"))?;
-            }
             "--headless" => options.headless = true,
             "--software" => options.software = true,
             "--state" => options.state = Some(value(&mut iter, arg)?.into()),

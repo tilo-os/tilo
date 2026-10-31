@@ -39,7 +39,7 @@ impl AttrVal {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DocSnapshot {
     pub schema: String,
-    pub schema_version: i64,
+    pub schema_version: u64,
     pub blocks: Vec<BlockView>,
     /// CRDT-native named styles: `style_id → (property → value)`. Built-ins (body/heading1…/quote) plus any user- or import-defined styles.
     #[serde(default)]
@@ -131,7 +131,7 @@ impl Default for DocSnapshot {
         // Hand-rolled (rather than `#[derive(Default)]`) so `columns` defaults to a single column, not the integer default of zero.
         DocSnapshot {
             schema: String::default(),
-            schema_version: i64::default(),
+            schema_version: u64::default(),
             blocks: Vec::default(),
             styles: BTreeMap::default(),
             properties: BTreeMap::default(),

@@ -207,6 +207,24 @@ impl InProcessApps {
         component.collaborate_through(broker(component.app_id(), room))
     }
 
+    /// A collaboration manager for `component`, mounted in `room` as an
+    /// instance of its app with no window ([`crate::shell::windowless`]), on
+    /// the session's broker. `None` for apps that reach no broker of a
+    /// session.
+    pub(crate) fn windowless_collaboration(
+        &self,
+        component: &AppComponent,
+        room: &str,
+    ) -> Option<ui::collaboration::CollaborationManager> {
+        let socket = self.native_broker_socket.clone()?;
+        component.collaborate_through(windowless_connector(
+            socket,
+            launcher::services::identity_socket(),
+            component.app_id(),
+            room,
+        ))
+    }
+
     /// Block until the store has committed every write the apps' records
     /// handed it, the debounced ones included, as its own thread would
     /// commit them a moment later.
@@ -215,23 +233,28 @@ impl InProcessApps {
         self.store.flush(None).map_err(|error| error.to_string())
     }
 
-    /// Acknowledge startup writes through the fixture's real canonical owner.
+    /// Acknowledge startup writes through the fixture's real canonical owner;
+    /// the records it holds open, by kind and id.
     #[cfg(test)]
     pub(crate) fn flush_fixture_records(
         &mut self,
         app_id: &str,
         room: &str,
-    ) -> Result<usize, String> {
+    ) -> Result<Vec<String>, String> {
         let records = self
             .owners
             .open(app_id, room)
             .map_err(|error| error.to_string())?;
-        let count = records.open_records().len();
-        if count == 0 {
+        let open: Vec<String> = records
+            .open_records()
+            .iter()
+            .map(|record| format!("{:?} {:?}", record.kind, record.id))
+            .collect();
+        if open.is_empty() {
             return Err("fixture must observe mounted records before flushing".into());
         }
         records.try_flush()?;
-        Ok(count)
+        Ok(open)
     }
 
     /// The apps of a session whose state lives in `profile_root`: their
@@ -399,6 +422,12 @@ impl InProcessApps {
                 };
                 (HostContext::prepare(definition, inputs(), &target)?, target)
             }
+            // The app's package primary, the record a launched window of it
+            // opens, is made as that record, under its own custody key.
+            Err(RecordOpenError::MissingRecord) if checkout.id.is_package_primary() => (
+                HostContext::prepare(definition, inputs(), &LaunchTarget::PrimaryNew)?,
+                LaunchTarget::PrimaryNew,
+            ),
             Err(RecordOpenError::MissingRecord) => (
                 HostContext::prepare_new_record(definition, inputs(), checkout.id)?,
                 LaunchTarget::New,
@@ -731,13 +760,47 @@ pub fn session_connector(
     app: &str,
     room: &str,
 ) -> ui::collaboration::HostSessionConnector {
+    connector_recorded_by(
+        collab,
+        identity,
+        app,
+        room,
+        crate::shell::launcher::register_in_process_launch,
+    )
+}
+
+/// [`session_connector`] for an instance of `app` the session runs with no
+/// window ([`crate::shell::windowless`]): its launch says so, so the broker
+/// hands it the app's actions on its records and never an `open`.
+fn windowless_connector(
+    collab: std::path::PathBuf,
+    identity: std::path::PathBuf,
+    app: &str,
+    room: &str,
+) -> ui::collaboration::HostSessionConnector {
+    connector_recorded_by(
+        collab,
+        identity,
+        app,
+        room,
+        crate::shell::launcher::register_windowless_launch,
+    )
+}
+
+fn connector_recorded_by(
+    collab: std::path::PathBuf,
+    identity: std::path::PathBuf,
+    app: &str,
+    room: &str,
+    record: fn(&str, &str),
+) -> ui::collaboration::HostSessionConnector {
     let (app, room) = (app.to_owned(), room.to_owned());
     // The collaboration socket carries Files' selected descriptors to the
     // broker, as a launched app's inherited connection does.
     ui::collaboration::HostSessionConnector::with_descriptor_lane(move |_route| async move {
         let failed = |error: std::io::Error| runtime_portal::NotAvailable::ConnectionFailed(error);
         let mut stream = std::os::unix::net::UnixStream::connect(&collab).map_err(failed)?;
-        crate::shell::launcher::register_in_process_launch(&app, &room);
+        record(&app, &room);
         if let Err(error) = launcher::services::write_collab_handoff(&mut stream, &app, &room) {
             crate::shell::launcher::withdraw_in_process_launch(&app, &room, None);
             return Err(failed(error));
@@ -921,7 +984,13 @@ mod tests {
                         .as_any()
                         .and_then(|any| any.downcast_ref::<ui::app::EmbeddedApp>())
                         .map_or_else(String::new, |embedded| {
-                            format!("{:?}", embedded.app().collaboration_state())
+                            let app = embedded.app();
+                            // Offered, and (taken, refused) by the broker.
+                            format!(
+                                "{:?} directory {:?}",
+                                app.collaboration_state(),
+                                app.action_directory_observation()
+                            )
                         })
                 })
                 .collect();

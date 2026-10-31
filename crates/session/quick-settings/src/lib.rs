@@ -37,7 +37,7 @@ mod view;
 
 pub use effect::QsEffect;
 pub use faces::subline;
-pub use now_playing::{MediaOutput, MediaPlayer, NowPlaying};
+pub use now_playing::{MediaOffer, MediaOutput, MediaPlayer, NowPlaying, PlayingSource};
 pub use prepare::prepare;
 pub use resource::{Page, QuickSettings, QuickSettingsApp};
 
@@ -202,6 +202,37 @@ pub struct SoundOutput {
     pub name: String,
     /// Sound plays here now.
     pub current: bool,
+}
+
+/// The microphone sound records from, as the Sound section shows it: its
+/// level and its mute are the panel's controls for it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundInput {
+    /// The audio graph's node: what the microphone's actions name.
+    pub node: u32,
+    /// The microphone's name, as the audio service reads it.
+    pub name: String,
+    /// Its level from 0 to 1, whether or not muted.
+    pub level: f32,
+    pub muted: bool,
+}
+
+/// One application's stream, as the Sound section lists it: what it plays,
+/// where that goes now, how loud.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundStream {
+    /// The stream's audio node: what routing it, its level and its mute
+    /// name.
+    pub node: u32,
+    /// The application, and what it plays.
+    pub label: String,
+    /// Whether it plays (`true`) or records.
+    pub playback: bool,
+    /// The output (or input) it is linked to now.
+    pub target: Option<u32>,
+    /// Its level from 0 to 1, whether or not muted.
+    pub level: f32,
+    pub muted: bool,
 }
 
 /// A `WiFi` entry in the drill-in list. `signal` is a strength bucket

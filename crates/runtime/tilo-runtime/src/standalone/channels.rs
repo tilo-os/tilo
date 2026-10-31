@@ -1,8 +1,9 @@
 //! This device's side of every encrypted channel the profile takes part in.
 //!
 //! In the profile's own room, which the room host this runtime runs hosts,
-//! that host takes part in the channels with this device's own leaf, and
-//! its apps get their route keys from it without any network. In a room
+//! the host takes part in the channels as this device's one peer and asks
+//! this service for their keys ([`DeviceChannelKeys`]), so its apps get
+//! their route keys without any network. In a room
 //! hosted elsewhere it is one participant among the room's member devices:
 //! it asks them for access over the room's relay session, follows and
 //! checks their commits against the room's governance, and commits itself
@@ -24,8 +25,8 @@ use std::{
 };
 use tilo_action_broker::{
     channel_encryption::{
-        ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
-        ChannelKeyProvider, GovernanceTransport,
+        ChannelAccess, ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig,
+        ChannelKeyAccess, ChannelKeyProvider, GovernanceTransport,
     },
     collab_core::BrokerChannels,
 };
@@ -159,17 +160,6 @@ impl ChannelDirectory for Directory {
         self.joined.governor_of(room)
     }
 
-    fn hosted_channel_keys(
-        &self,
-        room: RoomId,
-        channel: collab_types::ChannelId,
-        route: Option<&collab_types::ChannelRoute>,
-        create: bool,
-    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
-        self.joined
-            .hosted_channel_keys(room, channel, route, create)
-    }
-
     /// The member devices the room's governance lets read the channel's
     /// record.
     fn allowed_devices(
@@ -180,6 +170,62 @@ impl ChannelDirectory for Directory {
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
         self.joined.channel_readers(room, channel, route, now)
+    }
+}
+
+/// The room host this runtime runs holds no channel keys of its own: it
+/// takes part in a room's channels as this device's one peer, asking this
+/// device's channel service for them ([`tilo_room_host::rooms::ChannelKeys`]),
+/// so the host and the device never found two groups under one leaf.
+pub(super) struct DeviceChannelKeys {
+    keys: ChannelKeyProvider,
+}
+
+impl DeviceChannelKeys {
+    pub(super) fn handle(keys: ChannelKeyProvider) -> tilo_room_host::rooms::DeviceKeys {
+        Arc::new(Self { keys })
+    }
+}
+
+impl tilo_room_host::rooms::ChannelKeys for DeviceChannelKeys {
+    fn channel_keys<'a>(
+        &'a self,
+        room: &'a str,
+        route: &'a collab_types::ChannelRoute,
+        create: bool,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Option<Result<channel_crypto::ChannelContentKeys, String>>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        let keys = self.keys.clone();
+        let (room, route) = (room.to_owned(), route.clone());
+        Box::pin(async move {
+            // Asked off the caller's task: the service takes its lock and
+            // reads its state on that thread, never on the host's.
+            let asked = tokio::task::spawn_blocking(move || {
+                let Some(access) = keys.get() else {
+                    return Some(Err("this device's channel service is not running".into()));
+                };
+                let room = RoomId::parse(&room)?;
+                if create {
+                    match access.access_record(room, &route).0 {
+                        ChannelAccess::Ready(keys) => Some(Ok(keys)),
+                        ChannelAccess::Waiting | ChannelAccess::Removed => {
+                            Some(Err("the channel's keys are not ready".into()))
+                        }
+                        ChannelAccess::Unavailable | ChannelAccess::NoSecretStore => None,
+                    }
+                } else {
+                    access.record_keys(room, &route)
+                }
+            })
+            .await;
+            asked.unwrap_or_else(|error| Some(Err(error.to_string())))
+        })
     }
 }
 

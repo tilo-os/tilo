@@ -50,6 +50,12 @@ by = "os/tests/test_image_size_budget.py"
 suite = "tools/test-assets.py"
 by = "tools/tests/test_test_assets.py"
 
+# Not a suite: the developer entry point that execs local_affected.py --changed,
+# whose command line and runs its test covers.
+[[covered]]
+suite = "tools/ci/test-changed.sh"
+by = "tools/tests/test_local_affected.py"
+
 [[covered]]
 suite = "tools/test-env-setup.sh"
 by = "tools/tests/test_test_environment.py"
@@ -227,14 +233,11 @@ suites = [
   "os/tests/test_signing_recovery.py",
   "os/tests/test_signing_spool_transport.py",
   "os/tests/test_stage_kernel_checkpoint.py",
-  "os/tests/test_supervised_disk.py",
-  "os/tests/test_supervised_install_lane.py",
   "os/tests/test_tls_registry_fixture.py",
   "os/tests/test_verify_board_initramfs.py",
   "os/tests/test_verify_rpm_files.py",
   "os/tests/test_vm_install_image_proof.py",
   "os/tests/test_probe_kvm.py",
-  "os/tests/test_windows_dualboot_preflight.py",
   "os/tests/test_windows_direct_dev_provenance.py",
   "os/tests/test_windows_direct_dev_admission.py",
   "os/tests/test_windows_direct_provenance.py",
@@ -497,8 +500,6 @@ inputs = [
   "crates/session/shell/src/shell/search/providers/files.rs",
   # ... and the hosting-load KPI ids equal to the relay load bench's.
   "crates/hosting/tilo-relay/examples/relay_load/main.rs",
-  # ... and the room-load report fields equal to the room load bench's.
-  "crates/dev/room-load/src/",
   # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
   "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
   "crates/session/shell/examples/redraw_bench.rs",
@@ -674,13 +675,6 @@ inputs = ["crates/browser/tilo-web-desktop/scripts/"]
 suites = ["crates/browser/tilo-web-desktop/scripts/open-times-summary.test.mjs"]
 
 [[group]]
-name = "browser-auth-e2e"
-# dev/auth-e2e.mjs reuses the browser qualification's bundle check and
-# drives Chrome through tools/web/chrome.mjs.
-inputs = ["crates/hosting/tilo-room-service/dev/", "scripts/perf/browser_qualification.mjs", "tools/web/chrome.mjs"]
-suites = ["crates/hosting/tilo-room-service/dev/auth-e2e.test.mjs"]
-
-[[group]]
 name = "browser-benchmark-scripts"
 inputs = ["scripts/browser/"]
 suites = [
@@ -755,6 +749,7 @@ readers = [
   "apps/tilolang/src/packages.rs",
   "apps/tilolang/tests/board.rs",
   "apps/tilolang/tests/opening.rs",
+  "apps/tilolang/tests/support.rs",
 ]
 
 [[cargo]]
@@ -791,6 +786,7 @@ readers = [
   "crates/lang/tilolang-runtime/tests/e2e_todo.rs",
   "crates/lang/tilolang-runtime/tests/programs.rs",
   "crates/lang/tilolang-runtime/tests/rich_text.rs",
+  "crates/lang/tilolang-runtime/tests/written_views.rs",
 ]
 
 [[cargo]]
@@ -798,16 +794,21 @@ package = "tilolang-tilo"
 # The collaboration tests compile the built-in packages and the rich-text fixture from their sources.
 inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/"]
 readers = [
+  "crates/platform/tilolang-tilo/tests/agent_queries.rs",
   "crates/platform/tilolang-tilo/tests/budgets.rs",
   "crates/platform/tilolang-tilo/tests/bundle.rs",
   "crates/platform/tilolang-tilo/tests/chat.rs",
   "crates/platform/tilolang-tilo/tests/fixtures.rs",
+  "crates/platform/tilolang-tilo/tests/legacy.rs",
+  "crates/platform/tilolang-tilo/tests/legibility.rs",
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",
   "crates/platform/tilolang-tilo/tests/policy.rs",
   "crates/platform/tilolang-tilo/tests/rich_text.rs",
+  "crates/platform/tilolang-tilo/tests/scenarios.rs",
   "crates/platform/tilolang-tilo/tests/task.rs",
   "crates/platform/tilolang-tilo/tests/tasks.rs",
+  "crates/platform/tilolang-tilo/tests/views_migration.rs",
 ]
 
 [[cargo]]
@@ -826,6 +827,12 @@ package = "onboarding-walk"
 # The names test reads the onboarding app whose controls it walks.
 inputs = ["crates/session/onboarding/src/"]
 readers = ["crates/session/onboarding-walk/tests/names.rs"]
+
+[[cargo]]
+package = "provider-settings-ui"
+# The provider screenshots list the models of the provider config's recorded OpenRouter answer.
+inputs = ["crates/agent/provider-config/tests/fixtures/openrouter-models.json"]
+readers = ["crates/sdk/provider-settings-ui/src/app_tests.rs"]
 
 [[cargo]]
 package = "mail"
@@ -1146,6 +1153,8 @@ readers = [
   # Workspace certification's compute-package test reads real manifests.
   "crates/dev/tilo-app-cli/src/main.rs",
   "crates/dev/tilo-app-cli/src/native_sdk/tests.rs", "crates/dev/tilo-app-cli/tests/native_sdk.rs",
+  # `--from-example` embeds the example apps' files.
+  "crates/dev/tilo-app-cli/src/examples.rs",
 ]
 
 [[cargo]]
@@ -1507,10 +1516,6 @@ suite = "crates/browser/tilo-browser-runtime/container/test-image.sh"
 reason = "needs the built web entry image"
 
 [[unrequired]]
-suite = "crates/hosting/tilo-room-service/container/test-image.sh"
-reason = "needs the built room-service image"
-
-[[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
 reason = "needs the built registry-server image"
 
@@ -1823,10 +1828,6 @@ reason = "destructive, root: loop devices"
 [[unrequired]]
 suite = "os/tests/system_extension_boot_pack_stage.sh"
 reason = "needs a systemd system manager; skips without one"
-
-[[unrequired]]
-suite = "os/tests/test_direct_sparse_transfer.py"
-reason = "asserts preserved sparse holes, which the container overlay root of the suites job does not report"
 
 [[unrequired]]
 suite = "os/tests/test_import_development_rootfs.py"

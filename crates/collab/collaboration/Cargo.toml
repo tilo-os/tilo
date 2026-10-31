@@ -16,11 +16,11 @@ local-daemons = ["dep:runtime-portal", "dep:runtime-identity"]
 # A native launch: the manager joins its room on the connection the launcher
 # (or the shell, for a window it opened) handed the process.
 native = ["local-daemons"]
-# The collaboration manager's built-in transport: the Tilo collab broker's
-# Cap'n Proto SDK on a worker thread (`broker`). Without it the manager is
+# The collaboration manager's built-in transport: the collaboration wire's
+# client on a worker thread (`broker`). Without it the manager is
 # driven only through `CollaborationManager::with_transport`, and
 # `CollaborationManager::new` starts disabled.
-broker-transport = ["local-daemons", "runtime-collab/client", "dep:capnp", "dep:capnp-rpc", "tokio/full"]
+broker-transport = ["local-daemons", "runtime-collab/client", "tokio/full"]
 # The fixtures the toolkit's own tests drive the manager, its committed reads
 # and native construction with: the fake broker the tests stand up.
 test-support = ["dep:tilo-test-env", "dep:tracing-subscriber", "runtime-collab/settings-host"]
@@ -28,8 +28,6 @@ test-support = ["dep:tilo-test-env", "dep:tracing-subscriber", "runtime-collab/s
 [dependencies]
 collab-types = { version = "0.1.0", path = "../collab-types" }
 channel-crypto = { version = "0.1.0", path = "../channel-crypto" }
-capnp = { workspace = true, optional = true }
-capnp-rpc = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 # The clock (`crate::time`), background work and wake routing
 # (`crate::background`, `crate::wake`), as the toolkit reads them.
@@ -92,9 +90,6 @@ serial_test.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
-# The tests stand up a fake capnp broker on one end of a
-# `UnixStream::pair()` and drive `CollaborationManager` against it.
-capnp.workspace = true
 runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-host"] }
 tracing-subscriber.workspace = true
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }

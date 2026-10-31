@@ -17,7 +17,7 @@ use tilo_agent::tools::Answer;
 use tilo_agent_participant::{
     ModelPlanner, PlanContext, PlanModel, Planner, Replica, Seed, StepAction,
 };
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const SCRATCHPAD: &str = "so.tilo.scratchpad";

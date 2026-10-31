@@ -199,9 +199,16 @@ impl Core {
         &self,
         ty: &str,
     ) -> Result<(Rc<crate::registry::Package>, Rc<TypeInfo>), String> {
-        self.registry
-            .borrow()
-            .type_info(ty)
+        let registry = self.registry.borrow();
+        // A resource of an app this runtime does not run names its type `app#Type`: the app's
+        // description (`load_foreign`) declares it.
+        let id = match crate::foreign::foreign_type(ty) {
+            Some(key) => registry.type_for(&key),
+            None => Some(ty.to_owned()),
+        };
+        let id = id.ok_or_else(|| format!("type `{ty}` is not declared by any loaded package"))?;
+        registry
+            .type_info(&id)
             .ok_or_else(|| format!("type `{ty}` is not declared by any loaded package"))
     }
 
@@ -329,6 +336,11 @@ impl Core {
         field: &FieldInfo,
         author: Option<&ModuleHash>,
     ) -> Result<Value, String> {
+        // A resource of an app this runtime does not run has no record here: what it shows is
+        // its reading, as the session published it.
+        if crate::foreign::is_foreign(target) {
+            return self.foreign.borrow().field(target, field, author);
+        }
         let fv = match self.store.borrow().read(target, &spec(field)) {
             Ok(fv) => fv,
             // A root nobody opened yet reads as it would start (`root T` names it anywhere).
@@ -345,6 +357,22 @@ impl Core {
             }
             Err(e) => return Err(e.to_string()),
         };
+        self.field_value(target, field, fv, author)
+    }
+
+    /// A field of `target` as the store holds it (`fv`), as a value of its declared type:
+    /// [`Self::read_value`] of a value read some other way (as a change wrote it).
+    ///
+    /// # Errors
+    ///
+    /// A message when the stored shape does not fit the field.
+    pub fn field_value(
+        &self,
+        target: &ResourceRef,
+        field: &FieldInfo,
+        fv: FieldValue,
+        author: Option<&ModuleHash>,
+    ) -> Result<Value, String> {
         match (field.kind, fv) {
             (FieldKind::Register, FieldValue::Absent) => {
                 declared_default(&field.ty, field.default.as_ref())
@@ -478,7 +506,7 @@ impl Core {
         }
         // The hottest import: a view over a list reads a field of every item. The reference,
         // the field's name and the author are read where they are held, not copied.
-        let (value, read) = {
+        let (value, read, reading) = {
             let frames = self.frames.borrow();
             let target = match frames.get(rh)? {
                 Value::Ref(r) => &r.target,
@@ -496,27 +524,40 @@ impl Core {
             };
             let top = frames.top()?;
             let author = &top.module;
-            // A view reads a collection item by item, as it uses it (`colls`): the field is
-            // read when one of its items, its length or an end is.
-            if f.kind == FieldKind::Collection && matches!(top.kind, FrameKind::View(_)) {
+            // A resource of an app this runtime does not run reads from its reading, which the
+            // host sets as it follows the session's watch: the slot it moves is what marks the
+            // views that read it.
+            if crate::foreign::is_foreign(target) {
+                let value = self.read_value(target, f, Some(author))?;
+                (value, None, Some(crate::foreign::reading_key(target)))
+            } else if f.kind == FieldKind::Collection && matches!(top.kind, FrameKind::View(_)) {
                 // A collection of a union's types names no one item type: each item's is its own.
                 let item = match inner_ty(&f.ty) {
                     Some(Ty::Union(_)) => String::new(),
                     _ => self.item_type(&f.ty)?.id.clone(),
                 };
-                return Ok(Value::Coll(Rc::new(CollRef {
+                let coll = Value::Coll(Rc::new(CollRef {
                     target: Rc::clone(target),
                     field: f.id.clone(),
                     item,
                     author: Some(author.clone()),
                     filter: None,
                     order: None,
-                })));
+                }));
+                (coll, None, None)
+            } else {
+                let value = whole_map(f.kind, self.read_value(target, f, Some(author))?);
+                (value, Some((target.id_string(), f.id.clone())), None)
             }
-            let value = whole_map(f.kind, self.read_value(target, f, Some(author))?);
-            (value, (target.id_string(), f.id.clone()))
         };
-        if let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind {
+        if let Some(key) = reading {
+            let generation = self.view_states.borrow().generation(&key);
+            let seen = i64::try_from(generation).unwrap_or(i64::MAX);
+            self.note_state_read(key, generation, &Value::Int(seen))?;
+        }
+        if let Some(read) = read
+            && let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind
+        {
             vs.reads.push(read);
         }
         Ok(value)

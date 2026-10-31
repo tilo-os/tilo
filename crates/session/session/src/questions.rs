@@ -37,14 +37,10 @@ use tilo_portal::wallpaper::WallpaperQuestion;
 use tilo_service::{Answer, Question, Questions, Services};
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerSeat, FileRequest, FileType};
 use tilo_sheets::portal::{
-    Body, Device, Dialog, DraftRow, DraftValue, Field, PortalEffect, PortalSeat, Prompt,
-    PromptField, PromptKind, Remember, Shortcut,
+    Body, Device, Dialog, Field, PortalEffect, PortalSeat, Prompt, PromptField, PromptKind,
+    Remember, Shortcut,
 };
 use tilo_sheets::{Seat as _, word, words};
-
-/// A display's rectangle, in logical pixels: where a sheet that follows the
-/// person goes.
-pub(crate) type PromptPlace = (i32, i32, u32, u32);
 
 /// The sheet that asked the person.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,8 +81,6 @@ enum Plan {
     Bind(Vec<Binding>),
     /// A launcher's name and icon.
     Launcher { name: bool, icons: usize },
-    /// Red, green and blue, typed in.
-    Color,
     /// Confirming agrees, as choice 0.
     Agree,
     /// What was typed into the sheet is the answer, agreeing with it.
@@ -171,13 +165,14 @@ impl Asker {
     }
 
     /// Take what the person decided since the last pass, and put up the
-    /// oldest question nothing shows yet at `place`.
-    pub(crate) fn follow(&self, place: Option<PromptPlace>) {
+    /// oldest question nothing shows yet. The sheet draws on the display
+    /// the session put it on.
+    pub(crate) fn follow(&self) {
         let Some(questions) = &self.questions else {
             return;
         };
         self.settle(questions);
-        self.retire(questions, place);
+        self.retire(questions);
         // The sheet saying what was granted makes way for a question that
         // arrived meanwhile.
         if self.shown.borrow().is_some() && !questions.pending().is_empty() {
@@ -195,7 +190,7 @@ impl Asker {
         }
         let showing = questions.pending().into_iter().find_map(|question| {
             let kind = question.kind.clone();
-            self.show(question, place).then_some(kind)
+            self.show(question).then_some(kind)
         });
         if let Some(kind) = showing {
             tracing::debug!(kind, "a question is up on its sheet");
@@ -396,7 +391,7 @@ impl Asker {
 
     /// Take the sheet down when its question is gone from under it, or
     /// show it again when its service changed what it asks.
-    fn retire(&self, questions: &Questions, place: Option<PromptPlace>) {
+    fn retire(&self, questions: &Questions) {
         let current = self.shown.borrow().as_ref().map(Shown::state);
         let Some((handle, sheet, details)) = current else {
             return;
@@ -411,7 +406,7 @@ impl Asker {
         };
         if question.details != details {
             self.shown.borrow_mut().take();
-            self.show(question, place);
+            self.show(question);
         }
     }
 
@@ -431,7 +426,6 @@ impl Asker {
                     portal.show(None);
                     portal.presentation().close();
                     portal.presentation().gone();
-                    portal.presentation().place_at(None);
                 }
             }
             Sheet::Files => {
@@ -439,15 +433,13 @@ impl Asker {
                     picker.ask(None);
                     picker.presentation().close();
                     picker.presentation().gone();
-                    picker.presentation().place_at(None);
                 }
             }
         }
     }
 
-    /// Show `question` at `place`, unless nothing shows its kind: whether
-    /// it is up.
-    fn show(&self, question: Question, place: Option<PromptPlace>) -> bool {
+    /// Show `question`, unless nothing shows its kind: whether it is up.
+    fn show(&self, question: Question) -> bool {
         if question.kind == tilo_portal::file_chooser::FILE_CHOOSER_QUESTION {
             let Ok(asked) = serde_json::from_value::<FileChooserQuestion>(question.details.clone())
             else {
@@ -467,7 +459,6 @@ impl Asker {
                 grant: None,
             }));
             picker.ask(Some(request));
-            picker.presentation().place_at(place);
             picker.presentation().open(false);
             return true;
         }
@@ -488,7 +479,6 @@ impl Asker {
             grant: composed.grant,
         }));
         portal.show(Some(composed.dialog));
-        portal.presentation().place_at(place);
         portal.presentation().open(false);
         true
     }
@@ -693,26 +683,8 @@ impl Shown {
                     ..Answer::default()
                 })
             }
-            Plan::Color => {
-                let values: Vec<_> = (0..3).map(|at| seat.text(Field::Draft(at))).collect();
-                if !values.iter().all(|value| channel(value)) {
-                    return Err(word("portal-pick-color-incomplete"));
-                }
-                Ok(Answer {
-                    values,
-                    ..Answer::default()
-                })
-            }
         }
     }
-}
-
-/// Whether `typed` is a colour channel: a number from 0 to 1.
-fn channel(typed: &str) -> bool {
-    typed
-        .trim()
-        .parse::<f64>()
-        .is_ok_and(|value| (0.0..=1.0).contains(&value))
 }
 
 /// Whether `name` may name a launcher.
@@ -772,7 +744,6 @@ fn compose(question: &Question) -> Option<Composed> {
         tilo_portal::screenshot::SCREENSHOT_QUESTION => {
             screenshot(&question.handle, &who, details)?
         }
-        tilo_portal::screenshot::PICK_COLOR_QUESTION => pick_color(&question.handle),
         tilo_portal::usb::USB_QUESTION => usb(&question.handle, &who, details)?,
         tilo_portal::app_chooser::APP_CHOOSER_QUESTION => {
             app_chooser(&question.handle, &who, details)?
@@ -793,6 +764,7 @@ fn compose(question: &Question) -> Option<Composed> {
         NETWORK_KIND => network_secrets(&question.handle, details)?,
         CANNOT_JOIN_KIND => cannot_join(&question.handle, details)?,
         tilo_bluetooth_agent::KIND => pairing(&question.handle, details)?,
+        crate::agent_door::KIND => admitted(&question.handle, &who, details)?,
         _ => return None,
     };
     Some(Composed {
@@ -836,7 +808,7 @@ fn who(question: &Question) -> String {
 }
 
 /// What the app `app_id` is called.
-fn app_name(app_id: &str) -> String {
+pub(crate) fn app_name(app_id: &str) -> String {
     let scan = desktop_entry::cache::cached_scan();
     scan.find(app_id)
         .map_or_else(|| app_id.to_owned(), |entry| entry.name.clone())
@@ -882,6 +854,29 @@ fn access(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     let mut dialog = review(handle, title, heading, detail);
     dialog.body = Body::Choices(labels);
     Some((dialog, Plan::Choose(allowances)))
+}
+
+/// The agent door's question: a program of this login wants to work in the
+/// workspace in front as an agent. Answering admits it — as an agent member
+/// of that workspace, or for this connection only — and refusing leaves it
+/// with no access at all.
+fn admitted(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
+    let asked: crate::agent_door::Admission = serde_json::from_value(details).ok()?;
+    let title = words(
+        "agent-door-admission",
+        &[("workspace", &asked.workspace), ("agent", &asked.agent)],
+    );
+    let detail = words("agent-door-admission-detail", &[("agent", &asked.agent)]);
+    let mut dialog = review(handle, title, who.to_owned(), detail);
+    dialog.body = Body::Choices(vec![
+        word("portal-allow-once"),
+        word("portal-allow-session"),
+        word("portal-allow-always"),
+    ]);
+    Some((
+        dialog,
+        Plan::Choose(vec![ALLOW_ONCE, ALLOW_SESSION, ALLOW_ALWAYS]),
+    ))
 }
 
 /// What `capability` is, in the person's words.
@@ -1012,41 +1007,6 @@ fn screenshot(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)>
     );
     dialog.confirm_label = word("portal-screenshot-take");
     Some((dialog, Plan::Confirm))
-}
-
-/// The colour picker: three channels typed into the sheet.
-fn pick_color(handle: &str) -> (Dialog, Plan) {
-    let mut dialog = review(
-        handle,
-        word("portal-pick-color-title"),
-        String::new(),
-        word("portal-pick-color-detail"),
-    );
-    let channels = [
-        "portal-pick-color-red",
-        "portal-pick-color-green",
-        "portal-pick-color-blue",
-    ];
-    dialog.body = Body::Draft {
-        rows: channels
-            .iter()
-            .enumerate()
-            .map(|(index, key)| DraftRow {
-                index,
-                label: word(key),
-                value: DraftValue::Text {
-                    text: String::new(),
-                    multiline: false,
-                    number: true,
-                    withheld: false,
-                },
-                editable: true,
-            })
-            .collect(),
-        choices: Vec::new(),
-    };
-    dialog.confirm_label = word("portal-pick-color-use");
-    (dialog, Plan::Color)
 }
 
 fn usb(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {

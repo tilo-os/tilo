@@ -55,8 +55,41 @@ use tilo_power_mgmt::{
     PowerSignal,
 };
 
-pub use model::{Battery, Notice, Sleep};
+pub use model::{Battery, ChargeCapCapability, Notice, Sleep};
 pub use service::{BATTERY, SLEEP, SessionPower};
+
+/// The pack's charge-limit control as this machine offers it: the limit the
+/// driver exposes and the write that sets it. The real one is the
+/// [`tilo_power_mgmt::sysfs`] reading plus the narrowly scoped
+/// `tilo-battery-cap@` service that owns the write ([`OsChargePack`]); a
+/// test's is in memory.
+pub trait ChargePack: Send + Sync + std::fmt::Debug {
+    /// The limit this pack's driver offers, its current value and the ones
+    /// it takes; `None` where the hardware offers no limit.
+    fn limit(&self) -> Option<ChargeCapCapability>;
+    /// Apply `percent` and read the hardware back.
+    ///
+    /// # Errors
+    ///
+    /// Why the pack did not take it: out of the driver's range, the helper
+    /// refused, or the firmware kept another value.
+    fn set_limit(&self, percent: u32) -> Result<ChargeCapCapability, String>;
+}
+
+/// This machine's pack: the driver's limit, written through the
+/// `tilo-battery-cap@` service that alone may touch it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OsChargePack;
+
+impl ChargePack for OsChargePack {
+    fn limit(&self) -> Option<ChargeCapCapability> {
+        os_actions::charge_capability()
+    }
+
+    fn set_limit(&self, percent: u32) -> Result<ChargeCapCapability, String> {
+        os_actions::set_charge_limit_checked(percent)
+    }
+}
 
 /// The idle, lid, key and battery policy of this session, and the way to
 /// every part of the machine that acts on it.
@@ -72,6 +105,8 @@ pub struct PowerLink {
 struct Inner {
     bridge: PowerBridge,
     registry: InhibitRegistry,
+    /// The pack's charge limit, when this machine has one.
+    pack: std::sync::Arc<dyn ChargePack>,
     /// The policy in force.
     policy: Mutex<PowerPolicy>,
     /// The last battery notice, until a surface shows it.
@@ -98,13 +133,21 @@ impl Default for PowerLink {
 
 impl PowerLink {
     /// A link running `policy`, as the session's settings loader resolved
-    /// it.
+    /// it, over this machine's own pack.
     #[must_use]
     pub fn new(policy: PowerPolicy) -> Self {
+        Self::over(policy, std::sync::Arc::new(OsChargePack))
+    }
+
+    /// A link running `policy`, with `pack` behind the charge limit: a test
+    /// drives a pack in memory, a capture shows one.
+    #[must_use]
+    pub fn over(policy: PowerPolicy, pack: std::sync::Arc<dyn ChargePack>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 bridge: PowerBridge::new(),
                 registry: InhibitRegistry::new(),
+                pack,
                 policy: Mutex::new(policy),
                 notice: Mutex::new(None),
                 holds: Mutex::new(BTreeMap::new()),
@@ -279,8 +322,19 @@ impl PowerLink {
             state: state_label(snapshot.state),
             on_battery: snapshot.runs_on_battery(),
             minutes_left,
+            charge_limit: self.inner.pack.limit(),
             notice: self.inner.notice.lock_recover().clone(),
         }
+    }
+
+    /// Stop charging at `percent`, where the pack's driver offers a limit,
+    /// and read the hardware back.
+    ///
+    /// # Errors
+    ///
+    /// Why the pack did not take it.
+    pub fn set_charge_limit(&self, percent: u32) -> Result<ChargeCapCapability, String> {
+        self.inner.pack.set_limit(percent)
     }
 
     /// The policy in force and what holds the machine awake.

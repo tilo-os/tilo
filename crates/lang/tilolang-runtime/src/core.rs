@@ -113,8 +113,12 @@ pub struct Core {
     pub reader: RefCell<Option<Box<crate::program::ReadThrough>>>,
     /// Whether the invocation being made is a `try`'s, whose failure the program handles.
     pub trying: std::cell::Cell<bool>,
-    /// The resources of apps this runtime does not hold that programs read, as they print.
-    pub foreign: RefCell<crate::reads::Foreign>,
+    /// The resources of apps this runtime does not run: how they print, and their readings, as
+    /// the host gives them.
+    pub foreign: RefCell<crate::foreign::Foreign>,
+    /// The seen marks the person set here, for the host to keep in their own record
+    /// ([`crate::seen`]).
+    pub seen_writes: RefCell<Vec<crate::seen::SeenWrite>>,
 }
 
 /// What `now` reads while the host has set no clock.
@@ -219,7 +223,8 @@ impl Core {
             invoker: RefCell::new(None),
             reader: RefCell::new(None),
             trying: std::cell::Cell::new(false),
-            foreign: RefCell::new(crate::reads::Foreign::default()),
+            foreign: RefCell::new(crate::foreign::Foreign::default()),
+            seen_writes: RefCell::new(Vec::new()),
         });
         // The types the host provides to every module, such as `Invocation`.
         let host = crate::registry::Package::new(
@@ -292,22 +297,22 @@ impl Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActOpen, ActRef, ActSet, ActThen, Actions, ArgAt, CollInsert, CollMove,
-            CollMoveAmong, CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, Dated,
-            Delivery, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI,
-            EventPart, EventValue, Filters, FloatToStr, IdentPart, IntToStr, Invoke, Invoker,
-            InvokerPop, InvokerPush, IsError, IsSome, Lenses, ListEnd, ListGetF, ListGetH,
-            ListGetI, ListLen, ListNew, ListPushF, ListPushH, ListPushI, ListReverse,
-            ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd, MapSetRemove, Members,
-            MetaOf, ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq, PrincipalKind,
-            PrincipalName, PrincipalNamed, PrincipalRole, Query, QueueBlock, RecNew, RecSetF,
-            RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH,
-            ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, RichEmpty, RichNew, RichPart, RichTime,
-            SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet,
-            StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
-            TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions, UiAnchor, UiBind, UiBindState,
-            UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
-            VersionEnd, Versions, WorkspaceMembers,
+            Abort, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, ArgAt, ChangeView,
+            CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRemove, CollWhere,
+            CollWhereWith, Dated, Delivery, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew,
+            EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, Filters, FloatToStr, IdentPart,
+            IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, Lenses, ListEnd,
+            ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH, ListPushI,
+            ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd,
+            MapSetRemove, Members, MetaOf, ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq,
+            PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Query, QueueBlock, RecNew,
+            RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF,
+            ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, RichEmpty, RichNew, RichPart,
+            RichTime, RunChanges, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers,
+            StateAt, StateGet, Steps, StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke,
+            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions,
+            UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI,
+            Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -356,9 +361,11 @@ impl Core {
             }
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
             | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet | ActThen | ActOpen
-            | UiActions => self.ui_import(imp, a),
+            | ActUndo | ChangeView | UiActions => self.ui_import(imp, a),
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions
-            | VersionEnd | Phrase | Dated => self.platform_import(imp, a),
+            | RunChanges | Unseen | Steps | VersionEnd | Phrase | Dated => {
+                self.platform_import(imp, a)
+            }
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }

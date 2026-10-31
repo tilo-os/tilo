@@ -86,6 +86,9 @@ pub(super) struct HeldRoom {
     host: iroh::EndpointId,
     /// Whether that host is this device's own.
     here: bool,
+    /// The host is one that acts as a host for others, which issues an
+    /// invitation for every member the room's policy lets invite.
+    relay: bool,
 }
 
 impl HeldRoom {
@@ -97,6 +100,17 @@ impl HeldRoom {
     /// here, private until its person makes it public.
     pub(super) const fn hosted_here(&self) -> bool {
         self.here
+    }
+
+    /// The host's own device, the room's governor.
+    pub(super) const fn host(&self) -> iroh::EndpointId {
+        self.host
+    }
+
+    /// Whether the host issues an invitation this device asks for on anyone's
+    /// behalf, or only one this person governs the room for.
+    pub(super) const fn invites_for_members(&self) -> bool {
+        self.relay
     }
 }
 
@@ -133,18 +147,18 @@ impl PersonsHost {
 /// placed on it. `None` when the room is governed elsewhere than where it
 /// is served.
 pub(super) fn hosting_governor(
-    view: &tilo_joined_room::NativeCommittedView,
+    view: &tilo_peer_state::owner::NativeCommittedView,
     room: RoomId,
 ) -> Result<Option<iroh::EndpointId>, String> {
     let (hint, _) = IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint()?)
         .map_err(|error| error.to_string())?;
-    if hint.room != room.to_string() || &hint.governing_authority != view.governor() {
+    if hint.room != room.to_string() || &hint.host_device_certificate != view.room_host() {
         return Err("the room's host differs from its current admitted governor".into());
     }
-    if &hint.host_device_certificate != view.governor() {
+    if &hint.host_device_certificate != view.room_host() {
         return Ok(None);
     }
-    iroh::EndpointId::from_bytes(&view.governor().device_public_key)
+    iroh::EndpointId::from_bytes(&view.room_host().device_public_key)
         .map(Some)
         .map_err(|error| error.to_string())
 }
@@ -293,7 +307,7 @@ impl ShellNetwork {
         owner
             .with_current(room, |view| {
                 let (certificate, _) = identity.current_native_material(view.workspace())?;
-                if view.governor().user_public_key != certificate.user_public_key {
+                if view.owner() != certificate.user_public_key {
                     return Err("another person governs the room".into());
                 }
                 Ok(())
@@ -314,6 +328,7 @@ impl ShellNetwork {
                     room,
                     host,
                     here: host == self.local_peer_id,
+                    relay: crate::shell::native_workspace_owner::host_hosts_for_others(view, room),
                 })
             })
             .ok()
@@ -515,8 +530,8 @@ impl ShellNetwork {
         self.remember_relay_invitation(target.room, &issued, terms)
     }
 
-    /// Cancel `invitation` of `room` at the relay governing it. `Ok(false)`
-    /// when no relay of this person governs `room`.
+    /// Cancel `invitation` of `room` at the host governing it. `Ok(false)`
+    /// when no host of this person governs `room`.
     pub(super) fn cancel_relay_invitation(
         &self,
         room: RoomId,
@@ -776,7 +791,7 @@ impl ShellNetwork {
             .filter_map(|room| {
                 let host = owner
                     .with_current(room, |view| {
-                        if view.governor().user_public_key != user {
+                        if view.owner() != user {
                             return Ok(None);
                         }
                         Ok(Some(view.transport_hint()?.host.device_public_key))

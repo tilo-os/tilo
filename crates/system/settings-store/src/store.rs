@@ -5,10 +5,11 @@
 //! other section), in `<root>/records/person.automerge` and
 //! `<root>/records/device.automerge`. Each section is a map at the document's
 //! root and each leaf a key in it; a value is stored as what it is (an object
-//! a map, an array a list, a string, number, boolean or `null` a scalar), the
-//! way `tilo_resource` stores JSON, so concurrent edits of different keys
-//! merge and a typed model can read the same document. Readers see the
-//! device document with the person's leaves laid over it.
+//! a map, an array a list, a string, number, boolean or `null` a scalar), as
+//! every Tilo document stores JSON ([`tilo_automerge::json`]), so concurrent
+//! edits of different keys merge and a typed model can read the same
+//! document. Readers see the device document with the person's leaves laid
+//! over it.
 //!
 //! A write changes the documents in memory, commits it with its
 //! [`ChangeOrigin`] as the change's message, and shows it to readers at once;
@@ -27,7 +28,10 @@
 //! follows the holder's saves; its writes go to the holder over
 //! `<root>/records/settings.sock`, which applies them as its own and saves
 //! before it answers. Nothing else stands in for the documents: there is no
-//! copy to keep in step.
+//! copy to keep in step. A follower whose write the door does not take
+//! makes it itself only where the holder is gone (its lock is free); while
+//! the holder lives, the write fails with what the door said, and never
+//! waits for the holder to end.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -35,9 +39,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 
 use automerge::transaction::{CommitOptions, Transactable as _};
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _, ScalarValue};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
 use serde_json::{Map, Value};
-use tilo_automerge::ApplyIncoming as _;
+use tilo_automerge::{ApplyIncoming as _, json};
 use tilo_lock::MutexRecover as _;
 
 use tilo_settings_records::{Door, Hold, Holding, Records, Stamp, Watch};
@@ -232,13 +236,31 @@ impl Store {
     /// Take other processes' writes from now on.
     fn open_door(&self) {
         let weak = self.me.clone();
-        *self.door.lock_recover() = self.records.open_door(move |request| {
+        let opened = self.records.open_door(move |request| {
             let answer = match weak.upgrade() {
                 Some(store) => door::answer(&store, request),
                 None => door::Answer::Refused("the settings were closed".to_owned()),
             };
-            serde_json::to_vec(&answer).unwrap_or_default()
+            match serde_json::to_vec(&answer) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::error!(%error, "the settings door could not encode its answer");
+                    Vec::new()
+                }
+            }
         });
+        *self.door.lock_recover() = match opened {
+            Ok(door) => Some(door),
+            Err(error) if error.kind() == std::io::ErrorKind::Unsupported => None,
+            Err(error) => {
+                tracing::error!(
+                    root = %self.root.display(),
+                    %error,
+                    "the settings door did not open: other processes' settings writes fail"
+                );
+                None
+            }
+        };
     }
 
     fn is_follower(&self) -> bool {
@@ -247,17 +269,13 @@ impl Store {
 
     /// A follower opened to hold the profile takes it over when its holder
     /// is gone (a session that ended): from what the holder saved, as the
-    /// holder from now on. Whether this process now holds it.
-    fn take_over(&self, wait: bool) -> bool {
+    /// holder from now on. Whether this process now holds it; never waits
+    /// for a holder that is still there.
+    fn take_over(&self) -> bool {
         if !self.may_hold || !self.is_follower() {
             return false;
         }
-        let held = if wait {
-            self.records.wait_to_hold()
-        } else {
-            self.records.try_hold()
-        };
-        let Hold::Held(lock) = held else {
+        let Hold::Held(lock) = self.records.try_hold() else {
             return false;
         };
         let Ok((person, device, seen)) = load_docs(&self.records) else {
@@ -370,7 +388,7 @@ impl Store {
     ) -> std::io::Result<ConditionalUpdate> {
         let refused = self.refused.lock_recover().clone();
         if let Some(why) = refused
-            && !self.take_over(false)
+            && !self.take_over()
         {
             if self.is_follower() {
                 return self.forward(origin, decide, &why);
@@ -395,8 +413,9 @@ impl Store {
                 }
                 let holder = placement::holder(&name);
                 let doc = docs.doc(holder);
-                let section = map_at(doc, &ROOT, &name).map_err(std::io::Error::other)?;
-                write_value(doc, &section, &leaf, &value).map_err(std::io::Error::other)?;
+                let section =
+                    json::map_at(doc, &ROOT, name.as_str()).map_err(std::io::Error::other)?;
+                json::write(doc, &section, leaf.as_str(), &value).map_err(std::io::Error::other)?;
                 touched.push((holder, name.clone(), leaf, value));
             }
         }
@@ -512,7 +531,7 @@ impl Store {
         let holder = placement::holder(section);
         let refused = self.refused.lock_recover().clone();
         if let Some(why) = refused
-            && !self.take_over(false)
+            && !self.take_over()
         {
             if !self.is_follower() {
                 return Err(std::io::Error::new(
@@ -591,7 +610,7 @@ impl Store {
                 self.take_in_saves();
                 Ok(())
             }
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound && self.take_over(true) => {
+            Err(_) if self.take_over() => {
                 let Some(changes) = request.changes else {
                     return Ok(());
                 };
@@ -623,10 +642,10 @@ fn make_containers(
     for (name, values) in sections {
         let doc = docs.doc(placement::holder(name));
         made |= !is_map(doc, &ROOT, name);
-        let section = map_at(doc, &ROOT, name)?;
+        let section = json::map_at(doc, &ROOT, name.as_str())?;
         for (leaf, value) in values {
             if value.is_object() && !is_map(doc, &section, leaf) {
-                map_at(doc, &section, leaf)?;
+                json::map_at(doc, &section, leaf.as_str())?;
                 made = true;
             }
         }
@@ -749,11 +768,11 @@ impl Store {
         };
         let answer = match door::send(&self.records, &request) {
             Ok(answer) => answer,
-            // The holder's door closes only as the holder ends: once it has
-            // let the settings go, this process holds them and makes the
-            // change itself.
-            // A holder with no door at all (`NotFound`) is not waited for.
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound && self.take_over(true) => {
+            // The holder lets the settings go before it closes its door:
+            // where the door no longer answers and the lock is free, this
+            // process holds them and makes the change itself. A holder that
+            // is still there is never waited for.
+            Err(_) if self.take_over() => {
                 let door::Request {
                     expected, sections, ..
                 } = request;
@@ -1113,64 +1132,7 @@ fn empty(root: &Path) -> Arc<Store> {
     })
 }
 
-// ----- JSON values as the document's own maps, lists and scalars -----
-
-fn scalar_of(value: &Value) -> ScalarValue {
-    match value {
-        Value::Bool(flag) => ScalarValue::Boolean(*flag),
-        Value::String(text) => ScalarValue::Str(text.as_str().into()),
-        Value::Number(number) => number.as_i64().map_or_else(
-            || {
-                number.as_u64().map_or_else(
-                    || ScalarValue::F64(number.as_f64().unwrap_or_default()),
-                    ScalarValue::Uint,
-                )
-            },
-            ScalarValue::Int,
-        ),
-        Value::Null | Value::Array(_) | Value::Object(_) => ScalarValue::Null,
-    }
-}
-
-fn json_of_scalar(scalar: &ScalarValue) -> Value {
-    match scalar {
-        ScalarValue::Boolean(flag) => Value::Bool(*flag),
-        ScalarValue::Str(text) => Value::String(text.to_string()),
-        ScalarValue::Int(int) => Value::from(*int),
-        ScalarValue::Uint(uint) => Value::from(*uint),
-        ScalarValue::F64(float) => {
-            serde_json::Number::from_f64(*float).map_or(Value::Null, Value::Number)
-        }
-        ScalarValue::Counter(counter) => Value::from(i64::from(counter)),
-        ScalarValue::Timestamp(at) => Value::from(*at),
-        _ => Value::Null,
-    }
-}
-
-fn read_value(doc: &AutoCommit, value: &automerge::Value<'_>, id: &ObjId) -> Value {
-    match value {
-        automerge::Value::Scalar(scalar) => json_of_scalar(scalar),
-        automerge::Value::Object(ObjType::Text) => doc.text(id).map_or(Value::Null, Value::String),
-        automerge::Value::Object(ObjType::Map | ObjType::Table) => Value::Object(read_map(doc, id)),
-        automerge::Value::Object(ObjType::List) => Value::Array(
-            (0..doc.length(id))
-                .map(|at| match doc.get(id, at) {
-                    Ok(Some((value, child))) => read_value(doc, &value, &child),
-                    _ => Value::Null,
-                })
-                .collect(),
-        ),
-    }
-}
-
-fn read_map(doc: &AutoCommit, obj: &ObjId) -> Map<String, Value> {
-    doc.keys(obj)
-        .filter_map(|key| {
-            let (value, id) = doc.get(obj, key.as_str()).ok()??;
-            Some((key, read_value(doc, &value, &id)))
-        })
-        .collect()
-}
+// ----- the sections as JSON -----
 
 /// The sections of `doc`: its root, without the history's bookkeeping.
 fn read_root(doc: &AutoCommit) -> Map<String, Value> {
@@ -1178,88 +1140,9 @@ fn read_root(doc: &AutoCommit) -> Map<String, Value> {
         .filter(|key| !key.starts_with(BOOKKEEPING))
         .filter_map(|key| {
             let (value, id) = doc.get(&ROOT, key.as_str()).ok()??;
-            Some((key, read_value(doc, &value, &id)))
+            Some((key, json::read_value(doc, &value, &id).ok()?))
         })
         .collect()
-}
-
-/// The map at `key` of `obj`, made where something else or nothing is there.
-fn map_at(
-    doc: &mut AutoCommit,
-    obj: &ObjId,
-    key: &str,
-) -> Result<ObjId, automerge::AutomergeError> {
-    match doc.get(obj, key)? {
-        Some((automerge::Value::Object(ObjType::Map), id)) => Ok(id),
-        _ => doc.put_object(obj, key, ObjType::Map),
-    }
-}
-
-/// Make `key` of the map `obj` hold `value`, changing only what differs.
-fn write_value(
-    doc: &mut AutoCommit,
-    obj: &ObjId,
-    key: &str,
-    value: &Value,
-) -> Result<(), automerge::AutomergeError> {
-    match value {
-        Value::Object(fields) => {
-            let map = map_at(doc, obj, key)?;
-            let stale: Vec<String> = doc.keys(&map).filter(|k| !fields.contains_key(k)).collect();
-            for gone in stale {
-                doc.delete(&map, gone.as_str())?;
-            }
-            for (field, value) in fields {
-                write_value(doc, &map, field, value)?;
-            }
-        }
-        Value::Array(items) => {
-            let same = match doc.get(obj, key)? {
-                Some((found, id)) => read_value(doc, &found, &id) == *value,
-                None => false,
-            };
-            if !same {
-                let list = doc.put_object(obj, key, ObjType::List)?;
-                for (at, item) in items.iter().enumerate() {
-                    insert_value(doc, &list, at, item)?;
-                }
-            }
-        }
-        scalar => {
-            let same = match doc.get(obj, key)? {
-                Some((automerge::Value::Scalar(found), _)) => json_of_scalar(&found) == *scalar,
-                _ => false,
-            };
-            if !same {
-                doc.put(obj, key, scalar_of(scalar))?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn insert_value(
-    doc: &mut AutoCommit,
-    list: &ObjId,
-    at: usize,
-    value: &Value,
-) -> Result<(), automerge::AutomergeError> {
-    match value {
-        Value::Object(fields) => {
-            let map = doc.insert_object(list, at, ObjType::Map)?;
-            for (field, value) in fields {
-                write_value(doc, &map, field, value)?;
-            }
-        }
-        Value::Array(items) => {
-            let inner = doc.insert_object(list, at, ObjType::List)?;
-            for (index, item) in items.iter().enumerate() {
-                insert_value(doc, &inner, index, item)?;
-            }
-        }
-        scalar => doc.insert(list, at, scalar_of(scalar))?,
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1385,6 +1268,80 @@ mod tests {
         assert_eq!(follower.load_section_value("s")["z"], 3);
     }
 
+    /// `write`'s result, failing the test where it has not returned within
+    /// seconds: a write that waits for nobody.
+    fn promptly<T: Send + 'static>(write: impl FnOnce() -> T + Send + 'static) -> T {
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done.send(write()));
+        result
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the write returned")
+    }
+
+    /// A profile whose door's path is longer than a socket's path may be.
+    fn deep_profile() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("a".repeat(60)).join("b".repeat(60));
+        let [_, door] = Records::of(&root).runtime_files();
+        assert!(door.as_os_str().len() > 108, "{}", door.display());
+        (dir, root)
+    }
+
+    #[test]
+    fn a_profile_deeper_than_a_socket_path_still_takes_followers_writes() {
+        let (_dir, root) = deep_profile();
+        let holder = Store::open(&root).unwrap();
+        holder.update_section("s", object(json!({"x": 1}))).unwrap();
+        holder.flush_pending();
+        let follower = Store::open(&root).unwrap();
+        assert!(!follower.is_holder());
+        let writer = Arc::clone(&follower);
+        promptly(move || writer.update_section("s", object(json!({"x": 2})))).unwrap();
+        assert_eq!(holder.load_section_value("s"), json!({"x": 2}));
+        let writer = Arc::clone(&follower);
+        promptly(move || {
+            writer.edit_document(
+                "power",
+                &ChangeOrigin::local("settings.power/undo"),
+                |doc| {
+                    put_leaf(doc, "power", "x", 2);
+                    Ok(())
+                },
+            )
+        })
+        .unwrap();
+        assert_eq!(holder.load_section_value("power"), json!({"x": 2}));
+        assert!(!follower.is_holder(), "the holder is still there");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_follower_never_waits_for_a_live_holder_whose_door_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let holder = Store::open(dir.path()).unwrap();
+        holder.update_section("s", object(json!({"x": 1}))).unwrap();
+        holder.flush_pending();
+        let follower = Store::open(dir.path()).unwrap();
+        // The holder lives on with its lock, behind a door nobody answers.
+        *holder.door.lock_recover() = None;
+        let [_, door] = holder.records.runtime_files();
+        drop(std::os::unix::net::UnixListener::bind(&door).unwrap());
+
+        let writer = Arc::clone(&follower);
+        let refused = promptly(move || writer.update_section("s", object(json!({"x": 2}))));
+        assert!(refused.is_err(), "{refused:?}");
+        let writer = Arc::clone(&follower);
+        let refused = promptly(move || {
+            writer.edit_document("power", &ChangeOrigin::default(), |doc| {
+                put_leaf(doc, "power", "x", 2);
+                Ok(())
+            })
+        });
+        assert!(refused.is_err(), "{refused:?}");
+        assert!(!follower.is_holder());
+        assert_eq!(holder.load_section_value("s"), json!({"x": 1}));
+    }
+
     #[test]
     fn the_change_log_names_what_made_each_change() {
         let dir = tempfile::tempdir().unwrap();
@@ -1427,7 +1384,7 @@ mod tests {
     /// Put `value` at `leaf` of the section `section` of `doc`, and mark
     /// the history's bookkeeping beside it.
     fn put_leaf(doc: &mut AutoCommit, section: &str, leaf: &str, value: i64) {
-        let map = map_at(doc, &ROOT, section).unwrap();
+        let map = json::map_at(doc, &ROOT, section).unwrap();
         doc.put(&map, leaf, value).unwrap();
         doc.put(&ROOT, format!("{BOOKKEEPING}mark"), true).unwrap();
     }

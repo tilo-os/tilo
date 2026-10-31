@@ -65,7 +65,7 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
     let mut views = host("Views");
     views.push(ExportedAction {
         resource: format!("tl:{VIEWS}:root"),
-        resource_kind: format!("tl.{VIEWS}.Answers"),
+        resource_kind: format!("tl.{VIEWS}.Views"),
         resource_label: "Views".into(),
         ..descriptor(
             "answer",
@@ -74,7 +74,8 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
             vec![
                 ActionParam::required("title", ParamType::Text, "title"),
                 ActionParam::required("question", ParamType::Text, "question"),
-                ActionParam::required("source", ParamType::Text, "source"),
+                ActionParam::required("definition", ParamType::Text, "definition"),
+                ActionParam::optional("shows", ParamType::Text, "shows"),
             ],
             Availability::Available,
             vec![],
@@ -137,7 +138,7 @@ pub(super) fn catalogue() -> Value {
         {"app": BOARD, "name": "Column", "signature": "type Column { title: Text }"},
         {"app": BOARD, "name": "Board", "signature": "root Board"},
         {"app": BOARD, "name": "add_card", "signature": "action add_card(b: Board, col: Column, title: Text) -> Card"},
-        {"app": VIEWS, "name": "Answer", "signature": "type Answer { title: Text, source: Text }"},
+        {"app": VIEWS, "name": "WrittenView", "signature": "type WrittenView { title: Text, definition: Text }"},
     ])
 }
 
@@ -204,10 +205,11 @@ fn a_task_works_in_programs_and_answers_with_a_view() {
     });
     let world = World {
         tilolang: true,
-        // The view's rows, checked by the Views host.
+        // The view, checked by the Views host: a `view` declaration that takes nothing.
         tl_blocks: vec![(
             "row(c)",
-            serde_json::json!({"kind": "view", "tree": {"kind": "column", "key": "0"}}),
+            serde_json::json!({"kind": "view", "tree": {"kind": "column", "key": "0"},
+                "definition": {"name": "left", "shows": null, "params": []}}),
         )],
         // Matched in order: the program that does not compile, the move, the cards.
         tl_programs: vec![
@@ -224,7 +226,7 @@ fn a_task_works_in_programs_and_answers_with_a_view() {
         ],
         ..World::default()
     };
-    let view = "column { for c in (root board.Board).cards { row(c) } }";
+    let view = "view left() {\n    column { for c in (root board.Board).cards { row(c) } }\n}";
     let mut f = fixture(
         "what's left for the release?",
         world,
@@ -264,9 +266,10 @@ fn a_task_works_in_programs_and_answers_with_a_view() {
             message: "One card is left.".into()
         }
     );
-    // The first message says where the task is: its limits and the apps its programs reach.
+    // The first message says where the task is: the apps its programs reach, and no limits
+    // when its person set none.
     let first = bodies[0].to_string();
-    assert!(first.contains("Limits: at most"), "{first}");
+    assert!(!first.contains("Limits:"), "{first}");
     assert!(first.contains("`board`: Board"), "{first}");
     assert!(first.contains("types Card, Column"), "{first}");
     assert!(tool_names(&bodies[0]).contains(&crate::programs::TILO.to_owned()));
@@ -319,6 +322,16 @@ fn a_task_works_in_programs_and_answers_with_a_view() {
         .filter(|action| ["run-block", "answer"].contains(action))
         .collect();
     assert_eq!(kept, ["run-block", "answer"]);
+    // It is kept as the declaration the task wrote, among the person's own views.
+    let answer = &world
+        .steps
+        .iter()
+        .find(|(action, _)| action == "answer")
+        .unwrap()
+        .1;
+    assert_eq!(answer["definition"], Value::String(view.to_owned()));
+    assert_eq!(answer["shows"], Value::String(String::new()));
+    drop(world);
     let answers: Vec<ResourceAt> = recorded(&sent, "record-answer")
         .into_iter()
         .map(|arguments| serde_json::from_value(arguments["view"].clone()).unwrap())
@@ -354,7 +367,7 @@ fn a_view_that_is_not_a_view_is_refused_and_the_task_goes_on() {
     f.session.run_task(&f.run).unwrap();
     let bodies = f.script.bodies.lock().unwrap();
     let refused = said_last(&bodies[1]);
-    assert!(refused.contains("is not a view"), "{refused}");
+    assert!(refused.contains("is not a `view` declaration"), "{refused}");
     drop(bodies);
     assert!(recorded(&f.sent.borrow(), "record-answer").is_empty());
     assert_eq!(

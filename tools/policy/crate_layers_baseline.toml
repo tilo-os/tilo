@@ -63,8 +63,3 @@ rule = "tilo-peer-state"
 package = "tilo-network-actor"
 path = "Cargo.toml"
 
-# An agent crate's tests name the join contract's `MemberRole` through the
-# engine; they go when they read it from tilo-workspace-join, which owns it.
-[[violation]]
-rule = "tilo-peer-state"
-package = "tilo-agent-participant"

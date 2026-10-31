@@ -170,7 +170,7 @@ fn apply(
     original: &BTreeMap<[u8; 32], VerifiedCertificate>,
     certificates: &mut BTreeMap<[u8; 32], VerifiedCertificate>,
     revocations: &mut RevocationList,
-    authority: &DeviceCert,
+    owner: &[u8; 32],
     now: SystemTime,
     cert_work: &mut Work,
 ) -> Result<bool, ImportError> {
@@ -196,7 +196,7 @@ fn apply(
             None => cert_work.certificate(cert, Some(now_ns(now)))?,
         };
         if !original.contains_key(&cert.device_public_key)
-            && cert.user_public_key != authority.user_public_key
+            && cert.user_public_key != *owner
             && !identity.has_admission()
             && !inputs.members.contains(&hex::encode(cert.user_public_key))
         {
@@ -234,7 +234,7 @@ pub(in crate::state) fn legacy(
     room: &AutoCommit,
     original: &BTreeMap<[u8; 32], VerifiedCertificate>,
     revocations: &RevocationList,
-    authority: &DeviceCert,
+    owner: &[u8; 32],
     now: SystemTime,
 ) -> Result<LegacyImport, ImportError> {
     let mut work = Work::unlimited();
@@ -246,7 +246,7 @@ pub(in crate::state) fn legacy(
         original,
         &mut certificates,
         &mut revocations,
-        authority,
+        owner,
         now,
         &mut work,
     )?;

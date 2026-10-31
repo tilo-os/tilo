@@ -18,6 +18,9 @@ const FREE_TEXT: &[(&str, &str)] = &[
     ("settings.appearance", "language"),
     // Any family a theme's type role may name.
     ("settings.appearance", "ui_face"),
+    // A name the presence palette gives a hue, checked by the section's
+    // invariant.
+    ("settings.appearance", "accent"),
     ("settings.text-assistance", "spelling_language"),
     // A shipped wallpaper's id, checked against the ones installed.
     ("settings.appearance", "wallpaper"),

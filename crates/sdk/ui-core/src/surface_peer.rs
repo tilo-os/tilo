@@ -16,6 +16,10 @@
 //!
 //! A surface process finds the socket in [`ACTIONS_FD_ENV`]; without it the
 //! app is an ordinary app with no host in reach, as before.
+//!
+//! What a surface reads of the session is no action: it reads what the
+//! session publishes through the session's own services, as any app does
+//! ([`crate::surface_services`]).
 
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::FromRawFd;
@@ -238,8 +242,10 @@ impl PeerTransport for SurfacePeer {
                     })
                     .map_err(|_| String::from("the session closed the actions socket"))
             }
-            CollabRequest::PublishActionSurface { app_id, delta } => {
-                self.app_id = app_id;
+            CollabRequest::PublishActionSurface { delta } => {
+                // The app this peer is was named when it joined: a surface
+                // publishes what it offers, and the session reads it as the
+                // app it placed.
                 if let Err(error) = self.published.lock_recover().apply(&delta) {
                     tracing::warn!(%error, "a surface's action surface did not apply");
                 }

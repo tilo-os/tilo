@@ -2058,3 +2058,6 @@ mod tests;
 
 mod component;
 pub use component::SectionProps;
+
+mod status_component;
+pub use status_component::{ObjectHeaderProps, StatusLineProps};

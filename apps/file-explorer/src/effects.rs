@@ -151,6 +151,30 @@ pub enum FilesEffect {
         #[param("Absolute path of the folder to show")]
         path: AbsolutePath,
     },
+    /// Remove from favorites.
+    ///
+    /// Unpins a favorite from the places list of this window. The folder
+    /// stays where it is; nothing on disk changes.
+    #[effect(view, idempotent)]
+    #[effect(icon = "x")]
+    RemoveFavorite {
+        #[param("Absolute path of the favorite to unpin")]
+        path: AbsolutePath,
+    },
+    /// Move favorite.
+    ///
+    /// Puts one favorite before or after another in the places list, in this
+    /// window's own order; nothing on disk changes.
+    #[effect(view, idempotent)]
+    #[effect(icon = "list")]
+    MoveFavorite {
+        #[param("Absolute path of the favorite to move")]
+        source: AbsolutePath,
+        #[param("Absolute path of the favorite it lands beside")]
+        target: AbsolutePath,
+        #[param("Whether it lands before the target, and after it otherwise")]
+        before: bool,
+    },
     /// Parent folder.
     #[effect(view)]
     #[effect(keywords = "go up, parent directory, up one level")]
@@ -238,6 +262,21 @@ pub enum FilesEffect {
     OpenItem {
         #[param("The row: an entry, a place or a found record")]
         item: String,
+    },
+    /// Read entry
+    ///
+    /// Answers what a file, folder or app the window shows is: its name and
+    /// absolute path, whether it is a folder, its type, size and when it
+    /// was last changed, whether its content is on this device and whether
+    /// it has an open conflict. A file's text is Read a file's text. It is
+    /// the entry's read: what discloses its row, so copying, sending,
+    /// sharing, renaming and its other actions are offered to whoever may
+    /// read it, an agent too.
+    #[effect(view, row, kind = "read", returns, idempotent)]
+    #[effect(icon = "info")]
+    ReadEntry {
+        #[param("The entry's row id")]
+        entry: String,
     },
     /// Show in folder.
     #[effect(view, row)]

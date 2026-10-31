@@ -103,11 +103,38 @@ impl AnswerScope {
         }
     }
 
-    fn key(&self) -> String {
+    /// The scope as one key, which [`Self::parse`] reads back: the app's id,
+    /// and the kind and the action a narrower scope names.
+    #[must_use]
+    pub fn key(&self) -> String {
         match self {
             Self::App { app } => format!("app:{app}"),
             Self::Kind { app, kind } => format!("kind:{app}:{kind}"),
             Self::Action { app, kind, action } => format!("action:{app}:{kind}:{action}"),
+        }
+    }
+
+    /// The scope a [`Self::key`] names, if it names one.
+    #[must_use]
+    pub fn parse(key: &str) -> Option<Self> {
+        let mut parts = key.split(':');
+        match (
+            parts.next()?,
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ) {
+            ("app", Some(app), None, None, None) if !app.is_empty() => Some(Self::app(app)),
+            ("kind", Some(app), Some(kind), None, None) if !app.is_empty() && !kind.is_empty() => {
+                Some(Self::kind(app, kind))
+            }
+            ("action", Some(app), Some(kind), Some(action), None)
+                if !app.is_empty() && !kind.is_empty() && !action.is_empty() =>
+            {
+                Some(Self::action(app, kind, action))
+            }
+            _ => None,
         }
     }
 }

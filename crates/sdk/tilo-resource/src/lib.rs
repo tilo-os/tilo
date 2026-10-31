@@ -169,7 +169,7 @@ pub use collection::{
 };
 pub use delta::{Delta, ObjPath, Touch, Touched, Tracker};
 pub use derived::{Bound, Derived};
-pub use effect::{Answers, Effect, EffectDecl, EffectOffload, NoEffect};
+pub use effect::{Answers, Effect, EffectDecl, EffectDecodeError, EffectOffload, NoEffect};
 pub use evolution::Unreadable;
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use keyed::{ById, Identified, ItemStorage, Items, Keyed};

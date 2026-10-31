@@ -81,3 +81,53 @@ source `cancelled`, so a move never completed and the source kept the item.
   set; the compositor sends `dnd_finished` once its target read the data.
 
 Remove this once smithay lets a compositor complete drops on its own targets.
+
+## What the focused field committed (`text-input-v3`)
+
+smithay's text-input handle keeps a client's pending state but takes the
+committed state out of it on `commit` and only hands it to the input method,
+so a compositor cannot tell which field has the focus, what it declared, or
+whether it changed since it was looked at.
+
+- `src/wayland/text_input/text_input_handle.rs`: each instance keeps
+  `committed_state` (the serial of the commit that accepted it, the content
+  type it declared and the cursor rectangle it reported; a commit that does
+  not restate either keeps the previous one, since clients send them only
+  when they change). A commit that is accepted stores it in the same places
+  the handler continues past its "discarding …" returns, a commit that
+  disables the field clears it, and a discarded commit changes nothing.
+  `TextInputHandle::with_active_text_input_committed(f)` reports it for the
+  active instance — the text-input object, its surface and a
+  `CommittedState` — and returns whether there is one.
+
+Remove this once a smithay release keeps committed text-input state,
+including the cursor rectangle, or exposes what the focused field declared
+and where its caret is.
+
+## A toplevel icon outlives the objects that carried it (`xdg_toplevel_icon_v1`)
+
+The protocol says a client may destroy its `xdg_toplevel_icon_v1` right after
+`set_icon`, and its buffers once the icon object is gone, and that the
+toplevel keeps the icon either way. This release kept the protocol objects in
+the surface's cached icon state instead, so an icon read after the client
+freed them found dead objects (and panicked), and never survived the commit
+that makes it current. Freeing the buffer also disconnected the client: the
+icon's buffer-destruction hook could not be unregistered.
+
+- `src/wayland/shm/mod.rs`: `ShmBufferUserData::remove_destruction_hook`
+  removed the first hook whose id *differed* from the one asked for, leaving
+  every hook in place.
+- `src/wayland/xdg_toplevel_icon.rs`: assigning an icon snapshots what it
+  holds — `ToplevelIconData` (its name) with a `ToplevelIconBuffer` per size
+  and scale, each carrying the pixels copied out of the client's pool, the
+  format, size and stride. `ToplevelIconCachedState` keeps that snapshot
+  (shared as an `Arc`, so the commit copies a pointer) rather than the
+  protocol object, so `icon()`, `icon_name()` and `buffers()` keep answering
+  after the client freed the icon and its buffers. An icon with neither a
+  name nor pixels resets the toplevel's icon, as the protocol says a null one
+  does. `set_name`/`add_buffer` stop after the `immutable` error instead of
+  going on to change a frozen icon, and a replaced buffer that is already
+  gone no longer panics the deduplication.
+
+Remove this once a smithay release keeps a toplevel's icon once it is set,
+copied out of the client's pool.

@@ -534,6 +534,9 @@ pub enum ToUi {
     Form(Option<Box<Form>>),
     /// Someone asked to see the window ("Show this window"): it comes forward.
     Activate,
+    /// A change mark was activated: show what the task run `run` (its group,
+    /// `runtime_collab::task_run_group`) did, where the system keeps its log.
+    ShowRun { run: String },
     /// The app ran the first `fired` presses the window sent (`ToApp::Fire`), and sent what
     /// they opened before this. What the person typed after a press goes to the app once it
     /// ran it, into the field focused then.
@@ -629,7 +632,9 @@ pub enum ToApp {
     FormCancel {
         form: u64,
     },
-    /// The person chose Undo on a notice.
+    /// The person asked to take back their last step: Undo on a notice, or the window's undo
+    /// (Ctrl+Z, Edit › Undo). The record's undo, the one undo there is: a field the person typed
+    /// into keeps no history of its own beside it.
     Undo,
     /// The keyboard focus is in the bound control `key` of `lane`, or in none.
     Focus {
@@ -651,6 +656,9 @@ pub enum ToApp {
         width: f32,
         height: f32,
     },
+    /// The person asked to bring back what their last undo took back: the window's redo
+    /// (Ctrl+Shift+Z, Edit › Redo). The mirror of [`ToApp::Undo`].
+    Redo,
 }
 
 /// Largest batch either side sends or accepts.

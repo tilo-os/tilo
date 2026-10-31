@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 
+use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -43,6 +44,10 @@ struct StepMetrics {
     gap: f64,
     min_gap: f64,
     rule: f64,
+    /// The compact form's progress track: its segments' height and the
+    /// space between segments and above the track.
+    track: f64,
+    track_gap: f64,
 }
 
 impl StepMetrics {
@@ -57,6 +62,8 @@ impl StepMetrics {
             gap: f64::from(spacing.s2),
             min_gap: f64::from(spacing.s6),
             rule: f64::from(theme.tokens.metrics.chrome_rule_px),
+            track: f64::from(spacing.s1),
+            track_gap: f64::from(spacing.s1),
         }
     }
 
@@ -165,7 +172,10 @@ impl<'a> StepperFace<'a> {
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         let m = StepMetrics::new(theme);
         if self.is_compact(text, theme, width) {
-            StepMetrics::line(text, &m.position) + StepMetrics::line(text, &m.current)
+            StepMetrics::line(text, &m.position)
+                + StepMetrics::line(text, &m.current)
+                + m.track_gap * 2.0
+                + m.track
         } else {
             m.disc.max(StepMetrics::line(text, &m.current))
         }
@@ -181,6 +191,29 @@ impl<'a> StepperFace<'a> {
                 format!("Step {n} of {}", self.steps.len())
             }
             None => format!("{} steps", self.steps.len()),
+        }
+    }
+
+    /// The compact form's progress: one segment per step across `track`,
+    /// in the stations' inks, so where the person is reads at a glance
+    /// even when the stations do not fit. Done steps take the done disc's
+    /// fill, the current one primary ink, later ones the ground's edge.
+    fn paint_track(&self, ctx: &mut PaintCtx<'_>, track: Rect, m: &StepMetrics) {
+        let colors = &ctx.theme.tokens.colors;
+        let count = crate::num::f64_of_usize(self.steps.len());
+        let segment = ((track.width() - m.track_gap * (count - 1.0)) / count).max(0.0);
+        let mut x = track.x0;
+        for index in 0..self.steps.len() {
+            let ink = if self.is_done(index) {
+                colors.intent.value_fill
+            } else if self.is_current(index) {
+                ctx.theme.text_primary
+            } else {
+                crate::surface::edge_on(colors.surfaces.content)
+            };
+            let piece = Rect::new(x, track.y0, x + segment, track.y1);
+            ctx.fill_round(piece, track.height() / 2.0, ink);
+            x += segment + m.track_gap;
         }
     }
 
@@ -211,6 +244,8 @@ impl<'a> StepperFace<'a> {
                 Point::new(rect.x0, y),
                 None,
             );
+            let y = y + StepMetrics::line(ctx.text, &m.current) + m.track_gap * 2.0;
+            self.paint_track(ctx, Rect::new(rect.x0, y, rect.x1, y + m.track), &m);
             return;
         }
 
@@ -320,6 +355,8 @@ pub struct Stepper {
     dirty: bool,
     id: String,
     on_station: Option<Box<dyn FnMut(usize)>>,
+    action: Option<crate::widget::ActionEmitter<usize>>,
+    native_resource: Option<crate::tilo_actions::ResourceSpec>,
     /// Where each station was painted, for the pointer.
     stations: Vec<Rect>,
     hovered: Option<usize>,
@@ -338,6 +375,8 @@ impl Stepper {
             dirty: true,
             id: "stepper".to_owned(),
             on_station: None,
+            action: None,
+            native_resource: None,
             stations: Vec::new(),
             hovered: None,
             focused: false,
@@ -370,8 +409,60 @@ impl Stepper {
 
     /// Let the person go back to a step that is done: `f` gets the
     /// station's index.
+    ///
+    /// The stepper, as control `id`, publishes going back as its view action
+    /// `select` with the station's index, so a person's press, a screen
+    /// reader, a script and an agent go back through the same action. Going
+    /// back is where the window is, never an edit.
     #[must_use]
-    pub fn on_station(mut self, f: impl FnMut(usize) + 'static) -> Self {
+    #[expect(
+        clippy::expect_used,
+        reason = "the generated integer parameter and its action are internally consistent"
+    )]
+    pub fn on_station_view(mut self, f: impl FnMut(usize) + 'static) -> Self {
+        use crate::tilo_actions::{
+            ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
+            ResourceSpec,
+        };
+
+        const TYPE_ID: &str = "tilo.ui.stepper.select";
+        let control_id = self.id.clone();
+        let label = format!(
+            "Step {}",
+            control_id.rsplit('.').next().unwrap_or(&control_id)
+        );
+        let spec = ActionSpec::typed_operation(
+            "select",
+            "Go back",
+            "Go back to a step that is done",
+            OperationKind::View,
+            TYPE_ID,
+            vec![ActionParam::required(
+                "station",
+                ParamType::Integer,
+                "Zero-based station index",
+            )],
+            move |args| {
+                EncodedAction::encode_operation(
+                    TYPE_ID,
+                    &serde_json::json!({
+                        "control": control_id,
+                        "station": args.integer("station").unwrap_or_default(),
+                    }),
+                )
+                .expect("generated stepper action payload is serializable")
+            },
+        )
+        .for_audience(crate::tilo_actions::Audience::Agents);
+        let resource =
+            ResourceSpec::new(format!("tilo.control:{}", self.id), "tilo.control", label)
+                .with_action(spec.clone());
+        let binding = ActionBinding::new(&resource, &spec, |station: usize| {
+            serde_json::Map::from_iter([("station".into(), serde_json::json!(station))])
+        })
+        .expect("station index matches the generated integer parameter");
+        self.action = Some(crate::widget::ActionEmitter::new(binding));
+        self.native_resource = Some(resource);
         self.on_station = Some(Box::new(f));
         self
     }
@@ -401,10 +492,56 @@ impl Stepper {
         if !self.is_station_enabled(index) {
             return false;
         }
+        if let Some(action) = &mut self.action {
+            if let Err(error) = action.emit(index) {
+                tracing::warn!(%error, "the stepper's action refused its station");
+            }
+            return true;
+        }
+        self.apply_station(index);
+        true
+    }
+
+    /// Take the person to `index`: the press, the key and the published view
+    /// action all arrive here.
+    fn apply_station(&mut self, index: usize) {
         if let Some(f) = &mut self.on_station {
             f(index);
         }
-        true
+    }
+
+    /// Apply a `tilo.ui.stepper.select` addressed to this control.
+    /// `Ok(false)` when the operation is not this control's.
+    fn select_station_operation(
+        &mut self,
+        kind: crate::tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<bool, String> {
+        const TYPE_ID: &str = "tilo.ui.stepper.select";
+        if kind != crate::tilo_actions::OperationKind::View
+            || type_id != TYPE_ID
+            || self.action.is_none()
+        {
+            return Ok(false);
+        }
+        let value: serde_json::Value =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        if value.get("control").and_then(serde_json::Value::as_str) != Some(self.id.as_str()) {
+            return Ok(false);
+        }
+        let index = value
+            .get("station")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or_else(|| "station index is not a station".to_owned())?;
+        if !self.is_station_enabled(index) {
+            return Err(format!(
+                "station {index} is not one the stepper can go back to"
+            ));
+        }
+        self.apply_station(index);
+        Ok(true)
     }
 
     fn station_at(&self, point: Point) -> Option<usize> {
@@ -423,7 +560,11 @@ impl Stepper {
 }
 
 impl Widget for Stepper {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     fn build_layout(
         &mut self,
@@ -662,10 +803,76 @@ impl Widget for Stepper {
 
 impl crate::widget::controls::ActionControls for Stepper {
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        self.enabled_stations()
-            .into_iter()
-            .map(|index| crate::widget::ControlBindingMetadata::semantic(self.station_id(index)))
-            .collect()
+        let mut bindings = self
+            .action
+            .as_ref()
+            .map(|action| vec![action.metadata(self.id.clone())])
+            .unwrap_or_default();
+        bindings.extend(
+            self.enabled_stations().into_iter().map(|index| {
+                crate::widget::ControlBindingMetadata::semantic(self.station_id(index))
+            }),
+        );
+        bindings
+    }
+
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<crate::tilo_actions::ControlInvocation> {
+        self.action
+            .as_mut()
+            .and_then(crate::widget::ActionEmitter::take)
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<crate::tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+    }
+}
+
+impl crate::widget::ResourceOperations for Stepper {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        if self.native_resource.is_some() {
+            &["tilo.ui.stepper.select"]
+        } else {
+            &[]
+        }
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .select_station_operation(request.kind, request.type_id, request.payload)?
+            .then(|| {
+                crate::widget::ResourceOperationStart::Completed(
+                    crate::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+}
+
+impl crate::resources::PublishesResources for Stepper {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<crate::tilo_actions::ResourceSpec> {
+        self.native_resource.iter().cloned().collect()
     }
 }
 
@@ -686,6 +893,12 @@ mod tests {
         assert!(
             face.height(&mut text, &theme, 260.0) > face.height(&mut text, &theme, 900.0),
             "the compact form stacks its two lines"
+        );
+        let lines = StepMetrics::line(&mut text, &StepMetrics::new(&theme).position)
+            + StepMetrics::line(&mut text, &StepMetrics::new(&theme).current);
+        assert!(
+            face.height(&mut text, &theme, 260.0) > lines,
+            "the compact form shows its progress under the two lines"
         );
         assert!(face.is_compact(&mut text, &Theme::dark().with_text_scale(2.0), 600.0));
         let done = StepperFace::new(&STEPS, 9);

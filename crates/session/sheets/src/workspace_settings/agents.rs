@@ -9,8 +9,8 @@
 use ui::icons::Icon;
 use ui::tokens::Rhythm;
 use ui::widget::{
-    ButtonRole, ChipStyle, Column, ControlSize, Element, EmptyState, ListRow, Row, Section,
-    Segment, ToggleGroup, Tone,
+    ButtonRole, ChipStyle, Column, ControlSize, Element, EmptyState, Fact, Facts, ListRow, Row,
+    Section, Segment, ToggleGroup, Tone,
 };
 
 use super::general::{button, buttons, caption};
@@ -369,34 +369,17 @@ fn reviewed(review: &AgentReview, parts: &Parts) -> Element {
     column(groups)
 }
 
-/// One app: its name, and its answers as one tag each while it is closed,
-/// which opens to an Allow / Ask first / Deny control for each kind of
-/// action, with Reset once any of them was set here.
+/// One app: its name and its answers as separate facts, which opens to an
+/// Allow, Ask first or Deny control for each kind of action, with Reset once
+/// any of them was set here.
 fn access_app(review: &AgentReview, app: &AccessApp, open: bool, parts: &Parts) -> Element {
     let toggle = parts.clone();
     let scope = app.scope.clone();
-    let mut head = ListRow::new(format!("ws-agent-app-{}", app.scope), app.label.clone());
-    if open {
-        head = head.secondary(app.detail.clone());
-    } else {
-        let answers: Vec<String> = app
-            .kinds
-            .iter()
-            .filter_map(|kind| {
-                let answer = review.answers.get(kind.answer)?;
-                Some(format!("{}: {answer}", kind.label))
-            })
-            .collect();
-        let tags: Vec<(&str, ChipStyle)> = answers
-            .iter()
-            .map(|answer| (answer.as_str(), ChipStyle::Neutral))
-            .collect();
-        head = head.tags(&tags);
-    }
-    let mut head = head
+    let mut head = ListRow::new(format!("ws-agent-app-{}", app.scope), app.label.clone())
+        .secondary(app.detail.clone())
         .disclosure()
         .selected(open)
-        .on_activate(move || toggle.toggle_app(&scope));
+        .on_view(move || toggle.toggle_app(&scope));
     if app.customised && open {
         let (agent, scope) = (review.agent.clone(), app.scope.clone());
         head = head.trailing(Box::new(
@@ -415,14 +398,23 @@ fn access_app(review: &AgentReview, app: &AccessApp, open: bool, parts: &Parts) 
     } else if app.customised {
         head = head.tags(&[(review.custom.as_str(), ChipStyle::Tinted(Tone::Info))]);
     }
-    if !open {
-        return Box::new(head);
-    }
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
         .with_rhythm(Rhythm::Related)
         .push(Box::new(head));
+    if !open {
+        // Closed, each kind's answer is its own fact; open, its own control.
+        let facts = app
+            .kinds
+            .iter()
+            .map(|line| {
+                let answer = review.answers.get(line.answer).map_or("", String::as_str);
+                Fact::text(format!("{}: {answer}", line.label))
+            })
+            .collect();
+        return Box::new(column.push(Box::new(Facts::new(facts))));
+    }
     for line in &app.kinds {
         column = column.push(kind_line(review, app, line, parts));
     }
@@ -447,16 +439,19 @@ fn kind_line(review: &AgentReview, app: &AccessApp, line: &KindLine, parts: &Par
         .with_id(format!("ws-agent-answer-{}-{}", app.scope, line.kind))
         .with_accessible_name(format!("{} {}", app.label, line.label))
         .with_enabled(review.editable)
-        .on_change(move |index| {
-            if let Some(answer) = ANSWERS.get(index) {
-                press.ask(WorkspaceSettingsEffect::SetAgentAnswer {
-                    agent: agent.clone(),
-                    scope: scope.clone(),
-                    kind: kind.clone(),
-                    answer: (*answer).to_owned(),
-                });
-            }
-        });
+        .on_view(
+            &format!("ws-agent-answer-{}-{}", app.scope, line.kind),
+            move |index| {
+                if let Some(answer) = ANSWERS.get(index) {
+                    press.ask(WorkspaceSettingsEffect::SetAgentAnswer {
+                        agent: agent.clone(),
+                        scope: scope.clone(),
+                        kind: kind.clone(),
+                        answer: (*answer).to_owned(),
+                    });
+                }
+            },
+        );
     Box::new(
         ListRow::new(
             format!("ws-agent-kind-{}-{}", app.scope, line.kind),
@@ -476,7 +471,7 @@ fn models_section(review: &AgentReview, models: &Models, open: bool, parts: &Par
         .secondary(models.summary.clone())
         .disclosure()
         .selected(open)
-        .on_activate(move || toggle.toggle_models());
+        .on_view(move || toggle.toggle_models());
     if !open {
         return Box::new(head);
     }

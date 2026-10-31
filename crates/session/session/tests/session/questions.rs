@@ -301,50 +301,6 @@ fn every_portal_question_kind_is_asked_on_the_sheet() {
 }
 
 #[test]
-fn the_colour_picker_answers_what_was_typed_into_the_sheet() {
-    use tilo_portal::screenshot::ScreenshotQuestion;
-    let _settled = ui::motion::testing::settled();
-    let (mut session, questions) = asking();
-    let asked = ask(
-        &questions,
-        "portal.pick-color",
-        serde_json::to_value(ScreenshotQuestion {
-            parent_window: None,
-            modal: true,
-        })
-        .unwrap(),
-    );
-    session.step(Duration::from_millis(1)).expect("step");
-    press(
-        &mut session,
-        PortalEffect::CONFIRM.id,
-        serde_json::json!({}),
-    );
-    let error = session
-        .portal()
-        .expect("portal sheet")
-        .dialog()
-        .and_then(|dialog| dialog.error);
-    assert!(error.is_some(), "nothing typed is no colour");
-    assert_eq!(questions.pending().len(), 1, "the question waits");
-    for (at, value) in ["0.5", " 0.25 ", "1"].iter().enumerate() {
-        press(
-            &mut session,
-            PortalEffect::TYPE.id,
-            serde_json::json!({"field": format!("draft-{at}"), "text": value}),
-        );
-    }
-    press(
-        &mut session,
-        PortalEffect::CONFIRM.id,
-        serde_json::json!({}),
-    );
-    let answer = answered(&mut session, &questions, asked);
-    let values: Vec<&str> = answer.values.iter().map(|value| value.as_str()).collect();
-    assert_eq!(values, ["0.5", " 0.25 ", "1"]);
-}
-
-#[test]
 fn the_usb_question_answers_the_ticked_devices() {
     let _settled = ui::motion::testing::settled();
     let (mut session, questions) = asking();

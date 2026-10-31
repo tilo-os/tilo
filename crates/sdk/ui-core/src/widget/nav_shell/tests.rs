@@ -11,7 +11,9 @@ mod capabilities;
 mod hosted;
 mod inspector_sheet;
 mod nothing_listed;
+mod replan;
 mod sidebar_button;
+mod touch;
 
 /// A pane that fills what it is given and counts the input it receives.
 struct Probe {
@@ -2290,11 +2292,11 @@ fn a_toolbar_in_the_window_bar_leaves_no_header_row_and_its_buttons_are_slots() 
 /// the shell draws no header row.
 #[test]
 fn a_hosted_shell_hands_its_header_to_the_window_bar() {
-    use crate::window_toolbar::{ToolbarEvent, declared, deliver};
+    use crate::window_toolbar::{ToolbarEvent, declared};
     let pressed = SharedRc::new(Cell::new(0));
     let count = SharedRc::clone(&pressed);
     let add = Button::icon_only("mail.new-mailbox", Icon::Plus, "New mailbox")
-        .on_click(move || count.set(count.get() + 1));
+        .on_effect(move || count.set(count.get() + 1));
     let shell = NavShell::new()
         .sidebar(Probe::boxed("sidebar").0)
         .overview(Probe::boxed("overview").0)
@@ -2350,10 +2352,11 @@ fn a_hosted_shell_hands_its_header_to_the_window_bar() {
             .any(|action| action.id == "mail.reply"),
         "a row of buttons gives its buttons"
     );
-    deliver(ToolbarEvent::Action {
+    // The bar's press is a press on the app: the frame that takes it runs
+    // what it published, as the window's bar hands it over.
+    h.press_window_slot(ToolbarEvent::Action {
         id: action.id.clone(),
     });
-    settle(&mut h, 1280, 800);
     assert_eq!(pressed.get(), 1, "the bar's press runs the button");
 }
 

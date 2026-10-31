@@ -6,7 +6,8 @@
 //! thin dispatcher and every decision here is tested without a desktop.
 
 use serde_json::{Map, Value};
-use ui::widget::command_palette::{ActivationModifier, ArgumentKind, ArgumentSpec};
+use ui::search::ActivationModifier;
+use ui::{ArgumentKind, ArgumentSpec};
 
 use crate::shell::i18n::t;
 use crate::shell::search::action_api::{ActionParam, ParamType};

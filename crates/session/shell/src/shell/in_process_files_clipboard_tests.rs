@@ -11,7 +11,7 @@ mod files_clipboard_tests {
     struct RetiredOwner {
         tree: crate::shell::state::WeakWorkspaceTreeHandle,
         runtime: crate::shell::native_workspace_owner::NativeStateWitness,
-        broker: std::sync::Weak<tilo_action_broker::collab_broker_capnp::CapnpBrokerState>,
+        broker: std::sync::Weak<tilo_action_broker::collab_app_broker::AppBrokerState>,
     }
 
     thread_local! {
@@ -117,7 +117,7 @@ mod files_clipboard_tests {
             }
             .encode()
             .unwrap();
-            let endpoint = session.broker.capnp_socket().to_path_buf();
+            let endpoint = session.broker.app_socket().to_path_buf();
             let room = session.room.clone();
             let agent = agent.to_owned();
             let (send, mut receive) =
@@ -130,12 +130,11 @@ mod files_clipboard_tests {
                 runtime.block_on(tokio::task::LocalSet::new().run_until(async move {
                     let descriptor =
                         runtime_portal::agent_transport::connect_endpoint(&endpoint).unwrap();
-                    let connection = runtime_portal::CapnpClient::from_connected_fd(
-                        descriptor,
-                        capnp_rpc::rpc_twoparty_capnp::Side::Client,
+                    let (client, _end) = runtime_collab::CollabClient::from_connected_fd(
+                        // SAFETY: just connected; this takes its only owner.
+                        unsafe { std::os::fd::FromRawFd::from_raw_fd(descriptor) },
                     )
                     .unwrap();
-                    let client = runtime_collab::CollabClient::from_raw(connection.bootstrap());
                     let channel = tokio::time::timeout(
                         tilo_test_env::hang_bound(),
                         client.join_channel_as_kind(&room, &presentation, &agent, "agent", ""),
@@ -223,33 +222,18 @@ mod files_clipboard_tests {
             )
         }
 
-        fn start_session(profile: &Path, restarting: bool) -> crate::runtime_host::Session {
-            let deadline = std::time::Instant::now()
-                .checked_add(tilo_test_env::hang_bound())
-                .expect("bounded restart deadline");
-            loop {
-                let mut stage = String::new();
-                match crate::runtime_host::Session::start_reporting(profile, &mut |step| {
-                    stage = step.into();
-                }) {
-                    Ok(session) => return session,
-                    // Dropping a same-process session asks asynchronous hosts
-                    // to stop. Wait for that actual retirement before reopening;
-                    // a real process-kill journey releases its locks at exit.
-                    Err(error)
-                        if restarting
-                            && matches!(
-                                error.to_string().as_str(),
-                                "Busy" | "file lease is busy"
-                            )
-                            && std::time::Instant::now() < deadline =>
-                    {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                    Err(error) => {
-                        restart_lease_diagnostics(profile);
-                        panic!("actual session start failed at {stage}: {error}");
-                    }
+        fn start_session(profile: &Path) -> crate::runtime_host::Session {
+            // A session that ended let go of the profile's writer lease with
+            // it, however long its work lingers in this process: the next one
+            // starts at once.
+            let mut stage = String::new();
+            match crate::runtime_host::Session::start_reporting(profile, &mut |step| {
+                stage = step.into();
+            }) {
+                Ok(session) => session,
+                Err(error) => {
+                    restart_lease_diagnostics(profile);
+                    panic!("actual session start failed at {stage}: {error}");
                 }
             }
         }
@@ -265,14 +249,14 @@ mod files_clipboard_tests {
             } else {
                 assert!(folders.iter().all(|folder| folder.is_dir()));
             }
-            let session = Self::start_session(profile, !prepare);
+            let session = Self::start_session(profile);
             let source_grants = {
                 let tree = session.workspace_tree();
                 let source_grants = grant_files_folder(&tree, &folders[0]);
                 grant_files_folder(&tree, &folders[1]);
                 source_grants
             };
-            let collab = session.broker.capnp_socket().to_path_buf();
+            let collab = session.broker.app_socket().to_path_buf();
             let identity = session.identity_socket().to_path_buf();
             let mut apps =
                 mounted_apps(profile, &session.actor).reaching_broker(Rc::new(move |app, room| {

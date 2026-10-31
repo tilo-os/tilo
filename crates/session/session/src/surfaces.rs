@@ -36,6 +36,7 @@ use tilo_compositor::Compositor;
 use ui::collaboration::ExportedAction;
 use ui::host_operation::ResourceOperationStart;
 use ui::surface_peer::{ACTIONS_FD_ENV, FRAMING};
+use ui::surface_services::{APP_ID_ENV, SOCKET_ENV, WORKSPACE_ENV};
 
 /// Where on an output a surface app's window stands, lowest first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,6 +142,10 @@ pub struct Surface {
     /// What the session calls it: its name in logs and its key when it
     /// stops.
     pub name: String,
+    /// The app it is started as: what the broker admits its connection to
+    /// the session's services by, and what its own actions are published
+    /// under.
+    pub app_id: String,
     /// The program to start.
     pub program: PathBuf,
     /// Where its window stands on the output.
@@ -174,6 +179,7 @@ impl Surface {
     pub fn new(name: impl Into<String>, program: impl Into<PathBuf>) -> Self {
         let name = name.into();
         Self {
+            app_id: format!("{}.{name}", tilo_desktop_model::APP_ID_PREFIX),
             program: program.into(),
             namespace: format!("tilo-{name}"),
             name,
@@ -229,6 +235,14 @@ impl Surface {
     #[must_use]
     pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = namespace.into();
+        self
+    }
+
+    /// Start it as the app `app_id` instead of [`Self::new`]'s first-party
+    /// id for its name.
+    #[must_use]
+    pub fn app_id(mut self, app_id: impl Into<String>) -> Self {
+        self.app_id = app_id.into();
         self
     }
 
@@ -547,11 +561,29 @@ pub struct Surfaces {
     running: Vec<Running>,
     /// The id the next invocation asked of a surface app is named by.
     asked: u64,
+    /// The session's launch records, once it has lent them: each surface it
+    /// starts is written into them, so its connection to the session's
+    /// services is admitted for the launch that made it. `None` before the
+    /// session lends them, and in a session that serves no services.
+    launches: Option<std::sync::Arc<crate::Launches>>,
+    /// The socket the session serves its services on, once it has lent it:
+    /// what a surface app connects to read and change what the session
+    /// publishes, as any app of the session does.
+    services: Option<PathBuf>,
 }
 
 impl Surfaces {
+    /// The session's launch records and the socket it serves its services
+    /// on, which every surface app started from here on is told of. Without
+    /// a socket, a surface reads nothing of the session: it is a window
+    /// only.
+    pub fn lend(&mut self, launches: std::sync::Arc<crate::Launches>, services: Option<PathBuf>) {
+        self.launches = Some(launches);
+        self.services = services;
+    }
+
     /// Start `surface` as a trusted client of `compositor`, on the layer
-    /// surface it names.
+    /// surface it names, as the app it runs for in `room`.
     ///
     /// # Errors
     /// The socket or the process could not be made.
@@ -559,6 +591,7 @@ impl Surfaces {
         &mut self,
         compositor: &mut Compositor,
         surface: &Surface,
+        room: &str,
     ) -> Result<(), StartError> {
         let socket = compositor
             .connect_trusted_client()
@@ -572,6 +605,16 @@ impl Surfaces {
         let mut command = Command::new(&surface.program);
         command
             .envs(surface.environment())
+            // What the app is of this session: the launch the session
+            // records for the process it starts here, and the connection to
+            // the session's services it makes for itself, as any app of the
+            // session does.
+            .env(APP_ID_ENV, &surface.app_id)
+            .env(WORKSPACE_ENV, room);
+        if let Some(services) = &self.services {
+            command.env(SOCKET_ENV, services);
+        }
+        command
             // The app's end of the socket becomes a fixed descriptor in its
             // process; the compositor answers on the other end here.
             .env("WAYLAND_SOCKET", SOCKET_DESCRIPTOR.to_string())
@@ -606,6 +649,14 @@ impl Surfaces {
             program: surface.program.clone(),
             source,
         })?;
+        // The process that will connect the session's services is the one
+        // started here: its launch is written before the app has anything to
+        // say, as it is for any app the session starts.
+        if let Some(launches) = &self.launches {
+            // A surface app is the session's own program, run in its own
+            // place: no package sandbox has the documents store bound in.
+            launches.started(child.id(), &surface.app_id, room, false);
+        }
         // The child has its own copies: these would only keep the
         // connections' other ends open after the app is gone.
         drop(socket);
@@ -630,8 +681,8 @@ impl Surfaces {
 
     /// Start `surface` if the session can, and say so in the log if not: a
     /// missing surface app loses its surface, never the session.
-    pub fn start_or_log(&mut self, compositor: &mut Compositor, surface: &Surface) {
-        if let Err(error) = self.start(compositor, surface) {
+    pub fn start_or_log(&mut self, compositor: &mut Compositor, surface: &Surface, room: &str) {
+        if let Err(error) = self.start(compositor, surface, room) {
             tracing::warn!(surface = %surface.name, %error, "a surface app did not start");
         }
     }

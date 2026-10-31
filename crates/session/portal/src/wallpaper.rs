@@ -76,7 +76,13 @@ impl Wallpaper {
                 .portal
                 .authenticate(&header, path, &app_id, Some(&parent_window))
                 .await?;
-            let picture = documents::read_exported(&uri, MAX_PICTURE_BYTES).map_err(|error| {
+            let picture = documents::read_exported(
+                self.portal.documents(),
+                &auth.caller,
+                &uri,
+                MAX_PICTURE_BYTES,
+            )
+            .map_err(|error| {
                 tracing::debug!(%error, "wallpaper refused");
                 Ended::Failed
             })?;

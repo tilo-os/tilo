@@ -27,6 +27,7 @@ use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
 
 use crate::a11y::{self, MagnifierView};
 use crate::effects::WindowEffect;
+use crate::host::HostLayer;
 use crate::state::State;
 
 /// The colour behind every window: the desktop's background before a
@@ -236,6 +237,32 @@ where
     ))
 }
 
+/// A hosted surface's layer, drawn with its top left corner at `location`:
+/// the whole frame, scaled to the rectangle the layer covers, so a layer the
+/// size of a display shows all of the frame on it.
+fn hosted_layer<R>(
+    renderer: &mut R,
+    layer: &HostLayer,
+    location: Point<f64, Physical>,
+) -> Result<MemoryRenderBufferRenderElement<R>, R::Error>
+where
+    R: ImportMem,
+    R::TextureId: Send + Clone + 'static,
+{
+    let (width, height) = layer.frame.size();
+    let whole: Rectangle<f64, Logical> =
+        Rectangle::from_size(Size::from((f64::from(width), f64::from(height))));
+    MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        location,
+        layer.frame.buffer(),
+        None,
+        Some(whole),
+        Some(Size::from(layer.size)),
+        Kind::Unspecified,
+    )
+}
+
 /// What lies below hosted surface `host`, front first: the hosts beneath
 /// it and the windows, drawn at `scale` with `origin` (logical) at the
 /// top left of the area `bounds` (physical), as its backdrop sees them —
@@ -260,15 +287,7 @@ where
         for layer in below.layers().into_iter().rev() {
             let location =
                 (Point::<i32, Logical>::from(layer.location).to_f64() - origin).to_physical(scale);
-            match MemoryRenderBufferRenderElement::from_buffer(
-                renderer,
-                location,
-                layer.frame.buffer(),
-                None,
-                None,
-                Some(Size::from(layer.size)),
-                Kind::Unspecified,
-            ) {
+            match hosted_layer(renderer, &layer, location) {
                 Ok(element) => elements.push(OutputRenderElement::Hosted(element)),
                 Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
             }
@@ -378,7 +397,6 @@ where
         frame: closing.frame,
         images: &state.frame_images,
         snapshots: &state.snapshots,
-        display: &state.display,
     };
     // The frame the window last drew, kept before its surface went: the
     // desktop animates that away.
@@ -415,7 +433,8 @@ where
     let bounds = Rectangle::from_size(geometry.size.to_physical_precise_round(output_scale));
     let window_of = |id: u64| {
         state.space.elements().find(|window| {
-            crate::state::describe(&state.display, window).is_some_and(|info| info.id == id)
+            crate::state::describe(&state.display, &state.icons, window)
+                .is_some_and(|info| info.id == id)
         })
     };
     let locked = state.locked();
@@ -432,6 +451,7 @@ where
                         state.framing(window),
                         window,
                         picture,
+                        crate::capture::protected(state, window),
                         geometry.loc.to_f64(),
                         (bounds, output_scale),
                     ));
@@ -440,15 +460,7 @@ where
             for layer in host.layers().into_iter().rev() {
                 let location: Point<i32, Physical> =
                     (Point::from(layer.location) - geometry.loc).to_physical_precise_round(scale);
-                match MemoryRenderBufferRenderElement::from_buffer(
-                    renderer,
-                    location.to_f64(),
-                    layer.frame.buffer(),
-                    None,
-                    None,
-                    Some(Size::from(layer.size)),
-                    Kind::Unspecified,
-                ) {
+                match hosted_layer(renderer, &layer, location.to_f64()) {
                     Ok(element) => elements.push(OutputRenderElement::Hosted(element)),
                     Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
                 }

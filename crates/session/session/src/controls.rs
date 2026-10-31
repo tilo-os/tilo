@@ -1,6 +1,7 @@
 //! The session's own resources: what only the session can change, because
-//! it runs the compositor (the touchpad, locking the screen), published on
-//! the same door as every hosted surface's.
+//! it runs the compositor (the touchpad, locking the screen) or holds the
+//! questions about the person's apps, published on the same door as every
+//! hosted surface's.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -10,6 +11,7 @@ use tilo_actions::{
     ActionAddress, ActionContract, ActionParam, ActionSpec, DoorError, EncodedAction,
     ExecutionMode, OperationKind, ParamType, ResourceSpec, ResultSpec,
 };
+use tilo_desktop_search::providers::downloaded::{APP_PARAM, APPS_RESOURCE, ASK_UNINSTALL};
 use tilo_desktop_surface::i18n::t;
 use tilo_surface_host::Published;
 
@@ -49,6 +51,11 @@ pub enum SessionCommand {
     Magnifier(Magnify),
     /// Use the displays together this way.
     Displays { mode: DisplayMode },
+    /// Put the display sheet up, where the layouts and the wireless
+    /// displays are chosen.
+    OpenDisplaySheet,
+    /// Take the display sheet down.
+    CloseDisplaySheet,
     /// Turn the night light on (`Some(true)`), off, or (`None`) the other
     /// way from how it is.
     NightLight { on: Option<bool> },
@@ -57,6 +64,10 @@ pub enum SessionCommand {
     PasteFiles { destination: String },
     /// Type in the next of the person's keyboard input sources.
     NextInputSource,
+    /// Ask the person whether to uninstall `app`, by its entry's id or the
+    /// name they know it by: the question stands on the uninstall sheet
+    /// until they answer it, as it does when the app list asks.
+    AskUninstall { app: String },
 }
 
 /// A step of the magnifier.
@@ -117,6 +128,7 @@ fn resources() -> Vec<ResourceSpec> {
         magnifier_resource(),
         displays_resource(),
         clipboard_resource(),
+        apps_resource(),
     ]
 }
 
@@ -207,6 +219,18 @@ fn displays_resource() -> ResourceSpec {
             },
         ))
         .with_action(action(
+            "open-sheet",
+            t("session-displays-open-sheet"),
+            Vec::new(),
+            |_| SessionCommand::OpenDisplaySheet,
+        ))
+        .with_action(action(
+            "close-sheet",
+            t("session-displays-close-sheet"),
+            Vec::new(),
+            |_| SessionCommand::CloseDisplaySheet,
+        ))
+        .with_action(action(
             "set-mode",
             t("session-displays-set"),
             vec![
@@ -238,6 +262,23 @@ fn clipboard_resource() -> ResourceSpec {
         )],
         |args| SessionCommand::PasteFiles {
             destination: args.text("destination").unwrap_or_default().to_owned(),
+        },
+    ))
+}
+
+/// The questions about the person's apps: whether to uninstall one. The
+/// answer is the downloaded apps registry's own action, as from anywhere.
+fn apps_resource() -> ResourceSpec {
+    ResourceSpec::new(APPS_RESOURCE, "session", t("session-apps")).with_action(action(
+        ASK_UNINSTALL,
+        t("session-apps-uninstall"),
+        vec![ActionParam::required_owned(
+            APP_PARAM,
+            ParamType::Text,
+            t("session-param-app"),
+        )],
+        |args| SessionCommand::AskUninstall {
+            app: args.text(APP_PARAM).unwrap_or_default().to_owned(),
         },
     ))
 }

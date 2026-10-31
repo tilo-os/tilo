@@ -31,6 +31,10 @@ pub fn project_resource_id(id: Id) -> String {
     item_resource_id::<Calendar>("projects", &key(id))
 }
 
+/// The id of the calendar on this device, which holds the events that name
+/// no calendar of an account.
+pub const LOCAL_CALENDAR_ID: &str = "local";
+
 /// The id of a local or configured remote calendar collection's row.
 pub fn calendar_resource_id(id: &str) -> String {
     format!("calendar.collection:{id}")
@@ -51,8 +55,8 @@ pub fn occurrence_resource_id(event_id: Id, original_date: NaiveDate) -> String 
     )
 }
 
-/// A calendar collection as a live row: open it, show or hide it, choose
-/// its colour.
+/// A calendar collection as a live row: read it, open it, show or hide it,
+/// choose its colour.
 pub(crate) fn calendar_collection_row(
     calendar: &CalendarCollectionResource,
 ) -> ui::framework::LiveRow {
@@ -60,6 +64,13 @@ pub(crate) fn calendar_collection_row(
         calendar_resource_id(&calendar.id),
         "calendar.collection",
         calendar.label.clone(),
+    )
+    .operation(
+        crate::resource::CalendarEffect::ReadCalendar {
+            id: calendar.id.clone(),
+        }
+        .bound()
+        .reads_document(),
     )
     .effect(&crate::resource::CalendarEffect::Open {
         item: calendar_resource_id(&calendar.id),

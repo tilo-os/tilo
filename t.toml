@@ -964,51 +964,6 @@ run = "cargo test --locked -p tilo-media --features realtime --test realtime -- 
 on = ["stable", "dispatch"]
 
 [[check]]
-name = "browser-auth-e2e"
-run = "true"
-needs = ["browser-auth-e2e/limits", "browser-auth-e2e/owner-key", "browser-auth-e2e/auth"]
-outputs = ["/target/limits-e2e/**", "/target/owner-key-e2e/**", "/target/auth-e2e/**"]
-on = ["stable", "dispatch"]
-heavy = true
-
-[[check]]
-name = "browser-auth-e2e/limits"
-run = "bin=/target/publish/room-service/bin\npython3 crates/hosting/tilo-room-service/dev/limits-e2e.py --relay-bin \"$bin/tilo-relay\" --room-service-bin \"$bin/tilo-room-service\" --out /target/limits-e2e\n"
-needs = ["room-service-binaries"]
-requires = ["arch=x86_64"]
-outputs = ["/target/limits-e2e/**"]
-default = false
-
-[[check]]
-name = "browser-auth-e2e/owner-key"
-run = "bin=/target/publish/room-service/bin\npython3 crates/hosting/tilo-room-service/dev/owner-key-e2e.py --relay-bin \"$bin/tilo-relay\" --room-service-bin \"$bin/tilo-room-service\" --out /target/owner-key-e2e\n"
-needs = ["room-service-binaries"]
-requires = ["arch=x86_64"]
-outputs = ["/target/owner-key-e2e/**"]
-default = false
-
-[[check]]
-name = "browser-auth-e2e/auth"
-run = "export TILO_FONT_ASSET_CACHE=/target/font-artifacts\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nif [ -z \"$(git status --porcelain)\" ]; then revision=(--expect-revision \"$(git rev-parse HEAD)\"); else revision=(--allow-dev); fi\nbin=/target/publish/room-service/bin\nnode crates/hosting/tilo-room-service/dev/auth-e2e.mjs --bundle /target/publish/web-desktop/bundle --relay-bin \"$bin/tilo-relay\" --room-service-bin \"$bin/tilo-room-service\" --out /target/auth-e2e \"${revision[@]}\"\n"
-needs = ["room-service-binaries", "web-desktop-bundle"]
-requires = ["arch=x86_64"]
-outputs = ["/target/auth-e2e/**"]
-git = true
-timeout_secs = 9000
-default = false
-
-[[check]]
-name = "browser-shared-desktop-e2e"
-run = "export TILO_FONT_ASSET_CACHE=/target/font-artifacts\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nif [ -z \"$(git status --porcelain)\" ]; then revision=(--expect-revision \"$(git rev-parse HEAD)\"); else revision=(--allow-dev); fi\nbin=/target/publish/room-service/bin\nrm -rf /target/shared-desktop-e2e\n# The screenshots are what this is for: a failed check is in summary.json\n# beside them, and the outputs are kept whatever happened.\nnode crates/hosting/tilo-room-service/dev/shared-desktop-e2e.mjs --bundle /target/publish/web-desktop/bundle --relay-bin \"$bin/tilo-relay\" --room-service-bin \"$bin/tilo-room-service\" --out /target/shared-desktop-e2e \"${revision[@]}\" || echo \"shared-desktop-e2e: exited $? (see summary.json)\"\n"
-needs = ["room-service-binaries", "web-desktop-bundle"]
-requires = ["arch=x86_64"]
-outputs = ["/target/shared-desktop-e2e/**"]
-cache = false
-git = true
-timeout_secs = 9000
-on = ["dispatch"]
-
-[[check]]
 name = "security-isolation-{part}"
 run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_TEST_NTFS_FIXTURES=0\nany() { local e=\"\" t; for t; do e=\"${e:+$e | }test($t)\"; done; printf '%s' \"$e\"; }\nrun() { bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail \"$@\"; }\ncase {part} in\n  relay)\n    run -p tilo-relay --lib -E \"$(any room_access rooms:: compute_content host_authority)\"\n    run -p tilo-relay --test it -E \"$(any tenant_isolation:: governed_rooms:: governed_workspace_access:: room_admission:: auth_reject:: federation_cross_user_reject:: cross_user_workspace_host:: compute_content:: remote_action_routing::)\"\n    ;;\n  relay-agents)\n    run -p tilo-relay --features agents --test it -E \"$(any tenant_isolation:: governed_rooms:: governed_workspace_access:: room_admission:: auth_reject:: compute_content:: persistent_room::)\"\n    ;;\n  agent-participant)\n    run -p tilo-agent-participant --test worker_isolation\n    run -p tilo-agent-participant --test room_actions -E \"$(any governed_agent::)\"\n    ;;\nesac\n"
 env = { RUST_BACKTRACE = "1" }
@@ -1063,17 +1018,6 @@ run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for L
 requires = ["os=macos", "arch=arm64"]
 on = ["stable", "dispatch", "idle"]
 heavy = true
-
-[[check]]
-name = "perf-room-capacity"
-run = "out=/target/perf-room-capacity\nrm -rf \"$out\"\nmkdir -p \"$out\"\ncargo build --locked --release -p tilo-room-load --features tilo-relay/agents\n{\n  echo \"commit: ${T_COMMIT:-a working tree}\"\n  echo \"cpu: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')\"\n  echo \"cpus: $(nproc)\"\n  echo \"memory: $(awk '/^MemTotal:/ {printf \"%.1f\", $2 / 1048576}' /proc/meminfo) GiB\"\n  echo \"cgroup cpu.max: $(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo unknown)\"\n  echo \"cgroup memory.max: $(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo unknown)\"\n  echo \"kernel: $(uname -r)\"\n  df -h \"${TMPDIR:-/tmp}\" /dev/shm | sed 's/^/disk: /'\n} | tee \"$out/machine.txt\"\nstatus=0\npython3 tools/perf/room_capacity.py sweep --bin \"$CARGO_TARGET_DIR/release/tilo-room-load\" --out \"$out/runs\" --plan \"${T_INPUT_PLAN:-full}\" || status=$?\npython3 tools/perf/room_capacity.py summarize \"$out/runs\" --json \"$out/summary.json\" --markdown \"$out/summary.md\"\ncat \"$out/summary.md\"\nexit \"$status\"\n"
-env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
-requires = ["arch=x86_64"]
-outputs = ["/target/perf-room-capacity/**"]
-cache = false
-timeout_secs = 9000
-on = ["dispatch"]
-dispatch_inputs = { plan = "full" }
 
 [[check]]
 name = "perf-fs"
@@ -1165,16 +1109,6 @@ timeout_secs = 7200
 on = ["stable", "dispatch"]
 
 [[check]]
-name = "perf-hosting-room"
-run = "bash tools/ci/perf-scheduled.sh hosting-room"
-env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
-requires = ["arch=x86_64"]
-isolation = "nested"
-outputs = ["/target/perf/hosting-room/**"]
-timeout_secs = 7200
-on = ["stable", "dispatch"]
-
-[[check]]
 name = "perf-browser"
 run = "bash tools/ci/perf-scheduled.sh browser"
 needs = ["web-desktop-bundle"]
@@ -1197,7 +1131,7 @@ on = ["stable", "dispatch"]
 [[check]]
 name = "perf-scheduled"
 run = "bash tools/ci/perf-compare.sh"
-needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footprint", "perf-footprint-image", "perf-latency", "perf-render", "perf-wakeups", "perf-search", "perf-hosting", "perf-hosting-room", "perf-browser", "perf-stream"]
+needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footprint", "perf-footprint-image", "perf-latency", "perf-render", "perf-wakeups", "perf-search", "perf-hosting", "perf-browser", "perf-stream"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 outputs = ["/target/perf/compare/**"]
 cache = false
@@ -1206,7 +1140,7 @@ on = ["stable", "dispatch"]
 [[check]]
 name = "perf-publish"
 run = "bash tools/ci/perf-compare.sh /target/perf-publish"
-needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footprint", "perf-footprint-image", "perf-latency", "perf-render", "perf-wakeups", "perf-search", "perf-hosting", "perf-hosting-room", "perf-browser", "perf-stream"]
+needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footprint", "perf-footprint-image", "perf-latency", "perf-render", "perf-wakeups", "perf-search", "perf-hosting", "perf-browser", "perf-stream"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 outputs = ["/target/perf-publish/**"]
 cache = false
@@ -1833,14 +1767,6 @@ needs = ["web-desktop-wasm"]
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/web-desktop/bundle/**"]
 git = true
-default = false
-
-[[check]]
-name = "room-service-binaries"
-run = "bash tools/ci/publish/room-service-binaries.sh /target/publish/room-service/bin"
-env = { CARGO_BUILD_JOBS = "8" }
-requires = ["arch=x86_64"]
-outputs = ["/target/publish/room-service/bin/**"]
 default = false
 
 [[check]]
@@ -4251,52 +4177,7 @@ on = ["dispatch"]
 # out, bot programs renamed), and t reads a build's context from the state's sources, so it would
 # find those files missing. And both Containerfiles stamp the commit into the image with an `ARG`
 # that the packaging script passes the commit to — a build arg is a fixed string in t.toml, while
-# a per-commit one would rerun the config steps of every commit; the room service's test reads
-# that label back and refuses an image whose `/mode` reports another revision.
-
-[[check]]
-name = "image-room-service-context"
-run = "bash tools/ci/publish/room-service-context.sh /target/publish/room-service/context /target/publish/room-service/bin /target/publish/web-desktop/bundle"
-needs = ["room-service-binaries", "web-desktop-bundle"]
-outputs = ["/target/publish/room-service/context/**"]
-git = true
-requires = ["arch=x86_64"]
-default = false
-
-[[check]]
-name = "image-room-service"
-image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
-run = "bash tools/ci/publish/oci-build.sh /target/publish/room-service/context /target/publish/room-service/context/Containerfile /target/publish/room-service --build-arg SOURCE_REVISION=$(cat /target/publish/room-service/context/source-revision)\nbash crates/hosting/tilo-room-service/container/test-image.sh /target/publish/room-service/image.oci.tar $(cat /target/publish/room-service/context/source-revision)"
-needs = ["image-room-service-context"]
-outputs = ["/target/publish/room-service/image.oci.tar", "/target/publish/room-service/digest"]
-requires = ["arch=x86_64"]
-isolation = "nested"
-# The image is dated by its commit's time, which `oci-build.sh` reads from the log.
-git = true
-default = false
-
-[[check]]
-name = "sign-room-service"
-image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/room-service /target/publish/room-service"
-needs = ["image-room-service", "signing-tools"]
-outputs = ["/target/publish/room-service/payload.json", "/target/publish/room-service/signature", "/target/publish/room-service/dry-run.pub"]
-id_token = ["sts.amazonaws.com"]
-env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
-requires = ["arch=any"]
-on = ["stable"]
-
-[[check]]
-name = "publish-room-service"
-image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/room-service /target/publish/room-service 'dev:dev-{commit}' 'release:sha-{commit}'"
-needs = ["image-room-service", "signing-tools"]
-optional_needs = ["sign-room-service"]
-outputs = ["/target/publish/room-service/receipt.json"]
-pointers = { room-service = "/target/publish/room-service/receipt.json" }
-id_token = ["registry.tilo.so"]
-requires = ["arch=any"]
-on = ["dispatch", "stable"]
+# a per-commit one would rerun the config steps of every commit.
 
 [[check]]
 name = "image-web-entry-context"

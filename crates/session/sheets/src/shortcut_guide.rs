@@ -4,15 +4,21 @@
 //! The guide follows the input the person is using: the keyboard's
 //! navigation pairs and essentials, the controller's buttons, the
 //! touchscreen's gestures. On the keyboard each navigation key can be
-//! changed: pressing it asks the shell to take the next chord as its new
-//! keys, and a changed pair can go back to its defaults. The shell owns the
-//! shortcut table and checks every change ([`GuideSeat`]).
+//! changed: pressing it asks the desktop to take the next chord as its new
+//! keys, and a changed pair can go back to its defaults. The desktop owns the
+//! shortcut table and checks every change ([`GuideSeat`]);
+//! [`keyboard_guide`] shapes that table into what the guide shows.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
+use settings_store::keyboard_shortcuts::catalogue;
 use ui::framework::{Dispatcher, Effected, ResourceApp, ViewCx};
-use ui::input::{ControllerBinding, ControllerButton, InputBinding, KeyboardBinding, TouchGesture};
+use ui::input::{
+    ControllerBinding, ControllerButton, InputBinding, KeyLegend, KeyboardBinding,
+    KeyboardModifier, TouchGesture,
+};
 use ui::prelude::*;
 use ui::widget::{Column, Container, Element, InputHint, ModalDialog, Row, Scrollable, Text};
 
@@ -246,7 +252,6 @@ impl ResourceApp for ShortcutGuideApp {
 
 /// A keyboard guide as a fresh desktop has it, for captures.
 fn sample_keyboard_guide() -> Guide {
-    use ui::input::{KeyLegend, KeyboardModifier};
     let keys =
         |key: &str| KeyboardBinding::new([KeyboardModifier::System], KeyLegend::from_name(key));
     let shortcut = |action: &str, label: &str, key: &str| Shortcut {
@@ -318,6 +323,8 @@ fn body(guide: &Guide, dispatch: &Dispatcher<ShortcutGuide>) -> Element {
         .with_gap(gap)
         .push(caption(&t("guide-reopen-hint")));
     if guide.modality == Modality::Keys {
+        // While a key listens, what to do next is one line and how to leave
+        // it is a key hint beside it, never a glyph-joined sentence.
         let feedback = match (&guide.listening, &guide.message) {
             (Some(action), message) => {
                 let label = guide
@@ -326,29 +333,40 @@ fn body(guide: &Guide, dispatch: &Dispatcher<ShortcutGuide>) -> Element {
                     .flat_map(|pair| [&pair.previous, &pair.next])
                     .find(|shortcut| &shortcut.action == action)
                     .map_or_else(|| action.clone(), |shortcut| shortcut.label.clone());
-                Some(message.as_ref().map_or_else(
-                    || {
-                        crate::t_args(
-                            "guide-press-new-shortcut",
-                            &[("action", ui::i18n::ArgValue::Text(label))],
-                        )
-                    },
-                    |message| {
-                        crate::t_args(
-                            "guide-message-esc-cancels",
-                            &[("message", ui::i18n::ArgValue::Text(message.clone()))],
-                        )
-                    },
-                ))
+                let text = message.clone().unwrap_or_else(|| {
+                    crate::t_args(
+                        "guide-press-new-shortcut",
+                        &[("action", ui::i18n::ArgValue::Text(label))],
+                    )
+                });
+                Some((text, true))
             }
-            (None, message) => message.clone(),
+            (None, message) => message.clone().map(|text| (text, false)),
         };
-        if let Some(feedback) = feedback {
-            column = column.push(Box::new(
-                Text::new(&feedback)
+        if let Some((text, cancellable)) = feedback {
+            let line: Element = Box::new(
+                Text::new(&text)
                     .with_role(TextRole::Caption)
                     .with_id("guide-feedback"),
-            ));
+            );
+            column = column.push(if cancellable {
+                Box::new(
+                    Row::new()
+                        .with_gap(ui::tokens::Spacing::BASE.s4)
+                        .push(line)
+                        .push(Box::new(
+                            Row::new()
+                                .with_gap(ui::tokens::Spacing::BASE.s2)
+                                .push(hint(InputBinding::Keyboard(KeyboardBinding {
+                                    modifiers: Vec::new(),
+                                    key: KeyLegend::Escape,
+                                })))
+                                .push(caption(&t("guide-listening-cancel"))),
+                        )),
+                )
+            } else {
+                line
+            });
         }
     }
     let column = match guide.modality {
@@ -404,7 +422,7 @@ fn keys(mut column: Column, guide: &Guide, dispatch: &Dispatcher<ShortcutGuide>)
                     &format!("guide-reset-{}", pair.previous.action),
                     &t("guide-reset"),
                 )
-                .on_click(move || reset.effect(&effect)),
+                .on_own_device_effect(move || reset.effect(&effect)),
             ));
         }
         column = column.push(Box::new(row));
@@ -423,6 +441,9 @@ fn keys(mut column: Column, guide: &Guide, dispatch: &Dispatcher<ShortcutGuide>)
         }
         for (label, alternatives) in rows {
             let mut keys = Row::new().with_gap(gap);
+            if alternatives.is_empty() {
+                keys = keys.push(caption(&t("guide-unassigned")));
+            }
             for (alternative, binding) in alternatives.iter().enumerate() {
                 if alternative > 0 {
                     keys = keys.push(caption("/"));
@@ -548,7 +569,302 @@ fn touch(column: Column) -> Column {
     column
 }
 
+/// The keyboard guide for the shortcut table `table`: the navigation pairs
+/// the person can change, the essentials with the chords answering now, and
+/// what else to know about the keys.
+///
+/// Every row is a keyboard-shortcuts catalogue entry, so the guide, Settings
+/// and the action door read the same names and the same live chords, and the
+/// guide never promises a default the person has rebound.
+#[must_use]
+pub fn keyboard_guide(table: &ShortcutConfig) -> Guide {
+    let defaults = ShortcutConfig::default();
+    let entries = catalogue(table);
+    Guide {
+        modality: Modality::Keys,
+        controller: None,
+        faces: Faces::default(),
+        pairs: NAVIGATION_ROWS
+            .iter()
+            .map(|(label, previous, next)| Pair {
+                label: t(label),
+                previous: shortcut(table, *previous),
+                next: shortcut(table, *next),
+                changed: [previous, next]
+                    .into_iter()
+                    .any(|action| table.bindings.get(action) != defaults.bindings.get(action)),
+            })
+            .collect(),
+        essentials: ESSENTIALS
+            .iter()
+            .map(|group| {
+                group
+                    .iter()
+                    .filter_map(|id| entries.iter().find(|entry| entry.id == *id))
+                    .map(|entry| {
+                        (
+                            t(&entry.label_key),
+                            entry.chords.iter().map(keycaps).collect(),
+                        )
+                    })
+                    .collect()
+            })
+            .collect(),
+        notes: notes(table),
+        listening: None,
+        message: None,
+    }
+}
+
+/// The navigation rows: what a row moves, and the pair going each way.
+const NAVIGATION_ROWS: [(&str, ShortcutAction, ShortcutAction); 9] = {
+    use ShortcutAction as A;
+    [
+        (
+            "guide-row-windows",
+            A::FocusPreviousWindow,
+            A::FocusNextWindow,
+        ),
+        ("guide-row-tabs", A::PreviousTab, A::NextTab),
+        ("guide-row-move-tab", A::AttachTabLeft, A::AttachTabRight),
+        ("guide-row-maximize", A::MaximizeWindow, A::RestoreWindow),
+        ("guide-row-strips", A::PreviousStrip, A::NextStrip),
+        (
+            "guide-row-workspaces",
+            A::PreviousWorkspace,
+            A::NextWorkspace,
+        ),
+        ("guide-row-move-group", A::MoveGroupLeft, A::MoveGroupRight),
+        ("guide-row-resize", A::ResizeNarrower, A::ResizeWider),
+        (
+            "guide-row-move-group-strip",
+            A::MoveGroupToPreviousStrip,
+            A::MoveGroupToNextStrip,
+        ),
+    ]
+};
+
+/// The essentials in their three titled groups (windows and workspaces,
+/// search and system, capture and display): the keyboard-shortcuts catalogue
+/// entries of each, in reading order.
+const ESSENTIALS: [&[&str]; 3] = [
+    &[
+        "fixed-switch-windows",
+        "fixed-close-tab",
+        // Moving between workspaces is already an editable pair above, so
+        // this group names how to undo a close instead.
+        ShortcutAction::ReopenClosedTab.id(),
+        "fixed-new-window",
+        "fixed-duplicate-tab",
+    ],
+    &[
+        ShortcutAction::Search.id(),
+        // A lone Super tap opens the Super surface, whose field is this
+        // search and whose keys are the same; the keyboard map lists every
+        // alias, the guide keeps one row per action.
+        ShortcutAction::EmojiPicker.id(),
+        ShortcutAction::WorkspaceOverview.id(),
+        ShortcutAction::QuickSettings.id(),
+        "fixed-strip-switcher",
+        ShortcutAction::Lock.id(),
+    ],
+    &[
+        "fixed-screenshot",
+        "fixed-display-layout",
+        "fixed-capture-screenshot",
+        "fixed-open-terminal",
+        "fixed-picture-in-picture",
+        "fixed-save-recent-replay",
+    ],
+];
+
+/// `action` as the guide shows it under `table`, unassigned when it holds no
+/// chord.
+fn shortcut(table: &ShortcutConfig, action: ShortcutAction) -> Shortcut {
+    Shortcut {
+        action: action.id().to_owned(),
+        label: t(&action.label_key()),
+        keys: table.bindings.get(&action).map_or_else(unassigned, keycaps),
+    }
+}
+
+/// The keycap of a shortcut nobody holds.
+fn unassigned() -> KeyboardBinding {
+    KeyboardBinding::new([], KeyLegend::Character("—".to_owned()))
+}
+
+/// `chord` as the keycaps the guide draws.
+fn keycaps(chord: &KeyChord) -> KeyboardBinding {
+    let modifier = |name: &str| match name {
+        "Super" => Some(KeyboardModifier::System),
+        "Ctrl" => Some(KeyboardModifier::Control),
+        "Alt" => Some(KeyboardModifier::Alt),
+        "Shift" => Some(KeyboardModifier::Shift),
+        _ => None,
+    };
+    KeyboardBinding::new(
+        chord.modifiers.iter().filter_map(|name| modifier(name)),
+        KeyLegend::from_name(&chord.key),
+    )
+}
+
+/// `chord` as the active keyboard layout spells it (`Strg+Umschalt+T` on a
+/// German layout).
+fn chord_text(chord: &KeyChord) -> String {
+    ui::keycaps::active().chord(chord.modifiers.iter().map(String::as_str), &chord.key)
+}
+
+/// What else the guide tells the person about the keys, in reading order.
+fn notes(table: &ShortcutConfig) -> Vec<String> {
+    let mut notes = vec![strip_jump_note(table), app_tab_note()];
+    notes.extend(action_summary(table));
+    notes
+}
+
+/// Going straight to a strip with the live chords of the first and the last
+/// one: "Super+1 … Super+9" by default.
+fn strip_jump_note(table: &ShortcutConfig) -> String {
+    let chord = |action: ShortcutAction| {
+        table
+            .bindings
+            .get(&action)
+            .map_or_else(|| t("guide-unassigned-inline"), chord_text)
+    };
+    crate::t_args(
+        "guide-strip-jump",
+        &[
+            ("first", chord(ShortcutAction::FocusStrip1).into()),
+            ("last", chord(ShortcutAction::FocusStrip9).into()),
+        ],
+    )
+}
+
+/// The app tab chords: they reach the focused app first and change tabs only
+/// where it leaves them unhandled, while the desktop's own tab shortcuts
+/// always work. Written in the active layout's keycaps, so a German keyboard
+/// reads `Strg`.
+fn app_tab_note() -> String {
+    let chord = |text: &str| {
+        KeyChord::parse(text).map_or_else(|_| text.to_owned(), |chord| chord_text(&chord))
+    };
+    crate::t_args(
+        "guide-app-tab-chords",
+        &[
+            ("next", chord("Ctrl+Tab").into()),
+            ("previous", chord("Ctrl+Shift+Tab").into()),
+            ("reopen", chord("Ctrl+Shift+T").into()),
+        ],
+    )
+}
+
+/// One line naming every chord a published action answers, or `None` when
+/// nothing is published: those are not catalogue entries, so the guide would
+/// not mention them otherwise.
+fn action_summary(table: &ShortcutConfig) -> Option<String> {
+    if table.actions.is_empty() {
+        return None;
+    }
+    let list = table
+        .actions
+        .iter()
+        .map(|bound| format!("{} · {}", bound.label, chord_text(&bound.chord)))
+        .collect::<Vec<_>>()
+        .join("   ");
+    Some(crate::t_args(
+        "guide-your-shortcuts",
+        &[("shortcuts", ui::i18n::ArgValue::Text(list))],
+    ))
+}
+
 /// The app's definition, which the shell mounts.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(ShortcutGuideApp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The essentials row called `label`.
+    fn essential(guide: &Guide, label: &str) -> Vec<KeyboardBinding> {
+        guide
+            .essentials
+            .iter()
+            .flatten()
+            .find(|(name, _)| name == label)
+            .map(|(_, keys)| keys.clone())
+            .expect("the guide names this essential")
+    }
+
+    #[test]
+    fn the_guide_shows_the_chord_the_table_holds_now() {
+        let table = ShortcutConfig::default();
+        let search = t("shortcut-name-search");
+        assert_eq!(
+            essential(&keyboard_guide(&table), &search),
+            vec![KeyboardBinding::new(
+                [KeyboardModifier::System],
+                KeyLegend::from_name("space")
+            )]
+        );
+
+        let mut rebound = table;
+        rebound
+            .set(
+                ShortcutAction::Search,
+                KeyChord::parse("Ctrl+Alt+J").expect("a free chord"),
+            )
+            .expect("no other shortcut holds it");
+        let guide = keyboard_guide(&rebound);
+        assert_eq!(
+            essential(&guide, &search),
+            vec![KeyboardBinding::new(
+                [KeyboardModifier::Control, KeyboardModifier::Alt],
+                KeyLegend::from_name("j")
+            )]
+        );
+        // What can be changed is the navigation pairs, and only a changed one
+        // offers to go back.
+        assert_eq!(guide.pairs.len(), NAVIGATION_ROWS.len());
+        assert!(guide.pairs.iter().all(|pair| !pair.changed));
+        assert_eq!(guide.modality, Modality::Keys);
+        assert_eq!(guide.listening, None);
+        assert_eq!(guide.message, None);
+    }
+
+    #[test]
+    fn a_pair_whose_shortcut_holds_no_chord_reads_as_unassigned() {
+        let mut table = ShortcutConfig::default();
+        table.bindings.remove(&ShortcutAction::PreviousTab);
+        let guide = keyboard_guide(&table);
+        let pair = guide
+            .pairs
+            .iter()
+            .find(|pair| pair.previous.action == "previous-tab")
+            .expect("tabs are a navigation pair");
+        assert_eq!(pair.previous.keys, unassigned());
+        assert!(pair.changed, "no chord is not the default chord");
+        assert_eq!(
+            pair.next.keys,
+            keycaps(&table.bindings[&ShortcutAction::NextTab])
+        );
+    }
+
+    #[test]
+    fn published_action_chords_are_named_in_a_note_of_their_own() {
+        let mut table = ShortcutConfig::default();
+        assert_eq!(action_summary(&table), None);
+        table.actions.push(settings_store::hardware::ActionChord {
+            chord: KeyChord::parse("Ctrl+Alt+D").expect("a free chord"),
+            target: settings_store::hardware::ActionChordTarget {
+                provider: "actions".to_owned(),
+                resource: "deploy".to_owned(),
+                action: "run".to_owned(),
+            },
+            label: "Deploy".to_owned(),
+        });
+        let note = action_summary(&table).expect("the published chord is named");
+        assert!(note.contains("Deploy"), "{note}");
+        assert!(note.contains("Ctrl+Alt+D"), "{note}");
+    }
 }

@@ -66,7 +66,7 @@ impl RecordSaveStatus {
         }
         match cache.flush(key) {
             Ok(()) => Self::Saved,
-            Err(message) if message == "persistence pending host acknowledgement" => Self::Saving,
+            Err(message) if message == portable_storage::PENDING_ACKNOWLEDGEMENT => Self::Saving,
             Err(message) => Self::Failed(message),
         }
     }
@@ -109,8 +109,7 @@ pub fn room_document(
 
 /// Open the document `store` holds, as a room this device governs reads it:
 /// from its on-disk copy, with a writer that keeps it there. A document that
-/// left the room ([`super::retirement`]) starts over; one written by a newer
-/// build is opened without persistence, so the copy on disk is left intact.
+/// left the room ([`super::retirement`]) starts over.
 pub fn open_stored(mut store: DocStore) -> (AutoCommit, DocWriter) {
     let mut doc = store.load_or_new();
     // The app's document moved to another workspace, which now holds it
@@ -121,25 +120,36 @@ pub fn open_stored(mut store: DocStore) -> (AutoCommit, DocWriter) {
             tracing::error!(%error, "could not start a new app document after a move");
         }
     }
-    // A document written by a newer build is not opened, and the empty
-    // stand-in must never reach disk — with autosave on, the first edit
-    // (or the exit flush) would save it over the existing document. The store
-    // also refuses the write itself; the disabled writer is what stops
-    // the app logging an error on every keystroke to earn that guarantee.
-    if let Some(reason) = store.refusal() {
-        let reason = reason.to_string();
-        tracing::error!(
-            reason = %reason,
-            "app state was written by a newer version of this app; running \
-             without persistence so the file on disk is left intact"
-        );
-        eprintln!("tilo: {reason}");
-        eprintln!("tilo: this session starts empty and will NOT be saved.");
-        return (doc, DocWriter::disabled(reason));
-    }
     let mut autosave = store.writer();
     autosave.seed(&mut doc);
     (doc, autosave)
+}
+
+/// [`open_stored`] for a member's own record of an app (`member:<person>:…`),
+/// which may have kept its records in the workspace's record before: when this
+/// device holds no copy of the person's record yet and holds the workspace's
+/// record of the app (`workspace`), the person's record starts as that copy,
+/// its history and ids with it, so what they saw there is theirs from then on.
+/// The workspace's record is only read: nothing in it changes or goes. Once the
+/// person's record has a copy, it is opened as it is.
+pub fn open_stored_adopting(
+    mut store: DocStore,
+    workspace: Option<DocStore>,
+) -> (AutoCommit, DocWriter) {
+    // A record this device holds no copy of, complete and readable: a store
+    // that cannot read its copy says so in the load itself.
+    let fresh = matches!(store.load_complete(), Ok(None));
+    if fresh
+        && let Some(mut workspace) = workspace
+        && let Ok(Some(mut doc)) = workspace.load_complete()
+    {
+        doc.set_actor(store.actor().clone());
+        let mut writer = store.writer();
+        // Nothing of it is on disk under the person's record yet: the first write keeps it.
+        writer.request(&mut doc);
+        return (doc, writer);
+    }
+    open_stored(store)
 }
 
 /// Open the document `store` holds, as a room another host governs reads it:
@@ -156,10 +166,13 @@ pub fn open_with_committed_read(
     use tilo_automerge::ApplyIncoming as _;
     let stored = store.load_complete().map_err(|e| e.to_string())?;
     let had_stored = stored.is_some();
-    let mut doc = stored.unwrap_or_else(|| store.new_document());
-    if let Some(reason) = store.refusal() {
-        return Err(reason.to_string());
-    }
+    let mut doc = stored.unwrap_or_else(|| {
+        // The room's record carries its own genesis, schema version and
+        // all: a stamp made here would be a second, unnamed creation of it.
+        let mut fresh = store.new_document();
+        fresh.rollback();
+        fresh
+    });
     let mut writer = store.writer();
     // Only the previously stored heads are durable. The captured graph must
     // remain a pending local-cache write even without a subsequent user edit.

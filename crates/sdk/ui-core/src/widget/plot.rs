@@ -157,6 +157,10 @@ pub trait PlotMarks: 'static {
 }
 
 /// The one chart widget; see the [module docs](self).
+#[crate::component::not_a_component(
+    part,
+    "the body every chart shares; each chart is described under its own name"
+)]
 pub struct Plot<M: PlotMarks> {
     pub(crate) marks: M,
     activated: Option<M::Activated>,

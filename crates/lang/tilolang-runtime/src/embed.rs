@@ -6,7 +6,10 @@
 //! runs it as a nested boundary whose code author is the principal, and replaces the node's
 //! children with what the block's value shows. The node's `state` property says which:
 //!
-//! * `view`: the block was a view; its tree is the only child.
+//! * `view`: the block was a view, or the source a written view (`crate::written`) that takes
+//!   nothing; its tree is the only child.
+//! * `definition`: the source is a written view that takes a resource, which is drawn where
+//!   that resource is shown; the child says what it shows.
 //! * `invocation`: the block was an action application. Nothing runs here: the child is an
 //!   `invocation` node drawn from the recorded resource (`state` of `pending` before the host
 //!   has recorded one, then `done`, `suggested`, `declined`, `failed` or `denied`, plus
@@ -20,7 +23,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use serde_json::Value as Json;
-use tilolang::{BlockKind, CompiledBlock, Diagnostic, PackageMeta, Span};
+use tilolang::{BlockKind, CompiledBlock, Diagnostic, Span};
 
 use crate::core::Core;
 use crate::error::RuntimeError;
@@ -30,9 +33,7 @@ use crate::registry::Package;
 use crate::render::{Acc, Build, ViewTarget, scope};
 use crate::value::{ResourceRef, Value, from_json};
 use crate::view::UiNode;
-
-/// The app prefix of block modules: they are never visible to other blocks.
-const BLOCK_APP_PREFIX: &str = "agent.block.";
+use crate::written::diagnostic_line;
 
 /// A compiled and registered block.
 pub struct EmbedBlock {
@@ -45,6 +46,10 @@ pub(crate) type Cached = Result<Rc<EmbedBlock>, Rc<Vec<Diagnostic>>>;
 #[derive(Default)]
 pub struct EmbedState {
     blocks: HashMap<String, Cached>,
+    /// Written views (`crate::written`), by their source and the packages they saw.
+    pub(crate) views: HashMap<String, crate::written::CachedView>,
+    /// The writer of each written view's module, as its code author.
+    pub(crate) authors: HashMap<ModuleHash, ModuleHash>,
 }
 
 fn hex(h: &blake3::Hash) -> String {
@@ -93,10 +98,6 @@ fn error_node(key: &str, lines: &[String]) -> UiNode {
         &[("count", Value::Int(count))],
         children,
     )
-}
-
-fn diagnostic_line(d: &Diagnostic) -> String {
-    format!("{}:{}: {} {}", d.line, d.col, d.code, d.message)
 }
 
 /// The default rendering of a projected value.
@@ -231,6 +232,9 @@ impl Core {
         invocation: Option<&ResourceRef>,
         acc: &mut Acc,
     ) -> Result<(&'static str, Vec<UiNode>), RuntimeError> {
+        if tilolang::written::is_declaration(source) {
+            return self.embed_written(cx, key, source, author, acc);
+        }
         let block = match self.embed_block(source) {
             Ok(b) => b,
             Err(diags) => {
@@ -267,30 +271,12 @@ impl Core {
     /// source's hash and the set of packages it was compiled against, so loading another
     /// package makes the same source compile again.
     pub(crate) fn embed_block(&self, source: &str) -> Cached {
-        let pkgs: Vec<Rc<Package>> = self
-            .registry
-            .borrow()
-            .packages()
-            .into_iter()
-            .filter(|p| !p.meta.app.starts_with(BLOCK_APP_PREFIX))
-            .collect();
-        let mut fingerprint = blake3::Hasher::new();
+        let (visible, mut fingerprint) = self.visible_metas();
         fingerprint.update(source.as_bytes());
-        for p in &pkgs {
-            fingerprint.update(p.hash.0.as_bytes());
-        }
         let cache_key = hex(&fingerprint.finalize());
         if let Some(hit) = self.embeds.borrow().blocks.get(&cache_key) {
             return hit.clone();
         }
-        // The newest package of each app is the one a block sees.
-        let mut visible: Vec<PackageMeta> = Vec::new();
-        for p in pkgs.iter().rev() {
-            if !visible.iter().any(|m| m.app == p.meta.app) {
-                visible.push(p.meta.clone());
-            }
-        }
-        visible.reverse();
         let built = match tilolang::compile_block(source, &visible) {
             Ok(block) => match self.load_block(&block.wasm, &block.meta) {
                 Ok(pkg) => Ok(Rc::new(EmbedBlock { block, pkg })),
@@ -307,6 +293,45 @@ impl Core {
             .blocks
             .insert(cache_key, built.clone());
         built
+    }
+
+    /// An embedded written view (`crate::written`): one that takes nothing is drawn, with its
+    /// writer as its code author; one that takes a resource is drawn where that resource is
+    /// shown, so here it says what it shows.
+    fn embed_written(
+        &self,
+        cx: &Build<'_>,
+        key: &str,
+        source: &str,
+        author: &Principal,
+        acc: &mut Acc,
+    ) -> Result<(&'static str, Vec<UiNode>), RuntimeError> {
+        let view = match self.written_view(source, author) {
+            Ok(view) => view,
+            Err(diags) => {
+                let lines: Vec<String> = diags.iter().map(diagnostic_line).collect();
+                return Ok(("error", vec![error_node(key, &lines)]));
+            }
+        };
+        if !view.view.params.is_empty() {
+            let shows = view
+                .view
+                .params
+                .iter()
+                .map(|p| p.ty.rsplit('.').next().unwrap_or(&p.ty).to_owned())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Ok((
+                "definition",
+                vec![text_node(
+                    format!("{key}/shows"),
+                    &format!("Shows a {shows}"),
+                )],
+            ));
+        }
+        let nested = self.render_at(&view.target(), &[], cx.offer.deeper(), None)?;
+        let root = acc.absorb(nested);
+        Ok(("view", vec![scope(key, root)]))
     }
 
     /// Draw the invocation the host recorded for an action block. This only reads: the action

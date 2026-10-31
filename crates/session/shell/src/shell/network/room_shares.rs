@@ -106,7 +106,8 @@ impl ShellNetwork {
         owner.with_current(room, |view| {
             let member = view
                 .peer()
-                .permissions(view.device().device_public_key, now)?;
+                .permissions(view.device().device_public_key, now)
+                .map_err(|error| error.to_string())?;
             Ok((
                 member.allows(node, ActionKind::Read, now),
                 member.allows(node, ActionKind::Undoable, now),

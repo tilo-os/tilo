@@ -377,18 +377,17 @@ fn an_agent_lists_the_records_and_reads_one_through_the_broker() {
     let room = workspace.room().to_string();
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
-    let broker =
-        tilo_action_broker::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
-            Arc::new(crate::shell::broker_services::NativeWorkspaceAuthority(
-                tree.shared(),
-            )),
-            tilo_action_broker::services::HostServices {
-                host_steps: vec![Arc::new(BrokerDoor {
-                    dir: Some(dir.path().to_path_buf()),
-                })],
-                ..Default::default()
-            },
-        );
+    let broker = tilo_action_broker::collab_app_broker::AppBrokerState::test_broker_with_authority(
+        Arc::new(crate::shell::broker_services::NativeWorkspaceAuthority(
+            tree.shared(),
+        )),
+        tilo_action_broker::services::HostServices {
+            host_steps: vec![Arc::new(BrokerDoor {
+                dir: Some(dir.path().to_path_buf()),
+            })],
+            ..Default::default()
+        },
+    );
     let agent = Caller::local_agent("scribe").in_room(room);
 
     let offered = broker

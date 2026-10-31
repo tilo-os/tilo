@@ -14,7 +14,6 @@ async fn a_replaced_session_ends_as_superseded_unless_its_device_lost_the_room()
         let (replacement, _receiver) = mpsc::channel(32);
         fixture.workspace.lock().await.add_subscriber(Subscriber {
             device_public_key: device,
-            role: PeerRole::Device,
             tx: replacement,
             disconnect: fixture.recipient_disconnect.clone(),
         });
@@ -78,7 +77,6 @@ async fn replay_completion_only_classifies_a_valid_replacement_as_superseded() {
             let (replacement, receiver) = mpsc::channel(32);
             fixture.workspace.lock().await.add_subscriber(Subscriber {
                 device_public_key: device,
-                role: PeerRole::Device,
                 tx: replacement.clone(),
                 disconnect: fixture.source.disconnect.clone(),
             });
@@ -146,7 +144,6 @@ async fn replay_completion_takes_a_slot_its_earlier_connection_released() {
     let (earlier, _earlier_rx) = mpsc::channel(32);
     fixture.workspace.lock().await.add_subscriber(Subscriber {
         device_public_key: device,
-        role: PeerRole::Device,
         tx: earlier.clone(),
         disconnect: fixture.recipient_disconnect.clone(),
     });

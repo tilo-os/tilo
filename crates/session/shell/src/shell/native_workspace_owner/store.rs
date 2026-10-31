@@ -12,7 +12,7 @@ use std::{
     },
 };
 use tilo_files::native::atomic::lease::{FileLease, LeaseMode};
-pub(crate) use tilo_joined_room::{LimitedWriter, MAX_STATE_BYTES};
+pub(crate) use tilo_peer_state::owner::{LimitedWriter, MAX_STATE_BYTES};
 
 /// Where a snapshot stands among the writes of one state file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -52,6 +52,12 @@ pub(crate) enum AuthorityRejection {
     RoomOwnerNotCurrent,
 }
 impl AuthorityRejection {
+    /// Whether the authority is definitely gone. A stale snapshot is not:
+    /// the owner accepted a record after it, and the export of that record
+    /// is what tells whether anything was taken away.
+    pub(crate) const fn withdraws(self) -> bool {
+        !matches!(self, Self::StaleAcceptedSnapshot)
+    }
     pub(crate) fn reason(self) -> &'static str {
         match self {
             Self::WriterRetired => "writer_retired",
@@ -88,7 +94,9 @@ impl NativeStateWitness {
     /// the owner published since is not stale while `exporting` says the
     /// policy its publication exported (its revision) is still on its way
     /// to the observer: that export judges again when it lands, so the gap
-    /// between the two withdraws nothing by itself.
+    /// between the two withdraws nothing by itself. Every other rejection
+    /// is reported ahead of staleness, which withdraws nothing on its own
+    /// ([`AuthorityRejection::withdraws`]).
     pub(crate) fn authority_status_awaiting(
         &self,
         storage: &super::NativeAuthorityStorage,
@@ -106,13 +114,16 @@ impl NativeStateWitness {
             .health()
             .map_err(|_| AuthorityRejection::OwnerFenced)?;
         let current = owner.revision();
-        if current != storage.revision() && !exporting(current) {
-            return Err(AuthorityRejection::StaleAcceptedSnapshot);
-        }
+        let stale = current != storage.revision() && !exporting(current);
+        // Judged against the owner as it is now, so a room it no longer
+        // holds is a withdrawal whether or not the record is stale.
         if storage.requires(room) {
-            return owner
+            owner
                 .with_current(room, |_| Ok(()))
-                .map_err(|_| AuthorityRejection::RoomOwnerNotCurrent);
+                .map_err(|_| AuthorityRejection::RoomOwnerNotCurrent)?;
+        }
+        if stale {
+            return Err(AuthorityRejection::StaleAcceptedSnapshot);
         }
         Ok(())
     }
@@ -199,7 +210,7 @@ struct Writer {
 }
 
 type Attachment = (
-    tilo_joined_room::WeakNativeWorkspaceOwner,
+    tilo_peer_state::owner::WeakNativeWorkspaceOwner,
     WeakWorkspaceTreeHandle,
 );
 
@@ -247,14 +258,16 @@ impl NativeStateRuntime {
     pub(super) fn attach(&self, owner: &NativeWorkspaceOwner, tree: &WorkspaceTreeHandle) {
         *self.0.attached.lock() = Some((owner.downgrade(), tree.downgrade()));
     }
-    /// Write nothing more, once any write in progress has finished: the
-    /// state file stays as this writer last left it, as at the end of the
-    /// process that held it. For a test that starts a device again in the
-    /// same process, where the old session's work can outlive it.
-    #[cfg(test)]
-    pub(crate) fn close_for_shutdown(&self) {
-        let _writer = self.0.writer.lock();
+    /// Write nothing more, once any write in progress has finished, and let
+    /// go of the state file's lease: the file stays as this writer last left
+    /// it, as at the end of the process that held it. The session that owned
+    /// the writer ends with it, so the profile's next session takes the lease
+    /// however long work of the old one (a network task, a queued snapshot)
+    /// still holds the tree; that work's writes are refused.
+    pub(crate) fn close(&self) {
+        let mut writer = self.0.writer.lock();
         self.0.closed.store(true, Ordering::Release);
+        writer.lease = None;
     }
     /// Order of a snapshot of the tree among every other snapshot of it.
     /// Taken while the caller holds the tree, so a later sequence is never an

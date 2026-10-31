@@ -13,13 +13,19 @@ use crate::shell::state::AppKind;
 use tilo_desktop::feedback::{Control, Focused, Subject};
 
 pub(crate) fn open(st: &mut ChromeState) -> Result<(), ActionError> {
-    // Native tiles other than built-ins carry no app-chosen display name.
-    let focused = tilo_desktop::feedback::focused(&st.tree().desktop, |_| None);
+    let focused = tilo_desktop::feedback::focused(&st.tree().desktop, app_name);
     match focused {
         Focused::Composer => bring_up(st),
         Focused::Nothing => about(st, None),
         Focused::App(subject) => about(st, Some(subject)),
     }
+}
+
+/// The name a report gives the app `app`, for a window it runs as its own
+/// process: the name it was launched under, else its installed package's.
+/// Never the window's title, which can name what the person is working on.
+pub(crate) fn app_name(app: &str) -> Option<String> {
+    crate::shell::launcher::display_name_for_app_id_without_waiting(app)
 }
 
 /// The record the window in front shows, as the session's broker knows
@@ -82,7 +88,7 @@ pub(crate) fn report(
     st: &mut ChromeState,
     picked: tilo_app::feedback::PickedReport,
 ) -> Result<(), ActionError> {
-    let front = tilo_desktop::feedback::focused(&st.tree().desktop, |_| None);
+    let front = tilo_desktop::feedback::focused(&st.tree().desktop, app_name);
     let subject = with_record(
         st,
         tilo_desktop::feedback::picked_subject(&picked.draft, front),

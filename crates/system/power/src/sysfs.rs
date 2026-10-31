@@ -244,6 +244,7 @@ fn hours_at(amount: u64, per_hour: u64) -> Option<Duration> {
 /// platform driver actually exposes.  Settings builds its choices from this
 /// instead of assuming that every laptop accepts the same percentages.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "service", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChargeCapCapability {
     pub backend: ChargeCapBackend,
     pub current: u32,
@@ -252,6 +253,7 @@ pub struct ChargeCapCapability {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "service", derive(serde::Serialize, serde::Deserialize))]
 pub enum ChargeCapBackend {
     /// Linux power-supply attributes such as
     /// `charge_control_end_threshold`; used by `ThinkPad`, Framework, ASUS,

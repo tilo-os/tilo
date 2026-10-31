@@ -190,7 +190,7 @@ mod tests {
     fn another_device_of_the_owner_names_a_host() -> TestResult {
         use automerge::transaction::Transactable as _;
         let (mut peer, _, _, member, now) = crate::admission_tests::seeded();
-        assert_eq!(member.user_public_key, peer.authority().user_public_key);
+        assert_eq!(member.user_public_key, peer.owner());
         let mut doc = peer.admitted_room().ok_or("room missing")?.clone();
         let before = doc.get_heads();
         doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));

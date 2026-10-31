@@ -545,7 +545,7 @@ impl InstallerApp {
                 label: disk.label(),
                 presentation: ResourcePresentation {
                     detail: Some(bounded(
-                        &format!("{} · {}", capacity(disk), disk.contents_summary()),
+                        &format!("{}, {}", capacity(disk), disk.contents_summary()),
                         160,
                     )),
                     badge: Some(badge.to_owned()),
@@ -752,7 +752,8 @@ impl InstallerApp {
         let resources = self.published();
         let admitted = console::admit(PROVIDER, &resources, PROVIDER, id, args)
             .map_err(|refusal| format!("{}: {}", refusal.code, refusal.message))?;
-        let effect = DestinationEffect::from_payload(&admitted.encoded.payload)?;
+        let effect = DestinationEffect::from_payload(&admitted.encoded.payload)
+            .map_err(|error| error.to_string())?;
         self.apply(effect)
     }
 

@@ -1,10 +1,12 @@
-# tilolang engines: wasmi, Cranelift and Winch
+# tilolang engines: tiered, wasmi, Cranelift and Winch
 
-tilolang apps run on wasmi, an interpreter (`crates/lang/tilolang-runtime/DECISIONS.md`,
-"Engine: wasmi, lazy translation"). The runtime can also run them on wasmtime, compiled by
-Cranelift (its optimizing compiler) or Winch (its baseline compiler), to compare the engines on
-your own machine. wasmtime is behind the runtime's `wasmtime` feature, off by default: no build
-of Tilo ships it.
+tilolang apps run on the tiered engine (`crates/lang/tilolang-runtime/DECISIONS.md`, "Tiered"):
+a module starts on wasmi, an interpreter, while Cranelift, wasmtime's optimizing compiler,
+compiles it on a thread of its own; the next call after the compile finishes runs the compiled
+module, and the compiled module is kept on disk so the next start is compiled at once. A
+process can also run on one engine alone, wasmi, Cranelift or Winch (wasmtime's baseline
+compiler), to compare them on your own machine. wasmtime is the runtime's `wasmtime` feature,
+on by default; a build without it runs wasmi alone.
 
 ## Running the comparison
 
@@ -12,11 +14,11 @@ of Tilo ships it.
 python3 tools/perf/tilolang_engines.py
 ```
 
-It builds `tilolang bench` (the `bench` example of `tilolang-tilo`) in release, without and with
-the `wasmtime` feature, and the image filter library
+It builds `tilolang bench` (the `bench` example of `tilolang-tilo`) in release and the image
+filter library
 (`crates/platform/tilolang-tilo/bench/imagefilter/build.sh`). Then it runs the bench once
 per engine over every app in `apps/tl` at 1k and 10k items and prints one table of p50s.
-Options: `--engines wasmi,winch`, `--apps notes,todo`, `--sizes 1000`, `--samples 20`,
+Options: `--engines tiered,wasmi`, `--apps notes,todo`, `--sizes 1000`, `--samples 20`,
 `--records out.jsonl` (every record, as `tools/perf/record.py` JSON), and `--no-build` to rerun
 on the binaries already built. The whole run takes about 15 minutes. Close anything heavy first:
 the numbers are wall-clock times.
@@ -24,7 +26,7 @@ the numbers are wall-clock times.
 One engine on one app:
 
 ```
-cargo build --release --locked -p tilolang-tilo --example bench --features wasmtime
+cargo build --release --locked -p tilolang-tilo --example bench
 target/release/examples/bench apps/tl/notes --engine cranelift --sizes 1000,10000 \
     --compute --library target/wasm32-unknown-unknown/release/tilolang_bench_imagefilter.wasm
 ```
@@ -38,9 +40,13 @@ target/release/examples/bench apps/tl/notes --engine cranelift --sizes 1000,1000
   compiles the modules and makes their first instance. It includes the engine's one-time setup
   in that process and, for wasmi, the instance's linear memory, which wasmi fills with zeros.
 - **start to first frame**: opening the app's main view to its first tree in a process that
-  has compiled nothing yet, compiling included.
-- **open, keystroke, press, peer edit**: the bench's usual scenarios (`tilolang bench`), with
-  the modules already compiled.
+  has compiled nothing yet, compiling included (on the tiered engine, with nothing kept on disk
+  either: the first frame comes from wasmi).
+- **start to first frame, compiled module kept** (tiered only): the same in a process that
+  finds the compiled modules on disk, as every start after the first does.
+- **open, keystroke, press, peer edit, send in a thread**: the bench's usual scenarios
+  (`tilolang bench`), with the modules already compiled (on the tiered engine, after its
+  compile finished: what an app runs a moment after it starts).
 - **compute**: `crates/platform/tilolang-tilo/bench/compute`, a tilolang package doing 64-bit
   integer arithmetic over 2^20 indices. tilolang has no buffers and no counting loops, so it runs
   this twice: as recursive guest calls only, and as four nested `for` loops over a 32-element
@@ -52,7 +58,47 @@ target/release/examples/bench apps/tl/notes --engine cranelift --sizes 1000,1000
 Every workload's result is in its record (`result`, `checksum`), and the script checks that all
 engines agree.
 
-## Measured
+## Measured: the tiered engine
+
+On the arm64 rcargo builder (`rcargo exec`, shared with other builds, so a few percent is
+noise), release, 10 samples, 1k items (Chat: 20 conversations, its thread 1k messages), one
+binary for every engine. p50s in ms. *wasmi before* is the same scenarios on the binary of
+integration a01f8006bee, where wasmtime imports and calls converted every value through `Val`.
+
+| measure | wasmi before | Cranelift before | tiered | wasmi | Cranelift | Winch |
+|---|---:|---:|---:|---:|---:|---:|
+| compile, tasks | 0.217 | 63.1 | 0.239 | 0.219 | 14.1 | 2.94 |
+| compile, notes | 0.109 | 11.8 | 0.123 | 0.114 | 11.5 | 1.72 |
+| start to first frame (install, nothing compiled), notes | 26.4 | 38.9 | 26.1 | 26.7 | 37.4 | 27.4 |
+| start to first frame (install), tasks | 43.1 | 59.6 | 43.8 | 44.5 | 57.1 | 45.6 |
+| start to first frame (install), chat | 2.29 | 10.8 | 2.76 | 2.44 | 10.8 | 4.21 |
+| start to first frame (install), shell bar | | | 14.9 | 15.8 | 18.3 | 15.1 |
+| start to first frame, compiled module kept, notes / tasks / shell | | | 25.9 / 44.0 / 14.5 | | | |
+| first frame over the index, tasks | 9.43 | 11.4 | 8.20 | 9.75 | 8.27 | 8.29 |
+| keystroke, notes (typing) | 1.40 | 1.46 | 1.33 | 1.42 | 1.35 | 1.37 |
+| keystroke, tasks | 1.95 | 2.33 | 1.89 | 2.11 | 1.92 | 1.85 |
+| peer edit, tasks | 1.24 | 1.50 | 1.20 | 1.33 | 1.23 | 1.18 |
+| peer edit, shell bar (the session changes the desk) | | | 0.624 | 0.635 | 0.623 | 0.639 |
+| send in a thread, chat | 6.43 | 6.69 | 6.57 | 6.74 | 6.80 | 6.33 |
+| compute, guest calls (2^20) | 104 | 14.3 | 14.3 | 105 | 14.3 | 23.9 |
+| compute, loops over a list (2^20) | 216 | 231 | 77.5 | 212 | 77.6 | 95.9 |
+
+The shell bar has nothing to type into, so its change is the peer edit; the bench of
+integration a01f8006bee could not run it. The bench has no "add a task" scenario: a task's
+change is its keystroke and its peer edit.
+
+- **Launch.** The tiered engine starts like wasmi (it is wasmi until the compile ends), about
+  10 to 15 ms sooner than Cranelift alone, for which a launch waits on the compile. With the
+  compiled module kept on disk the start is the same: loading it costs what wasmi's lazy
+  validation does, and the first frame's time is in the host.
+- **Steady state.** A few milliseconds after load the tiered engine runs Cranelift's code:
+  views and changes are 3 to 15% faster than on wasmi, guest arithmetic 7x, and code that calls
+  the host in a loop 2.7x. Before, that loop was slower on Cranelift than on wasmi (231 against
+  216 ms) because every import converted its values through `Val`; raw values (`ValRaw`, checked
+  against the export's type once) removed that.
+- The results agreed on every engine.
+
+## Measured: the engines alone (October 2026)
 
 On the Lenovo Yoga laptop (aarch64, 12 threads), release, 10 samples, wasmtime 50.0.0 (which
 has the fix for CVE-2026-34987, the Winch-on-aarch64 sandbox escape fixed in 36.0.7, 42.0.2 and
@@ -95,9 +141,8 @@ What the numbers say:
   9 MiB for Cranelift.
 - Guest arithmetic runs 8x faster on Cranelift than on wasmi, and 5x faster on Winch. The Rust
   library runs 52x faster on Cranelift and 10x faster on Winch.
-- Code that calls the host in a tight loop is 15 to 33% slower on wasmtime. Not yet measured
-  why. A likely cause: the runtime binds imports dynamically (`Linker::func_new`), so each call
-  converts its arguments through `Val` slices. Typed imports would show whether that is it.
+- Code that calls the host in a tight loop was 15 to 33% slower on wasmtime: each import
+  converted its values through `Val`. Raw values fixed it (the tiered table above).
 
 ## Running the suites on another engine
 
@@ -105,7 +150,7 @@ The runtime's suites run on any engine through `TILOLANG_ENGINE`, which a build 
 `wasmtime` feature reads:
 
 ```
-cargo test --locked -p tilolang-runtime -p tilolang-tilo --features tilolang-tilo/wasmtime \
+cargo test --locked -p tilolang-runtime -p tilolang-tilo \
     --config 'env.TILOLANG_ENGINE="winch"'
 ```
 
@@ -127,4 +172,9 @@ implementation per engine (`engine/wasmi_backend.rs`, `engine/wasmtime_backend.r
   its duration.
 
 `configure(EngineConfig { kind, translation })` picks the engine once per process, before the
-first runtime.
+first runtime; `keep_compiled_in(dir)` says where the tiered engine keeps compiled modules.
+
+The tiered engine (`engine/tiering.rs`) uses both backends: each runtime holds a wasmi pool and
+a Cranelift pool per module, and a call checks out an instance from the Cranelift pool once the
+process's compile thread has the compiled module, dropping the wasmi ones. A call running when
+the compile finishes ends on wasmi; nothing waits.

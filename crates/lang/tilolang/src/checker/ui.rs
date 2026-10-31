@@ -445,6 +445,27 @@ impl Checker<'_> {
                     }
                 }
             }
+            // A view a value holds, read where it stands: `c.before` of a `host.Change`.
+            ExprKind::Field { .. } if args.is_empty() && c.block.is_none() => {
+                let v = self.expr(callee, None);
+                match v.ty {
+                    Ty::View => {
+                        let n = self.fresh(Ty::View);
+                        self.emit(Stmt::Set(n, v));
+                        n
+                    }
+                    Ty::Error => return self.dead_node(),
+                    other => {
+                        let t = self.show(&other);
+                        self.err(
+                            "E060",
+                            span,
+                            format!("a UI statement is a primitive, a view call or a view a value holds; this is {t}"),
+                        );
+                        return self.dead_node();
+                    }
+                }
+            }
             _ => {
                 self.err(
                     "E060",
@@ -525,9 +546,36 @@ impl Checker<'_> {
             self.drawer_props(n);
         }
         if let Some(block) = &c.block {
-            self.child_block(p.name, block, n);
+            self.primitive_block(p.name, block, n);
         }
         n
+    }
+
+    /// The block of the primitive `prim`, whose node is `n`: its children, and, for a primitive
+    /// a toolkit component draws (`rich_input` is `ui.RichInput`), that component's events
+    /// (`on submit: ...`), as the component written out takes them.
+    fn primitive_block(&mut self, prim: &'static str, block: &[UiStmt], n: LocalId) {
+        let described = crate::toolkit::prim_component(prim)
+            .and_then(|name| self.env.toolkit.and_then(|t| t.get(name)));
+        let Some(d) = described else {
+            self.child_block(prim, block, n);
+            return;
+        };
+        let mut children = Vec::new();
+        for s in block {
+            match &s.kind {
+                UiKind::On {
+                    event,
+                    param,
+                    at,
+                    action,
+                } => self.component_event(n, d, event, (param.as_ref(), at.as_ref()), action),
+                _ => children.push(s.clone()),
+            }
+        }
+        if !children.is_empty() {
+            self.child_block(prim, &children, n);
+        }
     }
 
     /// The people of a rich input's `@` drawer, which no view declares: the system gives them

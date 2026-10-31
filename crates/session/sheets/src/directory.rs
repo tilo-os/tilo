@@ -111,7 +111,10 @@ pub struct Listing {
 }
 
 impl Listing {
-    fn matches(&self, query: &str) -> bool {
+    /// Whether the search `query` names this listing: its name, what it is,
+    /// or the host listing it.
+    #[must_use]
+    pub fn matches(&self, query: &str) -> bool {
         let query = query.trim().to_lowercase();
         query.is_empty()
             || [&self.name, &self.about, &self.host]
@@ -384,7 +387,7 @@ fn rows(directory: &Directory, query: &str, dispatch: &Dispatcher<WorkspaceDirec
                     )))
                     .push(Box::new(
                         Button::new("directory-retry", &t("directory-try-again"))
-                            .on_click(move || retry.effect(&DirectoryEffect::Refresh)),
+                            .on_view(move || retry.effect(&DirectoryEffect::Refresh)),
                     )),
             );
         }
@@ -435,7 +438,7 @@ fn row(listing: &Listing, dispatch: &Dispatcher<WorkspaceDirectory>) -> Element 
             &[("name", ui::i18n::ArgValue::Text(listing.name.clone()))],
         ))
         .tooltip(listing.joins_as.clone())
-        .on_click(move || press.effect(&effect))
+        .on_own_device_effect(move || press.effect(&effect))
         .with_enabled(!listing.waiting && listing.action != ListingAction::Joining);
     if primary {
         button = button.role(ButtonRole::Primary);

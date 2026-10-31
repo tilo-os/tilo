@@ -408,6 +408,20 @@ mod tests {
                 .any(|row| row["resource"] == "windows.manager" && row["action"] == "field-edit"),
             "routes are edited on the manager"
         );
+        // A capture runs no row's effect; a drive of the scenario does.
+        let mut driven = TestApp::<WindowsShell>::drive("wide").unwrap();
+        let read = driven
+            .effect_on(
+                "windows.app:adobe-reader",
+                &crate::actions::WindowsEffect::ReadApp {
+                    app: "adobe-reader".into(),
+                },
+            )
+            .unwrap()
+            .value
+            .expect("an application's read answers it");
+        assert_eq!(read["id"], "adobe-reader", "{read:#}");
+        assert!(read["name"].is_string(), "{read:#}");
     }
 }
 
@@ -429,3 +443,15 @@ mod capture_tests {
 }
 
 ui::reach_tests!(WindowsShell);
+
+#[cfg(test)]
+mod agent_disclosure_tests {
+    #[test]
+    fn every_scenario_shows_an_agent_its_actions() {
+        if let Err(failures) =
+            ui::framework::testing::check_agents_are_shown_every_action::<super::WindowsShell>()
+        {
+            panic!("{failures}");
+        }
+    }
+}

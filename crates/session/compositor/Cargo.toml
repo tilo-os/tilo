@@ -41,6 +41,11 @@ tilo-frame-metrics = { path = "../frame-metrics" }
 # between ports.
 settings-store = { path = "../../system/settings-store" }
 tilo-wayland-ext = { path = "../wayland-ext" }
+# What a window's content is in and what an output displays, in the
+# vocabulary a share stream and the colour pass speak.
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+# `wp_color_management_v1`'s objects, which `tilo-wayland-ext` dispatches.
+wayland-protocols = { version = "0.32.12", features = ["server", "staging"] }
 # Xwayland's drag-and-drop (XDND) on a connection of the compositor's own;
 # smithay's window manager speaks selections but not XDND.
 x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
@@ -60,6 +65,9 @@ wayland-client.workspace = true
 wayland-protocols = { version = "0.32.12", features = ["client", "staging", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
+# A share of a window as the session keeps it, to prove the colour a client
+# commits is what the stream carrying the window's frames announces.
+tilo-window-share = { path = "../window-share" }
 
 [lints]
 workspace = true

@@ -24,6 +24,10 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{TaffyTreeExt, Widget};
 
+#[path = "facts_component.rs"]
+mod component;
+pub use component::{FactProps, FactsProps};
+
 /// One fact: an optional icon from the icon set and its text.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fact {

@@ -38,9 +38,23 @@ use ui::text_render::TextStyle;
 use ui::widget::ButtonRole;
 
 pub mod agent_access;
+pub mod default_apps;
+
+pub use default_apps::{
+    DefaultAppChoice, default_app_choices, default_apps_status, next_user_default,
+    next_workspace_default,
+};
+use default_apps::{default_app_labels, resource_kind_label};
+mod agents_pane;
 pub mod emoji_pane;
 pub mod overlay;
 mod people_pane;
+
+use agents_pane::agent_summary_parts;
+pub use agents_pane::{
+    AgentPreset, AgentRow, AgentSummary, admit_agent, admit_service_member, agent_authority_preset,
+    agent_preset_label, agent_summaries, agents_add_rect, agents_pane_rows,
+};
 
 pub use people_pane::{member_row_controls, member_row_offers, ownership_button};
 
@@ -2218,6 +2232,9 @@ enum GrantTarget {
 /// (devices gate the portal, `NetHost` gates egress, `FsPath` gates the
 /// sandbox binds and the filesystem, `Workspace` gates administration).
 pub struct GrantChoice {
+    /// What the choice is named by where a lens asks for it: the same key
+    /// every host and every view of the composer uses.
+    pub key: &'static str,
     /// Catalogue key of the picker's label.
     label_key: &'static str,
     target: GrantTarget,
@@ -2232,41 +2249,49 @@ impl GrantChoice {
 
 static GRANT_CHOICES: &[GrantChoice] = &[
     GrantChoice {
+        key: "camera",
         label_key: "workspace-settings-grant-camera",
         target: GrantTarget::Device("camera"),
         access: Access::Read,
     },
     GrantChoice {
+        key: "microphone",
         label_key: "workspace-settings-grant-microphone",
         target: GrantTarget::Device("microphone"),
         access: Access::Read,
     },
     GrantChoice {
+        key: "screencast",
         label_key: "workspace-settings-grant-screencast",
         target: GrantTarget::Device("screencast"),
         access: Access::Read,
     },
     GrantChoice {
+        key: "remote-control",
         label_key: "workspace-settings-grant-remote-control",
         target: GrantTarget::Device("remote-desktop"),
         access: Access::Write,
     },
     GrantChoice {
+        key: "network",
         label_key: "workspace-settings-grant-network",
         target: GrantTarget::AnyHost,
         access: Access::Read,
     },
     GrantChoice {
+        key: "read-files",
         label_key: "workspace-settings-grant-read-files",
         target: GrantTarget::WorkspaceFiles,
         access: Access::Read,
     },
     GrantChoice {
+        key: "edit-files",
         label_key: "workspace-settings-grant-edit-files",
         target: GrantTarget::WorkspaceFiles,
         access: Access::Write,
     },
     GrantChoice {
+        key: "create-roles",
         label_key: "workspace-settings-grant-create-roles",
         target: GrantTarget::GovernanceAction {
             action: tilo_desktop_model::PRESET_SAVE_ACTION_ID,
@@ -2274,6 +2299,7 @@ static GRANT_CHOICES: &[GrantChoice] = &[
         access: Access::Write,
     },
     GrantChoice {
+        key: "assign-roles",
         label_key: "workspace-settings-grant-assign-roles",
         target: GrantTarget::GovernanceAction {
             action: tilo_desktop_model::PRESET_ASSIGN_ACTION_ID,
@@ -2286,6 +2312,7 @@ static GRANT_CHOICES: &[GrantChoice] = &[
 /// length ever disagree — unreachable in practice since the index is
 /// always taken modulo the live length, but a real value beats a panic.
 const FALLBACK_CHOICE: GrantChoice = GrantChoice {
+    key: "edit-files",
     label_key: "workspace-settings-grant-edit-files",
     target: GrantTarget::WorkspaceFiles,
     access: Access::Write,
@@ -2345,6 +2372,77 @@ impl GrantDraft {
             .unwrap_or(0);
         GRANT_CHOICES.get(idx).unwrap_or(&FALLBACK_CHOICE)
     }
+}
+
+/// What a subject of the composer, a permission and an expiry are named by
+/// where a view asks for the grant: `member:…`, `agent:…` or `app:…`, the
+/// permission's key, and `never`, `session` or `once`.
+#[must_use]
+pub fn grant_subject_key(entry: &GrantSubject) -> Option<String> {
+    let kind = match entry.kind {
+        SubjectKind::Member => "member",
+        SubjectKind::Agent => "agent",
+        SubjectKind::App | SubjectKind::AppAction => "app",
+        SubjectKind::Role | SubjectKind::Other => return None,
+    };
+    Some(format!("{kind}:{}", entry.id))
+}
+
+/// The expiry's key, as [`GrantComposer`] names it.
+#[must_use]
+pub fn expiry_key(expiry: Expiry) -> &'static str {
+    match expiry {
+        Expiry::Never => "never",
+        Expiry::EndOfSession | Expiry::AtUnix(_) => "session",
+        Expiry::AfterUse => "once",
+    }
+}
+
+/// The composer's permissions as (key, label), in picker order.
+#[must_use]
+pub fn grant_choices() -> Vec<(&'static str, String)> {
+    GRANT_CHOICES
+        .iter()
+        .map(|choice| (choice.key, choice.label()))
+        .collect()
+}
+
+/// The composer's expiries as (key, label), in picker order.
+#[must_use]
+pub fn expiry_choices() -> Vec<(&'static str, String)> {
+    EXPIRY_CHOICES
+        .iter()
+        .map(|expiry| (expiry_key(*expiry), expiry_label(*expiry)))
+        .collect()
+}
+
+/// The draft a view asked for: the subject `subject` (`member:…`, `agent:…`
+/// or `app:…`), the permission `permission` and the expiry `expiry`, as the
+/// composer stands. `None` when the workspace holds no such subject, so a
+/// grant for someone who left is never made for someone else.
+#[must_use]
+pub fn draft_for(
+    ws: &Workspace,
+    subject: &str,
+    permission: &str,
+    expiry: &str,
+) -> Option<GrantDraft> {
+    let subject_index = grant_subjects(ws)
+        .iter()
+        .position(|entry| grant_subject_key(entry).as_deref() == Some(subject))?;
+    let choice_index = GRANT_CHOICES
+        .iter()
+        .position(|choice| choice.key == permission)?;
+    let expiry = EXPIRY_CHOICES
+        .iter()
+        .copied()
+        .find(|candidate| expiry_key(*candidate) == expiry)
+        .unwrap_or(Expiry::EndOfSession);
+    Some(GrantDraft {
+        subject_index,
+        choice_index,
+        expiry,
+    })
 }
 
 /// The subjects the composer can target, in picker order: the
@@ -2621,186 +2719,6 @@ pub struct MemberRow {
     pub remove_rect: Rect,
 }
 
-/// One explicitly non-human row in the Agents pane. Keeping this a
-/// separate type makes it hard for a future renderer to accidentally
-/// present agents as human roster entries.
-#[derive(Clone, Debug)]
-pub struct AgentRow {
-    pub agent: String,
-    /// The kinds of action its room grants allow.
-    pub kinds: tilo_action_policy::KindSet,
-    pub grant_count: usize,
-    /// A human-readable summary of the *scoped* authority, not a role.
-    /// Agents never inherit their admission capability as ambient access.
-    pub preset: AgentPreset,
-    /// Set when the agent is a service member: a cloud or relay identity
-    /// admitted to the room's encrypted channels with a stated purpose.
-    pub service: Option<ServiceMember>,
-    pub row_rect: Rect,
-    pub role_rect: Rect,
-    pub review_rect: Rect,
-    pub remove_rect: Rect,
-}
-
-/// A named starting point for an agent in the room: the grants it receives
-/// when admitted. Deliberately not a person's role.
-pub use tilo_action_policy::roles::AgentPreset;
-
-/// The preset's name, for the Agents pane.
-pub fn agent_preset_label(preset: AgentPreset) -> String {
-    t(match preset {
-        AgentPreset::Observer => "workspace-settings-preset-observer",
-        AgentPreset::Contributor => "workspace-settings-preset-contributor",
-        AgentPreset::Operator => "workspace-settings-preset-operator",
-        AgentPreset::Custom => "workspace-settings-preset-custom",
-    })
-}
-
-/// The preset `agent` was admitted with, from the ids of its room grants.
-/// Anything broad or sensitive it holds beside them (the whole room, an
-/// outside effect, a device, the network) makes it custom: that needs a
-/// conscious review, never a reassuring preset.
-pub fn agent_authority_preset(ws: &Workspace, agent: &str) -> AgentPreset {
-    use tilo_action_policy::ActionKind;
-    let prefix = format!("agent-member:{agent}:");
-    let subject = tilo_action_policy::Subject::agent(agent);
-    let room = ws.node();
-    let broad_grant = ws.policy.grants.iter().any(|grant| {
-        // An answer that asks first or denies never widens the agent.
-        let narrowing = tilo_action_policy::agent_answers::is_answer(grant)
-            && grant.answer != tilo_action_policy::Answer::Allow;
-        grant.subject == subject
-            && !grant.id.as_str().starts_with(&prefix)
-            && !narrowing
-            && grant.answer != tilo_action_policy::Answer::Deny
-            && (grant.node.covers(&room) || grant.kinds.contains(ActionKind::Outside))
-    });
-    let broad_sandbox = ws.sandbox.iter().any(|cap| {
-        cap.effect == Effect::Grant
-            && matches!(&cap.subject, Subject::Principal(Principal::Agent(id)) if id == agent)
-            && matches!(cap.scope, Scope::Device(_) | Scope::NetHost(_))
-    });
-    if broad_grant || broad_sandbox {
-        return AgentPreset::Custom;
-    }
-    ws.policy
-        .grants
-        .iter()
-        .filter_map(|grant| grant.id.as_str().strip_prefix(&prefix))
-        .map(|rest| rest.split(':').next().unwrap_or_default())
-        .find_map(AgentPreset::parse)
-        .unwrap_or(AgentPreset::Custom)
-}
-
-/// Admit a named agent with the grants of `preset`, replacing the ones it
-/// was admitted with before, as `actor`.
-pub fn admit_agent(
-    ws: &mut Workspace,
-    actor: &UserId,
-    agent: impl AsRef<str>,
-    preset: AgentPreset,
-) -> PolicyEdit {
-    let agent = agent.as_ref().trim().to_ascii_lowercase();
-    if agent.is_empty() {
-        return PolicyEdit::default();
-    }
-    let prefix = format!("agent-member:{agent}:");
-    let mut changes: Vec<tilo_action_policy::Change> = ws
-        .policy
-        .grants
-        .iter()
-        .filter(|grant| grant.id.as_str().starts_with(&prefix))
-        .map(|grant| tilo_action_policy::Change::Revoke(grant.id.clone()))
-        .collect();
-    changes.extend(
-        preset
-            .grants(
-                &ws.policy.room,
-                &agent,
-                &tilo_action_policy::Subject::Person(actor.clone()),
-            )
-            .into_iter()
-            .map(tilo_action_policy::Change::Grant),
-    );
-    ws.govern_all_at(actor, changes, tilo_clock::unix_now())
-        .unwrap_or_default()
-}
-
-/// Geometry for the always-visible entry point into the guided setup.
-pub fn agents_add_rect(pane_rect: Rect) -> Rect {
-    Rect::new(
-        pane_rect.x0 + PANE_PAD_X,
-        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
-        pane_rect.x0 + PANE_PAD_X + 132.0,
-        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + AGENT_ONBOARDING_HEIGHT,
-    )
-}
-
-/// Stable, policy-backed rows for the Agents pane.
-pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
-    let mut agents = ws.agent_members_at(tilo_clock::unix_now());
-    agents.compact_sort_by(|a, b| a.0.cmp(&b.0));
-    let mut rows = Vec::new();
-    let mut cursor_y = pane_rect.y0
-        + PANE_PAD_TOP
-        + PANE_INTRO_HEIGHT
-        + PANE_INTRO_GAP
-        + AGENT_ONBOARDING_HEIGHT
-        + SECTION_HEADER_HEIGHT;
-    for (agent, kinds) in agents {
-        let row_rect = Rect::new(
-            pane_rect.x0 + PANE_PAD_X,
-            cursor_y,
-            pane_rect.x1 - PANE_PAD_X,
-            cursor_y + ROW_HEIGHT,
-        );
-        if row_rect.y1 > pane_rect.y1 - PANE_PAD_BOTTOM {
-            break;
-        }
-        let remove_rect = Rect::new(
-            row_rect.x1 - 12.0 - REVOKE_WIDTH,
-            row_rect.center().y - REVOKE_HEIGHT / 2.0,
-            row_rect.x1 - 12.0,
-            row_rect.center().y + REVOKE_HEIGHT / 2.0,
-        );
-        let role_rect = Rect::new(
-            remove_rect.x0 - 12.0 - AGENT_REVIEW_WIDTH - 12.0 - 96.0,
-            row_rect.center().y - REVOKE_HEIGHT / 2.0,
-            remove_rect.x0 - 12.0 - AGENT_REVIEW_WIDTH - 12.0,
-            row_rect.center().y + REVOKE_HEIGHT / 2.0,
-        );
-        let review_rect = Rect::new(
-            remove_rect.x0 - 12.0 - AGENT_REVIEW_WIDTH,
-            row_rect.center().y - REVOKE_HEIGHT / 2.0,
-            remove_rect.x0 - 12.0,
-            row_rect.center().y + REVOKE_HEIGHT / 2.0,
-        );
-        let subject = tilo_action_policy::Subject::agent(agent.clone());
-        let admission = format!("agent-member:{agent}:");
-        let grant_count = ws
-            .policy
-            .grants
-            .iter()
-            .filter(|grant| grant.subject == subject && !grant.id.as_str().starts_with(&admission))
-            .count();
-        let preset = agent_authority_preset(ws, &agent);
-        let service = service_purpose(ws, &agent, tilo_clock::unix_now());
-        rows.push(AgentRow {
-            agent,
-            kinds,
-            grant_count,
-            preset,
-            service,
-            row_rect,
-            role_rect,
-            review_rect,
-            remove_rect,
-        });
-        cursor_y += ROW_HEIGHT + ROW_GAP;
-    }
-    rows
-}
-
 /// One of the room's bots in the Agents pane: a participant like an agent,
 /// listed apart and tagged as a bot.
 #[derive(Clone, Debug)]
@@ -2880,7 +2798,7 @@ pub fn bots_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<BotRow> {
 
 /// What a bot row says under its name: whether it runs yet, and from which
 /// version. One fact per row, never joined.
-fn bot_detail(bot: &tilo_desktop_model::RoomBot) -> String {
+pub fn bot_detail(bot: &tilo_desktop_model::RoomBot) -> String {
     if bot.installation.is_none() {
         t("workspace-settings-bot-starting")
     } else if bot.paused {
@@ -3289,7 +3207,7 @@ pub fn draw_agents_pane(
         theme,
     );
     for row in &rows {
-        draw_agent_row(scene, transform, row, is_owner, text_renderer, theme);
+        draw_agent_row(scene, transform, ws, row, is_owner, text_renderer, theme);
     }
     draw_bots_section(
         &mut PaintCtx::new(scene, transform, text_renderer, theme),
@@ -3357,6 +3275,7 @@ fn draw_agent_avatar(scene: &mut Scene, transform: Affine, row: &AgentRow, theme
 fn draw_agent_row(
     scene: &mut Scene,
     transform: Affine,
+    ws: &Workspace,
     row: &AgentRow,
     is_owner: bool,
     text_renderer: &mut TextRenderer,
@@ -3366,19 +3285,12 @@ fn draw_agent_row(
     let colors = &tokens.colors;
     draw_row_card(scene, transform, row.row_rect, theme);
     let avatar = draw_agent_avatar(scene, transform, row, theme);
-    let name = match &row.service {
-        Some(service) if !service.purpose.is_empty() => service.purpose.clone(),
-        _ => short_id(&row.agent),
-    };
+    let (name, badge_label, detail) = agent_summary_parts(ws, &row.agent, row.kinds);
     let badge = draw_pill(
         scene,
         transform,
         Point::new(row.role_rect.x0 - 12.0, row.row_rect.center().y),
-        &t(if row.service.is_some() {
-            "workspace-settings-badge-service"
-        } else {
-            "workspace-settings-badge-agent"
-        }),
+        &badge_label,
         ChipStyle::Neutral,
         text_renderer,
         theme,
@@ -3395,19 +3307,6 @@ fn draw_agent_row(
         None,
         &title_style,
     );
-    let admission = agent_admission_label(row.kinds);
-    let detail = if let Some(service) = &row.service {
-        service_member_detail(service)
-    } else {
-        t_args(
-            "workspace-settings-agent-detail",
-            &[
-                ("admission", admission.into()),
-                ("profile", agent_preset_label(row.preset).into()),
-                ("count", row.grant_count.into()),
-            ],
-        )
-    };
     let detail_style = tokens.typography.style(TextRole::Caption);
     let detail = elide(&detail, &detail_style, text_max, text_renderer);
     text_renderer.draw_style(
@@ -3497,23 +3396,6 @@ fn default_app_columns(x0: f64, x1: f64, compact: bool) -> ((f64, f64), (f64, f6
     ((workspace_x1 - control_w, workspace_x1), user)
 }
 
-/// The row label for a resource kind in the desktop's language.
-fn resource_kind_label(resource: &desktop_policy::ResourceKind) -> String {
-    if let Some(ext) = resource.extension_name() {
-        t_args(
-            "workspace-settings-resource-extension",
-            &[("ext", ext.into())],
-        )
-    } else if let Some(scheme) = resource.scheme_name() {
-        t_args(
-            "workspace-settings-resource-scheme",
-            &[("scheme", scheme.into())],
-        )
-    } else {
-        resource.display_label()
-    }
-}
-
 pub fn default_app_rows(
     pane: Rect,
     candidates: &[desktop_policy::AppCandidate],
@@ -3559,13 +3441,6 @@ pub fn default_app_rows(
         .collect()
 }
 
-fn app_name(id: &str, candidates: &[desktop_policy::AppCandidate]) -> String {
-    candidates.iter().find(|a| a.package_id == id).map_or_else(
-        || t("workspace-settings-unavailable-app"),
-        |a| a.display_name.clone(),
-    )
-}
-
 /// Bundles the per-workspace inputs to [`draw_default_apps_pane`] so the
 /// call stays under clippy's argument-count budget, without disturbing
 /// the shared `scene`/`transform`/`text_renderer`/`theme` draw parameters
@@ -3589,24 +3464,14 @@ pub fn draw_default_apps_pane(
         local_user,
         candidates,
     } = *ctx;
-    let resources = candidates
-        .iter()
-        .flat_map(|candidate| candidate.resources.iter())
-        .collect::<std::collections::BTreeSet<_>>()
-        .len();
-    let custom_rules = ws.default_apps.policy.len();
-    let status = if custom_rules == 0 {
-        t_args(
-            "workspace-settings-apps-file-types",
-            &[("count", resources.into())],
-        )
-    } else {
-        t_args(
-            "workspace-settings-apps-custom-rules",
-            &[("count", custom_rules.into())],
-        )
-    };
-    draw_default_apps_header(scene, transform, pane, &status, text_renderer, theme);
+    draw_default_apps_header(
+        scene,
+        transform,
+        pane,
+        &default_apps_status(ws, candidates),
+        text_renderer,
+        theme,
+    );
     let can_admin = ws.may_administer(local_user);
     draw_default_apps_rows(scene, transform, pane, ctx, can_admin, text_renderer, theme);
     if candidates.iter().all(|a| a.resources.is_empty()) {
@@ -3725,32 +3590,8 @@ fn draw_default_apps_rows(
             None,
             &label_style,
         );
-        let policy = ws
-            .default_apps
-            .policy
-            .get(&row.resource)
-            .unwrap_or(&desktop_policy::WorkspaceDefaultPolicy::FollowPersonal);
-        let policy_label = match policy {
-            desktop_policy::WorkspaceDefaultPolicy::FollowPersonal => {
-                t("workspace-settings-follow-personal")
-            }
-            desktop_policy::WorkspaceDefaultPolicy::App(id) => app_name(id, candidates),
-        };
-        let choice = ws
-            .default_apps
-            .user_choices
-            .get(local_user)
-            .and_then(|m| m.get(&row.resource))
-            .unwrap_or(&desktop_policy::UserWorkspaceChoice::FollowWorkspace);
-        let choice_label = match choice {
-            desktop_policy::UserWorkspaceChoice::FollowWorkspace => {
-                t("workspace-settings-use-workspace-choice")
-            }
-            desktop_policy::UserWorkspaceChoice::PersonalDefault => {
-                t("workspace-settings-use-personal-default")
-            }
-            desktop_policy::UserWorkspaceChoice::App(id) => app_name(id, candidates),
-        };
+        let (policy_label, choice_label) =
+            default_app_labels(ws, local_user, &row.resource, candidates);
         draw_cycler(
             scene,
             transform,
@@ -3769,53 +3610,6 @@ fn draw_default_apps_rows(
             text_renderer,
             theme,
         );
-    }
-}
-
-pub fn next_workspace_default(
-    current: Option<&desktop_policy::WorkspaceDefaultPolicy>,
-    resource: &desktop_policy::ResourceKind,
-    candidates: &[desktop_policy::AppCandidate],
-) -> desktop_policy::WorkspaceDefaultPolicy {
-    let apps: Vec<_> = candidates.iter().filter(|a| a.handles(resource)).collect();
-    match current.unwrap_or(&desktop_policy::WorkspaceDefaultPolicy::FollowPersonal) {
-        desktop_policy::WorkspaceDefaultPolicy::FollowPersonal => apps.first().map_or(
-            desktop_policy::WorkspaceDefaultPolicy::FollowPersonal,
-            |a| desktop_policy::WorkspaceDefaultPolicy::App(a.package_id.clone()),
-        ),
-        desktop_policy::WorkspaceDefaultPolicy::App(id) => apps
-            .iter()
-            .position(|a| &a.package_id == id)
-            .and_then(|i| apps.get(i.saturating_add(1)))
-            .map_or(
-                desktop_policy::WorkspaceDefaultPolicy::FollowPersonal,
-                |a| desktop_policy::WorkspaceDefaultPolicy::App(a.package_id.clone()),
-            ),
-    }
-}
-
-pub fn next_user_default(
-    current: Option<&desktop_policy::UserWorkspaceChoice>,
-    resource: &desktop_policy::ResourceKind,
-    candidates: &[desktop_policy::AppCandidate],
-) -> desktop_policy::UserWorkspaceChoice {
-    let apps: Vec<_> = candidates.iter().filter(|a| a.handles(resource)).collect();
-    match current.unwrap_or(&desktop_policy::UserWorkspaceChoice::FollowWorkspace) {
-        desktop_policy::UserWorkspaceChoice::FollowWorkspace => {
-            desktop_policy::UserWorkspaceChoice::PersonalDefault
-        }
-        desktop_policy::UserWorkspaceChoice::PersonalDefault => apps
-            .first()
-            .map_or(desktop_policy::UserWorkspaceChoice::FollowWorkspace, |a| {
-                desktop_policy::UserWorkspaceChoice::App(a.package_id.clone())
-            }),
-        desktop_policy::UserWorkspaceChoice::App(id) => apps
-            .iter()
-            .position(|a| &a.package_id == id)
-            .and_then(|i| apps.get(i.saturating_add(1)))
-            .map_or(desktop_policy::UserWorkspaceChoice::FollowWorkspace, |a| {
-                desktop_policy::UserWorkspaceChoice::App(a.package_id.clone())
-            }),
     }
 }
 
@@ -4033,6 +3827,59 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, Listed<'_>)> {
             .then_with(|| a.1.id().cmp(b.1.id()))
     });
     out
+}
+
+/// One permission the Permissions tab lists, in the viewer's words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedPermission {
+    /// What revoking it names.
+    pub id: String,
+    /// The group it is listed under: people, agents, apps and so on.
+    pub section: String,
+    /// Who holds it.
+    pub holder: String,
+    /// What it allows.
+    pub allows: String,
+    /// How long it lasts.
+    pub expiry: String,
+    /// Who gave it, where the workspace knows.
+    pub granted_by: Option<String>,
+}
+
+/// The permissions the workspace gives, in the order the tab lists them,
+/// each in the viewer's words. The same entries the pane draws, from the
+/// same labels, for a view that lays them out itself.
+#[must_use]
+pub fn listed_permissions(
+    ws: &Workspace,
+    apps: &dyn AppDirectory,
+    local_user: &str,
+) -> Vec<ListedPermission> {
+    listed_capabilities(ws)
+        .into_iter()
+        .map(|(subject, entry)| {
+            let (allows, expiry, granted_by) = match entry {
+                Listed::Sandbox(cap) => (
+                    capability_allows(cap, apps),
+                    expiry_label(cap.expiry),
+                    granted_by_label(cap, ws, local_user),
+                ),
+                Listed::Grant(grant) => (
+                    grant_allows(grant, apps),
+                    lifetime_label(&grant.lifetime),
+                    grant_given_by_label(grant, ws, local_user),
+                ),
+            };
+            ListedPermission {
+                id: entry.id().to_owned(),
+                section: subject.kind.section_label(),
+                holder: subject.display(ws, local_user, apps),
+                allows,
+                expiry,
+                granted_by,
+            }
+        })
+        .collect()
 }
 
 /// Geometry does not depend on the draft, so the click router can
@@ -5529,6 +5376,110 @@ mod agents_pane_tests {
                 );
             }
         }
+    }
+
+    /// A service member is a cloud or relay identity an administrator
+    /// admits: it joins with the purpose and the grants stated here, it is
+    /// listed with the room's agents under that purpose, and it holds
+    /// nothing else.
+    #[test]
+    fn a_service_member_is_admitted_with_only_the_grants_it_is_given() {
+        use tilo_desktop_model::service_member::{
+            service_device, service_members, service_principal,
+        };
+
+        let device = collab_types::Ed25519PublicKey::from_bytes([9; 32]);
+        let principal = service_principal(&device);
+        let mut ws = Workspace::new(WorkspaceId::from(20), "service-test");
+        ws.set_owner(OWNER);
+        let deadline = 2_000_000_000;
+        let grant = admit_service_member(
+            &mut ws,
+            &OWNER.to_string(),
+            &device,
+            "Cloud agent: summarise the brief",
+            KindSet::READ,
+            Some(deadline),
+        )
+        .expect("the owner admits a service member");
+
+        let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
+        let rows = agents_pane_rows(&ws, pane);
+        assert_eq!(rows.len(), 1, "listed with the room's agents");
+        assert_eq!(rows[0].agent, principal);
+        assert_eq!(rows[0].kinds, KindSet::READ, "only what it was granted");
+        assert_eq!(
+            rows[0].grant_count, 0,
+            "its membership is its admission, not a permission beside one"
+        );
+        let service = rows[0].service.clone().expect("a service member row");
+        assert_eq!(service.purpose, "Cloud agent: summarise the brief");
+        assert_eq!(service.kinds, KindSet::READ);
+        assert_eq!(service.expires_at, Some(deadline));
+        assert_eq!(service.grant_id, grant);
+        let summaries = agent_summaries(&ws);
+        assert_eq!(summaries[0].name, "Cloud agent: summarise the brief");
+        assert_eq!(summaries[0].badge, t("workspace-settings-badge-service"));
+        assert_eq!(summaries[0].detail, service_member_detail(&service));
+
+        // Only the granted kinds: it reads the room, it changes nothing in
+        // it, and it holds no governance of it.
+        let now = tilo_clock::unix_now();
+        let context = tilo_desktop_model::context_at(now);
+        let authority = ws.subject_authority(tilo_action_policy::Subject::agent(principal.clone()));
+        assert_eq!(
+            authority
+                .decide(&ws.node().app("so.tilo.notes"), ActionKind::Read, &context)
+                .answer,
+            Answer::Allow
+        );
+        assert_eq!(
+            authority
+                .decide(
+                    &ws.node().app("so.tilo.notes"),
+                    ActionKind::Undoable,
+                    &context
+                )
+                .answer,
+            Answer::Deny,
+            "an admission to read is not a permission to change"
+        );
+        assert!(
+            ws.grant_as(
+                &principal,
+                CapOverride::grant(
+                    Subject::agent(AGENT),
+                    Scope::FsPath("/var/workspace/brief.md".into()),
+                    Access::Read,
+                ),
+            )
+            .is_none(),
+            "a service member admits nobody"
+        );
+
+        // Only an administrator admits one, and a refused attempt writes
+        // nothing.
+        let before = ws.policy.clone();
+        assert_eq!(
+            admit_service_member(
+                &mut ws,
+                &"stranger".to_string(),
+                &collab_types::Ed25519PublicKey::from_bytes([10; 32]),
+                "search",
+                KindSet::READ,
+                None,
+            ),
+            None
+        );
+        assert_eq!(ws.policy, before);
+
+        // Ending it revokes what it was admitted with, and it leaves the
+        // agents' rows.
+        let edit = remove_agent(&mut ws, &OWNER.to_string(), &principal);
+        assert_eq!(edit.revoked, vec![grant]);
+        assert!(agents_pane_rows(&ws, pane).is_empty());
+        assert!(service_members(&ws, tilo_clock::unix_now()).is_empty());
+        assert_eq!(service_device("service:zz"), None);
     }
 }
 

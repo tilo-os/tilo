@@ -580,7 +580,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
         };
-        crate::shell::invite_policy::may_invite_here(&chrome.borrow())
+        chrome.borrow().may_invite_here()
     }
 }
 

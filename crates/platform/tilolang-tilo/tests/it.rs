@@ -18,11 +18,16 @@ mod columns;
 mod composer;
 mod engines;
 mod fixtures;
+mod foreign;
+#[cfg(feature = "room")]
+mod history_views;
 mod incremental;
 mod index;
 mod items;
 mod lanes;
 mod legacy;
+mod legibility;
+mod marks;
 mod outbox;
 mod outcomes;
 mod policy;
@@ -38,5 +43,8 @@ mod sync;
 mod task;
 mod task_door;
 mod tasks;
+#[cfg(feature = "room")]
+mod undo_own;
 mod unions;
 mod upgrade;
+mod views_migration;

@@ -58,7 +58,7 @@ pub enum OverviewEffect {
     #[effect(
         own_device,
         idempotent,
-        keywords = "switch workspace, change workspace"
+        keywords = "switch workspace, change workspace, open workspace"
     )]
     SwitchWorkspace {
         #[param("The workspace to go to, by name or id")]

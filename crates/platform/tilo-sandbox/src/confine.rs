@@ -100,12 +100,40 @@ pub fn share_allocator_arenas() {
 /// descendant. Never call this from a process that must keep running
 /// unconfined (a test harness).
 ///
+/// Every policy this installs refuses `exec`, so the process also declares
+/// [`declare_no_exec`]: nothing it starts would run anyway.
+///
 /// # Errors
 ///
 /// [`ConfineError::NotEnforced`] when the platform refuses the policy or can
 /// enforce only part of it; [`ConfineError::Unsupported`] on the web.
 pub fn confine(policy: &Policy) -> Result<(), ConfineError> {
-    sys::confine(policy)
+    let confined = sys::confine(policy);
+    if confined.is_ok() {
+        declare_no_exec();
+    }
+    confined
+}
+
+/// Set once the calling process confines itself to a policy that runs no
+/// other program — [`confine`], or a caller's own filter that refuses
+/// `exec`.
+static NO_EXEC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Declare that this process starts no other program: it confined itself to
+/// a policy that refuses `exec` (the parser policy of [`confine`], or an app
+/// worker's own filter of the same kind). Code that would start a helper
+/// reads [`no_exec`] and takes the path that runs in process instead, rather
+/// than failing on the refusal.
+pub fn declare_no_exec() {
+    NO_EXEC.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether this process has declared it starts no other program
+/// ([`declare_no_exec`]).
+#[must_use]
+pub fn no_exec() -> bool {
+    NO_EXEC.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(unix)]
@@ -423,6 +451,72 @@ mod sys {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Before anything confines itself, no process has declared it starts no
+    /// program.
+    #[test]
+    fn no_exec_is_undeclared_until_a_process_confines_itself() {
+        assert!(!no_exec());
+    }
+
+    /// A confined process declares it runs no other program: every policy
+    /// [`confine`] installs refuses `exec`, so code that would start a helper
+    /// (the PDF engine's, among others) reads this. The probe confines itself
+    /// and reports what it finds on the other side.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn confined_child_declares_it_starts_no_program() {
+        if let Some(dir) = std::env::var_os(NO_EXEC_PROBE_ENV) {
+            #[allow(
+                clippy::exit,
+                reason = "the re-executed probe reports through its exit status"
+            )]
+            std::process::exit(no_exec_probe(&PathBuf::from(dir)));
+        }
+        let root = std::env::temp_dir().join(format!("tilo-sandbox-noexec-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "confine::tests::confined_child_declares_it_starts_no_program",
+            ])
+            .env(NO_EXEC_PROBE_ENV, &root)
+            .status()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        if cfg!(target_os = "linux") && status.code() == Some(PROBE_UNENFORCEABLE) {
+            eprintln!("skipped: this kernel cannot enforce the policy");
+            return;
+        }
+        assert_eq!(status.code(), Some(0), "no-exec probe failures: {status}");
+    }
+
+    const NO_EXEC_PROBE_ENV: &str = "TILO_SANDBOX_NO_EXEC_PROBE_DIR";
+
+    fn no_exec_probe(root: &std::path::Path) -> i32 {
+        let policy = Policy {
+            read_only: vec![root.to_path_buf()],
+            socket_pairs: false,
+        };
+        if no_exec() {
+            // A fresh process has declared nothing yet.
+            return 202;
+        }
+        if detach().is_err() {
+            return 200;
+        }
+        match confine(&policy) {
+            Ok(()) => {}
+            Err(ConfineError::NotEnforced(message)) => {
+                eprintln!("{message}");
+                return PROBE_UNENFORCEABLE;
+            }
+            Err(_) => return 201,
+        }
+        // The confinement refuses `exec`; it says so, so a caller takes its
+        // in-process path instead of failing on the refusal.
+        i32::from(!no_exec())
+    }
 
     /// Set in the re-executed test binary: the probe below confines itself
     /// and reports what it could still do through its exit status.

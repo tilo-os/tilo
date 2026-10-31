@@ -370,31 +370,27 @@ impl Places {
     /// The favourite move a drop asks for: `(from, to)` indices into the
     /// favourites, or `None` when the drop is not a reorder of two favourites.
     pub fn reorder_for(&self, source: &str, drop: &NavDrop) -> Option<(usize, usize)> {
-        let index_of = |id: &str| {
-            self.favorites
-                .iter()
-                .position(|favorite| favorite_id(&favorite.path) == id)
-        };
-        let from = index_of(source)?;
         let (before, target) = match drop {
-            NavDrop::Before(id) => (true, index_of(id)?),
-            NavDrop::After(id) => (false, index_of(id)?),
+            NavDrop::Before(id) => (true, id),
+            NavDrop::After(id) => (false, id),
             NavDrop::Into(_) => return None,
         };
-        // The target index is read before the dragged row leaves its slot,
-        // so a move down lands one place earlier than the slot named.
-        let slot = if before { target } else { target + 1 };
-        let to = if from < slot { slot - 1 } else { slot };
-        (from != to).then_some((from, to))
+        crate::favorites::move_for(
+            &self.favorites,
+            &path_of_id(source)?,
+            &path_of_id(target)?,
+            before,
+        )
     }
 
     /// The navigation list: choosing a place opens it, dragging a favourite
     /// reorders them, and a favourite's row action unpins it. The row the
-    /// person chooses in the list is also left in `chosen`.
+    /// person chooses in the list is also left in `chosen`. The drag and the
+    /// row action run the window's published effects (see
+    /// [`crate::bindings`]).
     pub fn nav_list(self, sink: &CommandSink, chosen: &Rc<RefCell<Option<String>>>) -> NavList {
         let selected = self.selected_id();
         let sections = self.sections();
-        let places = Rc::new(self);
         let mut list = NavList::new(sections)
             .with_accessible_name(t("files-a11y-places"))
             .on_view("places_sidebar", {
@@ -404,33 +400,16 @@ impl Places {
                     choose(&sink, &id);
                     *chosen.borrow_mut() = Some(id);
                 }
-            })
-            .item_actions(
-                vec![NavAction::new(
-                    REMOVE_ACTION,
-                    Icon::X,
-                    t("files-menu-remove-favourite"),
-                )],
-                {
-                    let sink = sink.clone();
-                    move |id, action| {
-                        if action == REMOVE_ACTION
-                            && let Some(path) = path_of_id(id)
-                        {
-                            push(&sink, FileCommand::RemoveFavorite(path));
-                        }
-                    }
-                },
-            )
-            .on_move({
-                let sink = sink.clone();
-                let places = Rc::clone(&places);
-                move |source, drop| {
-                    if let Some((from, to)) = places.reorder_for(source, &drop) {
-                        push(&sink, FileCommand::ReorderFavorite { from, to });
-                    }
-                }
             });
+        if let Some(binding) = crate::bindings::remove_favorite() {
+            list = list.item_action(
+                NavAction::new(REMOVE_ACTION, Icon::X, t("files-menu-remove-favourite")),
+                binding,
+            );
+        }
+        if let Some(binding) = crate::bindings::move_favorite() {
+            list = list.on_move_action(binding);
+        }
         if let Some(id) = selected {
             list = list.selected(&id);
         }

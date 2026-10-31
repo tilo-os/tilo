@@ -284,6 +284,7 @@ pub fn apply(press: Press) -> Option<super::Acted> {
 /// An app declares one where it shows what wants a person, hands it the keys
 /// ([`Presses::key`]) while it is open, and answers what was pressed with
 /// [`apply`].
+#[crate::component::not_a_component(system, "the attention ledger's pane (HIG 11)")]
 pub struct Stack {
     inner: Column,
     presses: Presses,

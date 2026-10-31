@@ -76,7 +76,7 @@ pub(crate) struct Frame {
     body: Column,
     offset: Option<Rc<Cell<(f32, f32)>>>,
     notice: Option<Box<dyn Widget>>,
-    actions: Option<Row>,
+    actions: Option<Box<dyn Widget>>,
     actions_in_body: bool,
     center_short_body: bool,
     cursor: Option<ui::kurbo::Point>,
@@ -132,8 +132,8 @@ impl Frame {
     /// The page's actions: Back at the leading edge, the main action at the
     /// trailing one.
     #[must_use]
-    pub(crate) fn actions(mut self, actions: Row) -> Self {
-        self.actions = Some(actions);
+    pub(crate) fn actions(mut self, actions: impl Widget + 'static) -> Self {
+        self.actions = Some(Box::new(actions));
         self
     }
 
@@ -161,7 +161,7 @@ impl Frame {
                 self.body = self.body.push(notice);
             }
             if let Some(actions) = self.actions.take() {
-                self.body = self.body.push(Box::new(actions));
+                self.body = self.body.push(actions);
             }
         }
         let mut scroll = Scrollable::new_vertical()
@@ -196,7 +196,7 @@ impl Frame {
             column = column.push(notice);
         }
         if let Some(actions) = self.actions {
-            column = column.push(Box::new(actions));
+            column = column.push(actions);
         }
         // A wizard stands alone in its window: its readable column is
         // centred, the page gutter around it.

@@ -350,7 +350,7 @@ impl Text {
 
     /// Resolve the label through the i18n layer, interpolating any variables
     /// supplied via [`with_arg`](Self::with_arg) / [`with_args`](Self::with_args).
-    fn resolved_label(&self) -> String {
+    pub(crate) fn resolved_label(&self) -> String {
         if self.args.is_empty() {
             crate::i18n!(&self.label)
         } else {

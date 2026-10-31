@@ -1,29 +1,30 @@
 //! One application's settings over its collaboration channel.
 //!
 //! A sandboxed app cannot read the session's settings document. Its channel
-//! hands it an `AppSettings` capability instead
+//! answers its settings calls instead
 //! ([`crate::ChannelHandle::settings`]): the app reads its view and follows
 //! its changes with [`AppSettingsHandle::read`], and writes its own entries
 //! with [`AppSettingsHandle::update`]. With the `settings-host` feature,
-//! [`host::AppSettingsServer`] is that capability over a
+//! [`host::AppSettingsServer`] answers them from a
 //! `settings_store::SettingsSource`; what an app sees and may write is
 //! `settings_store::app_scope`'s.
 
-use std::rc::Rc;
-
 use runtime_portal::NotAvailable;
 
-use crate::collab_capnp::app_settings;
+use crate::wire::{Reply, SettingsCall};
 
 /// The most bytes one settings view or write carries on the wire.
 pub const MAX_SETTINGS_WIRE_BYTES: usize = 1024 * 1024;
 
+/// The most bytes one display request or reply carries on the wire.
+const MAX_DISPLAY_WIRE_BYTES: usize = 64 * 1024;
+
 pub use crate::DisplayOrigin;
 
-/// The capability [`crate::ChannelHandle::settings`] answers.
+/// What [`crate::ChannelHandle::settings`] answers.
 #[derive(Clone)]
 pub struct AppSettingsHandle {
-    pub(crate) inner: Rc<app_settings::Client>,
+    pub(crate) channel: crate::ChannelHandle,
 }
 
 /// One version of an app's settings view: its revision and the JSON
@@ -35,35 +36,35 @@ pub struct SettingsView {
 }
 
 impl SettingsView {
-    fn from_reply(revision: u64, document: &[u8]) -> Result<Self, NotAvailable> {
-        if document.len() > MAX_SETTINGS_WIRE_BYTES {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "settings view exceeds the wire bound".into(),
+    fn from_reply(reply: Reply) -> Result<Self, NotAvailable> {
+        let Reply::Settings { revision, document } = reply else {
+            return Err(NotAvailable::Refused(format!(
+                "the collaboration host answered settings with {reply:?}"
             )));
+        };
+        if document.len() > MAX_SETTINGS_WIRE_BYTES {
+            return Err(NotAvailable::Refused(
+                "settings view exceeds the wire bound".into(),
+            ));
         }
         Ok(Self {
             revision,
-            document_json: document.to_vec(),
+            document_json: document,
         })
-    }
-}
-
-impl From<app_settings::Client> for AppSettingsHandle {
-    fn from(client: app_settings::Client) -> Self {
-        Self {
-            inner: Rc::new(client),
-        }
     }
 }
 
 impl AppSettingsHandle {
     /// The view once its revision differs from `after`; at once for 0.
+    ///
+    /// # Errors
+    /// The host refuses or is unavailable.
     pub async fn read(&self, after: u64) -> Result<SettingsView, NotAvailable> {
-        let mut request = self.inner.read_request();
-        request.get().set_after(after);
-        let reply = request.send().promise.await?;
-        let reply = reply.get()?;
-        SettingsView::from_reply(reply.get_revision(), reply.get_document_json()?)
+        SettingsView::from_reply(
+            self.channel
+                .settings_call(SettingsCall::Read { after })
+                .await?,
+        )
     }
 
     /// Invoke the host's separately admitted display transaction service.
@@ -75,37 +76,37 @@ impl AppSettingsHandle {
         command: &[u8],
         origin: DisplayOrigin,
     ) -> Result<Vec<u8>, NotAvailable> {
-        if command.len() > 64 * 1024 {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
+        if command.len() > MAX_DISPLAY_WIRE_BYTES {
+            return Err(NotAvailable::Refused(
                 "display request exceeds the wire bound".into(),
+            ));
+        }
+        let reply = self
+            .channel
+            .settings_call(SettingsCall::Display {
+                command: command.to_vec(),
+                origin,
+            })
+            .await?;
+        let Reply::Answer(bytes) = reply else {
+            return Err(NotAvailable::Refused(format!(
+                "the collaboration host answered display control with {reply:?}"
             )));
-        }
-        let mut request = self.inner.display_control_request();
-        request.get().set_command_json(command);
-        match origin {
-            DisplayOrigin::LocalHost => request
-                .get()
-                .set_origin(crate::collab_capnp::DisplayRequestOrigin::LocalHost),
-            DisplayOrigin::Published(invocation) => {
-                request
-                    .get()
-                    .set_origin(crate::collab_capnp::DisplayRequestOrigin::Published);
-                request.get().set_published_invocation(&invocation);
-            }
-        }
-        let reply = request.send().promise.await?;
-        let bytes = reply.get()?.get_reply_json()?;
-        if bytes.len() > 64 * 1024 {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
+        };
+        if bytes.len() > MAX_DISPLAY_WIRE_BYTES {
+            return Err(NotAvailable::Refused(
                 "display reply exceeds the wire bound".into(),
-            )));
+            ));
         }
-        Ok(bytes.to_vec())
+        Ok(bytes)
     }
 
     /// Merge `values_json`, `{"<app id>": {...}}`, into the app's entry in
     /// `section`, answering the view after the write. `action` names the
     /// action that made the change, for the session's history.
+    ///
+    /// # Errors
+    /// Refuses oversized writes, and the host's refusal.
     pub async fn update(
         &self,
         section: &str,
@@ -113,38 +114,38 @@ impl AppSettingsHandle {
         action: Option<&str>,
     ) -> Result<SettingsView, NotAvailable> {
         if values_json.len() > MAX_SETTINGS_WIRE_BYTES {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
+            return Err(NotAvailable::Refused(
                 "settings write exceeds the wire bound".into(),
-            )));
+            ));
         }
-        let mut request = self.inner.update_request();
-        request.get().set_section(section);
-        request.get().set_values_json(values_json);
-        request.get().set_action(action.unwrap_or_default());
-        let reply = request.send().promise.await?;
-        let reply = reply.get()?;
-        SettingsView::from_reply(reply.get_revision(), reply.get_document_json()?)
+        SettingsView::from_reply(
+            self.channel
+                .settings_call(SettingsCall::Update {
+                    section: section.to_owned(),
+                    values: values_json.to_vec(),
+                    action: action.map(str::to_owned),
+                })
+                .await?,
+        )
     }
 }
 
 #[cfg(feature = "settings-host")]
 pub mod host {
-    //! The `AppSettings` capability over a settings source.
+    //! An app's settings calls answered from a settings source.
 
     use std::cell::RefCell;
     use std::sync::Arc;
 
-    use capnp::capability::Promise;
     use serde_json::{Map, Value};
     use settings_store::SettingsSource;
     use settings_store::app_scope::{Reach, update_at, view_at};
 
     use super::MAX_SETTINGS_WIRE_BYTES;
-    use crate::collab_capnp::app_settings;
 
     /// Asked before every call; an error refuses it (the channel's
     /// admission was withdrawn).
-    pub type Revalidate = Arc<dyn Fn() -> Result<(), capnp::Error> + Send + Sync>;
+    pub type Revalidate = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 
     /// An independently admitted typed display delegate; the caller's identity
     /// is captured by the broker, never read from the request.
@@ -236,163 +237,112 @@ pub mod host {
         }
     }
 
-    fn encode(view: &Map<String, Value>) -> Result<Vec<u8>, capnp::Error> {
-        let bytes = serde_json::to_vec(view).map_err(|e| capnp::Error::failed(e.to_string()))?;
+    fn encode(view: &Map<String, Value>) -> Result<Vec<u8>, String> {
+        let bytes = serde_json::to_vec(view).map_err(|e| e.to_string())?;
         if bytes.len() > MAX_SETTINGS_WIRE_BYTES {
-            return Err(capnp::Error::failed(
-                "settings view exceeds the wire bound".into(),
-            ));
+            return Err("settings view exceeds the wire bound".into());
         }
         Ok(bytes)
     }
 
-    #[allow(
-        refining_impl_trait,
-        reason = "the generated server methods return a future; a Promise is one"
-    )]
-    impl app_settings::Server for AppSettingsServer {
-        fn read(
-            self: std::rc::Rc<Self>,
-            params: app_settings::ReadParams,
-            mut results: app_settings::ReadResults,
-        ) -> Promise<(), capnp::Error> {
-            let after = match params.get() {
-                Ok(params) => params.get_after(),
-                Err(error) => return Promise::err(error),
-            };
-            Promise::from_future(async move {
-                loop {
-                    (self.revalidate)()?;
-                    // Armed before looking, so a change between the look
-                    // and the wait still wakes it.
-                    let changed = self.changed.notified();
-                    tokio::pin!(changed);
-                    changed.as_mut().enable();
-                    let (revision, view) = self.current();
-                    if revision != after {
-                        let mut reply = results.get();
-                        reply.set_revision(revision);
-                        reply.set_document_json(&encode(&view)?);
-                        return Ok(());
-                    }
-                    changed.await;
-                }
-            })
-        }
-
-        fn display_control(
-            self: std::rc::Rc<Self>,
-            params: app_settings::DisplayControlParams,
-            mut results: app_settings::DisplayControlResults,
-        ) -> Promise<(), capnp::Error> {
-            let answered = (|| {
+    impl AppSettingsServer {
+        /// The view, as its revision and JSON, once its revision differs
+        /// from `after`; at once for 0.
+        ///
+        /// # Errors
+        /// The channel's admission was withdrawn, or the view is too large.
+        #[expect(
+            clippy::future_not_send,
+            reason = "the host answers each app on its single-threaded broker task"
+        )]
+        pub async fn read(&self, after: u64) -> Result<(u64, Vec<u8>), String> {
+            loop {
                 (self.revalidate)()?;
-                let bytes = params.get()?.get_command_json()?;
-                if bytes.len() > 64 * 1024 {
-                    return Err(capnp::Error::failed(
-                        "display request exceeds the wire bound".into(),
-                    ));
+                // Armed before looking, so a change between the look and the
+                // wait still wakes it.
+                let changed = self.changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                let (revision, view) = self.current();
+                if revision != after {
+                    return Ok((revision, encode(&view)?));
                 }
-                let display = self.display.as_ref().ok_or_else(|| {
-                    capnp::Error::failed(
-                        "display control is unavailable to this application".into(),
-                    )
-                })?;
-                let original = params.get()?.get_published_invocation()?;
-                let origin = match params
-                    .get()?
-                    .get_origin()
-                    .map_err(|_| capnp::Error::failed("invalid display origin".into()))?
-                {
-                    crate::collab_capnp::DisplayRequestOrigin::LocalHost if original.is_empty() => {
-                        super::DisplayOrigin::LocalHost
-                    }
-                    crate::collab_capnp::DisplayRequestOrigin::Published => {
-                        super::DisplayOrigin::Published(original.try_into().map_err(|_| {
-                            capnp::Error::failed("invalid original display invocation".into())
-                        })?)
-                    }
-                    _ => {
-                        return Err(capnp::Error::failed(
-                            "original display origin is unavailable".into(),
-                        ));
-                    }
-                };
-                let reply = display(bytes, origin).map_err(capnp::Error::failed)?;
-                if reply.len() > 64 * 1024 {
-                    return Err(capnp::Error::failed(
-                        "display reply exceeds the wire bound".into(),
-                    ));
-                }
-                results.get().set_reply_json(&reply);
-                Ok(())
-            })();
-            match answered {
-                Ok(()) => Promise::ok(()),
-                Err(error) => Promise::err(error),
+                changed.await;
             }
         }
 
-        fn update(
-            self: std::rc::Rc<Self>,
-            params: app_settings::UpdateParams,
-            mut results: app_settings::UpdateResults,
-        ) -> Promise<(), capnp::Error> {
-            if let Err(error) = (self.revalidate)() {
-                return Promise::err(error);
+        /// Run a display transaction for the device's settings app.
+        ///
+        /// # Errors
+        /// The app holds no display authority, or the transaction failed.
+        pub fn display(
+            &self,
+            command: &[u8],
+            origin: super::DisplayOrigin,
+        ) -> Result<Vec<u8>, String> {
+            (self.revalidate)()?;
+            if command.len() > 64 * 1024 {
+                return Err("display request exceeds the wire bound".into());
             }
-            let written = (|| {
-                let params = params.get()?;
-                let section = params.get_section()?.to_str()?;
-                let bytes = params.get_values_json()?;
-                if bytes.len() > MAX_SETTINGS_WIRE_BYTES {
-                    return Err(capnp::Error::failed(
-                        "settings write exceeds the wire bound".into(),
-                    ));
-                }
-                let Ok(Value::Object(values)) = serde_json::from_slice(bytes) else {
-                    return Err(capnp::Error::failed(
-                        "a settings write is a JSON object".into(),
-                    ));
-                };
-                // The action the app says made the change, for the history;
-                // who invoked it is not the app's to say.
-                let origin = settings_store::ChangeOrigin {
-                    action: Some(params.get_action()?.to_str()?)
-                        .filter(|action| !action.is_empty())
-                        .map(str::to_owned),
-                    principal: None,
-                    invoked_by: None,
-                };
-                if !settings_store::personal_dictionary::host::command(
+            let display = self
+                .display
+                .as_ref()
+                .ok_or("display control is unavailable to this application")?;
+            let reply = display(command, origin)?;
+            if reply.len() > 64 * 1024 {
+                return Err("display reply exceeds the wire bound".into());
+            }
+            Ok(reply)
+        }
+
+        /// Merge `values` (a JSON object) into the app's entry in
+        /// `section`, answering the view after the write.
+        ///
+        /// # Errors
+        /// The write is malformed, too large or outside the app's reach.
+        pub fn update(
+            &self,
+            section: &str,
+            values: &[u8],
+            action: Option<&str>,
+        ) -> Result<(u64, Vec<u8>), String> {
+            (self.revalidate)()?;
+            if values.len() > MAX_SETTINGS_WIRE_BYTES {
+                return Err("settings write exceeds the wire bound".into());
+            }
+            let Ok(Value::Object(values)) = serde_json::from_slice(values) else {
+                return Err("a settings write is a JSON object".into());
+            };
+            // The action the app says made the change, for the history; who
+            // invoked it is not the app's to say.
+            let origin = settings_store::ChangeOrigin {
+                action: action
+                    .filter(|action| !action.is_empty())
+                    .map(str::to_owned),
+                principal: None,
+                invoked_by: None,
+            };
+            if !settings_store::personal_dictionary::host::command(
+                self.source.as_ref(),
+                &self.app_id,
+                self.dictionary_owner,
+                section,
+                &values,
+            )
+            .map_err(|e| e.to_string())?
+            {
+                update_at(
                     self.source.as_ref(),
                     &self.app_id,
-                    self.dictionary_owner,
+                    self.reach,
                     section,
-                    &values,
+                    values,
+                    &origin,
                 )
-                .map_err(|e| capnp::Error::failed(e.to_string()))?
-                {
-                    update_at(
-                        self.source.as_ref(),
-                        &self.app_id,
-                        self.reach,
-                        section,
-                        values,
-                        &origin,
-                    )
-                    .map_err(|e| capnp::Error::failed(e.to_string()))?;
-                }
-                let (revision, view) = self.current();
-                let mut reply = results.get();
-                reply.set_revision(revision);
-                reply.set_document_json(&encode(&view)?);
-                Ok(())
-            })();
-            match written {
-                Ok(()) => Promise::ok(()),
-                Err(error) => Promise::err(error),
+                .map_err(|e| e.to_string())?;
             }
+            let (revision, view) = self.current();
+            Ok((revision, encode(&view)?))
         }
     }
 }

@@ -42,7 +42,7 @@ mod tests {
             "same identity must not tear down authority"
         );
         let other = owner
-            .with_current(room, |view| Ok(view.governor().clone()))
+            .with_current(room, |view| Ok(view.room_host().clone()))
             .unwrap();
         assert_ne!(other, current);
         fence(&owner, room, Some(&other)).unwrap();

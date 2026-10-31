@@ -31,6 +31,15 @@ static DEV_SESSION_BUILD_MARKER: [u8; 32] = *b"tilo-app-session-build-marker-v1"
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
 
+    // The desktop's tilolang surfaces start compiled once Cranelift compiled them in an
+    // earlier session.
+    if let Some(cache) = tilo_paths::xdg::cache_home()
+        && let Err(error) = tilolang_tilo::runtime::engine::keep_compiled_in(
+            cache.join("tilo").join("tilolang-compiled"),
+        )
+    {
+        eprintln!("tilo-session: compiled tilolang modules are not kept: {error}");
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (ours, command) = split_command(&args);
     // `--firstboot` is the host package's wrapper hook, which goes on to the
@@ -147,8 +156,7 @@ fn start(
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
     use std::sync::Arc;
-    use tilo_compositor::{DisplayConfig, NestedConfig, OutputConfig};
-    use tilo_session::{Options, Session};
+    use tilo_session::Options;
 
     let CommandLine {
         backend,
@@ -199,6 +207,10 @@ fn start(
         tilo_app_launch::SessionEnvironment::from_process(),
         Some(wake.handle()),
     ));
+    // A drive the person plugs in is announced like any other news, and the
+    // eject the notice offers goes over the system bus the desktop services
+    // already hold.
+    let drives = drives(backend, desktop.as_ref());
     let options = Options {
         services,
         wake,
@@ -207,31 +219,14 @@ fn start(
         questions: desktop.as_ref().map(|desktop| desktop.questions().clone()),
         apps: Some(std::rc::Rc::clone(&launch) as std::rc::Rc<dyn tilo_session::AppActions>),
         launch: Some(std::rc::Rc::clone(&launch)),
+        drives,
         desktop,
         portal,
         power,
         hosted,
         ..device_options(hosted)
     };
-    let started = match backend {
-        Backend::Headless => Session::headless(
-            options,
-            &[OutputConfig::new(
-                "HEADLESS-1",
-                i32::from(size.0),
-                i32::from(size.1),
-            )],
-        ),
-        Backend::Drm => Session::drm(options, DisplayConfig::default()),
-        Backend::Nested => Session::nested(
-            options,
-            &NestedConfig {
-                size,
-                ..NestedConfig::default()
-            },
-        ),
-    };
-    let mut session = match started {
+    let mut session = match start_session(backend, options, size) {
         Ok(session) => session,
         Err(error) => {
             eprintln!("tilo-session: {error}");
@@ -251,6 +246,35 @@ fn start(
         session_bus,
         reach.export_displays,
     )
+}
+
+/// The session on `backend`'s displays, at `size` where the backend runs in
+/// one.
+fn start_session(
+    backend: Backend,
+    options: tilo_session::Options,
+    size: (u16, u16),
+) -> Result<tilo_session::Session, tilo_compositor::Error> {
+    use tilo_compositor::{DisplayConfig, NestedConfig, OutputConfig};
+    use tilo_session::Session;
+    match backend {
+        Backend::Headless => Session::headless(
+            options,
+            &[OutputConfig::new(
+                "HEADLESS-1",
+                i32::from(size.0),
+                i32::from(size.1),
+            )],
+        ),
+        Backend::Drm => Session::drm(options, DisplayConfig::default()),
+        Backend::Nested => Session::nested(
+            options,
+            &NestedConfig {
+                size,
+                ..NestedConfig::default()
+            },
+        ),
+    }
 }
 
 /// `session` running until `command` exits, its displays printed.
@@ -338,6 +362,25 @@ fn tell_the_person(
     }
 }
 
+/// The drives this desktop announces, when it owns the machine and the
+/// desktop services hold a system bus to ask udisks over: a session in a
+/// window of another desktop leaves that desktop's drives to it.
+#[cfg(target_os = "linux")]
+fn drives(
+    backend: Backend,
+    desktop: Option<&std::rc::Rc<tilo_session::desktop_services::DesktopServices>>,
+) -> Option<std::rc::Rc<tilo_session::mount::drives::Drives>> {
+    if backend != Backend::Drm {
+        return None;
+    }
+    let desktop = desktop?;
+    let connection = desktop.system_bus()?.clone();
+    Some(std::rc::Rc::new(tilo_session::mount::drives::Drives::new(
+        tilo_session::mount::drives::udisks(connection),
+        desktop.notifications().clone(),
+    )))
+}
+
 /// A main loop that stops for good keeps the display frozen on its last frame
 /// and the keyboard unread; the watchdog records why and ends the process, so
 /// the person comes back to the login screen. Only the TTY backend owns the
@@ -388,10 +431,24 @@ fn desktop_services(
 #[cfg(target_os = "linux")]
 fn device_options(hosted: bool) -> tilo_session::Options {
     use tilo_quick_settings::device::PlayerLink;
-    use tilo_session::{DeviceHost, KillSwitch, Options, QuickSettings, SessionConfig};
+    use tilo_session::{
+        ActionPlane, DeviceHost, KillSwitch, Options, QuickSettings, SessionConfig,
+    };
     Options {
         config: SessionConfig::load(),
         search: search_options(),
+        // The apps this session starts reach its services over the socket
+        // the launcher hands them; a session inside another desktop's
+        // window leaves that desktop's own socket alone.
+        action_plane: if hosted {
+            ActionPlane::Off
+        } else {
+            ActionPlane::Launcher
+        },
+        // A program of this login asks the person at the seat's agent door
+        // to work in a workspace as an agent; a session in another
+        // desktop's window serves none.
+        agent_door: (!hosted).then(tilo_session::agent_door::path).flatten(),
         quick_settings: (!hosted).then(|| {
             QuickSettings::Device(Box::new(|wake| {
                 let device = DeviceHost::os(wake);
@@ -402,6 +459,10 @@ fn device_options(hosted: bool) -> tilo_session::Options {
                 device
             }))
         }),
+        // The controllers in the room drive the desktop of the session that
+        // owns the machine; a session in another desktop's window leaves
+        // them to that desktop.
+        controllers: (!hosted).then_some(tilo_session::controllers::Source::Machine),
         session_actions: if hosted {
             tilo_session::no_session_actions
         } else {
@@ -485,6 +546,9 @@ fn services(
     services.push(Box::new(tilo_settings_service::SettingsService::new(
         &tilo_session::Options::default().person,
     )));
+    // What this session ran into: the list as the resource's reading and
+    // each record's text as its own, which Settings reads as an app does.
+    services.push(Box::new(tilo_crash_records::CrashRecords::new()));
     if hosted {
         return (services, following);
     }
@@ -547,8 +611,8 @@ fn audio_helper() -> Option<std::path::PathBuf> {
 
 /// What search reads of this device: the Tilo apps installed here and the
 /// machine's own and the apps the person can get, each followed as it
-/// changes, what apps hold, the person's files, and the search sources they
-/// switched off.
+/// changes, what apps hold, the person's files, the records the workspaces
+/// hold, and the search sources they switched off.
 #[cfg(target_os = "linux")]
 fn search_options() -> tilo_session::SearchOptions {
     use std::sync::Arc;
@@ -578,6 +642,9 @@ fn search_options() -> tilo_session::SearchOptions {
             &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
         ),
         places: tilo_desktop_search::providers::places::RecentPlaces::default(),
+        // The records the workspaces on this device hold, read now and
+        // followed as the apps of those workspaces name more.
+        records: Some(tilo_session::Records::of_device()),
     }
 }
 

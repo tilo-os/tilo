@@ -99,7 +99,8 @@ impl Source<'_> {
 }
 
 /// The default longest-edge target for generated thumbnails. Big enough to stay
-/// crisp on a 2x grid tile, small enough to fit an xattr and gossip cheaply.
+/// crisp on a 2x grid tile, small enough to fit an xattr and replicate
+/// cheaply.
 pub const DEFAULT_EDGE: u32 = 256;
 
 /// No source is read whole past this just to make a thumbnail: a pathological
@@ -391,7 +392,8 @@ pub fn rgba_to_thumb(
     downscale_to_rgba(image::DynamicImage::ImageRgba8(buf), size.into())
 }
 
-/// Encode a thumbnail as PNG — the on-disk cache, xattr and gossip form. `None`
+/// Encode a thumbnail as PNG — the on-disk cache, xattr and replicated form.
+/// `None`
 /// on an encode failure (never happens for a valid buffer).
 pub fn encode_png(thumb: &RgbaThumb) -> Option<Vec<u8>> {
     if !thumb.is_valid() {

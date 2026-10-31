@@ -15,6 +15,7 @@
 pub mod actions;
 pub mod applications;
 pub mod archive;
+pub mod bindings;
 pub mod breadcrumbs;
 mod cloud_jobs;
 mod cloud_transfer;

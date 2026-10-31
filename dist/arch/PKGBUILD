@@ -34,6 +34,7 @@ build() {
   cargo build --release --locked -p imager --bin imager --features installation
   export TILO_UNLOCK_HELPER_PATH=/usr/lib/tilo/tilo-unlock-helper
   cargo build --release --locked -p shell --bin shell --no-default-features
+  cargo build --release --locked -p tilo-session --bin tilo-session
   ./dist/stage-payload.sh target/release "$srcdir/payload"
 }
 
@@ -47,7 +48,7 @@ package_tilo-session() {
   )
   optdepends=('vulkan-driver: hardware-appropriate Vulkan ICD' 'greetd: display manager')
   cd "$srcdir/payload"
-  install -Dm755 bin/tilo-shell bin/tilo bin/tilo-import-folders -t "$pkgdir/usr/bin"
+  install -Dm755 bin/tilo-session bin/tilo-shell bin/tilo bin/tilo-import-folders -t "$pkgdir/usr/bin"
   # The launcher's path is pinned where the session and its units start it, on
   # every distribution; the old name on PATH links to it.
   install -Dm755 bin/tilo-launcher -t "$pkgdir/usr/libexec/tilo"
@@ -61,9 +62,11 @@ package_tilo-session() {
   sed -i 's#/usr/libexec/tilo-flight-recorder#/usr/lib/tilo/tilo-flight-recorder#' \
     "$pkgdir/usr/lib/tilo/tilo-session-runner"
   install -Dm644 pam/tilo-unlock "$pkgdir/etc/pam.d/tilo-unlock"
-  install -Dm644 wayland-sessions/tilo.desktop -t "$pkgdir/usr/share/wayland-sessions"
+  install -Dm644 wayland-sessions/tilo.desktop wayland-sessions/tilo-shell.desktop \
+    -t "$pkgdir/usr/share/wayland-sessions"
   sed -i 's#/usr/libexec/tilo-session#/usr/lib/tilo/tilo-session#' \
-    "$pkgdir/usr/share/wayland-sessions/tilo.desktop"
+    "$pkgdir/usr/share/wayland-sessions/tilo.desktop" \
+    "$pkgdir/usr/share/wayland-sessions/tilo-shell.desktop"
   install -Dm644 portal/tilo.portal -t "$pkgdir/usr/share/xdg-desktop-portal/portals"
   install -Dm644 portal/tilo-portals.conf -t "$pkgdir/usr/share/xdg-desktop-portal"
   install -Dm644 pipewire/tilo-echo-cancel.conf -t "$pkgdir/usr/share/pipewire"

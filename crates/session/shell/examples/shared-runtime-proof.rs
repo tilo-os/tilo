@@ -4,7 +4,7 @@
 use serde_json::json;
 use shell::{
     runtime_host::Session,
-    shell::collab_broker_capnp::{PublishedAction, PublishedSurface},
+    shell::collab_app_broker::{PublishedAction, PublishedSurface},
 };
 use std::{
     error::Error,
@@ -183,7 +183,7 @@ fn main() -> Result<()> {
     let session = Session::start(&root)?;
     emit(&json!({"event":"runtime_ready", "elapsed_ns":runtime_start.elapsed().as_nanos()}));
     emit(
-        &json!({"event":"runtime_started", "pid":std::process::id(), "os":std::env::consts::OS, "workspace":session.room, "socket":session.broker.capnp_socket(), "implementation":"shell::shell::collab_broker::spawn_native"}),
+        &json!({"event":"runtime_started", "pid":std::process::id(), "os":std::env::consts::OS, "workspace":session.room, "socket":session.broker.app_socket(), "implementation":"shell::shell::collab_broker::spawn_native"}),
     );
     let captured = Arc::new(Mutex::new(Vec::new()));
     let received = captured.clone();

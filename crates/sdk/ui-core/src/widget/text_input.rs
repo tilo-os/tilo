@@ -79,6 +79,9 @@ mod spelling;
 mod touch;
 use touch::TouchIntent;
 
+#[path = "text_input_input.rs"]
+mod input;
+
 /// Outline a field whose content was refused (a wrong password) in the
 /// danger colour, over the field's own edge at the control radius.
 pub fn paint_invalid_edge(scene: &mut Scene, transform: Affine, field: Rect, theme: &Theme) {
@@ -343,6 +346,10 @@ pub struct TextInput {
     is_hovered: bool,
     /// The form marked the value invalid ([`Widget::set_invalid`]).
     invalid: bool,
+    /// Someone else changed what it holds and the person has not seen it yet
+    /// ([`Self::with_change`]): their presence identity, which tints the field, and what the
+    /// field says of it on hover.
+    change: Option<(String, String)>,
     is_focused: bool,
     /// Paint-only suppression for drag previews; focus, selection and IME remain intact.
     caret_paint_suppressed: bool,
@@ -596,6 +603,12 @@ pub struct TextInput {
     on_submit: Option<TextChangeCallback>,
     /// Route a submitting Enter through an exported resource action.
     submit_action: Option<ActionEmitter<String>>,
+    /// Enter's submit, published as the field's view action `submit`
+    /// ([`Self::on_submit_view`]) and the resource it announces.
+    submit_view: Option<(ActionEmitter<()>, tilo_actions::ResourceSpec)>,
+    /// A committed edit, published as the field's view action `change`
+    /// ([`Self::on_change_view`]) and answered by its own handler.
+    change_verb: Option<super::control_verb::ControlVerb<String>>,
     /// A trailing icon button inside the field.
     accessory: Option<Accessory>,
     /// `font_size_override` is a document-space size, never grown by the text
@@ -694,6 +707,18 @@ pub enum AccessoryAction {
 /// assistive technology.
 const ACCESSORY_TARGET: &str = "text-input-accessory";
 
+/// The operation type of a field's submitting Enter.
+const SUBMIT_TEXT: &str = "tilo.ui.text.submit";
+
+/// The operation type of a field's committed edit.
+const CHANGE_TEXT: &str = "tilo.ui.text.change";
+
+/// What a `tilo.ui.text.submit` operation carries: the field it submits.
+#[derive(serde::Deserialize)]
+struct SubmitPayload {
+    control: String,
+}
+
 /// A trailing icon button inside a field.
 struct Accessory {
     icon: crate::icons::Icon,
@@ -772,6 +797,7 @@ impl TextInput {
             rect: Rect::ZERO,
             is_hovered: false,
             invalid: false,
+            change: None,
             is_focused: false,
             caret_paint_suppressed: false,
             ml_caret: None,
@@ -885,6 +911,8 @@ impl TextInput {
             document_inset: false,
             on_submit: None,
             submit_action: None,
+            submit_view: None,
+            change_verb: None,
             accessory: None,
             content_sized: false,
             span_highlighter: None,
@@ -1556,6 +1584,15 @@ impl TextInput {
         input
     }
 
+    /// Someone else (`identity`, by their presence) changed what the field holds and the person
+    /// has not seen it: the field is tinted in their colour, and hovering it says `note` (who
+    /// changed it, and what it held before). `None` once it is seen.
+    #[must_use]
+    pub fn with_change(mut self, change: Option<(String, String)>) -> Self {
+        self.change = change;
+        self
+    }
+
     /// Key the field's presence by `path`: collaborators editing the field at the same path
     /// see each other's carets and selections in it.
     #[must_use]
@@ -1660,6 +1697,10 @@ impl TextInput {
         // The field's own state stays the one a bound local edit reads: an
         // action publishing the text does not stand in for it.
         self.publish_local_state();
+        if let Some(verb) = &mut self.change_verb {
+            verb.emit(self.text.clone());
+            return;
+        }
         if let Some(callback) = self.on_change.as_mut() {
             callback(&self.text);
         }
@@ -3820,6 +3861,59 @@ impl TextInput {
         self
     }
 
+    /// Run `callback` with the text on a submitting Enter, the field, as
+    /// control `tilo.control:<id>`, publishing the submit as its view action
+    /// `submit`: a person's Enter, a screen reader, a script and an agent
+    /// submit through the same action. Two Enters delivered before the host
+    /// collects one submit once.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "the generated payload is serializable and the action is the resource's own"
+    )]
+    pub fn on_submit_view(mut self, callback: impl FnMut(&str) + 'static) -> Self {
+        use crate::tilo_actions::{ActionBinding, ActionSpec, OperationKind, ResourceSpec};
+        let id = self.test_id().unwrap_or("text_input").to_owned();
+        let spec = ActionSpec::operation(
+            "submit",
+            "Submit",
+            OperationKind::View,
+            SUBMIT_TEXT,
+            &serde_json::json!({ "control": id }),
+        )
+        .expect("the submit payload is serializable")
+        .for_audience(crate::tilo_actions::Audience::Agents);
+        let resource = ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control", "Submit")
+            .with_action(spec);
+        let binding = ActionBinding::unit_for(&resource, "submit")
+            .expect("the submit action is the resource's own and takes no arguments");
+        self.enter_submits = true;
+        self.on_submit = Some(Box::new(callback));
+        self.submit_view = Some((ActionEmitter::new_replace_one(binding), resource));
+        self
+    }
+
+    /// Run `callback` with the text of every committed edit, the field, as
+    /// control `tilo.control:<id>`, publishing the edit as its view action
+    /// `change`: typing, pasting, an IME commit, a screen reader's edit, a
+    /// script's and an agent's all arrive through the same action. The
+    /// control's latest text is what it reports, so a burst of edits the host
+    /// has not collected yet reports once, with the text it now holds.
+    #[must_use]
+    pub fn on_change_view(mut self, callback: impl FnMut(&str) + 'static) -> Self {
+        let id = self.test_id().unwrap_or("text_input").to_owned();
+        self.change_verb = Some(super::control_verb::ControlVerb::new(
+            &id,
+            "Change",
+            "change",
+            CHANGE_TEXT,
+            super::control_verb::VerbArgument::Text,
+        ));
+        self.on_change = Some(Box::new(callback));
+        self.last_notified_text.clone_from(&self.text);
+        self
+    }
+
     /// A trailing clear button inside the field while it holds text.
     #[must_use]
     pub fn with_clear_button(self) -> Self {
@@ -4041,6 +4135,12 @@ impl TextInput {
         self.document_inset = true;
     }
 
+    /// Set the text flush with the field's edge, without the document's inset: a body read
+    /// where it stands under a name, as a message's does.
+    pub(crate) fn drop_document_inset(&mut self) {
+        self.document_inset = false;
+    }
+
     /// Where the trailing accessory sits: a square at the field's trailing
     /// edge, one band tall, while it is shown.
     fn accessory_rect(&self) -> Option<Rect> {
@@ -4190,6 +4290,13 @@ impl TextInput {
         self.submit_requested = true;
         if let Some(action) = &mut self.submit_action {
             let _ = action.emit(self.text.clone());
+        }
+        let control = self.test_id().unwrap_or("text_input").to_owned();
+        if let Some((action, _)) = &mut self.submit_view {
+            if let Err(error) = action.emit(()) {
+                tracing::warn!(%error, %control, "a field refused its submit");
+            }
+            return;
         }
         if let Some(callback) = self.on_submit.as_mut() {
             callback(&self.text);
@@ -5355,7 +5462,7 @@ impl TextInput {
 }
 
 /// How a field stands: what its chrome shows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "a POD bundle of independent interaction flags a field can be in any combination of"
@@ -5365,11 +5472,15 @@ struct FieldState {
     focused: bool,
     invalid: bool,
     disabled: bool,
+    /// The presence colour of whoever changed the value without the person having seen it:
+    /// washed into the face and drawn as its edge, as their attribution is everywhere.
+    changed_by: Option<vello::peniko::Color>,
 }
 
 /// A field's chrome: the raised face, a half lift under the pointer, the
-/// derived rest edge, your colour as the focus ring and danger ink for a
-/// rejected value. Shared by [`TextInput`] and [`FieldFace`].
+/// derived rest edge, your colour as the focus ring, danger ink for a
+/// rejected value, and someone else's colour for a change the person has not
+/// seen. Shared by [`TextInput`] and [`FieldFace`].
 fn paint_field_chrome(
     scene: &mut Scene,
     transform: Affine,
@@ -5381,6 +5492,12 @@ fn paint_field_chrome(
     let rest = theme.tokens.colors.surfaces.raised;
     // Focus keeps the rest fill: the ring alone marks it, so a focused
     // field reads as the same field. Hover is a half lift of an idle one.
+    let rest = match state.changed_by {
+        Some(tint) if !disabled => {
+            crate::tokens::colors::mix8(rest, tint, crate::widget::chip::TINT_FILL)
+        }
+        _ => rest,
+    };
     let bg_color = if state.hovered && !state.focused && !disabled {
         theme.tokens.colors.lift_on(rest, 0.5)
     } else {
@@ -5398,13 +5515,7 @@ fn paint_field_chrome(
             shape,
         );
     }
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        bg_color,
-        None,
-        shape,
-    );
+    let bordered = crate::surface::control_face(scene, transform, shape, bg_color, theme);
     // A field is a raised well: no edge at rest (the level step separates
     // it), and no ring when focused (the caret is the focus). A value the
     // form rejected edges the field in danger ink, the one status colour a
@@ -5419,7 +5530,19 @@ fn paint_field_chrome(
                 crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
             ),
         ))
-    } else if theme.colors_are_forced() {
+    } else if let Some(tint) = state
+        .changed_by
+        .filter(|_| !disabled && !theme.colors_are_forced())
+    {
+        Some((
+            1.0,
+            crate::tokens::colors::mix8(
+                colors.surfaces.raised,
+                tint,
+                crate::widget::chip::TINT_EDGE,
+            ),
+        ))
+    } else if theme.colors_are_forced() && !bordered {
         // Accessibility deliberately collapses surface levels. Keep the
         // declared contrast edge instead of deriving a decorative hairline;
         // disabled fields keep this edge under the existing group opacity.
@@ -5587,6 +5710,96 @@ impl Drop for TextInput {
     }
 }
 
+impl crate::resources::PublishesResources for TextInput {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+        // The field is one resource however many verbs it publishes: a host
+        // keeps one spec per id, so a second spec under the same id would
+        // shadow the first and its verb would answer nothing.
+        let mut resource = match (&self.submit_view, &self.change_verb) {
+            (None, None) => return Vec::new(),
+            (Some((_, submit)), None) => return vec![submit.clone()],
+            (None, Some(verb)) => return vec![verb.resource()],
+            (Some((_, submit)), Some(_)) => submit.clone(),
+        };
+        if let Some(verb) = &self.change_verb {
+            resource.actions.extend(verb.resource().actions);
+        }
+        vec![resource]
+    }
+}
+
+/// The local operations a field answers, indexed by the mask of those it
+/// publishes: an edit, a submit, and the field's own edits in history.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "the mask is built from the same bits"
+)]
+const TEXT_OPERATIONS: [&[&str]; 8] = {
+    const C: &str = CHANGE_TEXT;
+    const S: &str = SUBMIT_TEXT;
+    const E: &str = crate::undo::EDIT_OPERATION;
+    [&[], &[C], &[S], &[C, S], &[E], &[C, E], &[S, E], &[C, S, E]]
+};
+
+impl crate::widget::ResourceOperations for TextInput {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        let mut mask = 0;
+        if self.change_verb.is_some() {
+            mask |= 1;
+        }
+        if self.submit_view.is_some() {
+            mask |= 2;
+        }
+        if !crate::widget::resource_operation::local_history_handlers(self).is_empty() {
+            mask |= 4;
+        }
+        TEXT_OPERATIONS[mask]
+    }
+
+    /// Answer a `submit` or a `change` addressed to this field: hand its text
+    /// to the field's handler, whoever submitted or edited.
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let changed = self
+            .change_verb
+            .as_ref()
+            .map(|verb| verb.start(op))
+            .transpose()?
+            .flatten();
+        if let Some(text) = changed {
+            if let Some(callback) = self.on_change.as_mut() {
+                callback(&text);
+            }
+            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
+        let is_submit = op.unscoped().is_some_and(|request| {
+            request.kind == tilo_actions::OperationKind::View && request.type_id == SUBMIT_TEXT
+        });
+        if !is_submit {
+            return crate::widget::resource_operation::start_by_default(self, op, doc, path);
+        }
+        let payload: SubmitPayload =
+            serde_json::from_slice(op.unscoped().map_or(&[][..], |request| request.payload))
+                .map_err(|error| error.to_string())?;
+        if payload.control != self.test_id().unwrap_or("text_input") {
+            return Ok(None);
+        }
+        let text = self.text.clone();
+        if let Some(callback) = self.on_submit.as_mut() {
+            callback(&text);
+        }
+        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
+    }
+}
+
 impl Widget for TextInput {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -5595,7 +5808,9 @@ impl Widget for TextInput {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
+        dyn crate::undo::UndoPoints,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -5850,6 +6065,30 @@ impl Widget for TextInput {
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
         if !self.plain {
             self.draw_field_chrome(scene, transform, theme, &shape);
+        } else if let Some((identity, _)) = &self.change {
+            // A field without chrome (a document's large title) still shows someone else's
+            // unseen change: their colour washed under the text.
+            let colors = &theme.tokens.colors;
+            let tint = colors
+                .presence
+                .hue(crate::tokens::colors::PresenceHue::of_identity(identity));
+            let ground = colors.surfaces.content;
+            let wash = crate::tokens::colors::mix8(ground, tint, crate::widget::chip::TINT_FILL);
+            let edge = crate::tokens::colors::mix8(ground, tint, crate::widget::chip::TINT_EDGE);
+            // Out past the text by a related gap, so the text keeps its own edge.
+            let outset = f64::from(theme.tokens.spacing.s2);
+            let washed = RoundedRect::from_rect(
+                self.rect.inflate(outset, 0.0),
+                f64::from(theme.tokens.radii.control),
+            );
+            scene.fill(vello::peniko::Fill::NonZero, transform, wash, None, &washed);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                edge,
+                None,
+                &crate::surface::edge_outline(washed.rect(), washed.radii().top_left),
+            );
         }
         self.draw_accessory(scene, transform, theme);
 
@@ -6215,11 +6454,16 @@ impl Widget for TextInput {
     /// Hosts that embed the field without a layout tree still get the
     /// show/hide control's tooltip.
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
-        if self.has_reveal_control() {
-            self.reveal.tooltip_at(point)
-        } else {
-            None
+        if self.has_reveal_control()
+            && let Some(tip) = self.reveal.tooltip_at(point)
+        {
+            return Some(tip);
         }
+        // A change the person has not seen says who made it and what the field held before.
+        self.change
+            .as_ref()
+            .filter(|_| self.rect.contains(point))
+            .map(|(_, note)| (self.rect, note.clone()))
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -6378,7 +6622,7 @@ impl Widget for TextInput {
         if !self.id.is_empty() {
             node = node.with_semantic_key(&self.id);
         }
-        if self.action.is_none() && self.on_change.is_none() {
+        if self.action.is_none() && self.on_change.is_none() && self.change_verb.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("text_input"));
         }
         if !secret {
@@ -6656,12 +6900,28 @@ impl crate::widget::controls::ActionControls for TextInput {
         if let Some(action) = &mut self.submit_action {
             let _ = action.install_custody(domain, attachment);
         }
+        if let Some((action, _)) = &mut self.submit_view {
+            let _ = action.install_custody(domain, attachment);
+        }
+        if let Some(verb) = &mut self.change_verb {
+            verb.install_custody(domain, attachment);
+        }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action
             .as_mut()
             .and_then(ActionEmitter::take)
             .or_else(|| self.submit_action.as_mut().and_then(ActionEmitter::take))
+            .or_else(|| {
+                self.submit_view
+                    .as_mut()
+                    .and_then(|(action, _)| action.take())
+            })
+            .or_else(|| {
+                self.change_verb
+                    .as_mut()
+                    .and_then(super::control_verb::ControlVerb::take)
+            })
     }
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let mut bindings = self.field_action_bindings();
@@ -6770,6 +7030,12 @@ impl TextInput {
         if let Some(action) = &self.submit_action {
             bindings.push(action.metadata(control_id));
         }
+        if let Some((action, _)) = &self.submit_view {
+            bindings.push(action.metadata(control_id));
+        }
+        if let Some(verb) = &self.change_verb {
+            bindings.push(verb.metadata(control_id));
+        }
         bindings
     }
     fn refresh_control_action_availability(
@@ -6782,6 +7048,12 @@ impl TextInput {
         if let Some(action) = &mut self.submit_action {
             action.refresh_availability(allowed);
         }
+        if let Some((action, _)) = &mut self.submit_view {
+            action.refresh_availability(allowed);
+        }
+        if let Some(verb) = &mut self.change_verb {
+            verb.refresh_availability(allowed);
+        }
         self.reveal.set_enabled(!self.effectively_disabled());
     }
 }
@@ -6791,542 +7063,22 @@ impl TextInput {
     fn value_bindings(&self, control_id: &str) -> Vec<ControlBindingMetadata> {
         if let Some(action) = &self.action {
             vec![action.metadata(control_id)]
+        } else if let Some(verb) = &self.change_verb {
+            vec![verb.metadata(control_id)]
         } else if self.bound_text.is_some() {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
                 kind: ControlBindingKind::CollaborativeDocument("<nested-text>".to_string()),
             }]
         } else if self.on_change.is_some() {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyCallback,
-            }]
+            // A callback-only field reaches no door, so it is no binding.
+            Vec::new()
         } else {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
                 kind: ControlBindingKind::SemanticAction(control_id.to_string()),
             }]
         }
-    }
-}
-
-impl TextInput {
-    fn draw_field_chrome(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        shape: &RoundedRect,
-    ) {
-        paint_field_chrome(
-            scene,
-            transform,
-            theme,
-            shape,
-            FieldState {
-                hovered: self.is_hovered,
-                focused: self.is_focused,
-                invalid: self.invalid,
-                disabled: self.effectively_disabled(),
-            },
-        );
-    }
-
-    fn handle_cursor_moved(
-        &mut self,
-        position: winit::dpi::PhysicalPosition<f64>,
-        scale_factor: f64,
-        handled: &mut bool,
-    ) {
-        let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
-        // Hover damage updates this field, but siblings still need the same
-        // motion to clear/arm their hover state. Only an owned drag consumes it.
-        self.update_pointer_position(logical_pos);
-        let over_accessory = self
-            .accessory_rect()
-            .is_some_and(|rect| rect.contains(logical_pos));
-        if let Some(accessory) = self.accessory.as_mut() {
-            accessory.hovered = over_accessory;
-        }
-
-        if !self.is_dragging {
-            return;
-        }
-        *handled = true;
-        let raw_position = self.resolve_position(logical_pos);
-        let raw = raw_position.byte;
-        let (anchor_lo, anchor_hi) = self.drag_anchor_span;
-        // Selection always *contains* the original span clicked.
-        let (new_anchor, new_cursor) = match self.drag_unit {
-            DragUnit::Char => (anchor_lo, raw),
-            DragUnit::Word => {
-                let (w_start, w_end) = word_boundaries(&self.text, raw);
-                extend_span_drag(anchor_lo, anchor_hi, raw, w_start, w_end)
-            }
-            DragUnit::Line => {
-                let (line_start, line_end) = line_boundaries(&self.text, raw);
-                extend_span_drag(anchor_lo, anchor_hi, raw, line_start, line_end)
-            }
-        };
-        let affinity = if self.drag_unit == DragUnit::Char {
-            raw_position.affinity
-        } else {
-            TextAffinity::Before
-        };
-        let cursor = TextPosition::with_affinity(new_cursor, affinity);
-        if (self.core.anchor(), self.core.caret_position()) != (new_anchor, cursor) {
-            self.core.set_selection_position(new_anchor, cursor);
-            *handled = true;
-        }
-    }
-
-    fn handle_right_click(
-        &mut self,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        handled: &mut bool,
-    ) {
-        if !self.is_focused {
-            *focus_target = Some(node_id);
-        }
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "pointer coordinates are bounded on-screen positions, never near f32's range"
-        )]
-        let pos = [self.last_mouse_pos.x as f32, self.last_mouse_pos.y as f32];
-        self.open_context_menu(pos);
-        *handled = true;
-    }
-
-    fn click_place_caret(&mut self, pos: usize, affinity: TextAffinity, modifiers: Modifiers) {
-        let extend = modifiers.state().shift_key();
-        self.core
-            .place_position(TextPosition::with_affinity(pos, affinity), extend);
-        let anchor = self.core.anchor();
-        self.drag_unit = DragUnit::Char;
-        self.drag_anchor_span = (anchor, anchor);
-        self.is_dragging = true;
-    }
-
-    /// Arms a word-granularity drag so dragging beyond it extends by whole words.
-    fn click_select_word(&mut self, pos: usize) {
-        self.core.select_word(&self.text, pos);
-        self.drag_unit = DragUnit::Word;
-        self.drag_anchor_span = (self.core.anchor(), self.core.caret());
-        self.is_dragging = true;
-        self.publish_primary_selection();
-    }
-
-    fn click_select_line(&mut self, pos: usize) {
-        self.core.select_line(&self.text, pos);
-        self.drag_unit = DragUnit::Line;
-        self.drag_anchor_span = (self.core.anchor(), self.core.caret());
-        self.is_dragging = true;
-        self.publish_primary_selection();
-    }
-
-    fn handle_left_press(
-        &mut self,
-        modifiers: Modifiers,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        handled: &mut bool,
-    ) {
-        if !self.is_focused {
-            *focus_target = Some(node_id);
-        }
-
-        let intent = self
-            .drag_select
-            .press(self.last_mouse_pos, modifiers.state().shift_key());
-        let position = self.resolve_position(self.last_mouse_pos);
-        let pos = position.byte;
-        match intent.granularity {
-            Granularity::Char => self.click_place_caret(pos, position.affinity, modifiers),
-            Granularity::Word => self.click_select_word(pos),
-            Granularity::Line if self.multiline => self.click_select_line(pos),
-            // A single-line field has exactly one line, so this is select-all.
-            Granularity::Line => self.click_select_line(pos),
-        }
-        *handled = true;
-    }
-
-    fn handle_left_click(
-        &mut self,
-        element_state: ElementState,
-        modifiers: Modifiers,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        handled: &mut bool,
-    ) {
-        // A left press while the menu is open is routed to it, never to caret placement.
-        if self.context_menu.is_open() {
-            if element_state == ElementState::Pressed {
-                let point = [self.last_mouse_pos.x, self.last_mouse_pos.y];
-                if let Some(idx) = self.context_menu.item_at(point) {
-                    self.dispatch_context_action(idx);
-                } else {
-                    self.context_menu.close();
-                }
-                *handled = true;
-            }
-            return;
-        }
-        match element_state {
-            // The tap the toolkit synthesises when a finger lifts: that
-            // finger's own lift, which follows, presses once
-            // (`text_input_touch.rs`), and a second press would count as a
-            // double click.
-            ElementState::Pressed if self.active_touch.is_some() => *handled = true,
-            ElementState::Pressed if self.is_hovered && self.press_accessory() => {
-                *handled = true;
-            }
-            ElementState::Pressed if self.is_hovered => {
-                self.handle_left_press(modifiers, focus_target, node_id, handled);
-            }
-            ElementState::Released if self.is_dragging => {
-                self.end_drag();
-                *handled = true;
-            }
-            _ => {}
-        }
-    }
-
-    /// Linux primary selection is intentionally available only for ordinary
-    /// text. A password must never leave its protected widget merely because
-    /// the user dragged across its bullets; middle click may still paste a
-    /// primary selection *into* a secret field, matching GTK password inputs.
-    fn publish_primary_selection(&self) {
-        if let Some(selected) = self.shareable_selection() {
-            clipboard_copy_primary(selected);
-        }
-    }
-
-    /// The selection as it may leave the field — for the clipboard, the
-    /// primary selection or a host's text action. Never a secret's.
-    fn shareable_selection(&self) -> Option<&str> {
-        (!self.holds_secret())
-            .then(|| self.selected_str())
-            .flatten()
-    }
-
-    fn handle_middle_click(
-        &mut self,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        handled: &mut bool,
-    ) {
-        let primary = clipboard_paste_primary();
-        self.handle_middle_click_with_primary(primary.as_deref(), focus_target, node_id, handled);
-    }
-
-    fn handle_middle_click_with_primary(
-        &mut self,
-        primary: Option<&str>,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        handled: &mut bool,
-    ) {
-        if !self.is_focused {
-            *focus_target = Some(node_id);
-        }
-        let position = self.resolve_position(self.last_mouse_pos);
-        self.core.set_caret_position(position);
-        self.goal_x = None;
-        if let Some(paste) = primary {
-            let cleaned = self.clean_pasted_text(paste);
-            if !cleaned.is_empty() {
-                self.insert_str(&cleaned);
-            }
-        }
-        *handled = true;
-    }
-
-    /// One step left or right in visual order through the shaped layout,
-    /// when the field has one (bidi runs move the way they read).
-    fn visual_step(&self, forward: bool) -> Option<TextPosition> {
-        if (self.multiline && !self.multiline_shaped) || self.masked() {
-            return None;
-        }
-        let layout = self.single_layout.as_ref()?;
-        let target =
-            self.layout_to_text_position(layout.visual_motion_position(
-                self.text_to_layout_position(self.caret_position()),
-                forward,
-            ));
-        Some(TextPosition::with_affinity(
-            target.byte.min(self.text.len()),
-            target.affinity,
-        ))
-    }
-
-    fn handle_arrow(&mut self, forward: bool, shift: bool, ctrl: bool, handled: &mut bool) {
-        let motion = match (forward, ctrl) {
-            (false, false) => Motion::Left,
-            (true, false) => Motion::Right,
-            (false, true) => Motion::WordLeft,
-            (true, true) => Motion::WordRight,
-        };
-        match (!ctrl).then(|| self.visual_step(forward)).flatten() {
-            Some(target) => self.core.motion_to(motion, target, shift),
-            None => self.core.motion(&self.text, motion, shift),
-        }
-        self.goal_x = None;
-        *handled = true;
-    }
-
-    fn handle_home(&mut self, shift: bool, ctrl: bool, handled: &mut bool) {
-        let target = if ctrl {
-            0
-        } else if self.multiline_shaped
-            && let Some(layout) = &self.single_layout
-        {
-            let (home, _) = layout.visual_line_edges(self.text_to_layout_byte(self.core.caret()));
-            self.layout_to_text_byte(home)
-        } else if self.multiline && !self.lines.is_empty() {
-            let (i, _) = self.locate_ml(self.core.caret());
-            self.lines.get(i).map_or(0, |r| r.start)
-        } else {
-            0
-        };
-        self.set_cursor(target, shift);
-        *handled = true;
-    }
-
-    fn handle_end(&mut self, shift: bool, ctrl: bool, handled: &mut bool) {
-        let target = if ctrl {
-            self.text.len()
-        } else if self.multiline_shaped
-            && let Some(layout) = &self.single_layout
-        {
-            let (_, end) = layout.visual_line_edges(self.text_to_layout_byte(self.core.caret()));
-            self.layout_to_text_byte(end)
-        } else if self.multiline && !self.lines.is_empty() {
-            let (i, _) = self.locate_ml(self.core.caret());
-            self.lines.get(i).map_or(self.text.len(), |r| r.end)
-        } else {
-            self.text.len()
-        };
-        self.set_cursor(target, shift);
-        *handled = true;
-    }
-
-    fn handle_enter_key(&mut self, shift: bool, handled: &mut bool) {
-        let correction = (self.enter_submits || self.multiline)
-            .then(|| self.autocorrect_previous_word())
-            .flatten();
-        if self.enter_submits && !shift {
-            // What is submitted is the corrected word.
-            if let Some(correction) = correction {
-                self.apply_autocorrection(correction);
-            }
-            self.fire_submit();
-            *handled = true;
-        } else if self.multiline {
-            self.insert_str("\n");
-            if let Some(correction) = correction {
-                self.apply_autocorrection(correction);
-            }
-            *handled = true;
-        }
-    }
-
-    /// Only reached when `self.tab_spaces.is_some()` — otherwise the host keeps Tab for focus traversal.
-    fn handle_tab_key(&mut self, shift: bool, handled: &mut bool) {
-        let width = self.tab_spaces.unwrap_or(0);
-        if shift {
-            self.outdent(width);
-        } else if width == 0 {
-            self.insert_str("\t");
-        } else {
-            let spaces = " ".repeat(width);
-            self.insert_str(&spaces);
-        }
-        *handled = true;
-    }
-
-    fn handle_backspace_key(&mut self, ctrl: bool, handled: &mut bool) {
-        if !ctrl && self.undo_last_autocorrection(true) {
-            *handled = true;
-            return;
-        }
-        self.last_autocorrection = None;
-        let edit = self.core.delete_backward(&self.text, ctrl);
-        self.apply_edit(&edit);
-        *handled = true;
-    }
-
-    fn handle_delete_key(&mut self, ctrl: bool, handled: &mut bool) {
-        let edit = self.core.delete_forward(&self.text, ctrl);
-        self.apply_edit(&edit);
-        *handled = true;
-    }
-
-    fn handle_ctrl_shortcut(&mut self, c: &str, handled: &mut bool) {
-        let lc = c.to_lowercase();
-        match lc.as_str() {
-            "a" => {
-                self.do_select_all();
-                *handled = true;
-            }
-            "c" => {
-                self.do_copy();
-                *handled = true;
-            }
-            "x" => {
-                self.do_cut();
-                *handled = true;
-            }
-            "v" => {
-                self.do_paste();
-                *handled = true;
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_keyboard_input(
-        &mut self,
-        logical_key: &Key,
-        text: Option<&str>,
-        element_state: ElementState,
-        modifiers: Modifiers,
-        handled: &mut bool,
-    ) {
-        if element_state != ElementState::Pressed {
-            return;
-        }
-        if !self.is_focused {
-            return;
-        }
-        let shift = modifiers.state().shift_key();
-        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-        if self.read_only && !Self::read_only_key(logical_key, ctrl) {
-            return;
-        }
-
-        // An open candidate list owns its keys before editing does: the
-        // caret stays put while Up and Down arm a row, and Enter or Tab
-        // accepts it instead of submitting or leaving the field.
-        if !ctrl && !modifiers.state().alt_key() && !self.is_composing() {
-            match self.completion.handle_key(logical_key) {
-                CompletionKey::Handled => {
-                    *handled = true;
-                    return;
-                }
-                CompletionKey::Accept(pick) => {
-                    *handled = true;
-                    self.accept_completion(pick);
-                    return;
-                }
-                CompletionKey::Pass => {}
-            }
-        }
-
-        match logical_key {
-            Key::Named(NamedKey::ArrowLeft) => self.handle_arrow(false, shift, ctrl, handled),
-            Key::Named(NamedKey::ArrowRight) => self.handle_arrow(true, shift, ctrl, handled),
-            Key::Named(NamedKey::ArrowUp) if self.multiline => {
-                self.move_vertical(false, shift);
-                *handled = true;
-            }
-            Key::Named(NamedKey::ArrowDown) if self.multiline => {
-                self.move_vertical(true, shift);
-                *handled = true;
-            }
-            Key::Named(NamedKey::Home) => self.handle_home(shift, ctrl, handled),
-            Key::Named(NamedKey::End) => self.handle_end(shift, ctrl, handled),
-            Key::Named(NamedKey::Enter) => self.handle_enter_key(shift, handled),
-            Key::Named(NamedKey::Tab) if self.tab_spaces.is_some() => {
-                self.handle_tab_key(shift, handled);
-            }
-            Key::Named(NamedKey::Backspace) => {
-                self.handle_backspace_key(ctrl, handled);
-            }
-            Key::Named(NamedKey::Delete) => self.handle_delete_key(ctrl, handled),
-            Key::Named(NamedKey::Space) => {
-                self.insert_word_boundary(" ");
-                *handled = true;
-            }
-            Key::Character(c) if ctrl => {
-                self.handle_ctrl_shortcut(c.as_str(), handled);
-            }
-            _ => {
-                if let Some(t) = text
-                    && !t.chars().all(char::is_control)
-                {
-                    if t.chars().next().is_some_and(is_autocorrect_boundary) {
-                        self.insert_word_boundary(t);
-                    } else {
-                        self.insert_str(t);
-                    }
-                    *handled = true;
-                }
-            }
-        }
-    }
-
-    /// The keys a read-only field takes: moving and selecting, select all and
-    /// copy. The rest are the app's.
-    fn read_only_key(key: &Key, ctrl: bool) -> bool {
-        match key {
-            Key::Named(
-                NamedKey::ArrowLeft
-                | NamedKey::ArrowRight
-                | NamedKey::ArrowUp
-                | NamedKey::ArrowDown
-                | NamedKey::Home
-                | NamedKey::End,
-            ) => true,
-            Key::Character(c) if ctrl => matches!(c.to_lowercase().as_str(), "a" | "c"),
-            _ => false,
-        }
-    }
-
-    fn handle_ime_commit(&mut self, t: &str, handled: &mut bool) {
-        if self.read_only {
-            return;
-        }
-        if !self.is_focused {
-            return;
-        }
-        let trailing_boundary = t
-            .char_indices()
-            .next_back()
-            .filter(|&(_, boundary)| is_autocorrect_boundary(boundary));
-        if self.multiline && t.contains('\n') && t.chars().all(|c| c == '\n' || !c.is_control()) {
-            let edit = self.core.commit(t);
-            self.apply_insert(&edit);
-            *handled = true;
-        } else if t.chars().all(char::is_control) {
-            self.core.clear_preedit();
-        } else if let Some((boundary_at, boundary)) = trailing_boundary {
-            // A committed word plus its boundary autocorrects like typing.
-            self.core.clear_preedit();
-            if let Some(prefix) = t.get(..boundary_at)
-                && !prefix.is_empty()
-            {
-                self.insert_str(prefix);
-            }
-            let mut encoded = [0; 4];
-            self.insert_word_boundary(boundary.encode_utf8(&mut encoded));
-            *handled = true;
-        } else {
-            let edit = self.core.commit(t);
-            self.apply_insert(&edit);
-            *handled = true;
-        }
-    }
-
-    fn handle_ime_preedit(&mut self, t: &str, cursor: Option<(usize, usize)>, handled: &mut bool) {
-        if self.read_only {
-            return;
-        }
-        if !self.is_focused {
-            return;
-        }
-        self.core.set_preedit(t, cursor);
-        *handled = true;
     }
 }
 

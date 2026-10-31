@@ -9,9 +9,10 @@ use vello::kurbo::{Point, Rect};
 
 use super::ShellOverlayHost;
 use crate::shell::agent_quick_composer::{AgentQuickComposerOrigin, ComposerOwner};
-use crate::shell::certified_action_session::ActionSessionSource;
+use crate::shell::certified_action_session::{ActionSessionSource, IdentityGate};
+use crate::shell::chrome_state::AgentAsk;
 use crate::shell::collab_broker::AppActionBroker;
-use crate::shell::selection_agent::{AgentStart, ChordRoute, SelectionSeed};
+use crate::shell::selection_agent::{ChordRoute, SelectionSeed};
 
 impl ShellOverlayHost {
     /// `app_id` on shell-ui `connection` answers selection requests.
@@ -50,26 +51,76 @@ impl ShellOverlayHost {
     /// app let its moment pass, the composer opens with what the desktop
     /// knows itself.
     pub(crate) fn route_ask_agent_chord(&mut self, now: Instant) -> Vec<u64> {
-        self.follow_agent_start(now);
+        // Work held for a room's identity to settle (the chrome's asks, an
+        // agent door's run) is handed over by the next pump once that moment
+        // came.
+        let due = self
+            .held_agent_asks
+            .due()
+            .into_iter()
+            .chain(self.door_runs_unsettled.iter().map(|(at, _)| *at))
+            .min();
+        if due.is_some_and(|at| at <= now) {
+            self.bump_chrome();
+        }
         let focused = self.focused_app_id();
         match self.selection_requests.route(focused.as_deref(), now) {
             Some(ChordRoute::Ask(connections)) => connections,
             Some(ChordRoute::Open) => {
-                self.open_ask_agent_on_primary();
+                self.open_ask_agent_once_settled(now);
                 Vec::new()
             }
             None => {
                 if self.selection_requests.expired(now) {
-                    self.open_ask_agent_on_primary();
+                    self.open_ask_agent_once_settled(now);
                 }
                 Vec::new()
             }
         }
     }
 
-    /// When the ask-agent chord next needs a tick.
+    /// Open the composer on the primary selection, or, while this device's
+    /// identity in the active room has just changed and is not settled yet
+    /// (the composer's session is bound to a settled one), at the moment it
+    /// settles: the press and what the palette asked wait for it rather
+    /// than being dropped. The same gate holds the work the chrome hands
+    /// over ([`Self::pump_agent_asks`]).
+    fn open_ask_agent_once_settled(&mut self, now: Instant) {
+        if let Some(IdentityGate::SettlesAt(at)) = self.active_identity_gate(now) {
+            tracing::debug!(
+                wait = ?at.saturating_duration_since(now),
+                "the composer opens once this device's identity in the room settles"
+            );
+            self.selection_requests.defer_open(at);
+            return;
+        }
+        self.open_ask_agent_on_primary();
+    }
+
+    /// The identity gate of the active workspace's room.
+    fn active_identity_gate(&self, now: Instant) -> Option<IdentityGate> {
+        let room = self
+            .chrome
+            .as_ref()?
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()?
+            .room()
+            .to_string();
+        let broker = self.shortcut_triggers.broker()?;
+        Some(ActionSessionSource::new(broker).identity_gate(&room, now))
+    }
+
+    /// When the ask-agent chord, work held for a room's identity to settle,
+    /// or an agent door connection's run waiting for it next needs a tick.
     pub(crate) fn ask_agent_deadline(&self, now: Instant) -> Option<Instant> {
-        self.selection_requests.deadline(now)
+        self.door_runs_unsettled
+            .iter()
+            .map(|(at, _)| *at)
+            .chain(self.selection_requests.deadline(now))
+            .chain(self.held_agent_asks.due())
+            .min()
     }
 
     /// `app_id` (as the launcher vouched for it) asked an agent about its
@@ -136,11 +187,15 @@ impl ShellOverlayHost {
         self.open_ask_agent(SelectionSeed::new(app_id, label, selection))
     }
 
-    /// Open the quick composer about `seed`, for the agent asked last in the
-    /// focused workspace (or its first live one) when that agent is admitted
-    /// and holds a live task subscription. Says so when none does.
+    /// Open the quick composer about `seed`. Its agent defaults to a new
+    /// agent made for the task the asking creates
+    /// ([`crate::shell::task_agents`]); the workspace's collaborators that
+    /// take tasks now are offered beside it, and picking one assigns the
+    /// task to it. When a new agent cannot be asked here (no agent runtime,
+    /// no model, offline) the composer says which and offers the fix in
+    /// place: it never waits on an agent that is not coming.
     pub(crate) fn open_ask_agent(&mut self, mut seed: SelectionSeed) -> bool {
-        use crate::shell::state::WorkspaceAuthority as _;
+        use crate::shell::task_agents::NEW_TASK_AGENT;
         // On a canvas a question's answer is a window where it was asked.
         if self.canvas_shown() && seed.ask.is_some() {
             return self.ask_about_on_canvas(&seed);
@@ -148,37 +203,24 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let Some((room, person, members)) = ({
-            let state = chrome.borrow();
-            let tree = state.tree();
-            tree.desktop.active_workspace().map(|workspace| {
-                (
-                    workspace.room().to_string(),
-                    state.active_local_user_in(&tree),
-                    workspace
-                        .agent_members()
-                        .into_iter()
-                        .map(|(agent, _)| agent)
-                        .collect::<Vec<_>>(),
-                )
-            })
-        }) else {
+        let Some((room, person, members)) = active_room_agents(&chrome.borrow()) else {
+            tracing::warn!("the composer did not open: no workspace is active");
             return false;
         };
-        let (source, live) = self
-            .live_agents(&room, members.clone())
-            .map_or((None, Vec::new()), |(source, live)| (Some(source), live));
-        let chosen = self.selection_requests.choose_agent(&room, &live);
-        let (Some(source), Some(agent)) = (source, chosen) else {
-            let osd = if self.start_admitted_agent(&room, &members, seed) {
-                crate::shell::osd::Osd::starting_agent()
-            } else {
-                crate::shell::osd::Osd::no_agent()
-            };
-            chrome.borrow_mut().show_osd(osd);
+        let Some((source, collaborators)) = self.live_agents(&room, members) else {
+            tracing::warn!("the composer did not open: the session reaches no broker");
             return false;
         };
+        let mut choices = vec![NEW_TASK_AGENT.to_owned()];
+        choices.extend(collaborators);
+        let agent = self
+            .selection_requests
+            .choose_agent(&room, &choices)
+            .unwrap_or_else(|| NEW_TASK_AGENT.to_owned());
         let Some(identity_revision) = source.identity_revision(&room) else {
+            tracing::warn!(
+                "the composer did not open: this device's identity in the room is not settled yet"
+            );
             return false;
         };
         let owner = ComposerOwner {
@@ -187,12 +229,13 @@ impl ShellOverlayHost {
             person,
             identity_revision,
         };
-        if !self
+        if let Err(error) = self
             .agent_actions
             .entry(owner.clone())
             .or_default()
             .open(source, owner.clone())
         {
+            tracing::warn!(%error, "the composer did not open");
             return false;
         }
         self.selection_requests.asked(&room, &agent);
@@ -211,9 +254,14 @@ impl ShellOverlayHost {
             .take()
             .or_else(|| self.selection_requests.take_asking());
         let draft = seed.draft.take();
+        let label = if agent == NEW_TASK_AGENT {
+            crate::shell::i18n::t("agent-quick-new-agent-addressed")
+        } else {
+            agent.clone()
+        };
         self.agent_quick_composer.open_about(
             owner,
-            &agent,
+            &label,
             &AgentQuickComposerOrigin {
                 marker: at,
                 protected,
@@ -222,8 +270,19 @@ impl ShellOverlayHost {
             viewport,
             seed,
         );
-        self.agent_quick_composer.offer_agents(live);
-        if let Some(text) = ask {
+        self.agent_quick_composer.offer_agents(choices);
+        let blocker = (agent == NEW_TASK_AGENT)
+            .then(|| {
+                crate::shell::search::providers::ask_agent::task_agent_blocker(&chrome.borrow())
+            })
+            .flatten();
+        self.agent_quick_composer.block(blocker);
+        if blocker.is_some() {
+            // What was asked waits in the field until asking is possible.
+            if let Some(text) = ask.or(draft) {
+                self.agent_quick_composer.begin_typing(&text);
+            }
+        } else if let Some(text) = ask {
             self.agent_quick_composer.ask(&text);
         } else if let Some(text) = draft {
             self.agent_quick_composer.begin_typing(&text);
@@ -248,76 +307,123 @@ impl ShellOverlayHost {
         self.open_ask_agent(seed)
     }
 
-    /// No agent of the focused workspace takes tasks: start the one asked
-    /// last there (else its first admitted agent), and open the composer about `seed` once it takes them.
-    /// Whether one is starting. Only someone who may administer the
-    /// workspace starts its agents.
-    fn start_admitted_agent(
-        &mut self,
-        room: &str,
-        members: &[String],
-        seed: SelectionSeed,
-    ) -> bool {
-        let Some(agent) = self.selection_requests.choose_agent(room, members) else {
-            return false;
-        };
-        // A chord pressed again while the agent comes up asks about the
-        // newer selection; the agent is not started twice.
-        if self.selection_requests.is_starting(room, &agent) {
-            self.selection_requests
-                .starting(room, &agent, seed, Instant::now());
+    /// The person pressed the composer's fix for what keeps a new agent from
+    /// being asked: open its place, as the palette's row does. Whether one
+    /// was pressed.
+    pub(super) fn fix_composer_blocker(&mut self) -> bool {
+        // Set up in place: once the provider settings change, ask again
+        // whether a new agent can be asked, so the composer unblocks.
+        if self.agent_quick_composer.block_stale()
+            && let Some(chrome) = self.chrome.as_ref()
+        {
+            let blocker =
+                crate::shell::search::providers::ask_agent::task_agent_blocker(&chrome.borrow());
+            self.agent_quick_composer.block(blocker);
             return true;
         }
-        let Some(workspace) = self
-            .chrome
-            .as_ref()
-            .and_then(|chrome| chrome.borrow().tree().desktop.active_workspace().cloned())
-        else {
+        let Some(blocker) = self.agent_quick_composer.take_fix() else {
             return false;
         };
-        if let Err(error) = crate::shell::launcher::launch_workspace_agent(&agent, &workspace) {
-            tracing::info!(%agent, error = %error.user_message(), "the ask-agent chord could not start the agent");
-            return false;
+        if let Some(chrome) = self.chrome.as_ref()
+            && let Err(error) =
+                crate::shell::search::providers::ask_agent::open_fix(blocker, chrome)
+        {
+            tracing::warn!(?blocker, ?error, "the composer's fix could not be opened");
         }
-        tracing::info!(%agent, "the ask-agent chord started the workspace's agent");
-        self.selection_requests
-            .starting(room, &agent, seed, Instant::now());
         true
     }
 
-    /// Open the composer once an agent the chord started takes tasks, or
-    /// say there is no agent when it did not come up.
-    fn follow_agent_start(&mut self, now: Instant) {
-        let broker = self.shortcut_triggers.broker();
-        // Ready means exactly what `open_ask_agent` asks for. On 2026-10-19
-        // this waited only for the task subscription: an agent that had one
-        // but no certified identity was "ready", `open_ask_agent` found no
-        // agent to ask and started another, every frame, until the shell
-        // ran out of file descriptors (87 agents in a second).
-        let outcome = self.selection_requests.started(now, |room, agent| {
-            broker
-                .as_ref()
-                .is_some_and(|broker| askable(broker, room, agent))
-        });
-        match outcome {
-            Some(AgentStart::Ready(seed)) => {
-                self.open_ask_agent(*seed);
-            }
-            Some(AgentStart::GaveUp) => {
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome
-                        .borrow_mut()
-                        .show_osd(crate::shell::osd::Osd::no_agent());
-                }
-                self.bump_chrome();
-            }
-            None => {}
+    /// Open the chats the composer asked for, each in a window of its own:
+    /// the desktop's `open` of the chat's address, run here as the person at
+    /// this device, as the palette's window actions are. A chat that cannot
+    /// open says why in the composer.
+    pub(super) fn open_composer_chats(&mut self) -> bool {
+        let chats: Vec<_> = self
+            .agent_actions
+            .values_mut()
+            .flat_map(super::agent_actions::AgentActions::take_chats)
+            .collect();
+        if chats.is_empty() {
+            return false;
         }
+        for (room, address) in chats {
+            let opened = (|| {
+                let room = crate::shell::state::RoomId::parse(&room)
+                    .ok_or("the chat's workspace is gone")?;
+                let target = crate::shell::desktop_layout::Target::parse(&address)?;
+                let actor = {
+                    let chrome = self
+                        .chrome
+                        .as_ref()
+                        .ok_or("this session shows no desktop")?;
+                    crate::shell::desktop_layout::Actor::person(&chrome.borrow(), room)
+                };
+                let command = crate::shell::desktop_door::Command::Open {
+                    target,
+                    place: crate::shell::desktop_layout::Place::NewWindow { strip: None },
+                    background: false,
+                };
+                match self.serve_desktop(room, &actor, command) {
+                    crate::shell::desktop_door::Served::WhenUp { .. }
+                    | crate::shell::desktop_door::Served::Now(Ok(_)) => Ok(()),
+                    crate::shell::desktop_door::Served::Now(Err(failure)) => Err(failure.message),
+                }
+            })();
+            if let Err(error) = opened {
+                tracing::warn!(%address, %error, "the chat could not be opened");
+                self.agent_quick_composer.tell(error);
+            }
+        }
+        true
     }
 
-    /// The session source for the workspace, and those of its agent
-    /// `members` that are admitted (certified under their own key) and hold
-    /// a live task subscription, so a queued task reaches them.
+    /// Launch the agents made for tasks that now exist, each under its own
+    /// key in its task's workspace. A launch that fails is said in the
+    /// composer. Whether any was asked.
+    pub(super) fn launch_task_agents(&mut self) -> bool {
+        let ends = std::mem::take(self.task_agent_ends.get_mut());
+        let ended = !ends.is_empty();
+        for why in ends {
+            self.agent_quick_composer.tell(crate::shell::i18n::t_args(
+                "agent-quick-task-agent-stopped",
+                &[("reason", why.into())],
+            ));
+        }
+        let launches: Vec<_> = self
+            .agent_actions
+            .values_mut()
+            .flat_map(super::agent_actions::AgentActions::take_launches)
+            .collect();
+        if launches.is_empty() {
+            return ended;
+        }
+        for (room, minted) in launches {
+            let workspace = self.chrome.as_ref().and_then(|chrome| {
+                chrome
+                    .borrow()
+                    .tree()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.room().to_string() == room)
+                    .cloned()
+            });
+            let outcome = workspace
+                .ok_or_else(|| "the task's workspace is gone".to_owned())
+                .and_then(|workspace| minted.launch(&workspace));
+            match outcome {
+                Ok(()) => {
+                    tracing::info!(agent = %minted.agent_id, "launched the agent made for the task");
+                }
+                Err(error) => {
+                    tracing::warn!(agent = %minted.agent_id, %error, "the agent made for the task could not be launched");
+                    self.agent_quick_composer.tell(error);
+                }
+            }
+        }
+        true
+    }
+
     /// Ask agents the work the chrome handed them (a notification, a query
     /// from search), each as an issue in its workspace's Tasks, and open the
     /// issue's page when the ask says so. An agent that is not running is
@@ -336,18 +442,23 @@ impl ShellOverlayHost {
             self.bump_chrome();
         }
         let asks = chrome.borrow_mut().take_agent_asks();
+        // Without a broker nothing can be asked yet: the asks wait for it
+        // with the ones held, and go with the next pump that has one.
+        let Some(broker) = self.shortcut_triggers.broker() else {
+            self.held_agent_asks.hold_all(asks);
+            return false;
+        };
+        let gate_source = ActionSessionSource::new(broker.clone());
+        let now = Instant::now();
+        let ready = self
+            .held_agent_asks
+            .admit(asks, now, |room| gate_source.identity_gate(room, now));
         let mut asked = false;
         let mut starts = Vec::new();
-        for ask in asks {
-            let Some(broker) = self.shortcut_triggers.broker() else {
-                break;
-            };
+        for (ask, identity_revision) in ready {
             let room = ask.room.to_string();
             let live = askable(&broker, &room, &ask.agent);
-            let source = ActionSessionSource::new(broker);
-            let Some(identity_revision) = source.identity_revision(&room) else {
-                continue;
-            };
+            let source = ActionSessionSource::new(broker.clone());
             let person = chrome.borrow().local_user_for_room(&ask.room);
             let owner = ComposerOwner {
                 person,
@@ -359,14 +470,17 @@ impl ShellOverlayHost {
             if !live && actions.start_once(Instant::now()) {
                 starts.push((ask.room, owner.agent.clone()));
             }
-            if actions.open_and_ask(
-                source,
-                &owner,
-                (&ask.title, &ask.body),
-                None,
-                ask.show,
-                ask.quick,
-            ) {
+            if actions
+                .open_and_ask(
+                    source,
+                    &owner,
+                    (&ask.title, &ask.body),
+                    None,
+                    ask.show,
+                    ask.quick,
+                )
+                .is_some()
+            {
                 asked = true;
             } else {
                 tracing::warn!(agent = %owner.agent, "work could not be handed to the agent");
@@ -374,6 +488,70 @@ impl ShellOverlayHost {
         }
         for (room, agent) in starts {
             self.start_agent_for(&room, &agent);
+        }
+        asked | self.ask_door_runs(&chrome)
+    }
+
+    /// Ask Tasks for the run of each agent door connection the person
+    /// admitted: an issue assigned to a task agent minted for it, started
+    /// by the person, as asking a new agent makes one. The connection joins
+    /// the run once it goes; it is never launched. Whether one was asked.
+    fn ask_door_runs(&mut self, chrome: &crate::shell::chrome_state::Chrome) -> bool {
+        let now = Instant::now();
+        let (due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.door_runs_unsettled)
+            .into_iter()
+            .partition(|(at, _)| *at <= now);
+        self.door_runs_unsettled = later;
+        let asks = due
+            .into_iter()
+            .map(|(_, ask)| ask)
+            .chain(chrome.borrow_mut().take_door_runs())
+            .collect::<Vec<_>>();
+        let mut asked = false;
+        for ask in asks {
+            if ask.reply.is_closed() {
+                continue;
+            }
+            let Some(broker) = self.shortcut_triggers.broker() else {
+                let _ = ask
+                    .reply
+                    .send(Err(crate::shell::i18n::t("agent-door-workspace-gone")));
+                continue;
+            };
+            let room = ask.room.to_string();
+            // The same gate as the chord's and the chrome's asks: just changed,
+            // as at a session's start, it is asked once it settles.
+            let gate = ActionSessionSource::new(broker.clone()).identity_gate(&room, now);
+            let identity_revision = match gate {
+                IdentityGate::Settled(revision) => revision,
+                IdentityGate::SettlesAt(at) => {
+                    self.door_runs_unsettled.push((at, ask));
+                    continue;
+                }
+                IdentityGate::Unknown => {
+                    let _ = ask.reply.send(Err(crate::shell::i18n::t(
+                        "agent-door-identity-unavailable",
+                    )));
+                    continue;
+                }
+            };
+            let owner = ComposerOwner {
+                person: ask.person,
+                room,
+                agent: crate::shell::task_agents::NEW_TASK_AGENT.into(),
+                identity_revision,
+            };
+            let reply = super::agent_actions::DoorReply::new(ask.reply);
+            self.agent_actions
+                .entry(owner.clone())
+                .or_default()
+                .open_and_ask_for_door(
+                    ActionSessionSource::new(broker),
+                    &owner,
+                    (&ask.title, &ask.body),
+                    reply,
+                );
+            asked = true;
         }
         asked
     }
@@ -402,7 +580,10 @@ impl ShellOverlayHost {
         }
     }
 
-    fn live_agents(
+    /// The session source for the workspace, and those of its collaborator
+    /// `members` that are admitted (certified under their own key) and hold
+    /// a live task subscription, so a task assigned to them reaches them.
+    pub(super) fn live_agents(
         &self,
         room: &str,
         members: Vec<String>,
@@ -454,9 +635,69 @@ impl ShellOverlayHost {
     }
 }
 
-/// Whether `agent` takes asks in `room`: admitted (certified under its own
-/// key) and holding a live task subscription. The one test both the chord
-/// and the start it waits for use.
+/// Work the chrome handed to agents that cannot be asked yet: its room's
+/// identity on this device has just changed and is not settled, or no
+/// broker is reached yet. It is asked as soon as it can be, never dropped.
+#[derive(Debug, Default)]
+pub(crate) struct HeldAgentAsks {
+    held: Vec<AgentAsk>,
+    /// When the earliest held room's identity settles.
+    until: Option<Instant>,
+}
+
+impl HeldAgentAsks {
+    /// When held work can next be asked; `None` when none waits on a
+    /// moment (none is held, or it waits for the broker).
+    pub(crate) fn due(&self) -> Option<Instant> {
+        self.until
+    }
+
+    /// Hold `asks` as they are, behind the ones already held.
+    pub(crate) fn hold_all(&mut self, asks: Vec<AgentAsk>) {
+        self.held.extend(asks);
+    }
+
+    /// The held asks and `incoming`, in the order they were handed over,
+    /// that can be asked at `now`, each with the identity revision of its
+    /// room (`gate`); the rest are held until their room settles. Work
+    /// whose room's identity cannot be known is said and let go: nothing
+    /// would ever settle it.
+    pub(crate) fn admit(
+        &mut self,
+        incoming: Vec<AgentAsk>,
+        now: Instant,
+        mut gate: impl FnMut(&str) -> IdentityGate,
+    ) -> Vec<(AgentAsk, u64)> {
+        let mut asks = std::mem::take(&mut self.held);
+        asks.extend(incoming);
+        self.until = None;
+        let mut ready = Vec::new();
+        for ask in asks {
+            match gate(&ask.room.to_string()) {
+                IdentityGate::Settled(revision) => ready.push((ask, revision)),
+                IdentityGate::SettlesAt(at) => {
+                    tracing::debug!(
+                        agent = %ask.agent,
+                        wait = ?at.saturating_duration_since(now),
+                        "the work is asked once this device's identity in the room settles"
+                    );
+                    self.until = Some(self.until.map_or(at, |until| until.min(at)));
+                    self.held.push(ask);
+                }
+                IdentityGate::Unknown => tracing::warn!(
+                    agent = %ask.agent,
+                    room = %ask.room,
+                    "the work could not be handed to the agent: this device's identity in the room cannot be read"
+                ),
+            }
+        }
+        ready
+    }
+}
+
+/// Whether the collaborator `agent` takes asks in `room` now: admitted
+/// (certified under its own key) and holding a live task subscription. A new
+/// agent made for a task needs neither: it is launched for its task.
 pub(super) fn askable(broker: &AppActionBroker, room: &str, agent: &str) -> bool {
     broker.agent_is_live_task_capable(room, agent)
         && broker
@@ -490,9 +731,92 @@ fn selection_area(window: Rect, caret: Option<Rect>, area: Option<Rect>) -> (Rec
     (at, at)
 }
 
+/// The active workspace's room, the person in it, and its agent members.
+fn active_room_agents(
+    state: &crate::shell::chrome_state::ChromeState,
+) -> Option<(String, crate::shell::state::UserId, Vec<String>)> {
+    use crate::shell::state::WorkspaceAuthority as _;
+    let tree = state.tree();
+    let workspace = tree.desktop.active_workspace()?;
+    let room = workspace.room().to_string();
+    let members = workspace
+        .agent_members()
+        .into_iter()
+        .map(|(agent, _)| agent)
+        .collect();
+    let person = state.active_local_user_in(&tree);
+    drop(tree);
+    Some((room, person, members))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ask(title: &str) -> AgentAsk {
+        AgentAsk {
+            room: crate::shell::state::RoomId::parse("566e67f1-95b8-482b-badb-14a937a220ef")
+                .expect("a room id"),
+            agent: crate::shell::task_agents::NEW_TASK_AGENT.to_owned(),
+            title: title.to_owned(),
+            body: String::new(),
+            show: false,
+            quick: true,
+        }
+    }
+
+    /// Work the chrome hands over while this device's identity in the room
+    /// settles is asked once it settled, in order, not dropped; and the
+    /// overlay is woken at that moment.
+    #[test]
+    fn work_handed_over_while_the_identity_settles_is_asked_once_it_settled() {
+        let t0 = Instant::now();
+        let settles = t0 + std::time::Duration::from_millis(1_500);
+        let gate = |now: Instant| {
+            move |_: &str| {
+                if now < settles {
+                    IdentityGate::SettlesAt(settles)
+                } else {
+                    IdentityGate::Settled(7)
+                }
+            }
+        };
+        let mut held = HeldAgentAsks::default();
+        let ready = held.admit(vec![ask("What is on today?")], t0, gate(t0));
+        assert!(ready.is_empty(), "nothing is asked before it settles");
+        assert_eq!(held.due(), Some(settles), "woken when it settles");
+        let later = t0 + std::time::Duration::from_millis(200);
+        let ready = held.admit(vec![ask("And tomorrow?")], later, gate(later));
+        assert!(ready.is_empty());
+        assert_eq!(held.due(), Some(settles));
+        let ready = held.admit(Vec::new(), settles, gate(settles));
+        let titles: Vec<_> = ready
+            .iter()
+            .map(|(ask, revision)| (ask.title.as_str(), *revision))
+            .collect();
+        assert_eq!(
+            titles,
+            [("What is on today?", 7), ("And tomorrow?", 7)],
+            "both are asked, in the order they were handed over"
+        );
+        assert_eq!(held.due(), None, "nothing waits any more");
+    }
+
+    #[test]
+    fn work_waits_for_the_broker_and_unreadable_identities_are_let_go() {
+        let mut held = HeldAgentAsks::default();
+        held.hold_all(vec![ask("Before the broker")]);
+        assert_eq!(held.due(), None, "it waits for the broker, not a moment");
+        let ready = held.admit(vec![ask("Unreadable")], Instant::now(), |_| {
+            IdentityGate::Unknown
+        });
+        assert!(ready.is_empty());
+        let ready = held.admit(Vec::new(), Instant::now(), |_| IdentityGate::Settled(1));
+        assert!(
+            ready.is_empty(),
+            "work whose identity cannot be read is let go"
+        );
+    }
 
     #[test]
     fn the_composer_keeps_clear_of_the_line_with_the_caret() {

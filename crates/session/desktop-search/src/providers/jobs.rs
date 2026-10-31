@@ -107,6 +107,10 @@ impl Source for Jobs {
         "app-jobs"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-jobs")
+    }
+
     /// Unasked, what is still running; asked, the jobs whose action or app
     /// is named, finished ones too.
     fn query(&self, needle: &str) -> Vec<Hit> {
@@ -132,6 +136,8 @@ impl Source for Jobs {
             };
             let id = format!("{}{ID_SEPARATOR}{}", job.app, job.invocation);
             hits.push(Hit {
+                faces: Vec::new(),
+                outcome: None,
                 kind: jobs_kind(),
                 provider: self.id().into(),
                 id: format!("job{ID_SEPARATOR}{id}"),
@@ -147,6 +153,8 @@ impl Source for Jobs {
             });
             if job.cancellable && running(&job.update) {
                 hits.push(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: jobs_kind(),
                     provider: self.id().into(),
                     id: format!("cancel{ID_SEPARATOR}{id}"),

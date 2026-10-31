@@ -188,7 +188,14 @@ fn the_prompt_prefix_is_stable_across_turns_and_runs() {
     }
     let bodies = f.script.bodies.lock().unwrap().clone();
     assert_eq!(bodies.len(), 3);
-    let user = |body: &Value| body["messages"][1]["content"].as_str().unwrap().to_owned();
+    let user = |body: &Value| {
+        body["messages"][1]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["text"].as_str().unwrap())
+            .collect::<String>()
+    };
     let first = user(&bodies[0]);
     let second = user(&bodies[1]);
     assert!(!second.contains("Hello chat."), "{second}");
@@ -205,7 +212,7 @@ fn the_prompt_prefix_is_stable_across_turns_and_runs() {
         bodies[2]["messages"].as_array().unwrap()[..2],
         bodies[1]["messages"].as_array().unwrap()[..2]
     );
-    // OpenAI-compatible providers cache by themselves: no marker at all.
+    // The agent places no cache markers of its own: that is the gateway's.
     for body in &bodies {
         assert!(!body.to_string().contains("cache_control"), "{body}");
     }

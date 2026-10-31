@@ -2,6 +2,11 @@
 //! as a page asks it (`crate::rooms::shares`): the same rule every receiver
 //! holds a device's own share to (`tilo_peer_state::room::share`).
 
+#![expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+)]
+
 use serde_json::{Value, json};
 use tilo_user_identity::DeviceCert;
 
@@ -55,7 +60,10 @@ async fn invoke(rooms: &Rooms, device: &DeviceCert, ask: Ask) -> Result<Value, S
                 .await
                 .map_err(|error| error.to_string())?;
             let held = state.lock().await;
-            let member = held.peer().permissions(device.device_public_key, now)?;
+            let member = held
+                .peer()
+                .permissions(device.device_public_key, now)
+                .map_err(|error| error.to_string())?;
             drop(held);
             return Ok(json!({
                 "read": member.allows(&node, tilo_action_policy::ActionKind::Read, now),

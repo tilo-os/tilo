@@ -1,5 +1,5 @@
-//! What an X11 window says about its own program, the focus X gives it and
-//! how dense its display is.
+//! What an X11 window says about its own program, the focus X gives it, how
+//! dense its display is and which pointer it draws.
 //!
 //! An X11 window carries its program's identity as window properties: its
 //! class, the desktop start-up it belongs to and its icons. Those are read
@@ -11,9 +11,9 @@
 //! window that has the session's keyboard focus.
 //!
 //! X clients size themselves from what they are told the display's density
-//! is: [`X11Windows::publish_scale`] says it over XSETTINGS and over the
-//! root window's `RESOURCE_MANAGER`, and Xwayland draws their buffers at the
-//! same scale.
+//! is and draw the pointer they are told to: [`X11Windows::publish_x_hints`]
+//! says both over XSETTINGS and over the root window's `RESOURCE_MANAGER`,
+//! and Xwayland draws their buffers at that same scale.
 
 use std::collections::HashMap;
 
@@ -57,12 +57,12 @@ pub struct Identity {
     /// The desktop start-up that opened it (`_NET_STARTUP_ID`).
     pub startup_id: Option<String>,
     /// The largest of the window's icons, when it has one.
-    pub icon: Option<Icon>,
+    pub icon: Option<X11Icon>,
 }
 
 /// An image an X11 window offers as its icon, in premultiplied RGBA.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Icon {
+pub struct X11Icon {
     /// Width in pixels.
     pub width: u32,
     /// Height in pixels.
@@ -83,6 +83,9 @@ pub(crate) struct X11Windows {
     client: Client,
     /// The scale last published to X clients; `0` until the first time.
     scale: f64,
+    /// The pointer theme last published to X clients; empty until the first
+    /// time.
+    cursor_theme: String,
 }
 
 impl X11Windows {
@@ -102,24 +105,27 @@ impl X11Windows {
             focused: None,
             client,
             scale: 0.0,
+            cursor_theme: String::new(),
         })
     }
 
-    /// Tell X clients how dense the display is, and tell them again whenever
-    /// its densest output changes. GTK sizes fonts from XSETTINGS, while Xft,
-    /// Qt and Xt clients read `Xft.dpi` from the root window's
-    /// `RESOURCE_MANAGER`; both are published so every toolkit sees one
-    /// display. Xwayland draws their buffers at the same scale, so a window
-    /// asked for one logical size covers the pixels the clients drew for it.
-    pub(crate) fn publish_scale(&mut self, state: &mut State) {
+    /// Tell X clients how dense the display is and which pointer theme to
+    /// draw, and tell them again whenever either changes. GTK sizes fonts
+    /// from XSETTINGS, while Xft, Qt and Xt clients read `Xft.dpi`,
+    /// `Xcursor.size` and `Xcursor.theme` from the root window's
+    /// `RESOURCE_MANAGER`; all of them are published so every toolkit sees
+    /// one display, the session's pointer included. Xwayland draws their
+    /// buffers at the same scale, so a window asked for one logical size
+    /// covers the pixels the clients drew for it.
+    pub(crate) fn publish_x_hints(&mut self, state: &mut State) {
         let scale = display_scale(state);
-        if (scale - self.scale).abs() < f64::EPSILON {
+        let theme = state.cursor.theme_name().to_owned();
+        let rescaled = (scale - self.scale).abs() >= f64::EPSILON;
+        if !rescaled && theme == self.cursor_theme {
             return;
         }
         self.scale = scale;
-        if let Some(client) = self.client.get_data::<XWaylandClientData>() {
-            client.compositor_state.set_client_scale(scale);
-        }
+        self.cursor_theme = theme;
         // A screen of `BASE_DPI` at scale 1, and `Xft/DPI` in 1/1024ths.
         #[allow(
             clippy::cast_possible_truncation,
@@ -129,37 +135,46 @@ impl X11Windows {
         // Fonts and cursors are drawn at scale 1's size times the scale, as
         // X clients have no other way to grow them.
         let cursor = dpi.saturating_mul(24).saturating_div(BASE_DPI).max(24);
-        if let Some(wm) = state.xwm.as_mut() {
-            let settings = [
-                (
-                    "Xft/DPI".to_owned(),
-                    Value::Integer(dpi.saturating_mul(1024)),
-                ),
-                (
-                    "Gdk/WindowScalingFactor".to_owned(),
-                    Value::Integer(dpi.saturating_div(BASE_DPI)),
-                ),
-                (
-                    "Gdk/UnscaledDPI".to_owned(),
-                    Value::Integer(BASE_DPI.saturating_mul(1024)),
-                ),
-                ("Xft/Antialias".to_owned(), Value::Integer(1)),
-                ("Xft/Hinting".to_owned(), Value::Integer(1)),
-                (
-                    "Xft/HintStyle".to_owned(),
-                    Value::String("hintslight".to_owned()),
-                ),
-                ("Xft/RGBA".to_owned(), Value::String("rgb".to_owned())),
-            ];
-            if let Err(error) = wm.set_xsettings(settings.into_iter()) {
-                tracing::warn!(%error, "X clients were told no scale");
+        if rescaled {
+            if let Some(client) = self.client.get_data::<XWaylandClientData>() {
+                client.compositor_state.set_client_scale(scale);
+            }
+            if let Some(wm) = state.xwm.as_mut() {
+                let settings = [
+                    (
+                        "Xft/DPI".to_owned(),
+                        Value::Integer(dpi.saturating_mul(1024)),
+                    ),
+                    (
+                        "Gdk/WindowScalingFactor".to_owned(),
+                        Value::Integer(dpi.saturating_div(BASE_DPI)),
+                    ),
+                    (
+                        "Gdk/UnscaledDPI".to_owned(),
+                        Value::Integer(BASE_DPI.saturating_mul(1024)),
+                    ),
+                    ("Xft/Antialias".to_owned(), Value::Integer(1)),
+                    ("Xft/Hinting".to_owned(), Value::Integer(1)),
+                    (
+                        "Xft/HintStyle".to_owned(),
+                        Value::String("hintslight".to_owned()),
+                    ),
+                    ("Xft/RGBA".to_owned(), Value::String("rgb".to_owned())),
+                ];
+                if let Err(error) = wm.set_xsettings(settings.into_iter()) {
+                    tracing::warn!(%error, "X clients were told no scale");
+                }
             }
         }
         let dpi = dpi.to_string();
         let cursor = cursor.to_string();
-        let values = [("Xft.dpi", dpi.as_str()), ("Xcursor.size", cursor.as_str())];
+        let values = [
+            ("Xft.dpi", dpi.as_str()),
+            ("Xcursor.size", cursor.as_str()),
+            ("Xcursor.theme", self.cursor_theme.as_str()),
+        ];
         if let Err(error) = set_resources(&self.connection, &values) {
-            tracing::warn!(%error, "X clients were told no font size");
+            tracing::warn!(%error, "X clients were told no font size or pointer theme");
         }
     }
 
@@ -174,6 +189,15 @@ impl X11Windows {
             icon: self.icon(id),
         };
         self.identities.insert(id, identity);
+    }
+
+    /// The icon `window` showed when it was last read.
+    pub(crate) fn window_icon(
+        &self,
+        window: X11Window,
+    ) -> Option<std::sync::Arc<crate::toplevel_icon::WindowIcon>> {
+        let icon = self.identities.get(&window)?.icon.as_ref()?;
+        Some(crate::toplevel_icon::x11_icon(icon))
     }
 
     /// Drop what was learned about `window`.
@@ -222,7 +246,7 @@ impl X11Windows {
     }
 
     /// The window's largest usable icon from `_NET_WM_ICON`.
-    fn icon(&self, window: X11Window) -> Option<Icon> {
+    fn icon(&self, window: X11Window) -> Option<X11Icon> {
         let reply = self
             .connection
             .get_property(
@@ -243,8 +267,8 @@ impl X11Windows {
 
 /// The largest square icon in a `_NET_WM_ICON` value that is small enough to
 /// keep, as premultiplied RGBA.
-fn icon(data: &[u32]) -> Option<Icon> {
-    let mut best: Option<Icon> = None;
+fn icon(data: &[u32]) -> Option<X11Icon> {
+    let mut best: Option<X11Icon> = None;
     let mut offset = 0_usize;
     while let Some(header) = data.get(offset..offset.checked_add(2)?) {
         let &[width, height] = header else {
@@ -264,7 +288,7 @@ fn icon(data: &[u32]) -> Option<Icon> {
         if best.as_ref().is_some_and(|best| best.width >= width) {
             continue;
         }
-        best = Some(Icon {
+        best = Some(X11Icon {
             width,
             height,
             pixels: premultiplied(pixels),
@@ -413,6 +437,15 @@ mod tests {
         assert_eq!(
             with_resource("Xcursor.theme:\tAdwaita\nXft.dpi:\t96", "Xft.dpi", "192"),
             "Xcursor.theme:\tAdwaita\nXft.dpi:\t192\n"
+        );
+        assert_eq!(
+            with_resource(
+                "Xcursor.theme:\tAdwaita\nXft.dpi:\t96",
+                "Xcursor.theme",
+                "Bibata-Modern-Ice"
+            ),
+            "Xft.dpi:\t96\nXcursor.theme:\tBibata-Modern-Ice\n",
+            "the pointer theme X clients draw replaces the one they drew"
         );
         assert_eq!(with_resource("", "Xft.dpi", "192"), "Xft.dpi:\t192\n");
     }

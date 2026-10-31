@@ -10,7 +10,8 @@
     clippy::indexing_slicing,
     clippy::panic,
     clippy::arithmetic_side_effects,
-    reason = "a failed step in a test is the assertion"
+    clippy::significant_drop_tightening,
+    reason = "a failed step in a test is the assertion, and the session outlives every call"
 )]
 
 use std::path::PathBuf;

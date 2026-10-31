@@ -70,7 +70,11 @@ fn theme_edit(
             if *sent {
                 cx.submit(Studio::DELETE.with(Id::from_raw(theme.clone())));
             }
-            crate::view::open(page, nav_pane, notice, crate::view::Page::Gallery);
+            // The window leaves the theme it was showing; one deleted from
+            // the list stays where the person is.
+            if page.get().theme() == Some(theme.as_str()) {
+                crate::view::open(page, nav_pane, notice, crate::view::Page::Gallery);
+            }
             Some(Ok(Effected::done()))
         }
         _ => None,

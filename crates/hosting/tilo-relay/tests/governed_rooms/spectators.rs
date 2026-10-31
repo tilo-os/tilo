@@ -49,7 +49,7 @@ async fn join(
         .bootstrap;
     let mut replica = StatePeer::new(
         &bootstrap.room,
-        bootstrap.authority.clone(),
+        bootstrap.host.clone(),
         bootstrap.certified_roster.clone(),
         RevocationList::new(),
         SystemTime::now(),
@@ -59,7 +59,7 @@ async fn join(
     for bytes in &bootstrap.governance_messages {
         replica
             .receive_from(
-                TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key),
+                TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key),
                 postcard::from_bytes(bytes).unwrap(),
                 SystemTime::now(),
             )

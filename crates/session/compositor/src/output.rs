@@ -151,6 +151,19 @@ pub(crate) fn apply_placement(state: &mut State, output: &Output, change: &Outpu
     }
 }
 
+/// An output's width in the logical layout: its mode over its scale,
+/// turned.
+pub(crate) fn logical_width(output: &Output) -> i32 {
+    let size = output
+        .current_mode()
+        .map(|mode| output.current_transform().transform_size(mode.size))
+        .unwrap_or_default();
+    size.to_f64()
+        .to_logical(output.current_scale().fractional_scale())
+        .to_i32_round::<i32>()
+        .w
+}
+
 /// Where outputs go in the logical layout, in the order given: an output
 /// named in `fixed` at its place, the others packed left to right (top
 /// edge at 0) after every fixed one, so outputs that come and go leave no
@@ -189,8 +202,9 @@ pub struct OutputConfig {
     pub size: (i32, i32),
     /// The scale clients render at (`1.0`, `1.5`, `2.0`).
     pub scale: f64,
-    /// The top-left corner in the logical layout.
-    pub position: (i32, i32),
+    /// The top-left corner in the logical layout, when the caller places
+    /// it; `None` puts it beside the outputs already there.
+    pub position: Option<(i32, i32)>,
     /// The refresh rate in millihertz.
     pub refresh_mhz: i32,
 }
@@ -202,7 +216,7 @@ impl OutputConfig {
             name: name.into(),
             size: (width, height),
             scale: 1.0,
-            position: (0, 0),
+            position: None,
             refresh_mhz: 60_000,
         }
     }
@@ -217,16 +231,18 @@ impl OutputConfig {
     /// The same output at another place in the logical layout.
     #[must_use]
     pub const fn at(mut self, x: i32, y: i32) -> Self {
-        self.position = (x, y);
+        self.position = Some((x, y));
         self
     }
 
-    pub(crate) fn location(&self) -> Point<i32, Logical> {
-        Point::from(self.position)
-    }
-
-    /// The output, advertised to clients.
-    pub(crate) fn create(&self, display: &DisplayHandle, model: &str) -> Output {
+    /// The output, advertised to clients, at `location` until the layout
+    /// places it.
+    pub(crate) fn create(
+        &self,
+        display: &DisplayHandle,
+        model: &str,
+        location: Point<i32, Logical>,
+    ) -> Output {
         let output = Output::new(
             self.name.clone(),
             PhysicalProperties {
@@ -244,7 +260,7 @@ impl OutputConfig {
             Some(mode),
             Some(Transform::Normal),
             Some(Scale::Fractional(self.scale)),
-            Some(self.location()),
+            Some(location),
         );
         output.set_preferred(mode);
         advertise(&output, display);

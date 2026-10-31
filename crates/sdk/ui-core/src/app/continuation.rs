@@ -309,17 +309,15 @@ pub fn validate_generic_continuation_metadata(bytes: &[u8]) -> bool {
 }
 
 fn continuation_publication(
-    app_id: String,
     metadata: Option<&crate::collaboration::ContinuationMetadata>,
     had_previous: bool,
 ) -> Option<CollabRequest> {
     match metadata {
         Some(metadata) => Some(CollabRequest::ReportContinuation {
-            app_id,
             schema_version: metadata.schema_version,
             metadata: metadata.bytes.clone(),
         }),
-        None if had_previous => Some(CollabRequest::ClearContinuation { app_id }),
+        None if had_previous => Some(CollabRequest::ClearContinuation),
         None => None,
     }
 }
@@ -338,11 +336,11 @@ impl App {
         if !self.collaboration.manager.is_connected() || self.continuation.pending_view.is_some() {
             return;
         }
-        let Some(route) = self.private_continuity_route() else {
+        if self.private_continuity_route().is_none() {
             return;
-        };
+        }
         let protected = self.accessibility.focus_trap_active
-            || self.wants_capture_protection()
+            || self.withholds_captures()
             || self.continuation.retired;
         let metadata = if protected {
             None
@@ -397,7 +395,6 @@ impl App {
             return;
         }
         if let Some(request) = continuation_publication(
-            route.app_id,
             metadata.as_ref(),
             self.continuation.last_published.is_some()
                 || (protected && !self.continuation.publication_initialized),
@@ -517,7 +514,7 @@ impl App {
         // the original route witness before applying any deferred position.
         if self.private_continuity_route().is_none()
             || self.accessibility.focus_trap_active
-            || self.wants_capture_protection()
+            || self.withholds_captures()
             || self.continuation.retired
         {
             self.continuation.owner_view.pending = None;

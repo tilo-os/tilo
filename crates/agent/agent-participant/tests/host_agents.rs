@@ -56,7 +56,8 @@ use tilo_actions::remote::{
     RemoteActionTarget,
 };
 use tilo_agent_participant::{AgentHost, ModelChoice, Replica, Seed};
-use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerEvents, PeerHandle};
+use tilo_browser_peer::{Host, PeerEvent, PeerEvents, PeerHandle};
+use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};

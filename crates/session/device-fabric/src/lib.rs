@@ -14,11 +14,13 @@ pub mod notification;
 pub mod random;
 pub mod realtime_session;
 pub mod remote_capture;
+pub mod runtime;
 pub mod secrets;
 pub mod spatial_calibration;
 pub mod speaker_group;
 pub mod tethering;
 pub mod unlock;
+pub mod wake;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 

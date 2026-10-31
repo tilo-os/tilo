@@ -13,7 +13,8 @@ use std::rc::Rc;
 use tilo_sheets::{Presentation, Seat};
 use ui::vello::kurbo::Rect;
 use ui::widget::{
-    CaptureDestination, CapturePreview, CaptureTarget, RegionAnchor, ScreenshotKept, SourceMode,
+    CaptureDestination, CapturePreview, CaptureTarget, RegionAnchor, ScreenshotKept,
+    ScreenshotSendDevice, SourceMode,
 };
 
 /// How a capture is made: what of the desktop, and which parts of it.
@@ -70,17 +71,97 @@ pub struct Recording {
     pub paused: bool,
 }
 
+/// What became of sending the last screenshot to one of the person's other
+/// devices.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sent {
+    /// The device it went to, as the person sees it named.
+    pub device: String,
+    /// Why it was not offered, when it was not.
+    pub refused: Option<Refusal>,
+}
+
+impl Sent {
+    /// Offered to `device`: its person accepts it there.
+    #[must_use]
+    pub fn offered(device: String) -> Self {
+        Self {
+            device,
+            refused: None,
+        }
+    }
+
+    /// Nothing was offered to `device`, and why.
+    #[must_use]
+    pub fn refused(device: String, refused: Refusal) -> Self {
+        Self {
+            device,
+            refused: Some(refused),
+        }
+    }
+}
+
+/// Why a screenshot did not go to the device it was sent to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// This session runs on no device fabric, so it reaches none of the
+    /// person's other devices.
+    SyncOff,
+    /// The device stopped being one this session can reach before the send.
+    Offline,
+    /// The screenshot's file is no longer where the studio wrote it.
+    Gone { path: PathBuf },
+    /// Nothing was captured to send.
+    NotKept,
+    /// The file has no folder to be read from.
+    NoFolder { path: PathBuf },
+    /// Larger than one Nearby send carries.
+    TooLarge { bytes: u64, limit: u64 },
+    /// The device's fabric or spool would not take it, in its own words.
+    Refused(String),
+}
+
+/// What an app asked the person to select, when it asked for something only
+/// they can name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Selection {
+    /// One window the person picks.
+    Window,
+    /// An area the person draws.
+    Area,
+}
+
+impl Selection {
+    /// What the studio captures for it.
+    #[must_use]
+    pub const fn source(self) -> SourceMode {
+        match self {
+            Self::Window => SourceMode::Window,
+            Self::Area => SourceMode::Region,
+        }
+    }
+}
+
 /// What the session hands the studio: what can be captured, and what became
 /// of what was.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scene {
     /// The windows a capture may take, focused first.
     pub windows: Vec<CaptureTarget>,
+    /// What an app asked the person to select: the bar comes up choosing
+    /// exactly that, and settles the app's request once they took it.
+    pub asking: Option<Selection>,
     /// Whether the machine's own sound and a microphone may be taken.
     pub system_audio: bool,
     pub microphone: bool,
     /// The last screenshot, while its receipt shows.
     pub kept: Option<Kept>,
+    /// The person's other devices that are here now: who a screenshot may be
+    /// sent to, and what became of the last send.
+    pub devices: Vec<ScreenshotSendDevice>,
+    /// What became of sending the last screenshot to a device, while its
+    /// receipt shows that.
+    pub sent: Option<Sent>,
     /// The recording that runs, and whether it is paused.
     pub recording: Option<Recording>,
     /// Seconds of the last half minute kept ready to clip, while that runs.
@@ -126,6 +207,9 @@ pub enum Ask {
     RevealLast,
     /// Copy the last screenshot to the clipboard again.
     CopyLast,
+    /// Offer the last screenshot to one of the person's other devices, by its
+    /// [`Scene::devices`] id.
+    SendLastTo(String),
 }
 
 #[derive(Default)]
@@ -259,6 +343,20 @@ mod tests {
         assert!(link.has_asks());
         assert_eq!(link.take_asks(), [Ask::SaveReplay, Ask::StopRecording]);
         assert!(!link.has_asks());
+    }
+
+    #[test]
+    fn what_the_session_asks_the_person_to_select_wakes_the_studio_for_it() {
+        let link = Link::new();
+        link.publish(Scene::default());
+        link.publish(Scene {
+            asking: Some(Selection::Area),
+            ..Scene::default()
+        });
+        assert_eq!(link.generation(), 1, "the bar comes up asking for an area");
+        assert_eq!(link.scene().asking, Some(Selection::Area));
+        assert_eq!(Selection::Area.source(), SourceMode::Region);
+        assert_eq!(Selection::Window.source(), SourceMode::Window);
     }
 
     #[test]

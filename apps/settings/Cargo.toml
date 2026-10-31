@@ -74,6 +74,9 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # `shell` and the Settings app drive the same hardware bindings without
 # this app depending on the compositor crate.
 os-actions = { path = "../../crates/system/os-actions" }
+# The session's `power:battery` resource: the pack's charge limit is read and
+# set through the service that owns it, not by the app itself.
+tilo-session-power = { path = "../../crates/session/power-service", default-features = false }
 # Remembered NTFS drives: the mount service's protocol (panes::drives).
 tilo-ntfs-mount = { path = "../../crates/system/ntfs-mount", default-features = false }
 # Public identity summaries, as the host's identity actions answer them. The
@@ -95,10 +98,13 @@ account-custody = { path = "../../crates/system/account-custody" }
 # Provider metadata is shared with the headless agent runner. This dependency
 # contains no HTTP client and no secret values.
 agent-provider-config = { path = "../../crates/agent/provider-config", features = ["model"] }
-# The audio graph client: enumerate the PipeWire/WirePlumber node graph and
-# route per-application streams. The Sound pane drives audio routing
-# through it (default features only — no gstreamer decode stack pulled in).
+# The bounded audio diagnostics the Sound pane starts (a channel test, a
+# microphone and an output meter), and the event-sound themes it lists.
 media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
+# The session's `sound` resource: the reading the Sound pane shows and the
+# actions its controls take. Without the `service` feature: the pane needs
+# the resource's spec and types, the session runs the service.
+tilo-audio-service = { path = "../../crates/session/audio-service", default-features = false }
 # Trait passes (`sync`, `build_layout`, `handle_event`) mention these crates
 # in their signatures; we re-export them at the same versions the sibling
 # native apps pin so a shared `target/` cache hits across crates.

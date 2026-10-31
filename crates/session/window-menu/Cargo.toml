@@ -1,0 +1,28 @@
+[package]
+name = "tilo-window-menu"
+description = "The menu of the window in front as a view of the session's window-menu resource: the rows the desk offers, drawn as a context menu, and the verbs that open, close and choose from it."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tilo-window-menu"
+path = "src/main.rs"
+
+[dependencies]
+# A framework app: the view's resource and surface, and the session's own
+# published resource read through it.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+vello.workspace = true
+winit.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
+
+[lints]
+workspace = true

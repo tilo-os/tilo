@@ -51,11 +51,11 @@ lazy-highlight = ["dep:tilo-engine-loader"]
 # (default: none). Settings are not gated here: `settings-store` reads
 # `settings.json` unless the host installs a `settings_store::SettingsSource`.
 local-daemons = ["dep:runtime-portal", "dep:runtime-identity", "collaboration/local-daemons"]
-# The collaboration manager's built-in transport: the Tilo collab broker's
-# Cap'n Proto SDK on a worker thread (`collaboration::broker`). Without it the
+# The collaboration manager's built-in transport: the collaboration wire's
+# client on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
 # `CollaborationManager::new` starts disabled.
-broker-transport = ["local-daemons", "collaboration/broker-transport", "runtime-collab/client", "dep:capnp", "dep:capnp-rpc", "tokio/full"]
+broker-transport = ["local-daemons", "collaboration/broker-transport", "runtime-collab/client", "tokio/full"]
 # An integration test links the library once, without its `cfg(test)`: the
 # fixtures a test draws with ([`headless::HeadlessApp`], the pinned font
 # catalogue) come with it.
@@ -160,6 +160,8 @@ fnv.workspace = true
 # native backends. Re-exported under the toolkit's own module paths.
 tilo-host = { version = "0.1.0", path = "../tilo-host" }
 tilo-ui-paint = { version = "0.1.0", path = "../ui-paint" }
+# The part painter interface every painter set draws through (`part_paint`).
+tilo-theme-sdk = { version = "0.1.0", path = "../theme-sdk" }
 # The emoji catalogue the toolkit's picker, reaction strip and text fields
 # read: a text field resolves `:name:` without the app naming a catalogue
 # crate, and every app's field offers emoji by default. A workspace's own
@@ -217,15 +219,13 @@ tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-me
 tilo-content-blocker = { version = "0.1.0", path = "../../browser/content-blocker", optional = true }
 # Opens the engine libraries the toolkit uses on first use (`lazy-*`).
 tilo-engine-loader = { version = "0.1.0", path = "../../runtime/engine-loader", optional = true }
-# runtime-collab is the Tilo collab broker Cap'n Proto SDK. Its vocabulary
-# types are part of `CollabRequest` / `CollabEvent`; the RPC client behind
+# runtime-collab is the collaboration wire and its client. Its vocabulary
+# types are part of `CollabRequest` / `CollabEvent`; the client behind
 # them is only needed by the `broker-transport` feature.
 runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false }
 # The collab client without the toolkit: record identities, the app surface,
 # the local identity seam and local action reports, under their toolkit paths.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
-capnp = { workspace = true, optional = true }
-capnp-rpc = { workspace = true, optional = true }
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", optional = true }
 runtime-identity = { package = "tilo-identity-client", version = "0.1.0", path = "../../runtime/tilo-identity-client", optional = true }
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
@@ -324,7 +324,7 @@ tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 # search layer.
 tilo-search = { version = "0.1.0", path = "../search" }
 # The Tilo ACTION model: serializable, replayable CRDT-mutation actions + the
-# nested Resource tree apps publish. `command_palette` + `action_palette` +
+# nested Resource tree apps publish. `action_palette` +
 # the `App` resource-collection hook build on it to make Ctrl+K scope to the
 # focused app instance's open resources and dispatch their exported actions.
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
@@ -418,17 +418,13 @@ tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony", feature
 threshold-identity = { path = "../../collab/threshold-identity" }
 # The scoped chooser and URI fixtures the invocation-scope tests select.
 tilo-host = { path = "../tilo-host", features = ["test-support"] }
-# The `collaboration` shim tests stand up a fake capnp broker on one end
-# of a `UnixStream::pair()` and drive `CollaborationManager` against it.
-# Same pin runtime-collab tests use.
-capnp.workspace = true
 # The settings capability the shell hands an app, served by the fake broker.
 runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-host"] }
 
 [[test]]
 name = "it"
 path = "tests/it.rs"
-# The shared harness stands up in-process Cap'n Proto brokers.
+# The shared harness stands up in-process collaboration hosts.
 required-features = ["broker-transport"]
 
 [[example]]

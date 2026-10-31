@@ -278,7 +278,7 @@ fn mint_with_nonce(
         request: Some(RequestBinding {
             digest: exact_intent
                 .get("request")
-                .map(crate::collab_broker_capnp::admission_request_digest),
+                .map(crate::collab_app_broker::admission_request_digest),
         }),
     };
     let intent_commitment = opening.commitment();
@@ -629,7 +629,7 @@ mod tests {
             let evidence = evidence_for(&intent);
             let digest = intent
                 .get("request")
-                .map(crate::collab_broker_capnp::admission_request_digest);
+                .map(crate::collab_app_broker::admission_request_digest);
             evidence.validate_request_digest(digest).unwrap();
             assert!(evidence.validate_request_digest(Some([0; 32])).is_err());
             if digest.is_some() {

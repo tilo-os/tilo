@@ -106,6 +106,12 @@ pub struct Workspace {
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
     #[serde(default)]
     pub shared_surfaces: SharedSurfaces,
+    /// The windows closed here and not reopened, newest last
+    /// ([`crate::closed_tabs`]). This device's own history, so it is written
+    /// to no document and projected into no room: a close is undone where
+    /// the person closed it, with the app this device opens.
+    #[serde(skip)]
+    pub(crate) closed_tabs: crate::closed_tabs::ClosedTabs,
     /// The fields a stored workspace holds that this one does not read (the
     /// shell engine's tasks among them), kept exactly as they were: saving
     /// the workspace again leaves them in place, and nothing is migrated.
@@ -185,6 +191,7 @@ impl From<StoredWorkspace> for Workspace {
             schedule_claims: stored.schedule_claims,
             bots: Vec::new(),
             shared_surfaces: stored.shared_surfaces,
+            closed_tabs: crate::closed_tabs::ClosedTabs::default(),
             retired_fields,
         }
     }
@@ -377,6 +384,38 @@ impl Workspace {
             .iter()
             .filter(|c| c.subject == want && c.effect == Effect::Grant && c.is_live_at(live_at))
             .collect()
+    }
+
+    /// Whether app `app_id` may act on this desktop beyond its own window at
+    /// `now`: a live [`Capability::DesktopControl`] grant of this
+    /// workspace's.
+    pub fn holds_desktop_control_at(&self, app_id: &str, now: u64) -> bool {
+        let want = SandboxSubject::app(app_id);
+        self.sandbox.iter().any(|cap| {
+            cap.subject == want
+                && cap.effect == Effect::Grant
+                && cap.is_live_at(Some(now))
+                && matches!(
+                    Capability::from_capability(cap),
+                    Some(Capability::DesktopControl { .. })
+                )
+        })
+    }
+
+    /// Take back app `app_id`'s desktop control: every
+    /// [`Capability::DesktopControl`] grant of its, whatever its lifetime.
+    /// Whether there was one.
+    pub fn stop_desktop_control(&mut self, app_id: &str) -> bool {
+        let want = SandboxSubject::app(app_id);
+        !self
+            .revoke_sandbox_matching(|cap| {
+                cap.subject == want
+                    && matches!(
+                        Capability::from_capability(cap),
+                        Some(Capability::DesktopControl { .. })
+                    )
+            })
+            .is_empty()
     }
 
     /// A **snapshot** of app grants in the portal's `Capability` shape.
@@ -1103,6 +1142,7 @@ impl Workspace {
             schedule_claims: Vec::new(),
             bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
+            closed_tabs: crate::closed_tabs::ClosedTabs::default(),
             retired_fields: serde_json::Map::new(),
         }
     }
@@ -1135,6 +1175,7 @@ impl Workspace {
             schedule_claims: _,
             bots,
             shared_surfaces,
+            closed_tabs: _,
             retired_fields: _,
         } = self;
         Self {
@@ -1156,6 +1197,7 @@ impl Workspace {
             schedule_claims: Vec::new(),
             bots: bots.clone(),
             shared_surfaces: shared_surfaces.clone(),
+            closed_tabs: crate::closed_tabs::ClosedTabs::default(),
             retired_fields: serde_json::Map::new(),
         }
     }
@@ -1219,6 +1261,7 @@ impl Default for Workspace {
             schedule_claims: Vec::new(),
             bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
+            closed_tabs: crate::closed_tabs::ClosedTabs::default(),
             retired_fields: serde_json::Map::new(),
         }
     }

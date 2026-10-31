@@ -487,7 +487,7 @@ pub struct ReplayBuild {
     shell_selected: bool,
     skip: Option<ResumeSkip>,
     /// Replay every record, on-demand ones and earlier parts of chains
-    /// included: a peer relay holding the room keeps all of it.
+    /// included: a host attached to the room keeps all of it.
     every_record: bool,
     /// The frames listed to pin when the capture is prepared
     /// (`capture.manifest`): the retained frames, with the lease that keeps

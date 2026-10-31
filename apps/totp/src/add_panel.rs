@@ -523,7 +523,7 @@ fn text_field(
     }
     if let Some(msg) = on_change {
         let queue = Rc::clone(sheet);
-        input = input.on_change(move |_| queue.borrow_mut().queue.push_back(msg));
+        input = input.on_change_view(move |_| queue.borrow_mut().queue.push_back(msg));
     }
     let mut field = Field::new(label, input).with_label_placement(Some(LabelPlacement::Above));
     if let Some(problem) = sheet.borrow().problem.as_ref().filter(|p| p.field == id) {

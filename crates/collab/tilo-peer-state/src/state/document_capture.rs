@@ -13,10 +13,10 @@ pub type OpenSealed<'a> = &'a mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String
 
 /// Why a record was not captured. These are observations; the embedding
 /// owner authenticates caller and time.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum PeerDocumentReadError {
     /// The reader is no current member of the room.
-    Membership(String),
+    Membership(crate::state::MembershipError),
     Denied,
     Missing,
     Encrypted,

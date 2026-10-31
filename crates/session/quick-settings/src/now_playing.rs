@@ -1,8 +1,10 @@
 //! What plays, as the desktop reads it: the player in front and its song,
-//! the other players one can switch to, and where its sound can go. The
-//! panel shows it as its now-playing card; the desktop sends each command to
-//! exactly the player it names.
+//! the other players one can switch to, where its sound can go, and what
+//! another of the person's devices hands this one. The panel shows it as its
+//! now-playing card; the desktop sends each command to exactly the player it
+//! names.
 
+use media::handoff::HandoffSource;
 use ui::widget::TransportArt;
 
 /// The player the card steers, and what else it can choose from.
@@ -32,6 +34,43 @@ pub struct NowPlaying {
     pub outputs: Vec<MediaOutput>,
     /// The speaker group it plays on, and how that stands.
     pub speakers: Option<String>,
+    /// The session another of the person's devices hands this one, which
+    /// the card offers to continue here.
+    pub offer: Option<MediaOffer>,
+}
+
+/// A session another device hands this one, at the point it stopped.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MediaOffer {
+    /// The handoff's request, 32 hex digits: the card names it when it asks
+    /// to continue it here.
+    pub request_id: String,
+    /// The app that plays it, by package id.
+    pub package_id: String,
+    pub title: String,
+    /// The device it comes from, as the person knows it.
+    pub source_label: String,
+    /// What it plays, as the locator this device resumes.
+    pub source: HandoffSource,
+    /// Where it stopped, in milliseconds.
+    pub position_ms: f64,
+    pub playing: bool,
+}
+
+/// What plays here, as another of the person's devices continues it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayingSource {
+    /// The session the hand-over names: the player and its source.
+    pub session_id: String,
+    /// The app that plays it, by package id.
+    pub app_id: String,
+    pub title: String,
+    /// The stream it plays from.
+    pub url: String,
+    /// Where it is, in milliseconds.
+    pub position_ms: u64,
+    /// It plays rather than stands paused.
+    pub playing: bool,
 }
 
 /// One running player.
@@ -92,6 +131,7 @@ impl NowPlaying {
                 },
             ],
             speakers: None,
+            offer: None,
         }
     }
 

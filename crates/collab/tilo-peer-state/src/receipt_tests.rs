@@ -156,9 +156,7 @@ fn room_keeping(role: MemberRole, units: &[&str]) -> (StatePeer, SigningKey, Dev
         InviteGrant {
             workspace_id: 7,
             room: ROOM.into(),
-            authority: owner.clone(),
             issuer: owner,
-            delegation: None,
             role,
             nonce: [43; 16],
             recipient_user_public_key: Some(guest.user_public_key),

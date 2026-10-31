@@ -1192,6 +1192,10 @@ impl Session {
             ("USER", user.name.clone()),
             ("LOGNAME", user.name.clone()),
             (
+                "XDG_RUNTIME_DIR",
+                user.runtime_dir().to_string_lossy().into_owned(),
+            ),
+            (
                 "SHELL",
                 crate::shell_host::guest_shell_path()
                     .to_string_lossy()

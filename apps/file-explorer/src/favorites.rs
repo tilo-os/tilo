@@ -163,6 +163,26 @@ pub fn reorder(favs: &mut Vec<Favorite>, from: usize, to: usize) {
     favs.insert(to, item);
 }
 
+/// The move a drop of the favourite at `source` on `target` asks for, as
+/// `(from, to)` indices for [`reorder`]: `before` the target row or after it.
+/// `None` when either is not a favourite, or when the drop leaves the order
+/// as it is.
+pub fn move_for(
+    favs: &[Favorite],
+    source: &Path,
+    target: &Path,
+    before: bool,
+) -> Option<(usize, usize)> {
+    let index_of = |path: &Path| favs.iter().position(|favourite| favourite.path == path);
+    let from = index_of(source)?;
+    let target = index_of(target)?;
+    // The target index is read before the dragged row leaves its slot, so a
+    // move down lands one place earlier than the slot named.
+    let slot = if before { target } else { target + 1 };
+    let to = if from < slot { slot - 1 } else { slot };
+    (from != to).then_some((from, to))
+}
+
 /// Append `path` as a favourite unless it is already present. Returns whether
 /// it was added.
 pub fn add(favs: &mut Vec<Favorite>, path: PathBuf, home: &Path, dirs: &UserDirs) -> bool {

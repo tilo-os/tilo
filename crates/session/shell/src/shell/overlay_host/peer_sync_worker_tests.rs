@@ -224,7 +224,7 @@ fn redeeming_an_invitation_opens_the_owner_on_the_worker_not_the_loop() {
     // An invitation that verifies: text that does not is refused before
     // any workspace is made for it, without the owner.
     let invitation = tilo_peer_state::join::encode_invitation_text(
-        tilo_joined_room::testing::raw_fixture()
+        tilo_peer_state::owner::testing::raw_fixture()
             .0
             .verified_join()
             .signed_invitation(),

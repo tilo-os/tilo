@@ -4,6 +4,7 @@
 //! Started by default in normal sessions; recovery sessions may disable it.
 
 mod boot_join;
+mod channel_keys;
 mod community;
 pub(crate) use community::configured_site as configured_community_site;
 pub use directory::{DirectoryListing, Publication};
@@ -16,7 +17,7 @@ mod display_input_tests;
 mod display_observation_refresh_tests;
 mod display_observations;
 mod governance_requests;
-mod governor_actions;
+mod hosted_actions;
 mod hosted_sites;
 mod room_rosters;
 mod room_window_carriers;
@@ -914,6 +915,17 @@ const SESSION_REACH_RECHECK: std::time::Duration = std::time::Duration::from_sec
 /// relay to name in it, when the relays were not already running: about
 /// what a net report and a relay handshake take.
 const INVITE_RELAY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What the issuer answers when the workspace's policy does not let this
+/// person invite into it.
+const INVITE_REFUSED: &str = "you do not have permission to invite people to this workspace";
+/// What the issuer answers when another person's own device governs the
+/// room: only that device signs an invitation it will honour.
+const INVITE_OWNER_ONLY: &str = "only the governing workspace administrator can create invitations here; \
+     ask the workspace owner to invite this person";
+/// What the issuer answers while the room's host is not reached yet.
+const INVITE_HOST_UNREACHED: &str =
+    "this workspace is still connecting to its owner; try again in a moment";
 /// The longest a shell goes without that pull while nothing changes: the
 /// safety net under the repair pull, not a heartbeat. An idle, converged
 /// desktop asks once per this long.
@@ -1142,6 +1154,10 @@ pub struct ShellNetwork {
     relay_rooms: relay_rooms::State,
     /// This device's own room host and the workspaces placed on it.
     embedded_host: embedded_host::State,
+    /// This device's channel service, as this network's broker opens it: the
+    /// room host this network runs takes the keys of the channels it takes
+    /// part in from here ([`Self::channel_keys`]).
+    channel_keys: crate::shell::channel_encryption::ChannelKeyProvider,
     /// The rooms held through a site, reached over their host's HTTPS routes.
     hosted_sites: hosted_sites::State,
     /// Pairing links this computer made, and the new devices asking.
@@ -2045,6 +2061,7 @@ impl ShellNetwork {
             room_window_carriers: room_window_carriers::State::default(),
             relay_rooms: relay_rooms::State::default(),
             embedded_host: embedded_host::State::new(local_host),
+            channel_keys: crate::shell::channel_encryption::ChannelKeyProvider::default(),
             hosted_sites: hosted_sites::State::open(state_dir, readiness),
             device_approvals: device_approvals::State::default(),
             record_content: record_content::State::default(),
@@ -3805,51 +3822,6 @@ impl ShellNetwork {
         Ok((endpoint, shared, topic))
     }
 
-    /// Invoke an application's action on another of this device's person's
-    /// own devices for `person`, and follow it there: the answer is the
-    /// other device's outcome, when it reports one. Nothing waits for it.
-    ///
-    /// Only the person this device belongs to reaches their devices, and
-    /// only a device that is enrolled, authenticated to this shell as one of
-    /// theirs, unexpired and unrevoked, and present in a workspace both
-    /// share. The other device decides the request for this device as its
-    /// transport authenticates it, as it does any request of the person's.
-    ///
-    /// # Errors
-    ///
-    /// Why the invocation cannot be sent.
-    pub fn invoke_own_device(
-        self: &Arc<Self>,
-        person: &str,
-        checked: &tilo_actions::remote::own_device::Checked,
-        request: &tilo_actions::remote::InvokeRequest,
-    ) -> Result<tilo_actions::remote::Pending<tilo_action_broker::services::OwnDeviceOutcome>, String>
-    {
-        let user = self
-            .local_person
-            .ok_or_else(|| "this device holds no identity".to_string())?;
-        if person != tilo_action_broker::collab_broker_capnp::principal_id_for_root(user) {
-            return Err("only the person this device belongs to reaches their devices".into());
-        }
-        if !self
-            .authenticated_devices_of(&user)
-            .iter()
-            .any(|cert| cert.device_public_key == checked.device)
-        {
-            return Err("the device is not one of the person's authenticated devices".into());
-        }
-        let (endpoint, room, topic) = self.enrolled_device_route(checked.device, None)?;
-        let forwarded = checked.forwarded(&room.to_string(), request);
-        let peer = Arc::new(crate::shell::remote_action_link::PeerActionHost::new(
-            Arc::clone(self),
-            topic,
-            endpoint,
-        ));
-        Ok(peer
-            .invoke_until_settled(forwarded, crate::shell::remote_action_link::FOLLOW_DEADLINE)
-            .map(own_device_outcome))
-    }
-
     fn room_for_topic(&self, topic: u64) -> Option<RoomId> {
         self.tree
             .read()
@@ -4551,8 +4523,7 @@ impl ShellNetwork {
 
     /// Cancel one exact bearer credential. A later redemption carrying its
     /// hash has no pending authority grant and is refused. Existing members
-    /// are unaffected; removing them is a separate governance action. An
-    /// invitation a relay issued stays pending until that relay cancels it.
+    /// are unaffected; removing them is a separate governance action.
     pub fn cancel_invitation(&self, id: &[u8; 32]) -> bool {
         let room = match self.pending_identity_admissions.lock() {
             Ok(pending) => match pending.get(id) {
@@ -4562,7 +4533,7 @@ impl ShellNetwork {
             Err(_) => return false,
         };
         if let Err(error) = self.cancel_relay_invitation(room, *id) {
-            tracing::warn!(%error, "the relay did not cancel the invitation");
+            tracing::warn!(%error, "the invitation was not cancelled");
             return false;
         }
         let Ok(mut pending) = self.pending_identity_admissions.lock() else {
@@ -4700,8 +4671,9 @@ impl ShellNetwork {
             .unwrap_or_else(|| crate::shell::state::local_user_id_for_room(&room))
     }
 
-    /// Have the room's host issue an invitation into `local`'s room, when the
-    /// one invitation policy lets this device ask for one.
+    /// Ask `room`'s host for an invitation into `local`'s room, when the
+    /// workspace's policy lets this device's person invite there and the
+    /// host issues one this device asks for.
     fn issue_invite_for(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -4710,24 +4682,9 @@ impl ShellNetwork {
         role: crate::network::invite::InviteRole,
         recipient_user_public_key: Option<[u8; 32]>,
     ) -> Result<String, String> {
-        use crate::shell::invite_policy::InviteRoute;
-        // Attach the native owner, when this device has one, so the policy
-        // below reads the admitted governor of the room. A device without
-        // one holds no room yet.
-        if let Err(error) = self.native_owner() {
-            tracing::debug!(%error, "inviting without a native owner");
-        }
         let tree_handle = self.tree.clone();
         let missing = || format!("no workspace {} to invite into", local.raw());
-        // The room's governor is read outside the tree's lock (see
-        // `invite_policy::native_governor`); the decision below is taken on
-        // the workspace as it stands under one read, and issued for it.
-        let (room, owner) = {
-            let tree = tree_handle.read();
-            let room = tree.room_of(local).ok_or_else(missing)?;
-            (room, tree.installed_native_owner())
-        };
-        let governor = crate::shell::invite_policy::native_governor(owner, room);
+        let room = tree_handle.read().room_of(local).ok_or_else(missing)?;
         let local_user = self.person_in_room(room);
         let tree = tree_handle.read();
         let ws = tree
@@ -4738,36 +4695,39 @@ impl ShellNetwork {
             .cloned()
             .ok_or_else(missing)?;
         // The same decision the invite composer and the palette are gated
-        // on: who may invite, and which authority signs it.
-        let route = crate::shell::invite_policy::may_issue_invitation(&ws, &local_user, governor);
+        // on: this person may invite into this workspace.
+        let permitted = ws.may_govern_at(
+            &local_user,
+            tilo_action_policy::roles::governance::INVITE,
+            tilo_clock::unix_now(),
+        );
         drop(tree);
+        if !permitted {
+            return Err(INVITE_REFUSED.into());
+        }
+        let held = self.hosted_room(room).ok_or(INVITE_HOST_UNREACHED)?;
+        // Only a host of this person's own, or one hosting rooms for others,
+        // signs an invitation this device asks for: another person's own
+        // device signs its own.
+        if self.administered_room(room).is_none() && !held.invites_for_members() {
+            return Err(INVITE_OWNER_ONLY.into());
+        }
+        if held.hosted_here() {
+            // The invitee dials this device's host, so the invitation names
+            // its home relay: from behind a NAT a direct address alone may
+            // not reach it. The composer started the relays when it opened;
+            // an invitation issued straight away waits a moment for one, and
+            // names direct addresses if none comes.
+            self.reachability.wake("an invitation was issued");
+            let _ = self.reachability.relay_addr_within(INVITE_RELAY_WAIT);
+        }
         let terms = relay_rooms::RelayInvitation {
             role,
             recipient: recipient_user_public_key,
             invitee,
             lifetime: expiry_seconds_from_now,
         };
-        match route {
-            InviteRoute::Host => {
-                let held = self
-                    .hosted_room(ws.room())
-                    .ok_or("this workspace's host is not reachable yet; try again in a moment")?;
-                if held.hosted_here() {
-                    // The invitee dials this device's host, so the
-                    // invitation names its home relay: from behind a NAT a
-                    // direct address alone may not reach it. The composer
-                    // started the relays when it opened; an invitation
-                    // issued straight away waits a moment for one, and
-                    // names direct addresses if none comes.
-                    self.reachability.wake("an invitation was issued");
-                    let _ = self.reachability.relay_addr_within(INVITE_RELAY_WAIT);
-                }
-                self.issue_relay_invitation(&held, &terms)
-            }
-            InviteRoute::ViaGovernor | InviteRoute::Refused(_) => {
-                Err(route.refusal().unwrap_or_default().into())
-            }
-        }
+        self.issue_relay_invitation(&held, &terms)
     }
 
     /// Ask the person's other devices for their continuity and device
@@ -7034,32 +6994,11 @@ impl ShellNetwork {
                 views,
                 decode,
             } => self.note_surface_views(ws, viewer, &room, views, &decode),
-            NeighbourMsg::MlsGovernance { room, frame, .. } => {
-                if let Some(room) = RoomId::parse(&room) {
-                    self.queue_channel_governance(InboundChannelGovernance::Frame { room, frame });
-                }
-            }
-            NeighbourMsg::MlsAccessRequest { room, request, .. } => {
-                if let Some(room) = RoomId::parse(&room) {
-                    self.queue_channel_governance(InboundChannelGovernance::AccessRequest {
-                        room,
-                        request,
-                        route: None,
-                    });
-                }
-            }
-            NeighbourMsg::MlsRoutedAccessRequest {
-                room,
-                request,
-                route,
-                ..
-            } => {
-                if let Some(room) = RoomId::parse(&room) {
-                    self.queue_channel_governance(InboundChannelGovernance::AccessRequest {
-                        room,
-                        request,
-                        route: Some(route),
-                    });
+            message @ (NeighbourMsg::MlsGovernance { .. }
+            | NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { .. }) => {
+                if let Some(governance) = InboundChannelGovernance::from_message(message) {
+                    self.queue_channel_governance(governance);
                 }
             }
             message @ (NeighbourMsg::RecordContentWant { .. }
@@ -7551,6 +7490,7 @@ pub(crate) fn shell_network_for_test(
         room_window_carriers: room_window_carriers::State::default(),
         relay_rooms: relay_rooms::State::default(),
         embedded_host: embedded_host::State::default(),
+        channel_keys: crate::shell::channel_encryption::ChannelKeyProvider::default(),
         hosted_sites: hosted_sites::State::with_readiness(readiness),
         device_approvals: device_approvals::State::default(),
         record_content: record_content::State::default(),
@@ -7624,47 +7564,6 @@ pub(crate) fn native_remote_answer_for_test(
         false,
         NeighbourMsg::RemoteAction { frame },
     );
-}
-
-/// How an own-device invocation ended, from the other device's last word
-/// on it: its output, or why it failed there or never ran.
-fn own_device_outcome(
-    settled: Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionHostError>,
-) -> tilo_action_broker::services::OwnDeviceOutcome {
-    use tilo_actions::InvocationUpdate;
-    let failure = |code: &str, message: String, retryable: bool| {
-        Box::new(tilo_actions::ActionFailure {
-            code: code.to_owned(),
-            message,
-            details: None,
-            retryable,
-        })
-    };
-    match settled {
-        Ok(InvocationUpdate::Succeeded { output, .. }) => Ok(output),
-        Ok(InvocationUpdate::Failed { error, .. }) => Err(Box::new(error)),
-        Ok(InvocationUpdate::Cancelled { message, .. }) => Err(failure(
-            "cancelled",
-            message.unwrap_or_else(|| "the other device cancelled the action".into()),
-            false,
-        )),
-        Ok(
-            InvocationUpdate::Accepted { .. }
-            | InvocationUpdate::Progress { .. }
-            | InvocationUpdate::Item { .. },
-        ) => Err(failure(
-            "unsettled",
-            "the other device did not finish the action".into(),
-            true,
-        )),
-        Err(error) => {
-            let retryable = matches!(
-                error,
-                tilo_actions::remote::ActionHostError::Unavailable { .. }
-            );
-            Err(failure(error.code(), error.to_string(), retryable))
-        }
-    }
 }
 
 impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
@@ -8230,167 +8129,6 @@ mod tests {
         );
     }
 
-    /// An application's action reaches another device only when that device
-    /// is the person's own: enrolled, authenticated to this shell under the
-    /// person's root, unrevoked, and asked for by the person this device
-    /// belongs to. Every refusal sends nothing; the one that passes is an
-    /// ordinary invocation of the app's action in the shared room, under
-    /// the original invocation's id.
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn own_device_invocations_reach_only_the_persons_own_authenticated_devices() {
-        use tilo_user_identity::{
-            DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
-            sign_device_cert, sign_revocation_entry,
-        };
-        let root = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
-        let stranger_root = ed25519_dalek::SigningKey::from_bytes(&[0x62; 32]);
-        let user = root.verifying_key().to_bytes();
-        let device = iroh::SecretKey::from_bytes(&[0x63; 32]).public();
-        let certified = |root: &ed25519_dalek::SigningKey| {
-            let mut cert = DeviceCert {
-                user_public_key: root.verifying_key().to_bytes(),
-                device_public_key: *device.as_bytes(),
-                device_label: "Desktop".into(),
-                capabilities: DeviceCapabilities::member(),
-                issued_at_ns: 1,
-                expires_at_ns: None,
-                signature: [0; 64],
-            };
-            sign_device_cert(&mut cert, root).expect("certified device");
-            cert
-        };
-
-        let dir = tempfile::tempdir().expect("temp");
-        let peers = dir.path().join("home-peers.json");
-        std::fs::write(&peers, b"[]").unwrap();
-        std::fs::write(
-            dir.path().join("personal-device-peers.json"),
-            serde_json::to_vec(&vec![hex::encode(device.as_bytes())]).unwrap(),
-        )
-        .unwrap();
-        let room = "11111111-1111-4111-8111-111111111111";
-        std::fs::write(
-            dir.path().join("personal-rooms.json"),
-            format!("[\"{room}\"]"),
-        )
-        .unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_HOME_PEERS_PATH", &peers);
-        env.set("XDG_STATE_HOME", dir.path().join("state"));
-        let (net, mut commands) = personal_continuity_network_for_test(user);
-        // The person's list brings the shared room's workspace; an
-        // enrollment's room list alone makes none.
-        net.tree
-            .write()
-            .join_room("Shared", RoomId::parse(room).expect("room"))
-            .expect("a workspace of the room");
-        let net = Arc::new(net);
-        assert!(net.join_default_workspace());
-        let topic = room_topic_id(RoomId::parse(room).expect("room"));
-        net.live_room_peers
-            .lock()
-            .expect("live peers")
-            .insert((topic, device));
-        while commands.try_recv().is_ok() {}
-
-        let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(user);
-        let checked = tilo_actions::remote::own_device::Invocation {
-            device: hex::encode(device.as_bytes()),
-            app: "so.tilo.settings".into(),
-            resource: "settings.root".into(),
-            action: "storage-summary".into(),
-            arguments: None,
-        }
-        .check()
-        .expect("valid");
-        let request = tilo_actions::remote::InvokeRequest {
-            on_behalf_of: None,
-            invocation: tilo_actions::InvocationId::new(),
-            target: tilo_actions::remote::own_device::target(),
-            argument: tilo_actions::remote::InvokeArgument::None,
-            context: None,
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            appearance: None,
-        };
-        let sent = |commands: &mut mpsc::Receiver<NetCmd>| {
-            std::iter::from_fn(|| commands.try_recv().ok())
-                .filter_map(|command| match command {
-                    NetCmd::PublishRemoteAction { ws, target, msg } => Some((ws, target, msg)),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-        };
-
-        assert!(
-            net.invoke_own_device(&person, &checked, &request).is_err(),
-            "an enrolled device that has not authenticated as the person's is refused"
-        );
-        let origin = crate::shell::state::PeerOrigin::peer(&device);
-        net.peer_identities
-            .insert(origin.clone(), certified(&stranger_root), 2)
-            .expect("stranger's device");
-        assert!(
-            net.invoke_own_device(&person, &checked, &request).is_err(),
-            "the same endpoint certified by another person is not the person's device"
-        );
-        net.peer_identities
-            .insert(origin, certified(&root), 2)
-            .expect("own device");
-        assert!(
-            net.invoke_own_device(&hex::encode([0x70; 32]), &checked, &request)
-                .is_err(),
-            "only the person this device belongs to reaches their devices"
-        );
-        let mut unenrolled = checked.clone();
-        unenrolled.device = *iroh::SecretKey::from_bytes(&[0x64; 32]).public().as_bytes();
-        assert!(
-            net.invoke_own_device(&person, &unenrolled, &request)
-                .is_err()
-        );
-        assert!(sent(&mut commands).is_empty(), "no refusal sent anything");
-
-        let _answer = net
-            .invoke_own_device(&person, &checked, &request)
-            .expect("the person's own authenticated device");
-        let delivered = sent(&mut commands);
-        let [(ws, target, NeighbourMsg::RemoteAction { frame })] = delivered.as_slice() else {
-            panic!("exactly one remote action frame, not {}", delivered.len());
-        };
-        assert_eq!((*ws, *target), (topic, device));
-        let decoded = tilo_actions::remote::RemoteActionFrame::decode(frame).expect("frame");
-        let tilo_actions::remote::RemoteActionMessage::Invoke(forwarded) = decoded.message else {
-            panic!("expected an invocation");
-        };
-        assert_eq!(forwarded.invocation, request.invocation);
-        assert_eq!(
-            tilo_actions::remote::application_provider(&forwarded.target.provider),
-            Some((room, "so.tilo.settings"))
-        );
-        assert_eq!(forwarded.target.address.action, "storage-summary");
-
-        let mut revoked = RevocationEntry {
-            user_public_key: user,
-            revoked_device_public_key: *device.as_bytes(),
-            revoked_at_ns: 1,
-            reason: RevocationReason::Compromised,
-            signature: [0; 64],
-        };
-        sign_revocation_entry(&mut revoked, &root).expect("revocation");
-        let mut list = RevocationList::new();
-        list.insert(revoked).expect("listed");
-        net.peer_identities.set_revocations(user, &list);
-        let mut retry = request;
-        retry.invocation = tilo_actions::InvocationId::new();
-        assert!(
-            net.invoke_own_device(&person, &checked, &retry).is_err(),
-            "a revoked device is refused"
-        );
-        assert!(sent(&mut commands).is_empty());
-    }
-
     #[test]
     #[serial_test::serial(process_env)]
     fn a_workspace_of_an_enrolled_room_stays_after_startup_when_continuations_are_off() {
@@ -8627,9 +8365,8 @@ mod tests {
     fn remote_action_from_an_authenticated_peer_is_confined_to_its_room() {
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xA1; 32]);
         let device = iroh::SecretKey::from_bytes(&[0xA2; 32]);
-        let person = crate::shell::collab_broker_capnp::principal_id_for_root(
-            root.verifying_key().to_bytes(),
-        );
+        let person =
+            crate::shell::collab_app_broker::principal_id_for_root(root.verifying_key().to_bytes());
         let (workspace, enrolled) = remote_action_room(&person, &person);
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
@@ -8687,10 +8424,10 @@ mod tests {
             reason = "two peers, their identities, the serving broker and both round trips form one scenario"
         )]
         fn a_peer_invokes_an_app_action_on_another_peer_and_gets_the_receipt() {
-            use crate::shell::collab_broker::CrdtRoute;
-            use crate::shell::collab_broker_capnp::{
+            use crate::shell::collab_app_broker::{
                 PublishedAction, PublishedInput, PublishedSurface,
             };
+            use crate::shell::collab_broker::CrdtRoute;
             use crate::shell::remote_action_link::RemoteActionLink as _;
             use tilo_actions::remote::{
                 InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage,
@@ -8701,10 +8438,10 @@ mod tests {
             let root_b = ed25519_dalek::SigningKey::from_bytes(&[0xB1; 32]);
             let device_a = iroh::SecretKey::from_bytes(&[0xA2; 32]);
             let device_b = iroh::SecretKey::from_bytes(&[0xB2; 32]);
-            let person_a = crate::shell::collab_broker_capnp::principal_id_for_root(
+            let person_a = crate::shell::collab_app_broker::principal_id_for_root(
                 root_a.verifying_key().to_bytes(),
             );
-            let person_b = crate::shell::collab_broker_capnp::principal_id_for_root(
+            let person_b = crate::shell::collab_app_broker::principal_id_for_root(
                 root_b.verifying_key().to_bytes(),
             );
             let (room_workspace, room) = remote_action_room(&person_a, &person_b);
@@ -8848,10 +8585,10 @@ mod tests {
             let device_a = iroh::SecretKey::from_bytes(&[0xA2; 32]);
             let stranger_root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
             let stranger = iroh::SecretKey::from_bytes(&[0xD2; 32]);
-            let person_a = crate::shell::collab_broker_capnp::principal_id_for_root(
+            let person_a = crate::shell::collab_app_broker::principal_id_for_root(
                 root_a.verifying_key().to_bytes(),
             );
-            let person_b = crate::shell::collab_broker_capnp::principal_id_for_root(
+            let person_b = crate::shell::collab_app_broker::principal_id_for_root(
                 root_b.verifying_key().to_bytes(),
             );
             let (room_workspace, room) = remote_action_room(&person_a, &person_b);

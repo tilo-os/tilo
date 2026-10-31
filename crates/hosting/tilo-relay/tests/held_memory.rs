@@ -17,8 +17,8 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT};
 use tilo_automerge::heap::{self, ThreadCounting};
+use tilo_relay::Envelope;
 use tilo_relay::workspace::{Membership, WorkspaceRuntime};
-use tilo_relay::{Envelope, PeerRole};
 
 #[global_allocator]
 static HEAP: ThreadCounting = ThreadCounting;
@@ -63,7 +63,7 @@ fn a_pinned_workspace_holds_what_its_saved_document_holds() {
         };
         let before = heap::held();
         workspace
-            .fanout_delta(&[0; 32], PeerRole::PeerRelay, &envelope, &delta, round + 1)
+            .fanout_delta(&[0; 32], &envelope, &delta, round + 1)
             .unwrap();
         grown += heap::held() - before;
     }

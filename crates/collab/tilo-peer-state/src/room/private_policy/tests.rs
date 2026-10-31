@@ -53,7 +53,7 @@ fn shared_private_policy_matches_existing_exact_revision_and_expiry_order() {
         &LegacyRead(peer.admitted_room().unwrap()),
         Metadata {
             room: peer.room(),
-            authority: peer.authority(),
+            owner: &peer.owner(),
             certificates: certificates.iter(),
             revocations: revocations.iter(),
         },

@@ -37,6 +37,14 @@ pub enum RowLeadingShape {
     Media(MediaAspect),
 }
 
+// What leads a kind of row as a component's prop; media art takes its aspect from the art.
+crate::component::choice!(RowLeadingShape, "RowLeadingShape", {
+    None => "none",
+    Mark => "mark",
+    Avatar => "avatar",
+    Tile => "tile",
+});
+
 /// The geometry of a kind of list row. See the module docs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RowShape {
