@@ -144,9 +144,7 @@ fn theme_key(theme: &Theme) -> ThemeKey {
         colors.semantic.danger,
         colors.intent.accent_ink,
         theme.tokens.radii.control.to_bits(),
-        theme
-            .painter(crate::tokens::SurfaceRole::Control)
-            .map_or(0, crate::part_paint::PainterSet::id),
+        theme.painter(crate::tokens::SurfaceRole::Control).id(),
     )
 }
 
@@ -1291,15 +1289,16 @@ impl FacePaint<'_> {
         }
     }
 
-    /// Draw the container with the theme's painter set into `scene`, where
-    /// the theme names one for controls and it draws the container.
+    /// Draw the container with the control role's painter set into
+    /// `scene`, where the set draws it; `None` leaves it to the toolkit's
+    /// face.
     fn painted_container(
         &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
     ) -> Option<crate::part_paint::Painted> {
-        let set = theme.painter(crate::tokens::SurfaceRole::Control)?;
+        let set = theme.painter(crate::tokens::SurfaceRole::Control);
         let ((fill, edge, ink), _) = self.colors(theme);
         crate::part_paint::paint_part(
             scene,
@@ -1322,7 +1321,8 @@ impl FacePaint<'_> {
     }
 
     /// The shape the theme's painter set draws the container as, in the
-    /// face's coordinates; `None` where no set draws it.
+    /// face's coordinates; `None` where the set leaves the container to the
+    /// toolkit.
     fn painted_shape(&self, theme: &Theme) -> Option<vello::kurbo::BezPath> {
         self.painted_container(&mut Scene::new(), Affine::IDENTITY, theme)?
             .hit
@@ -1337,12 +1337,13 @@ impl FacePaint<'_> {
         let radius = f64::from(theme.tokens.radii.control);
         let face_rect = self.face_rect();
         let shape = RoundedRect::from_rect(face_rect, radius);
-        let set = theme.painter(crate::tokens::SurfaceRole::Control);
+        let mut container = Scene::new();
+        let painted = self.painted_container(&mut container, ctx.transform, theme);
         // Disabled is the rest face under one group alpha (HIG §9.5), the
-        // same signal every other control gives. A painter set's container
-        // may take any shape in the face's rect.
+        // same signal every other control gives. A painted container may
+        // take any shape in the face's rect.
         if disabled {
-            let clip = if set.is_some() {
+            let clip = if painted.is_some() {
                 RoundedRect::from_rect(face_rect, 0.0)
             } else {
                 shape
@@ -1355,7 +1356,9 @@ impl FacePaint<'_> {
                 &clip,
             );
         }
-        let painted = self.painted_container(ctx.scene, ctx.transform, theme);
+        if painted.is_some() {
+            ctx.scene.append(&container, None);
+        }
         // A painted container draws its own edge; a border stands in for
         // the rest edge.
         let bordered = painted.is_some()
@@ -1956,7 +1959,7 @@ impl Widget for Button {
         // The toolkit's own button changes state at once.
         self.motion.go(
             container_states(interact, on),
-            (set, crate::part_paint::Part::ButtonContainer),
+            (Some(set), crate::part_paint::Part::ButtonContainer),
             crate::part_paint::Transition::None,
             theme.reduce_motion,
             now,

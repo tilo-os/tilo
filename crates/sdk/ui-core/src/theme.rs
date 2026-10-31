@@ -217,10 +217,6 @@ pub struct Theme {
     /// to edge. `None` when no host said; nothing then keeps out of corners.
     /// Set where the window is drawn, not part of the configured theme.
     pub surface: Option<SurfaceShape>,
-    /// The painter set drawing each surface role's parts, where the theme
-    /// names one; the toolkit's own painters elsewhere
-    /// ([`crate::part_paint`]). Read through [`Theme::painter`].
-    pub painters: crate::part_paint::RolePainters,
 }
 
 // Written out rather than derived: a derived `eq` is `#[inline]`, so every
@@ -249,7 +245,6 @@ impl PartialEq for Theme {
             caret_width,
             forced_colors,
             surface,
-            painters,
         } = self;
         *name == other.name
             && *document == other.document
@@ -270,7 +265,6 @@ impl PartialEq for Theme {
             && *caret_width == other.caret_width
             && *forced_colors == other.forced_colors
             && *surface == other.surface
-            && *painters == other.painters
     }
 }
 
@@ -299,7 +293,6 @@ impl Clone for Theme {
             caret_width: self.caret_width,
             forced_colors: self.forced_colors,
             surface: self.surface,
-            painters: self.painters.clone(),
         }
     }
 }
@@ -400,7 +393,6 @@ impl Theme {
             caret_width: 2.0,
             forced_colors: document.palette.high_contrast,
             surface: None,
-            painters: crate::part_paint::RolePainters::default(),
             document,
             tokens,
         }
@@ -797,50 +789,43 @@ impl Theme {
     }
 
     /// The finish `role` is painted in: the theme's, made opaque under
-    /// reduced transparency and forced colours (a flat finish stays flat).
+    /// reduced transparency (a flat finish stays flat, a theme's own set
+    /// keeps drawing opaque), and the toolkit's own under forced colours,
+    /// whose guarantees are not a theme's set to keep.
     #[must_use]
-    pub fn finish(&self, role: crate::tokens::SurfaceRole) -> crate::tokens::Finish {
-        self.finish_of(role)
-    }
-
-    /// The painter set drawing `role`'s parts, or `None` for the toolkit's
-    /// own. Forced colours always draw with the toolkit's own: what they
-    /// guarantee is not a painter's to keep.
-    #[must_use]
-    pub fn painter(
-        &self,
-        role: crate::tokens::SurfaceRole,
-    ) -> Option<&crate::part_paint::PainterSet> {
-        if self.forced_colors {
-            return None;
-        }
-        self.painters.of(role)
-    }
-
-    /// This theme with `set` drawing `role`'s parts.
-    #[must_use]
-    pub fn with_painter_set(
-        mut self,
-        role: crate::tokens::SurfaceRole,
-        set: crate::part_paint::PainterSet,
-    ) -> Self {
-        let slot = match role {
-            crate::tokens::SurfaceRole::Window => &mut self.painters.window,
-            crate::tokens::SurfaceRole::Control => &mut self.painters.control,
-            crate::tokens::SurfaceRole::Floating => &mut self.painters.floating,
-            crate::tokens::SurfaceRole::Bar => &mut self.painters.bar,
-        };
-        *slot = Some(set);
-        self
-    }
-
-    fn finish_of(&self, role: crate::tokens::SurfaceRole) -> crate::tokens::Finish {
+    pub fn finish(&self, role: crate::tokens::SurfaceRole) -> &crate::tokens::Finish {
         let finish = self.tokens.finishes.of(role);
-        if self.reduce_transparency || self.forced_colors {
+        if self.forced_colors {
+            finish.forced()
+        } else if self.reduce_transparency {
             finish.opaque()
         } else {
             finish
         }
+    }
+
+    /// The painter set drawing `role`'s parts: its finish's.
+    #[must_use]
+    pub fn painter(&self, role: crate::tokens::SurfaceRole) -> &crate::part_paint::PainterSet {
+        self.finish(role).set()
+    }
+
+    /// This theme with `set` drawing `role`'s parts, with none of its
+    /// parameters stated. `Err` where the set requires one.
+    pub fn with_painter_set(
+        mut self,
+        role: crate::tokens::SurfaceRole,
+        set: crate::part_paint::PainterSet,
+    ) -> Result<Self, &'static str> {
+        let finish = crate::tokens::Finish::new(set, std::iter::empty::<(String, f32)>())?;
+        let finishes = &mut self.tokens.finishes;
+        match role {
+            crate::tokens::SurfaceRole::Window => finishes.window = finish,
+            crate::tokens::SurfaceRole::Control => finishes.control = finish,
+            crate::tokens::SurfaceRole::Floating => finishes.floating = finish,
+            crate::tokens::SurfaceRole::Bar => finishes.bar = Some(finish),
+        }
+        Ok(self)
     }
 
     #[must_use]
@@ -1744,13 +1729,9 @@ mod tests {
                 hover_alpha: 0.8,
             };
             doc.material = ThemeMaterial {
-                floating: crate::tokens::Finish::Translucent {
-                    blur: 40.0,
-                    tint: 0.9,
-                    saturation: 1.0,
-                },
+                floating: crate::tokens::Finish::frosted(40.0, 0.9, 1.0),
                 selector,
-                ..ThemeMaterial::STOCK
+                ..ThemeMaterial::stock()
             };
             doc.emphasis = Emphasis::Tinted { hue: 150.0 };
             let theme = Theme::from_document(&doc).unwrap();
@@ -1778,8 +1759,8 @@ mod tests {
             let block = Theme::preset(Preset::Block);
             assert_eq!(block.tokens.radii.control, 0.0);
             assert_eq!(block.tokens.radii.tile, 0.0);
-            assert_eq!(block.tokens.finishes.window, Finish::Flat);
-            assert_eq!(block.tokens.finishes.floating, Finish::Flat);
+            assert_eq!(block.tokens.finishes.window, Finish::flat());
+            assert_eq!(block.tokens.finishes.floating, Finish::flat());
             assert_eq!(block.tokens.colors.surfaces.material_blur_px, 0.0);
             assert_eq!(block.tokens.elevation.window.color.components[3], 0.0);
             assert_eq!(block.tokens.elevation.floating.color.components[3], 0.0);
@@ -1797,7 +1778,7 @@ mod tests {
             );
 
             let glass = Theme::preset(Preset::Glass);
-            assert!(matches!(glass.tokens.finishes.window, Finish::Glass { .. }));
+            assert_eq!(glass.tokens.finishes.window.painter(), "glass");
             assert!(glass.tokens.colors.surfaces.material_blur_px > 0.0);
             assert!(
                 glass.tokens.elevation.floating.color.components[3]
@@ -1822,7 +1803,7 @@ mod tests {
             // Default stays exactly the design language.
             let stock = Theme::dark();
             assert_eq!(stock.tokens.elevation, crate::tokens::Elevation::dark());
-            assert_eq!(stock.tokens.finishes, crate::tokens::RoleFinishes::STOCK);
+            assert_eq!(stock.tokens.finishes, crate::tokens::RoleFinishes::stock());
             assert!(!stock.motion().still());
         }
 

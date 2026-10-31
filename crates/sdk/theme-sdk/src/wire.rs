@@ -311,17 +311,19 @@ impl Writer {
                 blur,
                 lens,
                 fallback,
+                glaze,
             } => {
                 self.u8(4);
                 self.f32(*blur);
                 self.f32(lens.refraction);
                 self.color(*fallback);
+                self.ops(glaze);
             }
         }
     }
-    fn scene(&mut self, scene: &PartScene) {
-        self.len(scene.ops.len());
-        for op in &scene.ops {
+    fn ops(&mut self, ops: &[Op]) {
+        self.len(ops.len());
+        for op in ops {
             match op {
                 Op::Fill {
                     path,
@@ -348,6 +350,9 @@ impl Writer {
             }
         }
     }
+    fn scene(&mut self, scene: &PartScene) {
+        self.ops(&scene.ops);
+    }
     fn tokens(&mut self, tokens: &PartTokens) {
         for color in [
             tokens.fill,
@@ -366,8 +371,9 @@ impl Writer {
         self.u8(u8::from(tokens.dark));
         self.u8(u8::from(tokens.high_contrast));
         self.u8(u8::from(tokens.reduce_transparency));
+        self.u8(u8::from(tokens.backdrop));
         self.len(tokens.params.len());
-        for param in &tokens.params {
+        for param in tokens.params.iter() {
             self.bytes(param.name.as_bytes());
             self.f32(param.value);
         }
@@ -463,7 +469,9 @@ impl Reader<'_> {
             })
             .collect()
     }
-    fn brush(&mut self) -> Option<Brush> {
+    /// A brush; `glazed`: inside a backdrop's glaze, where another
+    /// backdrop is refused.
+    fn brush(&mut self, glazed: bool) -> Option<Brush> {
         Some(match self.u8()? {
             0 => Brush::Solid(self.color()?),
             1 => Brush::Linear {
@@ -490,17 +498,19 @@ impl Reader<'_> {
                     scale: self.f32()?,
                 }
             }
-            4 => Brush::Backdrop {
+            4 if !glazed => Brush::Backdrop {
                 blur: self.f32()?,
                 lens: Lens {
                     refraction: self.f32()?,
                 },
                 fallback: self.color()?,
+                glaze: self.ops(true)?,
             },
             _ => return None,
         })
     }
-    fn scene(&mut self) -> Option<PartScene> {
+    /// Operations whose layers balance; `glazed`: a backdrop's glaze.
+    fn ops(&mut self, glazed: bool) -> Option<Vec<Op>> {
         let count = self.count(1)?;
         let mut ops = Vec::with_capacity(count);
         let mut depth = 0_usize;
@@ -508,13 +518,13 @@ impl Reader<'_> {
             let op = match self.u8()? {
                 0 => Op::Fill {
                     path: self.path()?,
-                    brush: self.brush()?,
+                    brush: self.brush(glazed)?,
                     brush_transform: self.affine()?,
                 },
                 1 => Op::Stroke {
                     path: self.path()?,
                     width: self.f32()?,
-                    brush: self.brush()?,
+                    brush: self.brush(glazed)?,
                 },
                 2 => {
                     depth = depth.checked_add(1).filter(|d| *d <= MAX_LAYER_DEPTH)?;
@@ -532,7 +542,12 @@ impl Reader<'_> {
             ops.push(op);
         }
         // Every layer an answer opens, it closes.
-        (depth == 0).then_some(PartScene { ops })
+        (depth == 0).then_some(ops)
+    }
+    fn scene(&mut self) -> Option<PartScene> {
+        Some(PartScene {
+            ops: self.ops(false)?,
+        })
     }
     fn tokens(&mut self) -> Option<PartTokens> {
         let mut colors = [Color::BLACK; 7];
@@ -554,6 +569,7 @@ impl Reader<'_> {
             dark: self.u8()? != 0,
             high_contrast: self.u8()? != 0,
             reduce_transparency: self.u8()? != 0,
+            backdrop: self.u8()? != 0,
             params: {
                 let count = self.count(8)?;
                 (0..count)
@@ -564,6 +580,7 @@ impl Reader<'_> {
                         })
                     })
                     .collect::<Option<Vec<_>>>()?
+                    .into()
             },
         })
     }
@@ -609,6 +626,11 @@ mod tests {
                 blur: 12.0,
                 lens: Lens { refraction: 3.0 },
                 fallback: Color::WHITE,
+                glaze: vec![Op::Fill {
+                    path: Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.1),
+                    brush: Brush::Solid(Color::WHITE.with_alpha(0.1)),
+                    brush_transform: Affine::IDENTITY,
+                }],
             },
         ]
     }
@@ -643,7 +665,9 @@ mod tests {
                 params: vec![Param {
                     name: "levels".into(),
                     value: 4.0,
-                }],
+                }]
+                .into(),
+                backdrop: true,
                 ..PartTokens::default()
             },
         };
@@ -713,6 +737,23 @@ mod tests {
                 },
                 scale: 1.0,
             },
+        );
+        assert_eq!(paint(&paint_answer(Some(&PaintedPart::new(scene)))), None);
+        // A backdrop inside a backdrop's glaze.
+        let backdrop = |glaze| Brush::Backdrop {
+            blur: 4.0,
+            lens: Lens::default(),
+            fallback: Color::WHITE,
+            glaze,
+        };
+        let mut scene = PartScene::new();
+        scene.fill(
+            BezPath::new(),
+            backdrop(vec![Op::Fill {
+                path: BezPath::new(),
+                brush: backdrop(Vec::new()),
+                brush_transform: Affine::IDENTITY,
+            }]),
         );
         assert_eq!(paint(&paint_answer(Some(&PaintedPart::new(scene)))), None);
     }

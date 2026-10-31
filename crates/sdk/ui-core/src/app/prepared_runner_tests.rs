@@ -149,8 +149,7 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
 #[serial_test::serial(process_env)]
 fn configured_theme_file_change_rethemes_an_open_app() {
     let config = tempfile::tempdir().expect("isolated appearance store");
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", config.path());
+    let _profile = settings_store::scoped_source(Some(settings_store::profile(config.path())));
 
     let write = |theme: &str| {
         let mut values = serde_json::Map::new();
@@ -200,8 +199,7 @@ fn settings_file_write_rethemes_the_sampled_app_surface() {
     // is the one the compositor watches. A write that leaves this surface
     // on the old theme is the failure.
     let session = tempfile::tempdir().expect("session settings");
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", session.path());
+    let _session = settings_store::scoped_source(Some(settings_store::profile(session.path())));
 
     let write = |theme: &str| {
         let mut values = serde_json::Map::new();
@@ -258,8 +256,7 @@ fn settings_keeps_the_session_theme_when_the_host_scheme_is_unset() {
     // surface unless the session document wins.
     let session = tempfile::tempdir().expect("session settings");
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.remove("XDG_CURRENT_DESKTOP")
-        .set("XDG_CONFIG_HOME", session.path());
+    env.remove("XDG_CURRENT_DESKTOP");
     // The session's settings, as the app's channel to the shell gives them.
     let _session = settings_store::scoped_source(Some(settings_store::profile(session.path())));
 

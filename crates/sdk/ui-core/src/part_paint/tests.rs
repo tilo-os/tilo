@@ -102,7 +102,9 @@ fn moved_to(button: &mut Button, at: (f64, f64)) -> bool {
 #[test]
 fn a_triangle_button_takes_the_pointer_inside_its_triangle_only() {
     let (set, _) = Triangles::set();
-    let theme = Theme::dark().with_painter_set(SurfaceRole::Control, set);
+    let theme = Theme::dark()
+        .with_painter_set(SurfaceRole::Control, set)
+        .unwrap();
     let fired = Arc::new(AtomicUsize::new(0));
     let clicks = fired.clone();
     let mut button = Button::new("go", "Go").on_click(move || {
@@ -155,7 +157,9 @@ fn a_triangle_button_takes_the_pointer_inside_its_triangle_only() {
 #[test]
 fn a_settled_part_is_painted_once_and_replayed() {
     let (set, painter) = Triangles::set();
-    let theme = Theme::dark().with_painter_set(SurfaceRole::Control, set.clone());
+    let theme = Theme::dark()
+        .with_painter_set(SurfaceRole::Control, set.clone())
+        .unwrap();
     let tokens = part_tokens(
         &theme,
         SurfaceRole::Control,
@@ -280,6 +284,7 @@ fn a_painted_backdrop_is_its_fallback_where_nothing_may_be_translucent() {
             blur: 20.0,
             lens: Lens::default(),
             fallback: Color::from_rgb8(9, 9, 9),
+            glaze: Vec::new(),
         },
     );
     struct Panel(PartScene);
@@ -325,19 +330,30 @@ fn a_registered_set_is_found_by_name_and_replaced_by_a_newer_one() {
     let (first, _) = Triangles::set();
     let named = |set: &PainterSet| PainterSet::new("test.registry", set.painter.clone());
     let older = named(&first);
-    register_painter_set(older.clone());
+    assert!(register_painter_set(older.clone()));
     assert_eq!(painter_set("test.registry"), Some(older.clone()));
     let newer = named(&first);
-    register_painter_set(newer.clone());
+    assert!(register_painter_set(newer.clone()));
     assert_eq!(painter_set("test.registry"), Some(newer));
     assert_ne!(painter_set("test.registry"), Some(older));
     assert_eq!(painter_set("test.nothing"), None);
+    // The toolkit's own names are not a theme's to take.
+    assert!(!register_painter_set(PainterSet::new(
+        builtin::GLASS,
+        first.painter.clone()
+    )));
+    assert_eq!(
+        painter_set(builtin::GLASS).as_ref(),
+        Some(builtin::glass_set())
+    );
 }
 
 #[test]
 fn forced_colours_draw_with_the_toolkits_own_painters() {
     let (set, _) = Triangles::set();
-    let theme = Theme::high_contrast().with_painter_set(SurfaceRole::Control, set);
+    let theme = Theme::high_contrast()
+        .with_painter_set(SurfaceRole::Control, set)
+        .unwrap();
     assert!(theme.forced_colors);
-    assert!(theme.painter(SurfaceRole::Control).is_none());
+    assert_eq!(theme.painter(SurfaceRole::Control), builtin::default_set());
 }

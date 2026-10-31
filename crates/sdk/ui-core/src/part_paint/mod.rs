@@ -4,9 +4,10 @@
 //! A theme's painter set ([`PainterSet`], a [`PartPainter`]) draws parts;
 //! this module is everything around it that the toolkit owns:
 //!
-//! * which set draws each surface role ([`RolePainters`], on
-//!   [`Theme::painters`]) and the sets a document can name
-//!   ([`register_painter_set`], [`painter_set`]);
+//! * the sets a document can name: the built-in Default, Glass and Block
+//!   ([`builtin`]) and those a theme installs ([`register_painter_set`],
+//!   [`painter_set`]); the set drawing each surface role is the role's
+//!   [`crate::tokens::Finish`] ([`Theme::painter`]);
 //! * the values a part is drawn with ([`part_tokens`]);
 //! * drawing a painted part into the frame, with its backdrop filled by the
 //!   backdrop pass and held legible ([`paint_part`]), and the cache that
@@ -17,6 +18,7 @@
 //! A set paints what it chooses to; a part it returns `None` for is drawn by
 //! the toolkit's own painters, so a theme draws only the parts it changes.
 
+pub mod builtin;
 mod draw;
 mod motion;
 
@@ -29,8 +31,8 @@ use std::sync::{Arc, PoisonError, RwLock};
 pub use draw::{Painted, cached_parts, paint_part};
 pub use motion::{Moment, PartMotion};
 pub use tilo_theme_sdk::{
-    Brush, Easing, Lens, Op, PaintedPart, Param, Part, PartImage, PartPainter, PartScene,
-    PartState, PartTokens, States, Stop, Transition,
+    Brush, Easing, Lens, Op, PaintedPart, Param, ParamSpec, Part, PartImage, PartPainter,
+    PartScene, PartState, PartTokens, States, Stop, Transition,
 };
 
 use vello::kurbo::{BezPath, Point, Shape};
@@ -88,53 +90,28 @@ impl PartialEq for PainterSet {
     }
 }
 
-/// The painter set drawing each surface role, where a theme names one.
-/// `None` is the toolkit's own painters.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct RolePainters {
-    pub window: Option<PainterSet>,
-    pub control: Option<PainterSet>,
-    pub floating: Option<PainterSet>,
-    pub bar: Option<PainterSet>,
-}
-
-impl RolePainters {
-    /// The set drawing `role`.
-    #[must_use]
-    pub fn of(&self, role: SurfaceRole) -> Option<&PainterSet> {
-        match role {
-            SurfaceRole::Window => self.window.as_ref(),
-            SurfaceRole::Control => self.control.as_ref(),
-            SurfaceRole::Floating => self.floating.as_ref(),
-            SurfaceRole::Bar => self.bar.as_ref(),
-        }
-    }
-
-    /// The same set for every role.
-    #[must_use]
-    pub fn all(set: &PainterSet) -> Self {
-        Self {
-            window: Some(set.clone()),
-            control: Some(set.clone()),
-            floating: Some(set.clone()),
-            bar: Some(set.clone()),
-        }
-    }
-}
-
 static REGISTRY: RwLock<Vec<PainterSet>> = RwLock::new(Vec::new());
 
 /// Make `set` one a theme document can name. A set registered under a name
 /// already taken replaces it: a theme's author installing a fixed version.
-pub fn register_painter_set(set: PainterSet) {
+/// The built-in sets' names are the toolkit's: `false`, and nothing
+/// registered, for a set that claims one.
+pub fn register_painter_set(set: PainterSet) -> bool {
+    if builtin::builtin(&set.name).is_some() {
+        return false;
+    }
     let mut sets = REGISTRY.write().unwrap_or_else(PoisonError::into_inner);
     sets.retain(|known| known.name != set.name);
     sets.push(set);
+    true
 }
 
-/// The registered set `name`.
+/// The set a document calls `name`: a built-in one, or one registered.
 #[must_use]
 pub fn painter_set(name: &str) -> Option<PainterSet> {
+    if let Some(set) = builtin::builtin(name) {
+        return Some(set.clone());
+    }
     REGISTRY
         .read()
         .unwrap_or_else(PoisonError::into_inner)
@@ -145,7 +122,8 @@ pub fn painter_set(name: &str) -> Option<PainterSet> {
 
 /// The values a part of `role` is drawn with under `theme`: `fill`, `ink`
 /// and `edge` as its role and state resolved them, `ground` what it stands
-/// on.
+/// on, and the parameters the role's finish states. No backdrop: the
+/// toolkit says where a part shows one.
 #[must_use]
 pub fn part_tokens(
     theme: &Theme,
@@ -176,7 +154,8 @@ pub fn part_tokens(
         dark: colors.palette.dark,
         high_contrast: colors.palette.high_contrast,
         reduce_transparency: theme.reduce_transparency || theme.forced_colors,
-        params: Vec::new(),
+        backdrop: false,
+        params: theme.finish(role).params().clone(),
     }
 }
 
