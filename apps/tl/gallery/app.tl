@@ -46,6 +46,7 @@ type Gallery {
     data: Collection<Data>
     controls: Collection<Controls>
     media: Collection<Media>
+    places: Collection<Places>
 }
 
 root Gallery
@@ -82,6 +83,9 @@ view gallery(g: Gallery) {
             }
             for x in g.media {
                 ui.ListRow(x.title, item: x, icon: .image)
+            }
+            for x in g.places {
+                ui.ListRow(x.title, item: x, icon: .map_pin)
             }
         }
     }

@@ -418,10 +418,12 @@ impl<F> Pred<F> {
                     .as_text()
                     .is_some_and(|t| crate::identifier::matches(pattern, t)),
             },
-            // Free text matches anywhere inside a text, without regard to case.
-            Self::Text(f, needle) => value(f)?
-                .as_text()
-                .is_some_and(|t| t.to_lowercase().contains(&needle.to_lowercase())),
+            Self::Text(f, needle) => {
+                // Free text matches anywhere inside a text, without regard to case.
+                let one = value(f)?;
+                one.as_text()
+                    .is_some_and(|t| t.to_lowercase().contains(&needle.to_lowercase()))
+            }
             Self::Present(f) => match value(f)? {
                 Lit::Absent => false,
                 Lit::Set(members) => !members.is_empty(),
