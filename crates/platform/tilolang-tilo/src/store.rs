@@ -1458,12 +1458,12 @@ impl TiloStore {
 
     /// The store's contents, with its schema table installed ([`Held::of`]).
     fn held(&self) -> Held<'_> {
-        Held::of(self.schemas(), &self.inner)
+        Held::of(&self.schemas(), &self.inner)
     }
 
     /// [`Self::held`], to change ([`Changing::of`]).
     fn changing(&self) -> Changing<'_> {
-        Changing::of(self.schemas(), &self.inner)
+        Changing::of(&self.schemas(), &self.inner)
     }
 
     /// Have the room record, if the store opened without it: from the loader.

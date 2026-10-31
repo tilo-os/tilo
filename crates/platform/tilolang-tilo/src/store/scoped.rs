@@ -14,7 +14,7 @@ impl<'a> Held<'a> {
     /// The store's contents with its schema table installed: what a read resolves a
     /// record's type by is this store's package version, never another store's.
     pub(super) fn of(
-        schemas: std::sync::Arc<crate::schema::Schemas>,
+        schemas: &std::sync::Arc<crate::schema::Schemas>,
         inner: &'a std::cell::RefCell<Inner>,
     ) -> Self {
         let scope = schemas.enter();
@@ -41,7 +41,7 @@ pub(super) struct Changing<'a> {
 impl<'a> Changing<'a> {
     /// The store's contents, to change, with its schema table installed.
     pub(super) fn of(
-        schemas: std::sync::Arc<crate::schema::Schemas>,
+        schemas: &std::sync::Arc<crate::schema::Schemas>,
         inner: &'a std::cell::RefCell<Inner>,
     ) -> Self {
         let scope = schemas.enter();

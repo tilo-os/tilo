@@ -259,6 +259,16 @@ implement the same `PartPainter` and draw through the same host as a
 theme's own set. Each draws the four surface parts (window ground, floating
 panel, bar body, control face) and leaves the rest to the toolkit.
 
+A part's tokens carry the light a surface catches (`PartTokens::light`,
+from `Colors::light`): daylight at no chroma, white under every palette and
+temperature, so it is not a shade of what it lands on. Glass draws its
+specular sheen and its lit rim in it; how strongly a body catches the light
+stays the role's finish (`specular`, `edge_highlight`), so a theme that
+wants a warmer or cooler light has a token to name rather than a literal
+in a painter. The wire encoding puts it after the parameter list and reads
+bytes that end before it as the stock white, so an older encoding still
+reads; a field added to `PartTokens` goes on the end the same way.
+
 **Sets loaded from wasm.** A theme's set is a module built against the SDK
 (`export_painter!`). `part_paint::wasm` loads it:
 
