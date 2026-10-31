@@ -28,6 +28,7 @@ pub mod backend;
 pub mod capture;
 pub mod clipboard_history;
 pub mod color_filter;
+mod color_management;
 pub mod config;
 mod cursor;
 pub mod dim;
@@ -511,6 +512,7 @@ impl Compositor {
         self.data.state.tick_idle();
         self.sync_power();
         self.publish_displays();
+        self.publish_output_colors();
         self.display.flush_clients()?;
         self.data.state.lift_lock_of_departed_client();
         Ok(())
@@ -1480,6 +1482,20 @@ impl Compositor {
             .into_iter()
             .map(|(info, rect)| (info, (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h)))
             .collect()
+    }
+
+    /// The colour the client of the window `id` says its content is in: the
+    /// image description it attached through `wp_color_management_v1`, or
+    /// `None` when it attached none. A share stream tags its frames with it.
+    #[must_use]
+    pub fn window_color(
+        &self,
+        id: u64,
+    ) -> Option<(
+        neighbour_wire::colorimetry::Colorimetry,
+        Option<neighbour_wire::hdr_metadata::Hdr10Metadata>,
+    )> {
+        self.data.state.window_color(id)
     }
 
     /// What the X11 window `id` says about its program: its process, class,

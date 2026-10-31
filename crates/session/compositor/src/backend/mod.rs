@@ -60,6 +60,14 @@ pub trait Backend {
         Vec::new()
     }
 
+    /// The HDR signal `output` is being driven with, or `None` for an
+    /// ordinary SDR one: colour-managed clients learn it through
+    /// `wp_color_management_output_v1`, so an HDR app knows the volume it
+    /// renders into. Backends that drive no HDR signal have none.
+    fn output_hdr(&self, _output: &smithay::output::Output) -> Option<crate::config::Hdr> {
+        None
+    }
+
     /// How this backend drives its outputs (`drm-kms`, `headless`), as
     /// Settings names it when it explains a display.
     fn describe(&self) -> &'static str {

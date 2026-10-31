@@ -411,6 +411,17 @@ impl Backend for DrmBackend {
             .collect()
     }
 
+    fn output_hdr(&self, output: &smithay::output::Output) -> Option<crate::config::Hdr> {
+        let inner = self.inner.borrow();
+        inner
+            .gpus
+            .values()
+            .flat_map(|gpu| gpu.outputs.values())
+            .find(|lit| lit.output == *output && lit.color.hdr_on)
+            .and_then(|lit| lit.color.pass.as_ref())
+            .and_then(|pass| pass.wanted().hdr.clone())
+    }
+
     fn backdrop(
         &mut self,
         state: &mut State,
