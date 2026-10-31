@@ -37,7 +37,7 @@ pub struct WindowInfo {
     /// portal request names the app it comes from.
     pub pid: Option<u32>,
     /// The icon the window set for itself, when it set one: what its tab
-    /// paints when its program brings no artwork of its own.
+    /// paints instead of its app kind's glyph.
     pub icon: Option<std::sync::Arc<crate::toplevel_icon::WindowIcon>>,
 }
 

@@ -374,6 +374,7 @@ mod tests {
                     id: opened,
                     app_id: (*app_id).to_owned(),
                     pid: Some(u32::try_from(ordinal).expect("a count")),
+                    artwork: None,
                 },
                 ProcessFacts {
                     exe: file.clone(),

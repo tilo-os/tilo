@@ -80,9 +80,8 @@ impl AppImageSource for Artwork {
 /// The artwork a window brought of its own: the icon the program set for
 /// that window, whether it handed over pixels or named a theme icon. Keyed by
 /// the window and the icon's serial, so a program that sets another icon is
-/// new artwork and the same one is not painted again. `None` when the window
-/// has no icon of its own.
-pub(crate) fn window(window: u64, icon: &tilo_compositor::WindowIcon) -> Option<AppImage> {
+/// new artwork and the same one is not painted again.
+pub(crate) fn window(window: u64, icon: &tilo_compositor::WindowIcon) -> AppImage {
     let layers = match icon.artwork() {
         tilo_compositor::IconArtwork::Named(name) => vec![Layer::Named(name.clone())],
         tilo_compositor::IconArtwork::Pixels(images) => {
@@ -102,10 +101,10 @@ pub(crate) fn window(window: u64, icon: &tilo_compositor::WindowIcon) -> Option<
             vec![Layer::Pixels(images)]
         }
     };
-    Some(AppImage::new(Artwork {
+    AppImage::new(Artwork {
         key: format!("window:{window}:{}", icon.serial()),
         layers,
-    }))
+    })
 }
 
 /// The pixels that fill `device_px`: the smallest offer at least that big, so

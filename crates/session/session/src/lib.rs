@@ -96,7 +96,7 @@ use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::Command;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Started;
-use tilo_surface_host::{DeskGesture, DesktopHost, Doors, Published, WidgetHost};
+use tilo_surface_host::{DeskGesture, DesktopHost, Doors, WidgetHost};
 use ui::application::ComponentRunnerInputs;
 use ui::host_operation::ResourceOperationStart;
 use ui::shortcut_table::ShortcutAction;
@@ -120,9 +120,10 @@ pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
 pub use tilo_quick_settings::host::PanelHost;
 pub use tilo_service::{Service, Services};
 
-use controls::SessionControls;
-use keys::{GuideKeys, Invocations, SessionKeys};
-use panels::{Banners, Held, Popover, Readout};
+use keys::{GuideKeys, Invocations};
+use mount::panels::{KeyContext, mount_controls, mount_device, mount_setup};
+use mount::services::{answered, mount_services, start_action_plane};
+use panels::{Banners, Held};
 use search::SessionSearch;
 use setup::Setup;
 use tilo_app_launch::Doors as WindowDoors;
@@ -2307,23 +2308,23 @@ impl Session {
         }
     }
 
-    /// Hand the desk each window's own icon, which it paints wherever the
-    /// window's program brings no artwork of its own, and let go of the icons
-    /// of windows that closed.
+    /// Hand the desk each window's own icon, which it paints on the window's
+    /// tab and in the switcher, and let go of the icons of windows that
+    /// closed or set none.
     fn feed_window_artwork(&mut self) {
         let mut shown = std::collections::BTreeMap::new();
         for (window, _) in self.compositor.windows() {
-            if let Some(serial) = window.icon.as_ref().map(|icon| icon.serial()) {
-                shown.insert(window.id, serial);
-                if self.window_artwork.get(&window.id) == Some(&serial) {
-                    continue;
-                }
+            let Some(icon) = window.icon.as_ref() else {
+                continue;
+            };
+            let serial = icon.serial();
+            shown.insert(window.id, serial);
+            if self.window_artwork.get(&window.id) == Some(&serial) {
+                continue;
             }
-            let icon = window
-                .icon
-                .as_ref()
-                .and_then(|icon| app_icons::window(window.id, icon));
-            self.shared.handle.set_window_artwork(window.id, icon);
+            self.shared
+                .handle
+                .set_window_artwork(window.id, Some(app_icons::window(window.id, icon)));
         }
         for (gone, _) in std::mem::take(&mut self.window_artwork) {
             if !shown.contains_key(&gone) {
@@ -2762,264 +2763,4 @@ fn running_apps(compositor: &Compositor) -> Vec<(String, u32)> {
         apps.insert(app_id, state);
     }
     apps.into_iter().collect()
-}
-
-/// Quick settings as a popover under the bar, lent `panel`'s readings
-/// (which `readings` then holds too).
-fn mount_quick_settings(
-    compositor: &mut Compositor,
-    doors: &mut Doors,
-    panel: Rc<dyn PanelHost>,
-    options: &Options,
-    readings: &panels::Readings,
-) -> Option<QuickSettingsPanel> {
-    let open = Rc::new(Cell::new(false));
-    let dismissed = Rc::new(Cell::new(None));
-    let panel = Rc::new(panels::Tap {
-        inner: panel,
-        feed: Rc::clone(readings),
-    });
-    match tilo_quick_settings::prepare(panel, &options.device, &options.person, 1)
-        .and_then(|component| ui::App::from_component(component, (options.presentation)()))
-    {
-        Ok(app) => {
-            let surface = Rc::new(RefCell::new(Popover::new(
-                app,
-                Rc::clone(&open),
-                Rc::clone(&dismissed),
-                options.scale,
-            )));
-            compositor.add_host(Box::new(Held(Rc::clone(&surface))));
-            doors.add(surface);
-            Some(QuickSettingsPanel { open, dismissed })
-        }
-        Err(error) => {
-            tracing::warn!(%error, "quick settings not mounted");
-            None
-        }
-    }
-}
-
-/// What a service answered, as a caller of the action protocol reads it.
-fn answered(started: Started) -> ResourceOperationStart {
-    match started {
-        Started::Done(output) => ResourceOperationStart::Completed(output),
-        Started::Accepted => ResourceOperationStart::Accepted,
-    }
-}
-
-/// The system services' published side, behind the session's door like
-/// every hosted surface: one action host for all of them.
-struct ServiceDoor {
-    services: Rc<RefCell<Services>>,
-    /// The last reading asked for, and the services' revision it was read
-    /// at: a panel following a resource is answered from here until the
-    /// services move, so a frame never reads the device again.
-    last: (u64, Option<(String, serde_json::Value)>),
-}
-
-/// A surface app reaches the desktop's actions exactly as a person's
-/// palette does: through the door over every surface it hosts.
-impl surfaces::ActionDoor for tilo_surface_host::Doors {
-    fn resources(&mut self) -> Vec<ResourceSpec> {
-        tilo_surface_host::Doors::resources(self)
-    }
-
-    fn read(&mut self, resource: &str) -> Option<serde_json::Value> {
-        tilo_surface_host::Doors::read(self, resource)
-    }
-
-    fn revision(&mut self) -> Option<u64> {
-        tilo_surface_host::Doors::moved(self)
-    }
-
-    fn invoke(
-        &mut self,
-        address: &ActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<ResourceOperationStart, DoorError> {
-        tilo_surface_host::Doors::invoke(self, address, arguments)
-    }
-}
-
-impl Published for ServiceDoor {
-    fn resources(&mut self) -> Vec<ResourceSpec> {
-        self.services.borrow().resources()
-    }
-
-    fn read(&mut self, resource: &str) -> Option<serde_json::Value> {
-        let revision = self.services.borrow().revision();
-        if self.last.0 == revision
-            && let Some((read, value)) = &self.last.1
-            && read == resource
-        {
-            return Some(value.clone());
-        }
-        let value = self.services.borrow().read(resource)?;
-        self.last = (revision, Some((resource.to_owned(), value.clone())));
-        Some(value)
-    }
-
-    fn revision(&self) -> Option<u64> {
-        Some(self.services.borrow().revision())
-    }
-
-    fn invoke(
-        &mut self,
-        address: &ActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<ResourceOperationStart, DoorError> {
-        match self
-            .services
-            .borrow_mut()
-            .invoke(&address.resource, &address.action, arguments)
-        {
-            Some(Ok(Started::Done(output))) => Ok(ResourceOperationStart::Completed(output)),
-            Some(Ok(Started::Accepted)) => Ok(ResourceOperationStart::Accepted),
-            Some(Err(error)) => Err(error),
-            None => Err(DoorError::Unknown(address.clone())),
-        }
-    }
-
-    fn accessible_labels(&mut self) -> Vec<String> {
-        Vec::new()
-    }
-}
-
-/// A sheet lent `seat`, hosted over the desktop and its panels with its
-/// actions behind the door while it is up; the seat, when it mounted.
-/// Setup, when the person has not been through it: above everything,
-/// first to the keyboard, and while it is up the only surface offering
-/// actions.
-fn mount_setup(
-    compositor: &mut Compositor,
-    doors: &mut Doors,
-    view: Option<OnboardingView>,
-    person: &str,
-    scale: f64,
-) -> Option<Rc<RefCell<Setup>>> {
-    setup::lend(compositor.waker(), person);
-    view.map(|view| {
-        let setup = Rc::new(RefCell::new(Setup::new(view, scale)));
-        compositor.add_host(Box::new(Held(Rc::clone(&setup))));
-        doors.add(Rc::clone(&setup) as tilo_surface_host::Shared);
-        setup
-    })
-}
-
-/// What the session's keys answer with besides the shortcut table: the
-/// controller the person last drove the desktop with, whether the keys
-/// being routed are that controller's own, and the display sheet Super+P
-/// puts up.
-struct KeyContext {
-    controller: Rc<Cell<Option<ui::ControllerFamily>>>,
-    controller_keys: Rc<Cell<bool>>,
-    displays: Option<tilo_sheets::Presentation>,
-}
-
-/// The hardware keys' readout above the apps, and the session's own
-/// resources and the keys it answers wherever the keyboard is: above every
-/// surface, so offered every press first.
-fn mount_controls(
-    compositor: &mut Compositor,
-    doors: &mut Doors,
-    shortcuts: Rc<RefCell<ui::shortcut_table::ShortcutConfig>>,
-    portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
-    guide: GuideKeys,
-    KeyContext {
-        controller,
-        controller_keys,
-        displays,
-    }: KeyContext,
-    scale: f64,
-) -> (Rc<RefCell<Vec<SessionCommand>>>, Invocations) {
-    let readout = Rc::new(RefCell::new(Readout::new(scale)));
-    compositor.add_host(Box::new(Held(Rc::clone(&readout))));
-    doors.add(readout);
-    let commands = Rc::new(RefCell::new(Vec::new()));
-    doors.add(Rc::new(RefCell::new(SessionControls::new(Rc::clone(
-        &commands,
-    )))));
-    let invocations = Invocations::default();
-    compositor.add_host(Box::new(SessionKeys::new(
-        shortcuts,
-        Rc::clone(&invocations),
-        portal,
-        guide,
-        displays,
-        controller,
-        controller_keys,
-    )));
-    (commands, invocations)
-}
-
-/// The plane the apps read and invoke this session's services on, when it
-/// serves one: the socket the launcher hands its apps, and the link the loop
-/// answers their calls through.
-fn start_action_plane(
-    options: &Options,
-    live_activities: &std::sync::Arc<runtime_collab::LiveActivities>,
-) -> Result<Option<Plane>, Error> {
-    let path = match &options.action_plane {
-        ActionPlane::Off => return Ok(None),
-        ActionPlane::Launcher => {
-            // The launcher hands an app the socket under the services root,
-            // which only its owner may reach.
-            launcher::services::ensure_services_root()?;
-            launcher::services::collab_socket()
-        }
-        ActionPlane::At(path) => path.clone(),
-    };
-    let link = plane::Link::new(options.wake.handle());
-    let broker = plane::serve(
-        path,
-        std::sync::Arc::clone(&link),
-        std::sync::Arc::clone(&options.launches),
-        options.fabric.clone(),
-        std::sync::Arc::clone(live_activities),
-        // The index search reads is the one apps publish into: a closed
-        // app's content is found from here on.
-        options.search.content.clone(),
-    )?;
-    Ok(Some(Plane {
-        link,
-        _broker: broker,
-    }))
-}
-
-/// The services, published on the door.
-fn mount_services(doors: &mut Doors, started: Vec<Box<dyn Service>>) -> Rc<RefCell<Services>> {
-    let mut services = Services::default();
-    for service in started {
-        services.add(service);
-    }
-    let services = Rc::new(RefCell::new(services));
-    doors.add(Rc::new(RefCell::new(ServiceDoor {
-        services: Rc::clone(&services),
-        last: (0, None),
-    })));
-    services
-}
-
-/// The device's own backend, when the session runs one, and the quick
-/// settings panel over it.
-fn mount_device(
-    compositor: &mut Compositor,
-    doors: &mut Doors,
-    options: &mut Options,
-    readings: &panels::Readings,
-) -> (Option<DeviceHost>, Option<QuickSettingsPanel>) {
-    let (device, panel) = match options.quick_settings.take() {
-        Some(QuickSettings::Device(make)) => {
-            let waker = compositor.waker();
-            let device = make(Arc::new(move || waker.wake_by_ref()));
-            let panel = device.panel();
-            (Some(device), Some(panel))
-        }
-        Some(QuickSettings::Lent(panel)) => (None, Some(panel)),
-        None => (None, None),
-    };
-    let quick_settings =
-        panel.and_then(|panel| mount_quick_settings(compositor, doors, panel, options, readings));
-    (device, quick_settings)
 }

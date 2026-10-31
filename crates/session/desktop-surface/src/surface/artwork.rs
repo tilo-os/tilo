@@ -1,8 +1,8 @@
 //! The artwork each window brought of its own: the icon a program set for its
-//! window, which that window's tab paints where its program brings no artwork
-//! of its own ([`DesktopHandle::set_window_artwork`]). Never part of the tree:
-//! a desk does not keep a window's icon after the window it belonged to is
-//! gone.
+//! window, which that window's tab paints in place of its app kind's glyph,
+//! and which the switcher shows
+//! ([`DesktopHandle::set_window_artwork`]). Never part of the tree: a desk does
+//! not keep a window's icon after the window it belonged to is gone.
 
 use super::{DesktopHandle, DesktopSurface};
 use tilo_desktop_model::TabId;
@@ -76,9 +76,16 @@ impl DesktopSurface {
         let mut changed = false;
         for row in self.rows.values_mut() {
             for group in &mut row.groups {
-                let tabs: Vec<TabId> = group.tabs().iter().map(|tab| tab.id).collect();
-                for tab in tabs {
-                    changed |= group.set_tab_icon(tab, wanted.get(&tab).cloned());
+                let tabs: Vec<(TabId, Option<ui::icons::AppImage>)> = group
+                    .tabs()
+                    .iter()
+                    .map(|tab| (tab.id, tab.icon.clone()))
+                    .collect();
+                for (tab, worn) in tabs {
+                    let wanted = wanted.get(&tab).cloned();
+                    if worn != wanted {
+                        changed |= group.set_tab_icon(tab, wanted);
+                    }
                 }
             }
         }

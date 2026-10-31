@@ -1965,7 +1965,7 @@ fn a_tab_dragged_along_its_bar_keeps_the_order_it_lands_in() {
 fn a_windows_own_icon_is_on_its_tab() {
     struct Own;
     impl ui::icons::AppImageSource for Own {
-        fn key(&self) -> &str {
+        fn key(&self) -> &'static str {
             "window:91:1"
         }
 

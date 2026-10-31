@@ -613,9 +613,9 @@ struct PlainOverview {
     user: String,
 }
 
-/// The switcher's view of a host: every window carries its app's mark or, when
-/// its program brings no artwork, the icon the window set for itself; none is
-/// pictured ([`NoThumbnails`]).
+/// The switcher's view of a host: a window shows the icon it set for itself
+/// and keeps its app's glyph when it set none; none is pictured
+/// ([`NoThumbnails`]).
 struct SwitcherWindows<'a> {
     handle: &'a DesktopHandle,
 }
