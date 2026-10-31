@@ -16,6 +16,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tilo_actions::remote::{
@@ -26,6 +27,7 @@ use tilo_compositor::OutputConfig;
 use tilo_desktop::desktop_actions::{
     CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND,
 };
+use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
@@ -73,11 +75,16 @@ impl AppActions for Host {
 }
 
 fn session(host: Rc<Host>) -> Session {
-    session_over(host, None)
+    session_over(host, None, None)
 }
 
-/// A session whose search also lists the records `records` keeps current.
-fn session_over(host: Rc<Host>, records: Option<tilo_session::Records>) -> Session {
+/// A session whose search also lists the records `records` keeps current
+/// and what apps published into `content`.
+fn session_over(
+    host: Rc<Host>,
+    records: Option<tilo_session::Records>,
+    content: Option<Arc<AppContentIndex>>,
+) -> Session {
     Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -91,6 +98,7 @@ fn session_over(host: Rc<Host>, records: Option<tilo_session::Records>) -> Sessi
                     }],
                     ..AppLists::default()
                 }),
+                content,
                 records,
                 ..SearchOptions::default()
             },
@@ -474,7 +482,7 @@ fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
     );
     let records = tilo_session::Records::of(home.data().to_path_buf());
     let host = Rc::new(Host::default());
-    let mut session = session_over(Rc::clone(&host), Some(records));
+    let mut session = session_over(Rc::clone(&host), Some(records), None);
     session.step(Duration::from_millis(1)).unwrap();
 
     // A second workspace, so a record can be held somewhere else than here.
@@ -542,7 +550,7 @@ fn a_row_for_a_record_no_workspace_holds_any_more_brings_nothing_here() {
     let _settled = ui::motion::testing::settled();
     write_index(&home, NOTES, "elsewhere", &[(STALE, "document")]);
     let records = tilo_session::Records::of(home.data().to_path_buf());
-    let mut session = session_over(Rc::new(Host::default()), Some(records));
+    let mut session = session_over(Rc::new(Host::default()), Some(records), None);
     session.step(Duration::from_millis(1)).unwrap();
     let here = active_room(&session);
 
@@ -582,4 +590,94 @@ fn a_row_for_a_record_no_workspace_holds_any_more_brings_nothing_here() {
         "no reference is written: {:?}",
         known_in(NOTES, &here)
     );
+}
+
+/// Publish one entry an app of `room` holds, as its record `tab:0001`
+/// filled with what it has: the one item, named `title`.
+fn published(index: &AppContentIndex, room: &str, title: &str) {
+    use ui::search::index_publication::{IndexDelta, IndexEntry};
+
+    let delta = IndexDelta {
+        reset: true,
+        upsert: vec![IndexEntry {
+            key: "n1".into(),
+            resource: "n1".into(),
+            action: None,
+            title: title.into(),
+            subtitle: None,
+            group: None,
+            icon: None,
+            boost: 0,
+            fields: Vec::new(),
+            secret: false,
+            references: Vec::new(),
+        }],
+        ..IndexDelta::default()
+    };
+    index
+        .publish(room, NOTES, "tab:0001", &delta.encode().expect("a delta"))
+        .expect("the index takes the publication");
+}
+
+/// Wait until the index has kept a slot on disk.
+fn kept(index_dir: &std::path::Path) -> bool {
+    std::fs::read_dir(index_dir).is_ok_and(|files| {
+        files.flatten().any(|file| {
+            file.path()
+                .extension()
+                .is_some_and(|extension| extension == "json")
+                && file.file_name() != "secrets.json"
+        })
+    })
+}
+
+#[test]
+fn an_apps_published_entry_is_found_with_the_app_closed_and_after_a_restart() {
+    let _settled = ui::motion::testing::settled();
+    let dir = tempfile::tempdir().expect("a directory to keep the index in");
+    let content = AppContentIndex::persistent(dir.path().to_path_buf());
+    let host = Rc::new(Host::default());
+    let mut session = session_over(Rc::clone(&host), None, Some(Arc::clone(&content)));
+    session.step(Duration::from_millis(1)).unwrap();
+    let room = active_room(&session);
+
+    // What an app published before it closed: no app runs here, and the only
+    // actions host is the fixture that runs nothing.
+    published(&content, &room, "Groceries for the weekend");
+    let row = find_row(&mut session, "groceries", "Groceries for the weekend");
+    assert_eq!(
+        row.presentation
+            .and_then(|presentation| presentation.detail),
+        Some("Notes".to_owned()),
+        "the row says which app holds it"
+    );
+
+    // Choosing it asks the app to open at the entry, starting it first when
+    // it is closed.
+    invoke(
+        &mut session,
+        row.id.as_str(),
+        "choose",
+        serde_json::json!({}),
+    );
+    until(&mut session, |_| !host.invoked.borrow().is_empty());
+    let (target, arguments) = host.invoked.borrow()[0].clone();
+    assert_eq!(
+        target,
+        application_action_target(&room, NOTES, "n1", "open"),
+        "the entry opens in the app that published it"
+    );
+    assert_eq!(arguments["anchor"], "n1");
+    drop(session);
+
+    // A restart reads back what the index kept on disk: the entry is found
+    // again, with nothing publishing it.
+    assert!(
+        within(|| kept(dir.path())),
+        "the index keeps the entry on disk"
+    );
+    let reopened = AppContentIndex::persistent(dir.path().to_path_buf());
+    let mut session = session_over(Rc::new(Host::default()), None, Some(reopened));
+    session.step(Duration::from_millis(1)).unwrap();
+    find_row(&mut session, "groceries", "Groceries for the weekend");
 }

@@ -23,9 +23,10 @@ use serde_json::Map;
 use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
 use tilo_action_broker::collab_outbound::PeerPublisher;
 use tilo_action_broker::services::{
-    Caller, HostServices, PublishedResources, Reading, ResourceWatch, SpeakerChange,
-    SpeakerServices,
+    Caller, HostServices, PublishedResources, Reading, ResourceWatch, SearchIndexServices,
+    SpeakerChange, SpeakerServices,
 };
+use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Services, Started, Wake};
 use tokio::sync::{mpsc, oneshot};
@@ -215,10 +216,29 @@ impl SpeakerServices for FabricSpeakers {
     }
 }
 
+/// The host service the broker hands apps' search publications to: the
+/// session's index of what apps hold, which the desktop's search reads and
+/// which keeps what was published after the app closes and the session
+/// restarts.
+struct ContentIndex(std::sync::Arc<AppContentIndex>);
+
+impl SearchIndexServices for ContentIndex {
+    fn publish(
+        &self,
+        room: tilo_desktop_model::RoomId,
+        app: &str,
+        record: &str,
+        delta: &[u8],
+    ) -> Result<(), String> {
+        self.0.publish(&room.to_string(), app, record, delta)
+    }
+}
+
 /// Serve the session's published resources to the apps on `socket`: the
 /// broker admits each connection by the launch `launches` recorded, asks
 /// `link` for what the services publish, and hands Settings the speaker
-/// groups of `fabric` when this session runs on one.
+/// groups of `fabric` when this session runs on one. What apps publish of
+/// their own content lands in `content`, the index search reads.
 ///
 /// # Errors
 ///
@@ -230,8 +250,9 @@ pub fn serve(
     launches: std::sync::Arc<Launches>,
     fabric: Option<tilo_device_fabric::link::SharedLink>,
     live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
+    content: Option<std::sync::Arc<AppContentIndex>>,
 ) -> std::io::Result<BrokerHandle> {
-    let services = host_services(link, launches, fabric, live_activities);
+    let services = host_services(link, launches, fabric, live_activities, content);
     tilo_action_broker::collab_broker::spawn_with_services(
         socket,
         None,
@@ -251,9 +272,13 @@ fn host_services(
     launches: std::sync::Arc<Launches>,
     fabric: Option<tilo_device_fabric::link::SharedLink>,
     live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
+    content: Option<std::sync::Arc<AppContentIndex>>,
 ) -> HostServices {
     let speakers: Option<std::sync::Arc<dyn SpeakerServices>> = fabric.map(|fabric| {
         std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
+    });
+    let search_index: Option<std::sync::Arc<dyn SearchIndexServices>> = content.map(|content| {
+        std::sync::Arc::new(ContentIndex(content)) as std::sync::Arc<dyn SearchIndexServices>
     });
     HostServices {
         published: Some(link),
@@ -262,6 +287,9 @@ fn host_services(
         // Every app shows its live activity (a running timer, a stopwatch)
         // outside its windows on this one board.
         live_activities: Some(live_activities),
+        // What an app publishes of its own content is found whether or not
+        // it runs, once it is closed and after a restart.
+        search_index,
         ..HostServices::default()
     }
 }
@@ -409,7 +437,58 @@ mod tests {
             std::sync::Arc::new(Launches::default()),
             fabric,
             std::sync::Arc::new(runtime_collab::LiveActivities::default()),
+            None,
         )
+    }
+
+    /// An app publishes what it holds through the broker, and the index the
+    /// session handed it keeps it: it is the same index search reads.
+    #[test]
+    fn an_apps_search_publication_lands_in_the_index_search_reads() {
+        use ui::search::index_publication::{IndexDelta, IndexEntry};
+
+        let content = std::sync::Arc::new(AppContentIndex::in_memory());
+        let services = host_services(
+            Link::new(std::sync::Arc::new(|| ())),
+            std::sync::Arc::new(Launches::default()),
+            None,
+            std::sync::Arc::new(runtime_collab::LiveActivities::default()),
+            Some(std::sync::Arc::clone(&content)),
+        );
+        let search_index = services
+            .search_index
+            .expect("a session with an index offers apps its search index");
+        let room = tilo_desktop_model::RoomId::new();
+        let delta = IndexDelta {
+            reset: true,
+            upsert: vec![IndexEntry {
+                key: "n1".into(),
+                resource: "n1".into(),
+                action: None,
+                title: "Groceries".into(),
+                subtitle: None,
+                group: None,
+                icon: None,
+                boost: 0,
+                fields: Vec::new(),
+                secret: false,
+                references: Vec::new(),
+            }],
+            ..IndexDelta::default()
+        };
+        search_index
+            .publish(
+                room,
+                "so.tilo.notes",
+                "tab:0001",
+                &delta.encode().expect("a delta"),
+            )
+            .expect("the index takes the publication");
+        assert_eq!(
+            content.title(&room.to_string(), "n1").as_deref(),
+            Some("Groceries"),
+            "what the app published is in the index search reads"
+        );
     }
 
     /// Settings reaches the speaker groups of the fabric this session runs

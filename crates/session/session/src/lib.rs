@@ -2669,6 +2669,9 @@ fn start_action_plane(
         std::sync::Arc::clone(&options.launches),
         options.fabric.clone(),
         std::sync::Arc::clone(live_activities),
+        // The index search reads is the one apps publish into: a closed
+        // app's content is found from here on.
+        options.search.content.clone(),
     )?;
     Ok(Some(Plane {
         link,
