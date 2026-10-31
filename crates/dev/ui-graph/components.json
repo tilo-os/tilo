@@ -705,6 +705,57 @@
       }
     },
     {
+      "name": "DragRun",
+      "doc": "A run of items — a dock's icons, a toolbar's tiles, a row of cards — reordered by dragging one. Each item is one `ui.DragItem`.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the run is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "axis",
+          "doc": "Whether the items lead to trailing (the default) or run top to bottom.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Axis",
+                "cases": [
+                  "horizontal",
+                  "vertical"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "items",
+          "doc": "The items, in order.",
+          "accepts": {
+            "component": "DragItem"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "drop",
+          "doc": "An item was let go in a new place: carries the resource it stands for and its place among the run's other items, from 0 — what `items.move(item, to: at)` takes.",
+          "value": "resource",
+          "at": "int"
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
       "name": "EmptyState",
       "doc": "What a place says while it holds nothing: one sentence, and at most one action that starts filling it.",
       "props": [
@@ -2526,6 +2577,45 @@
       "semantics": {
         "role": "MenuItem",
         "label": "label"
+      }
+    },
+    {
+      "name": "DragItem",
+      "doc": "One item of a run: what it stands for, and the view drawn in its slot.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The resource the item stands for: what a drop carries, and what a drag out of the run reports.",
+          "type": {
+            "option": "resource"
+          },
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What the item is called, for its ghost and for assistive technology.",
+          "type": "text",
+          "required": true
+        }
+      ],
+      "slots": [
+        {
+          "name": "body",
+          "doc": "What it shows.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "activate",
+          "doc": "It was pressed and let go without moving: open what it stands for."
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "label": "title"
       }
     },
     {

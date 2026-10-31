@@ -73,6 +73,16 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
          `show-strips`, `toggle-overview`, `new-workspace`, `join-workspace`, \
          `workspace-settings`), by its id.",
     ),
+    (
+        "session.launch",
+        "Opens an app, or goes to what a dock item stands for: the `key` of the item's \
+         `session.dock-item` — an app id, or a resource's reference.",
+    ),
+    (
+        "session.set",
+        "Sets one of the device's settings the shell's Quick Settings shows, by the setting's \
+         key and the value: `(key, value)`.",
+    ),
 ];
 
 /// Every kind of every origin the platform has.
@@ -161,6 +171,76 @@ pub const KINDS: &[OriginKind] = &[
         fields: &[
             field("key", "Text", "Who they are, by their live presence's id."),
             field("name", "Text", "Their name here."),
+        ],
+    },
+    OriginKind {
+        name: "session.dock-item",
+        doc: "One item of the dock as the session holds it: an app the person pinned, an app \
+              running now, or a task. A shell's dock shows them; the session writes the \
+              running and badge fields, the person the pinned ones.",
+        fields: &[
+            field("key", "Text", "The app's id, or a resource's reference."),
+            field("title", "Text", "Its name on the dock."),
+            field("icon", "Text", "Its glyph, by the platform icon's name."),
+            people(
+                "pinned",
+                "Bool",
+                "Whether the person pinned it to their dock.",
+            ),
+            field("running", "Bool", "Whether it runs now."),
+            field(
+                "badge",
+                "Int",
+                "How many things it has new, as its dock badge shows.",
+            ),
+            field("attention", "Bool", "Whether it wants the person now."),
+        ],
+    },
+    OriginKind {
+        name: "session.control",
+        doc: "A device control the person's shell shows in Quick Settings: sound, brightness, \
+              the network, Bluetooth, the power, the theme and the do-not-disturb state. The \
+              session writes what the device says; the person changes it, as the system's own \
+              panel does.",
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "Which control: `volume`, `brightness`, `network`, `bluetooth`, `wifi`, \
+                 `power`, `theme`, `quiet`.",
+            ),
+            field(
+                "label",
+                "Text",
+                "What it is called, in the person's language.",
+            ),
+            field("icon", "Text", "Its glyph, by the platform icon's name."),
+            field(
+                "on",
+                "Bool",
+                "Whether it is on: Bluetooth, Wi-Fi, do-not-disturb.",
+            ),
+            field(
+                "value",
+                "Int",
+                "Its level, 0 to 100 (sound, brightness); 0 when it has none.",
+            ),
+            field(
+                "detail",
+                "Text",
+                "What it stands at in words: the network's name, the theme's name, the \
+                 battery's charge.",
+            ),
+            field(
+                "available",
+                "Bool",
+                "Whether the device has it, or it can be changed now.",
+            ),
+            field(
+                "has_level",
+                "Bool",
+                "Whether it is a level the person sets (sound, brightness).",
+            ),
         ],
     },
     OriginKind {

@@ -37,6 +37,8 @@ mod rich_text;
 #[cfg(feature = "room")]
 mod room;
 mod scenarios;
+#[cfg(feature = "room")]
+mod shell_record;
 mod surface;
 mod sync;
 mod task;

@@ -1,6 +1,6 @@
 //! `layers`: children drawn on top of each other, each at one of nine logical positions.
 
-use taffy::style_helpers::{fr, length, line, minmax};
+use taffy::style_helpers::{fr, length, line, minmax, percent};
 use taffy::{Size, Style};
 
 use super::arranged::{Arranged, Layout, Resolved, Slot, wrapper_style};
@@ -34,6 +34,17 @@ impl Layout for LayersLayout {
     fn slot(&self, _index: usize, slot: &Slot, resolved: &Resolved) -> Style {
         let mut style = wrapper_style();
         slot.fit.apply(&mut style, Axis::Inline, resolved.rem);
+        // A layer that fills takes the whole cell. A grid child's flex-grow says
+        // nothing, so the fill is a width the cell resolves, and the layer keeps
+        // its own height (a bar at the top is as tall as the bar).
+        if slot.fit.width.fill.is_some() {
+            style.size.width = percent(1.0_f32);
+            style.flex_grow = 0.0;
+            style.flex_basis = taffy::Dimension::auto();
+        }
+        if slot.fit.height.fill.is_some() {
+            style.size.height = percent(1.0_f32);
+        }
         let cell = taffy::Line {
             start: line(1),
             end: taffy::GridPlacement::Auto,

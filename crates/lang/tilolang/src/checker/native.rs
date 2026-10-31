@@ -698,6 +698,14 @@ impl Checker<'_> {
                     Ty::Record(key) if crate::host::is_value(&key) => {
                         self.value_field(b, &key, name)
                     }
+                    // A resource's own `icon` field names the glyph it shows, as a
+                    // host value's does: an app, an entry of the launcher, an item of a
+                    // dock. Read as a field, its type tells whether it is a glyph or
+                    // something else.
+                    Ty::Record(_) => {
+                        let icon = self.field_read(b, name);
+                        (icon.ty == Ty::Text).then_some(icon)
+                    }
                     Ty::Error => Some(Ex::error()),
                     _ => None,
                 }
