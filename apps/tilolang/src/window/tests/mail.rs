@@ -1202,6 +1202,147 @@ fn find_kind<'a>(
         .find_map(|child| find_kind(child, kind, name, value))
 }
 
+// USER REQUIREMENT: a muted conversation stays out of the inbox while new messages keep coming,
+// and is found under Muted until it is brought back, as Gmail mutes a busy thread.
+#[test]
+fn muting_keeps_a_conversation_out_of_the_inbox_until_it_is_brought_back() {
+    let servers = servers();
+    let mut room = room_with(account(&servers));
+    synced(&mut room);
+    let account = room.accounts().remove(0);
+    let before = inbox_count(&room, &account).expect("the inbox counts its mail");
+    let plan = room.thread("Launch plan");
+    room.press("mute", vec![RtValue::resource(&plan)]);
+    assert!(room.flag(&plan, "muted"));
+    assert_eq!(
+        inbox_count(&room, &account),
+        Some(before - 1),
+        "a muted conversation leaves the inbox"
+    );
+    // New mail in it does not bring it back: with it unread again, as a new message leaves it,
+    // it is still out of the inbox.
+    room.press(
+        "mark_read",
+        vec![RtValue::resource(&plan), RtValue::Bool(true)],
+    );
+    assert!(room.flag(&plan, "unread"));
+    assert_eq!(
+        inbox_count(&room, &account),
+        Some(before - 1),
+        "the muted conversation stays out of the inbox while it is answered"
+    );
+    // Its place of its own lists it, so it is not lost.
+    let mut view = room
+        .host()
+        .open_resource(&account, None)
+        .expect("the account's window opens");
+    let muted = find_kind(view.tree(), "ui.NavItem", "label", "Muted")
+        .expect("the sidebar offers Muted")
+        .key
+        .clone();
+    view.fire(&muted, "select").expect("Muted opens");
+    view.poll_patches().expect("the window shows Muted");
+    assert_eq!(
+        count_in(view.tree(), "ui.NavShell"),
+        Some(1),
+        "Muted lists the muted conversation"
+    );
+    // The place the window went to is the window's, so it goes back to the inbox before the
+    // list is read again.
+    let inbox = find_kind(view.tree(), "ui.NavItem", "label", "Inbox")
+        .expect("the sidebar offers the inbox")
+        .key
+        .clone();
+    view.fire(&inbox, "select").expect("the inbox opens");
+    // Bringing it back unmutes it: it is in the inbox again.
+    room.press("to_inbox", vec![RtValue::resource(&plan)]);
+    assert!(!room.flag(&plan, "muted"));
+    assert_eq!(
+        inbox_count(&room, &account),
+        Some(before),
+        "brought back, it is in the inbox again"
+    );
+}
+
+// USER REQUIREMENT: one press reads a whole account's inbox, as Gmail's mark-all-read does.
+#[test]
+fn marking_all_read_reads_every_conversation_and_reaches_the_server() {
+    let servers = servers();
+    let mut room = room_with(account(&servers));
+    synced(&mut room);
+    let account = room.accounts().remove(0);
+    room.press("mark_all_read", vec![RtValue::resource(&account)]);
+    for t in room.refs(&account, "threads") {
+        assert!(!room.flag(&t, "unread"), "every conversation is read");
+    }
+    room.until("the server to hold them read", |_| {
+        servers
+            .imap
+            .messages("INBOX")
+            .iter()
+            .all(|m| m.flags.iter().any(|f| f == "\\Seen"))
+    });
+}
+
+// USER REQUIREMENT: a message can go at a moment instead of now, as Gmail's Schedule send does,
+// and until it goes it can be cancelled and is a draft again.
+#[test]
+fn a_message_sent_later_waits_for_its_moment_and_is_cancelled_before_it() {
+    use ui::time::testing::with_wall;
+    let _settled = ui::motion::testing::settled();
+    let servers = servers();
+    let mut room = room_at(local(6, 30, (10, 0, 0)), &servers);
+    hold_for(&mut room, 0);
+    let plan = room.thread("Launch plan");
+    let RtValue::Ref(draft) = room.press("reply", vec![RtValue::resource(&plan)]) else {
+        panic!("a reply is a draft");
+    };
+    let draft = (*draft.target).clone();
+    // Everything up to its cancellation happens at the pinned clock, so the moment it goes is
+    // still ahead: the frame settles without carrying it out.
+    let wait = with_wall(local(6, 30, (10, 0, 0)), || {
+        room.press(
+            "send_later",
+            vec![
+                RtValue::resource(&draft),
+                RtValue::text("2026-06-30T18:00:00Z"),
+            ],
+        );
+        assert!(room.flag(&draft, "sent"), "it is on its way, at a moment");
+        assert_eq!(
+            room.text(&draft, "send_at"),
+            "2026-06-30T18:00:00Z",
+            "the moment is recorded on the message"
+        );
+        assert_eq!(delivery_of(&room, &draft).unwrap().0, "held");
+        assert!(
+            servers.smtp.sent().is_empty(),
+            "a message sent later does not go yet"
+        );
+        // The window waits for its moment, and no longer.
+        room.window
+            .instance()
+            .wakes_in()
+            .expect("a message sent later sets the window's next wake")
+    });
+    assert!(
+        wait <= std::time::Duration::from_secs(8 * 3600 + 60),
+        "it waits until the moment it goes: {wait:?}"
+    );
+    // Cancelled before it goes: it is a draft again, and it never leaves.
+    with_wall(local(6, 30, (10, 1, 0)), || {
+        room.press("cancel_later", vec![RtValue::resource(&draft)]);
+    });
+    assert!(!room.flag(&draft, "sent"), "it is a draft again");
+    assert!(room.flag(&draft, "recalled"));
+    assert_eq!(delivery_of(&room, &draft).unwrap().0, "withdrawn");
+    for _ in 0..20 {
+        room.settle();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(servers.smtp.sent().is_empty(), "it never went");
+}
+
 // USER REQUIREMENT: a conversation must read as a mail client's does — its subject, each
 // message's sender and recipients, and what came with it — not as a run of bare bodies.
 #[test]
