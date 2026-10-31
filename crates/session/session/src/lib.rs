@@ -327,7 +327,6 @@ pub enum ActionPlane {
     At(std::path::PathBuf),
 }
 
-
 /// Where quick settings reads the device from.
 pub enum QuickSettings {
     /// The device host of this machine (or of a stand-in one), made with

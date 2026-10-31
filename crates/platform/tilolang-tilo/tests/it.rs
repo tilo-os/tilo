@@ -18,9 +18,9 @@ mod columns;
 mod composer;
 mod engines;
 mod fixtures;
+mod foreign;
 #[cfg(feature = "room")]
 mod history_views;
-mod foreign;
 mod incremental;
 mod index;
 mod items;
