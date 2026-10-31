@@ -1160,14 +1160,13 @@ impl AppWindow {
             .is_some_and(|typed| typed.after == fired && same_field(typed))
         {
             let follows = self.pointed_after != Some(self.fired);
-            let base = held.clone();
             self.typed.push_back(Typed {
                 after: fired,
                 key: Some(composed.to_owned()),
                 target,
                 follows,
                 moved: false,
-                held: base,
+                held,
                 sent: None,
             });
         } else if let Some(typed) = self.typed.back_mut() {
@@ -1475,7 +1474,7 @@ impl AppWindow {
             Held::Rich { base, .. } => Value::Rich(base.clone()),
         });
         if still_shown && let Some(target) = target {
-            self.send_typed_into_field(&key, lane, field, target, &typed.held, shown);
+            self.send_typed_into_field(&key, lane, field, target, &typed.held, &shown);
             return;
         }
         // The lane moved on to another resource: what they typed goes to the one it was typed
@@ -1483,7 +1482,7 @@ impl AppWindow {
         let Some(target) = typed.target else {
             return;
         };
-        let message = self.typed_elsewhere(&key, lane, field, target, &typed.held, shown);
+        let message = self.typed_elsewhere(&key, lane, field, target, &typed.held, &shown);
         self.out.push(message);
     }
 
@@ -1496,10 +1495,10 @@ impl AppWindow {
         field: String,
         target: ResourceRef,
         held: &Held,
-        shown: Value,
+        shown: &Value,
     ) {
-        let (show_at, delete, insert) = self.place_of(held, &shown);
-        match (&shown, held) {
+        let (show_at, delete, insert) = Self::place_of(held, shown);
+        match (shown, held) {
             (Value::Rich(before), _) => {
                 let rich = rich_spliced_at(before, show_at, delete, &insert);
                 self.bound
@@ -1540,7 +1539,7 @@ impl AppWindow {
 
     /// What the person typed, where it goes in what the field shows now: a splice of the
     /// shown text and the place the typing keeps from its end.
-    fn place_of(&self, held: &Held, shown: &Value) -> (usize, usize, String) {
+    fn place_of(held: &Held, shown: &Value) -> (usize, usize, String) {
         let (base_text, now_text) = held.texts();
         let (at, delete, insert) = splice_between(&base_text, &now_text);
         let shown = match shown {
@@ -1565,10 +1564,10 @@ impl AppWindow {
         field: String,
         target: ResourceRef,
         held: &Held,
-        shown: Value,
+        shown: &Value,
     ) -> ToApp {
-        let (show_at, delete, insert) = self.place_of(held, &shown);
-        match (held, &shown) {
+        let (show_at, delete, insert) = Self::place_of(held, shown);
+        match (held, shown) {
             (Held::Rich { base, .. }, _) => ToApp::EditRich {
                 lane,
                 target,
@@ -1582,7 +1581,7 @@ impl AppWindow {
                 rich: rich_spliced_at(before, show_at, delete, &insert),
             },
             (Held::Text { .. }, _) => {
-                let before = match &shown {
+                let before = match shown {
                     Value::Text(text) => text.clone(),
                     _ => String::new(),
                 };
