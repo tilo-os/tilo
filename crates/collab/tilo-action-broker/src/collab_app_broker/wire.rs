@@ -418,9 +418,9 @@ impl JoinedChannel {
             state.revalidate_admission(&route, &self.verified_identity)?;
             state
                 .commit_owner_request(
-                    tilo_owner_commit::OwnerCommitRequest {
+                    tilo_peer_state::owner_commit::OwnerCommitRequest {
                         room: route.cluster_id.clone(),
-                        operation: tilo_owner_commit::CommitOperation::Document {
+                        operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: route.app_id.clone(),
                             record: route.record_id.clone(),
                             envelope: Box::new(envelope.clone()),
@@ -687,13 +687,14 @@ impl JoinedChannel {
                 state.revalidate_admission(&route, &identity)?;
                 state
                     .commit_owner_request(
-                        tilo_owner_commit::OwnerCommitRequest {
+                        tilo_peer_state::owner_commit::OwnerCommitRequest {
                             room: surface.route.cluster_id,
-                            operation: tilo_owner_commit::CommitOperation::EffectReceipt {
-                                invocation: update.invocation().0,
-                                redacted: serde_json::to_vec(&receipt)
-                                    .map_err(|e| BrokerError::failed(e.to_string()))?,
-                            },
+                            operation:
+                                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                                    invocation: update.invocation().0,
+                                    redacted: serde_json::to_vec(&receipt)
+                                        .map_err(|e| BrokerError::failed(e.to_string()))?,
+                                },
                         },
                         None,
                     )

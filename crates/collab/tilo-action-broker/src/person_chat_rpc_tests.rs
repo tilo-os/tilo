@@ -35,7 +35,7 @@ impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
                     room,
                     &public_key,
                     &authority,
-                    tilo_joined_room::DirectMessageSend { invocation, text },
+                    tilo_peer_state::owner::DirectMessageSend { invocation, text },
                     now,
                 )?;
                 public_key
@@ -45,7 +45,7 @@ impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
             room,
             &peer,
             &authority,
-            tilo_joined_room::DirectConversationPage::default(),
+            tilo_peer_state::owner::DirectConversationPage::default(),
             now,
         )?;
         serde_json::to_vec(&serde_json::json!({
@@ -174,21 +174,21 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
 /// A second certified person joined through the room's host, so the owner has
 /// a private conversation peer that is a real member and not a bare label.
 fn enroll_contact(
-    owner: &tilo_joined_room::NativeWorkspaceOwner,
-    governor: &mut tilo_joined_room::testing::governor::TestGovernor,
+    owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
+    governor: &mut tilo_peer_state::owner::testing::governor::TestGovernor,
     room: tilo_desktop_model::RoomId,
 ) -> String {
     use tilo_peer_state::join;
     let now = std::time::SystemTime::now();
     let key = SigningKey::from_bytes(&[73; 32]);
-    let certificate = tilo_joined_room::testing::certificate(
+    let certificate = tilo_peer_state::owner::testing::certificate(
         &SigningKey::from_bytes(&[74; 32]),
         &key,
         "Conversation peer",
     );
-    let ns = tilo_joined_room::testing::ns(now).unwrap();
+    let ns = tilo_peer_state::owner::testing::ns(now).unwrap();
     let hint = governor.hint(iroh::EndpointAddr::new(
-        iroh::EndpointId::from_bytes(&governor.governor().device_public_key).unwrap(),
+        iroh::EndpointId::from_bytes(&governor.room_host().device_public_key).unwrap(),
     ));
     let invitation = governor.issue(
         vec![hint],
@@ -223,7 +223,7 @@ fn enroll_contact(
             .receive(
                 room,
                 tilo_peer_state::TransportOrigin::RetainedRelayDelta(
-                    governor.governor().device_public_key,
+                    governor.room_host().device_public_key,
                 ),
                 message,
                 now,
@@ -236,7 +236,7 @@ fn enroll_contact(
             .direct_contacts(
                 room,
                 &tilo_peer_state::caller_authority::CallerAuthority::Person {
-                    caller: governor.governor().clone(),
+                    caller: governor.room_host().clone(),
                 },
                 now,
             )
@@ -250,14 +250,14 @@ fn enroll_contact(
 
 /// Everything the room publishes about `owner`'s state, as peers can read it.
 fn public_owner_bytes(
-    owner: &tilo_joined_room::NativeWorkspaceOwner,
+    owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     room: tilo_desktop_model::RoomId,
 ) -> Vec<Vec<u8>> {
     owner
         .with_current(room, |view| {
-            let mut bytes = vec![tilo_joined_room::testing::durable_peer(view).to_vec()];
-            bytes.extend(tilo_joined_room::testing::entries(view)?);
-            bytes.extend(tilo_joined_room::testing::projection(view)?);
+            let mut bytes = vec![tilo_peer_state::owner::testing::durable_peer(view).to_vec()];
+            bytes.extend(tilo_peer_state::owner::testing::entries(view)?);
+            bytes.extend(tilo_peer_state::owner::testing::projection(view)?);
             Ok(bytes)
         })
         .unwrap()
@@ -283,11 +283,13 @@ async fn person_chat_open_send_read_stays_in_the_private_owner() {
         .run_until(async {
             let mut env = Environment::new();
             let path = env.root.path().join("private-person-chat.json");
-            let owner = tilo_joined_room::open_file(&path).unwrap();
-            let mut governor =
-                tilo_joined_room::testing::enroll_interactive_governor(&owner, &env.key, &env.cert)
-                    .unwrap();
-            let room = tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+            let owner = tilo_peer_state::owner::open_file(&path).unwrap();
+            let mut governor = tilo_peer_state::owner::testing::enroll_interactive_governor(
+                &owner, &env.key, &env.cert,
+            )
+            .unwrap();
+            let room =
+                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
             let peer = enroll_contact(&owner, &mut governor, room);
             env.route.app_id = "so.tilo.chat".into();
             env.route.cluster_id = room.to_string();
@@ -382,7 +384,7 @@ async fn person_chat_open_send_read_stays_in_the_private_owner() {
                     &tilo_peer_state::caller_authority::CallerAuthority::Person {
                         caller: env.cert.clone(),
                     },
-                    tilo_joined_room::DirectConversationPage::default(),
+                    tilo_peer_state::owner::DirectConversationPage::default(),
                     std::time::SystemTime::now(),
                 )
                 .unwrap();
@@ -399,7 +401,7 @@ async fn person_chat_open_send_read_stays_in_the_private_owner() {
             state.stop();
             drop(state);
             drop(owner);
-            let reopened = tilo_joined_room::open_file(&path).unwrap();
+            let reopened = tilo_peer_state::owner::open_file(&path).unwrap();
             let persisted = reopened
                 .read_direct_conversation(
                     room,
@@ -407,7 +409,7 @@ async fn person_chat_open_send_read_stays_in_the_private_owner() {
                     &tilo_peer_state::caller_authority::CallerAuthority::Person {
                         caller: env.cert.clone(),
                     },
-                    tilo_joined_room::DirectConversationPage::default(),
+                    tilo_peer_state::owner::DirectConversationPage::default(),
                     std::time::SystemTime::now(),
                 )
                 .unwrap();

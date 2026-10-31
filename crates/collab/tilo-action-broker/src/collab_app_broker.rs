@@ -1530,7 +1530,7 @@ struct PendingInvocation {
 
 struct PreparedEffectCommit {
     update: tilo_actions::InvocationUpdate,
-    request: tilo_owner_commit::OwnerCommitRequest,
+    request: tilo_peer_state::owner_commit::OwnerCommitRequest,
 }
 
 /// An opaque certified person admission. Its root/device are never accepted
@@ -3867,7 +3867,7 @@ impl AppBrokerState {
 
     async fn commit_owner_request(
         &self,
-        request: tilo_owner_commit::OwnerCommitRequest,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
         record_kind: Option<String>,
     ) -> Result<(), BrokerError> {
         // Dropping the waiting RPC cannot convert an admitted effect into a
@@ -3943,9 +3943,9 @@ impl AppBrokerState {
                     status,
                     tilo_clock::unix_now_i64(),
                 );
-                let request = tilo_owner_commit::OwnerCommitRequest {
+                let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
                     room: pending.cluster_id.clone(),
-                    operation: tilo_owner_commit::CommitOperation::EffectReceipt {
+                    operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
                         invocation: update.invocation().0,
                         redacted: serde_json::to_vec(&receipt)
                             .map_err(|error| BrokerError::failed(error.to_string()))?,
@@ -5752,7 +5752,7 @@ impl AppBrokerState {
         };
         let now = self.checked_policy_time(policy_time.as_ref())?.1 / 1_000_000_000;
 
-        if offered.0.app_id == tilo_owner_commit::desktop_command::APP_ID
+        if offered.0.app_id == tilo_peer_state::owner_commit::desktop_command::APP_ID
             && self
                 .pending_invocations
                 .lock()
@@ -10924,11 +10924,11 @@ pub mod tests {
     struct HealthyOwner;
 
     #[cfg(test)]
-    impl tilo_owner_commit::OwnerCommitService for HealthyOwner {
+    impl tilo_peer_state::owner_commit::OwnerCommitService for HealthyOwner {
         fn commit(
             &self,
-            _: tilo_owner_commit::OwnerCommitRequest,
-        ) -> tilo_owner_commit::CommitFuture {
+            _: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        ) -> tilo_peer_state::owner_commit::CommitFuture {
             Box::pin(async { Err("unused lifecycle commit".into()) })
         }
 
@@ -11444,11 +11444,11 @@ pub mod tests {
     }
 
     #[cfg(test)]
-    impl tilo_owner_commit::OwnerCommitService for DropBrokerOnHealth {
+    impl tilo_peer_state::owner_commit::OwnerCommitService for DropBrokerOnHealth {
         fn commit(
             &self,
-            _: tilo_owner_commit::OwnerCommitRequest,
-        ) -> tilo_owner_commit::CommitFuture {
+            _: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        ) -> tilo_peer_state::owner_commit::CommitFuture {
             Box::pin(async { Err("unused lifecycle commit".into()) })
         }
 
@@ -11524,11 +11524,11 @@ pub mod tests {
     }
 
     #[cfg(test)]
-    impl tilo_owner_commit::OwnerCommitService for DropOtherBrokerOnHealth {
+    impl tilo_peer_state::owner_commit::OwnerCommitService for DropOtherBrokerOnHealth {
         fn commit(
             &self,
-            _: tilo_owner_commit::OwnerCommitRequest,
-        ) -> tilo_owner_commit::CommitFuture {
+            _: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        ) -> tilo_peer_state::owner_commit::CommitFuture {
             Box::pin(async { Err("unused lifecycle commit".into()) })
         }
 
@@ -13571,8 +13571,8 @@ pub mod tests {
 
             fn execute(
                 &self,
-                _: tilo_owner_commit::OwnerCommitRequest,
-            ) -> tilo_owner_commit::CommitFuture {
+                _: tilo_peer_state::owner_commit::OwnerCommitRequest,
+            ) -> tilo_peer_state::owner_commit::CommitFuture {
                 Box::pin(async { Err("roster fixture never commits owner state".into()) })
             }
         }
@@ -14822,11 +14822,15 @@ pub mod tests {
             };
         let desktop = PublishedSurface {
             peer_id: 1,
-            app_id: tilo_owner_commit::desktop_command::APP_ID.into(),
-            route: CrdtRoute::record(tilo_owner_commit::desktop_command::APP_ID, &cluster, ""),
+            app_id: tilo_peer_state::owner_commit::desktop_command::APP_ID.into(),
+            route: CrdtRoute::record(
+                tilo_peer_state::owner_commit::desktop_command::APP_ID,
+                &cluster,
+                "",
+            ),
             actions: vec![action(
-                tilo_owner_commit::desktop_command::RESOURCE.into(),
-                tilo_owner_commit::desktop_command::ACTION,
+                tilo_peer_state::owner_commit::desktop_command::RESOURCE.into(),
+                tilo_peer_state::owner_commit::desktop_command::ACTION,
                 None,
             )],
             live: true,
@@ -14874,10 +14878,10 @@ pub mod tests {
                 > tilo_delivery_protocol::peer_actions::MAX_PRIVATE_BYTES
         );
         let scope = tilo_delivery_protocol::peer_actions::ExactActionRoute {
-            app_id: tilo_owner_commit::desktop_command::APP_ID.into(),
+            app_id: tilo_peer_state::owner_commit::desktop_command::APP_ID.into(),
             record_id: String::new(),
-            resource: tilo_owner_commit::desktop_command::RESOURCE.into(),
-            action: tilo_owner_commit::desktop_command::ACTION.into(),
+            resource: tilo_peer_state::owner_commit::desktop_command::RESOURCE.into(),
+            action: tilo_peer_state::owner_commit::desktop_command::ACTION.into(),
         };
         let scoped: serde_json::Value = serde_json::from_str(
             &state
