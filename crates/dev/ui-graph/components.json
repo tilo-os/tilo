@@ -1292,6 +1292,13 @@
               }
             }
           }
+        },
+        {
+          "name": "expanded",
+          "doc": "Whether the row is open. Unless given, the row keeps it.",
+          "type": {
+            "option": "bool"
+          }
         }
       ],
       "slots": [
@@ -1313,15 +1320,6 @@
           "name": "toggle",
           "doc": "The row was opened or closed; carries whether it is open now.",
           "value": "bool"
-        }
-      ],
-      "state": [
-        {
-          "name": "expanded",
-          "doc": "Whether the row is open. Unless given, the row keeps it.",
-          "type": {
-            "option": "bool"
-          }
         }
       ],
       "semantics": {

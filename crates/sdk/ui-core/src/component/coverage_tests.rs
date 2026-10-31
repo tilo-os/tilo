@@ -24,15 +24,22 @@ const NOT_YET_DESCRIBED: &str = include_str!("not_yet_described.txt");
 fn every_public_widget_is_a_component_or_says_why_not() {
     let scan = scan();
     let owed: Vec<&str> = NOT_YET_DESCRIBED.lines().map(str::trim).collect();
-    for name in &owed {
-        assert!(
-            scan.widgets
+    let paid: Vec<&str> = owed
+        .iter()
+        .copied()
+        .filter(|name| {
+            !scan
+                .widgets
                 .iter()
-                .any(|w| w.name == *name && w.exempt.is_none() && !scan.is_described(&w.name)),
-            "{name} is described now (or gone, or marked not a component): remove it from \
-             component/not_yet_described.txt"
-        );
-    }
+                .any(|w| w.name == *name && w.exempt.is_none() && !scan.is_described(&w.name))
+        })
+        .collect();
+    assert!(
+        paid.is_empty(),
+        "described now (or gone, or marked not a component), so remove from \
+         component/not_yet_described.txt:\n{}",
+        paid.join("\n")
+    );
     let missing: Vec<String> = scan
         .widgets
         .iter()

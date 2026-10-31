@@ -35,7 +35,6 @@ pub struct DisclosureRowProps {
     #[component(slot)]
     pub trailing: Option<Element>,
     /// Whether the row is open. Unless given, the row keeps it.
-    #[component(state)]
     pub expanded: Option<bool>,
     /// The row was opened or closed; carries whether it is open now.
     #[component(event(value = bool))]
