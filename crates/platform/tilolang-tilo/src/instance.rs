@@ -509,6 +509,15 @@ impl Instance {
     /// the time ever wakes the instance.
     #[must_use]
     pub fn wakes_in(&self) -> Option<std::time::Duration> {
+        let views = self.views_wake_in();
+        match (views, self.held_in()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// How long until the time a view read (`today` in a query) next reads differently.
+    fn views_wake_in(&self) -> Option<std::time::Duration> {
         let at = [self.root.as_ref(), self.detail.as_ref()]
             .into_iter()
             .flatten()
@@ -523,6 +532,12 @@ impl Instance {
         Some(std::time::Duration::from_secs(
             u64::try_from(at.saturating_sub(now)).unwrap_or(0),
         ))
+    }
+
+    /// How long until an outside effect an action held back (`outside(.., at:)`) is due: the
+    /// frame then runs and the host carries it out. `None` when none is held back.
+    fn held_in(&self) -> Option<std::time::Duration> {
+        self.host()?.runtime().held_for()
     }
 
     /// The resource the root view shows.
