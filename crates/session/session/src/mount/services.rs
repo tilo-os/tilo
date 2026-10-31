@@ -104,6 +104,7 @@ pub(crate) fn start_action_plane(
     activity: &activity::Activity,
     agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
     revocations: crate::engine::Revocations,
+    sync: Option<&crate::sync::Client>,
 ) -> Result<Option<Plane>, Error> {
     let path = match &options.action_plane {
         ActionPlane::Off => return Ok(None),
@@ -123,6 +124,18 @@ pub(crate) fn start_action_plane(
     // same model the desk serves its own windows.
     let activity_wire = activity_provider::wire(activity.requests());
     activity.serve_apps(std::sync::Arc::clone(&activity_wire));
+    // Calls run over the collaboration plane: an app joins a channel through
+    // the service, the session says the channel in its presence, and what the
+    // room says of its calls is what the app's channels show.
+    let calls = crate::calls::Calls::new();
+    let calls_service = sync.map(|sync| {
+        calls.follow(sync, None);
+        let service = tilo_native_media::NativeMediaService::new();
+        service.install_factory(std::sync::Arc::new(crate::calls::Factory::new(
+            std::sync::Arc::clone(&calls),
+        )));
+        service
+    });
     let broker = plane::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
@@ -130,6 +143,7 @@ pub(crate) fn start_action_plane(
         options.fabric.clone(),
         plane::Hosted {
             live_activities: std::sync::Arc::clone(live_activities),
+            native_media: calls_service.clone(),
             // The index search reads is the one apps publish into: a closed
             // app's content is found from here on.
             content: options.search.content.clone(),
@@ -146,6 +160,8 @@ pub(crate) fn start_action_plane(
         path,
         desk,
         broker,
+        calls,
+        calls_service,
     }))
 }
 

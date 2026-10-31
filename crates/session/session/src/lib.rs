@@ -33,6 +33,7 @@ mod app_icons;
 mod app_sheets;
 mod automation;
 mod bars;
+mod calls;
 pub mod capture;
 mod capture_send;
 mod capture_studio;
@@ -1267,6 +1268,7 @@ impl Session {
             &activity,
             std::sync::Arc::clone(&agent_runs),
             std::sync::Arc::clone(&revocations),
+            sync.as_deref(),
         )?;
         // The agent door: a program of this login asks here to work in a
         // workspace as an agent, and the person answers on their sheets. It
@@ -1700,6 +1702,13 @@ impl Session {
         self.shared.clock.board()
     }
 
+    /// The media service the apps reach through the session's plane, while
+    /// it serves one: what a call joins through.
+    #[cfg(test)]
+    pub(crate) fn media_service(&self) -> Option<&tilo_native_media::NativeMediaService> {
+        self.action_plane.as_ref()?.calls_service.as_ref()
+    }
+
     /// Reach `surface` (a service the session runs in its process) through
     /// the session's door from now on: its resources are published beside
     /// the desktop's, and keys that ask for its actions reach it.
@@ -2099,6 +2108,12 @@ impl Session {
         };
         self.shared.handle.read(|tree| sync.follow_desktop(tree));
         sync.follow();
+        // This device's call, as everyone in the room reads it, and theirs as
+        // this session's apps show them: a join or leave reaches a channel's
+        // roster on the pass it happened on.
+        if let Some(plane) = &self.action_plane {
+            plane.follow_calls(sync);
+        }
         // What became of the invitations redeemed is the directory's to say,
         // and the desk's to show.
         self.shared.follow_enrollments();

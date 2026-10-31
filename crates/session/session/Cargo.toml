@@ -145,6 +145,9 @@ tilo-service = { path = "../service" }
 # The broker that serves the socket this session's apps speak on, and the
 # provider seam it asks for what the services publish.
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
+# The calls an app joins: which channel, who is in it, and this device's
+# own call as presence carries it.
+tilo-native-media = { path = "../native-media" }
 # The shortcuts a person saved and the triggers that start them without
 # anyone invoking them.
 tilo-automation = { path = "../../collab/automation" }

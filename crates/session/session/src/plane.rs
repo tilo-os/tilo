@@ -244,6 +244,9 @@ impl SearchIndexServices for ContentIndex {
 /// agents.
 pub struct Hosted {
     pub live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
+    /// The calls this session's apps join: the service an app's
+    /// `join-call` reaches.
+    pub native_media: Option<tilo_native_media::NativeMediaService>,
     pub content: Option<std::sync::Arc<AppContentIndex>>,
     pub desk: std::sync::Arc<DeskAuthority>,
     pub shortcuts: std::sync::Arc<ShortcutLibrary>,
@@ -406,6 +409,7 @@ fn host_services(
 ) -> HostServices {
     let Hosted {
         live_activities,
+        native_media,
         content,
         desk: _,
         shortcuts,
@@ -438,6 +442,12 @@ fn host_services(
         // What people ask this session's agents to do: a run is the broker's
         // to deliver, and its reports come back to the run.
         tracker_runs: agent_runs.map(|runs| runs as std::sync::Arc<dyn TrackerRuns>),
+        // A call an app joins is this session's: the channel it is in, who
+        // else is there, and what the app hears of it until it leaves.
+        native_media: native_media.map(|media| {
+            std::sync::Arc::new(media)
+                as std::sync::Arc<dyn tilo_action_broker::services::NativeMediaServices>
+        }),
         ..HostServices::default()
     }
 }
@@ -491,9 +501,45 @@ pub(crate) struct Plane {
     /// Held so the broker's thread ends and its socket is unlinked with the
     /// session.
     pub(crate) broker: tilo_action_broker::collab_broker::BrokerHandle,
+    /// The calls of the rooms this session takes part in, as the loop
+    /// heard them: what a voice channel shows.
+    pub(crate) calls: std::sync::Arc<crate::calls::Calls>,
+    /// The service apps join a call through, when this session carries
+    /// calls at all.
+    pub(crate) calls_service: Option<tilo_native_media::NativeMediaService>,
 }
 
 impl Plane {
+    /// Say this device's call where everyone in the room reads it, and take
+    /// in what they say of theirs: the channel a person is in and who is in
+    /// each channel's call, which is what this session's apps show of calls.
+    pub(crate) fn follow_calls(&self, sync: &crate::sync::Client) {
+        let own = self
+            .calls_service
+            .as_ref()
+            .and_then(tilo_native_media::NativeMediaService::own_call);
+        let name = own.as_ref().map_or_else(String::new, |call| {
+            // What the app calls the channel, so the room reads a name and
+            // not an id; what the people in it said is the fallback.
+            self.action_broker()
+                .and_then(|broker| {
+                    crate::calls::channel_name(
+                        &broker.surfaces(),
+                        (&call.workspace, &call.app, &call.record),
+                        &call.channel,
+                    )
+                })
+                .unwrap_or_else(|| self.calls.name(&call.channel))
+        });
+        let presence = own.as_ref().map(|call| ui::CallPresence {
+            channel: call.channel.clone(),
+            name,
+        });
+        sync.in_call(presence);
+        self.calls
+            .follow(sync, own.as_ref().map(|call| call.channel.as_str()));
+    }
+
     /// The broker the apps' runs are started on, while it serves one.
     pub(crate) fn action_broker(
         &self,
@@ -640,6 +686,7 @@ mod tests {
             shortcuts: library(),
             activity: crate::activity_provider::wire(requests()),
             agent_runs: None,
+            native_media: None,
         }
     }
 

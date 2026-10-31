@@ -19940,6 +19940,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-native-media"
+version = "0.1.0"
+dependencies = [
+ "runtime-collab",
+ "serde_json",
+ "tilo-action-broker",
+ "tilo-lock",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-nearby-service"
 version = "0.1.0"
 dependencies = [
@@ -21543,6 +21556,7 @@ dependencies = [
  "tilo-lock",
  "tilo-media",
  "tilo-messaging",
+ "tilo-native-media",
  "tilo-nearby-service",
  "tilo-net",
  "tilo-network-actor",

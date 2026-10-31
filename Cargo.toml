@@ -424,6 +424,7 @@ members = [
     "crates/platform/imager-backend",
     "crates/session/install-profile-model",
     "crates/session/liveness",
+    "crates/session/native-media",
     "crates/session/network-actor",
     "crates/session/network-secret-agent",
     "crates/session/notification-banners",
