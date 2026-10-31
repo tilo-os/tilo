@@ -520,6 +520,7 @@ impl<'a> Validator<'a> {
                 self.key(&offered.event)?;
                 offered.icon.as_ref().map_or(Ok(()), |icon| self.key(icon))
             }
+            Value::Picture(picture) => self.string(&picture.src),
             Value::Rich(rich) => {
                 if rich.blocks.len() > self.limits.rows as usize
                     || rich.embeds.len() > self.limits.rows as usize
@@ -741,6 +742,7 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
         | (Type::Principal, Value::Principal(_))
         | (Type::Resource, Value::Ref(_))
         | (Type::Icon | Type::Time, Value::Text(_))
+        | (Type::Picture, Value::Picture(_))
         | (Type::RichText, Value::Rich(_))
         | (Type::Action, Value::Action(_)) => true,
         (Type::Option(inner), Value::Opt(Some(held))) => fits(held, inner),
@@ -748,7 +750,12 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
         (_, Value::Opt(Some(held))) => fits(held, ty),
         (
             Type::Text,
-            Value::List(_) | Value::Ref(_) | Value::Rich(_) | Value::Map(_) | Value::Action(_),
+            Value::List(_)
+            | Value::Ref(_)
+            | Value::Rich(_)
+            | Value::Map(_)
+            | Value::Action(_)
+            | Value::Picture(_),
         ) => false,
         (Type::Text, _) => true,
         (Type::Choice { cases, .. }, Value::Text(case) | Value::Enum(case)) => cases.contains(case),

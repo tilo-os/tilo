@@ -627,16 +627,20 @@ impl Runtime {
         self.core.unshared()
     }
 
-    /// The lenses on the resource `resource` (its id) now, as presence reports them: who, and
-    /// whether it is the person looking. What `lenses(r)` reads; a view that read the lenses
-    /// on it runs again when they move.
-    pub fn set_lenses(&self, resource: &str, lenses: &[(Principal, bool)]) {
+    /// The lenses on the resource `resource` (its id) now, as presence reports them: who,
+    /// whether it is the person looking, and whether they are composing a message in it. What
+    /// `lenses(r)` reads; a view that read the lenses on it runs again when they move.
+    pub fn set_lenses(&self, resource: &str, lenses: &[(Principal, bool, bool)]) {
         let key = crate::platform::lens_key(resource);
         let value = Value::List(
             lenses
                 .iter()
-                .map(|(who, mine)| {
-                    Value::Tuple(vec![Value::Principal(who.clone()), Value::Bool(*mine)])
+                .map(|(who, mine, composing)| {
+                    Value::Tuple(vec![
+                        Value::Principal(who.clone()),
+                        Value::Bool(*mine),
+                        Value::Bool(*composing),
+                    ])
                 })
                 .collect(),
         );
