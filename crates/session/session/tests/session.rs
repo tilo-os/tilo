@@ -15,7 +15,6 @@
 )]
 
 use std::cell::RefCell;
-use std::io::BufRead as _;
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
 use std::rc::Rc;
@@ -41,6 +40,7 @@ use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
 use tilo_sheets::workspace_settings::WorkspaceSettingsEffect;
 use tilo_surface_host::Published;
+use tilo_test_env::PrivateBus;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
     wl_keyboard::WlKeyboard, wl_pointer, wl_pointer::WlPointer, wl_registry,
@@ -2805,46 +2805,6 @@ fn a_copy_is_listed_pinned_across_a_restart_and_pasted_into_the_app_in_front() {
 // Notifications from an app
 // =====================================================================
 
-/// A session bus of its own, as `dbus-run-session` starts one, stopped on
-/// drop.
-struct SessionBus {
-    daemon: std::process::Child,
-    address: String,
-    _directory: tempfile::TempDir,
-}
-
-impl SessionBus {
-    fn start() -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let mut daemon = std::process::Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .arg(format!(
-                "--address=unix:path={}",
-                directory.path().join("bus").display()
-            ))
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("the session bus needs dbus-daemon, which the builder image installs");
-        let mut address = String::new();
-        std::io::BufReader::new(daemon.stdout.take().unwrap())
-            .read_line(&mut address)
-            .unwrap();
-        assert!(!address.trim().is_empty(), "dbus-daemon printed no address");
-        Self {
-            daemon,
-            address: address.trim().to_owned(),
-            _directory: directory,
-        }
-    }
-}
-
-impl Drop for SessionBus {
-    fn drop(&mut self) {
-        let _ = self.daemon.kill();
-        let _ = self.daemon.wait();
-    }
-}
-
 /// Send one notification over the freedesktop interface on `address`, as an
 /// app of the session would, and name the id the daemon gave it. The
 /// connection is the app's: it stays open until the caller drops it.
@@ -2887,13 +2847,13 @@ async fn notify(address: &str, summary: &str, body: &str, timeout: i32) -> (zbus
 #[test]
 fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
     let _settled = ui::motion::testing::settled();
-    let bus = SessionBus::start();
+    let bus = PrivateBus::start();
     let wake = tilo_service::LoopWake::default();
     let (side, link) = tilo_session::portal_link::channel(wake.handle());
     let desktop = Rc::new(
         DesktopServices::start(
             &Buses {
-                session: Bus::Address(bus.address.clone()),
+                session: Bus::Address(bus.address().to_owned()),
                 system: Bus::None,
             },
             &wake.handle(),
@@ -2926,7 +2886,7 @@ fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
 
     let runtime = desktop.runtime();
     // It waits for the person: nothing here measures the banner running out.
-    let (app, id) = runtime.block_on(notify(bus.address.as_str(), "New mail", "From Ada", 0));
+    let (app, id) = runtime.block_on(notify(bus.address(), "New mail", "From Ada", 0));
 
     pump(&mut session, &mut [&mut client], |session, _| {
         session.notifications().unread() == 1
@@ -3029,7 +2989,11 @@ fn the_dictation_key_shows_the_session_s_own_card_and_escape_closes_it() {
         "the card is gone: {labels}"
     );
     assert!(
-        !client.seen.keys.iter().any(|(code, _)| *code == keys::ESCAPE),
+        !client
+            .seen
+            .keys
+            .iter()
+            .any(|(code, _)| *code == keys::ESCAPE),
         "Escape was the card's, never the window's: {:?}",
         client.seen.keys
     );
