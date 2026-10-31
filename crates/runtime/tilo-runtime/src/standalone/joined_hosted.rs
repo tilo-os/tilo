@@ -209,7 +209,10 @@ impl Joined {
         }
         let (held, authors, generation) = self.owner.with_current(room, |view| {
             let now = SystemTime::now();
-            let member = view.peer().permissions(own, now).map_err(|error| error.to_string())?;
+            let member = view
+                .peer()
+                .permissions(own, now)
+                .map_err(|error| error.to_string())?;
             Ok((
                 view.peer().holds_document(&app, &record),
                 member
