@@ -329,7 +329,9 @@ pub struct MailApp {
     /// pointer, focus, keyboard and accessibility contract.
     first_run: EmptyState,
     first_run_node: Option<NodeId>,
-    compose: ComposeWindow,
+    /// Boxed: the composer's editors and fields are most of the app's size,
+    /// and an inline one puts that on every frame the app is built in.
+    compose: Box<ComposeWindow>,
     /// A modal, read-only key map. It is local presentation state; every
     /// shortcut it documents still routes to the normal visible/canonical path.
     shortcuts: MailShortcutsOverlay,
@@ -782,7 +784,7 @@ impl MailApp {
                 .with_action("Open External Accounts")
                 .with_action_id("mail.add-account"),
             first_run_node: None,
-            compose: ComposeWindow::new(ComposeFormat::default()),
+            compose: Box::new(ComposeWindow::new(ComposeFormat::default())),
             shortcuts: MailShortcutsOverlay::new(),
             editing_draft: None,
             projected_draft: RefCell::new(None),
