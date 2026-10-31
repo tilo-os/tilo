@@ -15,6 +15,7 @@
 //! surface connects nothing: an app started by the launcher already holds its
 //! connection, and a process started by hand has no session to reach.
 
+#[cfg(feature = "broker-transport")]
 use std::path::Path;
 
 /// The socket the session serves its services on, as a surface app reaches
