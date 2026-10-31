@@ -1765,6 +1765,34 @@
       }
     },
     {
+      "name": "Map",
+      "doc": "Places at points on a pannable, zoomable surface, each a view of its own.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the map is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "pins",
+          "doc": "The pins, in the order the map draws them (the last on top).",
+          "accepts": {
+            "component": "MapPin"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
       "name": "NavList",
       "doc": "The places of an app, in its sidebar: choosing one shows it. Selection follows the person's choice and is reported, never kept by the app beside it.",
       "props": [
@@ -2430,6 +2458,11 @@
           "name": "across",
           "doc": "Scroll sideways instead: a row wider than its column, such as a board's lanes.",
           "type": "bool"
+        },
+        {
+          "name": "both",
+          "doc": "Scroll both ways: a 2D surface whose content is wider and taller than its column, such as a desk of strips. Takes precedence over `across`.",
+          "type": "bool"
         }
       ],
       "slots": [
@@ -2950,6 +2983,63 @@
       ],
       "semantics": {
         "role": "Group"
+      }
+    },
+    {
+      "name": "TabStrip",
+      "doc": "A frame's tabs, in one row above its content: the shell's tab strip.\nThe chosen tab stands lifted off the strip's ground, and every pill says who is at its resource now. Choosing a pill activates that tab; a pill's close chip closes it; dragging one within the strip reorders it, and letting one go outside the strip hands it to the frame under the pointer.",
+      "props": [
+        {
+          "name": "active",
+          "doc": "The resource whose tab shows: the tab in front.",
+          "type": {
+            "option": "resource"
+          },
+          "positional": true
+        },
+        {
+          "name": "focused",
+          "doc": "Whether this frame has the keyboard: its tab strip says so.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "tabs",
+          "doc": "The tabs, in order.",
+          "accepts": {
+            "component": "TabItem"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "activate",
+          "doc": "Told a tab was chosen: carries the resource of the pill chosen.",
+          "value": "resource"
+        },
+        {
+          "name": "close",
+          "doc": "Told a tab's close chip was pressed: carries that tab's resource.",
+          "value": "resource"
+        },
+        {
+          "name": "reorder",
+          "doc": "Told a pill was dropped at a new place in the strip: carries the tab moved and its place among the strip's, from 0.",
+          "value": "resource",
+          "at": "int"
+        },
+        {
+          "name": "detach",
+          "doc": "Told a pill was dragged out of the strip and let go: carries the tab and where it was let go, as [`pack_point`] packs the window's coordinates. The shell puts the tab in the frame there, or makes one.",
+          "value": "resource",
+          "at": "int"
+        }
+      ],
+      "semantics": {
+        "role": "TabList"
       }
     },
     {
@@ -4186,6 +4276,53 @@
       }
     },
     {
+      "name": "MapPin",
+      "doc": "One pin of a map, as an instance gives it: its key, its place and the view it shows.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What it is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "x",
+          "doc": "The canvas point of its top-leading corner, in canvas pixels.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "y",
+          "doc": "The canvas y of its top-leading corner, in canvas pixels.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "width",
+          "doc": "How wide it stands, in canvas pixels.",
+          "type": {
+            "option": "int"
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "body",
+          "doc": "What it shows.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
       "name": "NavSection",
       "doc": "A group of places under a heading in a navigation list: a category of channels, a folder of notebooks. A collapsible one folds away under its heading.",
       "props": [
@@ -4424,6 +4561,89 @@
       "semantics": {
         "role": "ListItem",
         "label": "label"
+      }
+    },
+    {
+      "name": "TabItem",
+      "doc": "One tab of a frame: the resource it shows, and what its pill says.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The resource the tab shows: what choosing the pill reports, and which tab its close chip closes.",
+          "type": {
+            "option": "resource"
+          },
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What the pill says, from the resource's title.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "icon",
+          "doc": "A glyph before the title, from the resource's type.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "attention",
+          "doc": "The frame is waiting for the person on this tab: a dot at the pill's trailing edge.",
+          "type": "bool"
+        },
+        {
+          "name": "modified",
+          "doc": "Its content has unsaved changes: the close chip stands as the mark.",
+          "type": "bool"
+        },
+        {
+          "name": "busy",
+          "doc": "The content is loading: the pill's leading glyph turns.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "presence",
+          "doc": "Who else has this resource open now, drawn on the pill: their faces, from the resource's lenses.",
+          "accepts": {
+            "component": "TabFace"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Tab",
+        "label": "title"
+      }
+    },
+    {
+      "name": "TabFace",
+      "doc": "One face on a tab: who is at the tab's resource now.\nThe strip draws their initials in their presence colour, the same faces a window bar's pills carry, so a person sees at a glance who else is in a frame with them.",
+      "props": [
+        {
+          "name": "who",
+          "doc": "Who it is: a person or an agent.",
+          "type": {
+            "option": "principal"
+          },
+          "positional": true
+        },
+        {
+          "name": "name",
+          "doc": "What the room calls them, when it differs from their name here.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "name"
       }
     },
     {

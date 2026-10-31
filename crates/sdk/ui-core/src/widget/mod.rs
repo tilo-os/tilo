@@ -3280,6 +3280,10 @@ pub mod top_edge_reveal;
 pub use top_edge_reveal::{EdgeGeometry, TopEdgeReveal};
 pub mod tabs;
 pub use tabs::{SharedBy, SharedWith, TabBar, TabDescriptor, TabHolder, TabMark, draw_app_mark};
+mod tab_strip_component;
+pub use tab_strip_component::{
+    PresenceFaceProps, TabItemProps, TabStrip, TabStripProps, pack_point, unpack_point,
+};
 pub mod scrollbar;
 pub use scrollbar::{
     PressOutcome, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollMetrics,
@@ -3617,6 +3621,8 @@ pub use quick_tile::{QuickTile, QuickTileOutcome, QuickTilePart};
 // widget tree.
 pub mod docked;
 pub use docked::{Docked, DockedProps};
+pub mod map;
+pub use map::{MAP_ZOOM_MAX, MAP_ZOOM_MIN, Map, MapCamera, MapPinProps, MapProps, PinPlace};
 pub mod empty_state;
 pub use empty_state::{EmptyState, EmptyStateContent, EmptyStateLayout, EmptyStateProps};
 pub mod find_bar;
