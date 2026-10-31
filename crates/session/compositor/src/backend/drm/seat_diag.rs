@@ -183,7 +183,7 @@ impl SeatFailure {
         match self.kind {
             SeatFailureKind::NoLoginSession | SeatFailureKind::SessionOwnsNoSeat => {
                 "Switch to a free virtual terminal (Ctrl+Alt+F3), log in there, and run the \
-                 compositor from that shell — a VT login is a logind session that owns seat0. \
+                 compositor from that shell: a VT login is a logind session that owns seat0. \
                  If you are inside a container or over ssh, the seat lives on the host and \
                  cannot be reached from here. As an alternative, start `seatd` and add \
                  yourself to the `seat` group, or run with `--backend winit` to host inside \
