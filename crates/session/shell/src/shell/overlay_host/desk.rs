@@ -44,7 +44,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
-use ui::motion::{MotionValue, Timing};
+use ui::motion::MotionValue;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -982,11 +982,11 @@ impl ShellOverlayHost {
         let super_up = self.super_up();
         changed |= self.relayout_desk(now, super_up);
         changed |= self.decide_desk(now);
-        let fade = self.desk.motion.fade(self.desk.motion.fast());
         let before = self.desk.leaving.len();
-        self.desk
-            .leaving
-            .retain(|leaving| now.saturating_duration_since(leaving.since) < fade);
+        let spec = ui::motion::Transient::READOUT;
+        self.desk.leaving.retain(|leaving| {
+            ui::motion::Transient::exit_progress(spec, leaving.since, now, self.desk.motion) < 1.0
+        });
         changed |= before != self.desk.leaving.len();
         changed
     }
@@ -1237,12 +1237,12 @@ impl ShellOverlayHost {
 
     /// Lift `id` under the hand, or set it down.
     fn set_desk_lift(&mut self, id: WidgetId, up: bool, now: Instant) {
-        let motion = self.desk.motion;
-        let timing = if motion.moves() {
-            Timing::Spring(ui::motion::SpringSpec::settling_within(motion.fast()))
-        } else {
-            Timing::Instant
-        };
+        // Lifting under the hand is the control-change motion, at its own pace.
+        let timing = ui::motion::ControlChange::MOVE.timing(
+            ui::motion::Direction::of(up),
+            self.desk.motion,
+            ui::tokens::MotionSource::Pointer,
+        );
         self.desk
             .lifts
             .entry(id)
@@ -1937,10 +1937,10 @@ impl ShellOverlayHost {
             theme,
             content: &content,
         };
-        let fade = self.desk.motion.fade(self.desk.motion.fast());
+        let spec = ui::motion::Transient::READOUT;
         for leaving in self.desk.leaving.clone() {
-            let gone = now.saturating_duration_since(leaving.since).as_secs_f64()
-                / fade.as_secs_f64().max(1e-3);
+            let gone =
+                ui::motion::Transient::exit_progress(spec, leaving.since, now, self.desk.motion);
             if gone < 1.0 {
                 self.paint_leaving(&mut pass, leaving, gone, &mut painted);
             }

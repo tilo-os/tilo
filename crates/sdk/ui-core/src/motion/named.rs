@@ -863,6 +863,21 @@ impl Transient {
             .unwrap_or(expires)
     }
 
+    /// How far through its exit fade something leaving at `since` is at `now`,
+    /// `0..=1` (1: gone). The fade takes the motion's own exit time, so a
+    /// leaving surface shrinks and fades at the motion's pace rather than a
+    /// span the call site chose.
+    #[must_use]
+    pub fn exit_progress(
+        spec: MotionSpec,
+        since: Instant,
+        now: Instant,
+        motion: EffectiveMotion,
+    ) -> f64 {
+        let fade = Self::exit_time(spec, motion).as_secs_f64().max(1e-3);
+        (now.saturating_duration_since(since).as_secs_f64() / fade).clamp(0.0, 1.0)
+    }
+
     /// Its opacity at `now`, shown since `shown` and gone at `expires`.
     #[must_use]
     pub fn opacity(

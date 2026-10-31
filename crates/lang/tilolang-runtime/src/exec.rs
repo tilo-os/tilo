@@ -1094,11 +1094,36 @@ impl Core {
     // ----- effects imports ---------------------------------------------------------------
 
     fn outside(&self, cap_h: i32, payload_h: i32) -> HResult<Option<Wasm>> {
+        self.queue_outside(cap_h, payload_h, None)
+    }
+
+    /// `outside(capability, payload, at: instant)`: the effect, held back until `instant`, the
+    /// time `now` is a moment of (`2026-06-30T13:40Z`), ISO-8601 UTC text with the seconds.
+    fn outside_at(&self, cap_h: i32, payload_h: i32, at_h: i32) -> HResult<Option<Wasm>> {
+        self.queue_outside(cap_h, payload_h, Some(at_h))
+    }
+
+    fn queue_outside(
+        &self,
+        cap_h: i32,
+        payload_h: i32,
+        held: Option<i32>,
+    ) -> HResult<Option<Wasm>> {
         let capability = self.text(cap_h)?;
         let payload = outside_json(&unboxed(self.val_whole(payload_h)?))?;
         if !tilolang::origin::is_capability(&capability) {
             return trap(format!("unknown outside capability `{capability}`"));
         }
+        let held_until = match held {
+            Some(h) => {
+                let at = self.text(h)?;
+                tilolang::calendar::instant(&at).ok_or_else(|| {
+                    HostFail::Trap(format!("`outside(.., at: {at})`: that is not a time"))
+                })?;
+                Some(at)
+            }
+            None => None,
+        };
         let (txn, action, primary, origin) = {
             let frames = self.frames.borrow();
             match &frames.top()?.kind {
@@ -1127,9 +1152,37 @@ impl Core {
                 &Mutation::OutboxPush {
                     capability,
                     payload,
+                    held_until,
                     key: origin,
                 },
             )
+            .map_err(|e| HostFail::Trap(e.to_string()))?;
+        self.ret_h(Value::Unit)
+    }
+
+    /// `withdraw(r)`: take back the outside effects `r`'s actions queued that nothing carried
+    /// out yet, so they never happen. Only an action asks for it, of its own subject, or the
+    /// undo of one: what a person wrote and took back before it went.
+    fn withdraw(&self, primary_h: i32, reason_h: i32) -> HResult<Option<Wasm>> {
+        let primary = self.ref_arg(primary_h)?;
+        let reason = self.text(reason_h)?;
+        let (invoker, chain) = {
+            let frames = self.frames.borrow();
+            match &frames.top()?.kind {
+                FrameKind::Action(a) => (a.invoker.clone(), a.action.clone()),
+                _ => return trap("withdraw is only available in actions"),
+            }
+        };
+        let _ = chain;
+        let note = ChangeNote {
+            action: "$withdraw".to_owned(),
+            args: Json::String(reason.clone()),
+            invoker: invoker.0,
+            ..ChangeNote::default()
+        };
+        self.store
+            .borrow_mut()
+            .outbox_withdraw(&primary.target.doc, &reason, &note)
             .map_err(|e| HostFail::Trap(e.to_string()))?;
         self.ret_h(Value::Unit)
     }
@@ -1212,6 +1265,23 @@ impl Core {
 
     /// `now`: the invocation's time, read from the host's clock once per outermost invocation;
     /// in a scenario's `as who at time` block, that time.
+    /// A moment moved by some seconds, backwards when `back` says.
+    fn time_shift(&self, at_h: i32, secs: i64, back_h: i32) -> HResult<Option<Wasm>> {
+        let at = self.text(at_h)?;
+
+        // `back` crosses as a plain `i32`, not a handle: 1 backwards, 0 forwards.
+        let back = back_h != 0;
+        let Some(instant) = tilolang::calendar::instant(&at) else {
+            return trap(format!("`{at}` is not a time"));
+        };
+        let moved = if back {
+            instant.saturating_sub(secs)
+        } else {
+            instant.saturating_add(secs)
+        };
+        self.ret_h(Value::Text(tilolang::calendar::time_text(moved)))
+    }
+
     fn now(&self) -> HResult<Option<Wasm>> {
         {
             let frames = self.frames.borrow();
@@ -1304,6 +1374,8 @@ impl Core {
                 ret_i32(i32::from(failed))
             }
             Imp::Outside => self.outside(a.h(0)?, a.h(1)?),
+            Imp::OutsideAt => self.outside_at(a.h(0)?, a.h(1)?, a.h(2)?),
+            Imp::Withdraw => self.withdraw(a.h(0)?, a.h(1)?),
             Imp::ModelCall => self.model_call(a.h(0)?, a.h(1)?),
             Imp::Invoker => {
                 let frames = self.frames.borrow();
@@ -1363,6 +1435,7 @@ impl Core {
             }
             Imp::QueueBlock => self.queue_block(a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::Now => self.now(),
+            Imp::TimeShift => self.time_shift(a.h(0)?, a.long(1)?, a.h(2)?),
             _ => trap("not an effect import"),
         }
     }

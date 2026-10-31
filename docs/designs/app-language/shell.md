@@ -117,6 +117,13 @@ A shell view re-runs only on discrete changes (a place opened, focus moved, a no
 motion stays in the Rust components. Idle means no work. The shell's views are held to the same
 budgets and `layout-check` as apps.
 
+A shell's own data is derived, not saved. What the session owns and can make again at start (the
+clock, the desk, the device's state, the session origin's resources) is written into the store's
+unsaved layer, never into a collaborative record: a change of one reaches the views at once, and
+leaves no change to be committed, synced or replayed. A minute therefore costs a view run and a
+draw, not a record round-trip. Data that is the person's (their arrangement, their settings)
+stays a saved record, synced and undoable like any app's.
+
 ## 8. On the native session
 
 The native session (`crates/session/session`) is already a thin host: the compositor
