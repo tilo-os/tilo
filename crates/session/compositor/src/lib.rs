@@ -1339,6 +1339,24 @@ impl Compositor {
         })
     }
 
+    /// What `target` shows now, drawn to fit `max` — its widest and tallest
+    /// frame — read back as rows of R, G, B, A: one frame of the stream a
+    /// wireless display is sent.
+    ///
+    /// # Errors
+    /// The target is gone or asleep, the session is locked, or nothing could
+    /// be rendered.
+    pub fn read_back_scaled(
+        &mut self,
+        target: &capture::Target,
+        max: (u32, u32),
+    ) -> Result<Screenshot, Error> {
+        Ok(self
+            .data
+            .backend
+            .read_back_scaled(&mut self.data.state, target, max)?)
+    }
+
     /// The last frame drawn on the output named `name`.
     pub fn screenshot(&mut self, name: &str) -> Result<Screenshot, Error> {
         Ok(self.data.backend.screenshot(&mut self.data.state, name)?)

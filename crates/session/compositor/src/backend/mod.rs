@@ -170,6 +170,20 @@ pub trait Backend {
         )))
     }
 
+    /// What `target` shows now, drawn to fit `max` and read back as rows of
+    /// R, G, B, A (see [`crate::capture::read_back_scaled`]): a frame of the
+    /// stream a wireless display is sent.
+    fn read_back_scaled(
+        &mut self,
+        _state: &mut State,
+        _target: &crate::capture::Target,
+        _max: (u32, u32),
+    ) -> Result<Screenshot, crate::capture::CaptureError> {
+        Err(crate::capture::CaptureError::Backend(BackendError(
+            "this backend does not read frames back".into(),
+        )))
+    }
+
     /// The last frame drawn on the output named `name`.
     fn screenshot(&mut self, _state: &mut State, name: &str) -> Result<Screenshot, BackendError> {
         Err(BackendError(format!(

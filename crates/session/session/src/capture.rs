@@ -259,7 +259,17 @@ pub(crate) fn unique(directory: &Path, kind: &str, extension: &str) -> PathBuf {
 
 /// Every display on, each at its place in the layout.
 pub(crate) fn picture(compositor: &mut Compositor) -> Result<image::RgbaImage, String> {
-    Ok(desk(compositor)?.picture)
+    Ok(desk(compositor, None)?.picture)
+}
+
+/// Every display on, each at its place in the layout, drawn to fit `max` —
+/// the frame a video of the desktop is streamed at — and opaque throughout:
+/// one frame of the stream a wireless display is sent.
+pub(crate) fn video(
+    compositor: &mut Compositor,
+    max: (u32, u32),
+) -> Result<image::RgbaImage, String> {
+    Ok(desk(compositor, Some(max))?.picture)
 }
 
 /// The colour under the pointer: the pixel under it where a screenshot of
@@ -277,7 +287,7 @@ fn colour(compositor: &mut Compositor) -> Result<(f64, f64, f64), CaptureError> 
     {
         return Err(none());
     }
-    let desk = desk(compositor).map_err(CaptureError::Failed)?;
+    let desk = desk(compositor, None).map_err(CaptureError::Failed)?;
     desk.colour_at(pointer).ok_or_else(none)
 }
 
@@ -306,17 +316,36 @@ struct Frame {
     pixels: image::RgbaImage,
 }
 
-fn desk(compositor: &mut Compositor) -> Result<Desk, String> {
+/// A display's name and its place in the layout, in its own pixels.
+type Layout = (String, (i32, i32, i32, i32));
+
+/// Every display on, each at its place in the layout; `max` fits the whole
+/// layout into that frame — the size a video of the desktop is streamed at —
+/// and `None` keeps every display's own pixels.
+fn desk(compositor: &mut Compositor, max: Option<(u32, u32)>) -> Result<Desk, String> {
+    let displays: Vec<Layout> = compositor
+        .outputs()
+        .into_iter()
+        .filter_map(|output| output.rect.map(|rect| (output.name, rect)))
+        .collect();
+    let factor = max.map_or(1.0, |max| layout_factor(&displays, max));
     let mut frames = Vec::new();
     for output in compositor.outputs() {
         let Some(rect) = output.rect else {
             continue;
         };
-        let shot = compositor
-            .read_back(&tilo_compositor::capture::Target::output(
-                output.name.clone(),
-            ))
-            .map_err(|error| error.to_string())?;
+        let target = tilo_compositor::capture::Target::output(output.name.clone());
+        let shot = match max {
+            Some(_) => compositor.read_back_scaled(
+                &target,
+                (
+                    fit(f64::from(rect.2) * factor),
+                    fit(f64::from(rect.3) * factor),
+                ),
+            ),
+            None => compositor.read_back(&target),
+        }
+        .map_err(|error| error.to_string())?;
         // The frame is in the output's pixels: its place in the layout
         // scales with it.
         let scale = f64::from(shot.width) / f64::from(rect.2.max(1));
@@ -347,7 +376,15 @@ fn desk(compositor: &mut Compositor) -> Result<Desk, String> {
         .max()
         .unwrap_or(top);
     let size = |from: i64, to: i64| u32::try_from(to.saturating_sub(from)).unwrap_or(0);
-    let mut composed = image::RgbaImage::new(size(left, right), size(top, bottom));
+    let (width, height) = (size(left, right), size(top, bottom));
+    let mut composed = image::RgbaImage::new(width, height);
+    if max.is_some() {
+        // Between the displays is the desk, as a display shows it, not
+        // nothing: a video frame has no alpha to carry.
+        for pixel in composed.pixels_mut() {
+            *pixel = desk_pixel();
+        }
+    }
     let mut placed = Vec::new();
     for frame in frames {
         let at = (
@@ -411,10 +448,108 @@ fn holds(rect: (i32, i32, i32, i32), point: (f64, f64)) -> bool {
         && point.1 < f64::from(y.saturating_add(height))
 }
 
+/// The colour the compositor draws between and behind displays.
+fn desk_pixel() -> image::Rgba<u8> {
+    let [red, green, blue, alpha] = tilo_compositor::render::BACKGROUND;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the background's channels are colour fractions in 0.0..=1.0"
+    )]
+    let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+    image::Rgba([channel(red), channel(green), channel(blue), channel(alpha)])
+}
+
+/// The factor the whole layout is scaled by to fit `max`: the smallest of
+/// what its width and its height allow, never above the displays' own size.
+fn layout_factor(displays: &[Layout], max: (u32, u32)) -> f64 {
+    let left = displays
+        .iter()
+        .map(|(_, (x, _, _, _))| *x)
+        .min()
+        .unwrap_or(0);
+    let top = displays
+        .iter()
+        .map(|(_, (_, y, _, _))| *y)
+        .min()
+        .unwrap_or(0);
+    let right = displays
+        .iter()
+        .map(|(_, (x, _, width, _))| x.saturating_add(*width))
+        .max()
+        .unwrap_or(left);
+    let bottom = displays
+        .iter()
+        .map(|(_, (_, y, _, height))| y.saturating_add(*height))
+        .max()
+        .unwrap_or(top);
+    let (width, height) = (
+        f64::from(right.saturating_sub(left).max(1)),
+        f64::from(bottom.saturating_sub(top).max(1)),
+    );
+    (f64::from(max.0) / width)
+        .min(f64::from(max.1) / height)
+        .min(1.0)
+}
+
+/// `value` as a whole number of pixels the compositor is asked for, even and
+/// at least two: what an encoder takes.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a scaled frame side is far from u32's limits"
+)]
+fn fit(value: f64) -> u32 {
+    (value.round().max(2.0) as u32).saturating_add(1) & !1
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     reason = "a layout coordinate in pixels is far from i64's limits"
 )]
 fn scaled(at: i32, scale: f64) -> i64 {
     (f64::from(at) * scale).round() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
+
+    fn desktop() -> Compositor {
+        let mut compositor =
+            Compositor::headless(Box::new(StackPolicy)).expect("an in-process compositor");
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-1", 1920, 1080))
+            .expect("a display");
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720).at(1920, 0))
+            .expect("a second display beside it");
+        compositor.render().expect("a frame");
+        compositor
+    }
+
+    /// A screenshot keeps every display's own pixels, where a video of the
+    /// desktop is the whole layout fitted to what was asked for.
+    #[test]
+    fn a_video_of_the_desktop_is_the_whole_layout_fitted_to_its_size() {
+        let mut compositor = desktop();
+        let screenshot = picture(&mut compositor).expect("a screenshot");
+        assert_eq!(
+            screenshot.dimensions(),
+            (3200, 1080),
+            "a screenshot is the displays at their own size"
+        );
+
+        let streamed = video(&mut compositor, (1280, 720)).expect("a video frame");
+        assert_eq!(
+            streamed.dimensions(),
+            (1280, 432),
+            "both displays are sent, fitted into what the stream allows"
+        );
+        assert!(
+            streamed.pixels().all(|pixel| pixel[3] == 255),
+            "no part of a video frame is see-through"
+        );
+    }
 }

@@ -478,6 +478,30 @@ impl Backend for DrmBackend {
         )
     }
 
+    fn read_back_scaled(
+        &mut self,
+        state: &mut State,
+        target: &crate::capture::Target,
+        max: (u32, u32),
+    ) -> Result<crate::backend::Screenshot, crate::capture::CaptureError> {
+        let mut inner = self.inner.borrow_mut();
+        if !inner.active {
+            // Another session has the GPU.
+            return Err(BackendError("the session is not active".into()).into());
+        }
+        let primary = inner.primary.ok_or_else(|| BackendError("no GPU".into()))?;
+        let mut renderer = inner
+            .renderers
+            .single_renderer(&primary)
+            .map_err(|error| failed("renderer", error))?;
+        crate::capture::read_back_scaled::<_, smithay::backend::renderer::gles::GlesTexture>(
+            &mut renderer,
+            state,
+            target,
+            max,
+        )
+    }
+
     fn configure(
         &mut self,
         state: &mut State,

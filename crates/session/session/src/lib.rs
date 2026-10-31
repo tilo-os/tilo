@@ -65,6 +65,7 @@ mod panels;
 mod plane;
 pub mod portal_link;
 mod projection;
+mod projection_video;
 mod questions;
 mod records;
 mod rotation;
@@ -1305,6 +1306,8 @@ pub struct Session {
     /// The display sheet: where the desktop appears, and the wireless
     /// displays it streams to.
     display_sheet: display_sheet::DisplaySheet,
+    /// The frames a live projection is sent.
+    projection_video: projection_video::ProjectionVideo,
     /// Which way up the device is held, and the lock that pins the panel.
     rotation: rotation::Rotation,
     /// The keyboard input sources, and the one that types.
@@ -1835,6 +1838,7 @@ impl Session {
                 options.projector.clone(),
                 &options.wake.handle(),
             ),
+            projection_video: projection_video::ProjectionVideo::new(),
             rotation: rotation::Rotation::mount(options.accelerometer),
             sources,
             ended: false,
@@ -2960,6 +2964,10 @@ impl Session {
         // compositor draws their own pixels.
         self.shared.overview.step(&self.shared, now);
         self.compositor.render()?;
+        // A live projection is sent the desktop as the pass just drew it.
+        let video = self.display_sheet.video_stream();
+        self.projection_video
+            .follow(&mut self.compositor, video.as_ref());
         self.settle()?;
         self.shared.observe();
         self.shared.keep_desk();

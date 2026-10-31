@@ -172,8 +172,7 @@ fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
 fn docked() -> Session {
     let outputs: Vec<OutputConfig> = (1..=2)
         .map(|index| {
-            OutputConfig::new(format!("HEADLESS-{index}"), WIDTH, HEIGHT)
-                .at(WIDTH * (index - 1), 0)
+            OutputConfig::new(format!("HEADLESS-{index}"), WIDTH, HEIGHT).at(WIDTH * (index - 1), 0)
         })
         .collect();
     let mut session = Session::headless(

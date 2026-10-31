@@ -93,6 +93,9 @@ tilo-sheets = { path = "../sheets" }
 # The wireless display sheet speaks the projector service's control socket; the
 # sender stacks themselves (Miracast, GStreamer) stay in the service.
 tilo-projector = { path = "../../system/projector", default-features = false }
+# A projection's frames are the share streams' encode: the desktop as the
+# compositor draws it, through the one real-time encoder.
+tilo-window-share = { path = "../window-share" }
 # The directory of public workspaces a site serves: what joins list and
 # what a site's door and directory answer.
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
