@@ -61,6 +61,7 @@ pub mod sticky_keys;
 pub mod switch_scan;
 mod tablet;
 mod text_input;
+mod toplevel_icon;
 mod touch;
 mod window_frame;
 mod x11_windows;
@@ -112,8 +113,9 @@ pub use smithay::utils::Transform;
 pub use state::State;
 pub use switch_scan::{Scan, SwitchConfig, SwitchPair};
 pub use text_input::{TextCaret, TextEntry, TextField, TextFieldRefusal, TextInsertion};
+pub use toplevel_icon::{IconArtwork, IconImage, WindowIcon};
 pub use window_frame::{Edge, Shadow, WindowFrame};
-pub use x11_windows::{Icon, Identity as X11Identity};
+pub use x11_windows::{Identity as X11Identity, X11Icon};
 
 /// Why the compositor could not start or keep running.
 #[derive(Debug)]

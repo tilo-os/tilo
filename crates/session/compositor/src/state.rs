@@ -114,7 +114,7 @@ pub struct State {
     pub(crate) display: DisplayHandle,
     started: Instant,
     compositor_state: CompositorState,
-    xdg_shell_state: XdgShellState,
+    pub(crate) xdg_shell_state: XdgShellState,
     shm_state: ShmState,
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
@@ -142,6 +142,9 @@ pub struct State {
     pub(crate) pointer: Point<f64, Logical>,
     pointer_target: PointerTarget,
     pub(crate) protocols: crate::protocols::Protocols,
+    /// The icons windows set for themselves, and the buffers clients must
+    /// keep alive while their icon object holds them.
+    pub(crate) toplevel_icon: crate::toplevel_icon::ToplevelIconManager,
     pub(crate) lock: crate::lock::Lock,
     pub(crate) text_input: crate::text_input::TextInput,
     pub(crate) cursor: crate::cursor::Cursor,
@@ -235,6 +238,7 @@ impl State {
             pointer: Point::from((0.0, 0.0)),
             pointer_target: PointerTarget::Clients,
             protocols,
+            toplevel_icon: crate::toplevel_icon::ToplevelIconManager::new(display),
             exited: Arc::default(),
             lock: crate::lock::Lock::new(display),
             text_input: crate::text_input::TextInput::new(display),
@@ -1125,6 +1129,9 @@ pub(crate) fn describe(display: &DisplayHandle, window: &Window) -> Option<Windo
         min_size: size(x11.min_size()),
         max_size: size(x11.max_size()),
         pid: x11.pid(),
+        icon: x11
+            .wl_surface()
+            .and_then(|surface| crate::toplevel_icon::of_surface(&surface)),
     })
 }
 
@@ -1222,6 +1229,7 @@ fn window_info(display: &DisplayHandle, toplevel: &ToplevelSurface) -> WindowInf
             min_size: size(min),
             max_size: size(max),
             pid: pid_of(toplevel.wl_surface().client().as_ref(), display),
+            icon: crate::toplevel_icon::of_surface(toplevel.wl_surface()),
         }
     })
 }
@@ -1252,6 +1260,9 @@ impl CompositorHandler for State {
             while let Some(parent) = get_parent(&root) {
                 root = parent;
             }
+            // The icon a client set takes effect on this commit, like any
+            // other double-buffered state.
+            crate::toplevel_icon::committed(&root);
             let is_root = |window: &&Window| {
                 window
                     .toplevel()
@@ -1293,7 +1304,9 @@ impl CompositorHandler for State {
 }
 
 impl BufferHandler for State {
-    fn buffer_destroyed(&mut self, _buffer: &WlBuffer) {}
+    fn buffer_destroyed(&mut self, buffer: &WlBuffer) {
+        self.toplevel_icon.buffer_destroyed(buffer);
+    }
 }
 
 impl ShmHandler for State {

@@ -57,12 +57,12 @@ pub struct Identity {
     /// The desktop start-up that opened it (`_NET_STARTUP_ID`).
     pub startup_id: Option<String>,
     /// The largest of the window's icons, when it has one.
-    pub icon: Option<Icon>,
+    pub icon: Option<X11Icon>,
 }
 
 /// An image an X11 window offers as its icon, in premultiplied RGBA.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Icon {
+pub struct X11Icon {
     /// Width in pixels.
     pub width: u32,
     /// Height in pixels.
@@ -188,6 +188,9 @@ impl X11Windows {
             startup_id: window.startup_id().filter(|id| !id.is_empty()),
             icon: self.icon(id),
         };
+        if let Some(surface) = window.wl_surface() {
+            crate::toplevel_icon::set_x11(&surface, identity.icon.as_ref());
+        }
         self.identities.insert(id, identity);
     }
 
@@ -237,7 +240,7 @@ impl X11Windows {
     }
 
     /// The window's largest usable icon from `_NET_WM_ICON`.
-    fn icon(&self, window: X11Window) -> Option<Icon> {
+    fn icon(&self, window: X11Window) -> Option<X11Icon> {
         let reply = self
             .connection
             .get_property(
@@ -258,8 +261,8 @@ impl X11Windows {
 
 /// The largest square icon in a `_NET_WM_ICON` value that is small enough to
 /// keep, as premultiplied RGBA.
-fn icon(data: &[u32]) -> Option<Icon> {
-    let mut best: Option<Icon> = None;
+fn icon(data: &[u32]) -> Option<X11Icon> {
+    let mut best: Option<X11Icon> = None;
     let mut offset = 0_usize;
     while let Some(header) = data.get(offset..offset.checked_add(2)?) {
         let &[width, height] = header else {
@@ -279,7 +282,7 @@ fn icon(data: &[u32]) -> Option<Icon> {
         if best.as_ref().is_some_and(|best| best.width >= width) {
             continue;
         }
-        best = Some(Icon {
+        best = Some(X11Icon {
             width,
             height,
             pixels: premultiplied(pixels),

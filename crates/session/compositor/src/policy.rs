@@ -36,6 +36,9 @@ pub struct WindowInfo {
     /// The process that made the window: what it is asked of, the way a
     /// portal request names the app it comes from.
     pub pid: Option<u32>,
+    /// The icon the window set for itself, when it set one: what its tab
+    /// paints when its program brings no artwork of its own.
+    pub icon: Option<std::sync::Arc<crate::toplevel_icon::WindowIcon>>,
 }
 
 /// Where a window goes and the size it is asked to take.
