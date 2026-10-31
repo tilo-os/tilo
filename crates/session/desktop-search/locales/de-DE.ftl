@@ -64,6 +64,6 @@ search-continue-in-another-workspace = in einem anderen Arbeitsbereich
 # now that no app directory lists yet.
 search-downloaded-appimage = AppImage
 search-downloaded-program = Programm
-search-downloaded-missing = Die Datei ist weg
+search-downloaded-missing = Diese App ist nicht auffindbar
 search-downloaded-locate = { $name } suchen
 search-downloaded-add = { $name } zu den Apps hinzufügen

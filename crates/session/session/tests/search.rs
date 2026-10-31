@@ -881,6 +881,6 @@ fn a_downloaded_program_is_found_and_starts_and_one_whose_file_is_gone_says_so()
     let row = find_row(&mut session, "gone", "Gone Tool");
     assert_eq!(
         row.presentation.and_then(|shown| shown.detail),
-        Some("The file is gone".to_owned())
+        Some("Can't find this app".to_owned())
     );
 }

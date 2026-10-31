@@ -334,7 +334,7 @@ mod tests {
         let downloaded = Downloaded::new("room", reading(), &locate());
         let hits = downloaded.query("gone");
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].subtitle.as_deref(), Some("The file is gone"));
+        assert_eq!(hits[0].subtitle.as_deref(), Some("Can't find this app"));
         assert_eq!(hits[0].facts, ["Program"]);
         let Target::Invoke(target) = &hits[0].target else {
             panic!("finding the file is an action");
