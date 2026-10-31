@@ -179,14 +179,18 @@ impl Default for DesktopSearch {
     }
 }
 
-const PLACEHOLDER: &str = "Search apps, windows, documents and actions\u{2026}";
+/// What the empty field says the search over everything covers: the groups
+/// (kinds) it asks, in the desktop's language.
+fn placeholder() -> String {
+    crate::i18n::t("search-placeholder")
+}
 
 impl DesktopSearch {
     pub fn new() -> Self {
         let mut palette = ActionPalette::rows(Vec::new());
         // Rows arrive already matched and ranked by the shared ranking.
         palette.set_bypass_fuzzy(true);
-        palette.set_query_placeholder(PLACEHOLDER);
+        palette.set_query_placeholder(placeholder());
         Self {
             palette,
             sources: None,
@@ -214,9 +218,8 @@ impl DesktopSearch {
 
     /// Open over `data` with an empty query.
     pub fn open(&mut self, mut data: SearchData) {
-        let placeholder = data.placeholder.take();
-        self.palette
-            .set_query_placeholder(placeholder.as_deref().unwrap_or(PLACEHOLDER));
+        let placeholder = data.placeholder.take().unwrap_or_else(placeholder);
+        self.palette.set_query_placeholder(placeholder.as_str());
         self.sources = Some(Sources::new(data));
         self.choice = None;
         self.shown_query = None;
@@ -615,6 +618,35 @@ mod tests {
             }],
             ..SearchData::default()
         }
+    }
+
+    /// Opened before anything is typed, the card names each group it holds:
+    /// "Apps" over the applications, "Windows" over the open windows. A
+    /// person never reads a bare list, and the field says what those groups
+    /// are ("Search apps, windows, documents and actions…").
+    #[test]
+    fn the_empty_card_names_its_groups() {
+        let mut search = DesktopSearch::new();
+        search.open(data());
+        assert_eq!(search.query(), "", "nothing typed yet");
+        let groups: Vec<&str> = search
+            .palette()
+            .visible_entries()
+            .iter()
+            .map(|entry| {
+                entry
+                    .group
+                    .as_deref()
+                    .expect("every row is under a named group")
+            })
+            .collect();
+        assert!(groups.contains(&"Apps"), "{groups:?}");
+        assert!(groups.contains(&"Windows"), "{groups:?}");
+        assert_eq!(
+            crate::i18n::t("search-placeholder"),
+            "Search apps, windows, documents and actions\u{2026}",
+            "the empty field names those groups"
+        );
     }
 
     #[test]

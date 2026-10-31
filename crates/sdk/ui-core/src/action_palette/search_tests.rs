@@ -212,3 +212,55 @@ fn committed_text_narrows_the_rows_a_host_fed() {
     assert_eq!(palette.query(), "sheets notes");
     assert_ne!(palette.query_field(&key), Some(moved));
 }
+
+/// A query nothing matches leaves a line that names what was typed, and says
+/// what to try instead — never a bare "no matches", and never that hint on a
+/// card where nothing has been typed yet.
+#[test]
+fn a_query_that_matches_nothing_is_named_in_the_empty_list() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
+    // A palette searching its own providers.
+    let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        SearchField::with_language("en_US")
+    });
+    palette.open();
+    assert_eq!(
+        palette.empty_text(),
+        "Nothing to show",
+        "nothing typed yet, and nothing to show for it"
+    );
+    assert_eq!(
+        palette.empty_hint(),
+        None,
+        "a card with nothing typed does not talk about spelling"
+    );
+    palette.set_query("zzzz");
+    assert!(palette.is_empty());
+    assert_eq!(
+        palette.empty_text(),
+        "No results for \u{201c}zzzz\u{201d}",
+        "the line names the query"
+    );
+    assert_eq!(
+        palette.empty_hint(),
+        Some("Check the spelling, or try another word")
+    );
+
+    // A palette over the rows its host searched, as desktop search is.
+    let mut fed = ActionPalette::rows(vec![
+        CommandEntry::new("sheets", "Sheets").group("Apps"),
+        CommandEntry::new("notes", "Notes").group("Apps"),
+    ]);
+    fed.open();
+    fed.set_query("zzzz");
+    assert!(fed.visible_entries().is_empty());
+    assert_eq!(fed.empty_text(), "No results for \u{201c}zzzz\u{201d}");
+    assert_eq!(
+        fed.empty_hint(),
+        Some("Check the spelling, or try another word")
+    );
+    fed.set_query("");
+    assert_eq!(fed.empty_text(), "Nothing to show");
+    assert_eq!(fed.empty_hint(), None);
+}

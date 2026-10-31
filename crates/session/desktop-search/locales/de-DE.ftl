@@ -1,5 +1,6 @@
 # What desktop search says of the answers it works out and the web searches
 # it offers.
+search-placeholder = Apps, Fenster, Dokumente und Aktionen durchsuchen…
 search-kind-answers = Antworten
 search-kind-web = Web
 search-kind-websites = Websites
