@@ -713,7 +713,10 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::FeedbackRequest { .. }
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationRequest { .. }
-        | RemoteActionMessage::ConfirmationResponse { .. } => None,
+        | RemoteActionMessage::ConfirmationResponse { .. }
+        // Readings are the surface connection's own, and never reach here.
+        | RemoteActionMessage::ResourceWatch { .. }
+        | RemoteActionMessage::ResourceReading { .. } => None,
     }
 }
 

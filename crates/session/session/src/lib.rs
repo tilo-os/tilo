@@ -2407,8 +2407,6 @@ impl Session {
     /// The compositor failed.
     pub fn step(&mut self, timeout: Duration) -> Result<(), Error> {
         self.compositor.dispatch(timeout)?;
-        self.surfaces.poll();
-        self.surfaces.serve(&mut self.shared.doors);
         self.follow_displays()?;
         {
             let mut services = self.shared.services.borrow_mut();
@@ -2417,6 +2415,10 @@ impl Session {
                 plane.link.serve(&mut services);
             }
         }
+        // The surface apps are answered after the services took in what
+        // their devices did, so a panel is sent the reading of this pass.
+        self.surfaces.poll();
+        self.surfaces.serve(&mut self.shared.doors);
         // Dictation writes into the field the person is typing in, so it runs
         // before the frame rather than with the sheets.
         let locked = self.compositor.locked();
@@ -2549,13 +2551,27 @@ fn answered(started: Started) -> ResourceOperationStart {
 
 /// The system services' published side, behind the session's door like
 /// every hosted surface: one action host for all of them.
-struct ServiceDoor(Rc<RefCell<Services>>);
+struct ServiceDoor {
+    services: Rc<RefCell<Services>>,
+    /// The last reading asked for, and the services' revision it was read
+    /// at: a panel following a resource is answered from here until the
+    /// services move, so a frame never reads the device again.
+    last: (u64, Option<(String, serde_json::Value)>),
+}
 
 /// A surface app reaches the desktop's actions exactly as a person's
 /// palette does: through the door over every surface it hosts.
 impl surfaces::ActionDoor for tilo_surface_host::Doors {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         tilo_surface_host::Doors::resources(self)
+    }
+
+    fn read(&mut self, resource: &str) -> Option<serde_json::Value> {
+        tilo_surface_host::Doors::read(self, resource)
+    }
+
+    fn revision(&mut self) -> Option<u64> {
+        tilo_surface_host::Doors::moved(self)
     }
 
     fn invoke(
@@ -2569,11 +2585,24 @@ impl surfaces::ActionDoor for tilo_surface_host::Doors {
 
 impl Published for ServiceDoor {
     fn resources(&mut self) -> Vec<ResourceSpec> {
-        self.0.borrow().resources()
+        self.services.borrow().resources()
+    }
+
+    fn read(&mut self, resource: &str) -> Option<serde_json::Value> {
+        let revision = self.services.borrow().revision();
+        if self.last.0 == revision
+            && let Some((read, value)) = &self.last.1
+            && read == resource
+        {
+            return Some(value.clone());
+        }
+        let value = self.services.borrow().read(resource)?;
+        self.last = (revision, Some((resource.to_owned(), value.clone())));
+        Some(value)
     }
 
     fn revision(&self) -> Option<u64> {
-        Some(self.0.borrow().revision())
+        Some(self.services.borrow().revision())
     }
 
     fn invoke(
@@ -2582,7 +2611,7 @@ impl Published for ServiceDoor {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError> {
         match self
-            .0
+            .services
             .borrow_mut()
             .invoke(&address.resource, &address.action, arguments)
         {
@@ -2686,7 +2715,10 @@ fn mount_services(doors: &mut Doors, started: Vec<Box<dyn Service>>) -> Rc<RefCe
         services.add(service);
     }
     let services = Rc::new(RefCell::new(services));
-    doors.add(Rc::new(RefCell::new(ServiceDoor(Rc::clone(&services)))));
+    doors.add(Rc::new(RefCell::new(ServiceDoor {
+        services: Rc::clone(&services),
+        last: (0, None),
+    })));
     services
 }
 

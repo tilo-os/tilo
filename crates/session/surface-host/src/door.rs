@@ -20,6 +20,12 @@ pub trait Published {
     /// What it publishes now: its resources, with their actions.
     fn resources(&mut self) -> Vec<ResourceSpec>;
 
+    /// The reading of `resource` now, as its state's JSON; `None` when it
+    /// publishes no such resource, or publishes nothing of it.
+    fn read(&mut self, _resource: &str) -> Option<serde_json::Value> {
+        None
+    }
+
     /// Run its published action `address` with `arguments`.
     ///
     /// # Errors
@@ -159,4 +165,27 @@ impl Doors {
             .flat_map(|(_, surface)| surface.borrow_mut().accessible_labels())
             .collect()
     }
+
+    /// The reading of `resource` as the surface publishing it holds it now.
+    #[must_use]
+    pub fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        self.offered()
+            .into_iter()
+            .find_map(|(_, surface)| surface.borrow_mut().read(resource))
+    }
+
+    /// Where everything offered stands as one revision: equal revisions
+    /// publish the same readings. `None` when a surface cannot tell.
+    #[must_use]
+    pub fn moved(&self) -> Option<u64> {
+        Some(revision_of(&self.revision()?))
+    }
+}
+
+/// One number for `revisions`, so two that match publish the same readings.
+fn revision_of(revisions: &[(usize, u64)]) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    revisions.hash(&mut hasher);
+    hasher.finish()
 }

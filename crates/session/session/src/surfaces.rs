@@ -321,6 +321,19 @@ pub trait ActionDoor {
     /// What the desktop publishes now: its resources, each with its actions.
     fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec>;
 
+    /// The reading of `resource` now, as its state's JSON; `None` when
+    /// nothing publishes it.
+    fn read(&mut self, _resource: &str) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Where what the desktop publishes stands: equal revisions publish the
+    /// same readings and actions, so a surface watching a reading is only
+    /// read again once it moved. `None` when it cannot tell.
+    fn revision(&mut self) -> Option<u64> {
+        None
+    }
+
     /// Run the published action `address` with `arguments`.
     ///
     /// # Errors
@@ -435,6 +448,14 @@ struct Connection {
     /// How the last invocations its app run ended, newest last, so one the
     /// session answered as accepted can be asked after.
     answered: VecDeque<(InvocationId, InvocationUpdate)>,
+    /// The resources the surface follows, by name: it is sent each reading
+    /// that moves.
+    watched: Vec<String>,
+    /// The reading each watched resource was last sent, so one that did not
+    /// change is not sent again.
+    readings: HashMap<String, Option<String>>,
+    /// The door's revision the readings above were read at.
+    read_at: Option<u64>,
 }
 
 impl Connection {
@@ -463,6 +484,9 @@ impl Connection {
             listed_at: None,
             published: Vec::new(),
             answered: VecDeque::new(),
+            watched: Vec::new(),
+            readings: HashMap::new(),
+            read_at: None,
         }
     }
 
@@ -679,15 +703,25 @@ impl Surfaces {
         exited
     }
 
-    /// Answer what the surface apps asked since the last turn, and take in
-    /// how the invocations they were asked to run stand.
+    /// Answer what the surface apps asked since the last turn, take in how
+    /// the invocations they were asked to run stand, and send each reading a
+    /// surface follows that moved.
     pub fn serve(&mut self, door: &mut dyn ActionDoor) {
+        let revision = door.revision();
         for app in &mut self.running {
             // A surface publishes its actions once it has mounted: until it
             // has listed them, the session asks again.
             app.actions.list_if_silent();
             while let Ok(message) = app.actions.incoming.try_recv() {
                 match message {
+                    // A resource the surface shows: it is sent the reading
+                    // now, and each later one that moves.
+                    RemoteActionMessage::ResourceWatch { resource } => {
+                        if !app.actions.watched.contains(&resource) {
+                            app.actions.watched.push(resource);
+                            app.actions.read_at = None;
+                        }
+                    }
                     // What the surface offers: the session asked for it, and
                     // asks again whenever it changed.
                     RemoteActionMessage::CatalogueResponse { result, .. } => {
@@ -722,6 +756,7 @@ impl Surfaces {
                     }
                 }
             }
+            publish_readings(&mut app.actions, door, revision);
         }
     }
 
@@ -808,6 +843,37 @@ impl Surfaces {
 impl Drop for Surfaces {
     fn drop(&mut self) {
         self.stop_all();
+    }
+}
+
+/// Send `connection`'s surface each reading of what it follows that moved:
+/// its first reading once, and later ones as the desktop's revision moves
+/// and the reading with it.
+fn publish_readings(connection: &mut Connection, door: &mut dyn ActionDoor, revision: Option<u64>) {
+    if connection.watched.is_empty() {
+        return;
+    }
+    let read_at = std::mem::replace(&mut connection.read_at, revision);
+    // A door that cannot tell where it stands is read every pass; one that
+    // can is read only once it moved.
+    let moved = revision.is_none() || read_at != revision;
+    for resource in connection.watched.clone() {
+        if !moved && connection.readings.contains_key(&resource) {
+            continue;
+        }
+        let reading = door.read(&resource).map(|value| {
+            serde_json::to_string(&value).unwrap_or_else(|error| {
+                tracing::warn!(%resource, %error, "a reading did not encode");
+                String::from("null")
+            })
+        });
+        if connection.readings.get(&resource) == Some(&reading) {
+            continue;
+        }
+        connection
+            .readings
+            .insert(resource.clone(), reading.clone());
+        connection.send(RemoteActionMessage::ResourceReading { resource, reading });
     }
 }
 
