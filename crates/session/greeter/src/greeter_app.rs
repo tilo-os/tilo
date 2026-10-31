@@ -541,10 +541,12 @@ fn shot_sessions_with_a_choice() -> Vec<Session> {
         Session {
             name: "Tilo".to_string(),
             argv: vec!["/usr/libexec/tilo-session".to_string()],
+            default: true,
         },
         Session {
             name: "GNOME".to_string(),
             argv: vec!["/usr/bin/gnome-session".to_string()],
+            default: false,
         },
     ]
 }

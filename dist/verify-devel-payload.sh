@@ -19,4 +19,5 @@ entry=$(path /usr/share/wayland-sessions/tilo-app.desktop)
 grep -Fqx "Exec=$libexec_dir/tilo-session-dev" "$entry"
 grep -Fqx "TryExec=$libexec_dir/tilo-session-dev" "$entry"
 grep -Fq 'SESSION_RUNNER=$(dirname -- "$SELF_REAL")/tilo-session-runner' "$wrapper"
-grep -Fq 'exec "$SESSION_RUNNER" "$TARGET_REAL" "$@"' "$wrapper"
+grep -Fq 'exec "$SESSION_RUNNER" "$TARGET_REAL" \' "$wrapper"
+grep -Fq '    --host-desktop-session --firstboot --backend drm "$@"' "$wrapper"

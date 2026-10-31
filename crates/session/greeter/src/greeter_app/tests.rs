@@ -54,10 +54,12 @@ fn test_sessions() -> Vec<Session> {
                 "--backend".into(),
                 "drm".into(),
             ],
+            default: true,
         },
         Session {
             name: "Weston".to_string(),
             argv: vec!["/usr/bin/weston".into()],
+            default: false,
         },
     ]
 }
@@ -702,14 +704,14 @@ fn console_reports_input_only_once_the_compositor_focuses_the_window() {
 #[test]
 fn a_session_choice_appears_only_when_there_is_one_to_make() {
     // The image installs os/usr/share/wayland-sessions as-is, so this is
-    // exactly what the greeter on a fresh install reads: the shell, selected
-    // first, and the native session beside it.
+    // exactly what the greeter on a fresh install reads: the native session,
+    // selected first, and the old shell beside it.
     {
         let shipped = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../os/usr/share/wayland-sessions");
         let sessions = read_sessions(&shipped);
         let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["Tilo", "Tilo (native session)"]);
+        assert_eq!(names, ["Tilo", "Tilo (old shell)"]);
 
         let app = GreeterApp::with_sessions(sessions);
         assert!(app.offers_session_choice());
@@ -717,9 +719,9 @@ fn a_session_choice_appears_only_when_there_is_one_to_make() {
         assert_eq!(app.console_state()["session_choice"], true);
         assert_eq!(
             app.console_state()["sessions"],
-            serde_json::json!(["Tilo", "Tilo (native session)"])
+            serde_json::json!(["Tilo", "Tilo (old shell)"])
         );
-        // Signing in without a choice starts the shell.
+        // Signing in without a choice starts the native session.
         assert_eq!(app.session_label(), "Tilo");
         assert_eq!(
             app.sessions[app.selected_session].argv,
@@ -727,7 +729,7 @@ fn a_session_choice_appears_only_when_there_is_one_to_make() {
         );
         assert_eq!(
             app.sessions[1].argv,
-            ["/usr/libexec/tilo-session", "--native", "--backend", "drm"]
+            ["/usr/libexec/tilo-session", "--shell", "--backend", "drm"]
         );
     }
     {

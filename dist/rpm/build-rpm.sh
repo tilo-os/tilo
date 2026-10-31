@@ -76,6 +76,8 @@ if (( run_cargo )); then
     # Building the package without an explicit target compiles and LTO-links
     # those large binaries even though stage-payload never ships them.
     ( cd "$repo_root" && cargo build --release --locked -p shell --bin shell --bin tilo-runtime-mcp --no-default-features )
+    say "cargo build --release (native session)"
+    ( cd "$repo_root" && cargo build --release --locked -p tilo-session --bin tilo-session )
 fi
 
 # Cargo resolves a relative CARGO_TARGET_DIR from the repository root (the
@@ -85,7 +87,7 @@ target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 [[ $target_dir = /* ]] || target_dir=$repo_root/$target_dir
 target_dir=$(realpath -m "$target_dir")
 rel=${TILO_BIN_DIR:-$target_dir/release}
-for bin in shell tilo fs tilo-relay-admin tilo-enroll imager tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report tilo-install tilo-runtime-bundle \
+for bin in shell tilo-session tilo fs tilo-relay-admin tilo-enroll imager tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report tilo-install tilo-runtime-bundle \
            tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway tilo-model-http \
            tilo-relay-environment tilo-relay-offers tilo-legacy app; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }

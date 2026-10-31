@@ -1,23 +1,26 @@
 #!/bin/sh
 # Common display-manager lifecycle for both package-owned Tilo session entries.
 #
-# The caller must be one of the package-owned wrappers. The production wrapper
-# supplies its fixed /usr/bin/tilo-shell path; the developer wrapper supplies a
-# canonical path only after validating ownership, permissions, and the build
-# marker. This helper never discovers a compositor through the environment.
+# The caller must be one of the package-owned wrappers, and it names the whole
+# compositor command line: the path it trusts, then the compositor's own
+# arguments. The production wrapper supplies its fixed /usr/bin/tilo-session or
+# /usr/bin/tilo-shell path; the developer wrapper supplies a canonical path
+# only after validating ownership, permissions, and the build marker. This
+# helper never discovers a compositor through the environment, and adds no
+# compositor argument of its own.
 set -eu
 
 case $# in
     0) echo 'tilo-session-runner: missing compositor path' >&2; exit 2 ;;
 esac
-TILO_SHELL=$1
+COMPOSITOR=$1
 shift
-case "$TILO_SHELL" in
+case "$COMPOSITOR" in
     /*) ;;
     *) echo 'tilo-session-runner: compositor path must be absolute' >&2; exit 2 ;;
 esac
-[ -x "$TILO_SHELL" ] || {
-    echo "tilo-session-runner: $TILO_SHELL is missing or not executable" >&2
+[ -x "$COMPOSITOR" ] || {
+    echo "tilo-session-runner: $COMPOSITOR is missing or not executable" >&2
     exit 1
 }
 
@@ -44,8 +47,8 @@ XDG_CURRENT_DESKTOP=tilo
 XDG_SESSION_TYPE=wayland
 export XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 
-if [ ! -x "$TILO_SHELL" ]; then
-    echo "tilo-session: $TILO_SHELL is missing or not executable" >&2
+if [ ! -x "$COMPOSITOR" ]; then
+    echo "tilo-session: $COMPOSITOR is missing or not executable" >&2
     exit 1
 fi
 
@@ -310,25 +313,13 @@ rm -f -- "$flight_pipe"
 mkfifo -m 0600 -- "$flight_pipe"
 # The recorder writes the start header itself: it replaces the log atomically
 # on every chunk, so a header appended here beforehand would be overwritten.
-"$FLIGHT_RECORDER" "$flight_log" "$flight_started" "$$" "$TILO_SHELL" <"$flight_pipe" |
+"$FLIGHT_RECORDER" "$flight_log" "$flight_started" "$$" "$COMPOSITOR" <"$flight_pipe" |
     "$SYSTEMD_CAT" --identifier=tilo-session --level-prefix=false &
 flight_relay_pid=$!
 
-# --host-desktop-session is the package-owned, distro-neutral declaration that
-# this is a session added to an existing Linux installation. It keeps device
-# identity material in this login's XDG data tree and selects the reduced
-# identity-only OOBE. Do not infer this from distro files or XDG desktop names:
-# neither says how this binary was installed.
-#
-# --backend drm: this is a real login session on a seat of its own, driving
-# KMS directly. The winit backend (the default) is for running nested inside
-# another compositor and would have nothing to attach to here.
-#
-# --firstboot: on the Tilo image a systemd unit creates the user's config
-# directories once before the session. A host has no such unit, so the wrapper
-# performs that idempotent preparation and then falls through to the
-# compositor. Identity creation itself stays interactive in trusted compositor
-# chrome; it is never minted silently by this wrapper.
+# The compositor's own arguments come from the wrapper, which is where the
+# package declares how a host session differs from the image's own; this
+# helper passes them on unchanged.
 # Keep the wrapper alive so normal logout stops the session target and a
 # display-manager termination signal reaches the compositor before cleanup.
 set +e
@@ -338,8 +329,7 @@ set +e
 # user returns to another desktop.  systemd-cat execs the command and relays
 # its exit status/signals; disabling level-prefix parsing prevents app output
 # from forging journal priorities.
-"$TILO_SHELL" --host-desktop-session --firstboot --backend drm "$@" \
-    >"$flight_pipe" 2>&1 &
+"$COMPOSITOR" "$@" >"$flight_pipe" 2>&1 &
 shell_pid=$!
 if [ -n "$dev_attestation" ]; then
     attest_tmp=$dev_attestation.$$
