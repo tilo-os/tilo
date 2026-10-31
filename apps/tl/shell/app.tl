@@ -153,8 +153,13 @@ view presence(d: Desk) {
             }
             ui.Avatar(name: .some(d.person))
         }
-        ui.Button(if d.unread > 0 { "{d.unread}" } else { "Notifications" }, icon: if d.quiet { .bell_off } else { .bell }, icon_only: d.unread == 0, role: .bar) {
+        // The bell is named with what it shows; the count beside it is for the eye.
+        let bell = if d.quiet { "Notifications silenced" } else { "Notifications" }
+        ui.Button(if d.unread == 0 { bell } else if d.unread == 1 { "{bell}, 1 unread" } else { "{bell}, {d.unread} unread" }, icon: if d.quiet { .bell_off } else { .bell }, icon_only: true, role: .bar) {
             on press: status(d)
+        }
+        if d.unread > 0 {
+            ui.Badge(count: .some(d.unread))
         }
     }
 }
