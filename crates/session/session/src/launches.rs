@@ -161,6 +161,23 @@ impl Launches {
         (start_time(launched) == Some(start)).then_some(room)
     }
 
+    /// The app this session launched that `pid` descends from, while that
+    /// launch still runs: the app a program of the login is running in, such
+    /// as the terminal that started it. `None` when no launch is an ancestor
+    /// of `pid`.
+    #[must_use]
+    pub fn app_of_descendant(&self, pid: u32) -> Option<String> {
+        let lineage = ancestry(pid);
+        let launched = self
+            .started
+            .lock_recover()
+            .iter()
+            .find(|(launched, _)| lineage.contains(launched))
+            .map(|(launched, launch)| (*launched, launch.start, launch.app.clone()))?;
+        let (launched, start, app) = launched;
+        (start_time(launched) == Some(start)).then_some(app)
+    }
+
     /// The start time of the process `pid` started, when that process is the
     /// launch of `app` in `room` and still runs.
     fn live(&self, pid: u32, app: &str, room: &str) -> Option<u64> {
@@ -402,6 +419,40 @@ mod tests {
         assert!(
             launches.sandboxed_apps().is_empty(),
             "the sandbox that was bound is over"
+        );
+    }
+
+    /// A program's app is the launch it descends from, while that launch
+    /// runs: the terminal that started it, not any other launch of the
+    /// session.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_program_s_app_is_the_launch_it_descends_from() {
+        let launches = Launches::default();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("a process to launch");
+        assert_eq!(launches.app_of_descendant(child.id()), None, "no launch");
+
+        launches.started(std::process::id(), "so.tilo.terminal", "room-desk", false);
+        assert_eq!(
+            launches.app_of_descendant(std::process::id()).as_deref(),
+            Some("so.tilo.terminal"),
+            "the app of a process the session started"
+        );
+        assert_eq!(
+            launches.app_of_descendant(child.id()).as_deref(),
+            Some("so.tilo.terminal"),
+            "the app of a program running under it"
+        );
+
+        child.kill().ok();
+        child.wait().ok();
+        assert_eq!(
+            launches.app_of_descendant(std::process::id()).as_deref(),
+            Some("so.tilo.terminal"),
+            "the launch still runs"
         );
     }
 

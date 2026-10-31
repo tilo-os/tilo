@@ -28,6 +28,7 @@
 mod a11y_settings;
 mod activity;
 mod activity_provider;
+pub mod agent_door;
 mod app_icons;
 mod app_sheets;
 mod automation;
@@ -295,6 +296,12 @@ pub struct Options {
     /// publish, and on which socket. Off, the apps it starts reach no
     /// service at all.
     pub action_plane: ActionPlane,
+    /// Where the session's agent door listens
+    /// ([`agent_door::path`]): the socket a program of this login asks on to
+    /// work in a workspace as an agent, and the person admits it. `None`:
+    /// this session serves no agents (a test, or a session in a window of
+    /// another desktop).
+    pub agent_door: Option<std::path::PathBuf>,
 }
 
 /// Where a session serves its apps the resources its services publish.
@@ -311,6 +318,7 @@ pub enum ActionPlane {
     /// own socket alone.
     At(std::path::PathBuf),
 }
+
 
 /// Where quick settings reads the device from.
 pub enum QuickSettings {
@@ -429,6 +437,7 @@ impl Default for Options {
             wake_seams: mount::wake::Seams::default(),
             kill_switch: None,
             action_plane: ActionPlane::default(),
+            agent_door: None,
             launches: std::sync::Arc::default(),
             drives: None,
         }
@@ -592,6 +601,9 @@ struct Shared {
     /// The questions about the person's apps: whether to add a program they
     /// downloaded to their apps, and whether to uninstall one.
     app_sheets: app_sheets::AppSheets,
+    /// The agent door, when this session serves one: what a program of this
+    /// login asks on, and the person's answers about it.
+    agent_door: RefCell<Option<agent_door::Loop>>,
 }
 
 /// The app a window shows, by its id.
@@ -1100,6 +1112,12 @@ impl Shared {
             self.workspace_settings.as_ref(),
             &self.workspace_settings_feed(),
         );
+        // A program of this login asking to work as an agent is a question
+        // of the person's: their answer admits it, and the client is served
+        // from the next pass on.
+        if let Some(door) = self.agent_door.borrow_mut().as_mut() {
+            door.follow(&self.handle, &self.person);
+        }
         self.asker.follow();
         self.shortcut_guide.follow();
         self.app_sheets.follow();
@@ -1736,6 +1754,7 @@ impl Session {
         if let Some(apps) = &options.launch {
             apps.lend_launches(std::sync::Arc::clone(&options.launches));
         }
+
         // The shortcuts the person saved and the triggers that start them
         // without anyone invoking them: armed on the desk this device shows,
         // and started on the broker below. A run executes here, on a runtime
@@ -1755,6 +1774,43 @@ impl Session {
             std::sync::Arc::new(shortcut_library),
             &activity,
         )?;
+        // The agent door: a program of this login asks here to work in a
+        // workspace as an agent, and the person answers on their sheets. It
+        // binds first, and is served from the broker the plane starts, which
+        // already decides against the desk the loop shows.
+        let questions = options.questions.clone().or_else(|| {
+            options
+                .desktop
+                .as_ref()
+                .map(|desktop| desktop.questions().clone())
+        });
+        let door = options.agent_door.as_deref().and_then(|path| {
+            match agent_door::mount(
+                path,
+                questions.clone(),
+                std::sync::Arc::clone(&options.launches),
+                options.wake.handle(),
+                options.state.as_deref(),
+            ) {
+                Ok(mounted) => Some(mounted),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        path = %path.display(),
+                        "the agent door does not open"
+                    );
+                    None
+                }
+            }
+        });
+        let agent_door = door.map(|door| {
+            door.serve(
+                action_plane.as_ref().and_then(Plane::agent_broker),
+                action_plane
+                    .as_ref()
+                    .map(|plane| std::sync::Arc::clone(&plane.desk)),
+            )
+        });
         let automation = automation::Automation::new(
             options.state.as_deref(),
             options.wake.handle(),
@@ -1765,6 +1821,7 @@ impl Session {
             // are online: each schedule runs on one of them.
             sync.as_ref().and_then(|sync| sync.fabric()),
         );
+
         // The shell-ui socket this session serves: what an app asks about
         // its own tabs arrives there and is answered on this loop's pass.
         let tabs = mount::app_tabs::AppTabs::start(
@@ -1793,12 +1850,7 @@ impl Session {
 
         let search = Rc::new(SessionSearch::new(options.search, options.apps));
         let asker = questions::Asker::new(
-            options.questions.clone().or_else(|| {
-                options
-                    .desktop
-                    .as_ref()
-                    .map(|desktop| desktop.questions().clone())
-            }),
+            questions,
             portal.clone(),
             file_picker.clone(),
             Rc::clone(&services),
@@ -1863,6 +1915,7 @@ impl Session {
                 options.power.clone(),
             )),
             asker,
+            agent_door: RefCell::new(agent_door),
             notice_view: RefCell::new(None),
             sync,
             engine,

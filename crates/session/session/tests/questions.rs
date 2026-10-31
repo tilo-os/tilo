@@ -17,6 +17,8 @@
 )]
 
 use std::collections::BTreeMap;
+use std::io::{BufRead as _, BufReader, Write as _};
+use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -36,7 +38,7 @@ use tilo_portal::file_chooser::{
 };
 use tilo_portal::screenshot::ScreenshotQuestion;
 use tilo_service::{Answer, Asked, Question, Questions, Service, Started, decode, offer};
-use tilo_session::{Options, Session};
+use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::{FileMode, FilePickerEffect};
 use tilo_sheets::portal::{Body, Dialog, Field, PortalEffect, Prompt, PromptKind};
@@ -1024,4 +1026,199 @@ fn closing_the_chooser_leaves_the_file_question_unanswered() {
         !picker.presentation().is_open(),
         "the chooser sheet went away"
     );
+}
+
+/// A directory only this user reaches: the broker refuses to serve a socket
+/// anybody else could open, and the agent door is this account's alone.
+fn private_home() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = tempfile::tempdir().expect("a directory to serve the session in");
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("the session's directory is this user's");
+    root
+}
+
+/// The workspace of the desk `session` shows, owned by the person at it: a
+/// workspace nobody administers admits nobody.
+fn own_the_desk(session: &Session) {
+    let mut tree = session.handle().read(Clone::clone);
+    for workspace in &mut tree.workspaces {
+        workspace.set_owner("person");
+    }
+    session.handle().replace_tree(tree);
+}
+
+/// What the agents the desk's workspace holds, as Settings lists them.
+fn desk_agents(session: &Session) -> Vec<(String, tilo_action_policy::KindSet)> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .first()
+            .map(|workspace| workspace.agent_members_at(tilo_clock::unix_now()))
+            .unwrap_or_default()
+    })
+}
+
+/// A program of this login at the door: it says who it is, and asks what the
+/// session has for it. What it read comes back, however far it got.
+fn door_client(socket: &std::path::Path, answers: &std::sync::mpsc::Sender<Vec<Value>>) {
+    let stream = UnixStream::connect(socket).expect("the agent door's socket");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("the client waits for the person");
+    let mut writer = stream.try_clone().expect("a second handle on the door");
+    let mut reader = BufReader::new(stream);
+    let mut read = Vec::new();
+    for ask in [
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "Claude Code", "version": "2.1"}
+            }
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "tilo_ls", "arguments": {}}
+        }),
+    ] {
+        if writer.write_all(format!("{ask}\n").as_bytes()).is_err() {
+            break;
+        }
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => read.push(
+                serde_json::from_str(&line)
+                    .unwrap_or_else(|_| panic!("not a JSON-RPC answer: {line:?}")),
+            ),
+        }
+    }
+    let _ = answers.send(read);
+}
+
+/// The answers the program at the door read, once the session let it
+/// through.
+fn door_answers(
+    session: &mut Session,
+    questions: &Questions,
+    answers: &std::sync::mpsc::Receiver<Vec<Value>>,
+    client: std::thread::JoinHandle<()>,
+) -> Vec<Value> {
+    pump(session, |_| questions.pending().is_empty());
+    let read = answers
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the program at the door is served");
+    client.join().expect("the program's thread");
+    read
+}
+
+#[test]
+fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("agent.sock");
+    let questions = Questions::new();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            questions: Some(questions.clone()),
+            collab: false,
+            action_plane: ActionPlane::At(root.path().join("plane.sock")),
+            agent_door: Some(socket.clone()),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    own_the_desk(&session);
+    assert!(desk_agents(&session).is_empty(), "nobody works here yet");
+
+    let (answers, received) = std::sync::mpsc::channel();
+    let client = std::thread::spawn(move || door_client(&socket, &answers));
+
+    // Nothing the program sent past its introduction is read before the
+    // person says so: the question stands on the portal's sheet.
+    pump(&mut session, |_| questions.pending().len() == 1);
+    let shown = dialog(&session);
+    assert_eq!(
+        shown.title, "Work in “Desk” as the agent claude-code",
+        "where it would work, and as what"
+    );
+    assert!(
+        shown.heading.starts_with("Claude Code (") && shown.heading.ends_with(')'),
+        "who asks, and as what: {}",
+        shown.heading
+    );
+    assert_eq!(
+        shown.body,
+        Body::Choices(vec![
+            "Allow once".to_owned(),
+            "Allow for this session".to_owned(),
+            "Always allow".to_owned(),
+        ])
+    );
+    assert_eq!(shown.confirm_label, "Allow");
+    assert_eq!(shown.cancel_label, "Deny");
+    assert!(
+        desk_agents(&session).is_empty(),
+        "still nobody, before the answer"
+    );
+
+    press(&mut session, PortalEffect::SELECT.id, json!({"index": 1}));
+    press(&mut session, PortalEffect::CONFIRM.id, json!({}));
+    let read = door_answers(&mut session, &questions, &received, client);
+
+    assert!(
+        read[0].pointer("/result/serverInfo").is_some(),
+        "the program is served, as an agent: {read:?}"
+    );
+    assert!(
+        read[1].get("error").is_none(),
+        "it reaches this desktop's actions as the agent it was admitted as: {read:?}"
+    );
+    assert_eq!(
+        desk_agents(&session),
+        [("claude-code".to_owned(), tilo_action_policy::KindSet::READ)],
+        "the agent the workspace holds, with the Observer preset's grants"
+    );
+}
+
+#[test]
+fn a_program_the_person_refuses_works_nowhere() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("agent.sock");
+    let questions = Questions::new();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            questions: Some(questions.clone()),
+            collab: false,
+            action_plane: ActionPlane::At(root.path().join("plane.sock")),
+            agent_door: Some(socket.clone()),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    own_the_desk(&session);
+
+    let (answers, received) = std::sync::mpsc::channel();
+    let client = std::thread::spawn(move || door_client(&socket, &answers));
+
+    pump(&mut session, |_| questions.pending().len() == 1);
+    press(&mut session, PortalEffect::CANCEL.id, json!({}));
+    let read = door_answers(&mut session, &questions, &received, client);
+
+    assert_eq!(
+        read[0].pointer("/error/message").and_then(Value::as_str),
+        Some("You didn’t let this program work here as an agent."),
+        "the program reads why: {read:?}"
+    );
+    assert!(desk_agents(&session).is_empty(), "no agent joined");
 }

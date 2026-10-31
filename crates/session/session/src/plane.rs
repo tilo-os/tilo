@@ -484,6 +484,14 @@ impl Plane {
     ) -> Option<std::sync::Arc<tilo_action_broker::collab_broker::AppActionBroker>> {
         self.broker.app_action_broker().map(std::sync::Arc::new)
     }
+
+    /// The broker a program the person admitted as an agent is served
+    /// through, while it takes work.
+    pub(crate) fn agent_broker(
+        &self,
+    ) -> Option<std::sync::Arc<tilo_action_broker::collab_app_broker::AppBrokerState>> {
+        self.broker.fanout.app_broker()
+    }
 }
 
 #[cfg(test)]

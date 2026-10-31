@@ -485,3 +485,16 @@ uninstall-documents-body = Deine Dokumente bleiben in deinen Arbeitsbereichen.
 uninstall-from-apps-title = { $name } aus den Apps entfernen?
 uninstall-from-apps-action = Aus Apps entfernen
 uninstall-entry-body = Sie gehört zum System, bleibt also auf diesem Computer und erscheint nicht mehr unter deinen Apps.
+
+## Der Agenten-Zugang: ein Programm dieser Anmeldung (ein KI-Agent in einem
+## Terminal) bittet darum, in einem Arbeitsbereich als Agenten-Mitglied zu
+## arbeiten.
+agent-door-client = { $client } ({ $program })
+agent-door-client-in-app = { $who } in { $app }
+agent-door-admission = In „{ $workspace }“ als Agent { $agent } arbeiten
+agent-door-admission-detail = Er tritt diesem Arbeitsbereich als Beobachter bei: er liest, was der Arbeitsbereich enthält, und führt die Aktionen aus, die ihm gewährt sind; in den Einstellungen des Arbeitsbereichs kannst du ihn jederzeit entfernen.
+agent-door-no-workspace = Hier gibt es keinen Arbeitsbereich zum Arbeiten.
+agent-door-workspace-gone = Der Arbeitsbereich, in dem dieses Programm arbeiten wollte, existiert nicht mehr.
+agent-door-not-administrator = Du verwaltest diesen Arbeitsbereich nicht, daher wurde { $agent } nicht hinzugefügt.
+agent-door-withdrawn = Die Anfrage wurde zurückgezogen, bevor jemand sie beantwortet hat.
+agent-door-declined = Du hast dieses Programm nicht als Agenten hier arbeiten lassen.

@@ -145,6 +145,9 @@ tilo-automation = { path = "../../collab/automation" }
 # A schedule's fire time is claimed by one of the person's devices, ranked by
 # the same hash everywhere.
 sha2.workspace = true
+# The MCP projection of the action host, which the agent door serves a
+# program of this login through once the person admits it.
+tilo-runtime = { path = "../../runtime/tilo-runtime" }
 uuid.workspace = true
 # The kernel-attested custody of an executing app process a launch is
 # admitted by.
