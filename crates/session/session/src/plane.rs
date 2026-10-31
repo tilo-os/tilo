@@ -350,14 +350,20 @@ impl ShortcutLibraryServices for ShortcutLibrary {
 /// the broker reads the copy.
 pub struct DeskAuthority {
     tree: Mutex<tilo_desktop_model::DesktopTree>,
+    revocations: crate::engine::Revocations,
 }
 
 impl DeskAuthority {
-    /// The authority over `tree`, as the loop sees it now.
+    /// The authority over `tree`, as the loop sees it now, deciding what each
+    /// of its rooms revokes from `revocations`.
     #[must_use]
-    pub fn new(tree: tilo_desktop_model::DesktopTree) -> Self {
+    pub fn new(
+        tree: tilo_desktop_model::DesktopTree,
+        revocations: crate::engine::Revocations,
+    ) -> Self {
         Self {
             tree: Mutex::new(tree),
+            revocations,
         }
     }
 
@@ -376,13 +382,16 @@ impl WorkspaceAuthority for DeskAuthority {
         Ok(())
     }
 
-    /// A workspace this desk shows is one this device holds, so its shortcuts
-    /// are proven against the revocations its room's document records — which
-    /// this session does not read yet, so none of them is revoked here.
+    /// A workspace this desk shows is one this device was let into, so its
+    /// shortcuts are proven against the revocations its room records. A room
+    /// whose document this device does not hold — a desk kept from before it
+    /// joined, or one it left — revokes nothing here: the shortcuts it shows
+    /// are proven by what it does hold, and a call it can no longer make is
+    /// refused elsewhere.
     fn room_revocations(&self, room: &str) -> Option<tilo_user_identity::RevocationList> {
         let tree = self.tree.lock_recover();
-        tilo_action_broker::services::room_in(&tree, room)
-            .map(|_workspace| tilo_user_identity::RevocationList::new())
+        tilo_action_broker::services::room_in(&tree, room)?;
+        Some((self.revocations)(room).unwrap_or_default())
     }
 }
 
@@ -626,6 +635,7 @@ mod tests {
             content,
             desk: std::sync::Arc::new(DeskAuthority::new(
                 tilo_desktop_model::DesktopTree::default(),
+                crate::engine::revocations_of(None),
             )),
             shortcuts: library(),
             activity: crate::activity_provider::wire(requests()),

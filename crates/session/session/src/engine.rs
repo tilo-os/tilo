@@ -27,6 +27,7 @@ use tilo_peer_state::join::MemberRole;
 use tilo_peer_state::owner::{
     Change, DocumentRead, FileHost, NativeWorkspaceOwner, open_file_with, owner_file_of,
 };
+use tilo_user_identity::RevocationList;
 
 use crate::sync;
 
@@ -221,6 +222,31 @@ impl Engine {
         })
     }
 
+    /// The revocations the room `room`'s governance records, as the room
+    /// last admitted them: the devices of any of its people the room refuses
+    /// to hear from. `None` when this device holds no room of that name, so
+    /// nothing of it is known.
+    ///
+    /// What is checked against this: whether a shortcut's saver may still
+    /// start it here, and whether an app of the room may still be believed
+    /// about who saved one.
+    #[must_use]
+    pub fn revocations(&self, room: &str) -> Option<RevocationList> {
+        let room = RoomId::parse(room)?;
+        self.owner
+            .with_current(room, |view| {
+                let mut list = RevocationList::new();
+                for entry in view.peer().revocations() {
+                    // The room verified every entry when it admitted it: an
+                    // entry that does not verify now leaves the room's
+                    // refusals unknown rather than trusting the rest.
+                    list.insert(entry).map_err(|error| error.to_string())?;
+                }
+                Ok(list)
+            })
+            .ok()
+    }
+
     /// The engine's owner, for what holds the room's session.
     pub(crate) fn owner(&self) -> &NativeWorkspaceOwner {
         &self.owner
@@ -238,6 +264,18 @@ impl Engine {
     pub(crate) fn unbind(&self, workspace: WorkspaceId) {
         self.slots.0.lock_recover().remove(&workspace);
     }
+}
+
+/// A room's revocations, as the threads beside the session's loop ask for
+/// them: the broker decides on its own thread and the automation host arms
+/// shortcuts on the loop, and both refuse a device the room revoked.
+pub(crate) type Revocations = Arc<dyn Fn(&str) -> Option<RevocationList> + Send + Sync>;
+
+/// What a room of this device's engine revokes, for the callers that ask
+/// from another thread. A session that holds no room knows of none.
+pub(crate) fn revocations_of(engine: Option<&Arc<Engine>>) -> Revocations {
+    let engine = engine.cloned();
+    Arc::new(move |room: &str| engine.as_ref().and_then(|engine| engine.revocations(room)))
 }
 
 /// Where this device's rooms are kept under `state`.

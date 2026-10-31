@@ -13,14 +13,21 @@
 //! - a record change, from the record documents of this device's rooms,
 //!   read on a worker that a tree watch wakes ([`records`]);
 //! - the passing of time, a workspace being joined and an application
-//!   starting, from the desk the session shows;
+//!   starting, from the desk the session shows and the launches it made;
+//! - the focus modes a shortcut can answer, from the person's notification
+//!   policy, which the settings watch keeps current;
+//! - a file changing in a folder a shortcut's capability shares, from the
+//!   same file watch the session's folders use ([`folders`]);
 //! - a keyboard chord, once a press reaches the automation host rather than
-//!   a chord of the desktop's own table.
+//!   a chord of the desktop's own table ([`Automation::press`]);
+//! - the revoked devices of a room a shortcut is saved in, from the room's
+//!   governance as this device holds it.
 //!
 //! Only shortcuts saved by the person this device acts for in their room
 //! are armed ([`triggers::armed`]), so a collaborator's shortcut never fires
 //! on someone else's behalf.
 
+pub(crate) mod folders;
 pub(crate) mod records;
 pub(crate) mod triggers;
 
@@ -30,17 +37,21 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use chrono::{Datelike as _, Timelike as _};
+use settings_store::hardware::{ActionChord, KeyChord};
+use settings_store::notification_policy::NotificationPolicy;
+use tilo_action_broker::automation::chord_target;
 use tilo_action_broker::collab_broker::AppActionBroker;
 use tilo_actions::remote::Caller;
 use tilo_automation::dispatch::RecordEvent;
 use tilo_automation::{RunId, ScheduleClaim, TriggerSpec};
 use tilo_desktop_model::RoomId;
 use tilo_desktop_surface::DesktopHandle;
+use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
-use tilo_user_identity::RevocationList;
 
 pub(crate) use triggers::{
-    Armed, Firing, PersonalDevices, TriggerEvent, TriggerHost, armed, unix_ns,
+    Armed, Firing, FocusState, PersonalDevices, TriggerEvent, TriggerHost, armed, unix_ns,
 };
 
 /// The person's certified devices as this session's fabric sees them: which
@@ -87,6 +98,17 @@ pub struct Automation {
     devices: Arc<triggers::FixedDevices>,
     /// This session's device fabric, while the person certified its device.
     fabric: Option<tilo_device_fabric::link::SharedLink>,
+    /// The apps this session started, which an application-opened trigger
+    /// follows.
+    launches: Arc<crate::launches::Launches>,
+    /// The folders file-changed triggers watch, and what changed in them.
+    folders: folders::FolderWatch,
+    /// The person's notification policy, as the session keeps it current:
+    /// the focus modes a shortcut can answer.
+    policy: Arc<std::sync::Mutex<NotificationPolicy>>,
+    /// What each of this device's rooms revokes, as the room's governance
+    /// records it.
+    revocations: crate::engine::Revocations,
     handle: DesktopHandle,
     /// The person at this device, as the session's own identity names them:
     /// a shortcut saved by anyone else is never armed.
@@ -94,6 +116,9 @@ pub struct Automation {
     /// The rooms with a shortcut armed now: the ones the desk is published
     /// for, because a firing there has to find its shortcut.
     armed_rooms: BTreeSet<String>,
+    /// The shortcuts armed now, as the last look at the desk found them: the
+    /// chords the keys answer are theirs.
+    armed_now: Vec<Armed>,
     /// The desk revision the broker's copy was last brought level with.
     published: Option<u64>,
     /// The desk revision whose shortcuts were last armed: a desk that moved
@@ -110,6 +135,16 @@ pub struct Automation {
     waiting: RefCell<Vec<Firing>>,
 }
 
+/// What the session shows the trigger host besides its desk: the apps it
+/// starts, the person's notification policy, what each of its rooms revokes,
+/// and which of the person's devices are online to run a schedule.
+pub struct Feeds {
+    pub fabric: Option<tilo_device_fabric::link::SharedLink>,
+    pub launches: Arc<crate::launches::Launches>,
+    pub policy: Arc<std::sync::Mutex<NotificationPolicy>>,
+    pub revocations: crate::engine::Revocations,
+}
+
 impl Automation {
     /// The trigger host of a session whose desk is `handle`, keeping its
     /// schedule ledger under `state` in the file the shell kept it in.
@@ -120,8 +155,14 @@ impl Automation {
         handle: DesktopHandle,
         person: String,
         saved: tokio::sync::mpsc::UnboundedReceiver<crate::plane::StoreRequest>,
-        fabric: Option<tilo_device_fabric::link::SharedLink>,
+        feeds: Feeds,
     ) -> Self {
+        let Feeds {
+            fabric,
+            launches,
+            policy,
+            revocations,
+        } = feeds;
         let root = cli::data_home();
         let devices = Arc::new(triggers::FixedDevices::new(devices_of(fabric.as_ref())));
         let mut triggers = TriggerHost::for_session(state, wake.clone());
@@ -134,9 +175,14 @@ impl Automation {
             broker: None,
             devices,
             fabric,
+            launches,
+            folders: folders::FolderWatch::default(),
+            policy,
+            revocations,
             handle,
             person,
             armed_rooms: BTreeSet::new(),
+            armed_now: Vec::new(),
             published: None,
             armed_at: None,
             last_tick: RefCell::new(None),
@@ -216,6 +262,37 @@ impl Automation {
         self.publish_desk(desk);
     }
 
+    /// A chord was pressed that nothing else of the desktop's answers: it
+    /// starts every shortcut whose keyboard trigger names it, once.
+    pub fn press(&mut self, chord: &KeyChord) {
+        let now_ns = unix_ns(self.triggers.clock().now());
+        let armed = self.armed(now_ns);
+        let firings = self.triggers.observe(TriggerEvent::Key(chord), &armed);
+        self.start(firings);
+    }
+
+    /// The chords the armed shortcuts' keyboard triggers answer, as the
+    /// desktop's shortcut table lists them: the key surface claims these,
+    /// and the guide shows what each runs.
+    #[must_use]
+    pub fn trigger_chords(&self) -> Vec<ActionChord> {
+        self.armed_now
+            .iter()
+            .flat_map(|armed| {
+                armed.shortcut.triggers.iter().filter_map(move |trigger| {
+                    let TriggerSpec::Keyboard { chord } = trigger else {
+                        return None;
+                    };
+                    Some(ActionChord {
+                        chord: KeyChord::parse(chord).ok()?,
+                        target: chord_target(&armed.room, &armed.shortcut.id),
+                        label: format!("Run {}", armed.shortcut.name),
+                    })
+                })
+            })
+            .collect()
+    }
+
     /// Arm the shortcuts the desk shows, show every source what this device
     /// sees now, and start what fired. `tick` says the passing of time came
     /// round, which the schedules alone are shown.
@@ -224,10 +301,13 @@ impl Automation {
         let now_ns = unix_ns(self.triggers.clock().now());
         let armed = self.armed(now_ns);
         self.armed_rooms = armed.iter().map(|armed| armed.room.clone()).collect();
+        self.armed_now.clone_from(&armed);
         self.follow_records(&armed);
         self.armed_at = Some(self.handle.revision());
         let mut firings = if tick {
             let mut firings = self.triggers.observe(TriggerEvent::Tick, &armed);
+            let running = self.launches.running_apps();
+            firings.extend(self.triggers.observe(TriggerEvent::Apps(&running), &armed));
             let workspaces: BTreeMap<String, String> = self.handle.read(|tree| {
                 tree.workspaces
                     .iter()
@@ -238,6 +318,8 @@ impl Automation {
                 self.triggers
                     .observe(TriggerEvent::Workspaces(&workspaces), &armed),
             );
+            let focus = self.focus_state();
+            firings.extend(self.triggers.observe(TriggerEvent::Focus(focus), &armed));
             firings
         } else {
             Vec::new()
@@ -254,22 +336,60 @@ impl Automation {
                     .observe(TriggerEvent::Records(&events), &armed),
             );
         }
+        if tick {
+            self.follow_folders(&armed);
+            let changes = self.folders.changes();
+            if !changes.is_empty() {
+                firings.extend(self.triggers.observe(TriggerEvent::Files(&changes), &armed));
+            }
+        }
         self.start(firings);
+    }
+
+    /// Watch exactly the folders the armed shortcuts' file-changed triggers
+    /// name, for the changes the next look reports.
+    fn follow_folders(&mut self, armed: &[Armed]) {
+        let folders = self
+            .handle
+            .read(|tree| triggers::watched_folders(&tree.workspaces, armed));
+        self.folders.watch(folders);
+    }
+
+    /// Which focus modes are on now, as the person's notification policy
+    /// keeps them: their switch, and the schedule at this device's local
+    /// time.
+    fn focus_state(&self) -> FocusState {
+        let now = self.triggers.clock().now();
+        let local = now.with_timezone(&self.triggers.clock().offset_at(now));
+        let minute = local
+            .hour()
+            .checked_mul(60)
+            .and_then(|minutes| minutes.checked_add(local.minute()))
+            .and_then(|minute| u16::try_from(minute).ok())
+            .unwrap_or(0);
+        let weekday = u8::try_from(local.weekday().num_days_from_monday()).unwrap_or(0);
+        let policy = self.policy.lock_recover();
+        FocusState {
+            do_not_disturb: policy.do_not_disturb,
+            focus: policy.focus.active_until(minute, weekday).is_some(),
+        }
     }
 
     /// The shortcuts this device may start: those the person it acts for in
     /// their room saved with a device of theirs, with the fire times of that
     /// room's schedules already claimed.
     fn armed(&self, now_ns: u64) -> Vec<Armed> {
+        let revocations = &self.revocations;
         self.handle.read(|tree| {
             armed(
                 &tree.workspaces,
                 |workspace| self.person_in(&workspace.room().to_string()),
-                // The revocations a room's document records are not read by
-                // this session yet: it holds no revocation list of its own,
-                // and a document it does hold is the one the room's shortcuts
-                // came from.
-                |_workspace| Some(RevocationList::new()),
+                // A room this device holds arms against what its governance
+                // revokes. One it does not hold is a workspace on the desk
+                // whose room lives elsewhere: nothing of it is known here,
+                // and the run it starts is refused by the broker unless the
+                // room it holds says otherwise.
+                |workspace| Some(revocations(&workspace.room().to_string()).unwrap_or_default()),
                 now_ns,
             )
         })

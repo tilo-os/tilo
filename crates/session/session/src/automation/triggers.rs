@@ -55,17 +55,6 @@
 //! once, each other waits [`CLAIM_GRACE`] per rank and drops it if the
 //! run's first change has appeared.
 
-// The host is ported whole, so its sources for chords, applications, focus
-// modes and watched folders sit here with the ones the session drives today:
-// the session shows it the passing of time, the workspaces it joined and the
-// changes to its records, and nothing yet produces the other events. Their
-// behaviour is the old session's and is tested here until the session reads
-// those sources.
-#![allow(
-    dead_code,
-    reason = "the trigger host is ported whole; only Tick, Workspaces and Records are fed so far"
-)]
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -107,6 +96,7 @@ pub struct PersonalDevices {
     pub online: BTreeSet<String>,
 }
 
+#[cfg(test)]
 impl PersonalDevices {
     /// This device alone.
     #[must_use]
@@ -121,6 +111,42 @@ impl PersonalDevices {
 /// Where trigger sources learn which of the person's devices are online.
 pub trait DeviceDirectory: Send + Sync {
     fn personal_devices(&self) -> PersonalDevices;
+}
+
+/// A clock that moves only when told to, in a fixed offset.
+#[cfg(test)]
+#[derive(Debug)]
+pub struct ManualClock {
+    now: Mutex<DateTime<Utc>>,
+    offset: FixedOffset,
+}
+
+#[cfg(test)]
+impl ManualClock {
+    #[must_use]
+    pub fn new(now: DateTime<Utc>, offset: FixedOffset) -> Self {
+        Self {
+            now: Mutex::new(now),
+            offset,
+        }
+    }
+
+    pub fn set(&self, now: DateTime<Utc>) {
+        if let Ok(mut current) = self.now.lock() {
+            *current = now;
+        }
+    }
+}
+
+#[cfg(test)]
+impl Clock for ManualClock {
+    fn now(&self) -> DateTime<Utc> {
+        self.now.lock().map_or_else(|_| Utc::now(), |now| *now)
+    }
+
+    fn offset_at(&self, _at: DateTime<Utc>) -> FixedOffset {
+        self.offset
+    }
 }
 
 /// A fixed set of devices; a device with no certified identity by default.
@@ -167,45 +193,6 @@ impl Clock for SystemClock {
 
     fn offset_at(&self, at: DateTime<Utc>) -> FixedOffset {
         Local.offset_from_utc_datetime(&at.naive_utc()).fix()
-    }
-}
-
-/// A clock that moves only when told to, in a fixed offset.
-#[derive(Debug)]
-pub struct ManualClock {
-    now: Mutex<DateTime<Utc>>,
-    offset: FixedOffset,
-}
-
-impl ManualClock {
-    #[must_use]
-    pub fn new(now: DateTime<Utc>, offset: FixedOffset) -> Self {
-        Self {
-            now: Mutex::new(now),
-            offset,
-        }
-    }
-
-    pub fn set(&self, now: DateTime<Utc>) {
-        if let Ok(mut current) = self.now.lock() {
-            *current = now;
-        }
-    }
-
-    pub fn advance(&self, by: ChronoDuration) {
-        if let Ok(mut current) = self.now.lock() {
-            *current = current.checked_add_signed(by).unwrap_or(*current);
-        }
-    }
-}
-
-impl Clock for ManualClock {
-    fn now(&self) -> DateTime<Utc> {
-        self.now.lock().map_or_else(|_| Utc::now(), |now| *now)
-    }
-
-    fn offset_at(&self, _at: DateTime<Utc>) -> FixedOffset {
-        self.offset
     }
 }
 
@@ -455,11 +442,6 @@ pub trait TriggerSource: Send {
     /// reach the disk and may run now.
     fn take_settled(&mut self) -> Vec<Firing> {
         Vec::new()
-    }
-
-    /// Whether firings are waiting for the disk.
-    fn holds_firings(&self) -> bool {
-        false
     }
 }
 
@@ -919,10 +901,6 @@ impl TriggerSource for ScheduleTriggers {
         self.held = waiting;
         ready.into_iter().map(|(_, firing)| firing).collect()
     }
-
-    fn holds_firings(&self) -> bool {
-        !self.held.is_empty()
-    }
 }
 
 fn ledger_key(room: &str, shortcut: &str, index: usize) -> String {
@@ -1359,12 +1337,6 @@ impl TriggerHost {
             .iter_mut()
             .flat_map(|source| source.take_settled())
             .collect()
-    }
-
-    /// Whether a firing waits for its schedule ledger to be written.
-    #[must_use]
-    pub fn holds_firings(&self) -> bool {
-        self.sources.iter().any(|source| source.holds_firings())
     }
 }
 

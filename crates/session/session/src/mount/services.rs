@@ -87,6 +87,7 @@ pub(crate) fn start_action_plane(
     shortcuts: std::sync::Arc<ShortcutLibrary>,
     activity: &activity::Activity,
     agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
+    revocations: crate::engine::Revocations,
 ) -> Result<Option<Plane>, Error> {
     let path = match &options.action_plane {
         ActionPlane::Off => return Ok(None),
@@ -101,7 +102,7 @@ pub(crate) fn start_action_plane(
     let link = plane::Link::new(options.wake.handle());
     // What the broker decides against, from this pass on: the desk as it is
     // before the person touches anything, and every desk it shows after.
-    let desk = std::sync::Arc::new(DeskAuthority::new(handle.read(Clone::clone)));
+    let desk = std::sync::Arc::new(DeskAuthority::new(handle.read(Clone::clone), revocations));
     // The workspace's activity, as the apps this session runs read it: the
     // same model the desk serves its own windows.
     let activity_wire = activity_provider::wire(activity.requests());

@@ -141,9 +141,7 @@ pub(crate) fn answer(shared: &Shared) {
                 // The switch is persisted, so the settings app and the
                 // desktop's own menu read the same one; the session's
                 // settings watch brings it back into every arrival.
-                if let Err(error) =
-                    crate::notifications::SessionNotifications::set_do_not_disturb(on)
-                {
+                if let Err(error) = shared.notifications.borrow().set_do_not_disturb(on) {
                     tracing::warn!(%error, on, "do not disturb not saved");
                 }
             }

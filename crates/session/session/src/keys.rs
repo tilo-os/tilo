@@ -74,6 +74,19 @@ impl Invocation {
 /// Invocations waiting for the session's door.
 pub type Invocations = Rc<RefCell<Vec<Invocation>>>;
 
+/// Chords pressed that run a saved shortcut's keyboard trigger, waiting for
+/// the automation host to fire them.
+pub type PressedChords = Rc<RefCell<Vec<KeyChord>>>;
+
+/// What the keys hand the rest of the session: the shortcuts the person's
+/// presses invoked, and the chords an armed shortcut answers, which the
+/// automation host starts its run on.
+#[derive(Clone, Default)]
+pub(crate) struct Presses {
+    pub invocations: Invocations,
+    pub triggered: PressedChords,
+}
+
 /// Quick settings' resource, whose effects the level and radio keys run.
 pub const QUICK_SETTINGS: &str = "quick-settings.panel";
 /// What plays: the audio service's media, whose own controls reach the
@@ -291,6 +304,9 @@ pub(crate) struct SessionKeys {
     /// there, and once it is, the chord moves inside it instead.
     displays: Option<tilo_sheets::Presentation>,
     invocations: Invocations,
+    /// The chords pressed that run a saved shortcut's keyboard trigger: the
+    /// automation host starts them, on the pass that follows.
+    triggered: PressedChords,
     /// The apps' shortcuts, which work wherever the keyboard is.
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
     /// The shortcut guide's keys while it is up: what it holds back from
@@ -313,7 +329,7 @@ pub(crate) struct SessionKeys {
 impl SessionKeys {
     pub(crate) fn new(
         shortcuts: Rc<RefCell<ShortcutConfig>>,
-        invocations: Invocations,
+        presses: Presses,
         portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
         guide: GuideKeys,
         fold: DeskFold,
@@ -321,10 +337,15 @@ impl SessionKeys {
         controller: Rc<Cell<Option<ui::ControllerFamily>>>,
         controller_keys: Rc<Cell<bool>>,
     ) -> Self {
+        let Presses {
+            invocations,
+            triggered,
+        } = presses;
         Self {
             shortcuts,
             displays,
             invocations,
+            triggered,
             portal,
             guide,
             fold,
@@ -382,6 +403,20 @@ impl SessionKeys {
         let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
         let shortcuts = self.shortcuts.borrow();
         tilo_desktop::shortcuts::configured_shortcut_action(&shortcuts, &logical, modifiers)
+    }
+
+    /// The chord of this press that runs a saved shortcut's keyboard trigger,
+    /// which the session claims and the automation host fires. The chord is
+    /// the table's because the automation put it there when it armed the
+    /// shortcut, and it stays the session's until the next arming drops it.
+    fn trigger_chord(&self, key: &HostKey) -> Option<KeyChord> {
+        let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
+        let chord = tilo_desktop::shortcuts::shortcut_chord_from_event(&logical, modifiers)?;
+        let shortcuts = self.shortcuts.borrow();
+        shortcuts
+            .action_for(&chord)
+            .filter(|bound| tilo_action_broker::automation::is_shortcut_target(&bound.target))
+            .map(|_| chord)
     }
 
     /// The invocation a press is, and how it is claimed. `inhibited` while a
@@ -508,12 +543,22 @@ impl SurfaceHost for SessionKeys {
             // volume keys, F1) is no chord and answers as it does without
             // the guide.
             if classify(key.keysym).is_none() {
+                if self.trigger_chord(key).is_some() {
+                    return KeyClaim::Take;
+                }
                 return self
                     .resolve(key, locked, inhibited)
                     .map_or(KeyClaim::Pass, |(_, claim)| claim);
             }
         }
         if self.folds_the_desk(key) {
+            return KeyClaim::Take;
+        }
+        // A chord that runs a saved shortcut is the session's, as a chord of
+        // the desktop's own table is: the shortcut fires rather than the
+        // window behind it. A locked session, or one whose focused client
+        // holds the shortcuts, answers neither.
+        if !locked && !inhibited && self.trigger_chord(key).is_some() {
             return KeyClaim::Take;
         }
         self.resolve(key, locked, inhibited)
@@ -543,6 +588,12 @@ impl SurfaceHost for SessionKeys {
         }
         if self.folds_the_desk(key) {
             self.fold.ask();
+            return;
+        }
+        // A chord of a saved shortcut's keyboard trigger starts the shortcut:
+        // the automation host is handed the press on this pass.
+        if let Some(chord) = self.trigger_chord(key) {
+            self.triggered.borrow_mut().push(chord);
             return;
         }
         // A repeat of a key taken once is not run again (only a level key
@@ -688,7 +739,7 @@ mod tests {
     fn keys() -> SessionKeys {
         SessionKeys::new(
             Rc::new(RefCell::new(ShortcutConfig::default())),
-            Invocations::default(),
+            Presses::default(),
             None,
             GuideKeys::default(),
             DeskFold::default(),
@@ -705,7 +756,7 @@ mod tests {
         guide.set_up(true);
         let keys = SessionKeys::new(
             Rc::new(RefCell::new(ShortcutConfig::default())),
-            Invocations::default(),
+            Presses::default(),
             None,
             guide.clone(),
             DeskFold::default(),
@@ -930,11 +981,81 @@ mod tests {
     }
 
     #[test]
+    fn a_shortcuts_chord_is_claimed_and_handed_to_the_automation_host() {
+        let shortcuts = Rc::new(RefCell::new(ShortcutConfig::default()));
+        let triggered = PressedChords::default();
+        let mut keys = SessionKeys::new(
+            Rc::clone(&shortcuts),
+            Presses {
+                invocations: Invocations::default(),
+                triggered: Rc::clone(&triggered),
+            },
+            None,
+            GuideKeys::default(),
+            DeskFold::default(),
+            None,
+            Rc::new(Cell::new(None)),
+            Rc::new(Cell::new(false)),
+        );
+        let chord = KeyChord::parse("ctrl+alt+j").expect("a chord");
+        // Nothing armed: the chord is nobody's, and types into what is up.
+        assert_eq!(
+            keys.claim_key(
+                &key(
+                    keysyms::j,
+                    Some('j'),
+                    KeyModifiers {
+                        ctrl: true,
+                        alt: true,
+                        ..KeyModifiers::default()
+                    }
+                ),
+                false,
+                false
+            ),
+            KeyClaim::Pass
+        );
+        // The automation armed a shortcut on that chord: the session answers
+        // it, and hands the press on once.
+        let mut table = shortcuts.borrow().clone();
+        assert!(tilo_action_broker::automation::replace_trigger_chords(
+            &mut table,
+            vec![settings_store::hardware::ActionChord {
+                chord: chord.clone(),
+                target: tilo_action_broker::automation::chord_target("room", "tidy"),
+                label: "Run Tidy".into(),
+            }],
+        ));
+        *shortcuts.borrow_mut() = table;
+        let press = key(
+            keysyms::j,
+            Some('j'),
+            KeyModifiers {
+                ctrl: true,
+                alt: true,
+                ..KeyModifiers::default()
+            },
+        );
+        assert_eq!(keys.claim_key(&press, false, false), KeyClaim::Take);
+        assert_eq!(
+            keys.claim_key(&press, true, false),
+            KeyClaim::Pass,
+            "a locked session runs no shortcut"
+        );
+        keys.key(&press);
+        assert_eq!(triggered.borrow().as_slice(), [chord]);
+        assert!(
+            keys.invocations.borrow().is_empty(),
+            "the shortcut starts on the automation host, not as a desktop action"
+        );
+    }
+
+    #[test]
     fn escape_folds_the_card_a_widget_has_open_and_nothing_behind_it_hears_it() {
         let fold = DeskFold::default();
         let mut keys = SessionKeys::new(
             Rc::new(RefCell::new(ShortcutConfig::default())),
-            Invocations::default(),
+            Presses::default(),
             None,
             GuideKeys::default(),
             fold.clone(),

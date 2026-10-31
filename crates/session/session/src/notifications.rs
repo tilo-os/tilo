@@ -408,11 +408,14 @@ impl SessionNotifications {
 
     /// Turn Do Not Disturb on or off, as the person asked from quick
     /// settings or the desktop's own menu: the one persisted switch, which
-    /// the session's settings watch reloads into every later arrival.
+    /// the session's settings watch reloads into every later arrival, and
+    /// which this session applies at once so the switch the person just
+    /// flipped is the state everything else here reads.
     ///
     /// # Errors
     /// The settings document could not be written.
-    pub(crate) fn set_do_not_disturb(on: bool) -> std::io::Result<()> {
+    pub(crate) fn set_do_not_disturb(&self, on: bool) -> std::io::Result<()> {
+        self.policy.lock_recover().do_not_disturb = on;
         NotificationPolicy::save_do_not_disturb(on)
     }
 

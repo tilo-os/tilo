@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tilo_compositor::Compositor;
 
 use crate::controls::SessionControls;
-use crate::keys::{GuideKeys, Invocations, SessionKeys};
+use crate::keys::{GuideKeys, Invocations, PressedChords, Presses, SessionKeys};
 use crate::panels::{Held, Popover, Readout};
 use crate::setup::Setup;
 use crate::{
@@ -102,7 +102,7 @@ pub(crate) fn mount_controls(
         fold,
     }: KeyContext,
     scale: f64,
-) -> (Rc<RefCell<Vec<SessionCommand>>>, Invocations) {
+) -> (Rc<RefCell<Vec<SessionCommand>>>, Invocations, PressedChords) {
     let readout = Rc::new(RefCell::new(Readout::new(scale)));
     compositor.add_host(Box::new(Held(Rc::clone(&readout))));
     doors.add(readout);
@@ -111,9 +111,13 @@ pub(crate) fn mount_controls(
         &commands,
     )))));
     let invocations = Invocations::default();
+    let triggered = PressedChords::default();
     compositor.add_host(Box::new(SessionKeys::new(
         shortcuts,
-        Rc::clone(&invocations),
+        Presses {
+            invocations: Rc::clone(&invocations),
+            triggered: Rc::clone(&triggered),
+        },
         portal,
         guide,
         fold,
@@ -121,7 +125,7 @@ pub(crate) fn mount_controls(
         controller,
         controller_keys,
     )));
-    (commands, invocations)
+    (commands, invocations, triggered)
 }
 
 /// The device's own backend, when the session runs one, and the quick

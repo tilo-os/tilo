@@ -145,20 +145,6 @@ impl Shell {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn the_shell_package_compiles_and_its_ids_lock_holds_every_declaration() {
-        let compiled = super::compile().unwrap_or_else(|why| panic!("{why}"));
-        let lock = compiled.ids.to_text();
-        assert_eq!(
-            lock,
-            super::IDS,
-            "apps/tl/shell/app.ids is not the lock the package compiles to; write:\n{lock}"
-        );
-    }
-}
-
 impl crate::Session {
     /// Hand the shell's bar the desk when it changed, and run what the bar
     /// asked through the door, as any caller of the action protocol does.
@@ -214,5 +200,19 @@ impl crate::Session {
     #[must_use]
     pub fn shell_control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
         self.shell.as_ref()?.control(name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_shell_package_compiles_and_its_ids_lock_holds_every_declaration() {
+        let compiled = super::compile().unwrap_or_else(|why| panic!("{why}"));
+        let lock = compiled.ids.to_text();
+        assert_eq!(
+            lock,
+            super::IDS,
+            "apps/tl/shell/app.ids is not the lock the package compiles to; write:\n{lock}"
+        );
     }
 }

@@ -147,6 +147,19 @@ impl Launches {
         apps
     }
 
+    /// The apps this session started that still run, one entry per app: what
+    /// an application-opened trigger follows, so an app the person starts
+    /// again after closing it shows up again.
+    #[must_use]
+    pub fn running_apps(&self) -> std::collections::BTreeSet<String> {
+        self.started
+            .lock_recover()
+            .iter()
+            .filter(|(pid, launch)| start_time(**pid) == Some(launch.start))
+            .map(|(_, launch)| launch.app.clone())
+            .collect()
+    }
+
     /// The room of the launch that `pid` is or was started by, when it runs
     /// `app`: the app a connection came from, as the window it names.
     pub fn room_of(&self, pid: u32, app: &str) -> Option<String> {
