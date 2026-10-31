@@ -51,7 +51,7 @@ channel-crypto = { path = "../channel-crypto" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 parking_lot.workspace = true
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
-tokio = { workspace = true, features = ["sync", "time", "macros"] }
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 tracing.workspace = true
 iroh-base = { workspace = true, features = ["key"], optional = true }
 
@@ -82,6 +82,8 @@ tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 tilo-clock = { path = "../../platform/tilo-clock" }
 
 [dev-dependencies]
+# The closure-built action host a test dispatcher is.
+tilo-actions = { path = "../actions", features = ["test-support"] }
 # The producers of invitation and proof layouts earlier builds wrote: the
 # restore tests replay a record as such a build left it.
 tilo-workspace-join = { path = "../workspace-join", features = ["test-support"] }

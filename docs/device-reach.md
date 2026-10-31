@@ -67,8 +67,8 @@ An IP address is only a hint.
   failing on the first `No route to host`.
 - **Beyond the LAN** the peer network is the route: hole-punched QUIC with
   relay fallback and automatic reconnection, between devices that prove the
-  same identity. Typed actions already travel over it to an enrolled device
-  (`PeerActionHost`). Admin traffic uses that same route as its own versioned
+  same identity. Typed actions already travel over it to an enrolled device as
+  signed remote-action frames. Admin traffic uses that same route as its own versioned
   ALPN (`tilo-device-admin/1`), which carries the admin daemon's existing
   request protocol, never a raw shell. It is accepted only from a
   same-identity device whose certificate grants administration. A developer's

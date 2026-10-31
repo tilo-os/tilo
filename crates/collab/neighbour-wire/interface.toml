@@ -17,6 +17,7 @@ sources = [
     "crates/hosting/tilo-delivery-protocol/src/transport_v2/presence.rs",
     "crates/hosting/tilo-delivery-protocol/src/peer_actions.rs",
     "crates/collab/neighbour-wire/src/lib.rs",
+    "crates/collab/neighbour-wire/src/actions.rs",
     "crates/collab/neighbour-wire/src/colorimetry.rs",
     "crates/collab/neighbour-wire/src/hdr_metadata.rs",
     "crates/collab/neighbour-wire/src/presence_slot.rs",
@@ -41,7 +42,7 @@ sources = [
     "crates/collab/collab-types/src/role.rs",
     "crates/collab/collab-types/src/peer.rs",
 ]
-roots = ["Hello", "HelloAck", "HelloAck2", "EnvelopeV2", "NeighbourMsg"]
+roots = ["Hello", "HelloAck", "HelloAck2", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction"]
 
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
@@ -195,6 +196,12 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "DeltaSegment::Copy.len" = "#1 u32"
 "DeltaSegment::Copy.offset" = "#0 u32"
 "DeltaSegment::Literal" = "#1 tuple(Vec<u8>)"
+"DeviceAction" = "struct"
+"DeviceAction.message" = "#4 RemoteActionMessage with=message_frame"
+"DeviceAction.request_id" = "#1 Uuid"
+"DeviceAction.source" = "#2 [u8; 32]"
+"DeviceAction.target" = "#3 [u8; 32]"
+"DeviceAction.workspace" = "#0 String"
 "DeviceCapabilities" = "struct"
 "DeviceCapabilities.can_act_as_host" = "#2 bool"
 "DeviceCapabilities.can_administer_devices" = "#5 bool"
@@ -722,6 +729,11 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Showing.muted" = "#2 bool"
 "Showing.screen" = "#1 bool"
 "Signature" = "tuple([u8; 64]) transparent"
+"SignedDeviceAction" = "struct try_from=SignedWire into=SignedWire"
+"SignedDeviceAction.action" = "#0 DeviceAction"
+"SignedDeviceAction.encoded" = "#1 Vec<u8>"
+"SignedDeviceAction.issued_at_ns" = "#2 u64"
+"SignedDeviceAction.signature" = "#3 [u8; 64]"
 "SignedDirectedAction" = "struct try_from=SignedWire into=SignedWire"
 "SignedDirectedAction.action" = "#0 DirectedAction"
 "SignedDirectedAction.encoded" = "#1 Vec<u8>"

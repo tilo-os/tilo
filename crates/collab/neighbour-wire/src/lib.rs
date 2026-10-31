@@ -13,6 +13,8 @@
 //! The crate is pure data plus pure helpers ([`mod@retention`]); it owns no
 //! transport, runtime or state machine.
 
+/// One action sent to another device of the workspace, signed by its sender.
+pub mod actions;
 pub mod colorimetry;
 pub mod hdr_metadata;
 pub mod presence_slot;
@@ -1187,7 +1189,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b17",
+                "0b18",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
