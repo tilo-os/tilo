@@ -924,6 +924,12 @@ impl Session {
         // own, what the desk records, what the sheets change — is theirs.
         let seat = identity::seat(&options);
         options.person = seat.person;
+        // The ids this device mints are its own, as every room derives them
+        // from its key: a computer with an identity mints under that rather
+        // than the seed the caller passed.
+        if let Some(salt) = seat.salt {
+            options.salt = salt;
+        }
         let sources = config::Sources::from_config(&options.config);
         let mut doors = Doors::default();
         // The VPN profiles' kill switch runs for the session's lifetime: a
@@ -1141,7 +1147,11 @@ impl Session {
         let fullscreen: Rc<RefCell<Vec<String>>> = Rc::default();
         // The windows this session shares with its rooms: a share's encoder
         // wakes the loop when it has a frame, and the bar reads them.
-        let window_shares = window_share::WindowShares::new(options.wake.handle());
+        let window_shares = window_share::WindowShares::new(
+            options.wake.handle(),
+            options.person.clone(),
+            options.salt,
+        );
         // The emoji picker is the chrome's; the session holds its picks,
         // writes them into the focused field and keeps its recents.
         let emoji = emoji::Emoji::mount();
@@ -2524,10 +2534,9 @@ impl Session {
         // plane brought, and the frames of the ones on screen.
         {
             let sync = self.shared.sync.clone();
-            let tree = self.shared.handle.read(Clone::clone);
             self.shared.window_shares.borrow_mut().step(
                 &mut self.compositor,
-                &tree,
+                &self.shared.handle,
                 sync.as_deref(),
                 std::time::Instant::now(),
             );

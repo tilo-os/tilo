@@ -28,9 +28,11 @@ use std::time::{Duration, Instant};
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
 use serde_json::Value;
+use tilo_action_policy::share::is_of_share;
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, OutputConfig};
 use tilo_desktop::desktop_actions::WINDOW_KIND;
+use tilo_desktop_model::window_share::window_share_id;
 use tilo_desktop_model::{
     DesktopTree, GroupId, RoomId, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
     WindowWidth, Workspace, WorkspaceId,
@@ -131,6 +133,12 @@ struct Member {
 }
 
 fn member(seed: u8, desk: DesktopTree) -> Member {
+    member_minting_under(seed, desk, Options::default().salt)
+}
+
+/// One device of the room whose ids are minted under `salt`: a session with
+/// an identity mints under the salt its own key derives.
+fn member_minting_under(seed: u8, desk: DesktopTree, salt: u16) -> Member {
     let (sync, said) = Client::planeless(
         device(seed),
         OwnPresence {
@@ -144,6 +152,7 @@ fn member(seed: u8, desk: DesktopTree) -> Member {
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
+            salt,
             sync: Some(Rc::clone(&sync)),
             ..Options::default()
         },
@@ -298,7 +307,7 @@ fn share(member: &mut Member, app: &str, tab: u64) {
             "share",
             &arguments(serde_json::json!({
                 "window": window,
-                "tab": tab,
+                "tab": tab.to_string(),
                 "app_id": app,
                 "room": ROOM,
             })),
@@ -313,7 +322,7 @@ fn watch(member: &mut Member, tab: u64) {
         .invoke(
             SHARES_RESOURCE,
             "watch",
-            &arguments(serde_json::json!({ "tab": tab, "room": ROOM })),
+            &arguments(serde_json::json!({ "tab": tab.to_string(), "room": ROOM })),
         )
         .expect("the window is shown on the desk");
 }
@@ -325,7 +334,7 @@ fn allow_input(member: &mut Member, tab: u64, on: bool) {
         .invoke(
             SHARES_RESOURCE,
             "allow-remote-input",
-            &arguments(serde_json::json!({ "tab": tab, "on": on })),
+            &arguments(serde_json::json!({ "tab": tab.to_string(), "on": on })),
         )
         .expect("the members viewing it are told");
 }
@@ -705,7 +714,11 @@ fn a_shared_window_reaches_the_member_showing_it() {
         .first()
         .expect("the window is shared")
         .clone();
-    assert_eq!(shared["tab"].as_u64(), Some(tab), "which window: {reading}");
+    assert_eq!(
+        shared["tab"].as_str(),
+        Some(tab.to_string().as_str()),
+        "which window: {reading}"
+    );
     let watching = shared["viewers"].as_array().expect("who is watching");
     assert_eq!(watching.len(), 1, "one member watches it: {reading}");
     assert_eq!(
@@ -862,4 +875,159 @@ fn remote_input_reaches_the_window_until_the_cut_chord() {
         before, after,
         "after the cut chord the member's input no longer reaches the window"
     );
+}
+
+/// A window one device shares shows on another device's desk because the
+/// room's governance says it is shared there: nobody names the tab on the
+/// other device.
+#[test]
+fn a_share_shows_on_another_device_from_the_rooms_governance() {
+    tilo_window_share::flatpak_share::read_encoders();
+    let salt = tilo_desktop_model::ids::device_salt_of_key(device(0x21).as_bytes());
+    let tab = tilo_desktop_model::ids::compose_id(salt, 1);
+    let mut host = member_minting_under(
+        0x21,
+        desk(
+            TileContent::LocalApp {
+                app_id: APP.to_owned(),
+                label: "Notes".to_owned(),
+                note: String::new(),
+            },
+            tab,
+        ),
+        salt,
+    );
+    let mut window = Some(mapped(&mut host.session, APP));
+    let tab = tab_of(&host.session, APP);
+    assert_eq!(
+        tilo_desktop_model::peer_salt_of(tab),
+        salt,
+        "the window is this device's own"
+    );
+    let mut viewer = member_minting_under(0x22, own_desk(), 1);
+    share(&mut host, APP, tab);
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        !rows(&shares(&host.session), "sharing").is_empty()
+    });
+
+    // The room's governance says the window is shared, hosted on this
+    // device: what the room's document carries to its other devices.
+    let grants = host
+        .session
+        .handle()
+        .read(|tree| tree.workspaces[0].policy.grants.clone());
+    assert!(
+        grants
+            .iter()
+            .any(|grant| is_of_share(grant, &window_share_id(tab))),
+        "the share is in the room's governance: {grants:?}"
+    );
+    assert!(
+        hosted(&viewer.session, tab).is_none(),
+        "the other device shows nothing before the governance reaches it"
+    );
+    assert!(
+        rows(&shares(&viewer.session), "watching").is_empty(),
+        "nobody asked to view the window by hand"
+    );
+    carry_governance(&host.session, &viewer.session);
+    heard(&viewer, 0x21, "Framework");
+
+    // The other device shows the host's window in the tab the governance
+    // names, and its stream comes there without being asked for.
+    let host_key = hex::encode(device(0x21).as_bytes());
+    until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
+        hosted(&viewer.session, tab).as_deref() == Some(host_key.as_str())
+    });
+    until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
+        !rows(&shares(&viewer.session), "received").is_empty()
+    });
+
+    // The share ends, and with it the tab on the other device.
+    host.session
+        .invoke(
+            SHARES_RESOURCE,
+            "stop",
+            &arguments(serde_json::json!({ "tab": tab.to_string() })),
+        )
+        .expect("the share is stopped");
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        !host.session.handle().read(|tree| {
+            tree.workspaces[0]
+                .policy
+                .grants
+                .iter()
+                .any(|grant| is_of_share(grant, &window_share_id(tab)))
+        })
+    });
+    carry_governance(&host.session, &viewer.session);
+    until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
+        hosted(&viewer.session, tab).is_none()
+    });
+}
+
+/// The window of another device shown on `session`'s desk as `tab`, with the
+/// key of the device that hosts it: what a person sees there.
+fn hosted(session: &Session, tab: u64) -> Option<String> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|shown| shown.id == tab)
+            .and_then(|shown| match &shown.tile {
+                TileContent::HostedWindow { host, .. } => Some(host.clone()),
+                _ => None,
+            })
+    })
+}
+
+/// Carry `from`'s governance to `to`'s desk, as the room's document carries
+/// it between the room's devices.
+fn carry_governance(from: &Session, to: &Session) {
+    let grants = from.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| workspace.policy.grants.clone())
+            .collect::<Vec<_>>()
+    });
+    let mut desk = to.handle().read(Clone::clone);
+    for workspace in &mut desk.workspaces {
+        workspace.policy.grants.clone_from(&grants);
+    }
+    to.handle().replace_tree(desk);
+}
+
+/// The device `seed` said who it is on `viewer`'s plane: the certificate a
+/// session says when it starts, which names the device it runs on.
+fn heard(viewer: &Member, seed: u8, label: &str) {
+    let cert = tilo_user_identity::DeviceCert {
+        user_public_key: [seed; 32],
+        device_public_key: *device(seed).as_bytes(),
+        device_label: label.to_owned(),
+        capabilities: tilo_user_identity::DeviceCapabilities {
+            can_own_workspaces: false,
+            can_admit_devices: false,
+            can_act_as_host: false,
+            can_read_all_workspaces: false,
+            foreign: false,
+            can_administer_devices: false,
+        },
+        issued_at_ns: 0,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    let ws = viewer.sync.room_topic(ROOM).expect("the room's topic");
+    viewer.sync.hear(NetEvent::Msg {
+        ws,
+        peer: device(seed),
+        membership_epoch: None,
+        replayed: false,
+        msg: NeighbourMsg::IdentityHello {
+            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+            cert: Box::new(cert),
+            revocations: Vec::new(),
+        },
+    });
 }

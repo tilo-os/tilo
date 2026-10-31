@@ -76,12 +76,17 @@ pub(crate) struct Seat {
     /// account at it, and what the caller named — under which a desk kept
     /// from then is still theirs.
     pub(crate) earlier: Vec<String>,
+    /// The salt this device's ids are minted under, from its own key: what
+    /// the room's governance derives to tell which device a window of the
+    /// room runs on. `None` on a computer that has no identity yet.
+    pub(crate) salt: Option<u16>,
 }
 
 /// Who sits here, read from this device's own identity as the session starts,
 /// which setup settles before the desk opens.
 pub(crate) fn seat(options: &crate::Options) -> Seat {
-    let person = match crate::sync::device_identity() {
+    let identity = crate::sync::device_identity();
+    let person = match &identity {
         Some(identity) => hex::encode(identity.device_cert.user_public_key),
         None if !options.user.is_empty() => options.user.clone(),
         None => options.person.clone(),
@@ -90,7 +95,14 @@ pub(crate) fn seat(options: &crate::Options) -> Seat {
         .into_iter()
         .filter(|id| !id.is_empty() && *id != person)
         .collect();
-    Seat { person, earlier }
+    let salt = identity.map(|identity| {
+        tilo_desktop_model::ids::device_salt_of_key(&identity.device_cert.device_public_key)
+    });
+    Seat {
+        person,
+        earlier,
+        salt,
+    }
 }
 
 /// Read who sits here at startup, and keep it current from then on. A value

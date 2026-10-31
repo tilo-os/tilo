@@ -43,6 +43,7 @@ use neighbour_wire::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use tilo_action_policy::share::{ShareAccess, is_of_share, share_grants};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionParam, ActionSpec, DoorError, EncodedAction,
     ExecutionMode, OperationKind, ParamType, ResourceSpec, ResultSpec,
@@ -50,7 +51,11 @@ use tilo_actions::{
 use tilo_compositor::Compositor;
 use tilo_compositor::capture::Target;
 use tilo_desktop::chrome::ActiveExposure;
-use tilo_desktop_model::{DesktopTree, TabId, TileContent};
+use tilo_desktop_model::window_share::{window_node, window_share_id, window_shares};
+use tilo_desktop_model::{
+    DesktopTree, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, peer_salt_of,
+};
+use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::i18n::t;
 use tilo_network_actor::WorkspaceId;
 use tilo_service::{Service, Started, Wake};
@@ -183,6 +188,39 @@ pub(crate) struct WindowShares {
     revision: u64,
     /// The wake a share's encoder thread rings when a frame is ready.
     wake: Option<Wake>,
+    /// The person at this device, as the rooms' governance names them: the
+    /// sharer of the windows this session shares.
+    person: String,
+    /// The salt this device mints its tabs under: a tab carrying it is this
+    /// device's window, and every other tab in a share is another member's.
+    salt: u16,
+    /// The tabs this session put on the desk because the room's governance
+    /// says another member shares the window there, by the room it says it
+    /// in: what it takes away again when the share ends.
+    governed: BTreeMap<TabId, Governed>,
+}
+
+/// A window another member shares, as this session shows it on the desk.
+struct Governed {
+    /// The room whose governance says so.
+    room: String,
+    /// Whether the strip it is in was made for it, and goes with it.
+    strip: bool,
+}
+
+/// A window another device shares in a room of this desk, as the room's
+/// governance names it.
+struct Shared {
+    /// The tab the window is shown in, the one its sharer's desk names.
+    tab: TabId,
+    /// The app the window belongs to.
+    app_id: String,
+    /// The key of the device the window runs on.
+    host: String,
+    /// The room the governance says it in.
+    room: String,
+    /// What the room calls the device that hosts it.
+    host_label: String,
 }
 
 /// A window of another member's this device shows.
@@ -195,10 +233,14 @@ struct Watched {
 
 impl WindowShares {
     /// The shares, with `wake` being what a share's encoder rings when it
-    /// has a frame for the next pass.
-    pub(crate) fn new(wake: Wake) -> Rc<RefCell<Self>> {
+    /// has a frame for the next pass, `person` the person whose shares the
+    /// rooms' governance carries, and `salt` what this device mints its tabs
+    /// under.
+    pub(crate) fn new(wake: Wake, person: String, salt: u16) -> Rc<RefCell<Self>> {
         Rc::new(RefCell::new(Self {
             wake: Some(wake),
+            person,
+            salt,
             ..Self::default()
         }))
     }
@@ -246,7 +288,7 @@ impl WindowShares {
                     })
                     .collect();
                 json!({
-                    "tab": tab,
+                    "tab": tab.to_string(),
                     "window": hosted.window,
                     "app_id": hosted.app_id,
                     "room": hosted.room,
@@ -262,7 +304,7 @@ impl WindowShares {
             .iter()
             .map(|start| {
                 json!({
-                    "tab": start.tab,
+                    "tab": start.tab.to_string(),
                     "window": start.window,
                     "app_id": start.app_id,
                     "room": start.room,
@@ -274,7 +316,7 @@ impl WindowShares {
             .watching
             .iter()
             .map(|((room, tab), watched)| {
-                json!({ "tab": tab, "room": room, "host": watched.host.to_string() })
+                json!({ "tab": tab.to_string(), "room": room, "host": watched.host.to_string() })
             })
             .collect();
         let received: Vec<Value> = self
@@ -293,7 +335,7 @@ impl WindowShares {
                     })
                     .collect();
                 json!({
-                    "tab": stream.tab,
+                    "tab": stream.tab.to_string(),
                     "surface": surface,
                     "from": from,
                     "app_id": stream.app_id,
@@ -324,21 +366,22 @@ impl WindowShares {
     }
 
     /// One pass of the shares: take what the plane brought and carry out
-    /// what the person asked, then encode and publish the shared windows,
-    /// and end what is gone.
+    /// what the person asked, then show what the rooms' governance says the
+    /// members share, encode and publish the shared windows, and end what is
+    /// gone.
     pub(crate) fn step(
         &mut self,
         compositor: &mut Compositor,
-        tree: &DesktopTree,
+        desk: &DesktopHandle,
         sync: Option<&Client>,
         now: Instant,
     ) {
         let Some(sync) = sync else {
             // Without the plane a window cannot be shared: nothing reaches
             // a member, and nothing of theirs arrives.
-            if !self.commands.is_empty() || !self.hosted.is_empty() {
+            if !self.commands.is_empty() || !self.hosted.is_empty() || !self.governed.is_empty() {
                 self.commands.clear();
-                self.end_all(compositor, None);
+                self.end_all(compositor, desk, None);
                 self.changed();
             }
             return;
@@ -346,11 +389,13 @@ impl WindowShares {
         // What arrived is read first, so a share that starts this pass
         // already knows who views it and in which codec to encode.
         self.take_received(compositor, sync);
-        self.carry_out(compositor, tree, sync, now);
-        self.renegotiate(compositor, sync, now);
+        let tree = desk.read(Clone::clone);
+        self.carry_out(compositor, desk, &tree, sync, now);
+        self.follow_governance(desk, sync, now);
+        self.renegotiate(sync);
         self.ask_again(compositor, sync, now);
         self.capture(compositor, sync, now);
-        self.end_gone(compositor, sync);
+        self.end_gone(compositor, desk, sync);
     }
 
     /// Carry out what the person asked: start and stop shares, let a member
@@ -358,6 +403,7 @@ impl WindowShares {
     fn carry_out(
         &mut self,
         compositor: &mut Compositor,
+        desk: &DesktopHandle,
         tree: &DesktopTree,
         sync: &Client,
         now: Instant,
@@ -374,6 +420,17 @@ impl WindowShares {
                     if self.hosted.contains_key(&tab) {
                         continue;
                     }
+                    // The room's governance names the window and the device
+                    // it runs on, which is how the other members learn of the
+                    // share. Only this device's own window is hosted here.
+                    if peer_salt_of(tab) == self.salt {
+                        self.announce(desk, tab, &app_id, &room);
+                    } else {
+                        tracing::debug!(
+                            tab,
+                            "a window another device hosts is not shared from here"
+                        );
+                    }
                     self.starting.retain(|start| start.tab != tab);
                     self.starting.push(Starting {
                         window,
@@ -389,6 +446,7 @@ impl WindowShares {
                     if let Some(hosted) = self.hosted.remove(&tab) {
                         Self::end(&hosted, sync);
                     }
+                    self.retract(desk, tab);
                     self.asked.retain(|(asking, _), _| *asking != tab);
                     self.renegotiate.remove(&tab);
                     self.changed();
@@ -439,12 +497,233 @@ impl WindowShares {
                 }
             }
         }
-        self.start_waiting(compositor, sync, now);
+        self.start_waiting(compositor, desk, sync, now);
+    }
+
+    /// Write into the governance of the workspace addressing `room` that this
+    /// person shares the window `tab` of `app_id`: the share grants of the
+    /// window's own node, which every device of the room reads to show it.
+    /// The room's own governance checks them as it admits them, as it does
+    /// any grant.
+    fn announce(&self, desk: &DesktopHandle, tab: TabId, app_id: &str, room: &str) {
+        let share = window_share_id(tab);
+        let node = window_node(room, app_id, tab);
+        let grants = match share_grants(room, &self.person, &share, &node, ShareAccess::View) {
+            Ok(grants) => grants,
+            Err(error) => {
+                tracing::warn!(%error, tab, "a window cannot be shared with the room");
+                return;
+            }
+        };
+        let mut tree = desk.read(Clone::clone);
+        let mut changed = false;
+        for workspace in tree
+            .workspaces
+            .iter_mut()
+            .filter(|workspace| workspace.policy.room == room)
+        {
+            for grant in &grants {
+                let held = workspace
+                    .policy
+                    .grants
+                    .iter()
+                    .any(|known| known.id == grant.id);
+                if !held {
+                    workspace.policy.grants.push(grant.clone());
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            desk.replace_tree(tree);
+        }
+    }
+
+    /// Take the share of the window `tab` out of the governance of the
+    /// workspaces addressing its room: it is not shared any more, so no
+    /// device shows it.
+    fn retract(&mut self, desk: &DesktopHandle, tab: TabId) {
+        let share = window_share_id(tab);
+        let held = |workspace: &tilo_desktop_model::Workspace| {
+            workspace
+                .policy
+                .grants
+                .iter()
+                .any(|grant| is_of_share(grant, &share))
+        };
+        if !desk.read(|tree| tree.workspaces.iter().any(held)) {
+            return;
+        }
+        let mut tree = desk.read(Clone::clone);
+        for workspace in tree
+            .workspaces
+            .iter_mut()
+            .filter(|workspace| held(workspace))
+        {
+            workspace.end_window_shares(tab);
+        }
+        desk.replace_tree(tree);
+        self.changed();
+    }
+
+    /// Show what the governance of the workspaces' rooms says the members
+    /// share, and take away what ended: each window another device hosts as
+    /// a tab of its own at the end of the room's last strip, watched so its
+    /// stream comes here. A share is the room's, so every device shows it
+    /// without anyone naming the window there.
+    fn follow_governance(&mut self, desk: &DesktopHandle, sync: &Client, now: Instant) {
+        let mut tree = desk.read(Clone::clone);
+        let shared = self.shared_in(&tree, sync);
+        let live: BTreeSet<TabId> = shared.iter().map(|shared| shared.tab).collect();
+        let mut changed = self.take_ended(&mut tree, &live);
+        for shared in &shared {
+            changed |= self.show_shared(&mut tree, shared, now);
+        }
+        if changed {
+            desk.replace_tree(tree);
+        }
+    }
+
+    /// The windows another device shares in the rooms of `tree`'s workspaces,
+    /// as the rooms' governance names them.
+    fn shared_in(&self, tree: &DesktopTree, sync: &Client) -> Vec<Shared> {
+        let now_ms = tilo_clock::unix_now_ms();
+        let mut shared = Vec::new();
+        for workspace in &tree.workspaces {
+            let room = workspace.policy.room.clone();
+            let devices = sync.room_devices(&room);
+            let owners = owners_of(self.salt, sync.publisher(), &devices);
+            for (tab, share) in window_shares(&workspace.policy, &owners, now_ms) {
+                if peer_salt_of(tab) == self.salt {
+                    // This device's own window: it streams from here, and
+                    // shows no tab of itself.
+                    continue;
+                }
+                let host_label = devices
+                    .iter()
+                    .find(|(device, _)| hex::encode(device.as_bytes()) == share.host)
+                    .map(|(_, label)| label.clone())
+                    .unwrap_or_default();
+                shared.push(Shared {
+                    tab,
+                    app_id: share.app_id,
+                    host: share.host,
+                    room: room.clone(),
+                    host_label,
+                });
+            }
+        }
+        shared
+    }
+
+    /// Take the tabs of shares the governance no longer names out of `tree`,
+    /// with the watches they were asked for: what ended is shown nowhere.
+    fn take_ended(&mut self, tree: &mut DesktopTree, live: &BTreeSet<TabId>) -> bool {
+        let ended: Vec<TabId> = self
+            .governed
+            .keys()
+            .copied()
+            .filter(|tab| !live.contains(tab))
+            .collect();
+        let mut changed = false;
+        for tab in ended {
+            let Some(governed) = self.governed.remove(&tab) else {
+                continue;
+            };
+            self.watching.remove(&(governed.room, tab));
+            remove_governed_tile(tree, tab, governed.strip.then_some(StripId(tab)));
+            changed = true;
+        }
+        changed
+    }
+
+    /// Add the tab of `shared`'s window to `tree` at the end of its room's
+    /// last strip, and watch it from the device the governance says hosts it.
+    /// Answers whether `tree` changed.
+    fn show_shared(&mut self, tree: &mut DesktopTree, shared: &Shared, now: Instant) -> bool {
+        let Shared {
+            tab,
+            app_id,
+            host,
+            room,
+            host_label,
+        } = shared;
+        let (tab, room) = (*tab, room.clone());
+        let mut changed = false;
+        if shown(tree, tab) {
+            self.governed.entry(tab).or_insert_with(|| Governed {
+                room: room.clone(),
+                strip: false,
+            });
+        } else if let Some(workspace) = tree
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.policy.room == room)
+        {
+            let label = app_id.clone();
+            let group = WindowGroup {
+                id: tab,
+                tabs: vec![Tab {
+                    id: tab,
+                    title: label.clone(),
+                    tile: TileContent::HostedWindow {
+                        app_id: app_id.clone(),
+                        label,
+                        host: host.clone(),
+                        host_label: host_label.clone(),
+                    },
+                    app_title: None,
+                }],
+                active_tab: tab,
+                width: WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            };
+            let strip = workspace.strips.is_empty();
+            if strip {
+                workspace.strips.push(Strip {
+                    id: StripId(tab),
+                    name: String::new(),
+                    window_groups: Vec::new(),
+                });
+            }
+            if let Some(last) = workspace.strips.last_mut() {
+                last.window_groups.push(group);
+            }
+            self.governed.insert(
+                tab,
+                Governed {
+                    room: room.clone(),
+                    strip,
+                },
+            );
+            self.changed();
+            changed = true;
+        }
+        // Its stream is asked for as any watched window's is, from the
+        // device the governance says hosts it.
+        if let Some(host) = device_key(host)
+            && let std::collections::btree_map::Entry::Vacant(seat) =
+                self.watching.entry((room, tab))
+        {
+            seat.insert(Watched {
+                host,
+                asked_at: now.checked_sub(VIEW_AGAIN).unwrap_or(now),
+            });
+            self.changed();
+        }
+        changed
     }
 
     /// Start the shares that can start now, and keep those that cannot
     /// waiting with why.
-    fn start_waiting(&mut self, compositor: &mut Compositor, sync: &Client, now: Instant) {
+    fn start_waiting(
+        &mut self,
+        compositor: &mut Compositor,
+        desk: &DesktopHandle,
+        sync: &Client,
+        now: Instant,
+    ) {
         if self.starting.is_empty() {
             return;
         }
@@ -456,12 +735,13 @@ impl WindowShares {
         let waiting = std::mem::take(&mut self.starting);
         for mut start in waiting {
             if !shareable.contains(&start.window) {
-                // The window closed before it could be shared.
+                // The window closed before it could be shared: the room stops
+                // naming it as shared.
                 tracing::debug!(
                     window = %start.window,
                     "a window to share is gone before its share started"
                 );
-                self.changed();
+                self.retract(desk, start.tab);
                 continue;
             }
             let Some(ws) = sync.room_topic(&start.room) else {
@@ -544,7 +824,7 @@ impl WindowShares {
 
     /// Encode the shares whose viewers' decoders changed again, so their
     /// stream stays one every viewer takes.
-    fn renegotiate(&mut self, compositor: &mut Compositor, sync: &Client, now: Instant) {
+    fn renegotiate(&mut self, sync: &Client) {
         if self.renegotiate.is_empty() {
             return;
         }
@@ -559,13 +839,13 @@ impl WindowShares {
             if hosted.receivers == self.receivers_for(tab) {
                 continue;
             }
-            self.restart(compositor, sync, tab, now);
+            self.restart(sync, tab);
         }
     }
 
     /// End the shares whose window closed, and the ones whose room this
     /// session no longer takes part in.
-    fn end_gone(&mut self, compositor: &Compositor, sync: &Client) {
+    fn end_gone(&mut self, compositor: &Compositor, desk: &DesktopHandle, sync: &Client) {
         if self.hosted.is_empty() {
             return;
         }
@@ -586,24 +866,51 @@ impl WindowShares {
             if let Some(hosted) = self.hosted.remove(&tab) {
                 Self::end(&hosted, sync);
             }
+            // The window is gone, or its room is: the room stops naming it.
+            self.retract(desk, tab);
             self.asked.retain(|(asking, _), _| *asking != tab);
             self.changed();
         }
     }
 
     /// End every share: the session takes part in no plane.
-    fn end_all(&mut self, _compositor: &mut Compositor, sync: Option<&Client>) {
+    fn end_all(
+        &mut self,
+        _compositor: &mut Compositor,
+        desk: &DesktopHandle,
+        sync: Option<&Client>,
+    ) {
         let hosted = std::mem::take(&mut self.hosted);
-        for (_, share) in hosted {
+        for (tab, share) in hosted {
             if let Some(sync) = sync {
                 Self::end(&share, sync);
             }
+            self.retract(desk, tab);
         }
         self.starting.clear();
         self.asked.clear();
         self.watching.clear();
         self.received.clear();
         self.renegotiate.clear();
+        self.end_governed(desk);
+    }
+
+    /// Take away every window this session showed because a room's
+    /// governance said a member shared it: without the plane no stream of it
+    /// comes, and the governance that named it is gone with it.
+    fn end_governed(&mut self, desk: &DesktopHandle) {
+        let governed = std::mem::take(&mut self.governed);
+        if governed.is_empty() {
+            return;
+        }
+        let mut tree = desk.read(Clone::clone);
+        for (tab, entry) in governed {
+            self.watching
+                .retain(|(room, watched), _| *watched != tab || *room != entry.room);
+            remove_governed_tile(&mut tree, tab, entry.strip.then_some(StripId(tab)));
+        }
+        desk.replace_tree(tree);
+        self.changed();
     }
 
     /// Send the end of `hosted`'s stream to its viewers, so each drops its
@@ -919,7 +1226,7 @@ impl WindowShares {
                         if (picture.width, picture.height) != hosted.share.dimensions() {
                             // The window was resized: its stream restarts at
                             // the size it shows now.
-                            self.restart(compositor, sync, tab, now);
+                            self.restart(sync, tab);
                             continue;
                         }
                         hosted.share.deposit_captured_rgba(picture.rgba);
@@ -946,7 +1253,8 @@ impl WindowShares {
 
     /// Start `tab`'s share again, at the size its window shows now: its
     /// viewers are sent the end of the old stream and the start of the new.
-    fn restart(&mut self, compositor: &mut Compositor, sync: &Client, tab: TabId, now: Instant) {
+    /// The restarted share starts on the next pass, as any share does.
+    fn restart(&mut self, sync: &Client, tab: TabId) {
         let Some(hosted) = self.hosted.remove(&tab) else {
             return;
         };
@@ -962,7 +1270,6 @@ impl WindowShares {
             waiting_for: String::new(),
             controlled: hosted.controlled,
         });
-        self.start_waiting(compositor, sync, now);
         self.changed();
     }
 }
@@ -1056,6 +1363,59 @@ fn device_key(host: &str) -> Option<EndpointId> {
         .ok()
         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
         .and_then(|bytes| EndpointId::from_bytes(&bytes).ok())
+}
+
+/// Whether the desk shows the tab `tab` anywhere.
+fn shown(tree: &DesktopTree, tab: TabId) -> bool {
+    tree.workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .any(|shown| shown.id == tab)
+}
+
+/// The devices a room's windows are hosted on, by the salt each mints its
+/// ids under and its key: this device under `salt`, and each of `devices`
+/// (the ones heard in the room) under the salt its key derives. The desktop
+/// model finds a shared window's host with it.
+fn owners_of(
+    salt: u16,
+    publisher: EndpointId,
+    devices: &[(EndpointId, String)],
+) -> BTreeMap<u16, String> {
+    let mut owners = BTreeMap::from([(salt, hex::encode(publisher.as_bytes()))]);
+    for (device, _) in devices {
+        owners.insert(
+            tilo_desktop_model::ids::device_salt_of_key(device.as_bytes()),
+            hex::encode(device.as_bytes()),
+        );
+    }
+    owners
+}
+
+/// The desk without the tab `tab`, and without the strip `strip` when that
+/// was made for it and holds nothing else.
+fn remove_governed_tile(tree: &mut DesktopTree, tab: TabId, strip: Option<StripId>) {
+    for workspace in &mut tree.workspaces {
+        for held in &mut workspace.strips {
+            held.window_groups.retain_mut(|group| {
+                group.tabs.retain(|shown| shown.id != tab);
+                group.focus_history.retain(|id| *id != tab);
+                if group.active_tab == tab
+                    && let Some(first) = group.tabs.first()
+                {
+                    group.active_tab = first.id;
+                }
+                !group.tabs.is_empty()
+            });
+        }
+        if let Some(strip) = strip {
+            workspace
+                .strips
+                .retain(|held| held.id != strip || !held.window_groups.is_empty());
+        }
+    }
 }
 
 /// A member's input, in this device's terms: the window's place in the
@@ -1200,13 +1560,11 @@ fn shares_resource() -> ResourceSpec {
         .with_action(unwatch_action())
 }
 
-/// The tab argument: the window of the desk a share is about.
+/// The tab argument: the window of the desk a share is about, named by its
+/// id as the desk's own resources name it. Ids carry a device's salt and do
+/// not fit a JSON integer, so they travel as text.
 fn tab_argument() -> ActionParam {
-    ActionParam::required_owned(
-        "tab",
-        ParamType::Number,
-        t("session-window-share-param-tab"),
-    )
+    ActionParam::required_owned("tab", ParamType::Text, t("session-window-share-param-tab"))
 }
 
 /// The room argument: the room a window is shared with or watched in.
@@ -1218,10 +1576,10 @@ fn room_argument() -> ActionParam {
     )
 }
 
-/// The tab an action names.
+/// The tab an action names, by its decimal id.
 fn tab_of(args: &tilo_actions::ActionArgs) -> TabId {
-    args.integer("tab")
-        .and_then(|tab| u64::try_from(tab).ok())
+    args.text("tab")
+        .and_then(|tab| tab.trim().parse().ok())
         .unwrap_or(0)
 }
 

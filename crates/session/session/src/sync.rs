@@ -42,8 +42,7 @@ use tilo_device_fabric::runtime::FabricRuntime;
 use tilo_endpoint_reachability::{Need, Reachability};
 use tilo_network_actor::{
     HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, RosterDevice, WorkspaceControlRoute,
-    WorkspaceId,
-    native_ingress, room_topic_id,
+    WorkspaceId, native_ingress, room_topic_id,
 };
 
 use crate::channels::ChannelLink;
@@ -1001,6 +1000,24 @@ impl Client {
             .iter()
             .find(|held| held.id == room)
             .map(|held| held.ws)
+    }
+
+    /// The devices heard in `room` beside this one, by publisher and the name
+    /// each goes by: what shows which device a window of the room runs on.
+    #[must_use]
+    pub(crate) fn room_devices(&self, room: &str) -> Vec<(EndpointId, String)> {
+        self.plane
+            .borrow()
+            .rooms
+            .iter()
+            .find(|held| held.id == room)
+            .map(|held| {
+                held.peers
+                    .iter()
+                    .map(|peer| (peer.publisher, peer.label.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Keep what the person's other devices said of their workspaces: a
