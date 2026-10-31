@@ -443,8 +443,8 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
         self.0.borrow_mut().pressed_elsewhere();
     }
 
-    fn claim_key(&mut self, key: &HostKey, locked: bool) -> KeyClaim {
-        self.0.borrow_mut().claim_key(key, locked)
+    fn claim_key(&mut self, key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim {
+        self.0.borrow_mut().claim_key(key, locked, inhibited)
     }
 
     fn wants_keyboard(&self) -> bool {

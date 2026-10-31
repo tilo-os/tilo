@@ -46,6 +46,7 @@ pub mod output;
 mod output_management;
 mod output_power;
 mod pacing;
+mod pointer_lock;
 pub mod policy;
 mod power;
 mod present;
@@ -479,6 +480,11 @@ impl Compositor {
         self.display.dispatch_clients(&mut self.data.state)?;
         self.sync_text_input();
         self.data.state.refresh();
+        // A constraint or an inhibitor takes effect for what is focused and
+        // under the pointer now, so it is settled once the clients' requests
+        // and this turn's focus changes were handled.
+        self.data.state.sync_pointer_constraint();
+        self.data.state.sync_shortcut_inhibit();
         if let Some(x11) = self.data.x11_windows.as_mut() {
             // The X server's own focus follows the session's, and X clients
             // hear how dense the display is and which pointer to draw.

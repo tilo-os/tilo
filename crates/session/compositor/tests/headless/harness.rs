@@ -9,7 +9,7 @@ use std::time::Duration;
 use tilo_compositor::{Compositor, OutputConfig, WindowPolicy};
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
-    wl_keyboard::WlKeyboard, wl_pointer, wl_pointer::WlPointer, wl_registry,
+    wl_keyboard::WlKeyboard, wl_pointer, wl_pointer::WlPointer, wl_region::WlRegion, wl_registry,
     wl_registry::WlRegistry, wl_seat, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
     wl_shm_pool::WlShmPool, wl_surface::WlSurface, wl_touch, wl_touch::WlTouch,
 };
@@ -19,6 +19,19 @@ use wayland_client::{
 use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_manager_v1::ExtSessionLockManagerV1, ext_session_lock_v1,
     ext_session_lock_v1::ExtSessionLockV1,
+};
+use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::{
+    zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1,
+    zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1},
+};
+use wayland_protocols::wp::pointer_constraints::zv1::client::{
+    zwp_confined_pointer_v1::{self, ZwpConfinedPointerV1},
+    zwp_locked_pointer_v1::{self, ZwpLockedPointerV1},
+    zwp_pointer_constraints_v1::{Lifetime, ZwpPointerConstraintsV1},
+};
+use wayland_protocols::wp::relative_pointer::zv1::client::{
+    zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
+    zwp_relative_pointer_v1::{self, ZwpRelativePointerV1},
 };
 use wayland_protocols::wp::tablet::zv2::client::{
     zwp_tablet_manager_v2::ZwpTabletManagerV2,
@@ -82,8 +95,26 @@ pub struct Seen {
     /// Whether the compositor asked the input method to type.
     pub ime_activated: bool,
     pub pointer: Option<WlPointer>,
+    /// The absolute positions the pointer was put at here, as
+    /// `wl_pointer.motion` sent them.
+    pub pointer_positions: Vec<(f64, f64)>,
     pub keyboard: Option<WlKeyboard>,
     pub touch: Option<WlTouch>,
+    pub pointer_constraints: Option<ZwpPointerConstraintsV1>,
+    pub locked_pointer: Option<ZwpLockedPointerV1>,
+    pub confined_pointer: Option<ZwpConfinedPointerV1>,
+    /// Whether the compositor holds the pointer where it is.
+    pub pointer_locked: bool,
+    /// Whether the compositor keeps the pointer inside the region.
+    pub pointer_confined: bool,
+    pub relative_pointer_manager: Option<ZwpRelativePointerManagerV1>,
+    pub relative_pointer: Option<ZwpRelativePointerV1>,
+    /// The deltas the compositor sent, as `(dx, dy)`.
+    pub relative: Vec<(f64, f64)>,
+    pub inhibit_manager: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
+    pub inhibitor: Option<ZwpKeyboardShortcutsInhibitorV1>,
+    /// Whether the compositor lets this client answer the desktop's chords.
+    pub shortcuts_inhibited: bool,
     /// Touch events as `down id x y`, `motion id x y`, `up id`, `frame`.
     pub touches: Vec<String>,
     pub configured: bool,
@@ -305,6 +336,81 @@ impl TestClient {
         self.seen.input_method = Some(manager.get_input_method(seat, &qh, ()));
     }
 
+    /// Ask for the pointer to stay where it is while this window has it:
+    /// a game or a remote desktop view.
+    pub fn lock_pointer(&mut self) {
+        let qh = self.queue.handle();
+        let constraints = self
+            .seen
+            .pointer_constraints
+            .as_ref()
+            .expect("zwp_pointer_constraints_v1");
+        let surface = self.surface.as_ref().expect("surface").clone();
+        let pointer = self.seen.pointer.as_ref().expect("wl_pointer").clone();
+        self.seen.locked_pointer =
+            Some(constraints.lock_pointer(&surface, &pointer, None, Lifetime::Persistent, &qh, ()));
+        self.connection.flush().expect("flush");
+    }
+
+    /// Ask for the pointer to stay inside `rect` of this window, as a
+    /// remote desktop view does.
+    pub fn confine_pointer(&mut self, rect: (i32, i32, i32, i32)) {
+        let qh = self.queue.handle();
+        let constraints = self
+            .seen
+            .pointer_constraints
+            .as_ref()
+            .expect("zwp_pointer_constraints_v1");
+        let region = self
+            .seen
+            .compositor
+            .as_ref()
+            .expect("wl_compositor")
+            .create_region(&qh, ());
+        region.add(rect.0, rect.1, rect.2, rect.3);
+        let surface = self.surface.as_ref().expect("surface").clone();
+        let pointer = self.seen.pointer.as_ref().expect("wl_pointer").clone();
+        self.seen.confined_pointer = Some(constraints.confine_pointer(
+            &surface,
+            &pointer,
+            Some(&region),
+            Lifetime::Persistent,
+            &qh,
+            (),
+        ));
+        region.destroy();
+        // The region takes effect with the surface's next commit.
+        surface.commit();
+        self.connection.flush().expect("flush");
+    }
+
+    /// Read the deltas the compositor sends for the pointer of this seat.
+    pub fn own_relative_pointer(&mut self) {
+        let qh = self.queue.handle();
+        let manager = self
+            .seen
+            .relative_pointer_manager
+            .as_ref()
+            .expect("zwp_relative_pointer_manager_v1");
+        let pointer = self.seen.pointer.as_ref().expect("wl_pointer");
+        self.seen.relative_pointer = Some(manager.get_relative_pointer(pointer, &qh, ()));
+        self.connection.flush().expect("flush");
+    }
+
+    /// Ask to answer the desktop's own chords while this window is focused.
+    pub fn inhibit_shortcuts(&mut self) {
+        let qh = self.queue.handle();
+        let manager = self
+            .seen
+            .inhibit_manager
+            .as_ref()
+            .expect("zwp_keyboard_shortcuts_inhibit_manager_v1");
+        let surface = self.surface.as_ref().expect("surface");
+        let seat = self.seen.seat.as_ref().expect("wl_seat");
+        self.seen.inhibitor = Some(manager.inhibit_shortcuts(surface, seat, &qh, ()));
+        self.connection.flush().expect("flush");
+    }
+
     /// Type `text` into the field the input method serves.
     pub fn type_with_input_method(&self, text: &str) {
         let method = self.seen.input_method.as_ref().expect("input method");
@@ -408,6 +514,15 @@ impl Dispatch<WlRegistry, ()> for Seen {
                 }
                 "zwp_input_method_manager_v2" => {
                     seen.input_method_manager = Some(registry.bind(name, 1, qh, ()));
+                }
+                "zwp_pointer_constraints_v1" => {
+                    seen.pointer_constraints = Some(registry.bind(name, 1, qh, ()));
+                }
+                "zwp_relative_pointer_manager_v1" => {
+                    seen.relative_pointer_manager = Some(registry.bind(name, 1, qh, ()));
+                }
+                "zwp_keyboard_shortcuts_inhibit_manager_v1" => {
+                    seen.inhibit_manager = Some(registry.bind(name, 1, qh, ()));
                 }
                 _ => {}
             }
@@ -516,6 +631,11 @@ impl Dispatch<WlPointer, ()> for Seen {
         match event {
             wl_pointer::Event::Enter { .. } => seen.pointer_inside = true,
             wl_pointer::Event::Leave { .. } => seen.pointer_inside = false,
+            wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => seen.pointer_positions.push((surface_x, surface_y)),
             wl_pointer::Event::Button { button, state, .. } => {
                 seen.buttons.push((
                     button,
@@ -745,6 +865,78 @@ impl Dispatch<ZwpTabletPadRingV2, ()> for Seen {
     }
 }
 
+impl Dispatch<ZwpLockedPointerV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpLockedPointerV1,
+        event: zwp_locked_pointer_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_locked_pointer_v1::Event::Locked => seen.pointer_locked = true,
+            zwp_locked_pointer_v1::Event::Unlocked => seen.pointer_locked = false,
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpConfinedPointerV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpConfinedPointerV1,
+        event: zwp_confined_pointer_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_confined_pointer_v1::Event::Confined => seen.pointer_confined = true,
+            zwp_confined_pointer_v1::Event::Unconfined => seen.pointer_confined = false,
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpRelativePointerV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpRelativePointerV1,
+        event: zwp_relative_pointer_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwp_relative_pointer_v1::Event::RelativeMotion { dx, dy, .. } = event {
+            seen.relative.push((dx, dy));
+        }
+    }
+}
+
+impl Dispatch<ZwpKeyboardShortcutsInhibitorV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpKeyboardShortcutsInhibitorV1,
+        event: zwp_keyboard_shortcuts_inhibitor_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_keyboard_shortcuts_inhibitor_v1::Event::Active => seen.shortcuts_inhibited = true,
+            zwp_keyboard_shortcuts_inhibitor_v1::Event::Inactive => {
+                seen.shortcuts_inhibited = false;
+            }
+            _ => {}
+        }
+    }
+}
+
+delegate_noop!(Seen: ignore ZwpPointerConstraintsV1);
+delegate_noop!(Seen: ignore ZwpRelativePointerManagerV1);
+delegate_noop!(Seen: ignore ZwpKeyboardShortcutsInhibitManagerV1);
+delegate_noop!(Seen: ignore WlRegion);
 delegate_noop!(Seen: ignore ZwpTabletManagerV2);
 delegate_noop!(Seen: ignore ZwpTabletV2);
 delegate_noop!(Seen: ignore ZwpTabletToolV2);

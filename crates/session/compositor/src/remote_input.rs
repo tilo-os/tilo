@@ -17,6 +17,9 @@
 //!
 //! The chord is tracked here, not by the focused window: a window that
 //! wants Escape still gets one, but never the press that completes the cut.
+//! The same chord gives a locked pointer and an inhibited client their
+//! freedom back first ([`crate::state::State::handle_input`]); only when no
+//! client holds either does it cut.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -76,18 +79,16 @@ impl Firewall {
     }
 
     /// Track one key of the person's own keyboard; true when it completes
-    /// the cut chord, which the caller keeps from the desktop.
+    /// Ctrl+Alt+Escape, which the caller keeps from the desktop and acts on
+    /// ([`Firewall::cut`], or handing a client's pointer and shortcuts back
+    /// first).
     pub(crate) fn chord(&mut self, keycode: u32, pressed: bool) -> bool {
         if !pressed {
             self.held.remove(&keycode);
             return false;
         }
         self.held.insert(keycode);
-        if keycode != keycode::ESCAPE || !completes_cut(&self.held) {
-            return false;
-        }
-        self.cut();
-        true
+        keycode == keycode::ESCAPE && completes_cut(&self.held)
     }
 
     /// Whether remote input may reach the seat at `now`.
@@ -148,6 +149,8 @@ mod tests {
             firewall.chord(keycode::ESCAPE, true),
             "the completing press is the chord's"
         );
+        // The compositor decides what the chord means; cutting is one answer.
+        firewall.cut();
         assert!(firewall.is_cut());
         assert!(!firewall.admits(now + PHYSICAL_PRIORITY, false));
         assert_eq!(

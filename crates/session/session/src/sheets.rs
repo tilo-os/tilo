@@ -303,7 +303,7 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
         self.open() && !self.typing_through
     }
 
-    fn claim_key(&mut self, key: &HostKey, _locked: bool) -> KeyClaim {
+    fn claim_key(&mut self, key: &HostKey, _locked: bool, _inhibited: bool) -> KeyClaim {
         // The card's own two keys: the primary answer on Enter, the way out
         // on Escape. Ordinary typing is the field's.
         let answers = self.typing_through

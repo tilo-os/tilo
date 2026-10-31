@@ -286,7 +286,10 @@ impl PrimarySelectionHandler for State {
 }
 
 impl PointerConstraintsHandler for State {
-    fn new_constraint(&mut self, _surface: &WlSurface, _pointer: &PointerHandle<Self>) {}
+    fn new_constraint(&mut self, _surface: &WlSurface, _pointer: &PointerHandle<Self>) {
+        // Granted (or not) by the next turn's `sync_pointer_constraint`,
+        // which knows what is focused and under the pointer.
+    }
 
     fn cursor_position_hint(
         &mut self,
@@ -312,9 +315,14 @@ impl KeyboardShortcutsInhibitHandler for State {
         &mut self.protocols.shortcuts_inhibit
     }
 
-    fn new_inhibitor(&mut self, inhibitor: KeyboardShortcutsInhibitor) {
-        // Remote desktops and VMs take every key while focused.
-        inhibitor.activate();
+    fn new_inhibitor(&mut self, _inhibitor: KeyboardShortcutsInhibitor) {
+        // Granted (or not) by the next turn's `sync_shortcut_inhibit`, which
+        // knows what holds focus.
+    }
+
+    fn inhibitor_destroyed(&mut self, inhibitor: KeyboardShortcutsInhibitor) {
+        // Freed before the surface's commit could grant it again.
+        self.inhibitor_gone(inhibitor.wl_surface());
     }
 }
 

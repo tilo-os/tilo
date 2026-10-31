@@ -208,8 +208,10 @@ pub trait SurfaceHost {
     /// topmost surface first: a desktop chord or a hardware key this
     /// surface answers wherever the keyboard is. `locked` while the session
     /// is locked, when only keys that reveal nothing (volume, brightness)
-    /// may be taken.
-    fn claim_key(&mut self, _key: &HostKey, _locked: bool) -> KeyClaim {
+    /// may be taken. `inhibited` while a focused client holds the desktop's
+    /// shortcuts, when only what must never be given up (hardware keys,
+    /// locking the session) may be taken.
+    fn claim_key(&mut self, _key: &HostKey, _locked: bool, _inhibited: bool) -> KeyClaim {
         KeyClaim::Pass
     }
 

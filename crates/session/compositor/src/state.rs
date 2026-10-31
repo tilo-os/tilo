@@ -179,6 +179,10 @@ pub struct State {
     pub(crate) idle: crate::power::Idle,
     /// The keys hosted surfaces hold, and their repeat.
     pub(crate) host_keys: HostKeys,
+    /// The pointer lock or confinement a client holds, and its region.
+    pub(crate) pointer_lock: crate::pointer_lock::PointerLock,
+    /// The client that holds the desktop's shortcuts, if any.
+    pub(crate) shortcut_inhibit: crate::keys::ShortcutInhibit,
     /// The magnifier's zoom about the pointer; 1 is off.
     pub(crate) zoom: f64,
     pub(crate) selections: crate::selection::Selections,
@@ -267,6 +271,8 @@ impl State {
             disabled_outputs: Vec::new(),
             idle: crate::power::Idle::new(),
             host_keys: HostKeys::default(),
+            pointer_lock: crate::pointer_lock::PointerLock::default(),
+            shortcut_inhibit: crate::keys::ShortcutInhibit::default(),
             zoom: 1.0,
             selections,
             dnd: crate::dnd::Dnd::default(),
@@ -588,12 +594,19 @@ impl State {
     pub(crate) fn handle_input(&mut self, event: InputEvent) {
         let now = Instant::now();
         self.remote_input.note_local(now);
-        // The person's own Ctrl+Alt+Escape cuts remote input, and its press
-        // goes no further: the window does not see half a chord.
+        // The person's own Ctrl+Alt+Escape gives back whatever a client
+        // holds — a locked pointer, the desktop's shortcuts — and otherwise
+        // cuts remote input. Its press goes no further either way: no window
+        // sees half a chord.
         if let InputEvent::Key { keycode, pressed } = event
             && self.remote_input.chord(keycode, pressed)
         {
-            tracing::info!("the person cut remote input");
+            if self.pointer_lock.is_engaged() || self.shortcut_inhibit.is_active() {
+                self.release_pointer_lock();
+                self.suspend_shortcut_inhibit();
+            } else if self.remote_input.cut() {
+                tracing::info!("the person cut remote input");
+            }
             return;
         }
         self.route_input(event);
@@ -629,6 +642,9 @@ impl State {
                 self.pointer_motion(Point::from((x, y)), serial, time);
             }
             InputEvent::PointerMotionRelative { dx, dy } => {
+                // Every client with a relative pointer reads the deltas,
+                // whether or not the pointer it belongs to still moves.
+                self.forward_relative_motion(dx, dy, u64::from(time).saturating_mul(1_000));
                 let to = self.pointer + Point::from((dx, dy));
                 self.pointer_motion(to, serial, time);
             }
@@ -708,12 +724,14 @@ impl State {
                         });
                 }
                 let locked = state.locked();
+                // A client holding the desktop's shortcuts keeps them: only
+                // what must never be given up is still taken below.
+                let inhibited = state.shortcut_inhibit.is_active();
                 let now = Instant::now();
                 for index in (0..state.hosts.len()).rev() {
-                    let claim = state
-                        .hosts
-                        .get_mut(index)
-                        .map_or(KeyClaim::Pass, |host| host.claim_key(&key, locked));
+                    let claim = state.hosts.get_mut(index).map_or(KeyClaim::Pass, |host| {
+                        host.claim_key(&key, locked, inhibited)
+                    });
                     if claim != KeyClaim::Pass {
                         let repeats = claim == KeyClaim::TakeRepeating;
                         state.host_keys.press(index, &key, repeats, now);
@@ -773,7 +791,16 @@ impl State {
     }
 
     pub(crate) fn pointer_motion(&mut self, to: Point<f64, Logical>, serial: Serial, time: u32) {
-        self.pointer = self.clamp_to_outputs(to);
+        let to = self.clamp_to_outputs(to);
+        // A locked pointer stays where it is, and a confined one stops at
+        // the edge of its region; their clients read the deltas instead.
+        let Some((x, y)) = self
+            .pointer_lock
+            .constrain((self.pointer.x, self.pointer.y), (to.x, to.y))
+        else {
+            return;
+        };
+        self.pointer = Point::from((x, y));
         let location = self.pointer;
         self.policy.pointer_moved(location.x, location.y);
         if self.drag_motion(location, serial, time) {

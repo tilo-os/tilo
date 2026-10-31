@@ -28,7 +28,7 @@ use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
     Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostDrag, HostFrame,
-    HostKey, HostLayer, IconArtwork, InputEvent, KeyboardLayout, OutputConfig, PadAction,
+    HostKey, HostLayer, IconArtwork, InputEvent, KeyClaim, KeyboardLayout, OutputConfig, PadAction,
     StackPolicy, SurfaceHost, Switch, TabletEvent, TabletPadEvent, TabletPhase, TextField,
     TextFieldRefusal, TextInsertion, WindowEffect, WindowFrame, WindowIcon, WindowInfo,
     WindowPicture, WindowPolicy,
@@ -40,6 +40,11 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
 
 const BTN_LEFT: u32 = 0x110;
 const KEY_A: u32 = 30;
+const KEY_ESCAPE: u32 = 1;
+const KEY_LEFTCTRL: u32 = 29;
+const KEY_LEFTALT: u32 = 56;
+const KEY_LEFTMETA: u32 = 125;
+const KEY_X: u32 = 45;
 const BACKGROUND: [u8; 4] = [26, 27, 38, 255];
 
 #[test]
@@ -447,6 +452,9 @@ struct HostLog {
     left: u32,
     keys: Vec<HostKey>,
     wants_keyboard: bool,
+    /// Each Super+X the surface was offered, and whether it was told a client
+    /// holds the desktop's shortcuts.
+    taken: Vec<(u32, bool)>,
 }
 
 /// A hosted surface: one square of one colour.
@@ -522,6 +530,42 @@ impl SurfaceHost for Square {
 
     fn wants_keyboard(&self) -> bool {
         self.log.borrow().wants_keyboard
+    }
+
+    fn key(&mut self, key: &HostKey) {
+        self.log.borrow_mut().keys.push(key.clone());
+    }
+}
+
+/// The desktop's own key surface, as the session's is: it answers Super+X
+/// wherever the keyboard is, unless a client holds the desktop's shortcuts.
+struct Chords {
+    log: Rc<RefCell<HostLog>>,
+}
+
+impl SurfaceHost for Chords {
+    fn layers(&self) -> Vec<HostLayer> {
+        Vec::new()
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+    fn claim_key(&mut self, key: &HostKey, _locked: bool, inhibited: bool) -> KeyClaim {
+        if key.keycode != KEY_X || !key.modifiers.logo {
+            return KeyClaim::Pass;
+        }
+        self.log.borrow_mut().taken.push((key.keycode, inhibited));
+        if inhibited {
+            KeyClaim::Pass
+        } else {
+            KeyClaim::Take
+        }
     }
 
     fn key(&mut self, key: &HostKey) {
@@ -2509,5 +2553,223 @@ fn the_lens_magnifies_the_scene_around_the_pointer() {
     assert!(
         full_green > lensed_green,
         "the whole screen is magnified, past the lens's edges: {lensed_green} then {full_green}"
+    );
+}
+
+fn press_button(compositor: &mut Compositor, button: u32) {
+    for pressed in [true, false] {
+        compositor
+            .input(InputEvent::PointerButton { button, pressed })
+            .expect("input");
+    }
+}
+
+/// A press and its release of `keys`, in order, as fingers type a chord.
+fn press_keys(compositor: &mut Compositor, keys: &[u32]) {
+    for &keycode in keys {
+        compositor
+            .input(InputEvent::Key {
+                keycode,
+                pressed: true,
+            })
+            .expect("input");
+    }
+    for &keycode in keys.iter().rev() {
+        compositor
+            .input(InputEvent::Key {
+                keycode,
+                pressed: false,
+            })
+            .expect("input");
+    }
+}
+
+#[test]
+fn a_locked_pointer_only_moves_its_client_by_deltas_and_follows_focus() {
+    let mut compositor = headless(Box::<Columns>::default());
+    let mut game = mapped_client(&mut compositor, "game", (250, 200), [255, 0, 0, 255]);
+    let mut other = mapped_client(&mut compositor, "other", (250, 200), [0, 0, 255, 255]);
+    game.lock_pointer();
+    game.own_relative_pointer();
+    pump(&mut compositor, &mut [&mut game, &mut other], |_, _| true);
+    assert!(
+        !game.seen.pointer_locked,
+        "the window mapped last has the keyboard, not this one"
+    );
+
+    // Under the pointer is not enough: the lock takes hold with the keyboard
+    // focus, and only then.
+    compositor
+        .input(InputEvent::PointerMotion { x: 100.0, y: 100.0 })
+        .expect("input");
+    pump(&mut compositor, &mut [&mut game, &mut other], |_, _| true);
+    assert!(!game.seen.pointer_locked, "under the pointer, not focused");
+    press_button(&mut compositor, BTN_LEFT);
+    pump(
+        &mut compositor,
+        &mut [&mut game, &mut other],
+        |_, clients| clients[0].seen.pointer_locked,
+    );
+
+    // Absolute motion is dropped; the deltas still reach the game.
+    compositor
+        .input(InputEvent::PointerMotion { x: 400.0, y: 100.0 })
+        .expect("input");
+    compositor
+        .input(InputEvent::PointerMotionRelative { dx: 6.0, dy: -4.0 })
+        .expect("input");
+    pump(
+        &mut compositor,
+        &mut [&mut game, &mut other],
+        |_, clients| !clients[0].seen.relative.is_empty(),
+    );
+    assert_eq!(compositor.pointer_location(), (100.0, 100.0));
+    assert_eq!(game.seen.relative, vec![(6.0, -4.0)]);
+    assert!(
+        game.seen.pointer_positions.is_empty(),
+        "a locked pointer sends no absolute motion: {:?}",
+        game.seen.pointer_positions
+    );
+
+    // Losing the keyboard releases it: the person is looking at a new window.
+    let mut newest = mapped_client(&mut compositor, "newest", (40, 40), [0, 255, 0, 255]);
+    pump(
+        &mut compositor,
+        &mut [&mut game, &mut other, &mut newest],
+        |_, clients| !clients[0].seen.pointer_locked,
+    );
+    // Coming back grants it again: the client asked for it for good.
+    click(&mut compositor, 100.0, 100.0);
+    pump(
+        &mut compositor,
+        &mut [&mut game, &mut other, &mut newest],
+        |_, clients| clients[0].seen.pointer_locked,
+    );
+
+    // Ctrl+Alt+Escape gives the pointer back, and keeps it back while the
+    // game keeps the focus.
+    press_keys(&mut compositor, &[KEY_LEFTCTRL, KEY_LEFTALT, KEY_ESCAPE]);
+    pump(
+        &mut compositor,
+        &mut [&mut game, &mut other, &mut newest],
+        |_, clients| !clients[0].seen.pointer_locked,
+    );
+    assert_eq!(
+        compositor.pointer_location(),
+        (100.0, 100.0),
+        "the release moves no pointer of its own"
+    );
+    for _ in 0..3 {
+        pump(&mut compositor, &mut [&mut game, &mut other], |_, _| true);
+    }
+    assert!(
+        !game.seen.pointer_locked,
+        "the released lock does not come back by itself"
+    );
+    // Focus moving on and back is what makes it the game's again.
+    click(&mut compositor, 400.0, 100.0);
+    pump(&mut compositor, &mut [&mut game, &mut other], |_, _| true);
+    click(&mut compositor, 100.0, 100.0);
+    pump(
+        &mut compositor,
+        &mut [&mut game, &mut other],
+        |_, clients| clients[0].seen.pointer_locked,
+    );
+}
+
+#[test]
+fn a_confined_pointer_stops_at_the_edge_of_its_region() {
+    let mut compositor = headless(Box::<Columns>::default());
+    let mut client = mapped_client(&mut compositor, "editor", (250, 200), [255, 0, 0, 255]);
+    compositor
+        .input(InputEvent::PointerMotion { x: 20.0, y: 20.0 })
+        .expect("input");
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    client.confine_pointer((0, 0, 40, 40));
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.pointer_confined
+    });
+
+    // Past the region the pointer stops at its edge, on the client's own
+    // surface coordinates.
+    compositor
+        .input(InputEvent::PointerMotion { x: 200.0, y: 150.0 })
+        .expect("input");
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    assert_eq!(compositor.pointer_location(), (39.0, 39.0));
+    assert_eq!(client.seen.pointer_positions.last(), Some(&(39.0, 39.0)));
+    // Inside it moves as it always does.
+    compositor
+        .input(InputEvent::PointerMotion { x: 10.0, y: 30.0 })
+        .expect("input");
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    assert_eq!(compositor.pointer_location(), (10.0, 30.0));
+}
+
+#[test]
+fn an_inhibiting_client_keeps_the_desktops_chords_until_focus_or_the_release_chord() {
+    let log = Rc::new(RefCell::new(HostLog::default()));
+    let mut compositor = headless(Box::<Columns>::default());
+    compositor.add_host(Box::new(Chords {
+        log: Rc::clone(&log),
+    }));
+    let mut vm = mapped_client(&mut compositor, "vm", (250, 200), [255, 0, 0, 255]);
+
+    // The desktop's own key surface answers Super+X wherever the keyboard is.
+    press_keys(&mut compositor, &[KEY_LEFTMETA, KEY_X]);
+    pump(&mut compositor, &mut [&mut vm], |_, _| true);
+    assert_eq!(log.borrow().taken, vec![(KEY_X, false)]);
+    assert!(
+        !vm.seen.keys.iter().any(|(key, _)| *key == KEY_X),
+        "the desktop took the chord: {:?}",
+        vm.seen.keys
+    );
+
+    vm.inhibit_shortcuts();
+    pump(&mut compositor, &mut [&mut vm], |_, clients| {
+        clients[0].seen.shortcuts_inhibited
+    });
+    press_keys(&mut compositor, &[KEY_LEFTMETA, KEY_X]);
+    pump(&mut compositor, &mut [&mut vm], |_, clients| {
+        clients[0].seen.keys.iter().any(|(key, _)| *key == KEY_X)
+    });
+    assert_eq!(
+        log.borrow().taken,
+        vec![(KEY_X, false), (KEY_X, true)],
+        "the second press was offered with the client's hold on the shortcuts"
+    );
+
+    // Losing the focus hands them back, and taking it again takes them.
+    let mut other = mapped_client(&mut compositor, "other", (250, 200), [0, 0, 255, 255]);
+    pump(&mut compositor, &mut [&mut vm, &mut other], |_, clients| {
+        !clients[0].seen.shortcuts_inhibited
+    });
+    click(&mut compositor, 100.0, 100.0);
+    pump(&mut compositor, &mut [&mut vm, &mut other], |_, clients| {
+        clients[0].seen.shortcuts_inhibited
+    });
+
+    // A locked session hands them back too: the lock screen is the
+    // desktop's.
+    compositor.lock_now().expect("lock");
+    pump(&mut compositor, &mut [&mut vm, &mut other], |_, clients| {
+        !clients[0].seen.shortcuts_inhibited
+    });
+    compositor.unlock().expect("unlock");
+    pump(&mut compositor, &mut [&mut vm, &mut other], |_, clients| {
+        clients[0].seen.shortcuts_inhibited
+    });
+
+    // The release chord hands them back until focus moves on.
+    press_keys(&mut compositor, &[KEY_LEFTCTRL, KEY_LEFTALT, KEY_ESCAPE]);
+    pump(&mut compositor, &mut [&mut vm, &mut other], |_, clients| {
+        !clients[0].seen.shortcuts_inhibited
+    });
+    press_keys(&mut compositor, &[KEY_LEFTMETA, KEY_X]);
+    pump(&mut compositor, &mut [&mut vm, &mut other], |_, _| true);
+    assert_eq!(
+        log.borrow().taken.last(),
+        Some(&(KEY_X, false)),
+        "the desktop answers its own chord again"
     );
 }
