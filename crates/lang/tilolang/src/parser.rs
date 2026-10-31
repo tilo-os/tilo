@@ -1023,7 +1023,7 @@ impl<'a> Parser<'a> {
 
     fn search_entry(&mut self) -> PResult<SearchEntry> {
         let start = self.span();
-        let word = self.ident("`filter`, `sort` or `hide`")?;
+        let word = self.ident("`filter`, `sort`, `hide` or `mark`")?;
         let kind = match word.name.as_str() {
             "filter" => {
                 if matches!(self.peek(), Tok::Str(_)) {
@@ -1060,11 +1060,21 @@ impl<'a> Parser<'a> {
             "hide" => SearchEntryKind::Hide {
                 field: self.ident("the field to keep out of filters")?,
             },
+            "mark" => {
+                let what = self.ident("`others`")?;
+                if what.name != "others" {
+                    return self.fail(
+                        what.span,
+                        "\n`mark` takes `others`: `mark others` marks other people's changes to the type unseen, as an agent's are",
+                    );
+                }
+                SearchEntryKind::MarkOthers
+            }
             other => {
                 return self.fail(
                     word.span,
                     format!(
-                        "a search block holds `filter`, `sort` and `hide` lines; `{other}` is none of them"
+                        "a search block holds `filter`, `sort`, `hide` and `mark` lines; `{other}` is none of them"
                     ),
                 );
             }

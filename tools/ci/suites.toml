@@ -804,6 +804,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/bundle.rs",
   "crates/platform/tilolang-tilo/tests/chat.rs",
   "crates/platform/tilolang-tilo/tests/fixtures.rs",
+  "crates/platform/tilolang-tilo/tests/history_views.rs",
   "crates/platform/tilolang-tilo/tests/legacy.rs",
   "crates/platform/tilolang-tilo/tests/legibility.rs",
   "crates/platform/tilolang-tilo/tests/outbox.rs",
@@ -813,6 +814,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/scenarios.rs",
   "crates/platform/tilolang-tilo/tests/task.rs",
   "crates/platform/tilolang-tilo/tests/tasks.rs",
+  "crates/platform/tilolang-tilo/tests/undo_own.rs",
   "crates/platform/tilolang-tilo/tests/views_migration.rs",
 ]
 
@@ -826,6 +828,19 @@ readers = [
   "crates/platform/tilolang-host/tests/host.rs",
   "crates/platform/tilolang-host/tests/own_records.rs",
 ]
+
+[[cargo]]
+package = "tilo-session"
+# The desk's top bar compiles the tilolang shell package from its source and
+# ids lock.
+inputs = ["apps/tl/shell/app.tl", "apps/tl/shell/app.ids"]
+readers = ["crates/session/session/src/shell.rs"]
+
+[[cargo]]
+package = "tilo-surface-host"
+# The part's tests read the shell package's source and ids lock they lay out.
+inputs = ["apps/tl/shell/app.tl", "apps/tl/shell/app.ids"]
+readers = ["crates/session/surface-host/src/shell_part.rs"]
 
 [[cargo]]
 package = "onboarding-walk"

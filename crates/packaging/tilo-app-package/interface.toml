@@ -202,6 +202,7 @@ roots = ["Manifest", "Header", "SignedRegistrySnapshot", "CompactRegistrySnapsho
 "Providers" = "struct"
 "Providers.ext" = "Vec<String> optional"
 "Providers.mime" = "Vec<String> optional"
+"Providers.resources" = "Vec<String> optional"
 "Providers.schemes" = "Vec<String> optional"
 "Providers.secondary" = "bool optional"
 "Publisher" = "struct"
