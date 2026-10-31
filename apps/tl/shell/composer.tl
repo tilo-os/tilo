@@ -20,7 +20,7 @@ view composer(d: Desk) {
                 ui.Badge(count: live.len())
             }
         }
-        content: {
+        body: {
             ui.TextInput(value: words, placeholder: "What should it do?", lines: 3) {
                 on submit: send_to_agent(agent_key(agents), subject, words)
             }

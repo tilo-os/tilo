@@ -2758,32 +2758,6 @@
       }
     },
     {
-      "name": "FloatingPanel",
-      "doc": "The one body of a floating surface: a palette, a popover, the notification centre, the agent composer. It is the floating level's ground, the panel radius, the inner hairline and the two-layer shadow (`docs/design-language.md`, \"Surfaces\"); where it stands over the desk's windows its ground is the blurred material, which the host draws.",
-      "slots": [
-        {
-          "name": "header",
-          "doc": "A line over the body: a title, or the field a palette is typed into. A field here renders embedded in the panel's own ground.",
-          "accepts": "view"
-        },
-        {
-          "name": "content",
-          "doc": "What the panel holds, in order: the rows, the sections, the answer.",
-          "accepts": "view",
-          "many": true,
-          "default": true
-        },
-        {
-          "name": "footer",
-          "doc": "What stands under the body, separated by space, never boxed: a composer's Send and its keys.",
-          "accepts": "view"
-        }
-      ],
-      "semantics": {
-        "role": "Group"
-      }
-    },
-    {
       "name": "KeyHints",
       "doc": "Shortcuts and what they do, side by side: each hint the drawn keycaps of a chord and its label (\"Enter Save\", \"Esc Cancel\"), in the person's own keyboard legends. Never a sentence with a separator glyph.",
       "slots": [

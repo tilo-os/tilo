@@ -32,7 +32,6 @@ mod bar_control;
 mod disclosure_row;
 mod facts;
 mod floating_panel;
-mod floating_panel_component;
 mod key_hint;
 mod quick_tile;
 mod surface;
@@ -49,7 +48,6 @@ pub use surfaces_component::{
 };
 
 pub use floating_panel::{FloatingPanel, FloatingPanelFace, FloatingPanelLayout};
-pub use floating_panel_component::FloatingPanelProps;
 pub use key_hint::{KeyHint, KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps};
 pub use quick_tile::{QuickTileFace, paint_level_gauge};
 pub use surface::{

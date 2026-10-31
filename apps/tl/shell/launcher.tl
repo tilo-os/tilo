@@ -19,7 +19,7 @@ view launcher(d: Desk) {
                 on submit: submit_search(query)
             }
         }
-        content: {
+        body: {
             if not windows.is_empty() {
                 ui.Section(if typed { "Windows" } else { "Recent windows" }) {
                     for w in windows {
