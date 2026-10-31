@@ -89,7 +89,7 @@ impl StatePeer {
 
     /// The person behind `caller`, when the room lets them install apps.
     fn check_app_governance(&self, caller: &DeviceCert, now: SystemTime) -> Result<String, String> {
-        let member = self.permissions(caller.device_public_key, now).map_err(|error| error.to_string())?;
+        let member = self.membership(caller.device_public_key, now)?;
         let bound = tilo_action_policy::roles::foreign_device_bound();
         member
             .policy

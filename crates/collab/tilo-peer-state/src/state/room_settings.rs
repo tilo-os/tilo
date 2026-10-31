@@ -26,7 +26,7 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let member = self.permissions(caller.device_public_key, now).map_err(|error| error.to_string())?;
+        let member = self.membership(caller.device_public_key, now)?;
         let bound = roles::foreign_device_bound();
         let authority = member.authority(&bound);
         let seconds = now

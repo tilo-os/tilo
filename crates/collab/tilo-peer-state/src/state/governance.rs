@@ -3,10 +3,9 @@
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
     BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, GovernedMember, Grant,
-    GrantId, NeighbourMsg, ROOT, ReadDoc, RecordReaders, RevocationList, Role, SigningKey, Subject,
-    MembershipError, SystemTime, Transactable, TransportOrigin, administrator_grant_id, err,
-    governed_map,
-    member_role_from_role, now_ns, room,
+    GrantId, MembershipError, NeighbourMsg, ROOT, ReadDoc, RecordReaders, RevocationList, Role,
+    SigningKey, Subject, SystemTime, Transactable, TransportOrigin, administrator_grant_id, err,
+    governed_map, member_role_from_role, now_ns, room,
 };
 
 impl PeerGovernance<'_> {
@@ -839,7 +838,7 @@ impl super::StatePeer {
     fn require_inviter(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
         let device = key.verifying_key().to_bytes();
         self.require_member_writer(key, now)?;
-        let member = self.permissions(device, now).map_err(|error| error.to_string())?;
+        let member = self.membership(device, now)?;
         let bound = tilo_action_policy::roles::foreign_device_bound();
         member
             .policy

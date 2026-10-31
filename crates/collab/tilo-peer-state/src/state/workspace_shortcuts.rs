@@ -41,7 +41,7 @@ impl PeerWorkspaceMut<'_> {
         {
             return Err("shortcut caller is not exact current admitted evidence".into());
         }
-        let member = self.peer.permissions(caller.device_public_key, now).map_err(|error| error.to_string())?;
+        let member = self.peer.membership(caller.device_public_key, now)?;
         if !member.allows(
             &tilo_action_policy::TreePath::room(&self.peer.core.room),
             tilo_action_policy::ActionKind::Undoable,

@@ -9,9 +9,7 @@ use room::media::{self, RoomMediaV1};
 impl StatePeer {
     fn require_media_governor(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
         self.require_governance_writer(key, now)?;
-        let member = self
-            .permissions(key.verifying_key().to_bytes(), now)
-            .map_err(|error| error.to_string())?;
+        let member = self.membership(key.verifying_key().to_bytes(), now)?;
         if member.role != Role::Owner
             || room::governance_of(self.core.room_doc.as_deref())
                 .owner

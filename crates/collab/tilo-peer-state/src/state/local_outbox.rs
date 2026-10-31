@@ -350,7 +350,9 @@ impl PeerOutboxMut<'_> {
         {
             return Ok(None);
         }
-        self.peer.permissions(selected, now).map_err(|error| error.to_string())?;
+        self.peer
+            .permissions(selected, now)
+            .map_err(|error| error.to_string())?;
         let NeighbourMsg::AppDocument { envelope, .. } = original else {
             return Err("retained local publication requires AppDocument".into());
         };

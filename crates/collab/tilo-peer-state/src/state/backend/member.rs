@@ -38,14 +38,15 @@ fn current<'peer, P: Policy>(
     peer: &'peer PeerCore,
     source: &[u8; 32],
     now: SystemTime,
-    collect: impl FnOnce(
-        &'peer crate::cached_document::CachedDocument,
-    ) -> Result<P, MembershipError>,
+    collect: impl FnOnce(&'peer crate::cached_document::CachedDocument) -> Result<P, MembershipError>,
 ) -> Result<(Role, Option<Bound>), MembershipError> {
     let cert = peer
         .certificate_typed(source, now)
         .map_err(MembershipError::from)?;
-    let room = peer.room_doc.as_ref().ok_or(MembershipError::GovernanceMissing)?;
+    let room = peer
+        .room_doc
+        .as_ref()
+        .ok_or(MembershipError::GovernanceMissing)?;
     let policy = collect(room)?;
     let identity = policy.identity();
     if identity.device_cert != *cert {

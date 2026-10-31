@@ -832,7 +832,8 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<(), String> {
         let device = key.verifying_key().to_bytes();
-        self.certificate(&device, now).map_err(|error| error.to_string())?;
+        self.certificate(&device, now)
+            .map_err(|error| error.to_string())?;
         self.role(&device, now).map(drop)
     }
 
@@ -841,7 +842,9 @@ impl StatePeer {
     /// device their root certifies, so no one device of theirs is needed
     /// and a revoked one hands nothing over.
     fn owner_device(&self, device: &[u8; 32], now: SystemTime) -> Result<&DeviceCert, String> {
-        let cert = self.certificate(device, now).map_err(|error| error.to_string())?;
+        let cert = self
+            .certificate(device, now)
+            .map_err(|error| error.to_string())?;
         if cert.user_public_key != self.core.owner {
             return Err("governance writer is not the owner's device".into());
         }
@@ -1010,6 +1013,16 @@ impl StatePeer {
             delegate: agent,
         })
     }
+    /// [`Self::permissions`] as the text refusal the room's own write paths
+    /// report to the app that asked.
+    pub(crate) fn membership(
+        &self,
+        device: [u8; 32],
+        now: SystemTime,
+    ) -> Result<MemberAuthority, String> {
+        self.permissions(device, now)
+            .map_err(|error| error.to_string())
+    }
     /// The app surface this peer names in the changes it signs for `app`'s
     /// records, if it names one.
     #[must_use]
@@ -1075,7 +1088,7 @@ impl StatePeer {
         record: &str,
         now: SystemTime,
     ) -> Result<(), String> {
-        let member = self.permissions(device, now).map_err(|error| error.to_string())?;
+        let member = self.membership(device, now)?;
         let bound = tilo_action_policy::roles::foreign_device_bound();
         if !backend::access::document_read(
             &member.authority(&bound),
@@ -1455,7 +1468,7 @@ impl StatePeer {
         envelope: &SignedOp,
         authorization_time: SystemTime,
     ) -> Result<Option<MemberAuthority>, String> {
-        let member = self.permissions(*source, authorization_time).map_err(|error| error.to_string())?;
+        let member = self.membership(*source, authorization_time)?;
         // A change made with another version of the app than the room runs
         // is held: its author's desktop switches to the room's version, and
         // the same changes then name that version's surface.
