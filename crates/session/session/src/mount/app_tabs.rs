@@ -82,7 +82,7 @@ impl ServiceLinks {
         instance: u64,
         launch: Option<u32>,
     ) -> Option<OwnedFd> {
-        let mut stream = tilo_files::native::socket::connect(launcher::services::collab_socket())
+        let mut stream = tilo_files::native::socket::connect(&launcher::services::collab_socket())
             .inspect_err(|error| {
                 tracing::warn!(%error, %app, "a window could not reach the collaboration broker");
             })
@@ -105,7 +105,7 @@ impl ServiceLinks {
         let launcher = launcher?;
         self.launches.window_shell_ui(app, launcher);
         let connected = (|| {
-            let mut stream = tilo_files::native::socket::connect(launcher::services::socket_for(
+            let mut stream = tilo_files::native::socket::connect(&launcher::services::socket_for(
                 SHELL_UI_SERVICE,
             ))?;
             let mut frame = serde_json::to_vec(&serde_json::json!({
