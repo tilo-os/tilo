@@ -77,6 +77,9 @@ struct Grab {
 /// A press that moves this far is a drag, never a tap.
 const DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.icon_label_gap as f64;
 
+/// How much larger a widget is drawn while lifted under the hand.
+const LIFT_SCALE: f64 = 0.03;
+
 /// The desk's widgets, drawn over the desk and under the windows.
 pub struct DeskWidgets {
     handle: DesktopHandle,
@@ -105,6 +108,9 @@ pub struct DeskWidgets {
     /// Each widget's travel from its laid-out place into the one it was
     /// just dropped on: a set-down settles the last pixels, a throw coasts.
     offsets: BTreeMap<WidgetId, ui::motion::MotionValue<Vec2>>,
+    /// How far each widget is lifted under the hand, growing with its
+    /// shadow while a press carries it.
+    lifts: BTreeMap<WidgetId, ui::motion::MotionValue<f64>>,
     /// The system monitor's readings, and where they come from.
     monitor: Monitor,
     source: Box<dyn Source>,
@@ -174,6 +180,7 @@ impl DeskWidgets {
             grab: None,
             resizing: None,
             offsets: BTreeMap::new(),
+            lifts: BTreeMap::new(),
             monitor: Monitor::default(),
             source: Box::new(Service::default()),
             team_ids: Vec::new(),
@@ -220,6 +227,29 @@ impl DeskWidgets {
     #[must_use]
     pub fn prefs(&self) -> DeskWidgetPrefs {
         self.prefs.clone()
+    }
+
+    /// How far `id` is lifted under the hand now, from 0 (set down) to 1
+    /// (carried): it is drawn a little larger and its shadow deeper.
+    #[must_use]
+    pub fn lift(&self, id: WidgetId) -> f64 {
+        self.lifts
+            .get(&id)
+            .map_or(0.0, |lift| lift.get(ui::time::now()).clamp(0.0, 1.0))
+    }
+
+    /// Lift `id` under the hand, or set it down.
+    fn set_lift(&mut self, id: WidgetId, up: bool) {
+        let timing = if self.motion.moves() {
+            ui::motion::Timing::Spring(ui::motion::SpringSpec::settling_within(self.motion.fast()))
+        } else {
+            ui::motion::Timing::Instant
+        };
+        self.lifts
+            .entry(id)
+            .or_insert_with(|| ui::motion::MotionValue::new(0.0))
+            .set(if up { 1.0 } else { 0.0 }, timing, ui::time::now());
+        self.dirty = true;
     }
 
     /// The people the team card lists, top row first.
@@ -522,6 +552,9 @@ impl DeskWidgets {
             self.relayout();
         } else if !grab.dragging && (p - grab.at).hypot() > DRAG_SLOP {
             grab.dragging = true;
+            // Under the hand it comes up off the desk: bigger, and its
+            // shadow further away.
+            self.set_lift(grab.id, true);
             self.dirty = true;
         }
         self.grab = Some(grab);
@@ -539,6 +572,7 @@ impl DeskWidgets {
             return;
         }
         if grab.dragging {
+            self.set_lift(grab.id, false);
             self.drop(&grab, p);
             return;
         }
@@ -757,6 +791,7 @@ impl DeskWidgets {
         self.offsets
             .values()
             .any(|offset| offset.settles_at().is_some_and(|at| at > now))
+            || self.lifts.values().any(|lift| lift.is_moving(now))
             || self
                 .shown
                 .values()
@@ -1013,6 +1048,19 @@ impl Widget for DeskWidgets {
             let ground = lerp_rect(slot.glance, slot.open, morph);
             let bounds = slot.glance.union(slot.open).inflate(40.0, 48.0);
             let hovered = self.hovered(slot.id);
+            // A widget carried by the hand comes up off the desk: it grows
+            // a little and its shadow falls further, both from the middle
+            // it would grow from.
+            let lift = self
+                .lifts
+                .get(&slot.id)
+                .map_or(0.0, |lift| lift.get(now).clamp(0.0, 1.0));
+            let scale = if reduced {
+                1.0
+            } else {
+                1.0 + LIFT_SCALE * lift
+            };
+            let at = transform * Affine::scale_about(scale, ground.center());
             #[allow(clippy::cast_possible_truncation, reason = "a unit fraction")]
             let (glance_alpha, card_alpha) = if reduced {
                 (1.0 - open as f32, open as f32)
@@ -1025,26 +1073,26 @@ impl Widget for DeskWidgets {
             #[allow(clippy::cast_possible_truncation, reason = "a unit fraction")]
             let alpha = shown.clamp(0.0, 1.0) as f32;
             paint::with_alpha(scene, transform, bounds, alpha, |scene| {
+                paint::paint_lift(scene, at, theme, ground, radius, lift);
                 if morph >= 0.5 {
-                    paint::paint_card_ground(scene, transform, theme, ground);
+                    paint::paint_card_ground(scene, at, theme, ground);
                 } else {
-                    paint::paint_glance_ground(scene, transform, theme, slot.id, ground);
+                    paint::paint_glance_ground(scene, at, theme, slot.id, ground);
                 }
-                let _ = radius;
                 if glance_alpha > f32::EPSILON {
-                    paint::with_alpha(scene, transform, bounds, glance_alpha, |scene| {
-                        paint::paint_glance_ground(scene, transform, theme, slot.id, slot.glance);
-                        Self::paint_glance(scene, transform, text, theme, &slot, &content);
+                    paint::with_alpha(scene, at, bounds, glance_alpha, |scene| {
+                        paint::paint_glance_ground(scene, at, theme, slot.id, slot.glance);
+                        Self::paint_glance(scene, at, text, theme, &slot, &content);
                         if hovered && card_alpha <= f32::EPSILON {
                             let badge = paint::badge_rect(slot.glance, self.anchor(slot.id));
                             let on_badge = self.pointer.is_some_and(|p| badge.contains(p));
-                            paint::paint_badge(scene, transform, theme, badge, on_badge);
+                            paint::paint_badge(scene, at, theme, badge, on_badge);
                         }
                     });
                 }
                 if card_alpha > f32::EPSILON {
-                    paint::with_alpha(scene, transform, bounds, card_alpha, |scene| {
-                        self.paint_card(scene, transform, text, theme, &slot, &content);
+                    paint::with_alpha(scene, at, bounds, card_alpha, |scene| {
+                        self.paint_card(scene, at, text, theme, &slot, &content);
                     });
                 }
             });
@@ -1078,7 +1126,9 @@ impl Widget for DeskWidgets {
             self.board.pointer_left();
             // A press whose release will never come: what it carried goes
             // back where it was.
-            self.grab = None;
+            if let Some(grab) = self.grab.take() {
+                self.set_lift(grab.id, false);
+            }
             self.resizing = None;
             self.dirty = true;
             self.tick(now);
@@ -1196,10 +1246,15 @@ impl Widget for DeskWidgets {
             .offsets
             .values()
             .filter_map(ui::motion::MotionValue::settles_at);
+        let lifting = self
+            .lifts
+            .values()
+            .filter_map(ui::motion::MotionValue::settles_at);
         self.board
             .deadline(now)
             .into_iter()
             .chain(settling)
+            .chain(lifting)
             .chain(day)
             .chain(sample)
             .chain(fades)
@@ -1513,6 +1568,42 @@ mod tests {
         assert!(rig.send(&cursor_moved(glance.x, glance.y)), "on the widget");
         assert!(rig.send(&mouse_press()));
         assert!(rig.send(&mouse_release()));
+    }
+
+    #[test]
+    fn a_widget_carried_by_the_hand_comes_up_off_the_desk() {
+        let mut rig = rig(&[("ada", "Ada")]);
+        rig.point_at(BARE);
+        let glance = rig.slot(WidgetId::Calendar).glance;
+        let from = centre(glance);
+        let t0 = Instant::now();
+        ui::time::testing::with_monotonic_time(t0, || {
+            rig.send(&cursor_moved(from.x, from.y));
+            assert!(rig.send(&mouse_press()));
+        });
+        assert!(
+            rig.widgets.lift(WidgetId::Calendar) <= f64::EPSILON,
+            "resting on the desk while the press is still a press"
+        );
+        ui::time::testing::with_monotonic_time(t0 + Duration::from_millis(40), || {
+            rig.send(&cursor_moved(from.x + 30.0, from.y));
+        });
+        // The hand carries it: under it the widget has come up, its shadow
+        // further from the desk than any resting one.
+        let lifted =
+            ui::time::testing::with_monotonic_time(t0 + Duration::from_millis(160), || {
+                rig.widgets.lift(WidgetId::Calendar)
+            });
+        assert!(lifted > 0.5, "carried by the hand: lifted {lifted}");
+
+        // Let go: it settles back onto the desk.
+        ui::time::testing::with_monotonic_time(t0 + Duration::from_millis(200), || {
+            rig.send(&mouse_release());
+        });
+        let down = ui::time::testing::with_monotonic_time(t0 + Duration::from_millis(900), || {
+            rig.widgets.lift(WidgetId::Calendar)
+        });
+        assert!(down <= f64::EPSILON, "set down: lifted {down}");
     }
 
     /// The machine's readings as the tests give them, and how often the

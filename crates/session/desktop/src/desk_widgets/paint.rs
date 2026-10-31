@@ -211,6 +211,34 @@ pub(super) fn paint_card_ground(scene: &mut Scene, transform: Affine, theme: &Th
     ui::widget::floating_surface::paint_card(scene, transform, rect, theme);
 }
 
+/// The deeper shadow of a widget lifted under the hand, `lift` of the way
+/// up.
+pub(super) fn paint_lift(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    rect: Rect,
+    radius: f64,
+    lift: f64,
+) {
+    if lift <= f64::EPSILON {
+        return;
+    }
+    #[allow(clippy::cast_possible_truncation, reason = "a unit fraction")]
+    let shadow = theme
+        .tokens
+        .elevation
+        .floating
+        .with_alpha_scaled(0.9 * lift as f32);
+    ui::surface::shadow(
+        scene,
+        transform,
+        rect.inflate(4.0 * lift, 6.0 * lift) + vello::kurbo::Vec2::new(0.0, 6.0 * lift),
+        radius,
+        &shadow,
+    );
+}
+
 /// The radius a glance form's ground has.
 pub(super) fn glance_radius(id: WidgetId, theme: &Theme, rect: Rect) -> f64 {
     match id {
