@@ -416,6 +416,27 @@ impl App {
         }
     }
 
+    /// What the app is composing, and where: a conversation's "… is typing". Polled on the
+    /// root every frame like the location, and a draft that empties says so at once, so no
+    /// reader is left typing after the person stops or closes the window.
+    #[cfg(feature = "native")]
+    fn broadcast_composing_presence(&mut self) {
+        let current = crate::presence::capability::composing_payload(self.root_widget.as_ref());
+        if current == self.presence.last_composing {
+            return;
+        }
+        // A stop is said under the key the draft was under, or nobody could clear it.
+        match (&current, &self.presence.last_composing) {
+            (Some((key, payload)), _) => self.broadcast_presence(key.clone(), payload.clone()),
+            (None, Some((key, _))) => self.broadcast_presence(
+                key.clone(),
+                crate::collaboration::PresencePayload::Composing { composing: false },
+            ),
+            (None, None) => {}
+        }
+        self.presence.last_composing = current;
+    }
+
     /// Unlike focus presence, this is polled on the root regardless of
     /// focus.
     #[cfg(feature = "native")]

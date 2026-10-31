@@ -245,6 +245,12 @@ pub const VALUE_TYPES: &[ValueType] = &[
         fields: &[
             ("who", "Principal", "Whose lens it is."),
             (
+                "composing",
+                "Bool",
+                "Whether they are typing a message in it now: a draft under way, never what \
+                 it says (what a conversation shows as typing).",
+            ),
+            (
                 "mine",
                 "Bool",
                 "Whether it is the lens of the person looking.",
