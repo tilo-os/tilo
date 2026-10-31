@@ -78,6 +78,10 @@ tilo-sheets = { path = "../sheets" }
 # The directory of public workspaces a site serves: what joins list and
 # what a site's door and directory answer.
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# What a door's invitation is verified as before a workspace is joined: only
+# a grant signed for this person's key joins it.
+tilo-workspace-join = { path = "../../collab/workspace-join" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 # The sanctioned blocking HTTP client, which installs the crypto provider.
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking", "json"] }
 reqwest = { workspace = true, features = ["blocking", "json"] }
@@ -175,6 +179,8 @@ zbus = { workspace = true, features = ["tokio", "p2p"] }
 tilo-test-env = { path = "../../dev/test-env" }
 # A site's entry and directory served over loopback, for what joins list.
 test-http = { path = "../../dev/test-http" }
+# A host's key, signing the invitation a test's door answers with.
+ed25519-dalek.workspace = true
 # What `NetworkManager` says, fed in rather than read from a bus.
 tilo-nm = { path = "../../system/tilo-nm" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }

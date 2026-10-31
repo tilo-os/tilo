@@ -922,22 +922,50 @@ impl Shared {
     /// Make a new workspace through the desk's own published action, so the
     /// rules and the naming are the desk's.
     fn new_workspace(&self) {
-        self.ask_of_desk("new-workspace");
+        self.ask_and_report("new-workspace", &serde_json::Map::new());
     }
 
     /// Leave the workspace the person is in through the desk's own published
     /// action, which takes it off this device and says it went.
     fn leave_workspace(&self) {
-        self.ask_of_desk("leave-workspace");
+        self.ask_and_report("leave-workspace", &serde_json::Map::new());
     }
 
-    /// Carry out the desk's action `action` as the person's ask, with no
-    /// arguments of its own.
-    fn ask_of_desk(&self, action: &str) {
+    /// Carry out the desk's action `action` as the person's ask, with `args`
+    /// naming what the action works on.
+    fn ask_of_desk(
+        &self,
+        action: &str,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
         let address = ActionAddress::new(CHROME_RESOURCE, action);
-        if let Err(error) = self.doors.invoke(&address, &serde_json::Map::new()) {
-            self.handle.acknowledge(error.to_string());
+        self.doors
+            .invoke(&address, args)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    /// Ask the desk for `action`, and say so when it refuses.
+    fn ask_and_report(&self, action: &str, args: &serde_json::Map<String, serde_json::Value>) {
+        if let Err(error) = self.ask_of_desk(action, args) {
+            self.handle.acknowledge(error);
         }
+    }
+
+    /// Give this computer the workspace a join was granted, through the
+    /// desk's own action for making one, so the desk keeps its workspaces.
+    fn add_joined_workspace(&self, joined: &directory::Joined) -> Result<(), String> {
+        let args = serde_json::Map::from_iter([
+            (
+                "room".to_owned(),
+                serde_json::Value::from(joined.room.clone()),
+            ),
+            (
+                "name".to_owned(),
+                serde_json::Value::from(joined.name.clone()),
+            ),
+        ]);
+        self.ask_of_desk("new-workspace", &args)
     }
 
     /// Keep this device's desk as it stands: its workspaces, the windows in
@@ -1020,7 +1048,12 @@ impl Shared {
                 }
             }
         }
-        workspaces::follow_directory(self.directory.as_ref(), &self.handle, &self.directory_store);
+        workspaces::follow_directory(
+            self.directory.as_ref(),
+            &self.handle,
+            &self.directory_store,
+            &|joined| self.add_joined_workspace(joined),
+        );
         if let Some(settings) = &self.workspace_settings {
             for effect in settings.take_asked() {
                 match effect {

@@ -1,23 +1,30 @@
 //! The public workspaces the sites this computer knows list: what "Join a
-//! workspace…" shows of other people's workspaces, and where each one can
-//! be joined.
+//! workspace…" shows of other people's workspaces, where each one can be
+//! joined, and what became of the joins asked for.
 //!
 //! A site names its home workspace and the directory of its public ones in
 //! its `entry.json`; the directory then lists every public workspace it
 //! serves with what it is, who is in it now and how lively it is
 //! (`tilo_relay_protocol::directory`). The community site this computer is
 //! configured with is read first, and a site the person types is read too.
-//! Every read happens on a worker of its own, never on the session's loop
-//! ([`Store::ask`] and [`Store::answered`]).
+//!
+//! Joining one asks its door to admit this person
+//! ([`tilo_relay_protocol::directory::DoorAnswer`]) and verifies the
+//! invitation the door answers with for them: the room that invitation
+//! grants, and nothing the directory claims, is the workspace joined
+//! ([`join`]).
+//!
+//! Every read and every join happens on a worker of its own, never on the
+//! session's loop ([`Store::ask`], [`Store::join`] and [`Store::answered`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
 use serde::Deserialize;
 use tilo_desktop_surface::DesktopHandle;
-use tilo_relay_protocol::directory::{Activity, DirectoryEntry, DirectoryPage};
+use tilo_relay_protocol::directory::{Activity, DirectoryEntry, DirectoryPage, DoorAnswer};
 use tilo_relay_protocol::rooms::RoomRole;
 use tilo_sheets::directory::{Directory, Listing, ListingAction, Status};
 
@@ -244,7 +251,7 @@ fn home_listing(site: &url::Url, home: &SiteWorkspace) -> Listed {
 /// active), then by name. A workspace two directories list is shown once,
 /// as the first one listed it.
 fn ordered(listings: Vec<Listed>, now_ms: u64) -> Vec<Listed> {
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen = BTreeSet::new();
     let mut kept: Vec<_> = listings
         .into_iter()
         .filter(|listing| {
@@ -283,51 +290,188 @@ struct Snapshot {
     failures: Vec<String>,
 }
 
+/// The person a join is made as: the key a door admits, and the name a room
+/// learns of them.
+pub(crate) struct Person {
+    /// The person's root key, which this device is certified as.
+    user: [u8; 32],
+    /// The name they go by, never their device's.
+    name: String,
+}
+
+impl Person {
+    /// This computer's person: the one its device certificate names.
+    ///
+    /// # Errors
+    /// A computer with no identity of its own joins nowhere as anybody.
+    pub(crate) fn this_computer() -> Result<Self, String> {
+        let identity = crate::sync::device_identity().ok_or_else(|| {
+            "this computer has no identity yet, so it cannot join a workspace".to_owned()
+        })?;
+        Ok(Self {
+            user: identity.device_cert.user_public_key,
+            name: own_person_name(ui::local_identity::load().map(|identity| identity.display_name)),
+        })
+    }
+}
+
+/// The name this person goes by in a room: the one they chose, else their
+/// login account's. A room, a public one above all, learns nothing of this
+/// person's devices.
+fn own_person_name(chosen: Option<String>) -> String {
+    chosen
+        .filter(|name| runtime_identity::is_chosen_display_name(name))
+        .and_then(|name| {
+            tilo_user_identity::display_name(&name)
+                .ok()
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(tilo_identity_host::provisioning::login_account_display_name)
+}
+
+/// A workspace this person was let into: the room its door's invitation
+/// granted, and the name it was listed under.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Joined {
+    pub(crate) room: String,
+    pub(crate) name: String,
+}
+
 /// What the worker is asked.
 enum Ask {
     /// Read the community site and, when named, this one too.
     Read { site: Option<String> },
+    /// Ask `door` to admit `person`, and verify what it answers.
+    Join {
+        key: String,
+        name: String,
+        door: url::Url,
+        person: Person,
+    },
 }
 
-/// The directories as last read, and the worker that reads them.
+/// What the worker answers.
+enum Answer {
+    /// What the sites list, and what could not be read.
+    Read(Snapshot),
+    /// Where joining the listing `key`, named `name`, stands: the room it
+    /// was granted, or why it was not.
+    Joined {
+        key: String,
+        name: String,
+        room: Result<String, String>,
+    },
+}
+
+/// A door's refusal, when it says why.
+#[derive(Deserialize)]
+struct DoorRefusal {
+    error: Option<String>,
+}
+
+/// The directories as last read, the joins asked for, and the worker that
+/// carries both out.
 #[derive(Default)]
 pub(crate) struct Store {
     status: std::cell::RefCell<Status>,
     listed: std::cell::RefCell<Vec<Listed>>,
     note: std::cell::RefCell<Option<String>>,
+    /// The listing being joined, by its key: one join at a time.
+    joining: std::cell::RefCell<Option<String>>,
+    /// Why joining a listing failed, by its key, until it is joined.
+    failures: std::cell::RefCell<BTreeMap<String, String>>,
+    /// The workspaces joined since the session last took them, for the desk
+    /// to add.
+    joined: std::cell::RefCell<Vec<Joined>>,
     asks: std::cell::RefCell<Option<mpsc::Sender<Ask>>>,
-    answers: std::cell::RefCell<Option<mpsc::Receiver<Snapshot>>>,
+    answers: std::cell::RefCell<Option<mpsc::Receiver<Answer>>>,
 }
 
 impl Store {
+    /// The worker, started the first time anything is asked of it: one
+    /// thread reads the sites and asks their doors, in turn.
+    fn worker(&self) -> Option<mpsc::Sender<Ask>> {
+        let asking = self.asks.borrow().clone();
+        if let Some(asks) = asking {
+            return Some(asks);
+        }
+        let (asks, waiting) = mpsc::channel();
+        let (answers, read) = mpsc::channel();
+        if let Err(error) = std::thread::Builder::new()
+            .name("tilo-directory".into())
+            .spawn(move || work(&waiting, &answers))
+        {
+            tracing::warn!(%error, "the workspace directory is not read");
+            return None;
+        }
+        *self.answers.borrow_mut() = Some(read);
+        *self.asks.borrow_mut() = Some(asks.clone());
+        Some(asks)
+    }
+
     /// Read the directories again: the community site's, and `site`'s when
     /// the person named one.
     pub(crate) fn ask(&self, site: Option<String>) {
         *self.status.borrow_mut() = Status::Loading;
         *self.note.borrow_mut() = None;
-        let asking = self.asks.borrow().clone();
-        let asks = if let Some(asks) = asking {
-            asks
-        } else {
-            let (asks, asking) = mpsc::channel();
-            let (answers, read) = mpsc::channel();
-            if let Err(error) = std::thread::Builder::new()
-                .name("tilo-directory".into())
-                .spawn(move || work(&asking, &answers))
-            {
-                tracing::warn!(%error, "the workspace directory is not read");
-                return;
-            }
-            *self.answers.borrow_mut() = Some(read);
-            *self.asks.borrow_mut() = Some(asks.clone());
-            asks
+        let Some(asks) = self.worker() else {
+            return;
         };
         if let Err(error) = asks.send(Ask::Read { site }) {
             tracing::warn!(%error, "the workspace directory worker is gone");
         }
     }
 
-    /// Take what the worker read since the last call. Whether anything
+    /// Join `listing`, which the sheet knows as `key`: ask its door to admit
+    /// this person, off the frame loop. One join at a time.
+    ///
+    /// # Errors
+    /// Why no door was asked: the listing lets people in by invitation only,
+    /// or this computer has no identity to join as.
+    pub(crate) fn join(&self, key: &str, listing: &Listed) -> Result<(), String> {
+        let door = listing
+            .door
+            .clone()
+            .ok_or_else(|| format!("{} needs an invitation", listing.entry.name.trim()))?;
+        let person = Person::this_computer()?;
+        let Some(asks) = self.worker() else {
+            return Err("the directory has nowhere to ask".to_owned());
+        };
+        *self.joining.borrow_mut() = Some(key.to_owned());
+        self.failures.borrow_mut().remove(key);
+        *self.note.borrow_mut() = None;
+        if let Err(error) = asks.send(Ask::Join {
+            key: key.to_owned(),
+            name: listing.entry.name.clone(),
+            door,
+            person,
+        }) {
+            *self.joining.borrow_mut() = None;
+            return Err(format!("the join was not asked of its door: {error}"));
+        }
+        Ok(())
+    }
+
+    /// The listing `key` names, while it is listed.
+    pub(crate) fn listing(&self, key: &str) -> Option<Listed> {
+        self.listed
+            .borrow()
+            .iter()
+            .find(|listing| listing.key() == key)
+            .cloned()
+    }
+
+    /// The listing this session is joining, by its key, while it is.
+    pub(crate) fn joining(&self) -> Option<String> {
+        self.joining.borrow().clone()
+    }
+
+    /// Take the workspaces joined since this was last asked.
+    pub(crate) fn take_joined(&self) -> Vec<Joined> {
+        std::mem::take(&mut *self.joined.borrow_mut())
+    }
+
+    /// Take what the worker answered since the last call. Whether anything
     /// arrived.
     pub(crate) fn answered(&self) -> bool {
         let mut answered = false;
@@ -335,15 +479,36 @@ impl Store {
         let Some(read) = read.as_ref() else {
             return false;
         };
-        while let Ok(snapshot) = read.try_recv() {
+        while let Ok(answer) = read.try_recv() {
             answered = true;
-            let Snapshot { listings, failures } = snapshot;
-            if listings.is_empty() && !failures.is_empty() {
-                *self.status.borrow_mut() = Status::Failed(failures.join("; "));
-                continue;
+            match answer {
+                Answer::Read(Snapshot { listings, failures }) => {
+                    if listings.is_empty() && !failures.is_empty() {
+                        *self.status.borrow_mut() = Status::Failed(failures.join("; "));
+                        continue;
+                    }
+                    *self.listed.borrow_mut() = listings;
+                    *self.status.borrow_mut() = Status::Listed;
+                }
+                Answer::Joined { key, name, room } => {
+                    *self.joining.borrow_mut() = None;
+                    match room {
+                        Ok(room) => {
+                            self.failures.borrow_mut().remove(&key);
+                            self.joined.borrow_mut().push(Joined { room, name });
+                        }
+                        Err(reason) => {
+                            // The sheet says why, and the row says it was
+                            // not joined, to try again.
+                            *self.note.borrow_mut() = Some(tilo_sheets::words(
+                                "directory-join-failed",
+                                &[("name", &name), ("error", &reason)],
+                            ));
+                            self.failures.borrow_mut().insert(key, reason);
+                        }
+                    }
+                }
             }
-            *self.listed.borrow_mut() = listings;
-            *self.status.borrow_mut() = Status::Listed;
         }
         answered
     }
@@ -354,13 +519,83 @@ impl Store {
     }
 }
 
-/// The worker: read what is asked, and answer with what the sites said.
-fn work(asks: &mpsc::Receiver<Ask>, answers: &mpsc::Sender<Snapshot>) {
-    while let Ok(Ask::Read { site }) = asks.recv() {
-        if answers.send(read(site.as_deref())).is_err() {
+/// The worker: read what is asked, join where it is asked, and answer with
+/// what the sites said.
+fn work(asks: &mpsc::Receiver<Ask>, answers: &mpsc::Sender<Answer>) {
+    while let Ok(ask) = asks.recv() {
+        let answer = match ask {
+            Ask::Read { site } => Answer::Read(read(site.as_deref())),
+            Ask::Join {
+                key,
+                name,
+                door,
+                person,
+            } => Answer::Joined {
+                key,
+                name,
+                room: join(&door, &person),
+            },
+        };
+        if answers.send(answer).is_err() {
             return;
         }
     }
+}
+
+/// Ask `door` to admit this person, and verify the invitation it answers
+/// with for them. The room that invitation grants is the workspace joined:
+/// what a directory said about it is not what makes it so.
+///
+/// Blocks on the door: run it off the frame loop.
+fn join(door: &url::Url, person: &Person) -> Result<String, String> {
+    let client = tilo_net::http::blocking_client()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .map_err(|error| format!("no network to join over: {error}"))?;
+    let url = door
+        .join("join")
+        .map_err(|_| "that is not a web address".to_owned())?;
+    let response = client
+        .post(url.as_str())
+        .timeout(ANSWER_TIMEOUT)
+        .json(&serde_json::json!({
+            "userPublicKey": hex::encode(person.user),
+            "displayName": person.name,
+        }))
+        .send()
+        .map_err(|error| format!("the site could not be reached: {error}"))?;
+    let status = response.status();
+    let bytes = response
+        .bytes()
+        .map_err(|error| format!("the site could not be reached: {error}"))?;
+    if bytes.len() > MAX_ANSWER_BYTES {
+        return Err("the door answered more than a door says".into());
+    }
+    if !status.is_success() {
+        let refusal = serde_json::from_slice::<DoorRefusal>(&bytes)
+            .ok()
+            .and_then(|refusal| refusal.error)
+            .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
+        // A 5xx is a host that is full or failing: worth trying again.
+        return Err(if status.is_server_error() {
+            format!("the site could not be reached: {refusal}")
+        } else {
+            format!("the workspace did not let you in: {refusal}")
+        });
+    }
+    let answer: DoorAnswer = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("the workspace did not let you in: {error}"))?;
+    let verified = tilo_workspace_join::decode_and_verify_invitation_text(
+        &answer.invitation,
+        Some(person.user),
+        &tilo_user_identity::RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .map_err(|error| format!("the workspace did not let you in: {error}"))?;
+    let room = verified.grant().room.clone();
+    tilo_desktop_model::RoomId::parse(&room)
+        .ok_or_else(|| "the door named an invalid room".to_owned())?;
+    Ok(room)
 }
 
 /// What the community site and `typed` list, in the order the sheet shows
@@ -395,7 +630,7 @@ fn read(typed: Option<&str>) -> Snapshot {
     };
     let mut listings = Vec::new();
     let mut failures = Vec::new();
-    let mut directories = std::collections::BTreeSet::new();
+    let mut directories = BTreeSet::new();
     for site in &sites {
         match read_site(&client, site) {
             Ok(read) => {
@@ -412,6 +647,16 @@ fn read(typed: Option<&str>) -> Snapshot {
                     && !listed.iter().any(|listing| listing.entry.community)
                 {
                     listed.insert(0, home_listing(site, home));
+                }
+                // A site's own workspace is joined at its home, even when
+                // its directory lists it without a door of its own.
+                if let Some(home) = &read.home {
+                    for listing in listed
+                        .iter_mut()
+                        .filter(|listing| listing.entry.community && listing.door.is_none())
+                    {
+                        listing.door.clone_from(&home.admission);
+                    }
                 }
                 listings.extend(listed);
             }
@@ -555,12 +800,7 @@ fn joins_as(listing: &Listed) -> String {
 /// What the sheet shows: the workspaces this computer holds, and what the
 /// sites' directories list.
 pub(crate) fn view(store: &Store, handle: &DesktopHandle) -> Directory {
-    let now_ms = u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_millis()),
-    )
-    .unwrap_or(u64::MAX);
+    let now_ms = tilo_clock::unix_now_ms();
     // The workspaces this computer holds, by room, and the rows for those a
     // site does not list.
     let (held, desk_rows) = handle.read(|tree| {
@@ -576,16 +816,29 @@ pub(crate) fn view(store: &Store, handle: &DesktopHandle) -> Directory {
             .collect();
         (held, tree.workspaces.clone())
     });
+    let joining = store.joining();
+    let failures = store.failures.borrow().clone();
     let mut listings = Vec::new();
-    let mut shown: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut shown: BTreeSet<String> = BTreeSet::new();
     for listing in ordered(store.listed.borrow().clone(), now_ms) {
+        let listed_key = listing.key();
         let held_by = held.get(&listing.entry.room).cloned();
         let key = match &held_by {
             Some((id, _)) => {
                 shown.insert(id.clone());
                 id.clone()
             }
-            None => listing.key(),
+            None => listed_key.clone(),
+        };
+        let failure = failures.get(&listed_key);
+        let action = if held_by.is_some() {
+            ListingAction::Open
+        } else if joining.as_deref() == Some(listed_key.as_str()) {
+            ListingAction::Joining
+        } else if failure.is_some() {
+            ListingAction::TryAgain
+        } else {
+            ListingAction::Join
         };
         listings.push(Listing {
             key,
@@ -600,7 +853,10 @@ pub(crate) fn view(store: &Store, handle: &DesktopHandle) -> Directory {
                 .entry
                 .community
                 .then(|| tilo_sheets::words("directory-community-tag", &[("host", &listing.host)])),
-            activity: activity_line(&listing, now_ms),
+            activity: failure.map_or_else(
+                || activity_line(&listing, now_ms),
+                |reason| tilo_sheets::words("directory-join-failed-line", &[("error", reason)]),
+            ),
             joins_as: joins_as(&listing),
             here: listing
                 .entry
@@ -609,12 +865,9 @@ pub(crate) fn view(store: &Store, handle: &DesktopHandle) -> Directory {
                 .map(|face| (face.name.clone(), face.user_public_key.clone()))
                 .collect(),
             here_count: usize::try_from(listing.entry.here_count).unwrap_or(usize::MAX),
-            action: if held_by.is_some() {
-                ListingAction::Open
-            } else {
-                ListingAction::Join
-            },
-            waiting: false,
+            action,
+            waiting: joining.is_some()
+                && !matches!(action, ListingAction::Open | ListingAction::Joining),
         });
     }
     for workspace in desk_rows {

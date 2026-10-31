@@ -11,7 +11,7 @@ use tilo_desktop_surface::{
     notifications::{Notification, NotificationIconKind},
 };
 use tilo_sheets::Seat as _;
-use tilo_sheets::directory::{DirectoryEffect, DirectorySeat};
+use tilo_sheets::directory::{DirectoryEffect, DirectorySeat, ListingAction};
 
 use crate::directory;
 
@@ -67,11 +67,17 @@ pub(crate) fn open_directory(
 }
 
 /// Carry out what the directory asked: reading a site's directory again,
-/// opening a workspace this computer holds, and closing it.
+/// joining a public workspace, opening one this computer holds, and closing
+/// it.
+///
+/// `add_workspace` gives this computer the workspace a join was granted, by
+/// its room and its name, through the desk's own published action: the desk
+/// makes workspaces, not the directory.
 pub(crate) fn follow_directory(
     seat: Option<&DirectorySeat>,
     handle: &DesktopHandle,
     directory: &directory::Store,
+    add_workspace: &dyn Fn(&directory::Joined) -> Result<(), String>,
 ) {
     let Some(seat) = seat else {
         return;
@@ -79,26 +85,27 @@ pub(crate) fn follow_directory(
     if directory.answered() {
         seat.show(directory::view(directory, handle));
     }
+    for joined in directory.take_joined() {
+        match add_workspace(&joined) {
+            Ok(()) => {
+                // The person lands in the workspace they joined, as they do
+                // in any other they are given: the directory's work is done.
+                seat.presentation().close();
+            }
+            Err(error) => {
+                tracing::warn!(%error, room = %joined.room, "a joined workspace was not added");
+                directory.set_note(Some(error));
+            }
+        }
+        seat.show(directory::view(directory, handle));
+    }
     for effect in seat.take_asked() {
         match effect {
+            DirectoryEffect::Join { key } => {
+                join_listed(seat, handle, directory, &key);
+            }
             DirectoryEffect::Open { key } => {
-                let opened = handle.dispatch(
-                    &Command::Workspace {
-                        generation: crate::GENERATION.into(),
-                        workspace: key.clone(),
-                    },
-                    crate::GENERATION,
-                );
-                if let Err(error) = opened {
-                    // The listing named a workspace the desk no longer
-                    // admits: say so where the person picked it, and leave
-                    // the directory up to pick another.
-                    tracing::warn!(%error, %key, "workspace directory open");
-                    directory.set_note(Some(error));
-                    seat.show(directory::view(directory, handle));
-                    continue;
-                }
-                seat.presentation().close();
+                open_listed(seat, handle, directory, &key);
             }
             DirectoryEffect::Look { text } => {
                 if let Some(site) = typed_site(&text) {
@@ -107,12 +114,36 @@ pub(crate) fn follow_directory(
                     // answers.
                     directory.ask(Some(site));
                     seat.show(directory::view(directory, handle));
-                } else {
+                    continue;
+                }
+                // One workspace answers the search: Enter takes it, opening
+                // it when this computer holds it and joining it otherwise.
+                let only: Vec<_> = seat
+                    .directory()
+                    .listings
+                    .into_iter()
+                    .filter(|listing| listing.matches(&text))
+                    .collect();
+                let [only] = only.as_slice() else {
                     tracing::debug!(
                         %text,
                         "the workspace directory looks up a site, a link or a code"
                     );
+                    continue;
+                };
+                if only.action == ListingAction::Open {
+                    open_listed(seat, handle, directory, &only.key);
+                } else {
+                    join_listed(seat, handle, directory, &only.key);
                 }
+            }
+            DirectoryEffect::LinkOrCode { text } => {
+                // Joining with a link or an invitation code needs the join
+                // field's exchange, which this session does not host.
+                tracing::debug!(
+                    %text,
+                    "the workspace directory hands links and codes to a join field it has none of"
+                );
             }
             DirectoryEffect::Refresh => {
                 directory.ask(None);
@@ -121,12 +152,63 @@ pub(crate) fn follow_directory(
             DirectoryEffect::Done => {
                 seat.presentation().close();
             }
-            other => tracing::debug!(
-                ?other,
-                "the workspace directory asks for a listing the session has none of"
-            ),
         }
     }
+}
+
+/// Go to the workspace `key` names, which this computer holds, and be done
+/// with the directory. A workspace the desk no longer admits is said where
+/// the person picked it, and the directory stays up to pick another.
+fn open_listed(
+    seat: &DirectorySeat,
+    handle: &DesktopHandle,
+    directory: &directory::Store,
+    key: &str,
+) {
+    let opened = handle.dispatch(
+        &Command::Workspace {
+            generation: crate::GENERATION.into(),
+            workspace: key.to_owned(),
+        },
+        crate::GENERATION,
+    );
+    if let Err(error) = opened {
+        tracing::warn!(%error, %key, "workspace directory open");
+        directory.set_note(Some(error));
+        seat.show(directory::view(directory, handle));
+        return;
+    }
+    seat.presentation().close();
+}
+
+/// Join the listing `key` names, one join at a time: the row joining says
+/// so, and pressing it again says it is on its way.
+fn join_listed(
+    seat: &DirectorySeat,
+    handle: &DesktopHandle,
+    directory: &directory::Store,
+    key: &str,
+) {
+    let Some(listing) = directory.listing(key) else {
+        tracing::debug!(%key, "the workspace directory was asked to join a listing it has none of");
+        return;
+    };
+    match directory.joining() {
+        Some(joining) if joining == key => {
+            directory.set_note(Some(tilo_sheets::words(
+                "directory-already-joining",
+                &[("name", &listing.entry.name)],
+            )));
+        }
+        // One join at a time: the first is still on its way.
+        Some(_) => return,
+        None => {
+            if let Err(error) = directory.join(key, &listing) {
+                directory.set_note(Some(error));
+            }
+        }
+    }
+    seat.show(directory::view(directory, handle));
 }
 
 /// The site `text` names, when what was typed into the search is one: a

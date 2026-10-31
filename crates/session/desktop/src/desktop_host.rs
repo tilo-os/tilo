@@ -25,7 +25,7 @@ use tilo_desktop_model::commands::{
     DesktopCommand, TabLocation, TabPlacement, apply_command, apply_to_active_workspace,
     move_tab_to_workspace,
 };
-use tilo_desktop_model::{DesktopTree, Strip, StripId, TabId, Workspace, WorkspaceId};
+use tilo_desktop_model::{DesktopTree, RoomId, Strip, StripId, TabId, Workspace, WorkspaceId};
 use tilo_desktop_surface::navigation::{ActivityView, Command, Route, RouteIds};
 use tilo_desktop_surface::{DesktopHandle, HostActionSource};
 use ui::presence::PresenceCtx;
@@ -1121,7 +1121,7 @@ impl DesktopChrome {
                 None
             }
             OverviewPick::NewWorkspace => {
-                self.new_workspace();
+                self.new_workspace(None, None);
                 None
             }
             OverviewPick::JoinWorkspace => Some(DesktopAction::JoinWorkspace),
@@ -1322,19 +1322,35 @@ impl DesktopChrome {
         Ok(())
     }
 
-    /// Add an empty workspace after the others and go there; its launchpad
-    /// offers what to open.
-    fn new_workspace(&self) {
-        if let Err(refusal) = self.rules.may_create_workspace() {
-            self.handle.acknowledge(refusal);
-            return;
-        }
+    /// Make a workspace after the others and go there; with `room`, the
+    /// workspace sharing that room, joining it when this computer has none (a
+    /// workspace that exists is a room that exists, so joining one is holding
+    /// its room, which needs no room of the person's own to make).
+    fn new_workspace(&self, room: Option<&str>, name: Option<&str>) {
         let mut tree = self.handle.read(Clone::clone);
-        let name = tilo_desktop_surface::i18n::t_args(
-            "browser-new-workspace-name",
-            &[("number", tree.workspaces.len().saturating_add(1).into())],
-        );
-        let mut workspace = Workspace::new(WorkspaceId(self.handle.mint_id()), name);
+        let name = Self::name_of(name, tree.workspaces.len());
+        let mut workspace = if let Some(room) = room {
+            let Some(room) = RoomId::parse(room) else {
+                self.handle
+                    .acknowledge(tilo_desktop_surface::i18n::t("desktop-joined-room-unknown"));
+                return;
+            };
+            if let Some(held) = tree.workspaces.iter().find(|held| held.room() == room) {
+                // Already held, here or from another device: go there rather
+                // than make a second workspace of one room.
+                let held = held.id;
+                tree.active = held;
+                self.handle.replace_tree(tree);
+                return;
+            }
+            Workspace::in_room(WorkspaceId::of_room(room), room, name)
+        } else {
+            if let Err(refusal) = self.rules.may_create_workspace() {
+                self.handle.acknowledge(refusal);
+                return;
+            }
+            Workspace::new(WorkspaceId(self.handle.mint_id()), name)
+        };
         let strip = Strip::new(StripId(self.handle.mint_id()), "Main");
         let strip_id = strip.id;
         workspace.strips.push(strip);
@@ -1343,6 +1359,20 @@ impl DesktopChrome {
         tree.active_strip.insert(id, strip_id);
         tree.active = id;
         self.handle.replace_tree(tree);
+    }
+
+    /// What a workspace made with `name` is called: that name, or one
+    /// numbered by how many workspaces `held` there are here.
+    fn name_of(name: Option<&str>, held: usize) -> String {
+        name.map_or_else(
+            || {
+                tilo_desktop_surface::i18n::t_args(
+                    "browser-new-workspace-name",
+                    &[("number", held.saturating_add(1).into())],
+                )
+            },
+            str::to_owned,
+        )
     }
 
     /// The window `step` places from the focused one in the shown strip, or
@@ -1745,8 +1775,8 @@ impl DesktopChrome {
                 self.step_strip(isize::try_from(*steps).unwrap_or_default());
                 return true;
             }
-            DesktopAction::NewWorkspace => {
-                self.new_workspace();
+            DesktopAction::NewWorkspace { room, name } => {
+                self.new_workspace(room.as_deref(), name.as_deref());
                 return true;
             }
             DesktopAction::Overview { open } => {
