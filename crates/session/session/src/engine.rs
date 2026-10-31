@@ -23,6 +23,7 @@ use std::time::SystemTime;
 use tilo_desktop_model::{RoomId, WorkspaceId};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_lock::MutexRecover as _;
+use tilo_peer_state::join::MemberRole;
 use tilo_peer_state::owner::{
     Change, DocumentRead, FileHost, NativeWorkspaceOwner, open_file_with, owner_file_of,
 };
@@ -34,6 +35,20 @@ const FILE: &str = "rooms.json";
 
 /// The largest document the session reads out of a room.
 const MAX_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Someone a workspace has in it: the person, as their user key in hex, the
+/// name the workspace knows them by, and the part they take in it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Person {
+    /// The person (user root, hex).
+    pub person: String,
+    /// The name the workspace knows them by, if it knows one.
+    pub name: String,
+    /// The part they take in the workspace.
+    pub role: MemberRole,
+    /// Whether the workspace removed them.
+    pub removed: bool,
+}
 
 /// The room each workspace on the desk is, as the engine's record names its
 /// workspaces and the desk names its own.
@@ -183,19 +198,32 @@ impl Engine {
         })
     }
 
+    /// Who the room `room` has in it, as its governance tells it: every
+    /// person the workspace was shared with, by the name it knows them by and
+    /// the part they take in it. A workspace joined brings its people with
+    /// it, so this is how the desk knows them before any of them is here.
+    pub fn people(&self, room: &str) -> Result<Vec<Person>, String> {
+        let room = RoomId::parse(room).ok_or("that is not a room")?;
+        self.owner.with_current(room, |view| {
+            let members = view
+                .peer()
+                .governance()
+                .governed_members(SystemTime::now())?;
+            Ok(members
+                .into_iter()
+                .map(|member| Person {
+                    person: hex::encode(member.user_public_key),
+                    name: member.display_name.unwrap_or_default(),
+                    role: member.role,
+                    removed: member.removed,
+                })
+                .collect())
+        })
+    }
+
     /// The engine's owner, for what holds the room's session.
     pub(crate) fn owner(&self) -> &NativeWorkspaceOwner {
         &self.owner
-    }
-
-    /// This device's identity, as its rooms were enrolled with.
-    pub(crate) fn identity(&self) -> &HostIdentity {
-        &self.identity
-    }
-
-    /// The room the workspace `workspace` is, as an enrollment installed it.
-    pub(crate) fn room_of(&self, workspace: WorkspaceId) -> Option<RoomId> {
-        self.slots.slot_room(workspace)
     }
 
     /// Name the workspace a join is installing into as the room's: an

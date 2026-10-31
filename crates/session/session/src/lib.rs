@@ -50,6 +50,7 @@ mod emoji;
 mod engine;
 mod env;
 pub mod fabric;
+mod held;
 mod i18n;
 pub mod identity;
 mod keys;
@@ -108,6 +109,7 @@ pub use controls::{
     CLIPBOARD_RESOURCE, DISPLAYS_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify,
     NIGHT_LIGHT_RESOURCE, SESSION_RESOURCE, SessionCommand,
 };
+pub use engine::Person;
 pub use env::SessionEnvironment;
 pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS};
 pub use launches::Launches;
@@ -2044,42 +2046,6 @@ impl Session {
     #[must_use]
     pub fn workspace_directory(&self) -> Option<&DirectorySeat> {
         self.shared.directory.as_ref()
-    }
-
-    /// The rooms this device holds: the workspaces whose content reached
-    /// this computer, joined ones included.
-    #[must_use]
-    pub fn held_rooms(&self) -> Vec<String> {
-        self.shared
-            .engine
-            .as_ref()
-            .map(|engine| {
-                engine
-                    .rooms()
-                    .iter()
-                    .map(std::string::ToString::to_string)
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// What a held room has of the app `app`'s `record`, as the room last
-    /// admitted it: what a workspace shows of it, and what it held before
-    /// this computer joined.
-    ///
-    /// # Errors
-    /// The room is not held here, or this computer may not read it.
-    pub fn read_record(
-        &self,
-        room: &str,
-        app: &str,
-        record: &str,
-    ) -> Result<Option<Vec<u8>>, String> {
-        self.shared
-            .engine
-            .as_ref()
-            .ok_or_else(|| "this session holds no rooms".to_owned())?
-            .record(room, app, record)
     }
 
     /// The portal sheet's seat: the portal, authentication and

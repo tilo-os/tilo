@@ -43,7 +43,8 @@ use tilo_device_fabric::DeviceId;
 use tilo_device_fabric::runtime::FabricRuntime;
 use tilo_endpoint_reachability::{Need, Reachability};
 use tilo_network_actor::{
-    HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, WorkspaceId, room_topic_id,
+    HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, WorkspaceId, native_ingress,
+    room_topic_id,
 };
 
 use crate::engine::Engine;
@@ -1344,15 +1345,7 @@ fn run(
             Arc::new(std::sync::Mutex::new(Vec::new())),
             reachability.clone(),
         );
-        let (events, mut heard) = tokio::sync::mpsc::channel::<NetEvent>(256);
-        let carrying = tokio::spawn(async move {
-            while let Some(event) = heard.recv().await {
-                if arrivals.send(event).is_err() {
-                    break;
-                }
-                (wake)();
-            }
-        });
+        let (events, carrying, attending) = heard(identity.clone(), arrivals, wake);
         if ready.send(Ok((publisher, addr, reachability))).is_err() {
             return;
         }
@@ -1397,8 +1390,102 @@ fn run(
         }
         drop(events);
         carrying.abort();
+        if let Some(attending) = attending {
+            attending.abort();
+        }
         actor_task.abort();
     });
+}
+
+/// Hear the peer actor: what it says reaches the session, and what a room's
+/// host says after this device joined it — the room's state as it stands, its
+/// people and everything its apps recorded — is taken in where this device's
+/// rooms are kept.
+///
+/// The replay goes in on a thread of its own, in the order the host said it,
+/// so it never holds up what the session shows, and each run of one session
+/// in one commit, as a host replays a room in one go.
+fn heard(
+    identity: Option<HostIdentity>,
+    arrivals: std::sync::mpsc::Sender<NetEvent>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) -> (
+    tokio::sync::mpsc::Sender<NetEvent>,
+    tokio::task::JoinHandle<()>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
+    let (admissions, attending) = match identity {
+        Some(identity) => {
+            let (say, hear) = tokio::sync::mpsc::unbounded_channel();
+            let attending = tokio::spawn(async move { take_in(hear, &identity).await });
+            (Some(say), Some(attending))
+        }
+        None => (None, None),
+    };
+    let (events, mut heard) = tokio::sync::mpsc::channel::<NetEvent>(256);
+    let carrying = tokio::spawn(async move {
+        while let Some(event) = heard.recv().await {
+            if let (NetEvent::NativeInput(input), Some(say)) = (&event, admissions.as_ref()) {
+                let _ = say.send(input.clone());
+            }
+            if arrivals.send(event).is_err() {
+                break;
+            }
+            (wake)();
+        }
+    });
+    (events, carrying, attending)
+}
+
+/// Take what hosts replay into the rooms this device holds, as it arrives:
+/// each run of one session admitted together and in the order the host said
+/// it, on a blocking thread so no replay holds up the collaboration plane.
+async fn take_in(
+    mut replayed: tokio::sync::mpsc::UnboundedReceiver<native_ingress::Input>,
+    identity: &HostIdentity,
+) {
+    while let Some(input) = replayed.recv().await {
+        let mut waiting = vec![input];
+        while let Ok(next) = replayed.try_recv() {
+            waiting.push(next);
+        }
+        let mut run: Vec<native_ingress::Input> = Vec::new();
+        for input in waiting {
+            if run
+                .first()
+                .is_some_and(|first: &native_ingress::Input| !first.same_session(&input))
+            {
+                admit(run, identity).await;
+                run = Vec::new();
+            }
+            run.push(input);
+        }
+        admit(run, identity).await;
+    }
+}
+
+/// Admit one session's inputs, as one commit of the room they belong to.
+async fn admit(inputs: Vec<native_ingress::Input>, identity: &HostIdentity) {
+    let Some(room) = inputs.first().map(native_ingress::Input::room) else {
+        return;
+    };
+    let identity = identity.clone();
+    let admitted = match tokio::task::spawn_blocking(move || {
+        native_ingress::Input::admit_batch(inputs, &identity)
+    })
+    .await
+    {
+        Ok(admitted) => admitted,
+        Err(error) => {
+            tracing::debug!(%error, %room, "a room's state was not taken in");
+            return;
+        }
+    };
+    for (_, report) in admitted.inputs {
+        if let Err(error) = report {
+            tracing::debug!(%error, %room, "a room's state was not taken in");
+        }
+    }
 }
 
 /// Give one command from the session to the plane: whether it was taken, or

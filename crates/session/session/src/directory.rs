@@ -502,10 +502,7 @@ impl Store {
         *self.joining.borrow_mut() = Some(text.clone());
         self.failures.borrow_mut().remove(&text);
         *self.note.borrow_mut() = None;
-        if let Err(error) = asks.send(Ask::Take {
-            text: text.clone(),
-            person,
-        }) {
+        if let Err(error) = asks.send(Ask::Take { text, person }) {
             *self.joining.borrow_mut() = None;
             return Err(format!("that was not asked of its host: {error}"));
         }

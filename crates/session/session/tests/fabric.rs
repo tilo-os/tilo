@@ -80,6 +80,7 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
             workspace_revocations: HashMap::new(),
             identity_paths: None,
         }),
+        None,
         OwnPresence::default(),
         Vec::new(),
         MediaContinuity::default(),

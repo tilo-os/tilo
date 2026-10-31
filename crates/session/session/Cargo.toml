@@ -207,6 +207,14 @@ tilo-test-env = { path = "../../dev/test-env" }
 test-http = { path = "../../dev/test-http" }
 # A host's key, signing the invitation a test's door answers with.
 ed25519-dalek.workspace = true
+# A site's workspace as a site runs it: the host on this machine that
+# governs the room a join enrolls into, folding what its pages write, and
+# the page of its person that recorded there first.
+tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
+tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
+# The worker a host admits the records of its members through.
+tilo-automerge-isolate.workspace = true
+sha2.workspace = true
 # What `NetworkManager` says, fed in rather than read from a bus.
 tilo-nm = { path = "../../system/tilo-nm" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
