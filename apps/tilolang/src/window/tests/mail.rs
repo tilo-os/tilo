@@ -18,6 +18,14 @@ use ui::framework::RunMode;
 const APP: &str = "so.tilo.lang.mail";
 const ME: &str = "sam@rivera.example";
 
+/// A message as the second account's server holds it: one to `to`.
+fn mail_to(to: &str, from: &str, subject: &str, body: &str) -> String {
+    format!(
+        "From: {from}\nTo: {to}\nSubject: {subject}\nMessage-ID: <{subject}@{to}>\n\
+Date: Tue, 30 Jun 2026 09:00:00 +0000\n\n{body}\n"
+    )
+}
+
 /// A message as a server holds it.
 fn mail(id: &str, from: &str, subject: &str, body: &str, answers: Option<&str>) -> String {
     let threading = answers.map_or_else(String::new, |parent| {
@@ -76,6 +84,22 @@ fn servers() -> Servers {
         &["\\Seen"],
     );
     Servers { imap, smtp }
+}
+
+/// The config of the second account: another address on `servers`' own ports.
+fn work_account(servers: &Servers) -> AccountConfig {
+    AccountConfig {
+        display_name: "Sam at work".into(),
+        email: "work@rivera.example".into(),
+        username: "work@rivera.example".into(),
+        password: "app-password".into(),
+        imap_host: "127.0.0.1".into(),
+        imap_port: servers.imap.port,
+        smtp_host: "127.0.0.1".into(),
+        smtp_port: servers.smtp.port,
+        auth: AuthMethod::Password,
+        ..Default::default()
+    }
 }
 
 fn account(servers: &Servers) -> AccountConfig {
@@ -840,6 +864,19 @@ fn first_kind(node: &tilolang_tilo::runtime::UiNode, kind: &str) -> Option<Strin
         .find_map(|child| first_kind(child, kind))
 }
 
+/// Every text the host carries in `node`, its whole tree walked: what its `value`, `title`,
+/// `secondary` and `label` props say.
+fn host_texts_in(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+    for prop in ["value", "title", "secondary", "label"] {
+        if let Some(tilo_ui_host::Value::Text(text)) = node.props.get(prop) {
+            out.push(text.clone());
+        }
+    }
+    for child in &node.children {
+        host_texts_in(child, out);
+    }
+}
+
 /// Every text `node` shows, its whole tree walked: what its `value`, `title`, `secondary` and
 /// `label` props say.
 fn texts_in(node: &tilolang_tilo::runtime::UiNode, out: &mut Vec<String>) {
@@ -887,6 +924,84 @@ fn conversation_of(room: &mut Room, thread: &ResourceRef) -> Vec<String> {
     texts_in(&tree, &mut out);
     room.settle();
     out
+}
+
+/// A second account's server, synced alongside the first: another address, its own inbox.
+fn second_account() -> Servers {
+    let rt = ui::rt::app();
+    let imap = rt
+        .block_on(FakeImap::start(Layout::Gmail, server_tls_config()))
+        .expect("the second IMAP server starts");
+    let smtp = rt
+        .block_on(FakeSmtp::start(server_tls_config()))
+        .expect("the second SMTP server starts");
+    imap.append(
+        "INBOX",
+        &mail_to(
+            "work@rivera.example",
+            "holiday@team.example",
+            "Team holiday",
+            "The office is closed on the first.",
+        ),
+        &[],
+    );
+    Servers { imap, smtp }
+}
+
+// USER REQUIREMENT: every account shows in the sidebar and its mail is reachable from the one
+// window, not only the first account's.
+#[test]
+fn every_account_shows_in_the_sidebar_and_opens_its_own_mail() {
+    let servers = servers();
+    let second = second_account();
+    let mut room = room_over(
+        Box::new(move || vec![account(&servers), work_account(&second)]),
+        Arc::default(),
+    );
+    room.until("both accounts' mail", |room| {
+        room.accounts().len() == 2
+            && room
+                .accounts()
+                .iter()
+                .all(|a| !room.refs(a, "threads").is_empty())
+    });
+    let mut texts = Vec::new();
+    let root = room.window.root_tree().expect("the mail window runs");
+    host_texts_in(&root, &mut texts);
+    for want in ["Sam Rivera", "Sam at work"] {
+        assert!(
+            texts.iter().any(|text| text == want),
+            "the sidebar names {want}: {texts:#?}"
+        );
+    }
+    // The second account's own window shows its inbox, as its row in the sidebar opens it.
+    let work = room
+        .accounts()
+        .into_iter()
+        .find(|a| room.text(a, "address") == "work@rivera.example")
+        .expect("the second account");
+    let shown = conversation_titles(&mut room, &work);
+    assert!(
+        shown.iter().any(|text| text == "Inbox"),
+        "the account's window shows its mailboxes: {shown:#?}"
+    );
+    assert!(
+        room.refs(&work, "threads")
+            .iter()
+            .any(|t| room.text(t, "subject") == "Team holiday"),
+        "the second account holds its own mail"
+    );
+}
+
+/// The subjects a mail window over `of` lists, its root view's texts walked.
+fn conversation_titles(room: &mut Room, of: &ResourceRef) -> Vec<String> {
+    let view = room
+        .host()
+        .open_resource(of, None)
+        .expect("the account's window opens");
+    let mut texts = Vec::new();
+    texts_in(view.tree(), &mut texts);
+    texts
 }
 
 // USER REQUIREMENT: a conversation must read as a mail client's does — its subject, each

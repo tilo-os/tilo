@@ -77,6 +77,7 @@ flag~present = cvmtfflh
 forward = q6ltvsjf
 forward_message = jokcwung
 mail = 7rcrynvm
+mail.account = gxqacjy6
 mailboxes = gka45our
 mailboxes.query = vz7jagly
 mark_read = trjwm3gb
@@ -99,12 +100,16 @@ scenario "a busy inbox" = jjchy27c
 scenario "a reply being written" = yzfawxd2
 scenario "no account yet" = 6t5kuylv
 send = qcfc2rhb
+send_from = 7zk6ua6p
+send_from~present = iv7e7g52
 send~present = czouixzd
 thread_row = u43u7z6w
 to_inbox = eef4pxgf
 to_inbox~present = bs42bxdn
 undo_send = twebu5cb
 undo_send~present = i3cueozg
+unified = 4fjgzcq6
+unified.query = 757o4hag
 
 # retired
 Desk.open = pn66xyeo

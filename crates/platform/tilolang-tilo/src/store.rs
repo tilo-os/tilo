@@ -37,7 +37,7 @@ use automerge::transaction::Transactable as _;
 use automerge::{ChangeHash, ObjType, ReadDoc, ScalarValue, Value as AmValue};
 use serde_json::Value as Json;
 use tilo_automerge::ApplyIncoming as _;
-use tilo_resource::{Edit, EditOp, Model, Segment};
+use tilo_resource::{Model, Segment};
 use tilolang_runtime::Journal;
 use tilolang_runtime::ids::{AppId, DocId, FieldId, RunId, TypeId};
 use tilolang_runtime::store::{

@@ -1,19 +1,10 @@
 //! The write the store makes for an outside effect's settle or mark: one change of its own,
 //! carried by the action it notes.
-//!
-//! `$outbox` of a record holds one entry per queued effect: what it is, its payload, the device
-//! that carries it out, the moment it is held until when the action held it back, and how it
-//! stands. Nothing here is package code's: the runtime settles and marks, and a person's
-//! `withdraw` takes one back.
 
-use serde_json::Value as Json;
-use tilolang_runtime::ids::DocId;
-use tilolang_runtime::store::{
-    ChangeNote, DeliveryState, OutboxEntry, OutboxState, Settled, StoreError,
-};
+use tilolang_runtime::store::{ChangeNote, OutboxEntry, StoreError};
 
 use super::{Authorship, TiloStore, lookup, not_found};
-use crate::action::{DynAction, DynEdit, outbox_entries};
+use crate::action::{DynAction, DynEdit};
 
 impl TiloStore {
     /// Write `edit` of the outbox entry `entry` as a change of its own, noted as `note`.

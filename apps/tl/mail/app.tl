@@ -111,6 +111,8 @@ default view mail for Mail
 
 default view conversation for Thread
 
+default view mailboxes for Account
+
 default view editor for Draft
 
 row view thread_row for Thread
@@ -285,6 +287,12 @@ action mark_read(t: Thread, unread: Bool = not t.unread) (label: if t.unread { "
     }
 }
 
+/// Sends the message from another of the person's accounts.
+action send_from(d: Draft, a: Account) (icon: .user) {
+    require not d.sent or d.recalled "This message went already"
+    d.from = a.key
+}
+
 /// Throws a message being written away.
 destructive action discard(m: Mail, d: Draft) (icon: .trash) {
     m.drafts.remove(d)
@@ -336,14 +344,79 @@ view compose(d: Draft) {
     }
 }
 
-/// The mail window: the first account's conversations, the inbox first, each opening beside
-/// the list. The mailboxes are the conversations' places.
+/// The mail window: every account's mail. The unified inbox is every account's inbox in one
+/// list, a conversation in any account opening beside it; one account's window is its
+/// mailboxes as its places.
 view mail(m: Mail) {
-    if let a = m.accounts.first() {
-        mailboxes(a)
-    } else {
+    lens account: Text = ""
+    if m.accounts.is_empty() {
         std.page(m) {
             ui.EmptyState("Add a mail account in Settings", icon: .mail)
+        }
+    } else if let a = m.accounts.find(x -> x.key == account) {
+        mailboxes(a)
+    } else {
+        unified(m)
+    }
+}
+
+/// Every account's mail in one window: the unified inbox first, then each account's mail, and
+/// each account's own places under it. A conversation shows which account it came to.
+view unified(m: Mail) {
+    window query: Text = "is:inbox"
+    let places = filters(Thread).filter(f -> f.toggle)
+    let title = places.find(p -> p.query == query)?.label ?? "All mail"
+    if let a = m.accounts.first() {
+        let shown = a.threads.matching(query)
+        ui.NavShell(content_kind: .document, sidebar_title: .some("All accounts"), overview_title: .some(title), overview_count: .some(shown.len())) {
+            sidebar: {
+                ui.NavList(selected: query) {
+                    ui.NavItem("is:inbox", "All inboxes", icon: .inbox) {
+                        on select: set(query, "is:inbox")
+                    }
+                    ui.NavItem("all", "All mail", icon: .mail) {
+                        on select: set(query, "")
+                    }
+                    for acct in m.accounts {
+                        ui.NavSection(acct.name) {
+                            for p in places {
+                                ui.NavItem("{acct.key}/{p.query}", p.label, icon: p.icon) {
+                                    on select: open(acct)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            overview_actions: {
+                std.header(actions(m))
+            }
+            overview: {
+                if shown.is_empty() {
+                    ui.EmptyState("Nothing here", icon: .inbox)
+                } else {
+                    ui.VirtualList(selection_follows_focus: true, in_column: true) {
+                        on select(x: Thread): open(x, front: false).then(mark_read(x, false))
+                        on activate(x: Thread): open(x).then(mark_read(x, false))
+                        for x in shown {
+                            let offered = actions(x)
+                            ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
+                                menu: {
+                                    for o in offered {
+                                        ui.MenuItem(o.label, icon: o.icon, destructive: o.destructive) {
+                                            on choose: o.run
+                                        }
+                                    }
+                                }
+                                thread_row(x)
+                            }
+                        }
+                    }
+                }
+            }
+            content: {
+                ui.EmptyState("No conversation selected", icon: .mail)
+            }
         }
     }
 }
@@ -531,6 +604,20 @@ view editor(d: Draft) {
         if can_undo(d) {
             ui.Banner("Sending", message: .some("It goes in a moment. Take it back if you need to."), kind: .info, action: .some("Undo send")) {
                 on act: undo_send(d)
+            }
+        }
+        field("From") {
+            let mail = root Mail
+            if mail.accounts.len() > 1 {
+                row(gap: .tight, wrap: true) {
+                    for a in mail.accounts {
+                        ui.Chip(a.address, selected: a.key == d.from) {
+                            on press: send_from(d, a)
+                        }
+                    }
+                }
+            } else if let a = mail.accounts.first() {
+                text(a.address)
             }
         }
         field("To") {
