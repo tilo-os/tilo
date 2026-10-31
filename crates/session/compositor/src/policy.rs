@@ -105,9 +105,11 @@ pub trait WindowPolicy {
 
     /// The outputs, each with the monitor on it: its identity from the
     /// display's EDID (make, model and serial), else its connector, which
-    /// a layout follows between ports. Told when they change, before the
-    /// next arrangement.
-    fn monitors(&mut self, _monitors: &[(LayoutRect, String)]) {}
+    /// a layout follows between ports. `primary` names the monitor the
+    /// person made primary, while it is lit; `None` while they named none,
+    /// or the one they named is off or gone, and the first output stands
+    /// in. Told when either changes, before the next arrangement.
+    fn monitors(&mut self, _monitors: &[(LayoutRect, String)], _primary: Option<&str>) {}
 
     /// The pointer moved to `(x, y)` in the logical layout, wherever it
     /// went: over a window, a hosted surface or nothing.

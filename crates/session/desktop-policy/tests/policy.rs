@@ -356,6 +356,7 @@ fn displays(policy: &mut DesktopPolicy) {
     let output = |monitor: &str, x: f64| Output {
         monitor: monitor.into(),
         rect: Rect::new(x, 0.0, x + WIDTH / 2.0, 800.0),
+        primary: false,
     };
     assert!(policy.set_displays(&[output("left", 0.0), output("right", WIDTH / 2.0)]));
 }

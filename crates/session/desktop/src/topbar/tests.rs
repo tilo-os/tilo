@@ -2461,6 +2461,7 @@ fn display(id: u32, monitor: &str, x: f64) -> tilo_desktop_model::Display {
         y: 0.0,
         width: 1280.0,
         height: 800.0,
+        primary: false,
     }
 }
 

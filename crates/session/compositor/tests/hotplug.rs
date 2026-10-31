@@ -27,8 +27,9 @@ use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 /// draws where nothing else is.
 const BACKGROUND: [u8; 4] = [26, 27, 38, 255];
 
-/// Each output and the monitor on it, as the policy is told them.
-type Told = Vec<(LayoutRect, String)>;
+/// Each output and the monitor on it, and the primary monitor, as the
+/// policy is told them.
+type Told = (Vec<(LayoutRect, String)>, Option<String>);
 
 /// An output's name and the rectangle it covers in the layout, when it has
 /// a place there.
@@ -56,8 +57,8 @@ impl WindowPolicy for Monitors {
         LayoutPoint::from((0, 0))
     }
 
-    fn monitors(&mut self, monitors: &[(LayoutRect, String)]) {
-        *self.0.borrow_mut() = monitors.to_vec();
+    fn monitors(&mut self, monitors: &[(LayoutRect, String)], primary: Option<&str>) {
+        *self.0.borrow_mut() = (monitors.to_vec(), primary.map(str::to_owned));
     }
 }
 
@@ -164,6 +165,7 @@ fn rects(compositor: &Compositor) -> Vec<Placed> {
 /// What the policy was last told, as rectangles and monitors.
 fn told_monitors(told: &Rc<RefCell<Told>>) -> Vec<((i32, i32, i32, i32), String)> {
     told.borrow()
+        .0
         .iter()
         .map(|(rect, monitor)| {
             (
@@ -174,9 +176,14 @@ fn told_monitors(told: &Rc<RefCell<Told>>) -> Vec<((i32, i32, i32, i32), String)
         .collect()
 }
 
+/// The primary monitor the policy was last told, if any.
+fn told_primary(told: &Rc<RefCell<Told>>) -> Option<String> {
+    told.borrow().1.clone()
+}
+
 #[test]
 fn an_output_plugged_in_while_the_desk_runs_is_lit_beside_the_others_and_told_to_the_desk() {
-    let told = Rc::new(RefCell::new(Vec::new()));
+    let told = Rc::new(RefCell::new(Told::default()));
     let mut compositor = one_output(&told);
     let mut client = Client::connect(&mut compositor);
     pump(&mut compositor, &mut client, |seen| {
@@ -230,7 +237,7 @@ fn an_output_plugged_in_while_the_desk_runs_is_lit_beside_the_others_and_told_to
 
 #[test]
 fn an_output_unplugged_while_the_desk_runs_leaves_the_lit_set_and_the_layout() {
-    let told = Rc::new(RefCell::new(Vec::new()));
+    let told = Rc::new(RefCell::new(Told::default()));
     let mut compositor = one_output(&told);
     compositor
         .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
@@ -283,7 +290,7 @@ fn an_output_unplugged_while_the_desk_runs_leaves_the_lit_set_and_the_layout() {
 
 #[test]
 fn the_place_an_unplugged_output_left_closes_over() {
-    let told = Rc::new(RefCell::new(Vec::new()));
+    let told = Rc::new(RefCell::new(Told::default()));
     let mut compositor = one_output(&told);
     compositor
         .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
@@ -326,7 +333,7 @@ fn the_place_an_unplugged_output_left_closes_over() {
 
 #[test]
 fn an_output_the_person_turned_off_keeps_no_place_when_another_is_plugged_in() {
-    let told = Rc::new(RefCell::new(Vec::new()));
+    let told = Rc::new(RefCell::new(Told::default()));
     let mut compositor = one_output(&told);
     compositor
         .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
@@ -355,4 +362,85 @@ fn an_output_the_person_turned_off_keeps_no_place_when_another_is_plugged_in() {
         ],
         "the turned-off display is still known, and takes no place"
     );
+}
+
+/// A configuration that makes `primary` the display the person chose, and
+/// turns `off` off.
+fn choosing(primary: &str, off: &[&str]) -> tilo_compositor::DisplayConfig {
+    tilo_compositor::DisplayConfig {
+        primary: Some(primary.to_owned()),
+        disabled: off.iter().map(|name| (*name).to_owned()).collect(),
+        ..tilo_compositor::DisplayConfig::default()
+    }
+}
+
+/// The display the person made primary is the one the desk is told is
+/// primary, and the choice waits for the display to come back rather than
+/// falling to whichever output is lit.
+#[test]
+fn the_primary_chosen_in_settings_is_told_to_the_desk_and_returns_with_its_display() {
+    let told = Rc::new(RefCell::new(Told::default()));
+    let mut compositor = one_output(&told);
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
+        .expect("output");
+    assert_eq!(told_primary(&told), None, "no choice made yet");
+
+    compositor
+        .set_display_config(&choosing("HEADLESS-2", &[]))
+        .expect("a primary");
+    assert_eq!(
+        told_primary(&told).as_deref(),
+        Some("HEADLESS-2"),
+        "the desk is told the display the person chose"
+    );
+
+    // The cable is pulled: the other display stands in, and the choice is
+    // kept for the one that went away.
+    compositor.remove_output("HEADLESS-2").expect("unplug");
+    assert_eq!(
+        told_primary(&told),
+        None,
+        "a display that is gone is not the primary"
+    );
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
+        .expect("plugged back in");
+    assert_eq!(
+        told_primary(&told).as_deref(),
+        Some("HEADLESS-2"),
+        "the display is primary again the moment it comes back"
+    );
+}
+
+/// A display turned off is never the primary one: the desk is told of none
+/// while the chosen display is dark.
+#[test]
+fn a_display_turned_off_is_never_the_primary_one() {
+    let told = Rc::new(RefCell::new(Told::default()));
+    let mut compositor = one_output(&told);
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
+        .expect("output");
+    compositor
+        .set_display_config(&choosing("HEADLESS-2", &[]))
+        .expect("a primary");
+    assert_eq!(told_primary(&told).as_deref(), Some("HEADLESS-2"));
+
+    compositor
+        .set_display_config(&choosing("HEADLESS-2", &["HEADLESS-2"]))
+        .expect("the display turned off");
+    assert!(!compositor.output_lit("HEADLESS-2"), "the display is off");
+    assert_eq!(
+        told_primary(&told),
+        None,
+        "a display turned off is not the primary, even when it was chosen"
+    );
+
+    // Turned back on, it is the primary again.
+    compositor
+        .set_display_config(&choosing("HEADLESS-2", &[]))
+        .expect("a primary");
+    assert!(compositor.output_lit("HEADLESS-2"));
+    assert_eq!(told_primary(&told).as_deref(), Some("HEADLESS-2"));
 }

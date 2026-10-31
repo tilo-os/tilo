@@ -132,8 +132,13 @@ pub struct State {
     pub(crate) hosts: Vec<Box<dyn SurfaceHost>>,
     /// The outputs the hosted surfaces were last told of.
     told_outputs: Vec<(i32, i32, i32, i32)>,
+    /// The connector the person made primary, as the configuration names
+    /// it, whether or not it is lit right now.
+    primary_output: Option<String>,
     /// The monitors the policy was last told of.
     told_monitors: Vec<(Rectangle<i32, Logical>, String)>,
+    /// The primary monitor the policy was last told of.
+    told_primary: Option<String>,
     pub(crate) pointer: Point<f64, Logical>,
     pointer_target: PointerTarget,
     pub(crate) protocols: crate::protocols::Protocols,
@@ -224,7 +229,9 @@ impl State {
             policy,
             hosts: Vec::new(),
             told_outputs: Vec::new(),
+            primary_output: None,
             told_monitors: Vec::new(),
+            told_primary: None,
             pointer: Point::from((0.0, 0.0)),
             pointer_target: PointerTarget::Clients,
             protocols,
@@ -339,9 +346,10 @@ impl State {
             .collect()
     }
 
-    /// Tell every hosted surface where the outputs are, when that changed
+    /// Tell every hosted surface where the outputs are, and the policy which
+    /// monitors they hold and which of them is primary, when that changed
     /// since they were last told (an output came or went, changed mode,
-    /// scale or place).
+    /// scale or place, or the person made another display primary).
     fn outputs_changed(&mut self) {
         let monitors: Vec<(Rectangle<i32, Logical>, String)> = self
             .space
@@ -351,9 +359,11 @@ impl State {
                 Some((rect, crate::output::monitor_of(output).0))
             })
             .collect();
-        if monitors != self.told_monitors {
-            self.policy.monitors(&monitors);
+        let primary = self.primary_monitor();
+        if monitors != self.told_monitors || primary != self.told_primary {
+            self.policy.monitors(&monitors, primary.as_deref());
             self.told_monitors = monitors;
+            self.told_primary = primary;
         }
         let outputs = self.hosted_outputs();
         if outputs == self.told_outputs {
@@ -365,6 +375,31 @@ impl State {
             host.outputs_changed(&outputs);
         }
         self.told_outputs = outputs;
+    }
+
+    /// The monitor the person made primary, while it is lit: the configured
+    /// connector resolved to the monitor the policy follows it by. While
+    /// that connector is off or gone, no monitor is primary.
+    pub(crate) fn primary_monitor(&self) -> Option<String> {
+        let connector = self.primary_output.as_deref()?;
+        let output = self
+            .space
+            .outputs()
+            .find(|output| output.name() == connector)?;
+        self.space.output_geometry(output)?;
+        Some(crate::output::monitor_of(output).0)
+    }
+
+    /// The connector the person made primary, as their settings name it,
+    /// whether or not it is lit. Everything that places windows, bars and
+    /// sheets for the person learns of it on the next arrangement, which
+    /// this asks for when the choice changed.
+    pub(crate) fn set_primary_output(&mut self, connector: Option<String>) {
+        if self.primary_output == connector {
+            return;
+        }
+        self.primary_output = connector;
+        self.rearrange();
     }
 
     /// The logical rectangles of every output.

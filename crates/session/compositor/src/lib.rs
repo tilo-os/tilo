@@ -1121,6 +1121,10 @@ impl Compositor {
         if !changes.is_empty() {
             self.configure_outputs(&changes)?;
         }
+        // Which display is primary is told to the desk after the outputs are
+        // as the configuration asked, so it is resolved against the displays
+        // that are lit now.
+        self.data.state.set_primary_output(config.primary.clone());
         Ok(())
     }
 

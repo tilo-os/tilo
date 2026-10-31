@@ -1738,7 +1738,7 @@ impl WindowPolicy for Monitors {
         Point::from((0, 0))
     }
 
-    fn monitors(&mut self, monitors: &[(Rectangle<i32, Logical>, String)]) {
+    fn monitors(&mut self, monitors: &[(Rectangle<i32, Logical>, String)], _primary: Option<&str>) {
         *self.0.borrow_mut() = monitors.to_vec();
     }
 }

@@ -190,6 +190,7 @@ mod tests {
                     y: 0.0,
                     width: 1280.0,
                     height: 800.0,
+                    primary: false,
                 },
                 Display {
                     id: 1,
@@ -198,6 +199,7 @@ mod tests {
                     y: 0.0,
                     width: 2560.0,
                     height: 1440.0,
+                    primary: false,
                 },
             ],
             ..OutputPartition::default()

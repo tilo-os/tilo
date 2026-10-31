@@ -385,7 +385,8 @@ impl DesktopPolicy {
     }
 
     /// The display the person works on: the focused one across several,
-    /// else the primary.
+    /// else the primary. The partition answers both: focus falls back to
+    /// the display the person made primary in Settings, else the first.
     fn working_display(&self) -> Option<&Display> {
         let focused = self.handle.focused_display();
         self.displays
