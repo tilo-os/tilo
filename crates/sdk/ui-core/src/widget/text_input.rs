@@ -599,6 +599,9 @@ pub struct TextInput {
     /// Enter's submit, published as the field's view action `submit`
     /// ([`Self::on_submit_view`]) and the resource it announces.
     submit_view: Option<(ActionEmitter<()>, tilo_actions::ResourceSpec)>,
+    /// A committed edit, published as the field's view action `change`
+    /// ([`Self::on_change_view`]) and answered by its own handler.
+    change_verb: Option<super::control_verb::ControlVerb<String>>,
     /// A trailing icon button inside the field.
     accessory: Option<Accessory>,
     /// `font_size_override` is a document-space size, never grown by the text
@@ -699,6 +702,9 @@ const ACCESSORY_TARGET: &str = "text-input-accessory";
 
 /// The operation type of a field's submitting Enter.
 const SUBMIT_TEXT: &str = "tilo.ui.text.submit";
+
+/// The operation type of a field's committed edit.
+const CHANGE_TEXT: &str = "tilo.ui.text.change";
 
 /// What a `tilo.ui.text.submit` operation carries: the field it submits.
 #[derive(serde::Deserialize)]
@@ -898,6 +904,7 @@ impl TextInput {
             on_submit: None,
             submit_action: None,
             submit_view: None,
+            change_verb: None,
             accessory: None,
             content_sized: false,
             span_highlighter: None,
@@ -1673,6 +1680,10 @@ impl TextInput {
         // The field's own state stays the one a bound local edit reads: an
         // action publishing the text does not stand in for it.
         self.publish_local_state();
+        if let Some(verb) = &mut self.change_verb {
+            verb.emit(self.text.clone());
+            return;
+        }
         if let Some(callback) = self.on_change.as_mut() {
             callback(&self.text);
         }
@@ -3865,6 +3876,27 @@ impl TextInput {
         self
     }
 
+    /// Run `callback` with the text of every committed edit, the field, as
+    /// control `tilo.control:<id>`, publishing the edit as its view action
+    /// `change`: typing, pasting, an IME commit, a screen reader's edit, a
+    /// script's and an agent's all arrive through the same action. The
+    /// control's latest text is what it reports, so a burst of edits the host
+    /// has not collected yet reports once, with the text it now holds.
+    #[must_use]
+    pub fn on_change_view(mut self, callback: impl FnMut(&str) + 'static) -> Self {
+        let id = self.test_id().unwrap_or("text_input").to_owned();
+        self.change_verb = Some(super::control_verb::ControlVerb::new(
+            &id,
+            "Change",
+            "change",
+            CHANGE_TEXT,
+            super::control_verb::VerbArgument::Text,
+        ));
+        self.on_change = Some(Box::new(callback));
+        self.last_notified_text.clone_from(&self.text);
+        self
+    }
+
     /// A trailing clear button inside the field while it holds text.
     #[must_use]
     pub fn with_clear_button(self) -> Self {
@@ -5641,31 +5673,66 @@ impl Drop for TextInput {
 
 impl crate::resources::PublishesResources for TextInput {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        self.submit_view
+        let mut resources: Vec<tilo_actions::ResourceSpec> = self
+            .submit_view
             .iter()
             .map(|(_, resource)| resource.clone())
-            .collect()
+            .collect();
+        resources.extend(self.change_verb.iter().map(|verb| verb.resource()));
+        resources
     }
 }
 
+/// The local operations a field answers, indexed by the mask of those it
+/// publishes: an edit, a submit, and the field's own edits in history.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "the mask is built from the same bits"
+)]
+const TEXT_OPERATIONS: [&[&str]; 8] = {
+    const C: &str = CHANGE_TEXT;
+    const S: &str = SUBMIT_TEXT;
+    const E: &str = crate::undo::EDIT_OPERATION;
+    [&[], &[C], &[S], &[C, S], &[E], &[C, E], &[S, E], &[C, S, E]]
+};
+
 impl crate::widget::ResourceOperations for TextInput {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        let history = crate::widget::resource_operation::local_history_handlers(self);
-        match (self.submit_view.is_some(), history.is_empty()) {
-            (false, _) => history,
-            (true, true) => &[SUBMIT_TEXT],
-            (true, false) => &[SUBMIT_TEXT, crate::undo::EDIT_OPERATION],
+        let mut mask = 0;
+        if self.change_verb.is_some() {
+            mask |= 1;
         }
+        if self.submit_view.is_some() {
+            mask |= 2;
+        }
+        if !crate::widget::resource_operation::local_history_handlers(self).is_empty() {
+            mask |= 4;
+        }
+        TEXT_OPERATIONS[mask]
     }
 
-    /// Answer a `submit` addressed to this field: hand its text to the
-    /// field's handler, whoever submitted.
+    /// Answer a `submit` or a `change` addressed to this field: hand its text
+    /// to the field's handler, whoever submitted or edited.
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
         doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let changed = self
+            .change_verb
+            .as_ref()
+            .map(|verb| verb.start(op))
+            .transpose()?
+            .flatten();
+        if let Some(text) = changed {
+            if let Some(callback) = self.on_change.as_mut() {
+                callback(&text);
+            }
+            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
         let is_submit = op.unscoped().is_some_and(|request| {
             request.kind == tilo_actions::OperationKind::View && request.type_id == SUBMIT_TEXT
         });
@@ -6481,7 +6548,7 @@ impl Widget for TextInput {
         if !self.id.is_empty() {
             node = node.with_semantic_key(&self.id);
         }
-        if self.action.is_none() && self.on_change.is_none() {
+        if self.action.is_none() && self.on_change.is_none() && self.change_verb.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("text_input"));
         }
         if !secret {
@@ -6762,6 +6829,9 @@ impl crate::widget::controls::ActionControls for TextInput {
         if let Some((action, _)) = &mut self.submit_view {
             let _ = action.install_custody(domain, attachment);
         }
+        if let Some(verb) = &mut self.change_verb {
+            verb.install_custody(domain, attachment);
+        }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action
@@ -6772,6 +6842,11 @@ impl crate::widget::controls::ActionControls for TextInput {
                 self.submit_view
                     .as_mut()
                     .and_then(|(action, _)| action.take())
+            })
+            .or_else(|| {
+                self.change_verb
+                    .as_mut()
+                    .and_then(super::control_verb::ControlVerb::take)
             })
     }
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
@@ -6884,6 +6959,9 @@ impl TextInput {
         if let Some((action, _)) = &self.submit_view {
             bindings.push(action.metadata(control_id));
         }
+        if let Some(verb) = &self.change_verb {
+            bindings.push(verb.metadata(control_id));
+        }
         bindings
     }
     fn refresh_control_action_availability(
@@ -6899,6 +6977,9 @@ impl TextInput {
         if let Some((action, _)) = &mut self.submit_view {
             action.refresh_availability(allowed);
         }
+        if let Some(verb) = &mut self.change_verb {
+            verb.refresh_availability(allowed);
+        }
         self.reveal.set_enabled(!self.effectively_disabled());
     }
 }
@@ -6908,6 +6989,8 @@ impl TextInput {
     fn value_bindings(&self, control_id: &str) -> Vec<ControlBindingMetadata> {
         if let Some(action) = &self.action {
             vec![action.metadata(control_id)]
+        } else if let Some(verb) = &self.change_verb {
+            vec![verb.metadata(control_id)]
         } else if self.bound_text.is_some() {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),

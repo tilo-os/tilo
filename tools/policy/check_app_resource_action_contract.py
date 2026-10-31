@@ -177,6 +177,7 @@ NOT_CONTROL_CALLBACKS = {
     "on_check_view": "answers the table's published view action for the box turned",
     "on_row_click_view": "answers the table's published view action for the row clicked",
     "on_submit_view": "answers the field's published view action for the text submitted",
+    "on_change_view": "answers the control's published view action for the value its person set",
     "on_enter_default": "the surrounding dialog's default action reaching a host that has no "
     "dialog around the body, not a control of the prompt's own",
 }

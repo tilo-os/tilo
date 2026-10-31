@@ -45,6 +45,9 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::tokens::colors::{PresenceHue, SMALL_TEXT_MIN_CONTRAST};
 use crate::widget::activation::{Activation, Interaction};
+
+/// The operation type of a row's leading checkbox turned.
+const CHECK_ROW: &str = "tilo.ui.row.check";
 use crate::widget::avatar::AvatarFace;
 use crate::widget::{
     ActionEmitter, BadgeFace, ChipStyle, ControlBindingMetadata, Element, MediaArt, MediaAspect,
@@ -1934,6 +1937,9 @@ pub struct ListRow {
     swipe_offset: f64,
     trailing: Option<Trailing>,
     activation: Activation,
+    /// The leading checkbox's own state, published as the row's view action
+    /// `check` ([`ListRow::checkbox_view`]) and answered by the row.
+    check_verb: Option<super::control_verb::ControlVerb<bool>>,
     environment: crate::interaction::InteractionEnvironment,
     metrics: Option<RowMetrics>,
     theme: Option<Theme>,
@@ -1998,6 +2004,7 @@ impl ListRow {
             swipe_offset: 0.0,
             trailing: None,
             activation: Activation::new(id),
+            check_verb: None,
             environment: crate::interaction::InteractionEnvironment::default(),
             metrics: None,
             theme: None,
@@ -2220,6 +2227,27 @@ impl ListRow {
     /// Space on the focused row) runs `on_toggle` with the new state.
     #[must_use]
     pub fn checkbox(mut self, checked: bool, on_toggle: impl FnMut(bool) + 'static) -> Self {
+        self.leading = Some(Leading::Checkbox {
+            checked,
+            on_toggle: Box::new(on_toggle),
+        });
+        self
+    }
+
+    /// [`Self::checkbox`] published as the row's view action `check`: a
+    /// press on the box, Space on the focused row, a screen reader's toggle,
+    /// a script's and an agent's all reach `on_toggle` through the same
+    /// action. The row's control is `id` ([`Self::new`]).
+    #[must_use]
+    pub fn checkbox_view(mut self, checked: bool, on_toggle: impl FnMut(bool) + 'static) -> Self {
+        let control = self.activation.id().to_owned();
+        self.check_verb = Some(super::control_verb::ControlVerb::new(
+            &control,
+            "Check",
+            "check",
+            CHECK_ROW,
+            super::control_verb::VerbArgument::Flag,
+        ));
         self.leading = Some(Leading::Checkbox {
             checked,
             on_toggle: Box::new(on_toggle),
@@ -2872,8 +2900,13 @@ impl ListRow {
     fn toggle_checkbox(&mut self) -> bool {
         if let Some(Leading::Checkbox { checked, on_toggle }) = &mut self.leading {
             *checked = !*checked;
-            on_toggle(*checked);
+            let now = *checked;
             self.dirty = true;
+            if let Some(verb) = &mut self.check_verb {
+                verb.emit(now);
+                return true;
+            }
+            on_toggle(now);
             return true;
         }
         false
@@ -3596,6 +3629,9 @@ impl Widget for ListRow {
 impl crate::widget::ResourceOperations for ListRow {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         let mut handlers = self.activation.native_handlers();
+        if self.check_verb.is_some() {
+            handlers.insert(CHECK_ROW.to_owned());
+        }
         if let Some(trailing) = &self.trailing {
             handlers.extend(crate::widget::resource_operation_handlers(
                 &*trailing.element,
@@ -3613,13 +3649,35 @@ impl crate::widget::ResourceOperations for ListRow {
         if let Some(started) = self.activation.start_native(op)? {
             return Ok(Some(started));
         }
+        let checked = self
+            .check_verb
+            .as_ref()
+            .map(|verb| verb.start(op))
+            .transpose()?
+            .flatten();
+        if let Some(checked) = checked {
+            if let Some(Leading::Checkbox {
+                checked: shown,
+                on_toggle,
+            }) = &mut self.leading
+            {
+                *shown = checked;
+                self.dirty = true;
+                on_toggle(checked);
+            }
+            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
         crate::widget::start_in_children(self, op, doc, path)
     }
 }
 
 impl crate::resources::PublishesResources for ListRow {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        self.activation.native_resources()
+        let mut resources = self.activation.native_resources();
+        resources.extend(self.check_verb.iter().map(|verb| verb.resource()));
+        resources
     }
 }
 
@@ -3630,6 +3688,9 @@ impl crate::widget::controls::ActionControls for ListRow {
         attachment: crate::control_custody::CustodyAttachment,
     ) {
         self.activation.install_custody(domain, attachment);
+        if let Some(verb) = &mut self.check_verb {
+            verb.install_custody(domain, attachment);
+        }
         for action in &mut self.actions {
             if let ActionHandler::Bound(emitter) = &mut action.handler {
                 let _ = emitter.install_custody(domain, attachment);
@@ -3642,6 +3703,13 @@ impl crate::widget::controls::ActionControls for ListRow {
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         if let Some(invocation) = self.activation.take_invocation() {
+            return Some(invocation);
+        }
+        if let Some(invocation) = self
+            .check_verb
+            .as_mut()
+            .and_then(super::control_verb::ControlVerb::take)
+        {
             return Some(invocation);
         }
         for action in &mut self.actions {
@@ -3659,6 +3727,9 @@ impl crate::widget::controls::ActionControls for ListRow {
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let mut bindings = self.activation.bindings();
         let id = self.activation.id();
+        if let Some(verb) = &self.check_verb {
+            bindings.push(verb.metadata(id));
+        }
         for (index, action) in self.actions.iter().enumerate() {
             match &action.handler {
                 ActionHandler::Bound(emitter) => {
@@ -3680,6 +3751,9 @@ impl crate::widget::controls::ActionControls for ListRow {
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         let mut changed = self.activation.refresh_availability(allowed);
+        if let Some(verb) = &mut self.check_verb {
+            verb.refresh_availability(allowed);
+        }
         for action in &mut self.actions {
             if let ActionHandler::Bound(emitter) = &mut action.handler {
                 let before = emitter.is_available();
