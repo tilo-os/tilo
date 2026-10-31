@@ -213,7 +213,6 @@ pub mod pipeline_seed;
 pub use native::host_notifications;
 pub mod emoji_catalogue;
 pub mod held_images;
-pub mod pictures;
 #[cfg(not(all(windows, feature = "native")))]
 #[path = "host_notifications_unsupported.rs"]
 pub mod host_notifications;
@@ -247,6 +246,7 @@ pub mod permissions;
 pub mod person_card;
 pub mod pick;
 pub mod pick_wire;
+pub mod pictures;
 pub mod platform;
 pub mod pointer_replay;
 pub use ::collaboration::portable_storage;
@@ -406,7 +406,6 @@ pub use content_layout::{FocusedContentLane, ResponsiveControlBar};
 pub use doc::{TextEdit, put_text_diffed, splice_text_diffed};
 pub use i18n::{ArgValue, EmbeddedCatalog, I18nError, I18nManager, PseudoLocale};
 pub use image_store::{Fetcher, HostImageLoader, ImageStore};
-pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
 pub use input::{
     ActionBindings, BindingConflict, BindingSet, ControllerBinding, ControllerButton, InputBinding,
     KeyLegend, KeyboardBinding, KeyboardModifier, TouchGesture,
@@ -422,6 +421,7 @@ pub use local_state::{
 };
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
+pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
 pub use platform::{DialogActionOrder, Platform, PlatformConventions, Shortcut, spell_shortcut};
 pub use portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 pub use profiling::{

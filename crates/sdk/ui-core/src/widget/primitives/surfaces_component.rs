@@ -11,9 +11,7 @@
 use vello::kurbo::{Affine, Point, Rect};
 
 use crate::component::{Component, Described, Event};
-use crate::widget::{
-    Container, Element, FloatingPanel, ModalDialog, Popover, PopoverSide, Widget,
-};
+use crate::widget::{Container, Element, FloatingPanel, ModalDialog, Popover, PopoverSide, Widget};
 
 /// The views of a slot in a column, the column filling its width.
 fn column(views: Vec<Element>) -> Container {
@@ -23,7 +21,9 @@ fn column(views: Vec<Element>) -> Container {
     for view in views {
         stack = stack.push(view);
     }
-    Container::new().with_no_padding().with_child(Box::new(stack))
+    Container::new()
+        .with_no_padding()
+        .with_child(Box::new(stack))
 }
 
 /// A question over the window: a dimmed page, a sheet with a title, the view's content, and up
@@ -79,8 +79,9 @@ impl DeclaredModal {
     /// The modal the props describe.
     #[must_use]
     pub fn new(mut props: ModalProps) -> Self {
-        let mut dialog = ModalDialog::new(props.title.clone(), column(std::mem::take(&mut props.body)))
-            .open(props.open);
+        let mut dialog =
+            ModalDialog::new(props.title.clone(), column(std::mem::take(&mut props.body)))
+                .open(props.open);
         if let Some(icon) = props.icon {
             dialog = dialog.with_icon(icon);
         }
@@ -156,7 +157,8 @@ impl Widget for DeclaredModal {
         theme: &crate::theme::Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        self.dialog.draw_overlay(scene, transform, text, theme, presence);
+        self.dialog
+            .draw_overlay(scene, transform, text, theme, presence);
     }
 
     fn draw(
@@ -384,7 +386,8 @@ impl DeclaredPopover {
     /// The popover the props describe.
     #[must_use]
     pub fn new(mut props: PopoverProps) -> Self {
-        let mut popover = Popover::with_content(column(std::mem::take(&mut props.content))).open(props.open);
+        let mut popover =
+            Popover::with_content(column(std::mem::take(&mut props.content))).open(props.open);
         if let Some(label) = &props.label {
             popover = popover.with_label(label.clone());
         }
@@ -447,7 +450,8 @@ impl Widget for DeclaredPopover {
         theme: &crate::theme::Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        self.popover.draw_overlay(scene, transform, text, theme, presence);
+        self.popover
+            .draw_overlay(scene, transform, text, theme, presence);
     }
 
     fn draw(
@@ -604,7 +608,8 @@ impl Widget for DeclaredPopoverButton {
         theme: &crate::theme::Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        self.pair.draw_overlay(scene, transform, text, theme, presence);
+        self.pair
+            .draw_overlay(scene, transform, text, theme, presence);
     }
 
     fn handle_event(
@@ -613,6 +618,24 @@ impl Widget for DeclaredPopoverButton {
         ctx: &mut crate::widget::EventCtx<'_>,
     ) {
         self.pair.handle_event(event, ctx);
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.pair.children()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.pair.children_mut()
+    }
+
+    /// The button and its popover, and the popover's content, are laid out by the pair: the
+    /// walk follows the pair's own.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        crate::widget::Widget::for_each_layout_child(&self.pair, visitor)
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        self.pair.for_each_child(visitor);
     }
 
     fn get_rect(&self) -> Rect {

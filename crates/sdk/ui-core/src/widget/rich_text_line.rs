@@ -120,10 +120,7 @@ struct RichTextDirty {
     styled_layout: bool,
 }
 
-#[crate::component::not_a_component(
-    part,
-    "the line `ui.RichTextLine` edits its bound text in"
-)]
+#[crate::component::not_a_component(part, "the line `ui.RichTextLine` edits its bound text in")]
 pub struct RichTextLine {
     inner: TextInput,
     /// At most one signal in flight per frame; new signals overwrite the slot.
@@ -239,7 +236,7 @@ impl RichTextLine {
         let mut line = Self::new();
         line.inner = inner;
         line.inner.keep_document_inset();
-        line.prev_text = text.clone();
+        line.prev_text.clone_from(&text);
         line.prev_cursor = text.len();
         line
     }

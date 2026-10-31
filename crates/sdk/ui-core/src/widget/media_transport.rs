@@ -55,9 +55,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::ImageData;
 
+use crate::component::Event;
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
-use crate::component::Event;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -784,7 +784,7 @@ fn triggered_children(
     });
     if let Some(event) = &triggers.like {
         parts[LIKE] = Box::new(Follow::new(
-            event_button("transport.like", Icon::Heart, "Like", &Some(event.clone())),
+            event_button("transport.like", Icon::Heart, "Like", Some(event)),
             shared,
             |b, state| {
                 b.set_accessible_name(if state.liked == Some(true) {
@@ -798,19 +798,14 @@ fn triggered_children(
     }
     if let Some(event) = &triggers.lyrics {
         parts[LYRICS] = Box::new(Follow::new(
-            event_button("transport.lyrics", Icon::Mic, "Lyrics", &Some(event.clone())),
+            event_button("transport.lyrics", Icon::Mic, "Lyrics", Some(event)),
             shared,
             |b, state| toggle(b, state.lyrics, false),
         ));
     }
     if let Some(event) = &triggers.shuffle {
         parts[SHUFFLE] = Box::new(Follow::new(
-            event_button(
-                "transport.shuffle",
-                Icon::Shuffle,
-                "Shuffle",
-                &Some(event.clone()),
-            ),
+            event_button("transport.shuffle", Icon::Shuffle, "Shuffle", Some(event)),
             shared,
             |b, state| toggle(b, state.shuffle, state.idle),
         ));
@@ -820,7 +815,7 @@ fn triggered_children(
             event_transport(
                 "transport.previous",
                 TransportControl::Previous,
-                &Some(event.clone()),
+                Some(event),
             ),
             shared,
             |b, state| {
@@ -834,7 +829,7 @@ fn triggered_children(
             event_transport(
                 "transport.play",
                 TransportControl::PlayPause { playing: false },
-                &Some(event.clone()),
+                Some(event),
             ),
             shared,
             |b, state| {
@@ -848,7 +843,7 @@ fn triggered_children(
     }
     if let Some(event) = &triggers.next {
         parts[NEXT] = Box::new(Follow::new(
-            event_transport("transport.next", TransportControl::Next, &Some(event.clone())),
+            event_transport("transport.next", TransportControl::Next, Some(event)),
             shared,
             |b, state| {
                 b.set_enabled(!state.idle);
@@ -858,7 +853,7 @@ fn triggered_children(
     }
     if let Some(event) = &triggers.repeat {
         parts[REPEAT] = Box::new(Follow::new(
-            event_button("transport.repeat", Icon::Repeat, "Repeat", &Some(event.clone())),
+            event_button("transport.repeat", Icon::Repeat, "Repeat", Some(event)),
             shared,
             |b, state| {
                 let repeat = state.repeat.unwrap_or_default();
@@ -887,7 +882,7 @@ fn triggered_children(
                     })
                     .reads_out_while_held()
                     .commits_on_release(),
-                &seek,
+                seek.as_ref(),
             ),
             shared,
             |slider, state| {
@@ -901,21 +896,20 @@ fn triggered_children(
                     };
                     slider.set_value(fraction);
                 }
-                (before.0 - slider.value()).abs() > f64::EPSILON
-                    || before.1 != slider.is_enabled()
+                (before.0 - slider.value()).abs() > f64::EPSILON || before.1 != slider.is_enabled()
             },
         ),
     });
     if let Some(event) = &triggers.queue {
         parts[QUEUE] = Box::new(Follow::new(
-            event_button("transport.queue", Icon::ListMusic, "Queue", &Some(event.clone())),
+            event_button("transport.queue", Icon::ListMusic, "Queue", Some(event)),
             shared,
             |b, state| toggle(b, state.queue, false),
         ));
     }
     if let Some(event) = &triggers.mute {
         parts[MUTE] = Box::new(Follow::new(
-            event_button("transport.mute", Icon::Volume2, "Mute", &Some(event.clone())),
+            event_button("transport.mute", Icon::Volume2, "Mute", Some(event)),
             shared,
             |b, state| {
                 let muted = state.volume <= 0.0;
@@ -933,7 +927,7 @@ fn triggered_children(
             Slider::from_state(&crate::LocalState::new(1.0))
                 .with_id("transport.volume")
                 .with_accessible_name("Volume"),
-            &volume,
+            volume.as_ref(),
         ),
         shared,
         follow_volume,
@@ -946,7 +940,7 @@ fn triggered_children(
                     Slider::from_state(&crate::LocalState::new(1.0))
                         .with_id("transport.volume-menu.slider")
                         .with_accessible_name("Volume"),
-                    &volume,
+                    volume.as_ref(),
                 ),
             })
             .side(PopoverSide::Above)
@@ -1207,28 +1201,37 @@ fn view_button(
 
 /// A button running the view's `event`, beside the app action one: what the person pressed
 /// reaches the view's action, as an `UiOn` event of its node would.
-fn event_button(id: &str, icon: Icon, name: &str, event: &Option<Event>) -> Button {
+fn event_button(id: &str, icon: Icon, name: &str, event: Option<&Event>) -> Button {
     let button = Button::icon_only(id, icon, name).control_size(ControlSize::Regular);
-    match event.clone() {
-        Some(event) => button.on_view(move || event.fire(None)),
+    match event {
+        Some(event) => {
+            let event = event.clone();
+            button.on_view(move || event.fire(None))
+        }
         None => button,
     }
 }
 
 /// A transport-glyph button running the view's `event`.
-fn event_transport(id: &str, control: TransportControl, event: &Option<Event>) -> Button {
-    match event.clone() {
-        Some(event) => Button::transport(id, control).on_view(move || event.fire(None)),
+fn event_transport(id: &str, control: TransportControl, event: Option<&Event>) -> Button {
+    match event {
+        Some(event) => {
+            let event = event.clone();
+            Button::transport(id, control).on_view(move || event.fire(None))
+        }
         None => Button::transport(id, control),
     }
 }
 
 /// A slider reporting its value to the view's `event`, once the person lets it go.
-fn event_slider(slider: Slider, event: &Option<Event>) -> Slider {
-    match event.clone() {
-        Some(event) => slider.on_change(move |value| {
-            event.fire(Some(crate::component::Value::Float(value)));
-        }),
+fn event_slider(slider: Slider, event: Option<&Event>) -> Slider {
+    match event {
+        Some(event) => {
+            let event = event.clone();
+            slider.on_change(move |value| {
+                event.fire(Some(crate::component::Value::Float(value)));
+            })
+        }
         None => slider,
     }
 }

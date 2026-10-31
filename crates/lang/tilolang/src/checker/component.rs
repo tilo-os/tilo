@@ -935,7 +935,8 @@ fn offers_actions(ty: &Type) -> bool {
 /// The language's type of a description's scalar type, for checking literals against it.
 fn lang_type(ty: &Type) -> Ty {
     match ty {
-        Type::Text => Ty::Text,
+        // A picture is named by where its bytes are, which is text.
+        Type::Text | Type::Picture => Ty::Text,
         Type::Int => Ty::Int,
         Type::Float => Ty::Float,
         Type::Bool => Ty::Bool,
@@ -946,8 +947,6 @@ fn lang_type(ty: &Type) -> Ty {
         Type::List(inner) | Type::Set(inner) => Ty::List(Box::new(lang_type(inner))),
         Type::Map { value, .. } => Ty::Map(Box::new(lang_type(value))),
         Type::Action => super::platform::host_ty("Action"),
-        // A picture is named by where its bytes are, which is text.
-        Type::Picture => Ty::Text,
         Type::Resource | Type::Icon | Type::Choice { .. } => Ty::Error,
     }
 }

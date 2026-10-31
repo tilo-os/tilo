@@ -253,10 +253,7 @@ impl Image {
     /// old one in place ([`Self::set_picture`]).
     pub fn from_picture(pictures: crate::pictures::Pictures, picture: PictureSource) -> Self {
         Self {
-            source: Source::Loading {
-                pictures,
-                picture,
-            },
+            source: Source::Loading { pictures, picture },
             intrinsic_size: (0, 0),
             fit: ImageFit::Contain,
             rect: Rect::ZERO,
@@ -271,15 +268,11 @@ impl Image {
     /// Show `picture` instead, through `pictures`: the picture already shown stays until the
     /// new one's bytes arrive.
     pub fn set_picture(&mut self, pictures: crate::pictures::Pictures, picture: PictureSource) {
-        let same =
-            matches!(&self.source, Source::Loading { picture: held, .. } if held.src == picture.src);
+        let same = matches!(&self.source, Source::Loading { picture: held, .. } if held.src == picture.src);
         if same {
             return;
         }
-        self.source = Source::Loading {
-            pictures,
-            picture,
-        };
+        self.source = Source::Loading { pictures, picture };
         self.cached = None;
         self.intrinsic_size = (0, 0);
     }

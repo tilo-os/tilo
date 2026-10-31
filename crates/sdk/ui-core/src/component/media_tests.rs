@@ -15,8 +15,8 @@ use crate::headless::FrameHarness;
 use crate::theme::Theme;
 use crate::widget::{
     CodeEditor, CodeEditorProps, DeclaredLine, DropZone, DropZoneProps, Image, ImageProps,
-    MediaCardProps, MediaGrid, MediaGridProps, PagePreview, PagePreviewProps, QrProps, QrWidget, RichTextLineProps,
-    Widget,
+    MediaCardProps, MediaGrid, MediaGridProps, PagePreview, PagePreviewProps, QrProps, QrWidget,
+    RichTextLineProps, Widget,
 };
 
 /// An instance as a test gives it: values by prop, the events it handles, and the components in
@@ -102,7 +102,9 @@ fn text(value: &str) -> Value {
 }
 
 fn picture(src: &str) -> Value {
-    Value::Picture(tilo_ui_graph::component::Picture { src: src.to_owned() })
+    Value::Picture(tilo_ui_graph::component::Picture {
+        src: src.to_owned(),
+    })
 }
 
 /// A served pictures store, so a test's picture address answers from its own bytes rather than
@@ -159,7 +161,9 @@ fn an_image_is_a_picture_by_its_address_and_shows_its_bytes_when_they_arrive() {
     let store = picture.store().clone();
     let _ = picture.get(image.picture().expect("a picture"));
     store.block_until_idle(std::time::Duration::from_secs(5));
-    let decoded = picture.get(image.picture().expect("a picture")).expect("decoded");
+    let decoded = picture
+        .get(image.picture().expect("a picture"))
+        .expect("decoded");
     assert_eq!((decoded.width, decoded.height), (4, 4));
 }
 
@@ -179,7 +183,10 @@ fn a_picture_answers_a_served_store_and_nothing_else_loads() {
             src: "tilo-blob://only".into(),
         },
     );
-    assert!(shown.waiting(), "it asks for a frame until the bytes are in");
+    assert!(
+        shown.waiting(),
+        "it asks for a frame until the bytes are in"
+    );
     // The store's first get queues the load; the fetch runs on its own background, so the test
     // reads through the fetch directly to prove the address is the one it loads.
     assert!(crate::pictures::data_bytes("tilo-blob://only").is_none());
@@ -262,15 +269,36 @@ fn a_page_preview_clamps_its_page_into_its_count() {
 }
 
 #[test]
-fn a_drop_zone_reports_the_files_dropped_on_it() {
+fn a_drop_zone_settles_its_layout_with_a_message_and_an_action() {
     let queue = crate::Intents::default();
     let mut node = Node::new("DropZone", "import", &queue)
-        .prop("title", text("Drop files"))
-        .prop("message", text("Any file"))
+        .prop("title", text("Drop files to import"))
+        .prop("message", text("Any file up to 50 MB"))
+        .prop("icon", Value::Icon("upload".into()))
         .on("drop");
+    let mut node2 = Node::new("DropZone", "choose", &queue)
+        .prop("title", text("Drop a picture"))
+        .prop("action", text("Choose"))
+        .on("choose");
     let props = DropZoneProps::from_source(&mut node).expect("reads");
+    // A layout that never settles fails the harness's frame, so a zone whose height adjusts
+    // every pass is caught here.
+    let props2 = DropZoneProps::from_source(&mut node2).expect("reads");
     let host = harness(DropZone::from_props("import", props));
     let rect = host.root::<DropZone>().get_rect();
+    assert!(rect.width() > 0.0 && rect.height() > 0.0);
+    // The one with an action, at the gallery's width.
+    let wide = FrameHarness::for_root(
+        crate::State::new(),
+        {
+            let mut column = crate::widget::arrange::Stack::stack().fill_width();
+            column = column.push(Box::new(DropZone::from_props("choose", props2)));
+            column
+        },
+        (560, 800),
+        Theme::light(),
+    );
+    let rect = wide.root_widget().children()[0].get_rect();
     assert!(rect.width() > 0.0 && rect.height() > 0.0);
 }
 
@@ -307,5 +335,8 @@ fn a_rich_text_line_edits_its_bound_text() {
         .on("enter");
     let props = RichTextLineProps::from_source(&mut node).expect("reads");
     let mut host = harness(DeclaredLine::from_props("line", props));
-    assert_eq!(host.root_mut::<DeclaredLine>().line().name(), "RichTextLine");
+    assert_eq!(
+        host.root_mut::<DeclaredLine>().line().name(),
+        "RichTextLine"
+    );
 }

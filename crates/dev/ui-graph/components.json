@@ -1132,6 +1132,13 @@
           "doc": "The bottom crop edge, to 1 at the picture's bottom.",
           "type": "float",
           "required": true
+        },
+        {
+          "name": "aspect",
+          "doc": "The box's shape before the picture is here (its width over its height).",
+          "type": {
+            "option": "float"
+          }
         }
       ],
       "events": [
@@ -1165,6 +1172,13 @@
             "option": "text"
           },
           "required": true
+        },
+        {
+          "name": "aspect",
+          "doc": "The box's shape: its width over its height, which it stands at before the picture is here. The picture's own shape once it is.",
+          "type": {
+            "option": "float"
+          }
         }
       ],
       "semantics": {

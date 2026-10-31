@@ -169,12 +169,7 @@ impl crate::widget::Widget for DeclaredRail {
         )
     }
 
-    fn apply_layout(
-        &mut self,
-        taffy: &taffy::TaffyTree<()>,
-        node: taffy::NodeId,
-        origin: Point,
-    ) {
+    fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 

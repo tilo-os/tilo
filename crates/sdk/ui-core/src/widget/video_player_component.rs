@@ -237,12 +237,12 @@ impl Described for DeclaredVideo {
         }
         if let Some(position) = position {
             #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a position in whole milliseconds, clamped at zero"
-        )]
-        let at = (position.max(0.0) * 1000.0) as u64;
-        self.player.seek_to_ms(at);
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a position in whole milliseconds, clamped at zero"
+            )]
+            let at = (position.max(0.0) * 1000.0) as u64;
+            self.player.seek_to_ms(at);
         }
         true
     }

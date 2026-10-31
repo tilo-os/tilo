@@ -36,6 +36,8 @@ pub struct ImageCropEditorProps {
     /// The window's pictures, through which the picture loads.
     #[component(skip)]
     pub pictures: Option<Pictures>,
+    /// The box's shape before the picture is here (its width over its height).
+    pub aspect: Option<f64>,
 }
 
 /// The crop editor of a picture once its bytes arrive, reporting the crop the person sets.
@@ -44,6 +46,8 @@ pub struct CropEditor {
     editor: Option<ImageCropEditor>,
     selection: CropSelection,
     change: Event,
+    /// The box's shape before the picture is here (its width over its height).
+    aspect: Option<f64>,
     rect: Rect,
 }
 
@@ -58,13 +62,22 @@ impl CropEditor {
             editor: None,
             selection,
             change: Event::None,
+            aspect: None,
             rect: Rect::ZERO,
         }
     }
 
     /// Report each crop change to `event`.
+    #[must_use]
     pub fn reporting(mut self, event: Event) -> Self {
         self.change = event;
+        self
+    }
+
+    /// The box stands at `width / height` before the picture's shape is known.
+    #[must_use]
+    pub fn with_aspect(mut self, aspect: f64) -> Self {
+        self.aspect = Some(aspect);
         self
     }
 
@@ -142,19 +155,25 @@ impl Widget for CropEditor {
         theme: &crate::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        match &mut self.editor {
-            Some(editor) => editor.build_layout(taffy, theme, node_map),
-            None => taffy.widget_leaf(
-                taffy::Style {
-                    size: taffy::Size::from_percent(1.0, 1.0),
-                    flex_grow: 1.0,
-                    flex_shrink: 1.0,
-                    ..taffy::Style::default()
+        // One leaf of its own: the editor paints into the rect it is given, so it never takes
+        // a percentage height (which, inside a scrolling page whose height is its content's,
+        // never resolves). It takes the width it is given and stands at its aspect.
+        let _ = theme;
+        taffy.widget_leaf(
+            taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::auto(),
                 },
-                node_map,
-                self,
-            ),
-        }
+                // A box with no shape still stands at 4:3, so a leaf that is not yet sized
+                // does not collapse to nothing.
+                aspect_ratio: Some(crate::num::f32_of_f64(self.aspect.unwrap_or(4.0 / 3.0))),
+                flex_shrink: 0.0,
+                ..taffy::Style::default()
+            },
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
@@ -208,6 +227,7 @@ impl Described for CropEditor {
             bottom,
             change,
             pictures,
+            aspect,
         } = props;
         let pictures = pictures.unwrap_or_else(Pictures::window);
         let selection = CropSelection {
@@ -216,7 +236,9 @@ impl Described for CropEditor {
             right,
             bottom,
         };
-        Self::new(pictures, image, selection).reporting(change)
+        let mut editor = Self::new(pictures, image, selection).reporting(change);
+        editor.aspect = aspect;
+        editor
     }
 
     fn set_props(&mut self, props: ImageCropEditorProps) -> bool {
@@ -228,9 +250,11 @@ impl Described for CropEditor {
             bottom,
             change,
             pictures,
+            aspect,
         } = props;
         let pictures = pictures.unwrap_or_else(Pictures::window);
         self.change = change;
+        self.aspect = aspect;
         self.selection = CropSelection {
             left,
             top,

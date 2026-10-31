@@ -24,6 +24,9 @@ pub struct ImageViewerProps {
     /// The window's pictures, through which the bytes load.
     #[component(skip)]
     pub pictures: Option<Pictures>,
+    /// The box's shape: its width over its height, which it stands at before the picture is
+    /// here. The picture's own shape once it is.
+    pub aspect: Option<f64>,
 }
 
 /// The picture a viewer shows, by its address, until its bytes arrive: the box it will fill,
@@ -32,6 +35,9 @@ pub struct ImageViewerProps {
 pub struct ZoomableImage {
     shown: Shown,
     viewer: Option<ImageViewer>,
+    /// The width over the height the box stands at before the picture's shape is known: the
+    /// picture's own once it is here.
+    aspect: Option<f64>,
     rect: crate::kurbo::Rect,
 }
 
@@ -44,8 +50,16 @@ impl ZoomableImage {
         Self {
             shown,
             viewer: None,
+            aspect: None,
             rect: crate::kurbo::Rect::ZERO,
         }
+    }
+
+    /// The box stands at `width / height` before the picture's shape is known.
+    #[must_use]
+    pub fn with_aspect(mut self, aspect: f64) -> Self {
+        self.aspect = Some(aspect);
+        self
     }
 
     /// Take the picture's bytes once they are here, and show them in a viewer.
@@ -107,22 +121,28 @@ impl Widget for ZoomableImage {
         theme: &crate::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        match &mut self.viewer {
-            Some(viewer) => viewer.build_layout(taffy, theme, node_map),
-            None => {
-                use crate::widget::TaffyTreeExt;
-                taffy.widget_leaf(
-                    taffy::Style {
-                        size: taffy::Size::from_percent(1.0, 1.0),
-                        flex_grow: 1.0,
-                        flex_shrink: 1.0,
-                        ..taffy::Style::default()
-                    },
-                    node_map,
-                    self,
-                )
-            }
-        }
+        // One leaf of its own, whether or not the picture is here: the viewer paints into the
+        // rect it is given, so it never takes a percentage height of its own (which, inside a
+        // scrolling page whose height is its content's, never resolves). The box takes the
+        // width it is given and stands at its aspect until the picture's shape is known.
+        let _ = theme;
+        use crate::widget::TaffyTreeExt;
+        let aspect = self.aspect.unwrap_or(4.0 / 3.0);
+        taffy.widget_leaf(
+            taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::auto(),
+                },
+                // A box with no shape still stands at 4:3, so a leaf that is not yet sized
+                // does not collapse to nothing.
+                aspect_ratio: Some(crate::num::f32_of_f64(aspect)),
+                flex_shrink: 0.0,
+                ..taffy::Style::default()
+            },
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(
@@ -150,7 +170,11 @@ impl Widget for ZoomableImage {
         }
     }
 
-    fn handle_event(&mut self, event: &winit::event::WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) {
         if let Some(viewer) = &mut self.viewer {
             viewer.handle_event(event, ctx);
         }
@@ -177,9 +201,14 @@ impl Described for ZoomableImage {
             image,
             alt: _,
             pictures,
+            aspect,
         } = props;
         let pictures = pictures.unwrap_or_else(Pictures::window);
-        Self::of(pictures, image)
+        let mut zoomable = Self::of(pictures, image);
+        if let Some(aspect) = aspect {
+            zoomable = zoomable.with_aspect(aspect);
+        }
+        zoomable
     }
 
     fn set_props(&mut self, props: ImageViewerProps) -> bool {
@@ -187,8 +216,10 @@ impl Described for ZoomableImage {
             image,
             alt: _,
             pictures,
+            aspect,
         } = props;
         let pictures = pictures.unwrap_or_else(Pictures::window);
+        self.aspect = aspect;
         if self.shown.set(pictures, image) {
             self.viewer = None;
         }

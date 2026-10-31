@@ -1701,7 +1701,12 @@ impl MediaGrid {
         let card = self.cards.get_mut(index)?;
         card.as_any_mut()
             .and_then(|any| any.downcast_mut::<MediaCard>())
-            .map(|card| std::mem::replace(card, MediaCard::new(String::new(), MediaSource::Placeholder)))
+            .map(|card| {
+                std::mem::replace(
+                    card,
+                    MediaCard::new(String::new(), MediaSource::Placeholder),
+                )
+            })
     }
 
     fn cards_mut(&mut self) -> impl Iterator<Item = &mut MediaCard> {

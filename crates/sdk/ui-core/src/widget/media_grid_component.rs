@@ -11,7 +11,6 @@ use crate::pictures::Pictures;
 use crate::widget::media_card::MediaSize;
 use crate::widget::{MediaAspect, MediaCard, MediaGrid, MediaSource};
 
-
 // The `MediaAspect` choice is declared beside the enum, in `media_card.rs`.
 
 /// Cards in a grid: a library, an album's covers, a shelf of books, a set of channels. The cards
@@ -33,7 +32,12 @@ pub struct MediaGridProps {
 /// One card of a grid: the art (a cover, a thumbnail, a photo) with its title and up to two
 /// meta lines under it. A press opens what it stands for.
 #[derive(Component, Default)]
-#[component(name = "MediaCard", role = "ListItem", label = "title", presents = "item")]
+#[component(
+    name = "MediaCard",
+    role = "ListItem",
+    label = "title",
+    presents = "item"
+)]
 pub struct MediaCardProps {
     /// The card's stable key.
     #[component(key)]

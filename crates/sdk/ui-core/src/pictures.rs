@@ -60,7 +60,10 @@ impl Pictures {
             }
             data_bytes(url)
         });
-        Self::new(ImageStore::with_max_dimension(&fetch, PICTURE_MAX_DIMENSION))
+        Self::new(ImageStore::with_max_dimension(
+            &fetch,
+            PICTURE_MAX_DIMENSION,
+        ))
     }
 
     /// The store it loads through, for a component that shows more than one picture.
@@ -197,5 +200,4 @@ impl Shown {
     pub fn waiting(&self) -> bool {
         self.picture.is_some() && self.image.is_none() && !self.failed()
     }
-
 }

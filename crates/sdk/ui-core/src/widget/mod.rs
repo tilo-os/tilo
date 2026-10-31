@@ -3336,14 +3336,12 @@ pub use context_menu::{
 };
 mod row_menu;
 pub use primitives::{
-    BarControlFace, DensityRegion, DisclosureGroup, DisclosureRow, DisclosureRowProps,
-    DisclosureState, Fact, FactProps, Facts, FactsFace, FactsProps, FloatingPanel,
-    FloatingPanelFace, FloatingPanelLayout, FloatingPanelProps, IconButton, KeyHint, KeyHintProps,
-    DeclaredModal, DeclaredPanel, DeclaredPopover, DeclaredPopoverButton, KeyHints, KeyHintsFace,
-    KeyHintsProps,
+    BarControlFace, DeclaredModal, DeclaredPanel, DeclaredPopover, DeclaredPopoverButton,
+    DensityRegion, DisclosureGroup, DisclosureRow, DisclosureRowProps, DisclosureState, Fact,
+    FactProps, Facts, FactsFace, FactsProps, FloatingPanel, FloatingPanelFace, FloatingPanelLayout,
+    FloatingPanelProps, IconButton, KeyHint, KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps,
     ModalProps, PopoverButtonProps, PopoverProps, Surface, SurfaceLevel, TextStack, TextStackFace,
-    TextStackProps,
-    paint_see_through, paint_surface,
+    TextStackProps, paint_see_through, paint_surface,
 };
 pub use row_menu::RowMenu;
 pub mod context_menu_area;
@@ -3712,9 +3710,9 @@ pub use history_face::{EntryBody, EntryFace, HistoryEntryPresenter};
 pub use collab_types::ArtifactKind;
 
 pub mod qr;
-pub mod resource_actions;
 #[path = "qr_component.rs"]
 mod qr_component;
+pub mod resource_actions;
 pub use qr::QrWidget;
 pub use qr_component::QrProps;
 
