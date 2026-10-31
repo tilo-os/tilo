@@ -31,9 +31,10 @@ use super::*;
 /// The record the launcher is mounted on: one per session, never a tab's.
 const LAUNCHER_INSTANCE: u64 = u64::MAX - 1;
 
-/// The card's height less its list until the launcher measured it: a field
-/// and its padding.
-const SEARCH_CHROME_HEIGHT: f64 = 72.0;
+/// The card's height less its list until the launcher measured it: a
+/// bar-height field in the card's `s4` padding.
+const SEARCH_CHROME_HEIGHT: f64 =
+    (ui::tokens::Metrics::BASE.bar_height + 2.0 * ui::tokens::Spacing::BASE.s4) as f64;
 
 /// The launcher the shell shows, and its side of the link.
 pub(crate) struct LauncherHost {

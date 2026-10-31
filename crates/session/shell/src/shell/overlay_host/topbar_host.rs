@@ -34,7 +34,7 @@ const TOPBAR_INSTANCE: u64 = u64::MAX - 8;
 
 /// How far below a bar its own drawing reaches: the focus ring, the
 /// hairline and the shadow of what floats on it.
-const BAR_REACH: f64 = 28.0;
+const BAR_REACH: f64 = ui::tokens::Layout::BASE.bar_reach as f64;
 
 /// What the shell keeps of the bar it hosts.
 #[derive(Default)]

@@ -616,13 +616,15 @@ impl Default for AgentQuickComposer {
 
 /// How wide the composer is beside its subject: one width whatever it
 /// shows, so an answer arriving grows it downwards only.
-const COMPOSER_WIDTH: f32 = 360.0;
-/// Below this viewport width the composer is a sheet along the bottom.
-const SHEET_BELOW: f64 = 600.0;
+const COMPOSER_WIDTH: f32 = ui::tokens::Metrics::BASE.panel_width_list;
+/// Below this viewport width the composer is a sheet along the bottom: the
+/// HIG's sheet width is where a panel stops fitting beside what it answers.
+const SHEET_BELOW: f64 = ui::tokens::Metrics::BASE.panel_width_sheet as f64;
 /// The test id of the area showing the work: the steps, the answer view and the reply.
 const WORK_AREA: &str = "agent-quick-work";
-/// The tallest the work area starts, before the viewport it stands in is known.
-const WORK_MAX: f32 = 360.0;
+/// The tallest the work area starts, before the viewport it stands in is known:
+/// the card's own width, so it never starts taller than it is wide.
+const WORK_MAX: f32 = COMPOSER_WIDTH;
 /// The share of the viewport's height the work area may take; past it the work scrolls,
 /// following its end, so the field and its controls stay in view.
 const WORK_SHARE: f64 = 0.5;

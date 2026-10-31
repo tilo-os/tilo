@@ -33,7 +33,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Metrics;
 use crate::tokens::TextRole;
-use crate::tokens::{EffectiveMotion, MotionSource};
+use crate::tokens::{EffectiveMotion, Layout, MotionSource};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::edge_resize::{RectEdge, WindowEdge};
@@ -45,10 +45,10 @@ use crate::widget::edge_resize::{RectEdge, WindowEdge};
 /// ([`FloatingWindow::title_bar_height`]); this constant is for callers that
 /// need the reference value in a `const` context.
 pub const TITLE_BAR_HEIGHT: f64 = Metrics::BASE.bar_height as f64;
-pub const RESIZE_GRIP: f64 = 8.0;
+pub const RESIZE_GRIP: f64 = Layout::BASE.window_grip as f64;
 /// A finger is a wider target than a pointer: the band along an edge that
 /// starts a resize under a touch.
-const TOUCH_GRIP: f64 = 22.0;
+const TOUCH_GRIP: f64 = Layout::BASE.window_touch_grip as f64;
 pub const MIN_WIDTH: f64 = 280.0;
 pub const MIN_HEIGHT: f64 = 200.0;
 /// The smallest a resize leaves the window, on each axis.

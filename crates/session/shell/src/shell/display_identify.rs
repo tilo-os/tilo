@@ -72,9 +72,9 @@ pub(crate) struct KeepClear {
 }
 
 /// How far a card sits in from its display's edges.
-const CARD_INSET: f64 = 24.0;
+const CARD_INSET: f64 = ui::tokens::Spacing::BASE.s6 as f64;
 /// The widest a card's name runs before it is elided.
-const NAME_MAX_WIDTH: f32 = 200.0;
+const NAME_MAX_WIDTH: f32 = ui::tokens::Layout::BASE.identify_name_width;
 
 /// Where a card of `size` sits on `output`: inset from one of its corners,
 /// the corner whose card `avoid` (the focused window) covers least, the
