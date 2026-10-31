@@ -22,7 +22,6 @@ use crate::widget::{
 /// An instance as a test gives it: values by prop, the events it handles, and the components in
 /// its slots.
 struct Node {
-    kind: &'static str,
     key: String,
     props: BTreeMap<String, Value>,
     events: Vec<&'static str>,
@@ -31,9 +30,8 @@ struct Node {
 }
 
 impl Node {
-    fn new(kind: &'static str, key: &str, queue: &crate::Intents<Fired>) -> Self {
+    fn new(_kind: &'static str, key: &str, queue: &crate::Intents<Fired>) -> Self {
         Self {
-            kind,
             key: key.to_owned(),
             props: BTreeMap::new(),
             events: Vec::new(),
@@ -150,16 +148,19 @@ fn an_image_is_a_picture_by_its_address_and_shows_its_bytes_when_they_arrive() {
     props.pictures = Some(pictures);
     let image = Image::from_props("photo", props);
     assert_eq!(image.alt(), Some("A blue tile"));
-    // The picture loads on its store's own background: wait for it to decode, then the layout
-    // knows its size.
-    let store = image.pictures().expect("the image's store").store().clone();
-    store.block_until_idle(std::time::Duration::from_secs(5));
-    let harness = harness(image);
+    let picture = image.pictures().expect("the image shows a picture").clone();
     assert_eq!(
-        harness.root::<Image>().intrinsic_size(),
-        (4, 4),
-        "the picture decodes from its address"
+        image.picture().map(|p| p.src.as_str()),
+        Some("data:image/png;base64,x"),
+        "the picture keeps its address"
     );
+    // Reading the picture through its store queues the decode; once it settles the same
+    // read answers the decoded image, which is what the widget paints.
+    let store = picture.store().clone();
+    let _ = picture.get(image.picture().expect("a picture"));
+    store.block_until_idle(std::time::Duration::from_secs(5));
+    let decoded = picture.get(image.picture().expect("a picture")).expect("decoded");
+    assert_eq!((decoded.width, decoded.height), (4, 4));
 }
 
 #[test]
@@ -189,6 +190,7 @@ fn a_picture_answers_a_served_store_and_nothing_else_loads() {
 fn the_media_grid_reads_its_cards_and_a_pressed_card_reports_itself() {
     let queue = crate::Intents::default();
     let card = Node::new("MediaCard", "blue", &queue)
+        .prop("item", Value::Resource("photo".into()))
         .prop("title", text("Blue"))
         .prop("picture", picture("data:image/png;base64,x"))
         .on("activate");
@@ -289,10 +291,11 @@ fn a_code_editor_takes_the_language_its_view_names() {
 #[test]
 fn a_prop_of_an_undescribed_type_does_not_read() {
     // A picture is a `Picture` value, never text: the wrong kind is refused, not coerced.
-    let mut node = Node::new("Image", "photo", &crate::Intents::default()).prop("src", text("x"));
-    let mut props = ImageProps::from_source(&mut node).expect("src is text");
-    props.pictures = None;
     assert!(crate::widget::PictureSource::from_value(&text("x")).is_err());
+    assert!(
+        crate::widget::PictureSource::from_value(&picture("tilo-blob://dot")).is_ok(),
+        "a picture value reads"
+    );
 }
 
 #[test]

@@ -1105,7 +1105,7 @@
         {
           "name": "image",
           "doc": "The picture to crop.",
-          "type": "text",
+          "type": "picture",
           "required": true,
           "positional": true
         },
@@ -3528,10 +3528,11 @@
       "props": [
         {
           "name": "item",
-          "doc": "The resource the card stands for: what a press opens.",
+          "doc": "The resource the card stands for: what a press opens. Without one it is a picture with a title, which does nothing when pressed.",
           "type": {
             "option": "resource"
           },
+          "required": true,
           "positional": true
         },
         {

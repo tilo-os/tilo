@@ -30,7 +30,7 @@ view media(m: Media) {
             ui.Image(m.photo, alt: "A blue tile, cropped", fit: .cover)
             row(gap: .related) {
                 ui.Image(m.photo, alt: "")
-                ui.ImageViewer(m.photo, alt: "The same tile, to zoom")
+                ui.ImageViewer(m.photo, alt: "The same tile, to zoom", aspect: 2.0)
             }
             ui.ImageCropEditor(m.photo, left: 0.1, top: 0.1, right: 0.9, bottom: 0.9, aspect: 2.0)
         }

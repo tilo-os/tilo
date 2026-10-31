@@ -20,13 +20,11 @@ use crate::widget::PictureSource;
 /// How an app names a picture by its content address.
 pub const BLOB_SCHEME: &str = "tilo-blob://";
 
-/// What a component showing a picture reads: the store its bytes load through, and the last
-/// picture it asked for, so a picture shown on many frames costs one lookup each.
+/// What a component showing a picture reads: the store its bytes load through (which caches a
+/// decoded picture by its address), and what a window's pictures are.
 #[derive(Clone)]
 pub struct Pictures {
     store: ImageStore,
-    /// The last address asked for, and its decoded picture (or none, while it loads).
-    last: std::rc::Rc<std::cell::RefCell<Option<(String, Option<PenikoImage>)>>>,
 }
 
 impl std::fmt::Debug for Pictures {
@@ -39,10 +37,7 @@ impl Pictures {
     /// The pictures this window reads, loaded by `store`.
     #[must_use]
     pub fn new(store: ImageStore) -> Self {
-        Self {
-            store,
-            last: std::rc::Rc::default(),
-        }
+        Self { store }
     }
 
     /// The window's pictures: loaded through the store the toolkit builds for the window (the
@@ -75,22 +70,15 @@ impl Pictures {
     }
 
     /// The decoded picture at `picture`'s address, once its bytes are here: `None` while it
-    /// loads (or when it names nothing, or failed to load). Asking starts the load.
+    /// loads (or when it names nothing, or failed to load). Asking starts the load. The store
+    /// already caches a decoded picture by its address, so a picture still loading is asked
+    /// for again each frame without a second cache here.
     #[must_use]
     pub fn get(&self, picture: &PictureSource) -> Option<PenikoImage> {
         if picture.is_empty() {
             return None;
         }
-        let address = picture.src.clone();
-        let mut last = self.last.borrow_mut();
-        if let Some((kept, image)) = last.as_ref()
-            && *kept == address
-        {
-            return image.clone();
-        }
-        let image = self.store.get(&address);
-        *last = Some((address, image.clone()));
-        image
+        self.store.get(&picture.src)
     }
 
     /// Whether the picture at `picture`'s address has failed to load: its bytes are not here,

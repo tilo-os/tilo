@@ -182,6 +182,12 @@ impl Widget for DeclaredModal {
         self.dialog.children()
     }
 
+    /// The dialog's content is laid out in the top layer even while the wrapper's children
+    /// hide it: the walk follows the dialog's own.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        crate::widget::Widget::for_each_layout_child(&self.dialog, visitor)
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.dialog.children_mut()
     }
@@ -318,6 +324,10 @@ impl Widget for DeclaredPanel {
 
     fn children(&self) -> Vec<&dyn Widget> {
         self.panel.children()
+    }
+
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        crate::widget::Widget::for_each_layout_child(&self.panel, visitor)
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -461,6 +471,12 @@ impl Widget for DeclaredPopover {
 
     fn children(&self) -> Vec<&dyn Widget> {
         self.popover.children()
+    }
+
+    /// A popover's content is laid out open or closed (so reopening finds its nodes): the
+    /// walk follows the popover's own.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        crate::widget::Widget::for_each_layout_child(&self.popover, visitor)
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
