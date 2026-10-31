@@ -617,7 +617,12 @@ fn inbox_page(ada: &Replica, meta: &Meta, mail: &ResourceRef) -> (Vec<String>, u
             }
         })
         .collect();
-    let checked = ada.host.store().read_stats().evaluated - before;
+    let checked = ada
+        .host
+        .store()
+        .read_stats()
+        .evaluated
+        .saturating_sub(before);
     (items, checked)
 }
 
@@ -641,11 +646,10 @@ fn a_filter_of_a_run_and_a_clock_conjunct_pages_at_the_first_page_and_lists_what
         !listing.len_is_exact(),
         "the list says its length is up to that many"
     );
-    let kept: Vec<String> = (0..listing.len())
+    let kept = (0..listing.len())
         .filter_map(|index| listing.get(index))
-        .map(|id| id.to_string())
-        .collect();
-    assert_eq!(kept.len(), 5_333);
+        .count();
+    assert_eq!(kept, 5_333);
     assert!(listing.len_is_exact(), "every entry is checked now");
 }
 
@@ -706,7 +710,7 @@ fn a_snooze_ending_moves_its_thread_into_the_inbox_without_reading_the_room_agai
     // starts with the other 999.
     let clock = Rc::new(RefCell::new("2026-06-29T09:00:00Z".to_owned()));
     let read = Rc::clone(&clock);
-    let (mut ada, _meta, _mail) = inbox_room_of(INBOX_VIEW, 1_000, |i, item, meta| {
+    let (ada, _meta, _mail) = inbox_room_of(INBOX_VIEW, 1_000, |i, item, meta| {
         use serde_json::json;
         use tilolang_tilo::record::DynValue;
         // The first conversation is snoozed until 2027, and comes back once it is there.
@@ -735,6 +739,11 @@ fn a_snooze_ending_moves_its_thread_into_the_inbox_without_reading_the_room_agai
     assert_eq!(texts(view.tree()).len(), 1_000);
     // The listing's first page was filled again, and the item that came in checked: the
     // entries read are the page's, not the room's.
-    let filled = ada.host.store().read_stats().evaluated - before;
+    let filled = ada
+        .host
+        .store()
+        .read_stats()
+        .evaluated
+        .saturating_sub(before);
     assert!(filled <= 2, "the change checked {filled} items");
 }
