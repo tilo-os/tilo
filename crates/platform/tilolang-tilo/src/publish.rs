@@ -415,6 +415,8 @@ struct Whole {
 
 impl Whole {
     fn build(&self, snapshot: &crate::store::Snapshot) -> Built {
+        // This record is published by the package version the snapshot's store was taken from.
+        let _schemas = snapshot.scoped();
         let root = tilolang_runtime::value::ResourceRef::root(&self.doc, self.type_id.clone());
         let named = snapshot.first_text(&root);
         let schema = crate::schema::lookup(&self.type_id);
@@ -1361,8 +1363,9 @@ impl Published<'_> {
 
     /// The item at `path`, read from the index and published.
     fn item(&self, path: &str) -> Option<ResourceSpec> {
-        let schema = self.schema_at(path)?;
         let snapshot = self.store.snapshot();
+        let _schemas = snapshot.scoped();
+        let schema = self.schema_at(path)?;
         let view = snapshot.view(&self.types.meta().app)?;
         indexed_item(self.types, &view, &snapshot, path, Some(&schema.id))
     }

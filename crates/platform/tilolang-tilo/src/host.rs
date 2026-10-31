@@ -667,6 +667,8 @@ impl Host {
         }
         // The host's own record types (`Invocation`) are stored like any other resource.
         let host_meta = tilolang::host_meta();
+        let schemas = store.schemas();
+        let _schemas = schemas.enter();
         host_meta.register_schemas();
         store.open_index(&host_meta.app, &host_meta.schema_text());
         // What the runtime invokes is decided by the room's one policy: the person's standing,
@@ -904,7 +906,14 @@ impl Host {
     /// The module does not link; the loaded version, if any, stays.
     pub fn load_module(&self, wasm: &[u8], meta: Meta, ids: String) -> Result<Package, HostError> {
         let id = self.inner.runtime.reload_package(wasm, meta.clone())?;
+        // The store's table holds this package's schemas, and only this store's: another host on
+        // this thread that loaded another version of the same app keeps its own.
+        let schemas = self.inner.store.schemas();
+        let _schemas = schemas.enter();
         meta.register_schemas();
+        // The package's own table too: an action applied or described outside this store (a
+        // receiver replaying it, a task's door) resolves its record's type by this version.
+        crate::schema::register_package(&meta, &id);
         self.inner.store.open_index(&meta.app, &meta.schema_text());
         self.inner.authority.load(&id, &meta);
         let package = Package { meta, id, ids };
@@ -1187,6 +1196,13 @@ impl Host {
     /// `json` does not read as a value of `ty`, with why.
     pub fn argument(&self, meta: &Meta, json: &Json, ty: &str) -> Result<Value, String> {
         value_of(&self.inner, meta, json, ty)
+    }
+
+    /// Run `work` with this host's store's schema table installed: an action applied here (a
+    /// receiver replaying a peer's change, a test acting as the host) resolves a record's type
+    /// by the package versions this host loaded.
+    pub fn with_schemas<R>(&self, work: impl FnOnce() -> R) -> R {
+        self.inner.store.with_schemas(work)
     }
 
     /// Whether the type `ty` is registered (a package of it was loaded here).
