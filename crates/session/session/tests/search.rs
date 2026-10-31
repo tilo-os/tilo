@@ -274,9 +274,7 @@ fn session_with_settings() -> Session {
     Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            services: vec![Box::new(tilo_settings_service::SettingsService::new(
-                "person",
-            ))],
+            services: vec![Box::new(tilo_settings_service::SettingsService::new())],
             search: SearchOptions {
                 preferences: tilo_desktop_search::SearchPreferences::from_values(
                     &settings_store::load_section(tilo_desktop_search::preferences::SECTION),

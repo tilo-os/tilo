@@ -570,9 +570,7 @@ fn services(
 
     let mut services: Vec<Box<dyn tilo_session::Service>> = Vec::new();
     let mut following: Following = Vec::new();
-    services.push(Box::new(tilo_settings_service::SettingsService::new(
-        &tilo_session::Options::default().person,
-    )));
+    services.push(Box::new(tilo_settings_service::SettingsService::new()));
     // What this session ran into: the list as the resource's reading and
     // each record's text as its own, which Settings reads as an app does.
     services.push(Box::new(tilo_crash_records::CrashRecords::new()));

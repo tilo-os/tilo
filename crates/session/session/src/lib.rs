@@ -1377,6 +1377,12 @@ impl Session {
         let lock = lock_service::Lock::default();
         let mut started = std::mem::take(&mut options.services);
         started.push(Box::new(desk_service));
+        // A service that records who changed what records the person's, not
+        // the id its caller made it with: the session knows who sits here
+        // before it starts them.
+        for service in &mut started {
+            service.seated(&options.person, &seat.earlier);
+        }
         let services = mount_services(&mut doors, started);
         services
             .borrow_mut()
