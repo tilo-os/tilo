@@ -4763,7 +4763,7 @@ fn closing_a_dialog_while_the_host_asks_to_confirm_is_safe() {
         .perform_a11y_action(merge, &ui::a11y::Action::Focus)
         .unwrap();
     // In one event: the review closes, so its focused Merge button is
-    // dropped, and an export of the contact (private data leaving the room,
+    // dropped, and an export of the contact (private data leaving the workspace,
     // which asks even though nothing is lost) goes to the host, which asks
     // to confirm.
     app.with_widget(|surface: &mut ContactsApp| {

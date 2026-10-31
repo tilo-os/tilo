@@ -21,6 +21,14 @@ pub struct ChatCallContinuation {
 }
 
 impl ChatCallContinuation {
+    /// Take up a continuation stored before the workspace was called by its
+    /// name: it is this workspace's continuation all the same.
+    fn adopt_workspace_scope(&mut self) {
+        if self.workspace_id == crate::app::LEGACY_WORKSPACE_SCOPE {
+            crate::app::WORKSPACE_SCOPE.clone_into(&mut self.workspace_id);
+        }
+    }
+
     #[must_use]
     pub fn valid(&self) -> bool {
         portable_id(&self.workspace_id)
@@ -110,10 +118,11 @@ impl ChatApp {
         if metadata.schema_version != CHAT_CONTINUATION_SCHEMA {
             return false;
         }
-        let Ok(continuation) = serde_json::from_slice::<ChatCallContinuation>(&metadata.bytes)
+        let Ok(mut continuation) = serde_json::from_slice::<ChatCallContinuation>(&metadata.bytes)
         else {
             return false;
         };
+        continuation.adopt_workspace_scope();
         if !continuation.valid()
             || !crate::projection::read(doc)
                 .channel_rows()
@@ -397,6 +406,42 @@ mod tests {
                 &ROOT,
             ));
         }
+    }
+
+    #[test]
+    fn a_call_continuation_stored_before_the_workspace_was_named_still_resumes() {
+        let (mut app, doc) = app_and_doc();
+        let stored = serde_json::json!({
+            "workspace_id": crate::app::LEGACY_WORKSPACE_SCOPE,
+            "channel_id": "c_huddle",
+            "media": {
+                "microphone": true,
+                "camera": false,
+                "screen_share": false,
+                "share_audio": false,
+            },
+            "controls": {
+                "microphone_muted": false,
+                "camera_muted": true,
+                "screen_share_paused": false,
+                "share_audio_muted": true,
+            },
+        });
+        let metadata = ui::collaboration::ContinuationMetadata {
+            schema_version: CHAT_CONTINUATION_SCHEMA,
+            bytes: serde_json::to_vec(&stored).unwrap(),
+        };
+        assert!(app.restore_call_continuation(&metadata, &doc));
+        let restored = app
+            .realtime
+            .pending_restore
+            .as_ref()
+            .expect("the call resumes");
+        assert_eq!(restored.workspace_id, crate::app::WORKSPACE_SCOPE);
+        assert_eq!(
+            restored.resume_intent().semantic_position.as_deref(),
+            Some(crate::app::WORKSPACE_SCOPE)
+        );
     }
 
     #[test]

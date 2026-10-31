@@ -253,7 +253,7 @@ pub enum AccountsEffect {
     /// Recover an interrupted Files mode change after closing the connection form.
     #[effect(row, job, idempotent, label = "Recover mode change")]
     RecoverCloudMode { account: String },
-    /// Link your account with a service this room is connected to (a
+    /// Link your account with a service this workspace is connected to (a
     /// Discord server it bridges): the page goes to the service's consent
     /// page, which comes back here linked.
     #[effect(label = "Link account")]
@@ -261,7 +261,7 @@ pub enum AccountsEffect {
         #[param("The connector's app id")]
         app: String,
     },
-    /// Unlink your account with a service this room is connected to.
+    /// Unlink your account with a service this workspace is connected to.
     #[effect(destructive, label = "Unlink account")]
     UnlinkService {
         #[param("The connector's app id")]
@@ -733,7 +733,7 @@ impl AccountsArea {
                 model = model.with_open_form_for_shot(kind);
             }
             // Where the person stands with each connected service is asked
-            // of the room's host; the pane shows it once answered.
+            // of the workspace's host; the pane shows it once answered.
             self.linked.refresh();
             Rc::new(std::cell::RefCell::new(
                 model.with_linked(self.linked.clone()),
@@ -776,12 +776,12 @@ impl AccountsArea {
         self.adding.borrow().is_some() || self.model.get().is_some_and(pane)
     }
 
-    /// The person's accounts with the services the room is connected to.
+    /// The person's accounts with the services the workspace is connected to.
     pub(crate) fn linked(&self) -> &ui::linked_accounts::LinkedAccounts {
         &self.linked
     }
 
-    /// Show the linked accounts again when the room's host answered
+    /// Show the linked accounts again when the workspace's host answered
     /// something new about them.
     fn follow_linked(&self) {
         let revision = self.linked.revision();
@@ -978,7 +978,7 @@ impl Default for AccountsPane {
     reason = "each flag is an independent state of the pane's forms and vault work, never a parameter"
 )]
 pub struct AccountsPane {
-    /// The person's accounts with the services the room is connected to,
+    /// The person's accounts with the services the workspace is connected to,
     /// as the window this model serves was lent them; none for a model a
     /// test drives directly.
     linked: Option<ui::linked_accounts::LinkedAccounts>,
@@ -1252,7 +1252,7 @@ impl AccountsPane {
         !self.form_open()
     }
 
-    /// The model shown with `linked`, the room's connected services.
+    /// The model shown with `linked`, the workspace's connected services.
     #[must_use]
     pub(crate) fn with_linked(mut self, linked: ui::linked_accounts::LinkedAccounts) -> Self {
         self.linked = Some(linked);
@@ -1925,8 +1925,8 @@ impl AccountsPane {
         if let Some(id) = &self.reauth_id {
             panel.push(self.reauth_form(cx, id));
         }
-        // The services this room is connected to come first: they belong to
-        // this room, and show only when it has one.
+        // The services this workspace is connected to come first: they belong
+        // to this workspace, and show only when it has one.
         if let Some(linked) = self.linked_accounts_card(cx) {
             panel.push(linked);
         }
@@ -2017,10 +2017,10 @@ impl AccountsPane {
         section(&t("accounts-browser-sessions-title"), rows(body))
     }
 
-    /// The person's accounts with the services this room is connected to
-    /// (a Discord server it bridges), as the profile card shows them:
+    /// The person's accounts with the services this workspace is connected
+    /// to (a Discord server it bridges), as the profile card shows them:
     /// connect one, confirm one a link offers, or unlink it. `None`
-    /// where the room is connected to none.
+    /// where the workspace is connected to none.
     fn linked_accounts_card(&self, cx: &ViewCx<Settings>) -> Option<SettingsSection> {
         let accounts = self.linked.as_ref()?.accounts();
         if accounts.is_empty() {

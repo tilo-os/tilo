@@ -1,6 +1,6 @@
 # Word Processor — Tilo application manifest.
 #
-# Documents are the room's; the user dictionary and crash-recovery
+# Documents are the workspace's; the user dictionary and crash-recovery
 # copies are the app's own state and live in its own directory.
 #
 # Beyond the system read profile it needs, as a consented capability:

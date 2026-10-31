@@ -6,7 +6,7 @@
 //! page that shows it is [`crate::convert_page`].
 //!
 //! Everything here is arithmetic over a fixed table: nothing is fetched, so a
-//! conversion works with the network off and in a room with no server. Money
+//! conversion works with the network off and in a workspace with no server. Money
 //! is the one quantity Tilo cannot convert honestly — a rate is a fact about
 //! the moment, not a definition — so currency is a category that says so
 //! (`Dimension::Currency::rates_note`) rather than a table of stale numbers.

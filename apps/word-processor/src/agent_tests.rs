@@ -1,5 +1,5 @@
 //! What an agent does with a document through the published door: a
-//! picture placed after the heading it names, a document the room holds
+//! picture placed after the heading it names, a document the workspace holds
 //! imported into an empty one (never over someone's writing), the document
 //! kept as content, lists named as a reader sees them, and find and replace.
 

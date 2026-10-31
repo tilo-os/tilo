@@ -1674,7 +1674,7 @@ impl Music {
             return;
         };
         if !self.lib.tracks.contains_key(&track_id) {
-            // The room document may still be hydrating. Keep the exact request
+            // The workspace document may still be hydrating. Keep the exact request
             // pending; without a published session the source cannot receive a
             // false acknowledgement.
             self.pending_media_handoff = Some(pending);

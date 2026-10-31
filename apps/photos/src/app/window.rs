@@ -231,7 +231,7 @@ impl ui::content_zoom::ContentZoom for PhotosApp {
     }
 }
 
-/// Showing photographs to a room: the window goes full screen while the
+/// Showing photographs to a workspace: the window goes full screen while the
 /// person presents, and leaving full screen any other way ends it.
 impl ui::widget::FullscreenProvider for PhotosApp {
     fn fullscreen_intent(&self) -> Option<bool> {

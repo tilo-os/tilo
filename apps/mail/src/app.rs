@@ -423,7 +423,7 @@ pub struct MailApp {
     /// The accounts whose kept mail is in the mailbox.
     kept_loaded: std::collections::HashSet<String>,
     /// The mail the person's devices hold for one another, where they have
-    /// a room of their own ([`crate::copies`]).
+    /// a record of their own ([`crate::copies`]).
     copies: Option<crate::copies::Copies>,
     /// The messages whose notification the person clicked, from whatever
     /// thread the host reported it on; opened on the next settle.

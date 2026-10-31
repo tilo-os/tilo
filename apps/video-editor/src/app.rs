@@ -1010,7 +1010,7 @@ pub struct VideoEditorApp {
     timeline_split: ui::widget::SplitHandle,
     selection: Selection,
     selected_media: Option<MediaId>,
-    /// Decides which one thing to tell the room about this participant on
+    /// Decides which one thing to tell the workspace about this participant on
     /// each poll of [`Widget::presence_payload`], which only carries one.
     /// See [`crate::presence`] for why there are two things to say.
     local_presence: crate::presence::LocalPresence,
@@ -6263,7 +6263,7 @@ impl Widget for VideoEditorApp {
         // A key (B, Ctrl+I, S) or a render's progress changes what the bar
         // shows without a sync.
         ui::window_toolbar::declare(Some(self.window_toolbar()));
-        // Everything below draws the room from here: the host's own context,
+        // Everything below draws the presence from here: the host's own context,
         // fed by the collaboration socket, or the one a capture staged.
         #[cfg(feature = "samples")]
         let staged = self.capture.presence.clone();
@@ -7247,7 +7247,7 @@ impl ui::presence::capability::PublishesPresence for VideoEditorApp {
     fn presence_key(&self) -> Option<PresenceKey> {
         Some(crate::presence::timeline_key())
     }
-    /// Where this participant is, for the room to draw.
+    /// Where this participant is, for the workspace to draw.
     ///
     /// Two facts -- the playhead and the selected clip -- through a hook that
     /// carries one at a time, so [`crate::presence::LocalPresence`] hands over

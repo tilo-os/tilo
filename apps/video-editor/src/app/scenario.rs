@@ -73,7 +73,7 @@ pub enum ShotScenario {
     /// keyed, so the box, the channel chooser, the amount slider and its
     /// key control are all on screen at once.
     Curves,
-    /// Two other participants in the room: their playheads down the lanes
+    /// Two other participants in the workspace: their playheads down the lanes
     /// with their names on them, and the clips they have selected outlined
     /// in their colours -- next to this participant's own selection, so the
     /// capture shows the two reading as different people.

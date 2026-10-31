@@ -1,6 +1,6 @@
 //! The `tilo.moderation` record: reports, and the decisions taken on them.
 //!
-//! Anyone in the room may report; only those holding the room's
+//! Anyone in the workspace may report; only those holding the workspace's
 //! `moderation` node (Moderators, the Owner, and the host's moderation agent,
 //! whose delegation carries the Moderator preset) decide and overturn,
 //! because both verbs are `#[action(moderation)]` and the ordinary grant
@@ -227,7 +227,7 @@ impl Moderation {
 
     /// Report someone.
     ///
-    /// Tells the room's moderators, and its moderation agent, that this
+    /// Tells the workspace's moderators, and its moderation agent, that this
     /// person did something they should not have, optionally pointing at
     /// the message or item.
     #[action]
@@ -288,7 +288,7 @@ impl Moderation {
     ///
     /// Records what was done about a person and why, settling the reports
     /// named. Enforcement (the restriction, the ban, the undo) is the
-    /// deciding moderator's, through the room's own governance and history.
+    /// deciding moderator's, through the workspace's own governance and history.
     #[action(moderation)]
     pub fn decide(
         &mut self,

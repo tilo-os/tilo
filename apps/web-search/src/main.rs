@@ -12,7 +12,7 @@ extern crate runtime_dylib;
 #[derive(Parser, Debug)]
 #[command(name = "tilo-web-search")]
 struct Cli {
-    /// The room (workspace) to publish in — the `TILO_WORKSPACE_ID` the
+    /// The workspace to publish in — the `TILO_WORKSPACE_ID` the
     /// service was launched with.
     #[arg(long)]
     workspace: uuid::Uuid,

@@ -286,7 +286,7 @@ fn agents_and_collaborators_never_open_the_device_shell() {
     assert_eq!(recorded(&app), before, "a refused target is not recorded");
 
     // Through the published operation, as an agent or a collaborator in a
-    // shared room would reach it.
+    // shared workspace would reach it.
     let operate = |app: &mut App, actor: &str, target: &str| {
         let _scope = ui::invocation_scope::InvokerScope::enter(
             ui::tilo_actions::ActionInvoker::actor(actor),

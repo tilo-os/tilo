@@ -188,8 +188,8 @@ impl CalendarApp {
     }
 
     /// Say `text` of a change just submitted once it is kept: at once on
-    /// this device alone, once the room accepts it in a shared calendar,
-    /// and never when the room refuses it ([`Self::announce_answers`]).
+    /// this device alone, once the workspace accepts it in a shared calendar,
+    /// and never when the workspace refuses it ([`Self::announce_answers`]).
     pub(super) fn say_when_kept(&mut self, text: impl Into<String>) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.say_when_kept(text);
@@ -198,7 +198,7 @@ impl CalendarApp {
         }
     }
 
-    /// Show what the room answered of this window's changes: a change it
+    /// Show what the workspace answered of this window's changes: a change it
     /// kept is said done ("Added Buy milk"), and one it refused, which the
     /// record withdrew, says why instead.
     pub(super) fn announce_answers(&mut self) {

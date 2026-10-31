@@ -93,7 +93,7 @@ pub enum VideoEditorEffect {
     CancelExport,
     /// Import content.
     ///
-    /// Brings a video, sound or picture the room holds, by its content
+    /// Brings a video, sound or picture the workspace holds, by its content
     /// address, into the bin. Its kind, length, frame size and rate come
     /// from its container. Answers the new source: place it with add-clip.
     /// Importing the same content again answers the source already there.
@@ -160,7 +160,7 @@ pub enum VideoEditorEffect {
     /// content, deterministically: the same cut at the same settings is the
     /// same content. Answers state done with the content address, frames,
     /// duration and size; or state rendering with a job to ask
-    /// export-video-status about when the wait ran out. Sources must be room
+    /// export-video-status about when the wait ran out. Sources must be workspace
     /// content (import-content); at most two minutes. Changes nothing.
     #[effect(kind = "read", returns, audience = "agents", host_render)]
     ExportVideoContent {

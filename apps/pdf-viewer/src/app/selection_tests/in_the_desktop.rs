@@ -27,15 +27,19 @@ struct Readers {
 
 impl TileSource for Readers {
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
-        let room = workspace.room().to_string();
+        let workspace_id = workspace.room().to_string();
         let definition = crate::definition();
         let records = self
             .owners
-            .open(&definition.app_id, &room)
+            .open(&definition.app_id, &workspace_id)
             .expect("records");
         let views = Rc::new(
-            ui::application_view::InstanceViewStore::new(self.state.clone(), "device", &room)
-                .expect("views"),
+            ui::application_view::InstanceViewStore::new(
+                self.state.clone(),
+                "device",
+                &workspace_id,
+            )
+            .expect("views"),
         );
         let permissions = ui::permissions::SharedPermissions::new(
             ui::permissions::PermissionContext::member("reader", ui::permissions::Role::Owner),
