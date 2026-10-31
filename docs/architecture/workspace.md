@@ -275,7 +275,11 @@ the model but instead of it:
   are away, and ush environment sessions run on it. The person's devices
   already meet without it, on the session between two of them
   (`tilo-relay-sibling/1`), and learn the person's workspaces from the hosts
-  holding them (`room.list`).
+  holding them (`room.list`). While the person room stays, the readers of
+  each of its channels are the identity's certified devices that are not
+  revoked: the identity decides, and no governor or workspace takes part.
+  Any of those devices creates a channel's group and admits the others
+  (`channel_crypto::ChannelPeer`), as a workspace's participants do.
 - **Settings outside the model.** `Settings<T>` with Personal, DeviceLocal and
   Shared scopes, the settings registry and `settings.json`. Settings are
   resources.
