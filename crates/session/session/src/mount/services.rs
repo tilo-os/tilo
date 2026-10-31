@@ -4,15 +4,13 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_action_broker::channel_encryption::ChannelKeyProvider;
-use tilo_action_broker::collab_core::BrokerChannels;
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::Error;
 use tilo_service::Started;
 use tilo_surface_host::{Doors, Published};
 use ui::host_operation::ResourceOperationStart;
 
-use crate::plane::{DeskAuthority, ShortcutLibrary};
+use crate::plane::{DeskAuthority, Sealed, ShortcutLibrary};
 use crate::{
     ActionPlane, DesktopHandle, Options, Plane, Service, Services, activity, activity_provider,
     plane, surfaces,
@@ -111,8 +109,7 @@ pub(crate) fn start_action_plane(
     agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
     revocations: crate::engine::Revocations,
     sync: Option<&crate::sync::Client>,
-    channels: std::sync::Arc<std::sync::Mutex<BrokerChannels>>,
-    keys: Option<ChannelKeyProvider>,
+    sealed: Sealed,
 ) -> Result<Option<Plane>, Error> {
     let path = match &options.action_plane {
         ActionPlane::Off => return Ok(None),
@@ -161,8 +158,7 @@ pub(crate) fn start_action_plane(
             // The runs the broker delivers to the agents admitted here, and
             // hears back what they report of them.
             agent_runs: Some(agent_runs),
-            channels,
-            keys,
+            sealed,
         },
     )?;
     Ok(Some(Plane {

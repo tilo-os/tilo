@@ -377,6 +377,13 @@ impl Engine {
         *self.link.lock_recover() = Some(link);
     }
 
+    /// Where this device's channels hear its rooms' governance and tell which
+    /// devices each admits: the plane's side of them, `None` when this session
+    /// runs no channel service.
+    pub(crate) fn link(&self) -> Option<Arc<channels::ChannelLink>> {
+        self.link.lock_recover().clone()
+    }
+
     /// Where this session's channel service installs this device's keys: the
     /// broker, the room host and every sealed read meet here.
     pub(crate) fn keys(&self) -> ChannelKeyProvider {

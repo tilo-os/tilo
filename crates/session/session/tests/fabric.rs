@@ -85,7 +85,6 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
         Vec::new(),
         MediaContinuity::default(),
         Arc::new(|| {}),
-        tilo_session::ChannelLink::new(),
     )
     .expect("a loopback endpoint binds");
     // The fabric names a device by the key its session proves.

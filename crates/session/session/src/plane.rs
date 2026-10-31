@@ -238,6 +238,17 @@ impl SearchIndexServices for ContentIndex {
     }
 }
 
+/// The rooms' sealed records as this session serves them: the broker the
+/// channel service gates, and where an endpoint follows a route's keys.
+pub struct Sealed {
+    /// The broker's side of the rooms' sealed records: the channel service
+    /// gates a sealed record crossing it.
+    pub broker: std::sync::Arc<Mutex<BrokerChannels>>,
+    /// Where an endpoint follows when a route's keys change, when this
+    /// session's channel service runs.
+    pub keys: Option<ChannelKeyProvider>,
+}
+
 /// What this session hands the broker besides the link and the launcher: the
 /// board every app's live activity shows on, the index its publications land
 /// in, the desk it decides a room against, the shortcuts it saves and runs,
@@ -253,12 +264,9 @@ pub struct Hosted {
     pub shortcuts: std::sync::Arc<ShortcutLibrary>,
     pub activity: std::sync::Arc<ActivityWire>,
     pub agent_runs: Option<std::sync::Arc<tilo_agent_runs::AgentRuns>>,
-    /// The broker's side of the rooms' sealed records: the channel service
-    /// gates a sealed record crossing it.
-    pub channels: std::sync::Arc<Mutex<BrokerChannels>>,
-    /// Where an endpoint follows when a route's keys change, when this
-    /// session's channel service runs.
-    pub keys: Option<ChannelKeyProvider>,
+    /// The rooms' sealed records: what the broker gates, and where an
+    /// endpoint follows a route's keys.
+    pub sealed: Sealed,
 }
 
 /// Serve the session's published resources to the apps on `socket`: the
@@ -268,9 +276,9 @@ pub struct Hosted {
 /// in a room against `desk`. What apps publish of their own content lands in
 /// `content`, the index search reads.
 ///
-/// `channels` is the broker's side of the rooms' sealed records: the channel
-/// service gates a sealed record crossing it, and `keys` is what an endpoint
-/// follows to hear when a route's keys change.
+/// `sealed` is the broker's side of the rooms' sealed records: the channel
+/// service gates a sealed record crossing it, and its keys are what an
+/// endpoint follows to hear when a route's keys change.
 ///
 /// # Errors
 ///
@@ -284,7 +292,7 @@ pub fn serve(
     hosted: Hosted,
 ) -> std::io::Result<BrokerHandle> {
     let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.desk) as _;
-    let channels = std::sync::Arc::clone(&hosted.channels);
+    let channels = std::sync::Arc::clone(&hosted.sealed.broker);
     let services = host_services(link, launches, fabric, hosted);
     tilo_action_broker::collab_broker::spawn_with_services(
         socket,
@@ -427,8 +435,7 @@ fn host_services(
         shortcuts,
         activity,
         agent_runs,
-        channels: _,
-        keys,
+        sealed,
     } = hosted;
     let speakers: Option<std::sync::Arc<dyn SpeakerServices>> = fabric.map(|fabric| {
         std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
@@ -465,7 +472,7 @@ fn host_services(
         // This session's channel keys, when it holds rooms: a route's keys
         // reach its apps through them, and an endpoint follows their changes
         // here instead of asking again every second.
-        channel_keys: keys,
+        channel_keys: sealed.keys,
         ..HostServices::default()
     }
 }
@@ -705,8 +712,10 @@ mod tests {
             activity: crate::activity_provider::wire(requests()),
             agent_runs: None,
             native_media: None,
-            channels: std::sync::Arc::new(Mutex::new(BrokerChannels::default())),
-            keys: None,
+            sealed: Sealed {
+                broker: std::sync::Arc::new(Mutex::new(BrokerChannels::default())),
+                keys: None,
+            },
         }
     }
 

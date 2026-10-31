@@ -535,8 +535,9 @@ pub struct Client {
     /// session keeps no state to hold them in.
     engine: Option<Arc<Engine>>,
     /// What the session's channels hear and say on this plane: the governance
-    /// of the rooms' sealed records, and the devices each room admits.
-    link: Arc<ChannelLink>,
+    /// of the rooms' sealed records, and the devices each room admits. What
+    /// the engine holds, so a session that runs no channel service has none.
+    link: Option<Arc<ChannelLink>>,
     /// The person this device belongs to, by their root key, as its
     /// certificate names them.
     user: Option<[u8; 32]>,
@@ -603,9 +604,9 @@ impl Client {
     /// continuing on their other devices, kept current by the session's
     /// settings watch.
     ///
-    /// `link` is where the session's channels hear the rooms' governance and
-    /// tell which devices each room admits: what they say travels as this
-    /// plane's own messages.
+    /// The session's channels, when `engine` keeps them, hear the rooms'
+    /// governance on this plane and tell it which devices each room admits:
+    /// what they say travels as the plane's own messages.
     ///
     /// # Errors
     /// The endpoint could not be bound.
@@ -616,7 +617,6 @@ impl Client {
         hosts: Vec<EndpointAddr>,
         media: MediaContinuity,
         wake: Arc<dyn Fn() + Send + Sync>,
-        link: Arc<ChannelLink>,
     ) -> std::io::Result<Self> {
         let (outgoing, commands) = tokio::sync::mpsc::unbounded_channel();
         let (arrivals, arrived) = std::sync::mpsc::channel();
@@ -646,8 +646,12 @@ impl Client {
                 )
             })
         });
+        // The channels this session runs, if it runs any: their side of the
+        // plane is the engine's, opened before the plane starts. The thread
+        // takes its own handle, and this one tells them where the plane is.
+        let link = engine.as_ref().and_then(|engine| engine.link());
+        let plane_link = link.clone();
         let enrolling = engine.clone();
-        let channels = Arc::clone(&link);
         let thread = std::thread::Builder::new()
             .name("tilo-sync".into())
             .spawn(move || {
@@ -659,14 +663,16 @@ impl Client {
                     enrollments,
                     ready,
                     wake,
-                    channels,
+                    plane_link,
                 );
             })?;
         let (publisher, endpoint, reachability) = bound
             .recv()
             .map_err(std::io::Error::other)?
             .map_err(std::io::Error::other)?;
-        link.attach(outgoing.clone());
+        if let Some(link) = &link {
+            link.attach(outgoing.clone());
+        }
         let sync = Self {
             plane: RefCell::new(Plane {
                 publisher,
@@ -859,8 +865,8 @@ impl Client {
         self.keep_personal(&event);
         // What a room says of its channels' governance is the session's
         // channels' to take in, wherever the message came from.
-        if let NetEvent::Msg { msg, .. } = &event {
-            self.link.heard(msg);
+        if let (Some(link), NetEvent::Msg { msg, .. }) = (&self.link, &event) {
+            link.heard(msg);
         }
         if let Some(fabric) = &self.fabric {
             match &event {
@@ -1362,7 +1368,7 @@ impl Client {
                     enrolled
                 },
                 engine: None,
-                link: ChannelLink::new(),
+                link: None,
                 user: None,
                 siblings: RefCell::new(std::collections::BTreeMap::new()),
                 personal: RefCell::new(Vec::new()),
@@ -1493,7 +1499,7 @@ fn run(
     enrollments: std::sync::mpsc::Sender<Enrolled>,
     ready: std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
     wake: Arc<dyn Fn() + Send + Sync>,
-    link: Arc<ChannelLink>,
+    link: Option<Arc<ChannelLink>>,
 ) {
     let Some(runtime) = plane_runtime(&ready) else {
         return;
@@ -1537,8 +1543,7 @@ fn run(
             Arc::new(std::sync::Mutex::new(Vec::new())),
             reachability.clone(),
         );
-        let (events, carrying, attending) =
-            heard(identity.clone(), arrivals, wake, Arc::clone(&link));
+        let (events, carrying, attending) = heard(identity.clone(), arrivals, wake, link.clone());
         if ready.send(Ok((publisher, addr, reachability))).is_err() {
             return;
         }
@@ -1562,10 +1567,16 @@ fn run(
                     let endpoint = endpoint.clone();
                     let plane = actor.clone();
                     let events = events.clone();
-                    let channels = Arc::clone(&link);
+                    let channels = link.clone();
                     tokio::spawn(async move {
                         let result = redeem(
-                            endpoint, identity, engine, &plane, &events, request, &channels,
+                            endpoint,
+                            identity,
+                            engine,
+                            &plane,
+                            &events,
+                            request,
+                            channels.as_deref(),
                         )
                         .await;
                         let _ = landed.send(Enrolled {
@@ -1607,7 +1618,7 @@ fn heard(
     identity: Option<HostIdentity>,
     arrivals: std::sync::mpsc::Sender<NetEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
-    link: Arc<ChannelLink>,
+    link: Option<Arc<ChannelLink>>,
 ) -> (
     tokio::sync::mpsc::Sender<NetEvent>,
     tokio::task::JoinHandle<()>,
@@ -1642,7 +1653,7 @@ fn heard(
 async fn take_in(
     mut replayed: tokio::sync::mpsc::UnboundedReceiver<native_ingress::Input>,
     identity: &HostIdentity,
-    link: Arc<ChannelLink>,
+    link: Option<Arc<ChannelLink>>,
 ) {
     while let Some(input) = replayed.recv().await {
         let mut waiting = vec![input];
@@ -1654,24 +1665,31 @@ async fn take_in(
             // The channels' governance is between the room's devices: its
             // governor never admits it, and the channel service settles the
             // groups with it instead.
-            if link.dispatch(input.message()) {
+            if link
+                .as_ref()
+                .is_some_and(|link| link.dispatch(input.message()))
+            {
                 continue;
             }
             if run
                 .first()
                 .is_some_and(|first: &native_ingress::Input| !first.same_session(&input))
             {
-                admit(run, identity, &link).await;
+                admit(run, identity, link.as_deref()).await;
                 run = Vec::new();
             }
             run.push(input);
         }
-        admit(run, identity, &link).await;
+        admit(run, identity, link.as_deref()).await;
     }
 }
 
 /// Admit one session's inputs, as one commit of the room they belong to.
-async fn admit(inputs: Vec<native_ingress::Input>, identity: &HostIdentity, link: &ChannelLink) {
+async fn admit(
+    inputs: Vec<native_ingress::Input>,
+    identity: &HostIdentity,
+    link: Option<&ChannelLink>,
+) {
     let Some(room) = inputs.first().map(native_ingress::Input::room) else {
         return;
     };
@@ -1698,17 +1716,20 @@ async fn admit(inputs: Vec<native_ingress::Input>, identity: &HostIdentity, link
             }
         }
     }
-    if replay_wanted {
-        // A message waited on something the room's host sends of its own
-        // accord as well, such as the checkpoint a sealed record is founded
-        // on: the host replays what it retains, and the message is decided
-        // again.
-        link.ask_replay(room);
-    }
-    if admitted.changed {
-        // The room's governance moved with it: its channels and the devices
-        // it admits are read again, and the plane told what it admits now.
-        link.room_changed(room);
+    if let Some(link) = link {
+        if replay_wanted {
+            // A message waited on something the room's host sends of its own
+            // accord as well, such as the checkpoint a sealed record is
+            // founded on: the host replays what it retains, and the message
+            // is decided again.
+            link.ask_replay(room);
+        }
+        if admitted.changed {
+            // The room's governance moved with it: its channels and the
+            // devices it admits are read again, and the plane told what it
+            // admits now.
+            link.room_changed(room);
+        }
     }
 }
 
@@ -1801,7 +1822,7 @@ async fn redeem(
     plane: &tokio::sync::mpsc::Sender<NetCmd>,
     events: &tokio::sync::mpsc::Sender<NetEvent>,
     request: Enrolling,
-    link: &ChannelLink,
+    link: Option<&ChannelLink>,
 ) -> Result<(), String> {
     let topic = room_topic_id(request.room);
     // The room is joined as this person, under the identity they keep for
@@ -1839,7 +1860,9 @@ async fn redeem(
     // The room is held here now: this device takes part in it, so what its
     // people say and record reaches it as it happens, and the devices it
     // admits are told to the plane.
-    link.room_changed(request.room);
+    if let Some(link) = link {
+        link.room_changed(request.room);
+    }
     // The room's subscription comes before the session it carries: what the
     // host says the moment this device joins is the room as it stands, and a
     // room nobody listens to yet drops it.
