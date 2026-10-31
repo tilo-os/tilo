@@ -880,6 +880,7 @@ workspace-settings-nobody-to-grant = Noch niemand, dem du etwas erteilen kannst.
 workspace-settings-what-it-allows = Was es erlaubt
 workspace-settings-grant-header = Berechtigung erteilen
 workspace-settings-saved-roles = Rollen verwalten ({ $count })
+workspace-settings-query-saved-roles = Berechtigungsrolle
 workspace-settings-expiry-caption = Gültigkeit
 workspace-settings-grant = Erteilen
 workspace-settings-role-sheet-title = Zugriff auf den Arbeitsbereich wählen

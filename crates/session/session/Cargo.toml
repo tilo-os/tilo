@@ -202,6 +202,9 @@ tilo-quick-settings = { path = "../quick-settings", features = ["test-support"] 
 # What an external reader asks a panel's accessibility tree over AT-SPI2.
 atspi-proxies = { version = "0.13.0", default-features = false, features = ["wrappers", "tokio"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+# The sheets' apps mounted for a person, so a test presses a control of one
+# as the person's own gesture.
+tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 wayland-client.workspace = true
 wayland-protocols = { version = "0.32.12", features = ["client"] }
 # A display tool speaking `wlr-output-management` to the session's compositor.

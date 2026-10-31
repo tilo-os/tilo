@@ -64,6 +64,7 @@ mod system_sounds;
 pub mod unlock;
 mod wallpapers;
 mod window_motion;
+mod workspace_settings;
 mod workspaces;
 
 use std::cell::{Cell, RefCell};
@@ -124,9 +125,7 @@ use tilo_sheets::lock::LockSeat;
 use tilo_sheets::portal::PortalSeat;
 use tilo_sheets::power::{PowerEffect, PowerSeat};
 use tilo_sheets::shortcut_guide::GuideSeat;
-use tilo_sheets::workspace_settings::{
-    Settings as WorkspaceSettings, Tab, WorkspaceSettingsEffect, WorkspaceSettingsSeat,
-};
+use tilo_sheets::workspace_settings::WorkspaceSettingsSeat;
 
 pub use os_actions::SessionAction;
 
@@ -382,6 +381,9 @@ struct QuickSettingsPanel {
 struct Shared {
     handle: DesktopHandle,
     desktop: DesktopHost,
+    /// Who sits here, as the desk's rules and the workspaces' governance
+    /// name them.
+    person: String,
     search: Rc<SessionSearch>,
     /// The apps the person opens, when this session starts them.
     launch: Option<Rc<mount::apps::Apps>>,
@@ -413,6 +415,9 @@ struct Shared {
     /// asks for apps and services, by their seats.
     power: Option<PowerSeat>,
     workspace_settings: Option<WorkspaceSettingsSeat>,
+    /// The desk revision workspace settings was last fed at: its panes are
+    /// rebuilt when the desk changed under it.
+    ws_settings_fed: Cell<Option<u64>>,
     portal: Option<PortalSeat>,
     file_picker: Option<FilePickerSeat>,
     /// The question about a display change, which stands on every display
@@ -891,44 +896,24 @@ impl Shared {
 
     /// Show workspace settings for the workspace in front.
     fn open_workspace_settings(&self) {
-        let Some(seat) = &self.workspace_settings else {
-            return;
-        };
-        let name = self.handle.read(|tree| {
-            tree.active_workspace()
-                .map(|workspace| workspace.name.clone())
-                .unwrap_or_default()
-        });
-        seat.show(WorkspaceSettings {
-            name,
-            ..seat.settings()
-        });
-        seat.reset();
-        seat.presentation().open(false);
+        workspace_settings::open(
+            self.workspace_settings.as_ref(),
+            &self.handle,
+            &self.person(),
+            &self.app_lists(),
+            &self.ws_settings_fed,
+        );
     }
 
-    /// Put the workspace in front one place earlier or later among this
-    /// device's workspaces.
-    fn move_workspace(&self, step: i32) {
-        let mut tree = self.handle.read(Clone::clone);
-        let Some(at) = tree
-            .workspaces
-            .iter()
-            .position(|workspace| workspace.id == tree.active)
-        else {
-            return;
-        };
-        let last = tree.workspaces.len().saturating_sub(1);
-        let to = if step < 0 {
-            at.saturating_sub(usize::try_from(step.unsigned_abs()).unwrap_or(usize::MAX))
-        } else {
-            at.saturating_add(usize::try_from(step).unwrap_or(usize::MAX))
-                .min(last)
-        };
-        if to != at {
-            tree.workspaces.swap(at, to);
-            self.handle.replace_tree(tree);
-        }
+    /// Who sits here, as the session acts for them: the identity the desk's
+    /// rules answer for and the workspace's governance is asked of.
+    fn person(&self) -> String {
+        self.person.clone()
+    }
+
+    /// This machine's applications, as the session's own lists read them.
+    fn app_lists(&self) -> std::sync::Arc<AppLists> {
+        self.search.app_lists()
     }
 
     /// Make a new workspace through the desk's own published action, so the
@@ -1060,37 +1045,27 @@ impl Shared {
                 }
             }
         }
+
         workspaces::follow_directory(
             self.directory.as_ref(),
             &self.handle,
             &self.directory_store,
             &|joined| self.add_joined_workspace(joined),
         );
-        if let Some(settings) = &self.workspace_settings {
-            for effect in settings.take_asked() {
-                match effect {
-                    WorkspaceSettingsEffect::Rename { name } => self
-                        .intents
-                        .borrow_mut()
-                        .push(ChromeIntent::RenameWorkspace { name }),
-                    WorkspaceSettingsEffect::Close => {}
-                    WorkspaceSettingsEffect::ShowTab { tab } => {
-                        // The sheet shows the tab the person picked, and
-                        // keeps it for the next opening.
-                        if let Some(tab) = Tab::from_key(&tab) {
-                            let mut shown = settings.settings();
-                            shown.tab = tab;
-                            settings.show(shown);
-                        }
-                    }
-                    WorkspaceSettingsEffect::Move { step } => self.move_workspace(step),
-                    other => tracing::debug!(
-                        ?other,
-                        "workspace settings asks what the session cannot do yet"
-                    ),
-                }
-            }
-        }
+        workspace_settings::follow(
+            self.workspace_settings.as_ref(),
+            &self.handle,
+            &self.person(),
+            &self.intents,
+            &self.invocations,
+        );
+        workspace_settings::refresh(
+            self.workspace_settings.as_ref(),
+            &self.handle,
+            &self.person(),
+            &self.app_lists(),
+            &self.ws_settings_fed,
+        );
         self.asker.follow();
         self.shortcut_guide.follow();
     }
@@ -1660,6 +1635,7 @@ impl Session {
         let shared = Shared {
             handle,
             desktop,
+            person: options.person.clone(),
             search,
             launch: options.launch,
             drives: options.drives,
@@ -1675,6 +1651,7 @@ impl Session {
             device,
             power,
             workspace_settings,
+            ws_settings_fed: Cell::new(None),
             directory,
             directory_store: directory::Store::default(),
             portal,

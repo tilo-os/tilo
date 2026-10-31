@@ -294,6 +294,12 @@ impl SessionSearch {
         edits
     }
 
+    /// This device's app lists as last read: what a surface names an
+    /// application by, without reading the disk again.
+    pub(crate) fn app_lists(&self) -> Arc<AppLists> {
+        self.lists.latest()
+    }
+
     /// The lists as last read, with the sources built from them rebuilt
     /// when they were read again since: the machine's apps here, Settings
     /// and the catalogue at their room's next search.

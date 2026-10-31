@@ -22,6 +22,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
+use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::clipboard_history::{Copy, TEXT_MIME};
 use tilo_compositor::{Compositor, GestureEvent, InputEvent, KeyRepeat, OutputConfig, Selection};
 use tilo_desktop::desktop_actions::{CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND};
@@ -39,7 +40,7 @@ use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileReque
 use tilo_sheets::lock::LockEffect;
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
-use tilo_sheets::workspace_settings::WorkspaceSettingsEffect;
+use tilo_sheets::workspace_settings::{WorkspaceSettingsApp, WorkspaceSettingsEffect};
 use tilo_surface_host::Published;
 use tilo_test_env::PrivateBus;
 use wayland_client::protocol::{
@@ -1665,6 +1666,186 @@ fn workspace_settings_shows_a_tab_and_moves_the_workspace() {
         after,
         [names[1].clone(), names[0].clone()],
         "the workspace in front moved one place earlier"
+    );
+}
+
+/// Who sits here, as the session acts for them.
+const PERSON: &str = "person";
+
+/// The workspace in front belongs to the person who sits here, as it does
+/// once the room's custody has taken it, with `members` already in it.
+fn own_workspace(session: &Session, members: &[&str]) {
+    let mut tree = session.handle().read(Clone::clone);
+    let workspace = tree.active_workspace_mut().expect("a workspace in front");
+    workspace.set_owner(PERSON.to_owned());
+    for member in members {
+        tilo_desktop::workspace_settings::set_member_role(
+            workspace,
+            &PERSON.to_owned(),
+            &(*member).to_owned(),
+            tilo_action_policy::Role::Viewer,
+        );
+    }
+    session.handle().replace_tree(tree);
+}
+
+/// The sheet as a person presses it: the app the session hosts, lent the
+/// seat the session lends its own, so a press arrives as the person's own.
+fn sheet(session: &Session) -> HeadlessApp<WorkspaceSettingsApp> {
+    let seat = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .clone();
+    let mut app =
+        HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent(PERSON, seat).expect("the sheet");
+    app.harness().resize((1280, 900)).expect("a screen");
+    app.settle();
+    app
+}
+
+/// Press the control `id` of `app`, as a person's own gesture.
+fn press(app: &mut HeadlessApp<WorkspaceSettingsApp>, id: &str) {
+    app.harness()
+        .perform_named(id, &ui::a11y::Action::Activate)
+        .unwrap_or_else(|error| panic!("press {id}: {error}"));
+    app.settle();
+}
+
+/// Activate the element `name` says, as a screen reader does: the menu items
+/// a control opens have no id of their own, only what they say.
+fn activate(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) {
+    let node = app
+        .harness()
+        .a11y_node_named(name)
+        .unwrap_or_else(|| panic!("no element says {name:?}"));
+    app.harness()
+        .perform_a11y_action(node, &ui::a11y::Action::Activate)
+        .unwrap_or_else(|error| panic!("activate {name}: {error}"));
+    app.settle();
+}
+
+/// Show `tab` in the sheet, as pressing its tab does, and let the session
+/// answer with the tab it shows.
+fn show_tab(
+    session: &mut Session,
+    app: &mut HeadlessApp<WorkspaceSettingsApp>,
+    tab: &WorkspaceSettingsEffect,
+) {
+    app.effect(tab).expect("show the tab");
+    session.step(Duration::from_millis(1)).unwrap();
+    app.settle();
+}
+
+/// The People tab gives a member another role, and the workspace holds it
+/// afterwards, with the sheet's row saying so.
+#[test]
+fn workspace_settings_sets_a_members_role() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    own_workspace(&session, &["ada"]);
+    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
+    session.step(Duration::from_millis(1)).unwrap();
+    let mut app = sheet(&session);
+    show_tab(
+        &mut session,
+        &mut app,
+        &WorkspaceSettingsEffect::ShowTab {
+            tab: "people".to_owned(),
+        },
+    );
+    press(&mut app, "ws-people-role-ada");
+    activate(&mut app, "Editor");
+    session.step(Duration::from_millis(1)).unwrap();
+    app.settle();
+    let role = session.handle().read(|tree| {
+        tree.active_workspace()
+            .and_then(|workspace| workspace.role_of("ada"))
+    });
+    assert_eq!(
+        role,
+        Some(tilo_action_policy::Role::Editor),
+        "ada is an editor of the workspace"
+    );
+    let row = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .settings()
+        .people
+        .people
+        .into_iter()
+        .find(|person| person.key == "ada")
+        .expect("the sheet lists ada");
+    assert_eq!(
+        row.role_key.as_deref(),
+        Some("editor"),
+        "the sheet's row says which role she has"
+    );
+}
+
+/// The Permissions tab gives ada a permission beyond her role, and takes it
+/// back: the workspace holds it in between, and the sheet lists it.
+#[test]
+fn workspace_settings_gives_and_revokes_a_permission() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    own_workspace(&session, &["ada"]);
+    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
+    session.step(Duration::from_millis(1)).unwrap();
+    let mut app = sheet(&session);
+    show_tab(
+        &mut session,
+        &mut app,
+        &WorkspaceSettingsEffect::ShowTab {
+            tab: "permissions".to_owned(),
+        },
+    );
+    press(&mut app, "ws-grant-who");
+    activate(&mut app, "ada");
+    press(&mut app, "ws-grant");
+    session.step(Duration::from_millis(1)).unwrap();
+    app.settle();
+    let given = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .settings()
+        .permissions
+        .sections
+        .into_iter()
+        .flat_map(|section| section.permissions)
+        .find(|permission| permission.holder == "ada")
+        .expect("the sheet lists ada's permission");
+    let camera = tilo_desktop_surface::i18n::t("workspace-settings-scope-camera");
+    assert!(
+        given.detail.contains(&camera),
+        "the row says what the permission allows: {}",
+        given.detail
+    );
+    let held = session
+        .handle()
+        .read(|tree| tree.active_workspace().expect("a workspace").sandbox.len());
+    assert_eq!(held, 1, "the workspace gives ada the camera");
+
+    press(&mut app, &format!("ws-permission-revoke-{}", given.key));
+    press(&mut app, "ws-settings-decision.primary");
+    session.step(Duration::from_millis(1)).unwrap();
+    app.settle();
+    let left = session
+        .handle()
+        .read(|tree| tree.active_workspace().expect("a workspace").sandbox.len());
+    assert_eq!(left, 0, "the workspace gives the camera to no one again");
+    assert!(
+        session
+            .workspace_settings()
+            .expect("workspace settings")
+            .settings()
+            .permissions
+            .sections
+            .into_iter()
+            .flat_map(|section| section.permissions)
+            .all(|permission| permission.holder != "ada"),
+        "the sheet lists no permission of ada's"
     );
 }
 

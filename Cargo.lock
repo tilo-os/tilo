@@ -21453,6 +21453,7 @@ dependencies = [
  "tilo-action-broker",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-app",
  "tilo-app-launch",
  "tilo-app-state",
  "tilo-audio-service",

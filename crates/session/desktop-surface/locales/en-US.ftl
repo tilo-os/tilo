@@ -862,6 +862,7 @@ workspace-settings-nobody-to-grant = Nobody to grant to yet. Invite someone, or 
 workspace-settings-what-it-allows = What it allows
 workspace-settings-grant-header = Grant a permission
 workspace-settings-saved-roles = Manage roles ({ $count })
+workspace-settings-query-saved-roles = permission role
 workspace-settings-expiry-caption = Until
 workspace-settings-grant = Grant
 workspace-settings-role-sheet-title = Choose workspace access

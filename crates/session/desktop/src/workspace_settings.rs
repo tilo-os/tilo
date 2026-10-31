@@ -2218,6 +2218,9 @@ enum GrantTarget {
 /// (devices gate the portal, `NetHost` gates egress, `FsPath` gates the
 /// sandbox binds and the filesystem, `Workspace` gates administration).
 pub struct GrantChoice {
+    /// What the choice is named by where a lens asks for it: the same key
+    /// every host and every view of the composer uses.
+    pub key: &'static str,
     /// Catalogue key of the picker's label.
     label_key: &'static str,
     target: GrantTarget,
@@ -2232,41 +2235,49 @@ impl GrantChoice {
 
 static GRANT_CHOICES: &[GrantChoice] = &[
     GrantChoice {
+        key: "camera",
         label_key: "workspace-settings-grant-camera",
         target: GrantTarget::Device("camera"),
         access: Access::Read,
     },
     GrantChoice {
+        key: "microphone",
         label_key: "workspace-settings-grant-microphone",
         target: GrantTarget::Device("microphone"),
         access: Access::Read,
     },
     GrantChoice {
+        key: "screencast",
         label_key: "workspace-settings-grant-screencast",
         target: GrantTarget::Device("screencast"),
         access: Access::Read,
     },
     GrantChoice {
+        key: "remote-control",
         label_key: "workspace-settings-grant-remote-control",
         target: GrantTarget::Device("remote-desktop"),
         access: Access::Write,
     },
     GrantChoice {
+        key: "network",
         label_key: "workspace-settings-grant-network",
         target: GrantTarget::AnyHost,
         access: Access::Read,
     },
     GrantChoice {
+        key: "read-files",
         label_key: "workspace-settings-grant-read-files",
         target: GrantTarget::WorkspaceFiles,
         access: Access::Read,
     },
     GrantChoice {
+        key: "edit-files",
         label_key: "workspace-settings-grant-edit-files",
         target: GrantTarget::WorkspaceFiles,
         access: Access::Write,
     },
     GrantChoice {
+        key: "create-roles",
         label_key: "workspace-settings-grant-create-roles",
         target: GrantTarget::GovernanceAction {
             action: tilo_desktop_model::PRESET_SAVE_ACTION_ID,
@@ -2274,6 +2285,7 @@ static GRANT_CHOICES: &[GrantChoice] = &[
         access: Access::Write,
     },
     GrantChoice {
+        key: "assign-roles",
         label_key: "workspace-settings-grant-assign-roles",
         target: GrantTarget::GovernanceAction {
             action: tilo_desktop_model::PRESET_ASSIGN_ACTION_ID,
@@ -2286,6 +2298,7 @@ static GRANT_CHOICES: &[GrantChoice] = &[
 /// length ever disagree — unreachable in practice since the index is
 /// always taken modulo the live length, but a real value beats a panic.
 const FALLBACK_CHOICE: GrantChoice = GrantChoice {
+    key: "edit-files",
     label_key: "workspace-settings-grant-edit-files",
     target: GrantTarget::WorkspaceFiles,
     access: Access::Write,
@@ -2345,6 +2358,77 @@ impl GrantDraft {
             .unwrap_or(0);
         GRANT_CHOICES.get(idx).unwrap_or(&FALLBACK_CHOICE)
     }
+}
+
+/// What a subject of the composer, a permission and an expiry are named by
+/// where a view asks for the grant: `member:…`, `agent:…` or `app:…`, the
+/// permission's key, and `never`, `session` or `once`.
+#[must_use]
+pub fn grant_subject_key(entry: &GrantSubject) -> Option<String> {
+    let kind = match entry.kind {
+        SubjectKind::Member => "member",
+        SubjectKind::Agent => "agent",
+        SubjectKind::App | SubjectKind::AppAction => "app",
+        SubjectKind::Role | SubjectKind::Other => return None,
+    };
+    Some(format!("{kind}:{}", entry.id))
+}
+
+/// The expiry's key, as [`GrantComposer`] names it.
+#[must_use]
+pub fn expiry_key(expiry: Expiry) -> &'static str {
+    match expiry {
+        Expiry::Never => "never",
+        Expiry::EndOfSession | Expiry::AtUnix(_) => "session",
+        Expiry::AfterUse => "once",
+    }
+}
+
+/// The composer's permissions as (key, label), in picker order.
+#[must_use]
+pub fn grant_choices() -> Vec<(&'static str, String)> {
+    GRANT_CHOICES
+        .iter()
+        .map(|choice| (choice.key, choice.label()))
+        .collect()
+}
+
+/// The composer's expiries as (key, label), in picker order.
+#[must_use]
+pub fn expiry_choices() -> Vec<(&'static str, String)> {
+    EXPIRY_CHOICES
+        .iter()
+        .map(|expiry| (expiry_key(*expiry), expiry_label(*expiry)))
+        .collect()
+}
+
+/// The draft a view asked for: the subject `subject` (`member:…`, `agent:…`
+/// or `app:…`), the permission `permission` and the expiry `expiry`, as the
+/// composer stands. `None` when the workspace holds no such subject, so a
+/// grant for someone who left is never made for someone else.
+#[must_use]
+pub fn draft_for(
+    ws: &Workspace,
+    subject: &str,
+    permission: &str,
+    expiry: &str,
+) -> Option<GrantDraft> {
+    let subject_index = grant_subjects(ws)
+        .iter()
+        .position(|entry| grant_subject_key(entry).as_deref() == Some(subject))?;
+    let choice_index = GRANT_CHOICES
+        .iter()
+        .position(|choice| choice.key == permission)?;
+    let expiry = EXPIRY_CHOICES
+        .iter()
+        .copied()
+        .find(|candidate| expiry_key(*candidate) == expiry)
+        .unwrap_or(Expiry::EndOfSession);
+    Some(GrantDraft {
+        subject_index,
+        choice_index,
+        expiry,
+    })
 }
 
 /// The subjects the composer can target, in picker order: the
@@ -4033,6 +4117,59 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, Listed<'_>)> {
             .then_with(|| a.1.id().cmp(b.1.id()))
     });
     out
+}
+
+/// One permission the Permissions tab lists, in the viewer's words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedPermission {
+    /// What revoking it names.
+    pub id: String,
+    /// The group it is listed under: people, agents, apps and so on.
+    pub section: String,
+    /// Who holds it.
+    pub holder: String,
+    /// What it allows.
+    pub allows: String,
+    /// How long it lasts.
+    pub expiry: String,
+    /// Who gave it, where the workspace knows.
+    pub granted_by: Option<String>,
+}
+
+/// The permissions the workspace gives, in the order the tab lists them,
+/// each in the viewer's words. The same entries the pane draws, from the
+/// same labels, for a view that lays them out itself.
+#[must_use]
+pub fn listed_permissions(
+    ws: &Workspace,
+    apps: &dyn AppDirectory,
+    local_user: &str,
+) -> Vec<ListedPermission> {
+    listed_capabilities(ws)
+        .into_iter()
+        .map(|(subject, entry)| {
+            let (allows, expiry, granted_by) = match entry {
+                Listed::Sandbox(cap) => (
+                    capability_allows(cap, apps),
+                    expiry_label(cap.expiry),
+                    granted_by_label(cap, ws, local_user),
+                ),
+                Listed::Grant(grant) => (
+                    grant_allows(grant, apps),
+                    lifetime_label(&grant.lifetime),
+                    grant_given_by_label(grant, ws, local_user),
+                ),
+            };
+            ListedPermission {
+                id: entry.id().to_owned(),
+                section: subject.kind.section_label(),
+                holder: subject.display(ws, local_user, apps),
+                allows,
+                expiry,
+                granted_by,
+            }
+        })
+        .collect()
 }
 
 /// Geometry does not depend on the draft, so the click router can
