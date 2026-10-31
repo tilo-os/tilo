@@ -180,6 +180,7 @@ fn open_at_operation() -> ActionSpec {
     .of_kind(tilo_actions::ActionKind::Read)
     .for_audience(tilo_actions::Audience::Agents)
 }
+#[cfg(any(feature = "native", test))]
 pub(crate) fn encode_entry(id: HistoryEntryId) -> String {
     crate::widget::history_group::hex16(&id)
 }

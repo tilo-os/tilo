@@ -103,10 +103,12 @@ impl TooltipLayer {
         self.host.visible()
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn needs_frame(&self) -> bool {
         self.redraw || self.host.needs_frame()
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn reveal_at(&self) -> Option<crate::time::Instant> {
         self.host.reveal_at()
     }
