@@ -719,6 +719,29 @@ impl ViewInstance {
                 )));
             }
         };
+        // A control hands over the whole of what it holds, so a field drawn again and given
+        // back exactly what it already says is no edit: nothing is written, and nothing is
+        // recorded as a step of the resource's history.
+        let spec = crate::store::FieldSpec {
+            id: field.id.clone(),
+            kind: field.kind,
+        };
+        let held = self.core.store.borrow().read(&target, &spec);
+        let unchanged = match (&mutation, held) {
+            // A rich text that says nothing is the same rich text however many empty
+            // paragraphs hold the nothing: a control that has never been typed into hands
+            // back no paragraph at all, where the field holds the one it started with.
+            (Mutation::SetRich { value, .. }, Ok(crate::store::FieldValue::Rich(now))) => {
+                now == *value || (now.is_empty() && value.is_empty())
+            }
+            (Mutation::SetText { text, .. }, Ok(crate::store::FieldValue::Text(now))) => {
+                now == *text
+            }
+            _ => false,
+        };
+        if unchanged {
+            return Ok(EditOutcome::Applied);
+        }
         let change = ChangeNote {
             action: "$edit".into(),
             args: serde_json::json!([field.id, to_json(value).map_err(RuntimeError::BadArgs)?]),
