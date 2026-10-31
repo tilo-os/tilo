@@ -275,4 +275,33 @@ fn keeping_a_workspace_off_this_device_takes_it_off_this_desks() {
         after,
         "and comes back off the desk in the next session"
     );
+
+    // The desk keeps the person one workspace: their last one is not kept
+    // off this device, and its row says it still shows here.
+    session
+        .invoke(
+            CHROME_RESOURCE,
+            "workspace-settings",
+            &serde_json::Map::new(),
+        )
+        .expect("settings opens on the workspace that is left");
+    session.step(Duration::from_millis(1)).expect("a frame");
+    let mut app = sheet(&session);
+    press(&mut app, &format!("ws-general-device-{key}"));
+    session.step(Duration::from_millis(1)).expect("a frame");
+    assert_eq!(
+        held(&session),
+        after,
+        "the person is never left with no workspace"
+    );
+    let rows = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .settings()
+        .general
+        .device_rows;
+    assert!(
+        rows.iter().all(|row| row.shown),
+        "and its row still says the workspace shows here: {rows:?}"
+    );
 }

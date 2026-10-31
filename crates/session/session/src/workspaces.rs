@@ -780,6 +780,11 @@ impl Personal {
             .collect()
     }
 
+    /// Whether `device` is the device this session runs on.
+    pub(crate) fn is_this_device(&self, device: &[u8; 32]) -> bool {
+        *device == self.device
+    }
+
     /// Whether the workspace of `room` shows on `device`.
     pub(crate) fn shown_on(&self, room: RoomId, device: &[u8; 32]) -> Option<bool> {
         let entry = entries_of(&self.directory)

@@ -339,7 +339,16 @@ fn toggle_device(
     let Some(shown) = personal.shown_on(room, &device) else {
         return false;
     };
-    personal.set_shown(room, device, !shown)
+    if !shown {
+        return personal.set_shown(room, device, true);
+    }
+    // The desk keeps the person one workspace: keeping this device's last
+    // one off it would leave them with none, and the workspace would stay
+    // whatever the choice said.
+    if personal.is_this_device(&device) && handle.read(|tree| tree.workspaces.len()) <= 1 {
+        return false;
+    }
+    personal.set_shown(room, device, false)
 }
 
 /// The device `key` names, as the sheet hands it back.
