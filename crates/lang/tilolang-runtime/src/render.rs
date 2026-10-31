@@ -353,28 +353,12 @@ impl Core {
                 (name.clone(), r)
             })
             .collect();
+        // A call of another package's view: its boundary renders it where it stands, and this
+        // node is the fragment the boundary's tree goes in.
         if let (Some(target), Some(boundaries)) =
             (n.kind.strip_prefix(FOREIGN_VIEW), hook.as_deref_mut())
         {
-            let (vt, args) = self.call_of(target, &n.props)?;
-            let mut props = n.props.clone();
-            props.retain(|name, _| !name.starts_with(ARG_PREFIX));
-            let children = boundaries.boundary(Stub {
-                key: &key,
-                target: Rc::new(vt),
-                args,
-                lazy: walk.in_list,
-                depth: cx.offer.depth.saturating_add(1),
-            })?;
-            return Ok(UiNode {
-                kind: "fragment".to_owned(),
-                key,
-                props,
-                binding: n.binding.clone(),
-                events,
-                anchor: n.anchor.clone(),
-                children,
-            });
+            return self.foreign_view(cx, n, key, events, target, walk, boundaries);
         }
         // A view call's keys are the same at every call site, so they go under the call's key.
         let calls = n.kind == "fragment" || n.kind.starts_with(FOREIGN_VIEW);
@@ -439,6 +423,39 @@ impl Core {
             )?;
         }
         Ok(node)
+    }
+
+    /// The fragment a call of another package's view stands for: its props without the
+    /// arguments passed, and the tree its boundary renders for it.
+    fn foreign_view(
+        &self,
+        cx: &Build<'_>,
+        n: &NodeBuild,
+        key: String,
+        events: std::collections::BTreeMap<String, Retained>,
+        target: &str,
+        walk: Walk<'_>,
+        boundaries: &mut dyn Boundaries,
+    ) -> Result<UiNode, RuntimeError> {
+        let (vt, args) = self.call_of(target, &n.props)?;
+        let mut props = n.props.clone();
+        props.retain(|name, _| !name.starts_with(ARG_PREFIX));
+        let children = boundaries.boundary(Stub {
+            key: &key,
+            target: Rc::new(vt),
+            args,
+            lazy: walk.in_list,
+            depth: cx.offer.depth.saturating_add(1),
+        })?;
+        Ok(UiNode {
+            kind: "fragment".to_owned(),
+            key,
+            props,
+            binding: n.binding.clone(),
+            events,
+            anchor: n.anchor.clone(),
+            children,
+        })
     }
 
     /// The children of `n`, its loops' rows in their places, and how many there are: a

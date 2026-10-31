@@ -814,9 +814,10 @@ impl Core {
                 continue;
             }
             let versions = store.versions(&candidate)?;
-            let Some(last) = versions.last() else {
+            // An item nothing changed is not one anyone said: nothing unseen in it.
+            if versions.is_empty() {
                 continue;
-            };
+            }
             let seen = self.seen_mark(person, &candidate.id_string());
             if !crate::seen::unseen(&versions, person, seen.as_ref(), &runs, mark_others).is_empty()
             {
@@ -909,7 +910,7 @@ impl Core {
             .filter(|f| f.kind == crate::meta::FieldKind::RichText)
             .map(|f| f.id.clone())
             .collect();
-        let mut found = 0;
+        let mut found: usize = 0;
         for id in candidates {
             let candidate = at.item(&id, item.to_owned());
             // The item may have been removed since: it names nobody.
@@ -925,7 +926,7 @@ impl Core {
                     continue;
                 };
                 if rich.mentions(person) {
-                    found += 1;
+                    found = found.saturating_add(1);
                     break;
                 }
             }
@@ -990,7 +991,7 @@ impl Core {
         person: &str,
         at: &ResourceRef,
     ) -> Result<bool, crate::store::StoreError> {
-        let newest_item = self.mark_items_seen(person, at)?;
+        let newest_item = self.mark_items_seen(person, at);
         let resource = at.id_string();
         let versions = self.store.borrow().versions(at)?;
         // A store that keeps a version per item names the mark by the newest of what it holds;
@@ -1027,23 +1028,19 @@ impl Core {
     /// (`mark_seen`). A person who read a channel has read the messages in it. Each item's mark
     /// is set here and written with the container's own, so a replica's record keeps them
     /// (task-legibility §4). The newest item's version, when it holds any, is the time read to.
-    fn mark_items_seen(
-        &self,
-        person: &str,
-        at: &ResourceRef,
-    ) -> Result<Option<crate::store::Version>, crate::store::StoreError> {
+    fn mark_items_seen(&self, person: &str, at: &ResourceRef) -> Option<crate::store::Version> {
         // The type as the store knows it at `at`: the reference the view holds may name a
         // different one while the record catches up, so the store is asked.
         let ty = self.store.borrow().type_of(at).or_else(|_| {
             self.type_of_ref(&at.ty)
                 .map(|(_, info)| info.id.clone())
-                .map_err(|e| crate::store::StoreError::Invalid(e))
+                .map_err(crate::store::StoreError::Invalid)
         });
         let Ok(ty) = ty else {
-            return Ok(None);
+            return None;
         };
         let Ok((_, info)) = self.type_of_ref(&ty) else {
-            return Ok(None);
+            return None;
         };
         let specs: Vec<crate::store::FieldSpec> = info.specs();
         let mut newest: Option<crate::store::Version> = None;
@@ -1095,7 +1092,7 @@ impl Core {
                     });
             }
         }
-        Ok(newest)
+        newest
     }
 
     /// The task runs `person` reviewed are `runs` now.
@@ -1483,11 +1480,4 @@ fn said_value(value: &Value) -> String {
         Value::Principal(who) => who.0.clone(),
         _ => String::new(),
     }
-}
-
-/// The id of the item when `resource` is one of the items of `holder` (`holder/item`), never
-/// an item of one of them.
-fn item_of<'a>(resource: &'a str, holder: &str) -> Option<&'a str> {
-    let rest = resource.strip_prefix(holder)?.strip_prefix('/')?;
-    (!rest.is_empty() && !rest.contains('/')).then_some(rest)
 }

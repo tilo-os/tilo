@@ -827,11 +827,7 @@ fn the_transcript_marks_the_first_message_the_person_had_not_seen() {
 
     // A message from Ben afterwards is what is new, alone.
     ben.host.sync_from(&ada.doc);
-    call(
-        &ben,
-        "send",
-        vec![design.clone(), rich("Any time."), Value::none()],
-    );
+    call(&ben, "send", vec![design, rich("Any time."), Value::none()]);
     ben.commit();
     ben.host.sync_from(&ben.doc);
     ada.sync_with(&mut ben);
@@ -897,10 +893,11 @@ fn a_direct_message_opens_with_a_person_and_takes_their_messages() {
             .clone()
     };
     // The place's event runs the action the app declared for it.
-    let offered = sidebar
-        .event_action(&person.key, "select")
-        .expect("the place opens a conversation");
-    assert_eq!(
+    assert!(
+        sidebar.event_action(&person.key, "select").is_some(),
+        "the place opens a conversation"
+    );
+    assert!(
         ada.host
             .package(APP)
             .unwrap()
@@ -908,7 +905,7 @@ fn a_direct_message_opens_with_a_person_and_takes_their_messages() {
             .actions
             .iter()
             .any(|a| a.name == "message_person"),
-        true
+        "the action is declared"
     );
     let dm = call(
         &ada,
