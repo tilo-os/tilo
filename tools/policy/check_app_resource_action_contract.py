@@ -2059,13 +2059,29 @@ def write_baseline(
         if path not in files:
             path.unlink()
     for path, rules in files.items():
-        lines = []
+        lines = leading_comments(path)
         for rule in sorted(rules):
             lines.append(f"[ratchets.{rule}]")
             lines += [f'"{relative}" = {limit}' for relative, limit in sorted(rules[rule].items())]
             lines.append("")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+
+
+def leading_comments(path: Path) -> list[str]:
+    """The comment block a baseline file opens with, kept across rewrites: it
+    says why the ceiling that is left is there, which no count can say."""
+    if not path.exists():
+        return []
+    kept: list[str] = []
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith("#"):
+            if kept and line.strip() == "":
+                kept.append("")
+            break
+        kept.append(line)
+    return kept
 
 
 def main() -> int:
