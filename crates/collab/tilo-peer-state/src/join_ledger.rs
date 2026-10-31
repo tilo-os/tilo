@@ -50,6 +50,14 @@ pub struct JoinError {
     code: u16,
 }
 
+impl From<crate::state::MembershipError> for JoinError {
+    /// A joining device the room does not admit is refused in the words its
+    /// membership refusal already has.
+    fn from(error: crate::state::MembershipError) -> Self {
+        Self::new(error.to_string())
+    }
+}
+
 impl JoinError {
     /// A refusal.
     pub fn new(message: impl Into<String>) -> Self {

@@ -353,7 +353,8 @@ impl Rooms {
             tilo_action_policy::Subject::Person(hex::encode(administrator.user_public_key));
         let held = governed
             .peer()
-            .permissions(administrator.device_public_key, system_time(now)).map_err(|error| error.to_string())?
+            .permissions(administrator.device_public_key, system_time(now))
+            .map_err(|error| error.to_string())?
             .policy
             .grants;
         let grants: Vec<tilo_action_policy::Grant> = apps

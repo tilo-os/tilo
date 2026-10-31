@@ -60,7 +60,10 @@ async fn invoke(rooms: &Rooms, device: &DeviceCert, ask: Ask) -> Result<Value, S
                 .await
                 .map_err(|error| error.to_string())?;
             let held = state.lock().await;
-            let member = held.peer().permissions(device.device_public_key, now).map_err(|error| error.to_string())?;
+            let member = held
+                .peer()
+                .permissions(device.device_public_key, now)
+                .map_err(|error| error.to_string())?;
             drop(held);
             return Ok(json!({
                 "read": member.allows(&node, tilo_action_policy::ActionKind::Read, now),
