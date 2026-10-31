@@ -12,7 +12,7 @@
 //! [`SharedFlatpakSession::renegotiate`] switches codec when the viewer set
 //! changes, and the caller then announces the new stream.
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "dmabuf"))]
 use std::os::fd::AsRawFd;
 use std::sync::{
     Arc, Condvar, Mutex,
@@ -29,9 +29,9 @@ use crate::streaming::{InputEvent, ShareRegistry, StreamingShare};
 use media::realtime::{CodecCapabilities, RealtimePolicy, negotiate, negotiate_hdr};
 use neighbour_wire::colorimetry::Colorimetry;
 use neighbour_wire::{NeighbourMsg, PeerId, SurfaceId};
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "dmabuf"))]
 use smithay::backend::allocator::Buffer as _;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "dmabuf"))]
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use tilo_callstream::encoder::EncodeError;
 use tilo_callstream::stream::SurfaceStreamSender;
@@ -68,7 +68,7 @@ enum StagedKind {
     Window,
     /// DMABUF handle handed to the encoder; Arc-backed inside smithay, so
     /// staging it keeps every plane fd alive without a dup.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "dmabuf"))]
     Dmabuf(Dmabuf),
 }
 
@@ -76,7 +76,7 @@ enum StagedKind {
 /// `.take(4)` bounds the plane count, but writes go through `.get_mut()`
 /// anyway rather than trust that invariant to hold forever. Split out of
 /// `SharedFlatpakSession::encode_next_frame` to keep it short.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "dmabuf"))]
 fn dmabuf_frame_input(dmabuf: &Dmabuf) -> FrameInput<'_> {
     let mut plane_fds = [-1i32; 4];
     let mut plane_offsets = [0u64; 4];
@@ -865,7 +865,7 @@ impl SharedFlatpakSession {
     }
 
     /// Whether the encoder imports `dmabuf` without a copy.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "dmabuf"))]
     pub fn takes_dmabuf(&self, dmabuf: &Dmabuf) -> bool {
         let format = dmabuf.format();
         let layout = (format.code as u32, u64::from(format.modifier));
@@ -993,7 +993,7 @@ impl SharedFlatpakSession {
     /// [`Self::encode_next_frame`] finds the encoder rejects zero-copy
     /// import, the frame is dropped for that tick and the compositor's SHM
     /// fallback picks up on the next commit.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "dmabuf"))]
     pub fn deposit_captured_dmabuf(&self, dmabuf: Dmabuf) {
         self.stage(StagedKind::Dmabuf(dmabuf));
     }
@@ -1063,7 +1063,7 @@ impl SharedFlatpakSession {
                 };
                 (encoder.encode(input, &mut nalus), CapturePath::ShmReadback)
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", feature = "dmabuf"))]
             StagedKind::Dmabuf(dmabuf) => (
                 encoder.encode(dmabuf_frame_input(dmabuf), &mut nalus),
                 CapturePath::DmabufDirect,
