@@ -617,6 +617,68 @@ impl DeviceHost {
         }
     }
 
+    /// Show `muted` on the microphone's row, and say whether there was a
+    /// microphone to show it on.
+    fn show_input_muted(&self, muted: bool) -> bool {
+        let mut state = self.0.state.borrow_mut();
+        let Some(microphone) = state.microphone.as_mut() else {
+            return false;
+        };
+        microphone.muted = muted;
+        true
+    }
+
+    fn set_input_muted(&self, muted: bool) {
+        if self.show_input_muted(muted) {
+            self.ask(QsEffect::SetInputMuted { muted });
+        }
+    }
+
+    /// Show where the person put the microphone's level until the audio
+    /// service's reading replaces it.
+    fn set_input_level(&self, level: f64) {
+        {
+            let mut state = self.0.state.borrow_mut();
+            if let Some(microphone) = state.microphone.as_mut() {
+                microphone.level = apply::level_of(level);
+            }
+        }
+        self.ask(QsEffect::SetInputVolume { level });
+    }
+
+    /// Show where the person put one application's level until the audio
+    /// service's reading replaces it.
+    fn set_stream_level(&self, stream: u32, level: f64) {
+        {
+            let mut state = self.0.state.borrow_mut();
+            if let Some(shown) = state
+                .sound_streams
+                .iter_mut()
+                .find(|shown| shown.node == stream)
+            {
+                shown.level = apply::level_of(level);
+            }
+        }
+        self.ask(QsEffect::SetStreamVolume { stream, level });
+    }
+
+    /// Show `muted` on one application's row, and ask for it: a stream the
+    /// service no longer lists has nothing to mute.
+    fn set_stream_muted(&self, stream: u32, muted: bool) {
+        {
+            let mut state = self.0.state.borrow_mut();
+            let Some(shown) = state
+                .sound_streams
+                .iter_mut()
+                .find(|shown| shown.node == stream)
+            else {
+                return;
+            };
+            shown.muted = muted;
+        }
+        self.ask(QsEffect::SetStreamMuted { stream, muted });
+    }
+
     fn accessory(&self, address: &str, connect: bool) {
         let name = {
             let mut state = self.0.state.borrow_mut();
@@ -802,6 +864,19 @@ impl DeviceHost {
                     self.ask(QsEffect::ToggleMuted);
                 }
             }
+            QsEffect::SetInputVolume { level } => self.set_input_level(level),
+            QsEffect::SetInputMuted { muted } => self.set_input_muted(muted),
+            QsEffect::ToggleInputMuted => {
+                let muted = !state()
+                    .microphone
+                    .as_ref()
+                    .is_some_and(|microphone| microphone.muted);
+                if self.show_input_muted(muted) {
+                    self.ask(QsEffect::ToggleInputMuted);
+                }
+            }
+            QsEffect::SetStreamVolume { stream, level } => self.set_stream_level(stream, level),
+            QsEffect::SetStreamMuted { stream, muted } => self.set_stream_muted(stream, muted),
             QsEffect::JoinWifi { network } => {
                 {
                     let mut state = state();
@@ -921,6 +996,7 @@ impl DeviceHost {
             effect @ (QsEffect::HandOffBluetooth { .. }
             | QsEffect::PressDevice { .. }
             | QsEffect::RouteSound { .. }
+            | QsEffect::RouteStream { .. }
             | QsEffect::PasteCopy { .. }
             | QsEffect::PinCopy { .. }
             | QsEffect::RemoveCopy { .. }

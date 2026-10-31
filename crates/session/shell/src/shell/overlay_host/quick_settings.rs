@@ -894,7 +894,13 @@ impl ShellOverlayHost {
             | QsEffect::Seek { .. }
             | QsEffect::ChoosePlayer { .. }
             | QsEffect::ChooseOutput { .. }
-            | QsEffect::ResumePlayback { .. } => {}
+            | QsEffect::ResumePlayback { .. }
+            | QsEffect::SetInputVolume { .. }
+            | QsEffect::SetInputMuted { .. }
+            | QsEffect::ToggleInputMuted
+            | QsEffect::RouteStream { .. }
+            | QsEffect::SetStreamVolume { .. }
+            | QsEffect::SetStreamMuted { .. } => {}
         }
         chrome.borrow_mut().bump();
     }

@@ -229,6 +229,110 @@ fn the_sound_is_what_the_audio_service_reads_and_it_leaves_the_panel() {
     assert!(!desk.host.state().volume_muted());
 }
 
+#[test]
+fn the_microphone_row_mutes_and_sets_its_level() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
+    let machine = Machine::laptop();
+    let mut desk = Desk::on(&machine);
+    desk.until("the first reading", |state| state.bluetooth);
+    desk.host.sound(&sound());
+    desk.app
+        .invoke(QuickSettings::OPEN_SECTION.with(QsSection::Sound))
+        .unwrap();
+    desk.app.settle();
+    assert!(desk.has("qs-input-50"), "the microphone that records");
+    assert!(desk.has("qs-input-mute"), "the button that mutes it");
+    assert!(desk.has("qs-input-level"), "and its level");
+
+    desk.app
+        .effect(&QsEffect::SetInputVolume { level: 0.6 })
+        .unwrap();
+    desk.app.harness().click_named("qs-input-mute").unwrap();
+    desk.app.settle();
+    let microphone = desk.host.state().microphone.expect("still recording");
+    assert_eq!(microphone.level, 0.6, "the slider moved");
+    assert!(!microphone.muted, "a press unmuted it");
+
+    // Both are the audio service's to carry out: the panel asks the
+    // session and never writes the graph itself.
+    assert_eq!(
+        desk.host.take_requests(),
+        [
+            SessionRequest::Effect(QsEffect::SetInputVolume { level: 0.6 }),
+            SessionRequest::Effect(QsEffect::ToggleInputMuted),
+        ]
+    );
+    assert!(
+        machine.calls().is_empty(),
+        "the panel never writes the microphone itself: {:?}",
+        machine.calls()
+    );
+}
+
+#[test]
+fn an_apps_stream_is_moved_and_its_gain_set() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
+    let machine = Machine::laptop();
+    let mut desk = Desk::on(&machine);
+    desk.until("the first reading", |state| state.bluetooth);
+    desk.host.sound(&playing());
+    desk.app
+        .invoke(QuickSettings::OPEN_SECTION.with(QsSection::Sound))
+        .unwrap();
+    desk.app.settle();
+    assert!(desk.has("qs-stream-60"), "the application's stream");
+    assert!(desk.has("qs-stream-60-mute"), "the button that mutes it");
+    assert!(desk.has("qs-stream-60-gain"), "its gain");
+    assert!(desk.has("qs-stream-60-output-40"), "where it plays now");
+    assert!(desk.has("qs-stream-60-output-41"), "and where it can go");
+    assert!(
+        desk.app.harness().a11y_nodes().iter().any(|(_, node)| node
+            .value()
+            .is_some_and(|value| value.contains("Playing on Speakers"))),
+        "the row says where the stream goes"
+    );
+
+    desk.app
+        .harness()
+        .click_named("qs-stream-60-output-41")
+        .unwrap();
+    desk.app
+        .effect(&QsEffect::SetStreamVolume {
+            stream: 60,
+            level: 0.4,
+        })
+        .unwrap();
+    desk.app.settle();
+    assert_eq!(
+        desk.host.state().sound_streams[0].level,
+        0.4,
+        "the gain moved"
+    );
+
+    // Moving it and setting its gain are the audio service's: the panel
+    // asks the session for both and leaves the graph alone.
+    assert_eq!(
+        desk.host.take_requests(),
+        [
+            SessionRequest::Effect(QsEffect::RouteStream {
+                stream: 60,
+                device: Some(41),
+            }),
+            SessionRequest::Effect(QsEffect::SetStreamVolume {
+                stream: 60,
+                level: 0.4,
+            }),
+        ]
+    );
+    assert!(
+        machine.calls().is_empty(),
+        "the panel never writes the stream itself: {:?}",
+        machine.calls()
+    );
+}
+
 /// A reading like the audio service publishes: speakers playing quietly
 /// and muted, headphones to switch to, a muted microphone.
 fn sound() -> audio::sound::Sound {
@@ -272,6 +376,23 @@ fn sound() -> audio::sound::Sound {
             codec: None,
         }],
         ..audio::sound::Sound::default()
+    }
+}
+
+/// The same reading with an application playing: its stream on the
+/// speakers, with a gain of its own.
+fn playing() -> audio::sound::Sound {
+    audio::sound::Sound {
+        streams: vec![audio::sound::Stream {
+            node: 60,
+            app: "Music".into(),
+            media: Some("Clair de lune".into()),
+            playback: true,
+            target: Some(40),
+            volume: Some(0.3),
+            muted: false,
+        }],
+        ..sound()
     }
 }
 

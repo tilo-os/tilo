@@ -147,9 +147,12 @@ pub struct QuickSettingsState {
     pub notification_count: usize,
     /// This machine's sound outputs, as the audio service lists them.
     pub sound_outputs: Vec<crate::SoundOutput>,
-    /// Whether the microphone is muted, as the audio service reads it: the
-    /// key that toggles it answers with this state on screen.
-    pub microphone_muted: bool,
+    /// The microphone sound records from, as the audio service reads it:
+    /// the row it gets shows its level and answers its mute with this.
+    pub microphone: Option<crate::SoundInput>,
+    /// Every application's stream, as the audio service reads it: each
+    /// row shows where it goes, its level and its mute.
+    pub sound_streams: Vec<crate::SoundStream>,
     /// The Devices section's rows, in order. The overlay host reads the
     /// device fabric for them; the root page lays them out and paints them.
     pub device_rows: Vec<crate::hosted::HostedRow>,
@@ -213,7 +216,8 @@ impl Default for QuickSettingsState {
             clipboard: crate::ClipboardView::default(),
             notification_count: 0,
             sound_outputs: Vec::new(),
-            microphone_muted: false,
+            microphone: None,
+            sound_streams: Vec::new(),
             device_rows: Vec::new(),
             arrangement: settings_store::hardware::QuickSettingsConfig::default(),
             notifications: crate::NotificationsView::default(),
@@ -286,7 +290,8 @@ impl QuickSettingsState {
             clipboard: crate::ClipboardView::default(),
             notification_count: 0,
             sound_outputs: Vec::new(),
-            microphone_muted: false,
+            microphone: None,
+            sound_streams: Vec::new(),
             device_rows: Vec::new(),
             arrangement: settings_store::hardware::QuickSettingsConfig::default(),
             notifications: crate::NotificationsView::default(),

@@ -1182,7 +1182,13 @@ impl Shared {
             .map(tilo_quick_settings::host::Feed::current);
         let (level, on) = match (kind, state) {
             (OsdKind::Volume, Some(state)) => (state.volume_level(), !state.volume_muted()),
-            (OsdKind::Microphone, Some(state)) => (0.0, !state.microphone_muted),
+            (OsdKind::Microphone, Some(state)) => (
+                0.0,
+                !state
+                    .microphone
+                    .as_ref()
+                    .is_some_and(|microphone| microphone.muted),
+            ),
             (OsdKind::Brightness, Some(state)) => (state.brightness, true),
             (OsdKind::AirplaneMode, Some(state)) => (0.0, state.radios.airplane_mode),
             _ => (0.0, true),
