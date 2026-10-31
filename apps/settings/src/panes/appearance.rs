@@ -968,22 +968,28 @@ mod tests {
             "the accent keeps every contrast floor"
         );
 
-        // Read back from scratch: the leaf the chrome reads and the theme a
-        // fresh process resolves from the document alone.
-        let section = app
-            .settings::<AppearancePrefs>()
-            .document()
-            .section(ui::theme::APPEARANCE_SECTION);
+        // Read back from scratch: the leaf the chrome reads out of the
+        // document, and the theme a fresh process resolves from it alone.
+        let document = app.settings::<AppearancePrefs>().document().load();
         assert_eq!(
             settings_store::appearance::ACCENT
-                .from_document(&section)
+                .from_document(&document)
                 .as_deref(),
             Some("violet")
         );
-        let restarted = Theme::resolved_from_settings(
-            &serde_json::json!({ ui::theme::APPEARANCE_SECTION: section }).to_string(),
-        );
+        let text = serde_json::to_string(&document).unwrap();
+        let restarted = Theme::resolved_from_settings(&text);
         assert_eq!(restarted.tokens.colors.intent.accent, accent);
+        // The live desktop reads it through the path the shell applies on
+        // every settings change, not only when opening the document anew.
+        assert_eq!(
+            Theme::configured_from(&document)
+                .tokens
+                .colors
+                .intent
+                .accent,
+            accent
+        );
 
         // A name the presence palette does not have is refused and changes
         // nothing; following the theme again gives the theme's accent back.
