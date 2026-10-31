@@ -26,7 +26,7 @@ need "$arch_doc" "loopback"
 need "$readme" "Pair home server"
 need "$readme" "pair-device --headless"
 need "$relay_readme" "agent host"
-need "Agent host"
+need "$arch_doc" "Agent host"
 
 # Compose: relay + MCP sidecar, host network for LAN pair, loopback MCP.
 need "$compose" "tilo-relay:"
