@@ -459,6 +459,13 @@ pub enum QsEffect {
         #[param("The destination, as the now-playing card lists it")]
         output: String,
     },
+    /// Continue here what another of the person's devices handed over, at
+    /// the point it stopped.
+    #[effect(own_device, keywords = "handoff, continue, resume, another device")]
+    ResumePlayback {
+        #[param("The handoff, as the card lists it")]
+        request: String,
+    },
 }
 
 /// What callers are told when the device lacks the control an effect

@@ -229,6 +229,18 @@ impl DeviceHost {
         self.feed();
     }
 
+    /// Land the session another of the person's devices hands this one, so
+    /// the now-playing card offers to continue it here; `None` clears it.
+    /// The offer shows at once, and stays until the person takes it or the
+    /// session hands over another.
+    pub fn handoff(&self, offer: Option<crate::MediaOffer>) {
+        if let Some(players) = self.0.players.borrow_mut().as_mut() {
+            players.set_offer(offer);
+        }
+        self.feed_now_playing();
+        self.feed();
+    }
+
     /// The host as the panel takes it ([`crate::prepare`]).
     #[must_use]
     pub fn panel(&self) -> Rc<dyn PanelHost> {
@@ -892,7 +904,8 @@ impl DeviceHost {
             | QsEffect::PreviousTrack
             | QsEffect::NextTrack
             | QsEffect::Seek { .. }
-            | QsEffect::ChoosePlayer { .. }) => {
+            | QsEffect::ChoosePlayer { .. }
+            | QsEffect::ResumePlayback { .. }) => {
                 self.0
                     .players
                     .borrow_mut()

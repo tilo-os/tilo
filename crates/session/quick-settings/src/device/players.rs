@@ -1,6 +1,7 @@
 //! What plays, through the session's audio helper (`tilo-audio`): its
-//! players folded into the now-playing card's reading, and the card's
-//! effects sent to exactly the player they name.
+//! players folded into the now-playing card's reading, the card's effects
+//! sent to exactly the player they name, and what another of the person's
+//! devices hands over continued here.
 //!
 //! The transport is whatever carries the helper's lines: its pipes when
 //! the session starts it ([`PlayerLink::helper`]), or a test's. Lines are
@@ -12,11 +13,12 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
 use audio::client::{Artwork, PlayerTable};
-use audio::{Event, Request, Status};
+use audio::{Event, Request, ResumeRequest, ResumeSource, Status};
+use media::handoff::HandoffSource;
 use ui::widget::TransportArt;
 
 use super::refresh::Wake;
-use crate::{MediaOutput, MediaPlayer, NowPlaying, QsEffect};
+use crate::{MediaOffer, MediaOutput, MediaPlayer, NowPlaying, QsEffect};
 
 /// Where the helper's lines come and go.
 pub struct PlayerLink {
@@ -73,6 +75,9 @@ pub(crate) struct Players {
     art: Option<(Artwork, ui::vello::peniko::ImageData)>,
     /// Where the sound can go, as the audio service last read it.
     outputs: Vec<MediaOutput>,
+    /// The session another of the person's devices hands this one, until
+    /// the person continues it here.
+    offer: Option<MediaOffer>,
 }
 
 impl Players {
@@ -127,6 +132,7 @@ impl Players {
             child,
             art: None,
             outputs: Vec::new(),
+            offer: None,
         }
     }
 
@@ -159,6 +165,12 @@ impl Players {
         self.outputs = outputs;
     }
 
+    /// The session another of the person's devices hands this one, which
+    /// the card offers to continue here; `None` when there is none.
+    pub(crate) fn set_offer(&mut self, offer: Option<MediaOffer>) {
+        self.offer = offer;
+    }
+
     /// What the card shows at `now`.
     pub(crate) fn now_playing(&mut self, now: Instant) -> Option<NowPlaying> {
         let art = self
@@ -183,6 +195,7 @@ impl Players {
             self.preferred.as_deref(),
             image,
             self.outputs.clone(),
+            self.offer.clone(),
             now,
         )
     }
@@ -190,6 +203,21 @@ impl Players {
     /// Carry out one of the card's effects.
     pub(crate) fn run(&mut self, effect: &QsEffect) -> Result<(), String> {
         let nothing = || "nothing plays".to_owned();
+        if let QsEffect::ResumePlayback { request } = effect {
+            let resume = self
+                .offer
+                .as_ref()
+                .filter(|offer| offer.request_id == *request)
+                .ok_or_else(|| "no such handoff".to_owned())
+                .and_then(resume_request)?;
+            self.requests
+                .send(resume)
+                .map_err(|_| "the audio helper is gone".to_owned())?;
+            // A resume is one request: the helper answers it with the
+            // player that took the session, so the card stops offering it.
+            self.offer = None;
+            return Ok(());
+        }
         if let QsEffect::ChoosePlayer { player } = effect {
             if !self
                 .table
@@ -236,17 +264,26 @@ impl Drop for Players {
 
 /// The now-playing card's reading: the player in front (the one chosen,
 /// else what plays, else what is paused) while anything plays or is
-/// paused; `None` otherwise. `image` is the front player's cover, and
-/// `outputs` where the sound can go.
+/// paused, and the other device's session `offer` while one is handed over;
+/// `None` otherwise. `image` is the front player's cover, and `outputs`
+/// where the sound can go.
 pub(crate) fn now_playing(
     table: &PlayerTable,
     preferred: Option<&str>,
     image: Option<ui::vello::peniko::ImageData>,
     outputs: Vec<MediaOutput>,
+    offer: Option<MediaOffer>,
     now: Instant,
 ) -> Option<NowPlaying> {
     if !table.any_playing() {
-        return None;
+        return offer.map(|offer| NowPlaying {
+            title: offer.title.clone(),
+            playing: offer.playing,
+            position_ms: offer.position_ms,
+            outputs,
+            offer: Some(offer),
+            ..NowPlaying::default()
+        });
     }
     let front = table.front(preferred)?;
     let name = front.name();
@@ -293,7 +330,63 @@ pub(crate) fn now_playing(
             .collect(),
         outputs,
         speakers: None,
+        offer: None,
     })
+}
+
+/// What the person is told when this device cannot open what the other
+/// device played.
+const CANNOT_RESUME: &str = "this device cannot resume that source";
+
+/// The helper request that continues `offer` here, or why this device
+/// cannot resume it.
+fn resume_request(offer: &MediaOffer) -> Result<Request, String> {
+    // The card passes the request id as hex, since an effect's parameters
+    // are plain scalars.
+    let Some(request_id) = request_bytes(&offer.request_id) else {
+        return Err("the handoff names no request".to_owned());
+    };
+    let source = match &offer.source {
+        // What the other device played off a stream or a file this device
+        // can open itself; its work in a workspace path or an app's own
+        // resource has to be brought over first, which is not this card's.
+        HandoffSource::RemoteStream { url } => ResumeSource::Uri(url.clone()),
+        HandoffSource::LocalFile { path } => ResumeSource::LocalFile(path.clone()),
+        HandoffSource::Workspace { .. } | HandoffSource::AppResource { .. } => {
+            return Err(CANNOT_RESUME.to_owned());
+        }
+    };
+    if audio::handoff::resume_uri(&source).is_none() {
+        return Err(CANNOT_RESUME.to_owned());
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a playhead in a recording is far inside u64's milliseconds"
+    )]
+    let position_ms = offer.position_ms.max(0.0).round() as u64;
+    Ok(Request::Resume {
+        request: ResumeRequest {
+            request_id,
+            package_id: offer.package_id.clone(),
+            source,
+            position_ms,
+            playing: offer.playing,
+        },
+    })
+}
+
+/// The 16 bytes `hex` names with its 32 hex digits.
+fn request_bytes(hex: &str) -> Option<[u8; 16]> {
+    let mut bytes = [0u8; 16];
+    let digits = hex.as_bytes();
+    if digits.len() != 32 {
+        return None;
+    }
+    for (byte, pair) in bytes.iter_mut().zip(digits.chunks_exact(2)) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(bytes)
 }
 
 #[cfg(test)]
@@ -330,7 +423,7 @@ mod tests {
     fn the_card_shows_the_player_in_front_while_something_plays() {
         let now = Instant::now();
         let mut table = PlayerTable::new();
-        assert_eq!(now_playing(&table, None, None, Vec::new(), now), None);
+        assert_eq!(now_playing(&table, None, None, Vec::new(), None, now), None);
         table.apply(
             Event::Players {
                 players: vec![
@@ -340,7 +433,7 @@ mod tests {
             },
             now,
         );
-        let card = now_playing(&table, None, None, Vec::new(), now).expect("something plays");
+        let card = now_playing(&table, None, None, Vec::new(), None, now).expect("something plays");
         assert_eq!(card.title, "Music track");
         assert_eq!(card.subtitle, "An Artist");
         assert_eq!(card.player_name, "Music");
@@ -359,6 +452,7 @@ mod tests {
             Some("org.mpris.MediaPlayer2.browser"),
             None,
             Vec::new(),
+            None,
             now,
         )
         .expect("the chosen one");
@@ -369,6 +463,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            None,
             now + std::time::Duration::from_secs(2),
         )
         .expect("still playing");
@@ -381,9 +476,180 @@ mod tests {
             now,
         );
         assert_eq!(
-            now_playing(&table, None, None, Vec::new(), now),
+            now_playing(&table, None, None, Vec::new(), None, now),
             None,
             "stopped"
         );
+    }
+
+    /// A card that only another device's session makes: what it played,
+    /// where it stopped, and the offer to continue it here.
+    #[test]
+    fn a_handoff_alone_is_the_card_that_offers_it() {
+        let now = Instant::now();
+        let table = PlayerTable::new();
+        let offered = offer(HandoffSource::RemoteStream {
+            url: "https://media.example/clair.flac".into(),
+        });
+        let card = now_playing(&table, None, None, Vec::new(), Some(offered.clone()), now)
+            .expect("the offer is what the card shows");
+        assert_eq!(card.title, "Clair de lune");
+        assert!(card.playing);
+        assert_eq!(card.position_ms, 83_000.0);
+        assert_eq!(card.offer, Some(offered));
+        assert!(
+            !card.can_toggle && !card.can_next && !card.can_previous,
+            "nothing here plays it yet"
+        );
+    }
+
+    /// Continuing a handoff is one request to the helper, naming the
+    /// session's request, app, source and playhead; once asked, the offer
+    /// is over.
+    #[test]
+    fn continuing_a_handoff_asks_the_helper_for_that_session() {
+        let (mut players, heard) = over_a_helper();
+        players.set_offer(Some(offer(HandoffSource::RemoteStream {
+            url: "https://media.example/clair.flac".into(),
+        })));
+        players
+            .run(&QsEffect::ResumePlayback {
+                request: REQUEST.into(),
+            })
+            .expect("the offer is asked for");
+        let line = tilo_test_env::recv("the resume", &heard);
+        assert_eq!(
+            Request::parse(&line),
+            Some(Request::Resume {
+                request: ResumeRequest {
+                    request_id: request_bytes(REQUEST).expect("the offer's request"),
+                    package_id: "so.tilo.music".into(),
+                    source: ResumeSource::Uri("https://media.example/clair.flac".into()),
+                    position_ms: 83_000,
+                    playing: true,
+                },
+            })
+        );
+        assert!(heard.try_recv().is_err(), "one request, not two");
+        assert_eq!(
+            players.run(&QsEffect::ResumePlayback {
+                request: REQUEST.into(),
+            }),
+            Err("no such handoff".to_owned()),
+            "continued, the offer is over"
+        );
+
+        let (mut players, heard) = over_a_helper();
+        players.set_offer(Some(offer(HandoffSource::LocalFile {
+            path: "/home/alice/Clair de lune.flac".into(),
+        })));
+        players
+            .run(&QsEffect::ResumePlayback {
+                request: REQUEST.into(),
+            })
+            .expect("a file this device has is asked for");
+        let line = tilo_test_env::recv("the resume", &heard);
+        assert!(
+            matches!(
+                Request::parse(&line),
+                Some(Request::Resume { request }) if request.source
+                    == ResumeSource::LocalFile("/home/alice/Clair de lune.flac".into())
+            ),
+            "a file stays a file"
+        );
+    }
+
+    /// A press that names no handoff this device holds — the card went
+    /// stale — is refused and writes nothing.
+    #[test]
+    fn a_stale_handoff_is_refused_and_nothing_is_written() {
+        let (mut players, heard) = over_a_helper();
+        assert_eq!(
+            players.run(&QsEffect::ResumePlayback {
+                request: REQUEST.into(),
+            }),
+            Err("no such handoff".to_owned()),
+            "no handoff at all"
+        );
+        players.set_offer(Some(offer(HandoffSource::RemoteStream {
+            url: "https://media.example/clair.flac".into(),
+        })));
+        assert_eq!(
+            players.run(&QsEffect::ResumePlayback {
+                request: "ffeeddccbbaa99887766554433221100".into(),
+            }),
+            Err("no such handoff".to_owned()),
+            "another handoff's press"
+        );
+        assert!(heard.try_recv().is_err(), "nothing was asked");
+        players
+            .run(&QsEffect::ResumePlayback {
+                request: REQUEST.into(),
+            })
+            .expect("the offer itself still stands");
+    }
+
+    /// What another app keeps as its own resource is not something this
+    /// device can open, and the card says so instead of asking the helper.
+    #[test]
+    fn a_source_this_device_cannot_open_is_refused() {
+        let (mut players, heard) = over_a_helper();
+        players.set_offer(Some(offer(HandoffSource::AppResource {
+            uri: "tilo://music/track/1".into(),
+        })));
+        assert_eq!(
+            players.run(&QsEffect::ResumePlayback {
+                request: REQUEST.into(),
+            }),
+            Err(CANNOT_RESUME.to_owned())
+        );
+        assert!(heard.try_recv().is_err(), "the helper is not asked");
+    }
+
+    /// The request id every test's offer carries.
+    const REQUEST: &str = "00112233445566778899aabbccddeeff";
+
+    /// A session another device hands over: `source` playing at 1:23.
+    fn offer(source: HandoffSource) -> MediaOffer {
+        MediaOffer {
+            request_id: REQUEST.into(),
+            package_id: "so.tilo.music".into(),
+            title: "Clair de lune".into(),
+            source_label: "Studio".into(),
+            source,
+            position_ms: 83_000.0,
+            playing: true,
+        }
+    }
+
+    /// The players over a helper that reads its lines here.
+    fn over_a_helper() -> (Players, Receiver<String>) {
+        let (sent, heard) = channel();
+        let link = PlayerLink::new(
+            Lines(sent, Vec::new()),
+            std::io::BufReader::new(std::io::empty()),
+        );
+        let wake: Wake = std::sync::Arc::new(|| {});
+        (Players::start(link, wake), heard)
+    }
+
+    /// Requests, a line at a time.
+    struct Lines(Sender<String>, Vec<u8>);
+
+    impl Write for Lines {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.1.extend_from_slice(bytes);
+            while let Some(end) = self.1.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = self.1.drain(..=end).collect();
+                let _ = self
+                    .0
+                    .send(String::from_utf8_lossy(&line).trim_end().to_owned());
+            }
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 }

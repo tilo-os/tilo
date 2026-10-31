@@ -893,7 +893,8 @@ impl ShellOverlayHost {
             | QsEffect::NextTrack
             | QsEffect::Seek { .. }
             | QsEffect::ChoosePlayer { .. }
-            | QsEffect::ChooseOutput { .. } => {}
+            | QsEffect::ChooseOutput { .. }
+            | QsEffect::ResumePlayback { .. } => {}
         }
         chrome.borrow_mut().bump();
     }

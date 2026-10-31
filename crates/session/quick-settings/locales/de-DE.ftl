@@ -212,3 +212,4 @@ qs-unavailable = Dieses Gerät hat diese Einstellung nicht
 qs-nothing-plays = Es wird nichts abgespielt, das das kann
 qs-now-playing-player = Player
 qs-now-playing-output = Spielt auf
+qs-now-playing-offer = Von { $device }: { $title }, geht weiter bei { $position }

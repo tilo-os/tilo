@@ -18,7 +18,8 @@ use tilo_quick_settings::device::testing::{Kept, Machine};
 use tilo_quick_settings::device::{Device, DeviceHost, PlayerLink, SessionRequest};
 use tilo_quick_settings::host::Lent;
 use tilo_quick_settings::{
-    PowerProfile, QsEffect, QsSection, QuickSettings, QuickSettingsApp, QuickSettingsState,
+    MediaOffer, PowerProfile, QsEffect, QsSection, QuickSettings, QuickSettingsApp,
+    QuickSettingsState,
 };
 use ui::framework::testing::HeadlessApp;
 
@@ -797,5 +798,65 @@ fn the_cards_destinations_are_the_machines_outputs_and_choosing_one_is_the_sessi
     assert!(
         helper.heard.try_recv().is_err(),
         "and never the players' helper"
+    );
+}
+
+#[test]
+fn resuming_the_other_device_s_playhead_is_asked_from_the_card() {
+    let machine = Machine::laptop();
+    let mut desk = Desk::on(&machine);
+    let (link, helper) = Helper::link();
+    desk.host.follow_players(link);
+
+    // Another of the person's devices hands this one what it played, while
+    // nothing plays here: the card is that offer, saying what it is.
+    desk.host.handoff(Some(MediaOffer {
+        request_id: "00112233445566778899aabbccddeeff".into(),
+        package_id: "so.tilo.music".into(),
+        title: "Clair de lune".into(),
+        source_label: "Studio".into(),
+        source: media::handoff::HandoffSource::RemoteStream {
+            url: "https://media.example/clair.flac".into(),
+        },
+        position_ms: 83_000.0,
+        playing: true,
+    }));
+    desk.app.settle();
+    assert!(
+        desk.has("qs-now-playing-resume"),
+        "the card offers to continue it here"
+    );
+    let said = "From Studio: Clair de lune, resumes at 1:23";
+    assert!(
+        desk.app.harness().a11y_node_named(said).is_some(),
+        "the row is read as the session another device hands over: {said:?}"
+    );
+
+    // Pressing it is the helper's to carry out, with the session's exact
+    // request, app, source and playhead.
+    desk.app
+        .harness()
+        .click_named("qs-now-playing-resume")
+        .unwrap();
+    desk.app.settle();
+    assert_eq!(
+        helper.request(),
+        audio::Request::Resume {
+            request: audio::ResumeRequest {
+                request_id: [
+                    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
+                    0xdd, 0xee, 0xff,
+                ],
+                package_id: "so.tilo.music".into(),
+                source: audio::ResumeSource::Uri("https://media.example/clair.flac".into()),
+                position_ms: 83_000,
+                playing: true,
+            }
+        }
+    );
+    assert!(helper.heard.try_recv().is_err(), "a resume is one request");
+    assert!(
+        !desk.has("qs-now-playing-resume"),
+        "continued, nothing is left to offer"
     );
 }
