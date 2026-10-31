@@ -16,6 +16,7 @@ use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource as _};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER, Scale};
+use smithay::wayland::seat::WaylandFocus as _;
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
 };
@@ -59,6 +60,34 @@ impl State {
     /// its lock screen shows.
     pub(crate) fn locked(&self) -> bool {
         self.lock.locked || self.idle.session.is_locked()
+    }
+
+    /// Whether the window with the keyboard is fullscreen: it covers its
+    /// display and, being a game or a video, owns the input that plays it.
+    pub(crate) fn fullscreen(&self) -> bool {
+        let Some(focus) = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus())
+        else {
+            return false;
+        };
+        self.space.elements().any(|window| {
+            let focused = window
+                .wl_surface()
+                .is_some_and(|surface| surface.as_ref() == &focus)
+                || window
+                    .x11_surface()
+                    .is_some_and(|x11| x11.wl_surface() == Some(focus.clone()));
+            focused
+                && (window.toplevel().is_some_and(|toplevel| {
+                    toplevel.current_state().states.contains(
+                        smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
+                    )
+                }) || window
+                    .x11_surface()
+                    .is_some_and(smithay::xwayland::X11Surface::is_fullscreen))
+        })
     }
 
     /// Tell the locking client the desktop is hidden: called after a frame

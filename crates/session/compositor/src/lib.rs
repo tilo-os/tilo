@@ -384,6 +384,44 @@ impl Compositor {
         self.data.state.locked()
     }
 
+    /// Whether a surface of the session's own takes the keyboard now: a
+    /// palette, the overview or the shortcut guide, which see keys before
+    /// any client does.
+    #[must_use]
+    pub fn host_takes_keys(&self) -> bool {
+        self.data
+            .state
+            .hosts
+            .iter()
+            .any(|host| host.wants_keyboard())
+    }
+
+    /// Whether a fullscreen window is up: it owns its display, and with it
+    /// the controller in the person's hands.
+    #[must_use]
+    pub fn fullscreen_window(&self) -> bool {
+        self.data.state.fullscreen()
+    }
+
+    /// Wake [`Compositor::dispatch`] when `fd` is readable, so what arrives
+    /// on it (a controller's presses, a device's hotplug) ends the wait
+    /// rather than waiting for the next turn. Dropping the watch stops it.
+    ///
+    /// What the descriptor says is read by the caller's own source, not
+    /// here: this only ends the wait.
+    pub fn watch_input(&mut self, fd: std::os::fd::OwnedFd) -> Result<InputWatch, Error> {
+        let handle = self.event_loop.handle();
+        let token = handle
+            .insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, _| {
+                Ok(PostAction::Continue)
+            })
+            .map_err(io)?;
+        Ok(InputWatch {
+            handle: handle.clone(),
+            token,
+        })
+    }
+
     /// Listen for clients on a fresh `wayland-N` socket in
     /// `$XDG_RUNTIME_DIR` and return its name (for `WAYLAND_DISPLAY`).
     pub fn listen(&mut self) -> Result<String, Error> {
@@ -1405,6 +1443,20 @@ impl Compositor {
     #[must_use]
     pub fn waker(&self) -> std::task::Waker {
         std::task::Waker::from(std::sync::Arc::new(LoopWaker(self.event_loop.get_signal())))
+    }
+}
+
+/// A descriptor [`Compositor::watch_input`] polled for the loop: its
+/// readiness ends the wait, and dropping the watch stops the polling.
+#[derive(Debug)]
+pub struct InputWatch {
+    handle: LoopHandle<'static, LoopData>,
+    token: smithay::reexports::calloop::RegistrationToken,
+}
+
+impl Drop for InputWatch {
+    fn drop(&mut self) {
+        self.handle.remove(self.token);
     }
 }
 

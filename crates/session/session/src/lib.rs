@@ -32,6 +32,8 @@ pub mod capture;
 mod capture_studio;
 mod chrome;
 mod config;
+pub mod controller_nav;
+pub mod controllers;
 mod controls;
 mod desk;
 mod desk_layout;
@@ -164,6 +166,9 @@ pub struct Options {
     /// What quick settings reads of the device and carries out on it;
     /// without it, the bar's status cluster opens nothing.
     pub quick_settings: Option<QuickSettings>,
+    /// The controllers in the room, which drive the desktop; without one, a
+    /// controller does nothing here.
+    pub controllers: Option<controllers::Source>,
     /// The person's settings: shortcuts, input, gestures.
     pub config: SessionConfig,
     /// The built-in panel turns with the way up this reads the device.
@@ -347,6 +352,7 @@ impl Default for Options {
             person: "person".into(),
             presentation: ComponentRunnerInputs::from_native_process,
             quick_settings: None,
+            controllers: None,
             config: SessionConfig::default(),
             accelerometer: Accelerometer::default(),
             services: Vec::new(),
@@ -502,6 +508,12 @@ struct Shared {
     /// The monitors of the displays a fullscreen window owns, which the
     /// bars read.
     fullscreen: Rc<RefCell<Vec<String>>>,
+    /// The controller the person last drove the desktop with: the guide
+    /// leads with its buttons until a key of their own is pressed.
+    controller: Rc<Cell<Option<ui::ControllerFamily>>>,
+    /// Whether the keys being routed now are a controller's own, standing
+    /// for its presses: those say nothing about a keyboard.
+    controller_keys: Rc<Cell<bool>>,
 }
 
 /// The app a window shows, by its id.
@@ -1355,6 +1367,12 @@ pub struct Session {
     /// The shell-ui socket the apps ask about their own tabs on, while it
     /// serves.
     tabs: Option<mount::app_tabs::AppTabs>,
+    /// The controllers in the room, and how they drive the desktop; `None`
+    /// when this session reads none.
+    controllers: Option<controllers::Controllers>,
+    /// The controllers' descriptors, polled by the loop so their input ends
+    /// its wait, by the key the controller source gave each.
+    controller_wakes: std::collections::BTreeMap<u64, tilo_compositor::InputWatch>,
 }
 
 /// The lock screen's passwords being checked, off the loop.
@@ -1586,11 +1604,16 @@ impl Session {
         // The guide's keys while it is up: the key surface holds back what
         // would act behind the guide and hands it the chord it waits for.
         let guide_keys = GuideKeys::default();
+        // The controller the person last used: the guide leads with its
+        // buttons, and a key of their own leads with the keyboard again.
+        let controller: Rc<Cell<Option<ui::ControllerFamily>>> = Rc::new(Cell::new(None));
+        let controller_keys: Rc<Cell<bool>> = Rc::new(Cell::new(false));
         let shortcut_guide = shortcut_guide::ShortcutGuide::new(
             guide_seat,
             Rc::clone(&shortcuts),
             guide_keys.clone(),
             portal_shortcuts.clone(),
+            Rc::clone(&controller),
         );
         let (commands, invocations) = mount_controls(
             &mut compositor,
@@ -1598,6 +1621,8 @@ impl Session {
             shortcuts,
             portal_shortcuts,
             guide_keys,
+            Rc::clone(&controller),
+            Rc::clone(&controller_keys),
             options.scale,
         );
 
@@ -1703,6 +1728,8 @@ impl Session {
             shortcut_guide,
             chrome,
             fullscreen,
+            controller,
+            controller_keys,
         };
         shared.start_search();
         // What the portal brings comes from any thread, and wakes the loop
@@ -1758,6 +1785,11 @@ impl Session {
             ),
             machine,
             tabs,
+            controllers: options
+                .controllers
+                .take()
+                .map(controllers::Controllers::mount),
+            controller_wakes: std::collections::BTreeMap::new(),
         })
     }
 
@@ -2599,7 +2631,18 @@ impl Session {
     /// # Errors
     /// The compositor failed.
     pub fn step(&mut self, timeout: Duration) -> Result<(), Error> {
+        // A held direction repeats on its own clock, and a controller with
+        // more waiting than one pass read is read again at once.
+        let timeout = match self
+            .controllers
+            .as_ref()
+            .and_then(|controllers| controllers.next_deadline(Instant::now()))
+        {
+            Some(due) => timeout.min(due.saturating_duration_since(Instant::now())),
+            None => timeout,
+        };
         self.compositor.dispatch(timeout)?;
+        self.follow_controllers()?;
         self.follow_displays()?;
         self.follow_fullscreen();
         {
@@ -2860,6 +2903,8 @@ fn mount_controls(
     shortcuts: Rc<RefCell<ui::shortcut_table::ShortcutConfig>>,
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
     guide: GuideKeys,
+    controller: Rc<Cell<Option<ui::ControllerFamily>>>,
+    controller_keys: Rc<Cell<bool>>,
     scale: f64,
 ) -> (Rc<RefCell<Vec<SessionCommand>>>, Invocations) {
     let readout = Rc::new(RefCell::new(Readout::new(scale)));
@@ -2875,6 +2920,8 @@ fn mount_controls(
         Rc::clone(&invocations),
         portal,
         guide,
+        controller,
+        controller_keys,
     )));
     (commands, invocations)
 }

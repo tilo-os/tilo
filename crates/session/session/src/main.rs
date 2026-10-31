@@ -446,6 +446,10 @@ fn device_options(hosted: bool) -> tilo_session::Options {
                 device
             }))
         }),
+        // The controllers in the room drive the desktop of the session that
+        // owns the machine; a session in another desktop's window leaves
+        // them to that desktop.
+        controllers: (!hosted).then_some(tilo_session::controllers::Source::Machine),
         session_actions: if hosted {
             tilo_session::no_session_actions
         } else {

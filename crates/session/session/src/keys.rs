@@ -290,6 +290,12 @@ pub(crate) struct SessionKeys {
     guide: GuideKeys,
     /// The shortcut resources whose chords are held down, by key.
     held: RefCell<BTreeMap<u32, String>>,
+    /// The controller the person last drove the desktop with, which a press
+    /// of their own replaces: the guide then leads with the keyboard.
+    controller: Rc<Cell<Option<ui::ControllerFamily>>>,
+    /// Whether the keys being routed are a controller's own, standing for
+    /// its presses rather than the person's fingers on a keyboard.
+    controller_keys: Rc<Cell<bool>>,
 }
 
 impl SessionKeys {
@@ -298,6 +304,8 @@ impl SessionKeys {
         invocations: Invocations,
         portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
         guide: GuideKeys,
+        controller: Rc<Cell<Option<ui::ControllerFamily>>>,
+        controller_keys: Rc<Cell<bool>>,
     ) -> Self {
         Self {
             shortcuts,
@@ -305,6 +313,8 @@ impl SessionKeys {
             portal,
             guide,
             held: RefCell::new(BTreeMap::new()),
+            controller,
+            controller_keys,
         }
     }
 
@@ -445,6 +455,12 @@ impl SurfaceHost for SessionKeys {
             }
             return;
         }
+        // A press of the person's own: the guide leads with the keyboard
+        // again. The controller's own presses reach here too, standing for
+        // its buttons, and say nothing about a keyboard.
+        if !self.controller_keys.get() {
+            self.controller.set(None);
+        }
         if self.guide.up() {
             self.guide_key(key);
             return;
@@ -487,6 +503,8 @@ mod tests {
             Invocations::default(),
             None,
             GuideKeys::default(),
+            Rc::new(Cell::new(None)),
+            Rc::new(Cell::new(false)),
         )
     }
 
@@ -500,6 +518,8 @@ mod tests {
             Invocations::default(),
             None,
             guide.clone(),
+            Rc::new(Cell::new(None)),
+            Rc::new(Cell::new(false)),
         );
         (keys, guide)
     }
