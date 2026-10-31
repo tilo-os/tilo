@@ -64,13 +64,7 @@ pub(super) fn type_and_enter(session: &mut Session, word: &str) {
 /// The lock screen the session starts: the app whose window asks the
 /// compositor for the session lock.
 pub(super) fn lock_screen() -> Surface {
-    let binary = tilo_test_env::package_binary!("tilo-session").with_file_name("tilo-lock-screen");
-    assert!(
-        binary.exists(),
-        "expected the lock screen at {}; build the workspace first",
-        binary.display()
-    );
-    Surface::new("lock", binary).person("ada").lock()
+    Surface::new("lock", screen_binary()).person("ada").lock()
 }
 
 /// A directory for the plane's socket that only this user reaches: the broker
@@ -83,9 +77,9 @@ pub(super) fn private_home() -> tempfile::TempDir {
     root
 }
 
-/// The lock screen's binary, built beside the session's.
+/// The lock screen's binary, built with this package for the tests.
 fn screen_binary() -> PathBuf {
-    tilo_test_env::package_binary!("tilo-session").with_file_name("tilo-lock-screen")
+    tilo_test_env::package_binary!("tilo-lock-screen-test")
 }
 
 /// A verifier the test answers, so the screen is seen saying it is checking
@@ -127,7 +121,6 @@ pub(super) fn lockable_session(
     outputs: &[OutputConfig],
     verifier: std::sync::Arc<dyn tilo_session::unlock::PasswordVerifier>,
 ) -> Session {
-    assert!(screen_binary().exists(), "the workspace is built first");
     Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -163,7 +156,11 @@ pub(super) fn pictures(session: &mut Session, displays: &[&str]) -> Vec<Vec<f64>
 /// not changing any more: the screen itself, not the blank or dim a locked
 /// output shows before the client's first frame arrives.
 #[track_caller]
-pub(super) fn until_drawn(session: &mut Session, displays: &[&str], was: &[Vec<f64>]) -> Vec<Vec<f64>> {
+pub(super) fn until_drawn(
+    session: &mut Session,
+    displays: &[&str],
+    was: &[Vec<f64>],
+) -> Vec<Vec<f64>> {
     let deadline = Instant::now() + OPENING;
     let mut settled: Option<Vec<Vec<f64>>> = None;
     loop {
@@ -195,7 +192,11 @@ pub(super) fn until_drawn(session: &mut Session, displays: &[&str], was: &[Vec<f
 /// Step the session until `displays` show what `was` showed again, settled:
 /// the desk, back.
 #[track_caller]
-pub(super) fn until_back(session: &mut Session, displays: &[&str], was: &[Vec<f64>]) -> Vec<Vec<f64>> {
+pub(super) fn until_back(
+    session: &mut Session,
+    displays: &[&str],
+    was: &[Vec<f64>],
+) -> Vec<Vec<f64>> {
     let deadline = Instant::now() + OPENING;
     let mut settled: Option<Vec<Vec<f64>>> = None;
     loop {

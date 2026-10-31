@@ -18,6 +18,15 @@ name = "tilo-surface-probe"
 path = "tests/bin/surface_probe.rs"
 test = false
 
+# The lock screen the tests lock into, compiled from the app's own source
+# here: Cargo builds only the binaries of the package under test, and the
+# screen is a process of its own. Never installed — the image carries
+# `tilo-lock-screen` of the app's own package.
+[[bin]]
+name = "tilo-lock-screen-test"
+path = "../lock-screen/src/main.rs"
+test = false
+
 # The session's loop walks no path after startup. The audit watches the
 # process's main thread, and `libtest` runs every test on a thread of its own,
 # so this target is the process's `main` driving the session itself.

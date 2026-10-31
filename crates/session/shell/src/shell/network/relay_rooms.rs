@@ -388,7 +388,6 @@ impl ShellNetwork {
     /// The host's own operations (`tilo.host`) are app actions on the
     /// host's own action plane, not something this shell reaches.
     fn ask_host(
-        &self,
         _host: &PersonsHost,
         _action: &str,
         _arguments: serde_json::Map<String, serde_json::Value>,
@@ -508,11 +507,11 @@ impl ShellNetwork {
 
     /// Enter `room` at `host` as this device, and answer the text of the
     /// invitation this device redeems to hold it.
-    fn enter_host_room(&self, host: &PersonsHost, room: &str) -> Result<String, String> {
+    fn enter_host_room(host: &PersonsHost, room: &str) -> Result<String, String> {
         let mut arguments = serde_json::Map::new();
         arguments.insert("room".into(), room.into());
         arguments.insert("expires_in_seconds".into(), OWN_INVITATION_SECONDS.into());
-        let entered: EnteredRoom = answer_of(self.ask_host(host, ENTER_ROOM, arguments)?)?;
+        let entered: EnteredRoom = answer_of(Self::ask_host(host, ENTER_ROOM, arguments)?)?;
         let own = entered.invitation.decode()?;
         Ok(join::encode_invitation_text(&own.signed_invitation))
     }
@@ -576,7 +575,7 @@ impl ShellNetwork {
         let (local, own) = if let Some(retained) = self.retained_join(room)? {
             retained
         } else {
-            let own = self.enter_host_room(host, &room.to_string())?;
+            let own = Self::enter_host_room(host, &room.to_string())?;
             let local = tree
                 .write()
                 .join_native_room(name, room)
@@ -825,8 +824,7 @@ impl ShellNetwork {
             .chain(relays.into_iter().map(PersonsHost::Relay))
             .chain(device);
         for host in hosts.filter(|host| only.is_none_or(|only| host.endpoint() == Some(only))) {
-            let listed = self
-                .ask_host(&host, LIST_ROOMS, serde_json::Map::new())
+            let listed = Self::ask_host(&host, LIST_ROOMS, serde_json::Map::new())
                 .and_then(answer_of::<Vec<RoomListing>>);
             let rooms = match listed {
                 Ok(rooms) => rooms,

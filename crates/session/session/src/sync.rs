@@ -1650,6 +1650,18 @@ pub(crate) struct Serving {
     pub(crate) actions: Arc<std::sync::OnceLock<DeviceActions>>,
 }
 
+/// What this device answers on from the moment its endpoint is bound: the
+/// peer actor the session's commands go to, the events it hears, and what
+/// runs beside it until the session stops.
+struct Listening {
+    endpoint: iroh::Endpoint,
+    actor: tokio::sync::mpsc::Sender<NetCmd>,
+    events: tokio::sync::mpsc::Sender<NetEvent>,
+    actor_task: tokio::task::JoinHandle<()>,
+    carrying: tokio::task::JoinHandle<()>,
+    attending: Option<tokio::task::JoinHandle<()>>,
+}
+
 /// The thread: bind the endpoint, run the peer actor, and carry what it
 /// hears to the session's loop until it is told to stop.
 fn run(
@@ -1666,63 +1678,26 @@ fn run(
         return;
     };
     runtime.block_on(async move {
-        let lookup = iroh::address_lookup::memory::MemoryLookup::new();
-        let (builder, deferred_relays) = match endpoint_for(identity.as_ref()) {
-            Ok(building) => building,
-            Err(error) => {
-                let _ = ready.send(Err(error));
-                return;
-            }
-        };
-        let endpoint = match builder
-            .address_lookup(lookup.clone())
-            .transport_config(tilo_network_actor::transport_config())
-            .bind()
-            .await
-        {
-            Ok(endpoint) => endpoint,
-            Err(error) => {
-                let _ = ready.send(Err(format!("the collaboration endpoint: {error}")));
-                return;
-            }
-        };
-        let publisher = endpoint.id();
-        let addr = endpoint.addr();
-        // Nothing wakes the held-back relays from here: the peer actor does
-        // when it dials a host or a peer, and the session while a room it
-        // shows has someone else in it (`Client::note_reachability`).
-        let reachability = tilo_endpoint_reachability::Reachability::defer(
-            &endpoint,
-            &deferred_relays,
-            tokio::runtime::Handle::current(),
-            Some(tilo_endpoint_reachability::REST_AFTER),
-        );
-        // This device's action plane is served on the same endpoint: another
-        // of the person's devices reaches what this one publishes here,
-        // beside the rooms' own traffic.
-        let mut served: tilo_network_actor::local_host::Protocols = Vec::new();
-        if let Some(identity) = identity.as_ref() {
-            let device = DeviceActions::start(identity, endpoint.clone(), engine.clone());
-            served.push((
-                tilo_peer_state::actions::ACTIONS_ALPN.to_vec(),
-                Box::<dyn iroh::protocol::DynProtocolHandler>::from(device.plane()),
-            ));
-            // The session takes it from here: what it installs answers, and
-            // an app's own-device actions leave through it.
-            let _ = actions.set(device);
-        }
-        let (actor, actor_task) = tilo_network_actor::Actor::spawn_serving(
-            endpoint.clone(),
-            lookup,
-            identity.clone(),
-            Arc::new(std::sync::Mutex::new(Vec::new())),
-            reachability.clone(),
-            served,
-        );
-        let (events, carrying, attending) = heard(identity.clone(), arrivals, wake, link.clone());
-        if ready.send(Ok((publisher, addr, reachability))).is_err() {
+        let Some(Listening {
+            endpoint,
+            actor,
+            events,
+            actor_task,
+            carrying,
+            attending,
+        }) = listening(
+            identity.as_ref(),
+            engine.as_ref(),
+            arrivals,
+            wake,
+            link.clone(),
+            &ready,
+            &actions,
+        )
+        .await
+        else {
             return;
-        }
+        };
         while let Some(command) = commands.recv().await {
             let command = match command {
                 // A redemption asks a host, waits for it and takes the room
@@ -1780,6 +1755,85 @@ fn run(
         }
         actor_task.abort();
     });
+}
+
+/// Bind this device's endpoint, serve the peer actor and its action plane on
+/// it, and say where the session's apps reach this device — or say why it
+/// could not, and answer nothing.
+async fn listening(
+    identity: Option<&HostIdentity>,
+    engine: Option<&Arc<Engine>>,
+    arrivals: std::sync::mpsc::Sender<NetEvent>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+    link: Option<Arc<ChannelLink>>,
+    ready: &std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
+    actions: &Arc<std::sync::OnceLock<DeviceActions>>,
+) -> Option<Listening> {
+    let lookup = iroh::address_lookup::memory::MemoryLookup::new();
+    let (builder, deferred_relays) = match endpoint_for(identity) {
+        Ok(building) => building,
+        Err(error) => {
+            let _ = ready.send(Err(error));
+            return None;
+        }
+    };
+    let endpoint = match builder
+        .address_lookup(lookup.clone())
+        .transport_config(tilo_network_actor::transport_config())
+        .bind()
+        .await
+    {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            let _ = ready.send(Err(format!("the collaboration endpoint: {error}")));
+            return None;
+        }
+    };
+    let publisher = endpoint.id();
+    let addr = endpoint.addr();
+    // Nothing wakes the held-back relays from here: the peer actor does when
+    // it dials a host or a peer, and the session while a room it shows has
+    // someone else in it (`Client::note_reachability`).
+    let reachability = tilo_endpoint_reachability::Reachability::defer(
+        &endpoint,
+        &deferred_relays,
+        tokio::runtime::Handle::current(),
+        Some(tilo_endpoint_reachability::REST_AFTER),
+    );
+    // This device's action plane is served on the same endpoint: another of
+    // the person's devices reaches what this one publishes here, beside the
+    // rooms' own traffic.
+    let mut served: tilo_network_actor::local_host::Protocols = Vec::new();
+    if let Some(identity) = identity {
+        let device = DeviceActions::start(identity, endpoint.clone(), engine.cloned());
+        served.push((
+            tilo_peer_state::actions::ACTIONS_ALPN.to_vec(),
+            Box::<dyn iroh::protocol::DynProtocolHandler>::from(device.plane()),
+        ));
+        // The session takes it from here: what it installs answers, and an
+        // app's own-device actions leave through it.
+        let _ = actions.set(device);
+    }
+    let (actor, actor_task) = tilo_network_actor::Actor::spawn_serving(
+        endpoint.clone(),
+        lookup,
+        identity.cloned(),
+        Arc::new(std::sync::Mutex::new(Vec::new())),
+        reachability.clone(),
+        served,
+    );
+    let (events, carrying, attending) = heard(identity.cloned(), arrivals, wake, link);
+    if ready.send(Ok((publisher, addr, reachability))).is_err() {
+        return None;
+    }
+    Some(Listening {
+        endpoint,
+        actor,
+        events,
+        actor_task,
+        carrying,
+        attending,
+    })
 }
 
 /// Hear the peer actor: what it says reaches the session, and what a room's

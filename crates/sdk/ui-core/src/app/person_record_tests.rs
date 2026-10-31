@@ -477,7 +477,7 @@ fn a_reader_of_another_apps_record_joins_its_route_and_publishes_nothing() {
     let (app, recording) = recording_window(APP, &read);
     let recording = recording.lock().unwrap();
     assert!(
-        recording.joins.iter().any(|joined| *joined == route),
+        recording.joins.contains(&route),
         "the reader joins the record's route"
     );
     let offered = recording.writes.clone();

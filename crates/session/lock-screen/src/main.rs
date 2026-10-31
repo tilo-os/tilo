@@ -12,11 +12,11 @@ mod lock_session;
 
 use std::cell::RefCell;
 
-use tilo_sheets::lock::{self, LockSeat, Shown, Status};
-use ui::application::{
+use tilo_app::application::{
     ApplicationDefinition, ComponentRunnerInputs, NativeProcessHost, PreparedComponentInputs,
 };
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
+use tilo_app::launch::{LaunchArgs, LaunchError, LaunchSpec};
+use tilo_sheets::lock::{self, LockSeat, Shown, Status};
 
 thread_local! {
     /// What the app is lent: the seat the lock screen shows in and takes
@@ -38,7 +38,7 @@ fn main() {
         .runs_without_identity()
         .runtime_attachment(|_| false)
         .allowed_options(&["--data-dir"]);
-    ui::launch::run_or_exit(&spec);
+    tilo_app::launch::run_or_exit(&spec);
 }
 
 /// The lock screen's app on this process's own host, lent its seat.
@@ -58,8 +58,8 @@ fn prepared(
 /// this is, as the session that started it said.
 fn shown() -> Shown {
     Shown {
-        clock: ui::clock::time_of_day(&ui::clock::local_now()),
-        date: ui::format::day_heading(ui::clock::today(), false),
+        clock: tilo_app::clock::time_of_day(&tilo_app::clock::local_now()),
+        date: tilo_app::format::day_heading(tilo_app::clock::today(), false),
         person: std::env::var("TILO_SURFACE_PERSON").unwrap_or_default(),
         error: None,
         checking: false,

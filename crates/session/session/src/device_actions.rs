@@ -259,7 +259,10 @@ impl Workspaces for Rooms {
         };
         engine
             .owner()
-            .with_current(room, |view| Ok(read(view.peer())))
+            .with_current(room, |view| {
+                read(view.peer());
+                Ok(())
+            })
             .is_ok()
     }
 }
@@ -432,20 +435,16 @@ mod tests {
     }
 
     /// The outcome `actions` observes for `request`, once the other device
-    /// answers.
+    /// answers: `None` when it never does.
     fn answered(
         actions: &DeviceActions,
         caller: &Caller,
         checked: &own_device::Checked,
         request: &InvokeRequest,
-    ) -> OwnDeviceOutcome {
+    ) -> Option<OwnDeviceOutcome> {
         let pending = OwnDeviceActions::invoke(actions, caller, checked, request)
             .expect("the person here may act on their other device");
-        match pending.wait_timeout(PATIENCE) {
-            Ok(Some(outcome)) => outcome,
-            Ok(None) => panic!("the other device dropped its answer"),
-            Err(_) => panic!("the other device did not answer in time"),
-        }
+        pending.wait_timeout(PATIENCE).ok().flatten()
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -464,7 +463,8 @@ mod tests {
 
         // The other device runs the app's action and this one hears its
         // outcome as its own.
-        let outcome = answered(&actions, &caller, &checked, &request);
+        let outcome = answered(&actions, &caller, &checked, &request)
+            .expect("the other device answers within the patience");
         assert!(
             outcome.is_ok(),
             "the other device ran the action: {outcome:?}"
@@ -513,7 +513,8 @@ mod tests {
         .in_room(ROOM);
         let (checked, request) = invocation(there.1.device_public_key, "insert");
 
-        let refused = answered(&actions, &caller, &checked, &request);
+        let refused = answered(&actions, &caller, &checked, &request)
+            .expect("the other device answers within the patience");
         assert!(
             refused.is_err(),
             "a device the room has no part for acts nowhere in it: {refused:?}"

@@ -333,14 +333,10 @@ fn session(machine: &Machine, service: Box<dyn Service>) -> Session {
 }
 
 /// The lock screen the session starts when it locks: the app whose window
-/// asks the compositor for the session lock.
+/// asks the compositor for the session lock, built with this package for the
+/// tests.
 fn lock_screen() -> Surface {
-    let binary = tilo_test_env::package_binary!("tilo-session").with_file_name("tilo-lock-screen");
-    assert!(
-        binary.exists(),
-        "expected the lock screen at {}; build the workspace first",
-        binary.display()
-    );
+    let binary = tilo_test_env::package_binary!("tilo-lock-screen-test");
     Surface::new("lock", binary).person("ada").lock()
 }
 

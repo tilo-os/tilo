@@ -9,10 +9,10 @@
 
 use std::sync::mpsc::Receiver;
 
+use tilo_app::LocalStateWriter;
+use tilo_app::collaboration::SessionResource;
+use tilo_app::tilo_resource::Effect as _;
 use tilo_sheets::lock::{LockEffect, LockSeat, Shown};
-use ui::LocalStateWriter;
-use ui::collaboration::SessionResource;
-use ui::tilo_resource::Effect as _;
 
 /// The resource the session publishes the lock's state on.
 const LOCK: &str = "lock";
@@ -76,7 +76,7 @@ fn follow(showing: LocalStateWriter<Shown>, effects: Receiver<LockEffect>) {
 /// opened at, then each one the session publishes after it.
 fn draw_each(opened: &SessionResource, showing: &LocalStateWriter<Shown>) {
     let (woke, wakes) = std::sync::mpsc::channel();
-    let mut waking = ui::WakeScope::new();
+    let mut waking = tilo_app::WakeScope::new();
     if let Err(error) = waking.bind(move |_| {
         let _ = woke.send(());
     }) {

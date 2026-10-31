@@ -380,66 +380,29 @@ fn wait_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool
     }
 }
 
-#[test]
-fn opening_the_directory_lists_the_community_sites_public_workspaces() {
-    let _settled = ui::motion::testing::settled();
-    let (responder, page) = site();
-    let mut env = tilo_test_env::ScopedEnv::new();
-    let _config = community_site(&mut env, &responder.url());
-    let mut session = session();
-    session.step(Duration::from_millis(1)).unwrap();
-    let (held_id, held_name, held_room) = held(&session)
-        .into_iter()
-        .next()
-        .expect("the desk holds one workspace");
-    // What the site lists: its own community workspace, a club, and the
-    // workspace this computer holds already.
+/// What the site lists: its own community workspace, a club, and the
+/// workspace this computer holds already.
+fn page_listing_the_workspace_on_this_desk(held_name: &str, held_room: &str) -> String {
     let mut entries = vec![community_entry(34, now_ms()), club_entry(now_ms())];
     entries.push(DirectoryEntry {
-        room: held_room.clone(),
-        name: held_name.clone(),
+        room: held_room.to_owned(),
+        name: held_name.to_owned(),
         description: "The one on this desk".to_owned(),
         default_role: RoomRole::Commenter,
-        door: door_path(&held_room),
+        door: door_path(held_room),
         here: Vec::new(),
         here_count: 0,
         members: 3,
         last_active_ms: Some(now_ms()),
         community: false,
     });
-    *page.lock().expect("the page") = page_of(entries);
-    open_directory(&mut session);
-    let sheet = session
-        .workspace_directory()
-        .expect("the session hosts the workspace directory");
-    assert_eq!(
-        sheet.directory().status,
-        Status::Listed,
-        "the site's directory was read: {:?}",
-        sheet.directory().note
-    );
-    assert!(
-        sheet.presentation().is_open(),
-        "and the sheet is up to show it"
-    );
-    assert_eq!(
-        rows(&session),
-        [
-            (
-                "Tilers".to_owned(),
-                ListingAction::Join,
-                COMMUNITY_ROOM.to_owned()
-            ),
-            (held_name, ListingAction::Open, held_id),
-            (
-                "Book club".to_owned(),
-                ListingAction::Join,
-                CLUB_ROOM.to_owned()
-            ),
-        ],
-        "the community's own first, then the liveliest, and the held workspace opens rather than joins"
-    );
-    let community = listing(&session, "Tilers");
+    page_of(entries)
+}
+
+/// What the community's own workspace says of itself on its row, and of
+/// the people in it now.
+fn asserts_the_communitys_row(session: &Session) {
+    let community = listing(session, "Tilers");
     assert_eq!(
         community.about, "Anyone who lays tiles",
         "what it is, in its own words"
@@ -471,7 +434,11 @@ fn opening_the_directory_lists_the_community_sites_public_workspaces() {
         community.joins_as, "You join as an editor",
         "what joining gets the person"
     );
-    let club = listing(&session, "Book club");
+}
+
+/// What a workspace that says nothing of itself says on its row.
+fn asserts_the_clubs_row(session: &Session) {
+    let club = listing(session, "Book club");
     assert_eq!(
         club.about, "127.0.0.1",
         "a workspace that says nothing of itself is named by its host"
@@ -491,6 +458,55 @@ fn opening_the_directory_lists_the_community_sites_public_workspaces() {
     );
     assert!(club.here.is_empty(), "nobody is in it now");
     assert_eq!(club.tag, None, "it is not the site's own workspace");
+}
+
+#[test]
+fn opening_the_directory_lists_the_community_sites_public_workspaces() {
+    let _settled = ui::motion::testing::settled();
+    let (responder, page) = site();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    let _config = community_site(&mut env, &responder.url());
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    let (held_id, held_name, held_room) = held(&session)
+        .into_iter()
+        .next()
+        .expect("the desk holds one workspace");
+    *page.lock().expect("the page") =
+        page_listing_the_workspace_on_this_desk(&held_name, &held_room);
+    open_directory(&mut session);
+    let sheet = session
+        .workspace_directory()
+        .expect("the session hosts the workspace directory");
+    assert_eq!(
+        sheet.directory().status,
+        Status::Listed,
+        "the site's directory was read: {:?}",
+        sheet.directory().note
+    );
+    assert!(
+        sheet.presentation().is_open(),
+        "and the sheet is up to show it"
+    );
+    assert_eq!(
+        rows(&session),
+        [
+            (
+                "Tilers".to_owned(),
+                ListingAction::Join,
+                COMMUNITY_ROOM.to_owned()
+            ),
+            (held_name, ListingAction::Open, held_id),
+            (
+                "Book club".to_owned(),
+                ListingAction::Join,
+                CLUB_ROOM.to_owned()
+            ),
+        ],
+        "the community's own first, then the liveliest, and the held workspace opens rather than joins"
+    );
+    asserts_the_communitys_row(&session);
+    asserts_the_clubs_row(&session);
 }
 
 #[test]
