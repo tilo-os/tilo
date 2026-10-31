@@ -805,84 +805,6 @@ fn the_touchpad_key_and_the_sessions_own_action_switch_the_touchpad() {
     );
 }
 
-#[test]
-fn the_lock_action_locks_the_session_behind_the_lock_screen_which_a_password_unlocks() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            user: "ada".to_owned(),
-            verifier: std::sync::Arc::new(Sesame),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-    let _client = mapped(&mut session, "org.example.Terminal");
-    let unlocked = session.compositor().screenshot("HEADLESS-1").unwrap();
-    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
-    session.step(Duration::from_millis(1)).unwrap();
-    assert!(session.compositor().locked());
-    let unlock = tilo_sheets::lock::LockEffect::UNLOCK.id;
-    assert!(
-        publisher(&session, "toggle-overview").is_none(),
-        "the locked session withholds the desktop's actions"
-    );
-    let screen = publisher(&session, unlock).expect("the lock screen publishes unlocking");
-    let locked = session.compositor().screenshot("HEADLESS-1").unwrap();
-    assert_ne!(
-        locked.rgba, unlocked.rgba,
-        "the lock screen hides the desktop"
-    );
-    let colours: std::collections::BTreeSet<&[u8]> = locked.rgba.chunks(4).collect();
-    assert!(
-        colours.len() > 2,
-        "the lock screen draws its clock and prompt, not only the dim"
-    );
-
-    let type_password = tilo_sheets::lock::LockEffect::TYPE_PASSWORD.id;
-    session
-        .invoke(
-            &screen,
-            type_password,
-            &arguments(serde_json::json!({ "password": "wrong" })),
-        )
-        .expect("type");
-    session
-        .invoke(&screen, unlock, &serde_json::Map::new())
-        .expect("unlock");
-    pump(&mut session, &mut [], |session, _| {
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| label.contains("did not unlock"))
-    });
-    assert!(
-        session.compositor().locked(),
-        "a wrong password keeps it locked"
-    );
-
-    session
-        .invoke(
-            &screen,
-            type_password,
-            &arguments(serde_json::json!({ "password": "sesame" })),
-        )
-        .expect("type");
-    session
-        .invoke(&screen, unlock, &serde_json::Map::new())
-        .expect("unlock");
-    pump(&mut session, &mut [], |session, _| {
-        !session.compositor().locked()
-    });
-    assert!(
-        publisher(&session, unlock).is_none(),
-        "the lock screen is gone"
-    );
-    assert!(publisher(&session, "toggle-overview").is_some());
-}
-
 /// Unlocks with "sesame" only.
 struct Sesame;
 
@@ -1853,6 +1775,9 @@ fn pixel_at(picture: &image::RgbaImage, x: i32, y: i32) -> [u8; 4] {
         .get_pixel(u32::try_from(x).unwrap(), u32::try_from(y).unwrap())
         .0
 }
+
+#[path = "session/lock.rs"]
+mod lock;
 
 mod questions;
 
