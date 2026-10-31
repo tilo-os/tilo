@@ -1,8 +1,14 @@
 //! The capture studio over the session: its actions are the bar's keys,
-//! and what it takes is the compositor's own frames.
+//! and what it takes is the compositor's own frames. What an app asks for
+//! that only the person can name — a window, an area — is chosen here too.
+
+use std::sync::Arc;
 
 use super::desk::capture;
 use super::*;
+
+use tilo_portal::{Capture as _, CaptureError, CaptureTarget};
+use tilo_session::capture::ScreenCapture;
 
 /// The capture studio's published resource: its actions are the bar's keys.
 const STUDIO: &str = tilo_capture_studio::RESOURCE;
@@ -295,4 +301,273 @@ fn the_studios_open_action_puts_the_bar_over_the_desktop() {
         frame.rgba != desk.rgba
     });
     capture(&mut session, "capture-studio");
+}
+
+/// Two displays side by side with the portal's capture side asking for
+/// screenshots: what the person keeps lands under `pictures`, what an app
+/// asks for under `directory`.
+fn asking_session(
+    pictures: &std::path::Path,
+    directory: &std::path::Path,
+) -> (Session, Arc<ScreenCapture>) {
+    let wake = tilo_service::LoopWake::default();
+    let (capture, captures) =
+        tilo_session::capture::channel_to(directory.to_path_buf(), wake.handle());
+    let external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT).at(WIDTH, 0);
+    let session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            pictures: Some(pictures.to_path_buf()),
+            wake,
+            captures: Some(captures),
+            ..Options::default()
+        },
+        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0), external],
+    )
+    .expect("session");
+    (session, Arc::new(capture))
+}
+
+/// Ask for `target` from another runtime, as an app does.
+fn ask_in_background(
+    capture: &Arc<ScreenCapture>,
+    target: CaptureTarget,
+) -> std::thread::JoinHandle<Result<std::path::PathBuf, CaptureError>> {
+    let capture = Arc::clone(capture);
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(capture.screenshot(target))
+    })
+}
+
+/// Step `session` until the ask answers; its answer. The person takes as
+/// long as they take, so nothing but the answer ends this.
+#[track_caller]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "a test fixture: a screenshot that never comes is the failure"
+)]
+fn answered(
+    session: &mut Session,
+    asking: std::thread::JoinHandle<Result<std::path::PathBuf, CaptureError>>,
+) -> Result<std::path::PathBuf, CaptureError> {
+    let started = std::time::Instant::now();
+    while !asking.is_finished() {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the screenshot was never answered"
+        );
+        session.step(Duration::from_millis(5)).expect("step");
+    }
+    asking.join().unwrap()
+}
+
+/// Step `session` until the studio's bar shows on `display`: the frame
+/// there is no longer the desk it was. That desk, to know the bar is gone.
+#[track_caller]
+fn bar_up(session: &mut Session, display: &str) -> Vec<u8> {
+    let desk = session.compositor().screenshot(display).expect("shot").rgba;
+    pump(session, &mut [], |session, _| {
+        session
+            .compositor()
+            .screenshot(display)
+            .is_ok_and(|frame| frame.rgba != desk)
+    });
+    desk
+}
+
+/// Step `session` until nothing of the studio is drawn on `display` any
+/// more: the desk shows again as it was before the bar.
+#[track_caller]
+fn bar_down(session: &mut Session, display: &str, desk: &[u8]) {
+    pump(session, &mut [], |session, _| {
+        session
+            .compositor()
+            .screenshot(display)
+            .is_ok_and(|frame| frame.rgba == desk)
+    });
+}
+
+/// The person draws from `from` to `to` with the pointer, as they do on the
+/// desk.
+fn draw(session: &mut Session, from: (f64, f64), to: (f64, f64)) {
+    for event in [
+        InputEvent::PointerMotion {
+            x: from.0,
+            y: from.1,
+        },
+        InputEvent::PointerButton {
+            button: 0x110,
+            pressed: true,
+        },
+        InputEvent::PointerMotion { x: to.0, y: to.1 },
+        InputEvent::PointerButton {
+            button: 0x110,
+            pressed: false,
+        },
+    ] {
+        session.compositor().input(event).unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+}
+
+/// The middle of what a picture of a window's client shows.
+#[allow(clippy::cast_possible_wrap, reason = "a window's pixels on a screen")]
+fn middle(picture: &image::RgbaImage) -> (i32, i32) {
+    let (width, height) = picture.dimensions();
+    ((width / 2) as i32, (height / 2) as i32)
+}
+
+#[test]
+fn a_portal_area_request_is_the_rectangle_the_person_draws_on_that_display() {
+    let _settled = ui::motion::testing::settled();
+    let pictures = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let (mut session, capture) = asking_session(pictures.path(), directory.path());
+    settle(&mut session, 4);
+    // The person works on the second display, and a window is there.
+    let other = session.handle().displays()[1];
+    assert!(session.handle().focus_display(other));
+    let _client = mapped(&mut session, "org.example.Terminal");
+    settle(&mut session, 2);
+    let (_, (x, y, _, _)) = window(session.compositor(), "org.example.Terminal")
+        .expect("the compositor shows the window");
+    assert!(x >= WIDTH, "the window stands on the second display");
+
+    let asking = ask_in_background(&capture, CaptureTarget::Area);
+    let desk = bar_up(&mut session, "HDMI-A-1");
+    // A press, a drag and its release: the rectangle the person draws, on
+    // the display they are working on.
+    draw(
+        &mut session,
+        (f64::from(x + 40), f64::from(y + 30)),
+        (f64::from(x + 240), f64::from(y + 150)),
+    );
+    tap(&mut session, super::keys::ENTER);
+
+    let shown = answered(&mut session, asking).expect("the picture the app asked for");
+    let picture = image::open(&shown).expect("a picture").to_rgba8();
+    assert_eq!(
+        picture.dimensions(),
+        (200, 120),
+        "the rectangle as it was drawn"
+    );
+    assert_eq!(
+        pixel_at(&picture, 100, 60),
+        [200, 40, 40, 255],
+        "what the rectangle was drawn over"
+    );
+    assert!(
+        shown.starts_with(directory.path()),
+        "written where the app is handed it from, not in the person's folders: {}",
+        shown.display()
+    );
+    assert!(
+        kept(pictures.path(), "png").is_empty(),
+        "nothing landed in the person's Pictures"
+    );
+    // The studio goes away once the app has its picture.
+    bar_down(&mut session, "HDMI-A-1", &desk);
+}
+
+#[test]
+fn a_portal_window_request_is_the_window_the_person_picks() {
+    let _settled = ui::motion::testing::settled();
+    let pictures = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let (mut session, capture) = asking_session(pictures.path(), directory.path());
+    let _client = mapped(&mut session, "org.example.Terminal");
+    settle(&mut session, 4);
+    let (_, (x, y, width, height)) = window(session.compositor(), "org.example.Terminal")
+        .expect("the compositor shows the window");
+
+    let asking = ask_in_background(&capture, CaptureTarget::Window);
+    let desk = bar_up(&mut session, "eDP-1");
+    // The person picks the window with the pointer and takes it.
+    let centre = (
+        f64::from(x) + f64::from(width) / 2.0,
+        f64::from(y) + f64::from(height) / 2.0,
+    );
+    draw(&mut session, centre, centre);
+    tap(&mut session, super::keys::ENTER);
+
+    let shown = answered(&mut session, asking).expect("the picture the app asked for");
+    let picture = image::open(&shown).expect("a picture").to_rgba8();
+    let (width, height) = picture.dimensions();
+    assert!(
+        width < u32::try_from(WIDTH).unwrap() && height < u32::try_from(HEIGHT).unwrap(),
+        "the window, not the whole screen: {width}x{height}"
+    );
+    assert_eq!(
+        pixel_at(&picture, middle(&picture).0, middle(&picture).1),
+        [200, 40, 40, 255],
+        "the colour its client drew"
+    );
+    assert!(
+        shown.starts_with(directory.path()),
+        "written for the app, not in the person's folders: {}",
+        shown.display()
+    );
+    bar_down(&mut session, "eDP-1", &desk);
+}
+
+#[test]
+fn a_selection_the_person_closes_is_cancelled_and_the_next_request_still_works() {
+    let _settled = ui::motion::testing::settled();
+    let pictures = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let (mut session, capture) = asking_session(pictures.path(), directory.path());
+    let _client = mapped(&mut session, "org.example.Terminal");
+    settle(&mut session, 4);
+
+    let asking = ask_in_background(&capture, CaptureTarget::Area);
+    let desk = bar_up(&mut session, "eDP-1");
+    // The person closes the bar instead of drawing.
+    tap(&mut session, super::keys::ESCAPE);
+    assert_eq!(
+        answered(&mut session, asking),
+        Err(CaptureError::Cancelled),
+        "a selection nobody made is a cancel, not a failure"
+    );
+    // Nothing of the studio lingers over the desk.
+    bar_down(&mut session, "eDP-1", &desk);
+
+    // The next request is answered as usual.
+    let asking = ask_in_background(&capture, CaptureTarget::Window);
+    let _desk = bar_up(&mut session, "eDP-1");
+    tap(&mut session, super::keys::ENTER);
+    let next = answered(&mut session, asking).expect("the next request is answered");
+    let picture = image::open(&next).expect("a picture").to_rgba8();
+    let (width, height) = picture.dimensions();
+    assert!(
+        width < u32::try_from(WIDTH).unwrap() && height < u32::try_from(HEIGHT).unwrap(),
+        "the window, not the whole screen: {width}x{height}"
+    );
+}
+
+#[test]
+fn a_request_the_app_closes_takes_the_studio_down_and_leaves_nothing_behind() {
+    let _settled = ui::motion::testing::settled();
+    let pictures = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let (mut session, capture) = asking_session(pictures.path(), directory.path());
+    let _client = mapped(&mut session, "org.example.Terminal");
+    settle(&mut session, 4);
+
+    // The app asks, then stops waiting while the person is choosing.
+    let asking = capture.screenshot(CaptureTarget::Area);
+    let desk = bar_up(&mut session, "eDP-1");
+    drop(asking);
+    bar_down(&mut session, "eDP-1", &desk);
+
+    // The next request has the selector to itself.
+    let asking = ask_in_background(&capture, CaptureTarget::Window);
+    let _desk = bar_up(&mut session, "eDP-1");
+    tap(&mut session, super::keys::ENTER);
+    assert!(
+        answered(&mut session, asking).is_ok(),
+        "the next request is answered"
+    );
 }

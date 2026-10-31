@@ -73,31 +73,50 @@ impl StudioSurface {
     /// Follow the session and the scene: open or close the bar as the
     /// session says, and show what it last handed the studio.
     fn catch_up(&mut self) {
-        self.follow();
+        let opened = self.follow();
         self.take_scene();
+        if opened {
+            self.choose_what_is_asked();
+        }
         self.take_intents();
         self.dismiss();
         self.dirty = true;
     }
 
     /// Open on a new opening, close when the session took the studio down.
-    /// On its own the bar is up from the first frame.
-    fn follow(&mut self) {
+    /// On its own the bar is up from the first frame. `true` when the bar
+    /// came up now.
+    fn follow(&mut self) -> bool {
         if self.own {
             if !self.widget.is_open() {
                 self.widget.open();
+                return true;
             }
-            return;
+            return false;
         }
         let presentation = self.studio.presentation();
         match presentation.phase() {
             Phase::Open if self.opening != Some(presentation.openings()) => {
                 self.opening = Some(presentation.openings());
                 self.widget.open();
+                true
             }
-            Phase::Leaving | Phase::Closed if self.widget.is_open() => self.widget.close(),
-            _ => {}
+            Phase::Leaving | Phase::Closed if self.widget.is_open() => {
+                self.widget.close();
+                false
+            }
+            _ => false,
         }
+    }
+
+    /// The bar comes up choosing what an app asked the person for: a window
+    /// to pick or an area to draw, as a screenshot.
+    fn choose_what_is_asked(&mut self) {
+        let Some(asking) = self.scene.asking else {
+            return;
+        };
+        self.widget.set_mode(CaptureMode::Screenshot);
+        self.widget.set_source_mode(asking.source());
     }
 
     /// Show what the session published since the last look.

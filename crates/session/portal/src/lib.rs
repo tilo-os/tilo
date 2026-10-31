@@ -203,12 +203,24 @@ impl CaptureTarget {
     }
 }
 
+/// Why a screenshot the session was asked for has no picture.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CaptureError {
+    /// Nothing was taken: the person closed the selection, or nobody waits
+    /// for it any more. The app is answered as a cancel, not as a failure.
+    Cancelled,
+    /// What was asked for could not be captured.
+    Failed(String),
+}
+
 /// What the session captures for the portal: the compositor's pictures of
-/// what the displays show.
+/// what the displays show, and what the person picks or draws in the
+/// studio's selector.
 pub trait Capture: Send + Sync {
-    /// A picture of `target` as it shows now, written as a PNG the asking
-    /// app may read; its path.
-    fn screenshot(&self, target: CaptureTarget) -> Pending<Result<PathBuf, String>>;
+    /// A picture of `target` written as a PNG the asking app may read; its
+    /// path. The targets the person takes part in are answered once they
+    /// chose, however long that takes.
+    fn screenshot(&self, target: CaptureTarget) -> Pending<Result<PathBuf, CaptureError>>;
 
     /// The targets this session can take, as the interface's
     /// `AvailableTargets` bits: it is asked nothing it cannot answer.
@@ -219,8 +231,12 @@ pub trait Capture: Send + Sync {
 pub struct NoCapture;
 
 impl Capture for NoCapture {
-    fn screenshot(&self, _target: CaptureTarget) -> Pending<Result<PathBuf, String>> {
-        Box::pin(async { Err("this session captures nothing".to_owned()) })
+    fn screenshot(&self, _target: CaptureTarget) -> Pending<Result<PathBuf, CaptureError>> {
+        Box::pin(async {
+            Err(CaptureError::Failed(
+                "this session captures nothing".to_owned(),
+            ))
+        })
     }
 
     fn targets(&self) -> u32 {

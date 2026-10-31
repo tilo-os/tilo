@@ -2090,7 +2090,7 @@ impl Session {
         }
         self.follow_lock()?;
         if let Some(captures) = &self.captures {
-            captures.serve(&mut self.compositor);
+            captures.serve(&mut self.compositor, self.capture_studio.as_mut());
         }
         if let Some(studio) = &mut self.capture_studio {
             studio.serve(&mut self.compositor);
