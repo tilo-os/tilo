@@ -1310,10 +1310,10 @@ impl Audio {
         use tilo_audio_service::sound::Device;
         let device = |node, label: &str, chosen| Device {
             node,
+            name: format!("node-{node}"),
             label: label.into(),
             chosen,
-            volume: None,
-            muted: false,
+            ..Device::default()
         };
         Self {
             sound: RefCell::new(tilo_audio_service::sound::Sound {
@@ -1364,7 +1364,6 @@ impl tilo_session::Service for Audio {
 
 #[test]
 fn a_session_without_an_audio_service_offers_no_sound_to_change() {
-    use std::sync::Arc;
     let _settled = ui::motion::testing::settled();
     let reads = Machine::laptop();
     let session = Session::headless(
@@ -1373,8 +1372,8 @@ fn a_session_without_an_audio_service_offers_no_sound_to_change() {
             quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
                 DeviceHost::new(
                     Device {
-                        reads: Arc::new(reads.clone()),
-                        dispatcher: Arc::new(reads),
+                        reads: std::sync::Arc::new(reads.clone()),
+                        dispatcher: std::sync::Arc::new(reads),
                         preferences: Box::new(Kept::default()),
                     },
                     wake,
@@ -1395,7 +1394,6 @@ fn a_session_without_an_audio_service_offers_no_sound_to_change() {
 
 #[test]
 fn the_panels_sound_is_the_audio_services_and_its_changes_are_the_services_actions() {
-    use std::sync::Arc;
     let _settled = ui::motion::testing::settled();
     let machine = Machine::laptop();
     let reads = machine.clone();
@@ -1406,8 +1404,8 @@ fn the_panels_sound_is_the_audio_services_and_its_changes_are_the_services_actio
             quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
                 DeviceHost::new(
                     Device {
-                        reads: Arc::new(reads.clone()),
-                        dispatcher: Arc::new(reads),
+                        reads: std::sync::Arc::new(reads.clone()),
+                        dispatcher: std::sync::Arc::new(reads),
                         preferences: Box::new(Kept::default()),
                     },
                     wake,
