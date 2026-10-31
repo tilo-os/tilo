@@ -1068,6 +1068,10 @@ impl Core {
             Value::Bool(role == "primary" && shown.present),
             Value::Bool(role == "destructive"),
             on.map_or_else(Value::none, |on| Value::some(Value::Bool(on))),
+            action
+                .key
+                .clone()
+                .map_or_else(Value::none, |key| Value::some(Value::Text(key))),
             Value::List(params),
             Value::Action(ActionRef {
                 action: action.id.clone(),

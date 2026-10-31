@@ -152,6 +152,7 @@ impl Command {
             icon,
             destructive,
             checked: _,
+            key: _,
             choose,
         } = props;
         Self {

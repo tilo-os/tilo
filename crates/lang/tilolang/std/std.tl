@@ -149,7 +149,7 @@ view header<S>(
     extra
     for a in offered {
         if not a.primary and a.icon != .none {
-            ui.Button(a.label, icon: a.icon, icon_only: true, toggled: a.on == .some(true)) {
+            ui.Button(a.label, icon: a.icon, icon_only: true, toggled: a.on == .some(true), key: a.key) {
                 on press: a.run
             }
         }
@@ -158,7 +158,7 @@ view header<S>(
     if not more.is_empty() {
         ui.MenuButton(phrase("tilolang-more"), icon: .more_horizontal, icon_only: true) {
             for a in more {
-                ui.MenuItem(a.label, destructive: a.destructive) {
+                ui.MenuItem(a.label, destructive: a.destructive, key: a.key) {
                     on choose: a.run
                 }
             }

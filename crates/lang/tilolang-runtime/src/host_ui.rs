@@ -71,7 +71,7 @@ impl Core {
         let mut offered = Vec::with_capacity(actions.len());
         let mut events = Vec::with_capacity(actions.len());
         for (index, action) in actions.into_iter().enumerate() {
-            // `host.Action`: label, icon, role, primary, destructive, on, params, run.
+            // `host.Action`: label, icon, role, primary, destructive, on, key, params, run.
             let Value::Tuple(fields) = action else {
                 return trap("an offered action is a host.Action");
             };
@@ -90,7 +90,7 @@ impl Core {
                 },
                 _ => None,
             };
-            let Some(run @ Value::Action(_)) = fields.get(7).cloned() else {
+            let Some(run @ Value::Action(_)) = fields.get(8).cloned() else {
                 return trap("an offered action runs an action reference");
             };
             let event = offered_event(&name, index);
@@ -100,6 +100,7 @@ impl Core {
                 primary: flag(3).unwrap_or(false),
                 destructive: flag(4).unwrap_or(false),
                 on: flag(5),
+                key: text(6),
                 event: event.clone(),
             })));
             events.push((event, run));

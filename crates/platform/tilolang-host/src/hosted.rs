@@ -511,7 +511,6 @@ impl Hosted {
         }
         self.search_index_from = Some(generation);
     }
-    }
 
     /// Offer the instance's action directory on its connection, once it is connected, and
     /// answer what was asked of it since the last frame from what the instance published.

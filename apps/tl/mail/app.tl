@@ -128,14 +128,14 @@ fn re(subject: Text) -> Text {
 }
 
 /// Answers the conversation's newest message, to whoever wrote it.
-primary action reply(t: Thread) -> Draft (icon: .reply) {
+primary action reply(t: Thread) -> Draft (icon: .reply, key: "r") {
     let m = root Mail
     let last = t.messages.last()
     m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
 }
 
 /// Answers the conversation's newest message, to everyone it went to.
-action reply_all(t: Thread) -> Draft (icon: .reply_all, label: "Reply all") {
+action reply_all(t: Thread) -> Draft (icon: .reply_all, label: "Reply all", key: "a") {
     let m = root Mail
     let last = t.messages.last()
     m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", cc: if let l = last {
@@ -144,7 +144,7 @@ action reply_all(t: Thread) -> Draft (icon: .reply_all, label: "Reply all") {
 }
 
 /// Sends the conversation's newest message on, quoted.
-action forward(t: Thread) -> Draft (icon: .forward) {
+action forward(t: Thread) -> Draft (icon: .forward, key: "f") {
     let m = root Mail
     let last = t.messages.last()
     let said = if let l = last {
@@ -154,7 +154,7 @@ action forward(t: Thread) -> Draft (icon: .forward) {
 }
 
 /// Archives the conversation: its messages leave the inbox.
-action archive(t: Thread) (icon: .archive) {
+action archive(t: Thread) (icon: .archive, key: "e") {
     require t.boxes.any(b -> b == "inbox") "It is not in the inbox"
     for m in t.messages {
         if m.mailbox == "inbox" {
@@ -166,7 +166,7 @@ action archive(t: Thread) (icon: .archive) {
 }
 
 /// Moves the conversation back to the inbox.
-action to_inbox(t: Thread) (icon: .inbox, label: "Move to inbox") {
+action to_inbox(t: Thread) (icon: .inbox, label: "Move to inbox", key: "i") {
     require not t.boxes.any(b -> b == "inbox") "It is in the inbox"
     for m in t.messages {
         if m.mailbox != "sent" {
@@ -195,7 +195,7 @@ action move_to(t: Thread, to: Mailbox) (label: "Move to…", icon: .folder) {
 }
 
 /// Deletes the conversation: its messages go to the trash.
-destructive action delete(t: Thread) (icon: .trash) {
+destructive action delete(t: Thread) (icon: .trash, key: "#") {
     require not t.boxes.any(b -> b == "trash") "It is in the trash"
     for m in t.messages {
         m.mailbox = "trash"
@@ -208,7 +208,7 @@ destructive action delete(t: Thread) (icon: .trash) {
 }
 
 /// Flags or unflags the conversation.
-action flag(t: Thread, flagged: Bool = not t.flagged) (label: if t.flagged { "Unflag" } else { "Flag" }, icon: .flag, on: t.flagged) {
+action flag(t: Thread, flagged: Bool = not t.flagged) (label: if t.flagged { "Unflag" } else { "Flag" }, icon: .flag, on: t.flagged, key: "s") {
     if let last = t.messages.last() {
         last.flagged = flagged
     }
@@ -221,7 +221,7 @@ action flag(t: Thread, flagged: Bool = not t.flagged) (label: if t.flagged { "Un
 }
 
 /// Marks the conversation read, or unread again.
-action mark_read(t: Thread, unread: Bool = not t.unread) (label: if t.unread { "Mark as read" } else { "Mark as unread" }, icon: .mail_open, on: not t.unread) {
+action mark_read(t: Thread, unread: Bool = not t.unread) (label: if t.unread { "Mark as read" } else { "Mark as unread" }, icon: .mail_open, on: not t.unread, key: "u") {
     if t.unread != unread {
         if unread {
             if let last = t.messages.last() {

@@ -303,6 +303,9 @@ pub struct OfferedAction {
     pub destructive: bool,
     /// Whether the state it toggles is on, when it toggles one.
     pub on: Option<bool>,
+    /// The plain key that runs it while its window has the keyboard (and, on a row's action,
+    /// while that row is selected), as the app declared it.
+    pub key: Option<String>,
     pub run: Event,
 }
 
@@ -325,6 +328,7 @@ impl PropType for OfferedAction {
             primary: offered.primary,
             destructive: offered.destructive,
             on: offered.on,
+            key: offered.key.clone(),
             run: Event::None,
         })
     }

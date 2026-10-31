@@ -397,6 +397,18 @@ impl Window {
         self.view.act(event);
     }
 
+    /// Run the action the app declared the plain key `key` for in this window, as pressing it
+    /// does: the key reaches the app through the control that runs the action. Whether the
+    /// window offers it. A test's way in, and the person's key.
+    pub fn run_shortcut(&mut self, key: &str) -> bool {
+        let ran = self.view.run_shortcut(key);
+        self.show_sent();
+        ran
+    }
+
+    /// Ask the app to undo the person's last step, as the window's Undo does: the ask reaches
+    /// the instance on its next update, and the record carries it out on the person's history
+    /// verb.
     /// The shell.
     #[must_use]
     pub fn shell_ref(&self) -> Option<&ui::widget::NavShell> {
