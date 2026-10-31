@@ -157,6 +157,10 @@ struct Shared {
     /// Whoever holds each window someone else opened, by tab
     /// ([`DesktopHandle::set_holders`]).
     holders: HashMap<TabId, ui::widget::TabHolder>,
+    /// The windows the sharing app lists for its picker, as last published
+    /// ([`DesktopSurface::offer_window_shares`]): a window's menu offers the
+    /// share row exactly for these.
+    window_offers: Vec<ui::window_share::OpenWindow>,
     /// The windows waiting for the person ([`DesktopHandle::ask_attention`]),
     /// until each has their focus.
     asking: std::collections::BTreeSet<TabId>,
@@ -648,6 +652,9 @@ enum RowOp {
     Pan(StripId, f64),
     Scroll(StripId, GroupId, ScrollAction),
     History(StripId, GroupId, TabId, HistoryDirection),
+    /// The share row of a window: share it with its workspace's people, or
+    /// stop sharing it.
+    WindowShare(TabId, bool),
 }
 
 pub struct DesktopSurface {
@@ -786,6 +793,7 @@ impl DesktopSurface {
         let shared = Rc::new(RefCell::new(Shared {
             tree,
             holders: HashMap::new(),
+            window_offers: Vec::new(),
             asking: std::collections::BTreeSet::new(),
             opens: true,
             revision: 1,
@@ -1599,7 +1607,13 @@ impl DesktopSurface {
                         }
                         continue;
                     }
-                    _ => continue,
+                    // Everything else is a window menu's row: the desktop's
+                    // own moves, widths and closes of one window.
+                    other => {
+                        if !window_menu::apply(&mut shared, &other, &mut ops) {
+                            continue;
+                        }
+                    }
                 }
                 shared.changed();
             }
@@ -1681,6 +1695,9 @@ impl DesktopSurface {
                     {
                         self.structure_dirty = true;
                     }
+                }
+                RowOp::WindowShare(tab, share) => {
+                    self.ask_window_share(tab, share);
                 }
             }
         }

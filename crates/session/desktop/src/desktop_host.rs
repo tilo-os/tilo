@@ -2338,7 +2338,7 @@ impl Widget for DesktopChrome {
         if let Some((tab, row)) = self.window_menu.take_choice() {
             let done = self
                 .handle
-                .choose_window_menu(tab, row, None, &self.generation);
+                .choose_window_menu(tab, &row, None, &self.generation);
             self.report(done);
             changed = true;
         }

@@ -21,9 +21,9 @@ pub struct WindowMenu {
     /// The window the rows are for.
     tab: Option<TabId>,
     /// The command each row means, `None` for a row that commands nothing.
-    rows: Vec<Option<&'static str>>,
+    rows: Vec<Option<String>>,
     /// What the person chose, for the host to carry out.
-    chosen: Option<(TabId, &'static str)>,
+    chosen: Option<(TabId, String)>,
     rect: Rect,
 }
 
@@ -51,7 +51,7 @@ impl WindowMenu {
                 }
             }
             items.push(item);
-            ids.push(Some(row.id));
+            ids.push(Some(row.id.clone()));
         }
         self.menu.set_items(items);
         self.rows = ids;
@@ -106,7 +106,7 @@ impl WindowMenu {
     }
 
     /// What the person chose since the last call; the menu has closed.
-    pub fn take_choice(&mut self) -> Option<(TabId, &'static str)> {
+    pub fn take_choice(&mut self) -> Option<(TabId, String)> {
         self.settle();
         self.chosen.take()
     }
@@ -120,7 +120,7 @@ impl WindowMenu {
             return;
         };
         if let Some(Some(row)) = self.rows.get(index) {
-            self.chosen = Some((tab, *row));
+            self.chosen = Some((tab, row.clone()));
         }
     }
 }

@@ -210,6 +210,89 @@ pub enum Command {
         beside: Route,
         background: bool,
     },
+    /// Carry the window at `route` into `strip`, another strip of its
+    /// workspace.
+    MoveToStrip {
+        generation: String,
+        route: Route,
+        strip: String,
+    },
+    /// Take the tab at `route` into `workspace`, as a window of its own.
+    MoveToWorkspace {
+        generation: String,
+        route: Route,
+        workspace: String,
+    },
+    /// Show the window at `route` on `display`.
+    MoveToDisplay {
+        generation: String,
+        route: Route,
+        display: u32,
+    },
+    /// Give the window at `route` a preset share of its strip.
+    WidthPreset {
+        generation: String,
+        route: Route,
+        preset: WidthPreset,
+    },
+    /// Give every window of the strip the window at `route` stands in the
+    /// same share of it.
+    EqualizeWidths {
+        generation: String,
+        route: Route,
+    },
+    /// Share the window at `route` with the people of its workspace, or stop
+    /// sharing it.
+    ShareWindow {
+        generation: String,
+        route: Route,
+        shared: bool,
+    },
+    /// Detach the tab at `route` into a window of its own, right after the
+    /// one it is in.
+    SplitRight {
+        generation: String,
+        route: Route,
+    },
+    /// Detach the tab at `route` into a window of its own at the end of its
+    /// strip.
+    MoveToNewGroup {
+        generation: String,
+        route: Route,
+    },
+    /// Close every tab of the window at `route`, as one close.
+    CloseWindow {
+        generation: String,
+        route: Route,
+    },
+    /// Take back the control of the desktop the app showing `route` holds.
+    StopDesktopControl {
+        generation: String,
+        route: Route,
+    },
+}
+
+/// A share of its strip a window takes in one step.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WidthPreset {
+    /// Half the strip.
+    Half,
+    Narrow,
+    Normal,
+    Wide,
+}
+
+impl From<WidthPreset> for tilo_desktop_model::WindowWidth {
+    fn from(preset: WidthPreset) -> Self {
+        use tilo_desktop_model::WindowWidth;
+        match preset {
+            WidthPreset::Half => WindowWidth::Fraction(500),
+            WidthPreset::Narrow => WindowWidth::Narrow,
+            WidthPreset::Normal => WindowWidth::Normal,
+            WidthPreset::Wide => WindowWidth::Wide,
+        }
+    }
 }
 
 impl Command {
@@ -234,7 +317,17 @@ impl Command {
             | Self::Commands { generation, .. }
             | Self::Launch { generation, .. }
             | Self::Open { generation, .. }
-            | Self::TabOpenBeside { generation, .. } => generation,
+            | Self::TabOpenBeside { generation, .. }
+            | Self::MoveToStrip { generation, .. }
+            | Self::MoveToWorkspace { generation, .. }
+            | Self::MoveToDisplay { generation, .. }
+            | Self::WidthPreset { generation, .. }
+            | Self::EqualizeWidths { generation, .. }
+            | Self::ShareWindow { generation, .. }
+            | Self::SplitRight { generation, .. }
+            | Self::MoveToNewGroup { generation, .. }
+            | Self::CloseWindow { generation, .. }
+            | Self::StopDesktopControl { generation, .. } => generation,
         }
     }
 }
@@ -306,6 +399,27 @@ pub enum Admitted {
     /// Open `app` as a tab right after the tab at the route, in its group,
     /// taking focus unless the last field says not to.
     TabOpenBeside(RouteIds, String, bool),
+    /// Carry the window into another strip of its workspace.
+    MoveToStrip(RouteIds, StripId),
+    /// Take the tab into another workspace, as a window of its own.
+    MoveToWorkspace(RouteIds, WorkspaceId),
+    /// Show the window on another display.
+    MoveToDisplay(RouteIds, u32),
+    /// Give the window a preset share of its strip.
+    WidthPreset(RouteIds, tilo_desktop_model::WindowWidth),
+    /// Give every window of the strip the same share of it.
+    EqualizeWidths(RouteIds),
+    /// Share the window with the people of its workspace, or stop.
+    ShareWindow(RouteIds, bool),
+    /// Detach the tab into a window of its own, right after the one it is
+    /// in.
+    SplitRight(RouteIds),
+    /// Detach the tab into a window of its own at the end of its strip.
+    MoveToNewGroup(RouteIds),
+    /// Close every tab of the window, as one close.
+    CloseWindow(RouteIds),
+    /// Take back the app's control of the desktop.
+    StopDesktopControl(RouteIds),
 }
 
 pub fn scroll_region(route: RouteIds, key: &str) -> String {
@@ -517,6 +631,54 @@ pub fn admit_with(
             ..
         } => route(r).and_then(|ids| admit_beside(ids, app, *background)),
         Command::Open { app, .. } => admit_open(tree, app),
+        Command::MoveToStrip {
+            route: r, strip, ..
+        } => {
+            let ids = route(r)?;
+            let to = StripId(id(strip)?);
+            let there = tree
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == ids.workspace)
+                .is_some_and(|workspace| {
+                    to != ids.strip && workspace.strips.iter().any(|held| held.id == to)
+                });
+            there
+                .then_some(Admitted::MoveToStrip(ids, to))
+                .ok_or_else(|| "Strip unavailable".into())
+        }
+        Command::MoveToWorkspace {
+            route: r,
+            workspace: to,
+            ..
+        } => {
+            let ids = route(r)?;
+            let to = workspace(to)?;
+            (to != ids.workspace)
+                .then_some(Admitted::MoveToWorkspace(ids, to))
+                .ok_or_else(|| "Workspace unavailable".into())
+        }
+        Command::MoveToDisplay {
+            route: r, display, ..
+        } => {
+            let ids = route(r)?;
+            let connected = tree.outputs.displays.iter().any(|held| held.id == *display)
+                && tree.outputs.display_of(ids.group) != Some(*display);
+            connected
+                .then_some(Admitted::MoveToDisplay(ids, *display))
+                .ok_or_else(|| "Display unavailable".into())
+        }
+        Command::WidthPreset {
+            route: r, preset, ..
+        } => route(r).map(|ids| Admitted::WidthPreset(ids, (*preset).into())),
+        Command::EqualizeWidths { route: r, .. } => route(r).map(Admitted::EqualizeWidths),
+        Command::ShareWindow {
+            route: r, shared, ..
+        } => route(r).map(|ids| Admitted::ShareWindow(ids, *shared)),
+        Command::SplitRight { route: r, .. } => route(r).map(Admitted::SplitRight),
+        Command::MoveToNewGroup { route: r, .. } => route(r).map(Admitted::MoveToNewGroup),
+        Command::CloseWindow { route: r, .. } => route(r).map(Admitted::CloseWindow),
+        Command::StopDesktopControl { route: r, .. } => route(r).map(Admitted::StopDesktopControl),
     }
 }
 

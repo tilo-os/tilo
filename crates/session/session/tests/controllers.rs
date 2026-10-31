@@ -743,9 +743,11 @@ fn the_menu_button_opens_the_window_in_fronts_menu() {
     for row in [
         "Name this window…",
         "Fill the strip",
+        "Half the strip",
+        "Every window the same",
         "Wider",
         "Narrower",
-        "Close",
+        "Close this window",
     ] {
         assert!(rows.iter().any(|shown| shown == row), "{row}: {rows:?}");
     }

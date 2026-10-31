@@ -49,7 +49,7 @@ pub(super) fn desk_with(
 
 /// A desk whose one window holds `windows` windows' tabs on its bar, as a
 /// strip does once the windows have been gathered into one.
-fn one_window_desk(windows: usize) -> (DesktopSurface, DesktopHandle) {
+pub(super) fn one_window_desk(windows: usize) -> (DesktopSurface, DesktopHandle) {
     let mut minter = IdMinter::new(7);
     let tabs = windows_tabs(&mut minter, windows);
     let mut tree = seed_tree(&mut minter, "Desk", tabs);

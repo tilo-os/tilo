@@ -159,12 +159,20 @@ fn super_f10_opens_the_window_in_fronts_menu_at_its_window() {
     assert_eq!(
         expected,
         [
-            "Name this window…",
             "Full screen",
             "Fill the strip",
+            "Move to strip",
+            "Move to workspace",
+            "Move to display",
+            "Half the strip",
+            "Narrow",
+            "Normal",
+            "Wide",
+            "Every window the same",
             "Wider",
             "Narrower",
-            "Close"
+            "New tab of this app",
+            "Close this window"
         ],
         "the desk offers the window its own rows"
     );
@@ -210,9 +218,15 @@ fn super_f10_opens_the_window_in_fronts_menu_at_its_window() {
         "and on the display: {first_row:?}"
     );
 
-    // The keyboard walks the rows: Down past every row to Close, Enter takes
-    // it, and the window closes as the same command does from anywhere.
-    for _ in 0..expected.len() - 1 {
+    // The keyboard walks the rows it can choose: Down past every one of them
+    // to the window's own close, Enter takes it, and the window closes as the
+    // same command does from anywhere.
+    let choosable = handle
+        .window_menu(20)
+        .iter()
+        .filter(|row| row.enabled)
+        .count();
+    for _ in 0..choosable - 1 {
         frame.send_host_event(&named_key(NamedKey::ArrowDown));
     }
     frame.send_host_event(&named_key(NamedKey::Enter));

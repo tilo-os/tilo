@@ -121,6 +121,29 @@ fn floor_permille(px: f64, usable: f64) -> u32 {
     }
 }
 
+/// Give every window of `strip` the same share of it: each one
+/// `1000 / count` per-mille wide, so `count` windows tile the strip's
+/// usable width. Whether any window's width changed.
+pub fn equalize_widths(strip: &mut crate::layout::Strip) -> bool {
+    let count = u32::try_from(strip.window_groups.len()).unwrap_or(u32::MAX);
+    if count == 0 {
+        return false;
+    }
+    let share = WIDTH_WIDE_PERMILLE
+        .checked_div(count)
+        .unwrap_or(WIDTH_MIN_PERMILLE)
+        .max(WIDTH_MIN_PERMILLE);
+    let width = WindowWidth::Fraction(share);
+    let mut changed = false;
+    for group in &mut strip.window_groups {
+        if group.width != width {
+            group.width = width;
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Persisted width of a [`crate::WindowGroup`], as a fraction of the
 /// strip's usable width — a stored pixel count would mean a different
 /// screen share on every monitor.
@@ -381,5 +404,49 @@ mod tests {
             );
             assert!((WindowWidth::Wide.resolve(1000.0) - 1000.0).abs() < f64::EPSILON);
         }
+    }
+
+    /// Every window of a strip takes the same share of it, and a window
+    /// already at that share is left alone.
+    #[test]
+    fn equalizing_a_strip_gives_every_window_the_same_share() {
+        use crate::ids::StripId;
+        use crate::layout::{Strip, WindowGroup};
+
+        let group = |id: u64, width: WindowWidth| WindowGroup {
+            id,
+            active_tab: id,
+            tabs: Vec::new(),
+            width,
+            maximized: false,
+            focus_history: Vec::new(),
+        };
+        let mut strip = Strip {
+            id: StripId(1),
+            name: "Desk".into(),
+            window_groups: vec![
+                group(1, WindowWidth::Narrow),
+                group(2, WindowWidth::Wide),
+                group(3, WindowWidth::Fraction(500)),
+            ],
+        };
+        assert!(equalize_widths(&mut strip));
+        let shares: Vec<WindowWidth> = strip
+            .window_groups
+            .iter()
+            .map(|group| group.width)
+            .collect();
+        assert_eq!(
+            shares,
+            vec![WindowWidth::Fraction(333); 3],
+            "three windows tile the strip"
+        );
+        assert!(!equalize_widths(&mut strip), "nothing left to change");
+        let alone = &mut Strip {
+            window_groups: vec![group(4, WindowWidth::Narrow)],
+            ..strip
+        };
+        assert!(equalize_widths(alone));
+        assert_eq!(alone.window_groups[0].width, WindowWidth::Fraction(1000));
     }
 }
