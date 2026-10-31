@@ -59,6 +59,7 @@ use wayland_server::{backend::GlobalId, Client, DataInit, Dispatch, DisplayHandl
 
 use crate::input::{Seat, SeatHandler};
 
+pub use text_input_handle::CommittedState;
 pub use text_input_handle::TextInputHandle;
 pub use text_input_handle::TextInputUserData;
 

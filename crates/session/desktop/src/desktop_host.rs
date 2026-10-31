@@ -41,6 +41,7 @@ use crate::chrome::ChromeIntent;
 use crate::desktop_actions::{
     DesktopAction, OPERATION, chrome_resource, desk_resource, launchpad_resource,
 };
+use crate::emoji_picker::{EmojiLink, EmojiPicker};
 use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use crate::overview::{OverviewHost, room_cards};
 use crate::overview_panel::{OverviewPanel, OverviewPick};
@@ -645,6 +646,14 @@ pub struct DesktopChrome {
     /// The Alt+Tab switcher: the windows of the workspace by when they were
     /// last used, shown over the desk while Alt is held.
     switcher: WindowSwitcher,
+    /// The emoji picker: Super+. opens its card at the caret of the field the
+    /// person types into, and every pick is written into that field by the
+    /// host.
+    emoji: EmojiPicker,
+    /// Where the picker's next opening goes, and what came of the last pick.
+    emoji_link: EmojiLink,
+    /// The display the open card stands on.
+    emoji_viewport: Rect,
     /// Where the navigator's ribbon and rail stand and what they report.
     navigator_frame: StripFrame,
     /// What the navigator last read: the navigation and who-is-here
@@ -702,6 +711,9 @@ impl DesktopChrome {
             workspace_menu: WorkspaceMenu::new(),
             navigator: StripNavigator::default(),
             switcher: WindowSwitcher::default(),
+            emoji: EmojiPicker::new(),
+            emoji_link: EmojiLink::default(),
+            emoji_viewport: Rect::ZERO,
             navigator_frame: StripFrame::empty(Rect::ZERO),
             navigator_seen: None,
             overview_revision: 0,
@@ -726,6 +738,22 @@ impl DesktopChrome {
     #[must_use]
     pub fn keyboard(&self) -> Rc<Cell<bool>> {
         Rc::clone(&self.keyboard)
+    }
+
+    /// Keep the emoji picker's openings, picks and recents through `link`: the
+    /// host says where the focused field's caret is, writes each pick into
+    /// that field and keeps the recents where the link's store does.
+    #[must_use]
+    pub fn with_emoji(mut self, link: EmojiLink) -> Self {
+        self.emoji_link = link;
+        self
+    }
+
+    /// The emoji picker, as the host sees it: open or not, the card's place,
+    /// and what the person picked.
+    #[must_use]
+    pub const fn emoji(&self) -> &EmojiPicker {
+        &self.emoji
     }
 
     /// Use `shortcuts` for the desktop's chords (the person's bindings).
@@ -778,13 +806,74 @@ impl DesktopChrome {
     }
 
     /// Whether keys should come here rather than to the window in front:
-    /// a menu, the overview or the strip switcher is up.
+    /// a menu, the overview, the emoji picker or the strip switcher is up.
     #[must_use]
     pub fn wants_keyboard(&self) -> bool {
         self.menu_open()
             || self.overview.is_open()
+            || self.emoji.is_open()
             || self.navigator.takes_keys()
             || self.switcher.is_active()
+    }
+
+    /// Open the emoji picker at the caret of the field the person types into,
+    /// centred on the display they are working on when that field reported
+    /// none. What is picked goes to the host, which writes it into that
+    /// field.
+    pub fn open_emoji(&mut self) {
+        let place = self.emoji_link.place().unwrap_or_default();
+        self.emoji_viewport = place
+            .viewport
+            .or_else(|| self.working_display())
+            .unwrap_or(self.rect);
+        self.emoji.open_at(
+            self.emoji_viewport,
+            place.caret,
+            &ui::i18n::I18nManager::current_locale(),
+        );
+        self.keyboard.set(self.wants_keyboard());
+    }
+
+    /// The display the person is working on, while the desk spans several:
+    /// where a card without a caret is centred.
+    fn working_display(&self) -> Option<Rect> {
+        let tree = self.rules.tree();
+        let focused = tree.outputs.focused_display()?;
+        tree.outputs
+            .displays
+            .iter()
+            .find(|display| display.id == focused)
+            .map(|display| {
+                Rect::new(
+                    display.x,
+                    display.y,
+                    display.x + display.width,
+                    display.y + display.height,
+                )
+            })
+    }
+
+    /// Close the emoji picker without inserting anything.
+    pub fn close_emoji(&mut self) {
+        self.emoji.close();
+        self.keyboard.set(self.wants_keyboard());
+    }
+
+    /// Super+. opens the picker, and closes it again while it is up.
+    pub fn toggle_emoji(&mut self) {
+        if self.emoji.is_open() {
+            self.close_emoji();
+        } else {
+            self.open_emoji();
+        }
+    }
+
+    /// Hand the host the emoji the person picked since the card last ran, for
+    /// it to write into the field they were typing into.
+    fn note_emoji_picks(&mut self) {
+        for text in self.emoji.take_commits() {
+            self.emoji_link.note_picked(text);
+        }
     }
 
     /// The Alt+Tab switcher is open: Alt is held after Tab, and every key
@@ -1724,6 +1813,7 @@ impl DesktopChrome {
     pub fn shortcut(&mut self, action: ShortcutAction) -> bool {
         match action {
             ShortcutAction::WorkspaceOverview => self.toggle_overview(),
+            ShortcutAction::EmojiPicker => self.toggle_emoji(),
             ShortcutAction::FocusPreviousWindow | ShortcutAction::FocusNextWindow => {
                 let step = if action == ShortcutAction::FocusPreviousWindow {
                     -1
@@ -1775,6 +1865,8 @@ impl DesktopChrome {
     /// Whether anything of the chrome is due a redraw.
     fn chrome_needs_redraw(&self) -> bool {
         self.switcher.is_active()
+            || self.emoji.needs_redraw()
+            || self.emoji_link.has_delivered()
             || self.navigator.needs_animation_frame(ui::time::now())
             || self.children().iter().any(|child| child.needs_redraw())
     }
@@ -2041,6 +2133,17 @@ impl Widget for DesktopChrome {
         for bar in &mut self.compact {
             changed |= bar.update(state, path);
         }
+        // The host says where the recents are kept, and what of the person's
+        // picks reached a field: a secret field's emoji is never remembered.
+        if let Some(store) = self.emoji_link.take_store() {
+            self.emoji.attach_store(store);
+            changed = true;
+        }
+        for (text, sensitive) in self.emoji_link.take_delivered() {
+            self.emoji.note_delivered(&text, sensitive);
+            changed = true;
+        }
+        changed |= self.emoji.needs_redraw();
         self.observe_navigation();
         self.keyboard.set(self.wants_keyboard());
         if let Some(open) = &self.overview_open {
@@ -2162,6 +2265,14 @@ impl Widget for DesktopChrome {
             ui::time::now(),
             &mut NoThumbnails,
         );
+        // Above all of it: the emoji picker is modal, the one thing the person
+        // works with until it closes.
+        if self.emoji.is_open() {
+            self.emoji.advance_scroll();
+            self.emoji
+                .draw(scene, transform, text, theme, presence, self.emoji_viewport);
+            self.emoji.mark_drawn();
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -2176,6 +2287,34 @@ impl Widget for DesktopChrome {
             ));
         } else if matches!(event, WindowEvent::CursorLeft { .. }) {
             self.cursor = None;
+        }
+        // The emoji picker is modal: its own chord closes it, and every other
+        // key and press is the card's, reaching nothing behind it.
+        if self.emoji.is_open() {
+            let own = matches!(event, WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == ElementState::Pressed
+                    && page_shortcut_action(
+                        &self.shortcuts,
+                        &key.logical_key,
+                        key.physical_key,
+                        *ctx.modifiers,
+                        self.mac,
+                    ) == Some(ShortcutAction::EmojiPicker));
+            if own {
+                self.close_emoji();
+            } else {
+                self.emoji.handle_event(
+                    event,
+                    ctx.scale_factor,
+                    ctx.modifiers.state(),
+                    self.cursor,
+                    ui::time::now(),
+                );
+            }
+            self.note_emoji_picks();
+            *ctx.handled = true;
+            self.keyboard.set(self.wants_keyboard());
+            return;
         }
         // The menus take what they cover, the keyboard and the press that
         // dismisses them.
@@ -2301,6 +2440,7 @@ impl Widget for DesktopChrome {
 
     fn needs_animation_frame(&self) -> bool {
         self.switcher.needs_frame(ui::time::now())
+            || self.emoji.needs_animation_frame()
             || self.navigator.needs_animation_frame(ui::time::now())
             || self
                 .children()

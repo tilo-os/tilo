@@ -111,7 +111,7 @@ pub use selection::{Selection, TEXT_MIME};
 pub use smithay::utils::Transform;
 pub use state::State;
 pub use switch_scan::{Scan, SwitchConfig, SwitchPair};
-pub use text_input::{TextEntry, TextField, TextFieldRefusal, TextInsertion};
+pub use text_input::{TextCaret, TextEntry, TextField, TextFieldRefusal, TextInsertion};
 pub use window_frame::{Edge, Shadow, WindowFrame};
 pub use x11_windows::{Icon, Identity as X11Identity};
 
@@ -526,6 +526,24 @@ impl Compositor {
     /// trusted input method, never as keystrokes.
     pub fn insert_dictation(&mut self, field: TextField, text: &str) -> TextInsertion {
         self.data.state.insert_dictation(field, text)
+    }
+
+    /// Where the focused text field's caret stands in the desk, in logical
+    /// coordinates, from the cursor rectangle its client reported; `None`
+    /// when no field takes text or it never said where its caret is.
+    #[must_use]
+    pub fn text_caret(&self) -> Option<TextCaret> {
+        self.data.state.text_caret()
+    }
+
+    /// Insert `text` into the field the person is typing into, whatever that
+    /// field asks of its content: an emoji keeps none of its secret. The
+    /// text goes through the trusted input method, never as keystrokes.
+    ///
+    /// Answers whether the field declared its content secret, which decides
+    /// whether the text is remembered; `None` when no field takes text now.
+    pub fn insert_active_text(&mut self, text: &str) -> Option<bool> {
+        self.data.state.insert_active_text(text)
     }
 
     /// Flash every output: a visual alert for what a person who cannot hear

@@ -54,6 +54,9 @@ tilo-wallpapers = { path = "../../platform/tilo-wallpapers" }
 app-cli = { path = "../../packaging/app-cli" }
 # Following the directories search's lists are read from.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+# What the person picks in the emoji picker is remembered between sessions.
+emoji = { path = "../../text/emoji" }
+tilo-durable-writer = { path = "../../platform/tilo-durable-writer" }
 # The records the workspaces on this device hold: the room indexes search
 # reads them from, as the apps that write them keep them, and the document
 # store the reference bringing one here is written into.

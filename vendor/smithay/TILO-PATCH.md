@@ -90,14 +90,16 @@ so a compositor cannot tell which field has the focus, what it declared, or
 whether it changed since it was looked at.
 
 - `src/wayland/text_input/text_input_handle.rs`: each instance keeps
-  `committed_state` (the serial of the commit that accepted it and the
-  content type it declared; a commit that does not restate the content type
-  keeps the previous one). A commit that is accepted stores it in the same
-  places the handler continues past its "discarding …" returns, a commit
-  that disables the field clears it, and a discarded commit changes nothing.
+  `committed_state` (the serial of the commit that accepted it, the content
+  type it declared and the cursor rectangle it reported; a commit that does
+  not restate either keeps the previous one, since clients send them only
+  when they change). A commit that is accepted stores it in the same places
+  the handler continues past its "discarding …" returns, a commit that
+  disables the field clears it, and a discarded commit changes nothing.
   `TextInputHandle::with_active_text_input_committed(f)` reports it for the
-  active instance — the text-input object, its surface, the committed serial
-  and content type — and returns whether there is one.
+  active instance — the text-input object, its surface and a
+  `CommittedState` — and returns whether there is one.
 
-Remove this once a smithay release keeps committed text-input state, or
-exposes what the focused field declared.
+Remove this once a smithay release keeps committed text-input state,
+including the cursor rectangle, or exposes what the focused field declared
+and where its caret is.

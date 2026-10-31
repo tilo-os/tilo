@@ -493,6 +493,7 @@ pub(crate) fn host(
     feeds: BarFeeds,
     sync: Option<Rc<crate::sync::Client>>,
     overview: &crate::mount::overview::Overview,
+    emoji: &tilo_desktop::emoji_picker::EmojiLink,
 ) -> WidgetHost {
     let rules = Rc::new(SessionRules {
         handle: handle.clone(),
@@ -522,7 +523,8 @@ pub(crate) fn host(
     )
     .with_intents(intents)
     .with_asks(asks)
-    .with_overview(overview.flight(), overview.open_flag());
+    .with_overview(overview.flight(), overview.open_flag())
+    .with_emoji(emoji.clone());
     chrome.set_shortcuts(options.config.shortcuts.clone());
     let keyboard = chrome.keyboard();
     let placement = SurfacePlacement {

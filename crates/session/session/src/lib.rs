@@ -42,6 +42,7 @@ mod display_confirm;
 mod display_settings;
 pub mod displays;
 mod downloaded;
+mod emoji;
 mod env;
 mod i18n;
 pub mod identity;
@@ -489,6 +490,9 @@ struct Shared {
     /// Dictation: the speech the person allows once per dictation, and the
     /// sheet they answer on.
     dictation: dictation::Dictation,
+    /// The emoji picker's picks: written into the field the person was typing
+    /// into, and where that field's caret stands for the card to open at.
+    emoji: emoji::Emoji,
     /// The shortcut guide: the sheet naming every key the desktop answers,
     /// and the table it explains.
     shortcut_guide: shortcut_guide::ShortcutGuide,
@@ -1523,6 +1527,9 @@ impl Session {
         // The displays a fullscreen window owns, which the loop takes from
         // the compositor every pass: the bar there steps aside for it.
         let fullscreen: Rc<RefCell<Vec<String>>> = Rc::default();
+        // The emoji picker is the chrome's; the session holds its picks,
+        // writes them into the focused field and keeps its recents.
+        let emoji = emoji::Emoji::mount();
         let chrome = Rc::new(RefCell::new(chrome::host(
             &handle,
             &options,
@@ -1538,6 +1545,7 @@ impl Session {
             },
             sync.clone(),
             &overview,
+            &emoji.link(),
         )));
         compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
         doors.add(Rc::clone(&chrome) as tilo_surface_host::Shared);
@@ -1691,6 +1699,7 @@ impl Session {
             settings: mount::settings_sync::SettingsSync::new(),
             overview,
             dictation,
+            emoji,
             shortcut_guide,
             chrome,
             fullscreen,
@@ -2615,6 +2624,15 @@ impl Session {
             Instant::now(),
         );
         self.shared.follow_dictation();
+        // The picker's picks go into the field the person was typing in,
+        // through the same text-input door dictation writes through.
+        let origin = self
+            .shared
+            .desktop
+            .with_widgets(|host| host.placement().origin);
+        self.shared
+            .emoji
+            .step(&mut self.compositor, origin, Instant::now());
         let compositor = &mut self.compositor;
         self.shared
             .notifications
