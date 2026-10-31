@@ -24,7 +24,10 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{FontChoice, TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
+#[path = "editable_label_component.rs"]
+mod component;
 use crate::widget::{TextInput, TextInputKind, Widget};
+pub use component::EditableLabelProps;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditOutcome {
@@ -79,6 +82,8 @@ pub struct EditableLabel {
     /// A blank commit empties the value instead of keeping it: the label
     /// names something that has a default to fall back to.
     blank_clears: bool,
+    /// What a committed name is reported to, as a described component's binding path does.
+    edits: Option<crate::component::Bound<String>>,
 }
 
 impl EditableLabel {
@@ -106,7 +111,34 @@ impl EditableLabel {
             edit_request: None,
             measured: None,
             blank_clears: false,
+            edits: None,
         }
+    }
+
+    /// Report each committed name to the component binding `edits`, as a described component
+    /// does: the person's edits, never a name the view gave.
+    #[must_use]
+    pub fn on_edit(mut self, edits: crate::component::Bound<String>) -> Self {
+        self.edits = Some(edits);
+        self
+    }
+
+    /// What it is set in.
+    #[must_use]
+    pub fn text_role(&self) -> crate::tokens::TextRole {
+        self.role
+    }
+
+    /// Whether a single press begins an edit.
+    #[must_use]
+    pub fn edits_on_a_press(&self) -> bool {
+        self.edits_on_click
+    }
+
+    /// Whether it takes the width the row leaves.
+    #[must_use]
+    pub fn is_filling(&self) -> bool {
+        self.grow
     }
 
     /// Begin an edit when `request` is set, as a rename offered elsewhere
@@ -315,6 +347,9 @@ impl EditableLabel {
         self.outcome = EditOutcome::Committed(self.value.clone());
         if changed && let Some(action) = self.action.as_mut() {
             let _ = action.emit(self.value.clone());
+        }
+        if changed && let Some(edits) = &self.edits {
+            edits.edited(crate::component::Value::Text(self.value.clone()));
         }
     }
 

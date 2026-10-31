@@ -3901,3 +3901,6 @@ pub use component::{ListRowProps, SwipeActionProps};
 
 mod control_row;
 pub use control_row::ControlRow;
+
+mod control_row_component;
+pub use control_row_component::ControlRowProps;

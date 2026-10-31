@@ -99,6 +99,10 @@ impl<T> MenuEntry<T> {
     }
 }
 
+#[crate::component::not_a_component(
+    part,
+    "the block editor's caret menu, drawn over its own text: the slash menu and the link popover"
+)]
 pub struct FilterMenu<T> {
     spec: &'static MenuSpec,
     entries: Vec<MenuEntry<T>>,

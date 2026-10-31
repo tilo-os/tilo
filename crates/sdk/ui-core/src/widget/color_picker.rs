@@ -26,10 +26,13 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::ButtonRole;
 use crate::widget::TaffyTreeExt;
+#[path = "color_picker_component.rs"]
+mod component;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, ButtonFace, ColorSwatch, ColorSwatchFace};
 use crate::widget::{TextInput, TextInputKind};
+pub use component::ColorPickerProps;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -173,6 +176,8 @@ pub struct ColorPicker {
     title_rect: Rect,
     cancel_rect: Rect,
     done_rect: Rect,
+    /// What inputs the host has, from the frame: a swatch is a finger's target on touch.
+    interaction: crate::interaction::InteractionEnvironment,
 }
 
 impl ColorPicker {
@@ -212,6 +217,7 @@ impl ColorPicker {
             title_rect: Rect::ZERO,
             cancel_rect: Rect::ZERO,
             done_rect: Rect::ZERO,
+            interaction: crate::interaction::InteractionEnvironment::default(),
         };
         let hex = s.hex_string();
         s.hex_input.set_text(&hex);
@@ -1298,6 +1304,14 @@ impl Widget for ColorPicker {
     /// The SV square, hue strip and channel sliders render inline (there is
     /// no separate open/closed state), so `expanded` is left unset.
     ///
+    /// What inputs the host has, from the frame: a swatch is a finger's target on touch.
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+    }
+
     /// With swatches or in confirm mode the picker is a group: the colour
     /// value, one radio button per swatch (checked while it is the current
     /// colour) and, in confirm mode, *Cancel* and *Done* buttons — each with
@@ -1325,6 +1339,7 @@ impl Widget for ColorPicker {
                 .map(|(index, (swatch, rect))| {
                     ColorSwatchFace::new(*rect, swatch.color, swatch.spoken_name())
                         .selected(Self::same_rgb(swatch.color, self.color))
+                        .target_rect(self.interaction.minimum_target_rect(*rect))
                         .accessibility(format!("{TARGET_SWATCH}{index}"))
                 }),
         );
