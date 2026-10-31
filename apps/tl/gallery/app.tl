@@ -34,6 +34,8 @@ type Backlog {
 type Release {
     title: Text (title)
     items: Collection<Item>
+    /// Who leads the release: at each of its tabs.
+    lead: Option<Principal>
 }
 
 /// The gallery: a window of each group. A group's file adds its type here and a row to the
@@ -45,6 +47,8 @@ type Gallery {
     feedback: Collection<Feedback>
     data: Collection<Data>
     controls: Collection<Controls>
+    media: Collection<Media>
+    places: Collection<Places>
 }
 
 root Gallery
@@ -78,6 +82,12 @@ view gallery(g: Gallery) {
             }
             for x in g.controls {
                 ui.ListRow(x.title, item: x, icon: .settings)
+            }
+            for x in g.media {
+                ui.ListRow(x.title, item: x, icon: .image)
+            }
+            for x in g.places {
+                ui.ListRow(x.title, item: x, icon: .map_pin)
             }
         }
     }
@@ -223,9 +233,17 @@ view item_row(x: Item) {
     }
 }
 
-/// The release's window: a lane per stage, each card an item.
+/// The release's window: its items as tabs, as a frame holds them, over a lane per stage, each
+/// card an item.
 view release_board(r: Release) {
     std.page(r, canvas: true) {
+        ui.TabStrip(r.items.first(), focused: true) {
+            for x in r.items {
+                ui.TabItem(x, title: .some(x.title), icon: .file_text, modified: x.stage == "Doing") {
+                    ui.TabFace(r.lead, name: .some("Ada Lovelace"))
+                }
+            }
+        }
         ui.Scroll(across: true) {
             ui.Board(name: .some("Release")) {
                 for stage in ["To do", "Doing", "Done"] {
@@ -261,7 +279,7 @@ scenario "a backlog" {
 /// The same release on a board.
 scenario "a release board" {
     let g = root Gallery
-    let r = g.releases.insert(Release(title: "Release"))
+    let r = g.releases.insert(Release(title: "Release", lead: .some(invoker)))
     r.items.insert(Item(title: "Write the release notes", notes: RichText(""), stage: "To do"))
     r.items.insert(Item(title: "Translate the onboarding", notes: RichText(""), stage: "To do"))
     r.items.insert(Item(title: "Screenshots for the docs", notes: RichText(""), stage: "Doing"))

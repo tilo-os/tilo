@@ -2914,3 +2914,7 @@ impl crate::widget::AppWidget for WebView {
 #[cfg(test)]
 #[path = "webview_ime_tests.rs"]
 mod ime_tests;
+
+#[path = "webview_component.rs"]
+mod component;
+pub use component::WebViewProps;

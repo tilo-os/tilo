@@ -292,7 +292,16 @@ impl Walk<'_> {
         let scrolls = scrolls(node);
         let scrolling = scrolls.down || scrolls.across;
         // The box children are measured against, and which ways it scrolls them.
-        let (inner_parent, inner_scroller) = if geometric {
+        // A manual region in a view that pans both ways is the canvas's content placed by code
+        // (its places, put where its camera puts them): what it places pans as the canvas does.
+        // In a view that scrolls one way a region sizes itself, and its children are checked
+        // against it.
+        let placed_content = matches!(node.layout, Some(ui::widget::LayoutInfo::Manual(_)))
+            && scroller.down
+            && scroller.across;
+        let (inner_parent, inner_scroller) = if geometric && placed_content {
+            (own, scroller)
+        } else if geometric {
             (own, scrolls)
         } else {
             (parent, scroller)
@@ -747,6 +756,39 @@ mod tests {
         };
         assert_eq!(clipped(ui::text_render::TextWrapMode::Wrap), 0);
         assert_eq!(clipped(ui::text_render::TextWrapMode::Indented), 1);
+    }
+
+    /// A place on a canvas past its viewport is reached by panning, so it is no finding; the
+    /// same place in a region of a plain column reaches past it, and is caught.
+    #[test]
+    fn a_place_past_a_canvas_viewport_pans_and_past_a_column_overflows() {
+        use ui::widget::{LayoutInfo, ManualLayout, ScrollDirection, ScrollLayout};
+        let found = |outer: Option<LayoutInfo>| {
+            let mut region = node("Manual", "region", [0.0, 0.0, 320.0, 300.0], None);
+            region.layout = Some(LayoutInfo::Manual(ManualLayout {
+                allocation: [320.0, 300.0],
+                requested_bounds: [0.0, 0.0, 320.0, 300.0],
+                content_bounds: [0.0, 0.0, 560.0, 300.0],
+                overflow: false,
+                first_conflict: None,
+            }));
+            region.children = vec![node("Card", "place", [200.0, 40.0, 240.0, 90.0], None)];
+            let mut view = node("View", "view", [0.0, 0.0, 320.0, 300.0], None);
+            view.child_clip = Some([0.0, 0.0, 320.0, 300.0]);
+            view.layout = outer;
+            view.children = vec![region];
+            // The window is wider than the view, so the place stays within the window and only
+            // the view's own box is passed.
+            inspect(&view, (600, 300), None, 1.0)
+                .into_iter()
+                .map(|p| p.kind)
+                .collect::<Vec<_>>()
+        };
+        let canvas = Some(LayoutInfo::Scroll(ScrollLayout {
+            direction: ScrollDirection::Both,
+        }));
+        assert_eq!(found(canvas), []);
+        assert!(found(None).contains(&Kind::Overflow));
     }
 
     /// A header action the shell holds in a frame of its own is the control it frames.

@@ -53,7 +53,10 @@ impl Described for ColorPicker {
             ..
         } = props;
         let shown = value.clone();
-        let color = color_of(&value.state.get()).unwrap_or(vello::peniko::Color::BLACK);
+        // A field with no colour yet starts at the first colour offered, else at none.
+        let color = color_of(&value.state.get())
+            .or_else(|| swatches.iter().find_map(|hex| color_of(hex)))
+            .unwrap_or(vello::peniko::Color::TRANSPARENT);
         let mut picker = Self::new(color)
             .on_change(move |color| {
                 shown.edited(Value::Text(crate::color::to_hex(color)));

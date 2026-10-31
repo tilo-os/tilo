@@ -333,6 +333,7 @@ impl Map {
                 height: available.height.max(0.0),
             })
         });
+        region = region.filling();
         for view in views {
             region = region.child(view);
         }
@@ -627,6 +628,13 @@ impl Widget for Map {
 
     fn child_clip_rect(&self) -> Option<Rect> {
         (self.rect.width() > 0.0).then_some(self.rect)
+    }
+
+    /// A canvas pans both ways: a place past the viewport is reached by panning, not cut off.
+    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
+        Some(crate::widget::LayoutInfo::Scroll(crate::widget::ScrollLayout {
+            direction: crate::widget::ScrollDirection::Both,
+        }))
     }
 
     fn get_rect(&self) -> Rect {
