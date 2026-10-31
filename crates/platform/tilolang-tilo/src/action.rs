@@ -198,6 +198,23 @@ impl DynEdit {
             | Self::Migrated { .. } => false,
         }
     }
+
+    /// The id of the resource it is addressed to (its document).
+    #[must_use]
+    pub fn resource(&self) -> &str {
+        match self {
+            Self::Create { id, .. }
+            | Self::Edit { id, .. }
+            | Self::Insert { id, .. }
+            | Self::Place { id, .. }
+            | Self::Remove { id }
+            | Self::OutboxPush { id, .. }
+            | Self::OutboxSettle { id, .. }
+            | Self::OutboxMark { id, .. }
+            | Self::Migrated { id, .. } => id,
+            Self::In { edit, .. } => edit.resource(),
+        }
+    }
 }
 
 /// What an action did to one resource ([`DynAction::made`]).
