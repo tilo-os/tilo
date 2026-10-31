@@ -1335,3 +1335,64 @@ fn a_list_fitting_its_rows_is_as_tall_as_they_are() {
         after.rect
     );
 }
+
+/// A transcript shows the way back it owes its reader: to the first unread row while that is
+/// above the view, and to what is being said now while it has nothing unread but is not at its
+/// end. Taking it moves the reader, and where it moved them to changes what it offers next.
+#[test]
+fn a_transcript_offers_the_way_to_what_is_unread_or_to_what_is_now() {
+    use crate::widget::conversation::Jump;
+    let mut list = VirtualList::from_items(
+        (0..300_u32).collect(),
+        40.0,
+        |item| *item,
+        |_, _, _| Box::new(crate::widget::Spacer::fixed(40.0)) as Element,
+    )
+    .unwrap()
+    .with_viewport_height(200.0)
+    .following_end()
+    .with_id("transcript")
+    .unread_from(Some("250".to_owned()));
+    list.set_key_presenting(|id: &str| id.parse::<u32>().ok());
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    // The unread row is below the view (the list opens at its end), so the pill offers what is
+    // now only when there is nothing unread: here it offers the way back to the row.
+    assert_eq!(list.jump(), Some(Jump::Unread));
+    assert!(list.pill_rect().is_some(), "the pill has a rectangle");
+    // Taking it brings the row into view, and it stops offering that way.
+    let _ = dispatch(
+        &mut list,
+        &crate::synthetic_input::named_key(NamedKey::Home),
+        &taffy,
+        node,
+    );
+    crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+    list.jump_to_unread();
+    let _ = lay_out(&mut list, 300.0);
+    assert!(
+        list.visible_range().contains(&250),
+        "the unread row shows: {:?}",
+        list.visible_range()
+    );
+    assert_eq!(list.jump(), None, "nothing more to go to");
+
+    // A transcript with nothing unread, read into its history, offers what is now.
+    let mut reading = VirtualList::from_items(
+        (0..300_u32).collect(),
+        40.0,
+        |item| *item,
+        |_, _, _| Box::new(crate::widget::Spacer::fixed(40.0)) as Element,
+    )
+    .unwrap()
+    .with_viewport_height(200.0)
+    .following_end();
+    let _ = lay_out(&mut reading, 300.0);
+    assert_eq!(reading.jump(), None, "at its end with nothing unread");
+    reading.set_scroll_offset(reading.scroll_offset() - 400.0);
+    let _ = lay_out(&mut reading, 300.0);
+    assert_eq!(reading.jump(), Some(Jump::Present));
+    reading.jump_to_present();
+    let _ = lay_out(&mut reading, 300.0);
+    assert!(reading.is_at_end(), "it went back to the newest row");
+    assert_eq!(reading.jump(), None);
+}

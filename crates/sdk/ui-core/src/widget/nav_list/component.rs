@@ -75,6 +75,10 @@ pub struct NavItemProps {
     pub live: Option<i64>,
     /// Something new waits behind the place: its label stands out at rest.
     pub unread: bool,
+    /// How many things behind the place name the person (mentions): more specific than the
+    /// place's unread count, so it takes the badge's place while there are any, as Slack's one
+    /// badge counts what names you rather than everything new.
+    pub mentions: Option<i64>,
     /// The resource the place stands for, when it is one (a channel): the host says how much
     /// of it the person has not seen, in `live`, and lifts the label while anything is.
     pub item: Option<ResourceId>,
@@ -89,7 +93,13 @@ impl From<NavItemProps> for NavItem {
         if let Some(icon) = props.icon {
             item = item.icon(icon);
         }
-        if let Some(live) = props.live {
+        // What names the person is what the badge counts: a mention count is more specific
+        // than the place's unread count, and the label lifts either way.
+        if let Some(mentions) = props.mentions.filter(|mentions| *mentions > 0) {
+            item = item
+                .live_count(u32::try_from(mentions).unwrap_or(u32::MAX))
+                .unread(true);
+        } else if let Some(live) = props.live {
             item = item.live_count(u32::try_from(live.max(0)).unwrap_or(u32::MAX));
         } else if let Some(count) = props.count {
             item = item.count(u32::try_from(count.max(0)).unwrap_or(u32::MAX));

@@ -760,3 +760,84 @@ fn a_channels_new_messages_are_unseen_in_the_sidebar_until_the_person_opens_it()
         "random's is its own"
     );
 }
+
+/// A conversation's first unread message is where its "New messages" divider stands: the
+/// transcript reads `first_unseen(c)`, a fact of the channel's messages and the person's seen
+/// state, and the list places the divider over that message's row. Once the person reads to the
+/// end nothing is marked, and a message that arrives afterwards is marked alone.
+#[test]
+fn the_transcript_marks_the_first_message_the_person_had_not_seen() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("One."), Value::none()],
+    );
+    call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("Two."), Value::none()],
+    );
+    ben.commit();
+    ben.host.sync_from(&ben.doc);
+    ada.sync_with(&mut ben);
+
+    // The rows the list shows, as the runtime holds them, each with whether the divider stands
+    // over it (a row's first child is the list's divider when it is).
+    let marked = |view: &mut ViewInstance| -> Vec<bool> {
+        view.poll_patches().unwrap();
+        let list = find(view.tree(), "ui.VirtualList")
+            .expect("a transcript")
+            .key
+            .clone();
+        let len = view.list_len(&list).unwrap_or(0);
+        for i in 0..len {
+            let _ = view.row(&list, i).unwrap();
+        }
+        let tree = view.tree().clone();
+        let list = find(&tree, "ui.VirtualList").expect("a transcript");
+        list.children
+            .iter()
+            .map(|row| {
+                row.children
+                    .first()
+                    .is_some_and(|first| first.kind == "ui.UnreadDivider")
+            })
+            .collect()
+    };
+
+    // Ada's view stands the divider over the first of the two, and not over the second.
+    let mut view = ada.host.open_resource(&target(&design), None).unwrap();
+    assert_eq!(marked(&mut view), [true, false], "over the first");
+
+    // She reads: opening the channel marks what it showed seen, and nothing is left unread.
+    ada.host
+        .runtime()
+        .mark_seen("ada", &target(&design))
+        .unwrap();
+    ada.commit();
+    let mut reopened = ada.host.open_resource(&target(&design), None).unwrap();
+    assert_eq!(marked(&mut reopened), [false, false], "nothing unseen");
+
+    // A message from Ben afterwards is what is new, alone.
+    ben.host.sync_from(&ada.doc);
+    call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("Any time."), Value::none()],
+    );
+    ben.commit();
+    ben.host.sync_from(&ben.doc);
+    ada.sync_with(&mut ben);
+    assert_eq!(
+        marked(&mut reopened),
+        [false, false, true],
+        "his answer is what is new"
+    );
+}
