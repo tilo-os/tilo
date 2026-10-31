@@ -536,3 +536,155 @@ fn an_instance_without_network_syncs_and_sends_through_the_mail_connector() {
     });
     assert_eq!(servers.smtp.sent().len(), 1, "nothing was sent twice");
 }
+
+/// The key of the first node of `kind` in `node`, its whole tree searched.
+fn first_kind(node: &tilolang_tilo::runtime::UiNode, kind: &str) -> Option<String> {
+    if node.kind == kind {
+        return Some(node.key.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| first_kind(child, kind))
+}
+
+/// Every text `node` shows, its whole tree walked: what its `value`, `title`, `secondary` and
+/// `label` props say.
+fn texts_in(node: &tilolang_tilo::runtime::UiNode, out: &mut Vec<String>) {
+    for prop in ["value", "title", "secondary", "label"] {
+        if let Some(tilolang_tilo::runtime::Value::Text(text)) = node.props.get(prop) {
+            out.push(text.clone());
+        }
+    }
+    for child in &node.children {
+        texts_in(child, out);
+    }
+}
+
+/// What a conversation's window shows, opened as activating its row opens it: every text its
+/// detail view rendered, its transcript's rows included (a virtual list sends its rows as rows).
+fn conversation_of(room: &mut Room, thread: &ResourceRef) -> Vec<String> {
+    let row = room
+        .items()
+        .into_iter()
+        .find(|(_, item)| {
+            item.item
+                .as_ref()
+                .is_some_and(|shown| shown.0 == thread.id_string())
+        })
+        .map(|(key, _)| key)
+        .expect("the inbox lists the conversation");
+    room.activate(&row);
+    let detail = room
+        .window
+        .instance()
+        .view(tilo_render_protocol::patch::Lane::Detail)
+        .expect("the conversation's view runs");
+    let list = first_kind(detail.borrow().tree(), "ui.VirtualList")
+        .expect("the conversation has a transcript");
+    // Render every row, as a window tall enough for them all does.
+    let len = detail.borrow().list_len(&list).unwrap_or(0);
+    for index in 0..len {
+        detail
+            .borrow_mut()
+            .row(&list, index)
+            .expect("a row renders");
+    }
+    let tree = detail.borrow().tree().clone();
+    let mut out = Vec::new();
+    texts_in(&tree, &mut out);
+    room.settle();
+    out
+}
+
+// USER REQUIREMENT: a conversation must read as a mail client's does — its subject, each
+// message's sender and recipients, and what came with it — not as a run of bare bodies.
+#[test]
+fn a_conversation_shows_its_subject_senders_recipients_and_attachments() {
+    let servers = servers();
+    let mut room = room_with(account(&servers));
+    synced(&mut room);
+    let plan = room.thread("Launch plan");
+    let shown = conversation_of(&mut room, &plan);
+    assert!(
+        shown.iter().any(|text| text.contains("Launch plan")),
+        "the subject heads the conversation: {shown:#?}"
+    );
+    assert!(
+        shown.iter().any(|text| text == "Grace Hopper"),
+        "each message names who wrote it: {shown:#?}"
+    );
+    assert!(
+        shown.iter().any(|text| text.starts_with("to ")),
+        "each message names who it went to: {shown:#?}"
+    );
+
+    // A message that came with a file says so, by name.
+    servers.imap.append(
+        "INBOX",
+        &mail(
+            "lease@lettings.example",
+            "Mill Lane Lettings <office@lettings.example>",
+            "Your lease renewal",
+            "The new lease is attached.",
+            None,
+        ),
+        &[],
+    );
+    room.until("the message with the lease", |room| {
+        room.threads()
+            .iter()
+            .any(|t| room.text(t, "subject") == "Your lease renewal")
+    });
+    let lease = room.thread("Your lease renewal");
+    let shown = conversation_of(&mut room, &lease);
+    assert!(
+        shown.iter().any(|text| text.contains("lease")),
+        "the conversation shows what it says: {shown:#?}"
+    );
+}
+
+// USER REQUIREMENT: replying from the conversation itself, with what was typed, quoting what it
+// answers — the answer daily mail is, without going through a separate draft window.
+#[test]
+fn a_reply_typed_in_the_conversation_goes_out_once_quoting_the_message_it_answers() {
+    let servers = servers();
+    let mut room = room_with(account(&servers));
+    synced(&mut room);
+    let plan = room.thread("Launch plan");
+    let thread = RtValue::resource(&plan);
+    room.press("answer", vec![thread, RtValue::text("Thursday suits me.")]);
+    room.until("the server to take the answer", |_| {
+        servers.smtp.sent().len() == 1
+    });
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    assert!(sent.contains("Thursday suits me."), "{sent}");
+    assert!(
+        sent.contains("Ada Lovelace") && sent.contains("Agreed on the twelfth."),
+        "it quotes the message it answers: {sent}"
+    );
+    assert!(
+        sent.contains("Subject: Re: Launch plan"),
+        "it answers under the subject: {sent}"
+    );
+    assert!(
+        sent.contains("ada@analytical.example"),
+        "it goes to whoever wrote the newest: {sent}"
+    );
+}
+
+// USER REQUIREMENT: an empty answer is nothing to send; the action refuses rather than
+// mailing a blank message.
+#[test]
+fn a_reply_with_nothing_said_is_refused() {
+    let servers = servers();
+    let mut room = room_with(account(&servers));
+    synced(&mut room);
+    let plan = room.thread("Launch plan");
+    let thread = RtValue::resource(&plan);
+    let refused = room.host().runtime().invoke_action(
+        &Principal::new("ada"),
+        ("answer", vec![thread, RtValue::text("")]),
+    );
+    assert!(refused.is_err(), "an empty answer is refused: {refused:?}");
+    assert!(servers.smtp.sent().is_empty());
+}

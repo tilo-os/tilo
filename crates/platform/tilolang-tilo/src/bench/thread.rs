@@ -57,6 +57,7 @@ pub(super) fn filled(
     label: &str,
     depth: usize,
     principals: &Principals,
+    meta: &tilolang_runtime::meta::Meta,
 ) -> Result<DynRecord, String> {
     let schema = lookup(ty).ok_or_else(|| format!("unregistered type {ty}"))?;
     let mut record = DynRecord::empty(schema).map_err(|e| e.to_string())?;
@@ -80,7 +81,13 @@ pub(super) fn filled(
                     let part = format!("{id}-part");
                     items.push(
                         Id::from_raw(&part),
-                        filled((&part, inner), label, depth.saturating_sub(1), principals)?,
+                        filled(
+                            (&part, inner),
+                            label,
+                            depth.saturating_sub(1),
+                            principals,
+                            meta,
+                        )?,
                     );
                     *slot = items;
                 }
@@ -88,6 +95,9 @@ pub(super) fn filled(
             _ => {}
         }
     }
+    // A register of a type with no default (a time, a date, an identifier) reads as an error
+    // until it holds a value: the seed gives it one.
+    super::fill_registers(&mut record, &super::register_fields(meta, ty));
     Ok(record)
 }
 
@@ -103,9 +113,16 @@ pub(super) fn seeded(
     n: usize,
 ) -> Result<Doc, String> {
     let principals = principals(packages);
+    let meta = &packages.last().ok_or("no package")?.meta;
     let root_schema = lookup(&shape.root_ty).ok_or("unregistered root type")?;
     let mut root = DynRecord::empty(root_schema).map_err(|e| e.to_string())?;
-    let mut item = filled((&thread_id(), &list.item_ty), "Item 0", 0, &principals)?;
+    let mut item = filled(
+        (&thread_id(), &list.item_ty),
+        "Item 0",
+        0,
+        &principals,
+        meta,
+    )?;
     let mut inner = Collection::default();
     for i in 0..n {
         inner.push(
@@ -115,6 +132,7 @@ pub(super) fn seeded(
                 &format!("Message {i}"),
                 1,
                 &principals,
+                meta,
             )?,
         );
     }
@@ -124,7 +142,8 @@ pub(super) fn seeded(
     }
     let mut items = Collection::default();
     items.push(Id::from_raw(thread_id()), item);
-    match root.get_mut(&list.field) {
+    let items = super::with_holders(list, items)?;
+    match root.get_mut(&super::top_field(list)) {
         Some(DynValue::Collection(slot)) => *slot = items,
         _ => return Err("the list field is not a collection".into()),
     }
@@ -185,8 +204,7 @@ impl Thread {
 /// A scenario fails.
 pub(super) fn run(sized: &Sized<'_>, list: &List, nested: &Nested) -> Result<Vec<Record>, String> {
     let shape = sized.shape;
-    let item = ResourceRef::root(root_id(shape), shape.root_ty.clone())
-        .item(&thread_id(), list.item_ty.clone());
+    let item = super::item_ref(shape, list, &thread_id());
     let mut out = vec![open(sized, &item)?];
     if sized.config.open_only {
         return Ok(out);
@@ -272,6 +290,7 @@ fn post(
             &format!("Peer message {sample}"),
             1,
             &principals,
+            sized.meta,
         )?;
         // After the seeded messages and the peer's earlier ones.
         let key = crate::action::keys_in_order(sized.n.saturating_add(sample).saturating_add(1))

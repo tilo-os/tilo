@@ -240,3 +240,10 @@ fn today_does_the_work_of_what_it_shows() {
 fn chat_does_the_work_of_what_it_shows() {
     the_runtime_does_the_work_of_what_it_shows("chat");
 }
+
+// Mail's root holds the workspace's accounts, and what people read is the conversations in
+// one: the harness reaches them ([`Shape`]'s holders), so the gate holds them too.
+#[test]
+fn mail_does_the_work_of_what_it_shows() {
+    the_runtime_does_the_work_of_what_it_shows("mail");
+}
