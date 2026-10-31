@@ -237,10 +237,17 @@ pub enum Mutation {
     OutboxPush {
         capability: String,
         payload: Json,
+        /// Held back until this moment, ISO-8601 UTC text: the device carries it out only once
+        /// the clock reaches it. `None` carries it out as soon as the device reads it.
+        held_until: Option<String>,
         /// What the entry is known by: queued twice under one key it is one entry. `None` gives
         /// each push an entry of its own.
         key: Option<String>,
     },
+    /// Take back the outside effects queued on the document of this resource that were not
+    /// settled yet, each as one change, and settle them as withdrawn: what they would have
+    /// done never happens.
+    OutboxWithdraw,
 }
 
 /// What a mutation produced.
@@ -316,6 +323,20 @@ pub struct Version {
     /// The change that made it, as its store names changes; empty while provisional. What a
     /// seen mark names ([`crate::seen`]).
     pub change: String,
+    /// For an item it removed, where the item stood: what a list that held it shows of it
+    /// until the person has seen its removal.
+    pub left: Option<Left>,
+}
+
+/// Where a removed item stood ([`Version::left`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Left {
+    /// The resource holding the collection, as [`ResourceRef::id_string`] writes it.
+    pub holder: String,
+    /// The collection's field.
+    pub field: FieldId,
+    /// The item's type, when the store knows it.
+    pub ty: Option<TypeId>,
 }
 
 /// One run of a task, as the changes it made are stamped.
@@ -435,6 +456,7 @@ pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
             fields: Vec::new(),
             resource: id.clone(),
             change: n.to_string(),
+            left: None,
         })
         .collect()
 }
@@ -746,6 +768,9 @@ pub struct OutboxEntry {
     pub id: String,
     pub capability: String,
     pub payload: Json,
+    /// Held back until this moment, ISO-8601 UTC text, when the action said
+    /// (`outside(capability, payload, at: ...)`); `None` carries out as soon as it is read.
+    pub held_until: Option<String>,
     pub state: OutboxState,
 }
 
@@ -773,31 +798,40 @@ pub enum Settled {
     /// The process handing it over stopped before the service answered: whether it went is
     /// not known, and it is not tried again.
     Unknown,
+    /// A person took it back before it was carried out: it never went, and its reason says so.
+    Withdrawn(String),
 }
 
 impl Settled {
-    /// The outcome as the record keeps it: `done`, `rejected` or `unknown`.
+    /// The outcome as the record keeps it: `done`, `rejected`, `unknown` or `withdrawn`.
     #[must_use]
     pub const fn word(&self) -> &'static str {
         match self {
             Self::Done => "done",
             Self::Rejected(_) => "rejected",
             Self::Unknown => "unknown",
+            Self::Withdrawn(_) => "withdrawn",
         }
     }
 
-    /// Why, when the service said.
+    /// Why, when the service said, or why it was taken back.
     #[must_use]
     pub fn reason(&self) -> &str {
         match self {
-            Self::Rejected(reason) => reason,
+            Self::Rejected(reason) | Self::Withdrawn(reason) => reason,
             Self::Done | Self::Unknown => "",
         }
+    }
+
+    /// Whether the effect can still be taken back: it was queued and never handed over.
+    #[must_use]
+    pub fn withdrawable(state: &OutboxState) -> bool {
+        matches!(state, OutboxState::Queued | OutboxState::Waiting { .. })
     }
 }
 
 /// How the outside effect a resource's actions queued last stands, as `delivery(r)` reads it:
-/// `waiting`, `sending`, `sent`, `rejected` or `unknown`, and why.
+/// `waiting`, `held`, `sending`, `sent`, `rejected`, `withdrawn` or `unknown`, and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeliveryState {
     pub state: String,
@@ -806,16 +840,30 @@ pub struct DeliveryState {
 
 impl DeliveryState {
     /// How an entry stands: settled with `settled`'s outcome word and reason, else by `state`.
+    /// An entry not settled that is held back until a moment still reads `held`.
     #[must_use]
     pub fn of(state: &OutboxState, settled: Option<(&str, &str)>) -> Self {
+        Self::of_entry(state, settled, None)
+    }
+
+    /// As [`Self::of`], for an entry held back until `held_until`: while the clock has not
+    /// reached it, it reads `held`, and the moment says when.
+    #[must_use]
+    pub fn of_entry(
+        state: &OutboxState,
+        settled: Option<(&str, &str)>,
+        held_until: Option<&str>,
+    ) -> Self {
         let (state, reason) = match settled {
             Some(("done", _)) => ("sent", ""),
             Some(("unknown", _)) => ("unknown", ""),
+            Some(("withdrawn", reason)) => ("withdrawn", reason),
             Some((_, reason)) => ("rejected", reason),
-            None => match state {
-                OutboxState::Queued => ("waiting", ""),
-                OutboxState::Sending { .. } => ("sending", ""),
-                OutboxState::Waiting { reason } => ("waiting", reason.as_str()),
+            None => match (state, held_until) {
+                (OutboxState::Queued, Some(at)) => ("held", at),
+                (OutboxState::Queued, None) => ("waiting", ""),
+                (OutboxState::Sending { .. }, _) => ("sending", ""),
+                (OutboxState::Waiting { reason }, _) => ("waiting", reason.as_str()),
             },
         };
         Self {
@@ -1135,8 +1183,26 @@ pub trait Store {
     fn subscribe(&mut self, doc: &DocId, f: Box<dyn FnMut(&ChangeSummary)>) -> SubId;
     fn unsubscribe(&mut self, sub: SubId);
 
-    /// Outside effects queued and not yet settled.
+    /// Outside effects queued and not yet settled, each with the moment it is held until when
+    /// the action held it back.
     fn outbox_pending(&self) -> Vec<OutboxEntry>;
+
+    /// The earliest moment an unsettled outside effect is held until, ISO-8601 UTC text:
+    /// nothing carries it out before then.
+    fn outbox_next_held(&self) -> Option<String>;
+
+    /// Take back the outside effects queued on `doc` that were not settled yet, settling each
+    /// as withdrawn for `reason`, each as a change of its own.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` when the document is gone.
+    fn outbox_withdraw(
+        &mut self,
+        doc: &DocId,
+        reason: &str,
+        note: &ChangeNote,
+    ) -> Result<usize, StoreError>;
 
     /// Record where an entry that is not settled is now (handed over, or waiting to go
     /// online), as one change.

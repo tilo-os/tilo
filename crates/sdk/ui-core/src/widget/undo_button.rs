@@ -39,6 +39,10 @@ use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize};
     clippy::struct_excessive_bools,
     reason = "independent pointer, focus, availability, and repaint states"
 )]
+#[crate::component::not_a_component(
+    system,
+    "history and undo are the system's (AGENTS.md principle 3)"
+)]
 pub struct UndoButton {
     kind: UndoRequest,
     /// Visible label. Empty by default: the control is icon-only, and its

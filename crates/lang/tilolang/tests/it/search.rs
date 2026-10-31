@@ -473,10 +473,12 @@ fn a_query_that_does_not_fit_the_types_filters_is_an_error() {
             "{q}: expected {code} saying {says:?}, got:\n{got}"
         );
     }
-    let got = first_message("fn f() -> Int {\n    return 7d\n}");
+    // A length of time is a number of seconds where a value is one (a view moves a moment by
+    // it), so `7d` in a function returning an Int is an Int.
+    let compile_at = |body: &str| compile_with(&format!("app t.x \"X\"\n{body}\n"), &[]);
     assert!(
-        got.contains("E105") && got.contains("a duration is the value of a filter"),
-        "{got}"
+        compile_at("fn f() -> Int {\n    return 7d\n}").is_ok(),
+        "`7d` is an Int where a value is a number of seconds"
     );
     let got = first_message("fn f(a: Int) -> Int {\n    return a..3\n}");
     assert!(got.contains("E105") && got.contains("a range"), "{got}");

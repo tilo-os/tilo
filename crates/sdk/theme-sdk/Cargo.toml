@@ -1,0 +1,22 @@
+[package]
+name = "tilo-theme-sdk"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The theme SDK: the part painter interface every theme draws through, built in or loaded from wasm."
+
+# Geometry and paint only, so a painter builds for wasm32 as easily as for
+# the host. The toolkit converts a painted part into a vello scene.
+[dependencies]
+kurbo = { version = "0.13", default-features = false, features = ["std"] }
+peniko = { version = "0.6", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

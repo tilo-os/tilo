@@ -330,4 +330,11 @@ impl Staged {
         self.window()
             .and_then(|window| window.failed().map(str::to_owned))
     }
+
+    /// Each component of the window's view that did not build or take its props, and why.
+    pub fn broken_components(&mut self) -> Vec<String> {
+        self.window()
+            .map(|window| window.broken_components())
+            .unwrap_or_default()
+    }
 }

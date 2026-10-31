@@ -580,6 +580,7 @@ fn ui_count(n: usize) -> f64 {
     clippy::struct_excessive_bools,
     reason = "independent capture, recording, replay and receipt states are retained together"
 )]
+#[crate::component::not_a_component(system, "screen capture is the system's")]
 pub struct CaptureStudio {
     rect: Rect,
     overlay_rect: Rect,

@@ -27,8 +27,9 @@ regex.workspace = true
 thiserror.workspace = true
 # The interpreter. `engine.rs` is the only module that names it.
 wasmi = { version = "1.1", default-features = false, features = ["std"] }
-# A second engine for comparing against wasmi (`tilolang bench --engine cranelift|winch`); see
-# docs/tilolang-engines.md. Off by default: no build ships it.
+# The compiled tier: apps start on wasmi while Cranelift compiles their modules, then run
+# compiled (`engine/tiering.rs`). Winch is there to compare engines (`tilolang bench --engine`,
+# docs/tilolang-engines.md).
 wasmtime = { version = "50.0.0", optional = true, default-features = false, features = [
     "cranelift",
     "parallel-compilation",
@@ -36,9 +37,15 @@ wasmtime = { version = "50.0.0", optional = true, default-features = false, feat
     "std",
     "winch",
 ] }
+# Why a module stays on wasmi or was not kept on disk.
+tracing.workspace = true
+# Compiled modules are written beside their place in the disk cache, then renamed into it.
+tempfile.workspace = true
 workspace-hack = { version = "0.1" }
 
 [features]
+# Every shipped build runs the tiered engine; without the feature, wasmi alone.
+default = ["wasmtime"]
 wasmtime = ["dep:wasmtime"]
 
 [dev-dependencies]

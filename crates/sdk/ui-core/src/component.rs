@@ -76,7 +76,7 @@ pub use tilo_ui_graph::component::{
     Accepts, Binding as BindingDescription, Catalogue, Description, Event as EventDescription,
     FORMAT_VERSION, Merge, Offered, Prop, Semantics, Slot, State as StateDescription, Type, Value,
 };
-pub use tilo_ui_macros::Component;
+pub use tilo_ui_macros::{Component, not_a_component};
 
 /// Why an instance's props could not be read.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -149,7 +149,7 @@ pub trait PropType: Sized {
     }
 }
 
-fn wrong(want: &Type, found: &Value) -> String {
+pub(crate) fn wrong(want: &Type, found: &Value) -> String {
     format!("takes {}, not {}", want.show(), found.kind())
 }
 
@@ -385,14 +385,25 @@ impl PropType for Moment {
         Type::Time
     }
 
+    /// A moment is an instant (`YYYY-MM-DDTHH:MM:SSZ`), or the day it falls on (`YYYY-MM-DD`,
+    /// its midnight): that is what a day's field binds.
     fn from_value(value: &Value) -> Result<Self, String> {
         match value {
-            Value::Text(at) => chrono::DateTime::parse_from_rfc3339(at)
-                .map(|at| Self(at.timestamp()))
-                .map_err(|_| format!("is no moment: {at}")),
+            Value::Text(at) => moment_of(at).ok_or_else(|| format!("is no moment: {at}")),
             other => Err(wrong(&Self::ty(), other)),
         }
     }
+}
+
+/// The instant `at` is, in seconds since the Unix epoch: its instant, or the midnight of the
+/// day it names.
+fn moment_of(at: &str) -> Option<Moment> {
+    if let Ok(instant) = chrono::DateTime::parse_from_rfc3339(at) {
+        return Some(Moment(instant.timestamp()));
+    }
+    let day = chrono::NaiveDate::parse_from_str(at.get(..10)?, "%Y-%m-%d").ok()?;
+    day.and_hms_opt(0, 0, 0)
+        .map(|midnight| Moment(midnight.and_utc().timestamp()))
 }
 
 /// The id of a resource a component presents.
@@ -413,20 +424,21 @@ impl PropType for ResourceId {
 }
 
 /// One of the design system's closed sets (a role, a size) as a prop: [`Type::Choice`] of its
-/// cases' snake-case names.
+/// cases' snake-case names. Crate-wide, so a component declares its choices beside itself:
+/// `crate::component::choice!(MyRole, "MyRole", { A => "a", B => "b" });`.
 macro_rules! choice {
     ($ty:ty, $name:literal, { $($case:ident => $text:literal),+ $(,)? }) => {
-        impl PropType for $ty {
-            fn ty() -> Type {
-                Type::Choice {
+        impl $crate::component::PropType for $ty {
+            fn ty() -> $crate::component::Type {
+                $crate::component::Type::Choice {
                     name: $name.into(),
                     cases: vec![$($text.into()),+],
                 }
             }
 
-            fn from_value(value: &Value) -> Result<Self, String> {
-                let (Value::Choice(case) | Value::Text(case)) = value else {
-                    return Err(wrong(&Self::ty(), value));
+            fn from_value(value: &$crate::component::Value) -> Result<Self, String> {
+                let ($crate::component::Value::Choice(case) | $crate::component::Value::Text(case)) = value else {
+                    return Err($crate::component::wrong(&<Self as $crate::component::PropType>::ty(), value));
                 };
                 match case.as_str() {
                     $($text => Ok(<$ty>::$case),)+
@@ -436,6 +448,47 @@ macro_rules! choice {
         }
     };
 }
+
+#[allow(
+    unused_imports,
+    reason = "a component declares its choices beside itself; none outside this file may yet"
+)]
+pub(crate) use choice;
+
+/// A slot of any number of one part, whose props the slot's owner reads (a stat group's tiles,
+/// a trail's segments): `crate::component::part_slot!(FactProps);` beside the part.
+macro_rules! part_slot {
+    ($props:ty) => {
+        impl $crate::component::SlotType for Vec<$props> {
+            const MANY: bool = true;
+
+            fn accepts() -> $crate::component::Accepts {
+                $crate::component::Accepts::Component(
+                    <$props as $crate::component::Component>::NAME.into(),
+                )
+            }
+
+            fn fill(
+                &mut self,
+                source: &mut dyn $crate::component::Source,
+                slot: &str,
+            ) -> Result<(), String> {
+                let mut read = Vec::new();
+                source.components(slot, &mut |child| {
+                    read.push(
+                        <$props as $crate::component::Component>::from_source(child)
+                            .map_err(|error| error.to_string())?,
+                    );
+                    Ok(())
+                })?;
+                *self = read;
+                Ok(())
+            }
+        }
+    };
+}
+
+pub(crate) use part_slot;
 
 choice!(crate::tokens::TextRole, "TextRole", {
     Display => "display",
@@ -651,6 +704,8 @@ impl<T: Clone + 'static> Bound<T> {
 pub enum BoundValue {
     Text(Bound<String>),
     Bool(Bound<bool>),
+    Int(Bound<i64>),
+    Float(Bound<f64>),
     /// Rich text, edited by its paragraphs and marks.
     Rich(Bound<tilo_ui_graph::rich::RichText>),
 }
@@ -672,9 +727,7 @@ impl BindType for Bound<String> {
     fn from_bound(bound: BoundValue) -> Result<Self, String> {
         match bound {
             BoundValue::Text(bound) => Ok(bound),
-            BoundValue::Bool(_) | BoundValue::Rich(_) => {
-                Err("binds Text, not a Bool or RichText".to_owned())
-            }
+            other => Err(other.not_text()),
         }
     }
 }
@@ -687,9 +740,33 @@ impl BindType for Bound<bool> {
     fn from_bound(bound: BoundValue) -> Result<Self, String> {
         match bound {
             BoundValue::Bool(bound) => Ok(bound),
-            BoundValue::Text(_) | BoundValue::Rich(_) => {
-                Err("binds a Bool, not Text or RichText".to_owned())
-            }
+            other => Err(other.not_bool()),
+        }
+    }
+}
+
+impl BindType for Bound<i64> {
+    fn ty() -> Type {
+        Type::Int
+    }
+
+    fn from_bound(bound: BoundValue) -> Result<Self, String> {
+        match bound {
+            BoundValue::Int(bound) => Ok(bound),
+            other => Err(other.not_int()),
+        }
+    }
+}
+
+impl BindType for Bound<f64> {
+    fn ty() -> Type {
+        Type::Float
+    }
+
+    fn from_bound(bound: BoundValue) -> Result<Self, String> {
+        match bound {
+            BoundValue::Float(bound) => Ok(bound),
+            other => Err(other.not_float()),
         }
     }
 }
@@ -702,10 +779,41 @@ impl BindType for Bound<tilo_ui_graph::rich::RichText> {
     fn from_bound(bound: BoundValue) -> Result<Self, String> {
         match bound {
             BoundValue::Rich(bound) => Ok(bound),
-            BoundValue::Text(_) | BoundValue::Bool(_) => {
-                Err("binds RichText, not Text or a Bool".to_owned())
-            }
+            other => Err(other.not_rich()),
         }
+    }
+}
+
+/// What a binding of another type is, for the message saying it fits neither.
+impl BoundValue {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Text(_) => "Text",
+            Self::Bool(_) => "Bool",
+            Self::Int(_) => "Int",
+            Self::Float(_) => "Float",
+            Self::Rich(_) => "RichText",
+        }
+    }
+
+    fn not_text(&self) -> String {
+        format!("binds Text, not {}", self.kind())
+    }
+
+    fn not_bool(&self) -> String {
+        format!("binds a Bool, not {}", self.kind())
+    }
+
+    fn not_int(&self) -> String {
+        format!("binds an Int, not {}", self.kind())
+    }
+
+    fn not_float(&self) -> String {
+        format!("binds a Float, not {}", self.kind())
+    }
+
+    fn not_rich(&self) -> String {
+        format!("binds RichText, not {}", self.kind())
     }
 }
 
@@ -994,43 +1102,15 @@ pub fn entry<W: Described>() -> Entry {
     }
 }
 
-/// Every described widget.
+include!(concat!(env!("OUT_DIR"), "/component_registry.rs"));
+
+/// Every described widget: generated by the build script from each `impl Described` in the
+/// toolkit's sources (`component_scan.rs`), so a widget described where it is written is
+/// registered with no list to add it to.
 #[must_use]
 pub fn registry() -> &'static [Entry] {
-    use crate::widget::{
-        Avatar, Button, Card, EmptyState, ListRow, NavList, NavShell, PropertyList, Section, Text,
-        TextInput,
-    };
     static REGISTRY: std::sync::OnceLock<Vec<Entry>> = std::sync::OnceLock::new();
-    REGISTRY.get_or_init(|| {
-        vec![
-            entry::<Text>(),
-            entry::<crate::widget::RelativeTime>(),
-            entry::<Button>(),
-            entry::<crate::widget::MenuButton>(),
-            entry::<crate::search::SearchButton>(),
-            entry::<crate::widget::Scrollable>(),
-            entry::<crate::widget::Docked>(),
-            entry::<TextInput>(),
-            entry::<crate::widget::RichInput>(),
-            entry::<crate::widget::ReactionStripWidget>(),
-            entry::<crate::widget::EmojiPickerButton>(),
-            entry::<crate::widget::Quote>(),
-            entry::<ListRow>(),
-            entry::<crate::widget::virtual_list::DescribedList>(),
-            entry::<NavShell>(),
-            entry::<NavList>(),
-            entry::<Section>(),
-            entry::<EmptyState>(),
-            entry::<Card>(),
-            entry::<PropertyList>(),
-            entry::<Avatar>(),
-            entry::<crate::widget::Board>(),
-            entry::<crate::widget::Chip>(),
-            crate::widget::change_mark::entry(),
-            entry::<crate::widget::BlockEditor>(),
-        ]
-    })
+    REGISTRY.get_or_init(generated_entries)
 }
 
 /// The entry of the component `name`.
@@ -1059,26 +1139,13 @@ pub fn update(name: &str, widget: &mut Element, source: &mut dyn Source) -> Resu
 }
 
 /// The components that stand only in a slot of another, which reads their props: a property
-/// list's facts, a navigation list's places and sections, a menu's commands, separators and emoji bar, a
-/// row's swipe, the items of a virtual list, and what a view attaches to the element it stands
-/// in (its context menu, hover toolbar and swipe).
+/// list's facts, a navigation list's places and sections, a menu's commands, separators and
+/// emoji bar, a row's swipe, the items of a virtual list, and what a view attaches to the
+/// element it stands in (its context menu, hover toolbar and swipe). Generated: every
+/// `#[derive(Component)]` props that no described widget is built from.
 #[must_use]
-pub fn parts() -> [fn() -> Description; 13] {
-    [
-        crate::widget::PropertyProps::describe,
-        crate::widget::NavItemProps::describe,
-        crate::widget::NavSectionProps::describe,
-        crate::widget::MenuItemProps::describe,
-        crate::widget::MenuSeparatorProps::describe,
-        crate::widget::EmojiBarProps::describe,
-        crate::widget::SwipeActionProps::describe,
-        crate::widget::ListItemProps::describe,
-        crate::widget::ContextMenuProps::describe,
-        crate::widget::HoverToolbarProps::describe,
-        crate::widget::SwipeProps::describe,
-        crate::widget::BoardLaneProps::describe,
-        crate::widget::BoardCardProps::describe,
-    ]
+pub fn parts() -> &'static [fn() -> Description] {
+    &GENERATED_PARTS
 }
 
 /// The views of the slot `slot` of `widget`, built for an instance of `name`, to change by key
@@ -1108,3 +1175,15 @@ pub fn catalogue() -> Catalogue {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod coverage_tests;
+
+#[cfg(test)]
+mod feedback_tests;
+
+#[cfg(test)]
+mod data_tests;
+
+#[cfg(test)]
+mod controls_tests;

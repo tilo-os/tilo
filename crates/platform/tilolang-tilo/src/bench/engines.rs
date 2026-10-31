@@ -21,7 +21,7 @@ use serde_json::{Value as Json, json};
 use tilolang::{Compiled, IdsLock, SeededEntropy};
 use tilolang_runtime::engine::{Engine, Host, HostFail, Wasm};
 use tilolang_runtime::{
-    AmStore, EngineConfig, EngineKind, EngineLimits, InvokeOutcome, Principal, Runtime,
+    AmStore, EngineConfig, EngineKind, EngineLimits, InvokeOutcome, ModuleHash, Principal, Runtime,
     SimpleAuthority, Translation, Value,
 };
 
@@ -209,17 +209,83 @@ fn compile_records(
     ])
 }
 
-/// `start`: each sample opens the room in a process that has forgotten the modules it compiled.
-pub(super) fn start(sized: &Sized<'_>) -> Result<Record, String> {
+/// Where a tiered run keeps compiled modules: a directory of its own, removed when the run
+/// ends.
+pub(super) struct CompiledDir(Option<PathBuf>);
+
+impl CompiledDir {
+    /// The tiered engine keeps its compiled modules here, as a tilolang host keeps them in its
+    /// storage; other engines keep none.
+    pub(super) fn new(config: &BenchConfig) -> Result<Self, String> {
+        if config.engine.kind != EngineKind::Tiered {
+            return Ok(Self(None));
+        }
+        let dir =
+            std::env::temp_dir().join(format!("tilolang-bench-compiled-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        tilolang_runtime::engine::keep_compiled_in(dir.clone())?;
+        Ok(Self(Some(dir)))
+    }
+
+    /// Remove what is kept, so that the next start compiles.
+    fn empty(&self) -> Result<(), String> {
+        let Some(dir) = &self.0 else { return Ok(()) };
+        for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+            std::fs::remove_file(entry.map_err(|e| e.to_string())?.path())
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for CompiledDir {
+    fn drop(&mut self) {
+        if let Some(dir) = &self.0 {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+/// Wait until the tiered engine has compiled the modules, so that what is measured next runs
+/// compiled, as an app does a moment after it starts. Nothing on any other engine.
+pub(super) fn settle(modules: impl IntoIterator<Item = impl AsRef<[u8]>>) -> Result<(), String> {
+    // The compiles are the process's: any runtime's engine waits on them.
+    let engine = Engine::new(EngineLimits::default())?;
+    for bytes in modules {
+        engine.settle_compile(&ModuleHash::of_bytes(bytes.as_ref()));
+    }
+    Ok(())
+}
+
+/// `start`: each sample opens the room in a process that has forgotten the modules it compiled
+/// (and, on the tiered engine, with nothing kept on disk). On the tiered engine also
+/// `start_cached`: the same in a process that finds them kept on disk, as every start after
+/// the first does.
+pub(super) fn start(sized: &Sized<'_>, kept: &CompiledDir) -> Result<Vec<Record>, String> {
     let mut samples = Vec::new();
     for _ in 0..sized.config.samples {
+        settle(sized.packages.iter().map(|p| &p.wasm))?;
         tilolang_runtime::engine::forget_compiled();
+        kept.empty()?;
         let started = Instant::now();
         let room = sized.open()?;
         samples.push(ms(started.elapsed()));
         drop(room);
     }
-    Ok(sized.record("start", "ms", samples, Json::Null))
+    let mut records = vec![sized.record("start", "ms", samples, Json::Null)];
+    if kept.0.is_some() {
+        let mut samples = Vec::new();
+        for _ in 0..sized.config.samples {
+            settle(sized.packages.iter().map(|p| &p.wasm))?;
+            tilolang_runtime::engine::forget_compiled();
+            let started = Instant::now();
+            let room = sized.open()?;
+            samples.push(ms(started.elapsed()));
+            drop(room);
+        }
+        records.push(sized.record("start_cached", "ms", samples, Json::Null));
+    }
+    Ok(records)
 }
 
 /// The tilolang package of the compute workload, compiled into the bench so it runs from
@@ -252,6 +318,7 @@ fn compute(config: &BenchConfig) -> Result<[Record; 2], String> {
     };
     let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).map_err(|e| e.to_string())?;
     rt.load_wasm(&package.wasm).map_err(|e| e.to_string())?;
+    settle([&package.wasm])?;
     let lab = rt.create("Lab").map_err(|e| e.to_string())?;
     let who = Principal::new("bench");
     let timed = |id: &str, args: Vec<Value>| -> Result<(Vec<f64>, Json), String> {
@@ -319,6 +386,9 @@ fn read_library(path: &Path) -> Result<Vec<u8>, String> {
 fn library(config: &BenchConfig, bytes: &[u8]) -> Result<Record, String> {
     let engine = Engine::new(EngineLimits::default())?;
     let module = engine.compile(bytes).map_err(|e| e.to_string())?;
+    // The library keeps its image in its memory from `fill` to `blur`, which a move to
+    // compiled code between them would lose: it is measured compiled.
+    engine.settle_compile(&module);
     let host: Rc<dyn Host> = Rc::new(NoImports);
     let call = |export: &str, args: &[Wasm]| {
         engine

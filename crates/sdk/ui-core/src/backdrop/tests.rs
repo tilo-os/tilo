@@ -743,14 +743,8 @@ fn render_floating_over_stripes(theme: &Theme) -> Vec<u8> {
 
 fn glass_theme(refraction: f32) -> Theme {
     let mut document = crate::theme::Preset::Glass.document();
-    document.material.floating = crate::tokens::Finish::Glass {
-        blur: 4.0,
-        tint: 0.2,
-        saturation: 1.0,
-        refraction,
-        edge_highlight: 0.5,
-        specular: 0.0,
-    };
+    document.material.floating =
+        crate::tokens::Finish::glass([4.0, 0.2, 1.0, refraction, 0.5, 0.0]);
     Theme::from_document(&document).unwrap()
 }
 
@@ -837,4 +831,26 @@ fn a_block_panel_is_flat_and_bordered() {
             1
         ));
     }
+}
+
+/// A glass body's refraction rings are clipped only to an outline that is
+/// not its body. A painter draws its body at the origin, and the body
+/// rebuilt from that path's bounds lands a hair off it (the arcs' ends sit
+/// at -4e-31): compared exactly, every glass body took a clip it did not
+/// need and had its edges antialiased twice.
+#[test]
+fn a_body_rebuilt_from_its_path_is_the_same_outline() {
+    let body = RoundedRect::new(0.0, 0.0, 399.5, 98.0, 14.0);
+    let path = body.to_path(0.1);
+    let rebuilt = RoundedRect::from_rect(path.bounding_box(), 14.0).to_path(0.1);
+    assert!(rebuilt != path, "the premise: not bit-identical");
+    assert!(same_outline(&rebuilt, &path));
+    let mut triangle = vello::kurbo::BezPath::new();
+    triangle.move_to((0.0, 98.0));
+    triangle.line_to((199.75, 0.0));
+    triangle.line_to((399.5, 98.0));
+    triangle.close_path();
+    assert!(!same_outline(&rebuilt, &triangle));
+    let smaller = RoundedRect::new(0.0, 0.0, 399.5, 98.0, 13.0).to_path(0.1);
+    assert!(!same_outline(&rebuilt, &smaller));
 }

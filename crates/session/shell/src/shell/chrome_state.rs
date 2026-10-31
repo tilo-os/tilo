@@ -292,6 +292,10 @@ pub(crate) struct AgentAsk {
 )]
 pub struct ChromeState {
     identity_source: IdentitySource,
+    /// The session's Bluetooth pairing questions, which the shell publishes
+    /// an action for while one is up. A fixture's chrome holds a private
+    /// handle nothing posts to, so no frame reads the process-global one.
+    pub(crate) pairing: crate::bluetooth::PairingPromptHandle,
     pub(crate) hosted_inputs: super::hosted_inputs::HostedTileInputs,
     pub(crate) native_app_opening: super::launcher::NativeAppOpening,
     /// Layout changes to take back by run, and windows opened for a
@@ -685,7 +689,6 @@ impl ChromeState {
             IdentitySource::Explicit("shell-fixture".into()),
         )
     }
-
     #[allow(
         clippy::too_many_lines,
         reason = "one struct literal that names every field of the chrome state with its starting value"
@@ -697,12 +700,20 @@ impl ChromeState {
         local_user_id: String,
         identity_source: IdentitySource,
     ) -> Chrome {
+        // The session's own pairing questions; a fixture (an explicit
+        // identity) holds a private handle nothing posts to, so building
+        // and pumping its frame starts no session service.
+        let pairing = match identity_source {
+            IdentitySource::SessionRegistry => crate::bluetooth::PairingPromptHandle::global(),
+            IdentitySource::Explicit(_) => crate::bluetooth::PairingPromptHandle::new(),
+        };
         Rc::new(RefCell::new(Self {
             tree_handle,
             hosted_inputs,
             native_app_opening: super::launcher::NativeAppOpening::default(),
             desktop_layout: super::desktop_layout::Journal::default(),
             identity_source,
+            pairing,
             overlays: OverlayFlags::default(),
             projection_follow: ProjectionFollow::Person,
             quick_settings,

@@ -76,6 +76,7 @@ fn column_style(gap: f32) -> Style {
 
 /// Intrinsic ordered sections with a trailing standard action region.
 #[derive(Default)]
+#[crate::component::not_a_component(layout, "the language's `form`")]
 pub struct Form {
     parts: Parts,
     density: Option<Density>,
@@ -138,6 +139,10 @@ impl Form {
 ///
 /// The title is a `Heading`. A section is never a card: it sits on the
 /// ground, separated from the next section by space.
+#[crate::component::not_a_component(
+    layout,
+    "the language's `form`, one section per `section` in it"
+)]
 pub struct FormSection {
     parts: Parts,
     /// Whether `parts.children[0]` is the section's heading.
@@ -305,6 +310,7 @@ enum FieldKind {
 /// or nothing for a control row. Help copy reads under the label while the
 /// label stands beside the control, and under the control once stacked;
 /// validation copy always stays with the control.
+#[crate::component::not_a_component(layout, "the language's `field`")]
 pub struct Field {
     /// `[label, body, help?]`.
     parts: Parts,

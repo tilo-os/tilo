@@ -28,7 +28,8 @@ use syn::{
 /// - `#[component(event)]`, `#[component(event(value = T))]`: an **event**, of type `Event`;
 ///   `event(value = T, at = i64)` also says where the value lands (a drop's place);
 /// - `#[component(bind)]`, `#[component(bind(merge = "splice"))]`: a **binding**, of type
-///   `Bound<T>`;
+///   `Bound<T>`; `bind(ty = Type)` describes it as another type the field holds differently (a
+///   moment a widget edits as its ISO text);
 /// - `#[component(state)]`: the widget's own **state** (lens state) to restore, a `PropType`;
 /// - `#[component(key)]`: the instance's stable key, a `String`, not described;
 /// - `#[component(skip)]`: Rust only, not described.
@@ -41,6 +42,61 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }
+}
+
+/// Say of a public widget why it is not a described component, where it is declared:
+/// `#[not_a_component(layout, "the language's `stack`")]`. The toolkit's coverage check reads
+/// it: every public widget is either described (`impl Described`) or says why not, so a widget
+/// that works in Tilo is either in tilolang or names the reason it never will be.
+///
+/// The kinds:
+///
+/// - `layout`: a layout the language's own primitive builds (name it);
+/// - `shell`: window management the system owns, never inside an app's window;
+/// - `system`: a surface only the system may draw (a prompt for a secret or a permission, the
+///   palette, system search), which an app must not be able to forge;
+/// - `part`: a part of another component, reached through it (name it);
+/// - `framework`: behaviour the framework applies around a view, not something a view places.
+///
+/// The item is left as it is.
+#[proc_macro_attribute]
+pub fn not_a_component(attr: TokenStream, item: TokenStream) -> TokenStream {
+    match exemption(attr.into()) {
+        Ok(()) => item,
+        Err(error) => {
+            let mut tokens: Tokens = error.to_compile_error();
+            tokens.extend(Tokens::from(item));
+            tokens.into()
+        }
+    }
+}
+
+/// The kinds `not_a_component` takes.
+const EXEMPTIONS: [&str; 5] = ["layout", "shell", "system", "part", "framework"];
+
+fn exemption(attr: Tokens) -> syn::Result<()> {
+    let parser = |input: syn::parse::ParseStream<'_>| -> syn::Result<()> {
+        let kind: syn::Ident = input.parse()?;
+        if !EXEMPTIONS.iter().any(|k| kind == k) {
+            return Err(syn::Error::new(
+                kind.span(),
+                format!(
+                    "a widget is not a component for one of: {}",
+                    EXEMPTIONS.join(", ")
+                ),
+            ));
+        }
+        input.parse::<syn::Token![,]>()?;
+        let reason: LitStr = input.parse()?;
+        if reason.value().trim().is_empty() {
+            return Err(syn::Error::new(
+                reason.span(),
+                "say why it is not a component",
+            ));
+        }
+        Ok(())
+    };
+    syn::parse::Parser::parse2(parser, attr)
 }
 
 /// The struct attribute.
@@ -69,6 +125,9 @@ enum Part {
     },
     Bind {
         merge: Tokens,
+        /// The type the binding is described as, when it is not the one the field is a
+        /// [`Bound`](crate::component::Bound) of: a moment the widget holds as its ISO text.
+        described: Option<Box<syn::Type>>,
     },
     State,
     /// The instance's key.
@@ -193,6 +252,7 @@ fn part_of(field: &syn::Field) -> syn::Result<Part> {
                 set(&mut part, event_part(&meta)?, span)?;
             } else if meta.path.is_ident("bind") {
                 let mut merge = quote!(Register);
+                let mut described = None;
                 if meta.input.peek(syn::token::Paren) {
                     meta.parse_nested_meta(|inner| {
                         if inner.path.is_ident("merge") {
@@ -209,12 +269,17 @@ fn part_of(field: &syn::Field) -> syn::Result<Part> {
                                 }
                             };
                             Ok(())
+                        } else if inner.path.is_ident("ty") {
+                            // A value the field holds another way (a moment as its ISO text):
+                            // the description says what it is, which is what tilolang binds.
+                            described = Some(Box::new(inner.value()?.parse::<syn::Type>()?));
+                            Ok(())
                         } else {
-                            Err(inner.error("a binding takes `merge = \"splice\"`"))
+                            Err(inner.error("a binding takes `merge = \"splice\"` or `ty = Type`"))
                         }
                     })?;
                 }
-                set(&mut part, Part::Bind { merge }, span)?;
+                set(&mut part, Part::Bind { merge, described }, span)?;
             } else if meta.path.is_ident("state") {
                 set(&mut part, Part::State, span)?;
             } else if meta.path.is_ident("key") {
@@ -460,21 +525,16 @@ impl Generated {
                     props.#member = source.event(#key);
                 });
             }
-            Part::Bind { merge } => {
-                self.bindings.push(quote! {
-                    #k::BindingDescription {
-                        name: #key.into(),
-                        doc: #field_doc.into(),
-                        ty: <#ty as #k::BindType>::ty(),
-                        merge: #k::Merge::#merge,
-                    }
-                });
-                self.reads.push(quote! {
-                    if let Some(bound) = source.binding(#key) {
-                        props.#member = <#ty as #k::BindType>::from_bound(bound)
-                            .map_err(|message| #k::Error::value(#name, #key, message))?;
-                    }
-                });
+            Part::Bind { merge, described } => {
+                self.binding(
+                    k,
+                    name,
+                    field,
+                    &key,
+                    &field_doc,
+                    &merge,
+                    described.as_deref(),
+                );
             }
             Part::State => {
                 self.states.push(quote! {
@@ -508,6 +568,41 @@ impl Generated {
             }
             _ => false,
         }
+    }
+
+    /// A binding: what it is described as, and how an instance's binding reads into it.
+    fn binding(
+        &mut self,
+        k: &Tokens,
+        name: &str,
+        field: &syn::Field,
+        key: &str,
+        doc: &str,
+        merge: &Tokens,
+        described: Option<&syn::Type>,
+    ) {
+        let (member, ty) = match &field.ident {
+            Some(member) => (member, &field.ty),
+            None => return,
+        };
+        let described = described.map_or_else(
+            || quote!(<#ty as #k::BindType>::ty()),
+            |shown| quote!(<#shown as #k::PropType>::ty()),
+        );
+        self.bindings.push(quote! {
+            #k::BindingDescription {
+                name: #key.into(),
+                doc: #doc.into(),
+                ty: #described,
+                merge: #k::Merge::#merge,
+            }
+        });
+        self.reads.push(quote! {
+            if let Some(bound) = source.binding(#key) {
+                props.#member = <#ty as #k::BindType>::from_bound(bound)
+                    .map_err(|message| #k::Error::value(#name, #key, message))?;
+            }
+        });
     }
 
     fn prop(

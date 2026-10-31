@@ -716,6 +716,7 @@ struct AddRow {
     clippy::struct_excessive_bools,
     reason = "focus, selection, scrolling, and invalidation are independent table states"
 )]
+#[crate::component::not_a_component(part, "the body of a data table")]
 pub struct DataTableCore {
     test_id: String,
     /// Choosing a row, published as the table's view action `select`.
@@ -882,6 +883,10 @@ pub type AnyRow = dyn std::any::Any;
 /// it again for each row type it showed (40 to 100 KB of text per app); now
 /// only the conversions here are, and every method that does not name a row
 /// is the core's, reached through `Deref`.
+#[crate::component::not_a_component(
+    part,
+    "`ui.DataTable` (`DescribedTable`) is its described form, over rows of its own"
+)]
 pub struct DataTable<Row> {
     core: DataTableCore,
     row: std::marker::PhantomData<fn() -> Row>,

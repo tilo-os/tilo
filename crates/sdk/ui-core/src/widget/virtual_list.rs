@@ -373,6 +373,10 @@ enum RowStance {
     clippy::struct_excessive_bools,
     reason = "focus, drag threshold, fetch, structural, and layout invalidation are independent widget states"
 )]
+#[crate::component::not_a_component(
+    part,
+    "`ui.VirtualList` (`DescribedList`) is its described form"
+)]
 pub struct VirtualList<M: ListModel> {
     test_id: Option<String>,
     model: M,

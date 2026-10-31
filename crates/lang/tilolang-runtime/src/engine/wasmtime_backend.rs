@@ -1,11 +1,14 @@
 //! wasmtime behind [`Backend`], compiling with Cranelift or Winch: the only module that names
-//! wasmtime. Built with the `wasmtime` feature, to compare engines.
+//! wasmtime. It is the tiered engine's compiled tier, and runs alone to compare engines.
+//! Imports and calls pass raw values (`ValRaw`), with a call's arguments checked against the
+//! export's type, instead of converting every value through `Val`.
 
 use std::collections::HashMap;
+use std::mem::MaybeUninit;
 
 use wasmtime::{
-    Caller, Config, Extern, Func, FuncType, Instance, Linker, Module, ResourceLimiter, Store,
-    Strategy, Trap, Val, ValType,
+    Caller, Config, Func, FuncType, Instance, Linker, Memory, Module, ResourceLimiter, Store,
+    Strategy, Trap, ValRaw, ValType,
 };
 
 use super::{
@@ -23,7 +26,7 @@ impl Wasmtime {
         let mut cfg = Config::new();
         cfg.strategy(match kind {
             EngineKind::Winch => Strategy::Winch,
-            EngineKind::Wasmi | EngineKind::Cranelift => Strategy::Cranelift,
+            EngineKind::Tiered | EngineKind::Wasmi | EngineKind::Cranelift => Strategy::Cranelift,
         });
         cfg.consume_fuel(true);
         // A trap reports what wasm says, as wasmi does, without walking the guest's stack.
@@ -31,6 +34,20 @@ impl Wasmtime {
         let engine = wasmtime::Engine::new(&cfg)
             .map_err(|e| format!("cannot make the {} engine: {e}", kind.name()))?;
         Ok(Self { engine })
+    }
+
+    pub(super) const fn engine(&self) -> &wasmtime::Engine {
+        &self.engine
+    }
+
+    /// A module [`Module::serialize`] wrote, by this engine or one of the same version,
+    /// configuration and CPU features; wasmtime refuses any other.
+    pub(super) fn deserialize(&self, serialized: &[u8]) -> Result<Module, String> {
+        // SAFETY: wasmtime runs what the bytes hold as machine code, so they must be what
+        // `Module::serialize` wrote. The tiering's disk cache hands over only an entry whose
+        // digest matches, from the directory this process keeps its own compiled modules in;
+        // wasmtime checks the version, configuration and CPU features it was written for.
+        unsafe { Module::deserialize(&self.engine, serialized) }.map_err(|e| e.to_string())
     }
 }
 
@@ -81,13 +98,25 @@ impl ResourceLimiter for Limits {
 pub(super) struct Slot {
     cx: Option<Cx>,
     limits: Limits,
+    /// The instance's exported memory, found once when it is made.
+    memory: Option<Memory>,
+}
+
+/// An export's handle and type, resolved on its first call.
+#[derive(Clone)]
+struct Export {
+    func: Func,
+    params: Vec<ValType>,
+    results: usize,
+    result: Option<ValType>,
 }
 
 pub(super) struct Pooled {
     store: Store<Slot>,
     instance: Instance,
-    /// Export handles and result types, resolved on first use.
-    funcs: HashMap<String, (Func, Vec<ValType>)>,
+    funcs: HashMap<String, Export>,
+    /// The parameters and results of a call, reused from call to call.
+    raw: Vec<ValRaw>,
 }
 
 fn val_type(c: u8) -> ValType {
@@ -98,49 +127,54 @@ fn val_type(c: u8) -> ValType {
     }
 }
 
-fn to_wasm(v: &Val) -> Result<Wasm, CallError> {
-    match v {
-        Val::I32(i) => Ok(Wasm::I32(*i)),
-        Val::I64(i) => Ok(Wasm::I64(*i)),
-        Val::F64(bits) => Ok(Wasm::F64(f64::from_bits(*bits))),
-        _ => Err(CallError::Trap("unsupported wasm value type".into())),
-    }
-}
-
-fn from_wasm(w: Wasm) -> Val {
+fn to_raw(w: Wasm) -> ValRaw {
     match w {
-        Wasm::I32(i) => Val::I32(i),
-        Wasm::I64(i) => Val::I64(i),
-        Wasm::F64(f) => Val::F64(f.to_bits()),
+        Wasm::I32(i) => ValRaw::i32(i),
+        Wasm::I64(i) => ValRaw::i64(i),
+        Wasm::F64(f) => ValRaw::f64(f.to_bits()),
     }
 }
 
-fn zero(ty: &ValType) -> Val {
+/// The value of type `ty` in `raw`.
+fn wasm(ty: u8, raw: ValRaw) -> Wasm {
     match ty {
-        ValType::I64 => Val::I64(0),
-        ValType::F32 => Val::F32(0),
-        ValType::F64 => Val::F64(0),
-        _ => Val::I32(0),
+        b'l' => Wasm::I64(raw.get_i64()),
+        b'f' => Wasm::F64(f64::from_bits(raw.get_f64())),
+        _ => Wasm::I32(raw.get_i32()),
     }
 }
 
+/// Whether `w` is a value of type `ty`.
+fn fits(w: &Wasm, ty: &ValType) -> bool {
+    matches!(
+        (w, ty),
+        (Wasm::I32(_), ValType::I32) | (Wasm::I64(_), ValType::I64) | (Wasm::F64(_), ValType::F64)
+    )
+}
+
+/// Import `id`, whose parameters have the types `params` (`i`, `l`, `f`), with its parameters
+/// in `values` and its result written there.
 fn run_import(
     id: usize,
-    mut caller: Caller<'_, Slot>,
-    params: &[Val],
-    results: &mut [Val],
+    params: &str,
+    caller: &Caller<'_, Slot>,
+    values: &mut [MaybeUninit<ValRaw>],
 ) -> wasmtime::Result<()> {
-    let args = params
-        .iter()
-        .map(to_wasm)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| wasmtime::Error::msg(e.to_string()))?;
-    let memory = caller.get_export("memory").and_then(Extern::into_memory);
-    let bytes: &[u8] = memory.as_ref().map_or(&[][..], |m| m.data(&caller));
+    let args: Vec<Wasm> = params
+        .bytes()
+        .zip(values.iter())
+        // SAFETY: wasmtime writes every parameter of the import's type before calling it.
+        .map(|(ty, value)| wasm(ty, unsafe { value.assume_init() }))
+        .collect();
+    let bytes: &[u8] = caller
+        .data()
+        .memory
+        .as_ref()
+        .map_or(&[][..], |m| m.data(caller));
     match import(caller.data().cx.as_ref(), id, bytes, &args) {
         Ok(out) => {
-            if let (Some(slot), Some(w)) = (results.first_mut(), out) {
-                *slot = from_wasm(w);
+            if let (Some(slot), Some(w)) = (values.first_mut(), out) {
+                *slot = MaybeUninit::new(to_raw(w));
             }
             Ok(())
         }
@@ -183,16 +217,21 @@ impl Backend for Wasmtime {
                 params.bytes().map(val_type),
                 result.bytes().map(val_type),
             );
-            linker
-                .func_new(
+            let params: &'static str = params;
+            // SAFETY: `run_import` reads exactly the parameters of `ty` and writes at most its
+            // one result, of the type `ty` declares (the host's import answers with the
+            // result type of `IMPORTS`).
+            unsafe {
+                linker.func_new_unchecked(
                     abi::MODULE,
                     name,
                     ty,
-                    move |caller: Caller<'_, Slot>, params: &[Val], results: &mut [Val]| {
-                        run_import(id, caller, params, results)
+                    move |caller: Caller<'_, Slot>, values: &mut [MaybeUninit<ValRaw>]| {
+                        run_import(id, params, &caller, values)
                     },
                 )
-                .map_err(|e| format!("defining import {name}: {e}"))?;
+            }
+            .map_err(|e| format!("defining import {name}: {e}"))?;
         }
         Ok(linker)
     }
@@ -210,6 +249,7 @@ impl Backend for Wasmtime {
                 limits: Limits {
                     max_memory_bytes: limits.max_memory_bytes,
                 },
+                memory: None,
             },
         );
         store.limiter(|slot| &mut slot.limits);
@@ -219,10 +259,12 @@ impl Backend for Wasmtime {
         let instance = linker
             .instantiate(&mut store, module)
             .map_err(|e| CallError::Link(e.to_string()))?;
+        store.data_mut().memory = instance.get_memory(&mut store, "memory");
         Ok(Pooled {
             store,
             instance,
             funcs: HashMap::new(),
+            raw: Vec::new(),
         })
     }
 
@@ -250,22 +292,50 @@ fn run(
         .store
         .set_fuel(fuel)
         .map_err(|e| CallError::Link(e.to_string()))?;
-    let (func, results) = if let Some(found) = pooled.funcs.get(export) {
+    let found = if let Some(found) = pooled.funcs.get(export) {
         found.clone()
     } else {
         let func = pooled
             .instance
             .get_func(&mut pooled.store, export)
             .ok_or_else(|| CallError::NoExport(export.to_owned()))?;
-        let results: Vec<ValType> = func.ty(&pooled.store).results().collect();
-        pooled
-            .funcs
-            .insert(export.to_owned(), (func, results.clone()));
-        (func, results)
+        let ty = func.ty(&pooled.store);
+        let found = Export {
+            func,
+            params: ty.params().collect(),
+            results: ty.results().len(),
+            result: ty.results().next(),
+        };
+        pooled.funcs.insert(export.to_owned(), found.clone());
+        found
     };
-    let inputs: Vec<Val> = args.iter().copied().map(from_wasm).collect();
-    let mut outputs: Vec<Val> = results.iter().map(zero).collect();
-    func.call(&mut pooled.store, &inputs, &mut outputs)
-        .map_err(|e| classify(&e))?;
-    outputs.first().map(to_wasm).transpose()
+    if args.len() != found.params.len()
+        || !args.iter().zip(&found.params).all(|(a, ty)| fits(a, ty))
+    {
+        return Err(CallError::Trap(format!(
+            "`{export}` takes {:?}, not {args:?}",
+            found.params
+        )));
+    }
+    pooled.raw.clear();
+    pooled.raw.extend(args.iter().copied().map(to_raw));
+    pooled
+        .raw
+        .resize(args.len().max(found.results), ValRaw::i32(0));
+    // SAFETY: the parameters were just checked against the export's type, and the buffer holds
+    // its parameters and its results; no value is a reference.
+    unsafe {
+        found.func.call_unchecked(
+            &mut pooled.store,
+            std::ptr::from_mut(pooled.raw.as_mut_slice()),
+        )
+    }
+    .map_err(|e| classify(&e))?;
+    Ok(match (found.result, pooled.raw.first()) {
+        (Some(ValType::I64), Some(r)) => Some(Wasm::I64(r.get_i64())),
+        (Some(ValType::F64), Some(r)) => Some(Wasm::F64(f64::from_bits(r.get_f64()))),
+        (Some(ValType::I32), Some(r)) => Some(Wasm::I32(r.get_i32())),
+        (Some(_), _) => return Err(CallError::Trap("unsupported wasm value type".into())),
+        (None, _) => None,
+    })
 }

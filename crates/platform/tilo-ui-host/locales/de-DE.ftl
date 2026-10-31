@@ -46,7 +46,6 @@ tilolang-none-value = Keine Angabe
 tilolang-empty-value = Leer
 tilolang-yes = Ja
 tilolang-no = Nein
-tilolang-undo-unavailable = Dieses Fenster kann keinen Schritt aus seinem Verlauf zurücknehmen.
 tilolang-history = Verlauf
 tilolang-history-changes = { $count ->
     [one] 1 Änderung

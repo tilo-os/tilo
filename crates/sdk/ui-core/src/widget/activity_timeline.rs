@@ -338,6 +338,10 @@ struct NamingState {
     clippy::struct_excessive_bools,
     reason = "each flag tracks an independent interaction, rendering, or invalidation state"
 )]
+#[crate::component::not_a_component(
+    part,
+    "`ui.ActivityTimeline` (`DescribedActivityTimeline`) is its described form"
+)]
 pub struct ActivityTimeline {
     entries: Vec<HistoryEntry>,
     named: Vec<NamedRange>,
@@ -423,6 +427,9 @@ pub struct ActivityTimeline {
     /// `false` when the host has already painted a surface underneath.
     draws_own_surface: bool,
     preview_selection: bool,
+    /// The pane takes the height its parent gives it and scrolls inside; without it, it is as
+    /// tall as its strip and its rows, inside another scroll.
+    fill: bool,
     dirty: bool,
 }
 
@@ -484,6 +491,7 @@ impl ActivityTimeline {
             on_clear_filters: None,
             draws_own_surface: true,
             preview_selection: false,
+            fill: true,
             dirty: true,
         }
     }
@@ -736,6 +744,15 @@ impl ActivityTimeline {
             self.draws_own_surface = draws;
             self.dirty = true;
         }
+    }
+
+    /// The pane is as tall as its strip and the rows it shows, inside another scroll
+    /// ([`Self::with_fill(false)`]). A view that places it among other content states this;
+    /// the History pane, which takes a window's height, leaves it filling.
+    #[must_use]
+    pub fn with_fill(mut self, fill: bool) -> Self {
+        self.fill = fill;
+        self
     }
 
     /// Filter by who made the changes instead of by what kind they are: the
@@ -3388,6 +3405,18 @@ impl Widget for ActivityTimeline {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        if !self.fill {
+            // Its strip, its rows and its padding: the page scrolls it with the rest.
+            let height = self.content_height() + FILTER_STRIP_HEIGHT + PADDING * 3.0;
+            let style = taffy::Style {
+                size: taffy::Size {
+                    width: taffy::style_helpers::percent(1.0_f32),
+                    height: taffy::style_helpers::length(crate::num::f32_of_f64(height)),
+                },
+                ..Default::default()
+            };
+            return taffy.widget_leaf(style, node_map, self);
+        }
         taffy.fill_leaf(node_map, self)
     }
 

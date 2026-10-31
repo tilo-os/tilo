@@ -160,6 +160,11 @@ fnv.workspace = true
 # native backends. Re-exported under the toolkit's own module paths.
 tilo-host = { version = "0.1.0", path = "../tilo-host" }
 tilo-ui-paint = { version = "0.1.0", path = "../ui-paint" }
+# The part painter interface every painter set draws through (`part_paint`).
+tilo-theme-sdk = { version = "0.1.0", path = "../theme-sdk" }
+# The interpreter a theme's painter sets loaded from wasm run on
+# (`part_paint::wasm`): fuel-bounded, memory-capped, no imports.
+wasmi = { version = "1.1", default-features = false, features = ["std"] }
 # The emoji catalogue the toolkit's picker, reaction strip and text fields
 # read: a text field resolves `:name:` without the app naming a catalogue
 # crate, and every app's field offers emoji by default. A workspace's own
@@ -389,6 +394,11 @@ windows = { version = "0.62.2", optional = true, features = [
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [dev-dependencies]
+# Hand-written painter modules for the wasm host's refusal and budget tests.
+wat = "1"
+# The Bauhaus theme's painter, run natively through the host to check its
+# shipped document and how the toolkit draws it.
+tilo-theme-bauhaus = { version = "0.1.0", path = "../themes/bauhaus" }
 runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
 # The headless host's `HeadlessApp` and its fixtures are behind `test-support`;
 # enabling it here runs the integration tests that drive them whenever the

@@ -26,6 +26,10 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
+#[path = "progress_bar_component.rs"]
+mod component;
+pub use component::ProgressBarProps;
+
 /// Width of the moving segment in indeterminate mode, expressed as a
 /// fraction of the track width. `0.3` keeps the affordance readable on
 /// narrow bars while still leaving room for the segment to travel.

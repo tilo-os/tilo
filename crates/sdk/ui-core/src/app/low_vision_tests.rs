@@ -7,8 +7,18 @@ fn app() -> App {
     App::new(State::new(), Box::new(crate::widget::Text::new("t")))
 }
 
+/// An empty settings document for this test's thread, so the app it builds
+/// starts from the stock theme whatever the person's profile, or a test
+/// running beside it, holds.
+fn own_settings() -> settings_store::SourceScope {
+    settings_store::scoped_source(Some(std::sync::Arc::new(
+        settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
+    )))
+}
+
 #[test]
 fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
+    let _settings = own_settings();
     // Case `defaults_are_off`.
     {
         let a = app();
@@ -195,6 +205,7 @@ fn intent(
 
 #[test]
 fn appearance_reconcile_is_a_noop_when_off_and_applies_live_otherwise() {
+    let _settings = own_settings();
     // Case `appearance_reconcile_off_is_a_noop`.
     {
         let root = AppearanceRoot {
@@ -249,6 +260,9 @@ fn appearance_reconcile_is_a_noop_when_off_and_applies_live_otherwise() {
 #[test]
 fn host_appearance_rethemes_through_the_appearance_intent() {
     use crate::host_appearance::{HostAppearance, Scheme};
+    // A process the shell supplies no settings to: the host's appearance
+    // is the one it follows.
+    let _settings = settings_store::scoped_source(None);
     let mut a = app();
     let light = HostAppearance {
         scheme: Some(Scheme::Light),
@@ -296,6 +310,7 @@ fn host_appearance_rethemes_through_the_appearance_intent() {
 fn the_shell_s_window_appearance_dresses_the_theme_and_survives_rebuilds() {
     use crate::theme::WindowAppearance;
     use crate::tokens::PresenceHue;
+    let _settings = own_settings();
 
     let mut a = app();
     a.set_theme(Theme::light());
@@ -352,6 +367,7 @@ fn the_shell_s_window_appearance_dresses_the_theme_and_survives_rebuilds() {
 #[test]
 fn shell_palette_message_rethemes_the_open_app_without_settings_file_access() {
     use crate::floating_surface::FloatingSurfaceHostMessage;
+    let _settings = own_settings();
 
     let mut app = app();
     app.set_theme(Theme::dark());

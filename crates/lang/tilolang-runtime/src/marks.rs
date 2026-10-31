@@ -21,7 +21,7 @@ use crate::error::RuntimeError;
 use crate::ids::Principal;
 use crate::render::Acc;
 use crate::store::{FieldSpec, FieldValue, Scalar, Version};
-use crate::value::{ActionRef, ResourceRef, Value};
+use crate::value::{ActionRef, CollRef, ResourceRef, Value};
 use crate::view::UiNode;
 
 /// The node kind of a change mark.
@@ -32,8 +32,14 @@ const LIST_ITEM: &str = "ui.ListItem";
 const NAV_SHELL: &str = "ui.NavShell";
 /// The node kind of a text field.
 const TEXT_INPUT: &str = "ui.TextInput";
+/// The node kind of a place in a navigation list.
+const NAV_ITEM: &str = "ui.NavItem";
 /// The kind of a node holding a component's named slot.
 const SLOT: &str = "slot";
+/// The node kind of a list of any length, whose rows are its items'.
+const VIRTUAL_LIST: &str = "ui.VirtualList";
+/// The node kind of a list row.
+const LIST_ROW: &str = "ui.ListRow";
 
 /// The pseudo-field a window's mark reads of its document: every version of every resource in
 /// it, so the count moves when any of them changes.
@@ -48,11 +54,15 @@ impl Core {
     pub(crate) fn mark_unseen(
         &self,
         node: &mut UiNode,
-        viewer: &Principal,
-        window: &str,
+        (viewer, window): (&Principal, &str),
+        listed: Option<&CollRef>,
         acc: &mut Acc,
     ) -> Result<(), RuntimeError> {
         match node.kind.as_str() {
+            VIRTUAL_LIST => match listed {
+                Some(coll) => self.mark_removed(node, viewer, coll, acc),
+                None => Ok(()),
+            },
             CHANGE_MARK => {
                 if let Some(Value::Ref(r)) = node.props.get("of").cloned() {
                     let unseen = self.unseen_noted(viewer, &r.target, acc)?;
@@ -78,10 +88,100 @@ impl Core {
                 node.children.push(slot("change", &node.key, mark));
                 Ok(())
             }
+            NAV_ITEM => self.mark_nav_item(node, viewer, acc),
             NAV_SHELL => self.mark_window(node, viewer, window, acc),
             TEXT_INPUT => self.mark_field(node, viewer, acc),
             _ => Ok(()),
         }
+    }
+
+    /// A list of the collection `coll`: a row after its items for each item someone else
+    /// removed from it that `viewer` has not seen go, its title as it was struck through, its
+    /// mark saying who removed it in which run and showing that run.
+    fn mark_removed(
+        &self,
+        node: &mut UiNode,
+        viewer: &Principal,
+        coll: &CollRef,
+        acc: &mut Acc,
+    ) -> Result<(), RuntimeError> {
+        let holder = coll.target.id_string();
+        acc.reads
+            .push((coll.target.doc.clone(), DOC_VERSIONS.to_owned()));
+        let within = match self.store.borrow().versions_within(&coll.target.doc) {
+            Ok(within) => within,
+            Err(crate::store::StoreError::NotFound(_)) => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        let runs = self.seen_runs(&viewer.0);
+        // The field marked `title` of the items' type, which a removed item's row shows.
+        let title = {
+            let registry = self.registry.borrow();
+            registry.type_info(&coll.item).and_then(|(pkg, info)| {
+                let ty = pkg.meta.types.iter().find(|t| t.id == info.id)?;
+                let field = ty
+                    .fields
+                    .iter()
+                    .find(|f| f.role.as_deref() == Some("title"))?;
+                info.fields
+                    .iter()
+                    .find(|f| f.id == field.id)
+                    .map(|f| FieldSpec {
+                        id: f.id.clone(),
+                        kind: f.kind,
+                    })
+            })
+        };
+        let mut rows = Vec::new();
+        for (resource, versions) in within {
+            let Some(last) = versions.last() else {
+                continue;
+            };
+            let stood_here = last.left.as_ref().is_some_and(|left| {
+                left.holder == holder
+                    && left.field == coll.field
+                    && left.ty.as_ref().is_none_or(|ty| *ty == coll.item)
+            });
+            if last.kind != crate::store::VersionKind::Removed || !stood_here {
+                continue;
+            }
+            self.note_seen_reads(viewer, &resource, acc);
+            let mark = self.seen_mark(&viewer.0, &resource);
+            let mark_others = self.marks_others(&coll.item);
+            let unseen =
+                crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs, mark_others);
+            if unseen.is_empty() {
+                continue;
+            }
+            let Some(at) = ResourceRef::parse_id(&resource, coll.item.clone()) else {
+                continue;
+            };
+            let said = match &title {
+                Some(spec) => text_of(&self.store.borrow().read_before(&at, spec, &last.change)?),
+                None => None,
+            };
+            let key = format!("{}~removed~{resource}", node.key);
+            let mut row = UiNode::empty(LIST_ROW, &format!("{key}~row"));
+            row.props
+                .insert("title".to_owned(), Value::Text(said.unwrap_or_default()));
+            let mut item = UiNode::empty(LIST_ITEM, &key);
+            item.props.insert("removed".to_owned(), Value::Bool(true));
+            item.children.push(row);
+            let mut mark = UiNode::empty(CHANGE_MARK, &format!("{key}~change"));
+            mark.props.insert("of".to_owned(), Value::resource(&at));
+            self.fill_mark(&mut mark, &at, &unseen, acc);
+            item.children.push(slot("change", &key, mark));
+            rows.push(item);
+        }
+        if !rows.is_empty() {
+            let mut removed = UiNode::empty(SLOT, &format!("{}~slot-removed", node.key));
+            removed
+                .props
+                .insert("name".to_owned(), Value::Text("removed".to_owned()));
+            removed.children = rows;
+            node.children.push(removed);
+        }
+        Ok(())
     }
 
     /// The versions of `at` `viewer` has not seen, read by the boundary being built.
@@ -204,6 +304,34 @@ impl Core {
         Ok(())
     }
 
+    /// A place in a navigation list that names a resource (`ui.NavItem(item: c)`, a channel):
+    /// how much of it the person has not seen stands on the row, and the row's label lifts
+    /// when anything does. What a sidebar shows without the app counting anything.
+    fn mark_nav_item(
+        &self,
+        node: &mut UiNode,
+        viewer: &Principal,
+        acc: &mut Acc,
+    ) -> Result<(), RuntimeError> {
+        let Some(Value::Ref(r)) = node.props.get("item").cloned() else {
+            return Ok(());
+        };
+        let unseen = self.unseen_noted(viewer, &r.target, acc)?;
+        if unseen.is_empty() {
+            return Ok(());
+        }
+        // A `live` the view set itself (a count of what it knows) is the view's; the host
+        // fills only what the view left for it, as with a row's change mark.
+        let count = i64::try_from(unseen.len()).unwrap_or(i64::MAX);
+        node.props
+            .entry("live".to_owned())
+            .or_insert(Value::Int(count));
+        node.props
+            .entry("unread".to_owned())
+            .or_insert(Value::Bool(true));
+        Ok(())
+    }
+
     /// A window's header mark: how many changes of what it shows (its resource and everything
     /// in its document) are unseen, and who made the newest.
     fn mark_window(
@@ -238,8 +366,11 @@ impl Core {
             self.note_seen_reads(viewer, &resource, acc);
             let mark = self.seen_mark(&viewer.0, &resource);
             // One per resource: its newest unseen change.
+            // Every version within `at` is of one of its resources; a mark asks the type of
+            // the first, the same for them all in a window of the item.
+            let mark_others = self.marks_others(&at.ty);
             if let Some(newest) =
-                crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs).pop()
+                crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs, mark_others).pop()
             {
                 unseen.push(newest);
             }

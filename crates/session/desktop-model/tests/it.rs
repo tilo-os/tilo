@@ -19,6 +19,8 @@ pub mod commands;
 pub mod desktop_doc;
 #[path = "history.rs"]
 pub mod history;
+#[path = "own_arrangement.rs"]
+pub mod own_arrangement;
 #[path = "peer_window_merge.rs"]
 pub mod peer_window_merge;
 #[path = "portable_state.rs"]

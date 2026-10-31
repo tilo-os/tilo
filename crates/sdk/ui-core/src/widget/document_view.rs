@@ -70,6 +70,10 @@ type Builder<K> = Box<dyn FnMut(&K, Option<&crate::ControlDomain>) -> Element>;
 /// `K` is both the value passed to `build` and the reconciliation key. Keep it
 /// small and make its equality match structural meaning: if two values compare
 /// equal, the existing subtree is retained and synchronized normally.
+#[crate::component::not_a_component(
+    framework,
+    "binds a native app's model to its view; a tilolang view is bound by the language"
+)]
 pub struct ModelView<K> {
     project: Projection<K>,
     build: Builder<K>,

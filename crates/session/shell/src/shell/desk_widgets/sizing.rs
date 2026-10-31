@@ -103,8 +103,11 @@ pub fn stages(id: WidgetId, width: f64) -> (Stage, Stage, f64) {
         (sizing.large_at, Stage::Regular, Stage::Large),
     ] {
         if (width - at).abs() < half {
-            let t = (width - (at - half)) / BLEND;
-            return (lo, hi, smoothstep(t));
+            return (
+                lo,
+                hi,
+                ui::motion::blend_across(width, at - half, at + half),
+            );
         }
     }
     let stage = if width < sizing.regular_at {
@@ -135,11 +138,6 @@ pub fn height(id: WidgetId, width: f64, stage_height: impl Fn(Stage, f64) -> f64
     let a = stage_height(lo, width);
     let b = stage_height(hi, width);
     a + (b - a) * t
-}
-
-fn smoothstep(t: f64) -> f64 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 #[cfg(test)]

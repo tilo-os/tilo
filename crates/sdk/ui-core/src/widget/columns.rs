@@ -22,6 +22,7 @@ use crate::theme::Theme;
 use crate::tokens::Rhythm;
 
 /// See the module docs.
+#[crate::component::not_a_component(layout, "the language's `grid` and `split`")]
 pub struct Columns {
     main: Element,
     aside: Option<Element>,

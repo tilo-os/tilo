@@ -338,8 +338,10 @@ impl RoomRecord {
     /// resource `kind`), as a step of their own that the room is handed like any other; the
     /// instance is brought up to date. Whether there was one.
     ///
+    /// What somebody else changed since stays theirs: the step is taken back around it.
+    ///
     /// # Errors
-    /// The undo was refused: somebody else changed what the step touched since.
+    /// The undo failed: the step's inverse could not be applied.
     pub fn undo(
         &mut self,
         instance: &mut Instance,

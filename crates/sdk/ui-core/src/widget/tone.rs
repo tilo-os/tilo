@@ -45,6 +45,15 @@ impl Tone {
     }
 }
 
+// A status as a component's prop; a person's tone comes from the person a component shows.
+crate::component::choice!(Tone, "Tone", {
+    Neutral => "neutral",
+    Success => "success",
+    Warning => "warning",
+    Danger => "danger",
+    Info => "info",
+});
+
 #[cfg(test)]
 mod tests {
     use super::*;

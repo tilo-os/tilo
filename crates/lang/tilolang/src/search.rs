@@ -339,6 +339,17 @@ pub fn resolve(
                 }
                 out.sort = ctx.sort(field, order);
             }
+            SearchEntryKind::MarkOthers => {
+                if out.mark_others {
+                    ctx.err(
+                        "E104",
+                        entry.span,
+                        format!("{} marks others' changes already", about(info)),
+                    );
+                    continue;
+                }
+                out.mark_others = true;
+            }
             SearchEntryKind::Hide { field } => {
                 if let Some(f) = ctx.field(field, "`hide`") {
                     let id = f.id.clone();

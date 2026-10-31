@@ -253,6 +253,10 @@ pub fn paint_see_through(
 /// A retained surface of one level around one child, padded by the
 /// level's rhythm. A `Surface` inside a surface of the same level paints
 /// no ground of its own.
+#[crate::component::not_a_component(
+    framework,
+    "the framework paints each region's ground (HIG 9.2)"
+)]
 pub struct Surface {
     level: SurfaceLevel,
     child: Box<dyn Widget>,
@@ -480,6 +484,7 @@ mod tests {
 /// ([`crate::tokens::Density`]): a data-heavy sidebar or list at compact
 /// while the rest of the window stays comfortable. Rows, rhythm and tables
 /// inside it take the region's density; controls and text keep their size.
+#[crate::component::not_a_component(framework, "the framework sets each region's density")]
 pub struct DensityRegion {
     density: crate::tokens::Density,
     child: Box<dyn Widget>,

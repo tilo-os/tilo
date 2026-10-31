@@ -924,14 +924,17 @@ reference-open = Open { $label }
 # A field they changed, on hover: $who changed it; $before is what it held.
 change-field = Changed by { $who }
 change-field-before = Changed by { $who }. Before: { $before }
-# The mark on a row or wherever a view places it: who, and the task run it was part of.
-change-mark-run = { $who } · { $run }
+# The mark on a row or wherever a view places it: the task run it was part of. Who made the
+# change is the face the chip leads with, and its accessible name says it.
+change-mark-run = { $run }
 change-mark-who = { $who }
 # What the mark says when read out or hovered: what they did.
 change-mark-created = Made by { $who }
 change-mark-changed = Changed by { $who }
 change-mark-removed = Removed by { $who }
 change-mark-open = Show what { $who } did
+# A row’s mark, read out and on hover: what they did, in which task run.
+change-mark-in-run = { $what } in “{ $run }”
 # A window's title, with how many changes there are the person has not seen, and by whom.
 change-window = { $count ->
     [one] One change by { $who }

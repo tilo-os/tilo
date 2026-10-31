@@ -60,6 +60,42 @@ impl Core {
                 let o = self.text(a.h(0)?)?.cmp(&self.text(a.h(1)?)?);
                 ret_i32(ordering_to_i32(o))
             }
+            // Where `needle` first stands in `text`, in characters; -1 when it does not.
+            Imp::StrFind => {
+                let text = self.text(a.h(0)?)?;
+                let needle = self.text(a.h(1)?)?;
+                let at = text
+                    .find(&needle)
+                    .and_then(|at| text.get(..at))
+                    .map_or(-1, |head| len_to_i64(head.chars().count()));
+                ret_i64(at)
+            }
+            // The characters from `from` to `to`, counted in characters as `len` counts them.
+            Imp::StrSlice => {
+                let text = self.text(a.h(0)?)?;
+                let from = a.long(1)?;
+                let to = a.long(2)?;
+                let count = text.chars().count();
+                let clamp = |n: i64| usize::try_from(n).unwrap_or(0).min(count);
+                let (from, to) = (clamp(from), clamp(to));
+                let sliced: String = text
+                    .chars()
+                    .skip(from)
+                    .take(to.saturating_sub(from))
+                    .collect();
+                self.ret_h(Value::Text(sliced))
+            }
+            Imp::StrReplace => {
+                let text = self.text(a.h(0)?)?;
+                let from = self.text(a.h(1)?)?;
+                let to = self.text(a.h(2)?)?;
+                let replaced = if from.is_empty() {
+                    text
+                } else {
+                    text.replace(&from, &to)
+                };
+                self.ret_h(Value::Text(replaced))
+            }
             _ => trap("not a text import"),
         }
     }

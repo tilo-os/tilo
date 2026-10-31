@@ -85,18 +85,18 @@ pub fn label_of(action: &ActionMeta) -> String {
     }
 }
 
-/// The type a parameter of `meta`'s action is of, when it is one of `meta`'s record types.
-fn type_named<'m>(meta: &'m Meta, name: &str) -> Option<&'m TypeMeta> {
-    if let Some(found) = meta.types.iter().find(|ty| ty.id == name) {
-        return Some(found);
+/// Whether the parameter type `name` (as metadata writes it) names the record type `id`:
+/// either that type itself, or one of the types of a union it is written as
+/// (`TextChannel | Thread`).
+fn names_type(meta: &Meta, name: &str, id: &str) -> bool {
+    let Some(ty) = meta.types.iter().find(|ty| ty.id == id) else {
+        return false;
+    };
+    match crate::meta::parse_ty(name, &meta.app) {
+        Ok(crate::meta::Ty::Record(key)) => key.name == ty.name,
+        Ok(crate::meta::Ty::Union(keys)) => keys.iter().any(|key| key.name == ty.name),
+        _ => false,
     }
-    let (app, last) = name
-        .rsplit_once('.')
-        .map_or((None, name), |(app, last)| (Some(app), last));
-    if app.is_some_and(|app| app != meta.app) {
-        return None;
-    }
-    meta.types.iter().find(|ty| ty.name == last)
 }
 
 /// Whether an invocation can be offered with only its first parameters given: each of the rest
@@ -665,6 +665,29 @@ impl Core {
         mark_of(self.view_states.borrow().get(&key))
     }
 
+    /// `person`'s seen mark that covers `resource`: its own, else the mark of whatever holds
+    /// it, then of whatever holds that. Opening a conversation marks seen what its window
+    /// showed (task-legibility.md §4), and what it showed is the messages in it: items are
+    /// stored flat by id (convergence.md, "Items"), so the collection holding one names its
+    /// holder, never the path down to it.
+    pub(crate) fn seen_mark_of_tree(&self, person: &str, at: &ResourceRef) -> Option<SeenMark> {
+        if let Some(mark) = self.seen_mark(person, &at.id_string()) {
+            return Some(mark);
+        }
+        let mut holding = at.clone();
+        // A collection of items nests at most a few deep (a board's card, a card's comment).
+        for _ in 0..8 {
+            let Ok(Some((holder, _))) = self.store.borrow().container(&holding) else {
+                return None;
+            };
+            if let Some(mark) = self.seen_mark(person, &holder.id_string()) {
+                return Some(mark);
+            }
+            holding = holder;
+        }
+        None
+    }
+
     /// The versions of `at` `person` has not seen.
     pub(crate) fn unseen_of(
         &self,
@@ -672,9 +695,25 @@ impl Core {
         at: &ResourceRef,
     ) -> Result<Vec<crate::store::Version>, crate::store::StoreError> {
         let versions = self.store.borrow().versions(at)?;
-        let mark = self.seen_mark(person, &at.id_string());
+        let mark = self.seen_mark_of_tree(person, at);
         let runs = self.seen_runs(person);
-        Ok(crate::seen::unseen(&versions, person, mark.as_ref(), &runs))
+        let mark_others = self.marks_others(&at.ty);
+        Ok(crate::seen::unseen(
+            &versions,
+            person,
+            mark.as_ref(),
+            &runs,
+            mark_others,
+        ))
+    }
+
+    /// Whether the type `ty` declares `mark others`: another person's change to it is marked
+    /// unseen, as an agent's is.
+    pub(crate) fn marks_others(&self, ty: &str) -> bool {
+        self.registry
+            .borrow()
+            .type_info(ty)
+            .is_some_and(|(_, info)| info.mark_others)
     }
 
     /// The task runs `person` reviewed, as the runtime holds them.
@@ -918,7 +957,7 @@ impl Core {
                     action.params.split_first().is_some_and(|(first, rest)| {
                         all_asked(&pkg.meta, rest)
                             && !asks_for_own_item(&pkg.meta, info.id.as_str(), rest)
-                            && type_named(&pkg.meta, &first.ty).is_some_and(|t| t.id == info.id)
+                            && names_type(&pkg.meta, &first.ty, info.id.as_str())
                     })
                 })
                 .collect();
@@ -947,10 +986,8 @@ impl Core {
                     if !all_asked(&pkg.meta, rest) {
                         continue;
                     }
-                    let on_holder =
-                        type_named(&pkg.meta, &first.ty).is_some_and(|t| t.id == holder_info.id);
-                    let takes_subject =
-                        type_named(&pkg.meta, &second.ty).is_some_and(|t| t.id == target.ty);
+                    let on_holder = names_type(&pkg.meta, &first.ty, holder_info.id.as_str());
+                    let takes_subject = names_type(&pkg.meta, &second.ty, &target.ty);
                     if !(on_holder && takes_subject) {
                         continue;
                     }

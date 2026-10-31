@@ -23,8 +23,7 @@ use ui::widget::arrange::{
 };
 use ui::widget::{
     Button, ButtonRole, Checkbox, Container, Divider, Dropdown, Element, EmptyState, Field,
-    FormSection, ProgressBar, Scrollable, Section, Segment, Spacer, Text, Toggle, ToggleGroup,
-    labeled_check,
+    FormSection, Scrollable, Section, Segment, Spacer, Text, Toggle, ToggleGroup, labeled_check,
 };
 
 use crate::adapter::{Adapter, NodeSource};
@@ -114,6 +113,8 @@ pub struct Reconciler {
     sink: EventSink,
     texts: HashMap<String, LocalState<String>>,
     flags: HashMap<String, LocalState<bool>>,
+    counts: HashMap<String, LocalState<i64>>,
+    numbers: HashMap<String, LocalState<f64>>,
     riches: HashMap<String, LocalState<tilo_render_protocol::patch::rich::RichText>>,
     /// The handle on the split that collapses to navigate, the last one built.
     navigation: Option<Navigation>,
@@ -121,6 +122,11 @@ pub struct Reconciler {
     adapter: Adapter,
     /// Where the rows of the virtual lists it builds come from.
     rows: Option<crate::adapter::RowsOf>,
+    /// Each component of the view that did not build or take its props, and why: shown as a
+    /// caption in its place, and read by whoever checks the view (layout-check, tests), so a
+    /// component that does not build is never only a log line. Shared with every reconciler of
+    /// the same view.
+    broken: Rc<RefCell<Vec<String>>>,
 }
 
 fn prop<'a>(node: &'a UiNode, name: &str) -> Option<&'a Value> {
@@ -436,10 +442,13 @@ impl Reconciler {
             sink,
             texts: HashMap::new(),
             flags: HashMap::new(),
+            counts: HashMap::new(),
+            numbers: HashMap::new(),
             riches: HashMap::new(),
             navigation: None,
             adapter,
             rows: None,
+            broken: Rc::default(),
         }
     }
 
@@ -451,11 +460,27 @@ impl Reconciler {
             sink: Rc::clone(&other.sink),
             texts: HashMap::new(),
             flags: HashMap::new(),
+            counts: HashMap::new(),
+            numbers: HashMap::new(),
             riches: HashMap::new(),
             navigation: None,
             adapter: other.adapter.clone(),
             rows: other.rows.clone(),
+            broken: Rc::clone(&other.broken),
         }
+    }
+
+    /// Each component of the view that did not build or take its props, and why, as of now.
+    #[must_use]
+    pub fn broken(&self) -> Vec<String> {
+        self.broken.borrow().clone()
+    }
+
+    fn note_broken(&self, node: &UiNode, error: &ui::component::Error) {
+        tracing::warn!(%error, key = %node.key, "a component of the view did not build");
+        self.broken
+            .borrow_mut()
+            .push(format!("{} ({}): {error}", node.kind, node.key));
     }
 
     /// Read the rows of the virtual lists it builds from `rows`.
@@ -496,6 +521,40 @@ impl Reconciler {
             .entry(key.to_owned())
             .or_insert_with(|| LocalState::new(false))
             .clone()
+    }
+
+    /// The whole number the control `key` shows, kept in step with what it is bound to.
+    pub fn count_state(&mut self, key: &str) -> LocalState<i64> {
+        self.counts
+            .entry(key.to_owned())
+            .or_insert_with(|| LocalState::new(0))
+            .clone()
+    }
+
+    /// The number the control `key` shows, kept in step with what it is bound to.
+    pub fn number_state(&mut self, key: &str) -> LocalState<f64> {
+        self.numbers
+            .entry(key.to_owned())
+            .or_insert_with(|| LocalState::new(0.0))
+            .clone()
+    }
+
+    /// Show `number` in the control `key`.
+    pub fn set_count(&self, key: &str, number: i64) {
+        if let Some(state) = self.counts.get(key)
+            && state.get() != number
+        {
+            state.set(number);
+        }
+    }
+
+    /// Show `number` in the control `key`.
+    pub fn set_number(&self, key: &str, number: f64) {
+        if let Some(state) = self.numbers.get(key)
+            && state.get().total_cmp(&number).is_ne()
+        {
+            state.set(number);
+        }
     }
 
     /// The rich text the rich input `key` shows, kept in step with what it is bound to.
@@ -571,7 +630,6 @@ impl Reconciler {
             "scroll" => self.scroll(node),
             "spacer" => Box::new(Spacer::fixed(0.0).with_id(node.key.clone())),
             "divider" => Box::new(Divider::horizontal()),
-            "progress" => Box::new(ProgressBar::new(number(node, "value").unwrap_or(0.0))),
             "form" | "field" => self.holder(node),
             "toggle" => self.toggle(node),
             "choice" => self.choice(node),
@@ -590,6 +648,7 @@ impl Reconciler {
     /// A node of a described component, built by the one adapter from its description.
     fn component(&mut self, node: &UiNode) -> Element {
         let Some(description) = crate::adapter::description_of(node) else {
+            self.note_broken(node, &ui::component::Error::unknown(&node.kind));
             return self.text_of(node, "", TextRole::Caption);
         };
         // In a document, a body is the block editor native Notes edits a note in.
@@ -609,7 +668,7 @@ impl Reconciler {
             ui::component::build(&description.name, &mut source)
         };
         built.unwrap_or_else(|error| {
-            tracing::warn!(%error, "a component of the view did not build");
+            self.note_broken(node, &error);
             self.text_of(node, "", TextRole::Caption)
         })
     }
@@ -636,7 +695,7 @@ impl Reconciler {
                 Ok(true) => {}
                 Ok(false) => return Some(self.build(new_node)),
                 Err(error) => {
-                    tracing::warn!(%error, "a component of the view did not take its props");
+                    self.note_broken(new_node, &error);
                     return Some(self.build(new_node));
                 }
             }
@@ -1556,6 +1615,27 @@ mod tests {
             .iter()
             .map(|child| std::ptr::from_ref::<dyn ui::widget::Widget>(*child).cast::<()>() as usize)
             .collect()
+    }
+
+    /// A component that does not build is shown as an empty caption in its place, and said:
+    /// whoever checks the view (layout-check, a test) reads why, never only a log line.
+    #[test]
+    fn a_component_that_does_not_build_is_recorded_with_why() {
+        let mut reconciler = reconciler();
+        // `ui.Text` requires its value; an unknown component is not described at all.
+        let view = stack("s", vec![node("ui.Text", "t"), node("ui.Nothing", "n")]);
+        let _ = reconciler.build(&view);
+        let broken = reconciler.broken();
+        assert_eq!(broken.len(), 2, "both are recorded: {broken:?}");
+        assert!(
+            broken
+                .iter()
+                .any(|b| b.contains("ui.Text (t)") && b.contains("value"))
+        );
+        assert!(broken.iter().any(|b| b.contains("ui.Nothing (n)")));
+        // Every reconciler of the same view records into the one list.
+        let rows = Reconciler::sharing(&reconciler);
+        assert_eq!(rows.broken().len(), 2);
     }
 
     #[test]

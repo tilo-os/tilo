@@ -918,12 +918,13 @@ reference-open = { $label } öffnen
 # What someone else (an agent's run, mostly) changed that the person has not seen yet.
 change-field = Geändert von { $who }
 change-field-before = Geändert von { $who }. Vorher: { $before }
-change-mark-run = { $who } · { $run }
+change-mark-run = { $run }
 change-mark-who = { $who }
 change-mark-created = Erstellt von { $who }
 change-mark-changed = Geändert von { $who }
 change-mark-removed = Entfernt von { $who }
 change-mark-open = Zeigen, was { $who } getan hat
+change-mark-in-run = { $what } in „{ $run }“
 change-window = { $count ->
     [one] Eine Änderung von { $who }
    *[other] { $count } Änderungen von { $who }

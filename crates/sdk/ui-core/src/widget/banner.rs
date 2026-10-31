@@ -35,6 +35,9 @@ use crate::tokens::TextRole;
 use crate::widget::control_size::ControlSize;
 use crate::widget::{Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget, layout_rect};
 
+mod component;
+pub use component::BannerProps;
+
 #[derive(Clone, Copy, Debug)]
 struct Metrics {
     pad_x: f64,
@@ -195,22 +198,24 @@ fn geometry(
     let main = content
         .action
         .map(|label| action_face(Rect::ZERO, label, true).intrinsic_width(text, theme));
-    geometry_with(content, [secondary, main], width, text, theme)
+    let control_h = ButtonFace::height(ControlSize::Small, theme);
+    geometry_with(content, [secondary, main], control_h, width, text, theme)
 }
 
-/// [`geometry`] with the actions' widths given: `[secondary, main]`. The
-/// retained banner measures its own buttons.
+/// [`geometry`] with the actions' widths given, `[secondary, main]`, and the height its controls
+/// take (a finger's target on touch). The retained banner measures its own buttons.
 fn geometry_with(
     content: &BannerContent<'_>,
     actions: [Option<f64>; 2],
+    control_h: f64,
     width: f64,
     text: &mut TextRenderer,
     theme: &Theme,
 ) -> Geometry {
     let m = Metrics::of(theme);
-    let control_h = ButtonFace::height(ControlSize::Small, theme);
+    let dismiss_size = m.dismiss.max(control_h);
     let trailing = if content.dismissible {
-        m.dismiss + m.gap
+        dismiss_size + m.gap
     } else {
         0.0
     };
@@ -293,10 +298,10 @@ fn geometry_with(
             text_top + title_h.max(m.icon) / 2.0
         };
         Rect::new(
-            x1 - m.dismiss,
-            cy - m.dismiss / 2.0,
+            x1 - dismiss_size,
+            cy - dismiss_size / 2.0,
             x1,
-            cy + m.dismiss / 2.0,
+            cy + dismiss_size / 2.0,
         )
     });
     Geometry {
@@ -525,6 +530,8 @@ struct BannerBody {
     notice: BannerNotice,
     /// The measured widths of the banner's buttons: `[secondary, main]`.
     actions: [Option<f64>; 2],
+    /// The height the banner's buttons measure themselves at: a finger's target on touch.
+    control_h: Option<f64>,
     dismissible: bool,
     rect: Rect,
     theme: Theme,
@@ -542,7 +549,10 @@ impl BannerBody {
     }
 
     fn geometry(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> Geometry {
-        geometry_with(&self.content(), self.actions, width, text, theme)
+        let control_h = self
+            .control_h
+            .unwrap_or_else(|| ButtonFace::height(ControlSize::Small, theme));
+        geometry_with(&self.content(), self.actions, control_h, width, text, theme)
     }
 }
 
@@ -677,6 +687,9 @@ pub struct Banner {
     /// It is shown at rest from its first frame: what it stands in brings
     /// it in ([`Banner::arrives_in_place`]).
     arrives_in_place: bool,
+    /// The device pixels per logical pixel it was laid out at: its buttons, placed as it is
+    /// drawn, land on that grid.
+    device_scale: f64,
 }
 
 impl Banner {
@@ -703,6 +716,7 @@ impl Banner {
             body: BannerBody {
                 notice: notice.unwrap_or_else(|| BannerNotice::neutral("")),
                 actions: [None, None],
+                control_h: None,
                 dismissible: false,
                 rect: Rect::ZERO,
                 theme: Theme::dark(),
@@ -726,6 +740,7 @@ impl Banner {
             // First paint shows the banner at rest; only a change moves it.
             band: crate::widget::BandMotion::new(shown),
             arrives_in_place: false,
+            device_scale: 1.0,
         }
     }
 
@@ -980,9 +995,16 @@ impl Banner {
         let g = self.body.geometry(text, theme, rect.width());
         let dy = ((rect.height() - g.height) / 2.0).max(0.0);
         let origin = rect.origin().to_vec2() + vello::kurbo::Vec2::new(0.0, dy);
+        let scale = self.device_scale;
         let place = |button: &mut Option<Button>, at: Option<Rect>| {
             if let (Some(button), Some(at)) = (button, at) {
-                button.apply_layout_external(at + origin);
+                // On device pixels: centring the controls in the line leaves fractions.
+                let at = at + origin;
+                let corner = Point::new(
+                    (at.x0 * scale).round() / scale,
+                    (at.y0 * scale).round() / scale,
+                );
+                button.apply_layout_external(Rect::from_origin_size(corner, at.size()));
             }
         };
         place(&mut self.secondary, g.secondary_action);
@@ -1008,8 +1030,8 @@ impl Banner {
     }
 }
 
-/// A button's width as it measures itself.
-fn button_width(button: &mut Button, text: &mut TextRenderer) -> f64 {
+/// A button's width and height as it measures itself.
+fn button_size(button: &mut Button, text: &mut TextRenderer) -> (f64, f64) {
     let size = Widget::measure(
         button,
         taffy::Size {
@@ -1022,7 +1044,7 @@ fn button_width(button: &mut Button, text: &mut TextRenderer) -> f64 {
         },
         text,
     );
-    f64::from(size.width)
+    (f64::from(size.width), f64::from(size.height))
 }
 
 impl Widget for Banner {
@@ -1098,13 +1120,20 @@ impl Widget for Banner {
         text: &mut TextRenderer,
     ) -> bool {
         let mut changed = self.style_visibility(taffy, node);
-        // The body's height depends on the buttons' widths: measure them.
-        let widths = [
-            self.secondary.as_mut().map(|b| button_width(b, text)),
-            self.action.as_mut().map(|b| button_width(b, text)),
-        ];
-        if widths != self.body.actions {
+        // The body's height depends on the buttons' sizes: measure them. On touch they are a
+        // finger's target tall, and the banner makes room for that.
+        let secondary = self.secondary.as_mut().map(|b| button_size(b, text));
+        let main = self.action.as_mut().map(|b| button_size(b, text));
+        let dismiss = self.dismiss.as_mut().map(|b| button_size(b, text));
+        let widths = [secondary.map(|s| s.0), main.map(|s| s.0)];
+        let control_h = [secondary, main, dismiss]
+            .into_iter()
+            .flatten()
+            .map(|s| s.1)
+            .reduce(f64::max);
+        if widths != self.body.actions || control_h != self.body.control_h {
             self.body.actions = widths;
+            self.body.control_h = control_h;
             if let Some(&body) = self.nodes.first() {
                 let _ = taffy.mark_dirty(body);
             }
@@ -1124,6 +1153,7 @@ impl Widget for Banner {
             self.dirty = true;
         }
         self.layout_dirty = false;
+        self.device_scale = f64::from(super::layout::device_scale());
         // Its identity matched nothing: it takes up the banner that stood
         // here before (what it says changed), or it arrived.
         let visible = self.visible();

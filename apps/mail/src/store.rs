@@ -305,7 +305,7 @@ mod tests {
         assert_eq!(loaded[0].body, kept[0].body);
         assert!(store.load("other@x.example").is_empty());
         store.forget("me@x.example");
-        tilo_test_env::wait_until("the kept mail to be forgotten", || {
+        ui::testing::wait_until("the kept mail to be forgotten", || {
             store.load("me@x.example").is_empty()
         });
         assert!(Store::nowhere().load("me@x.example").is_empty());
@@ -324,7 +324,7 @@ mod tests {
         let id = with_file.id;
         let kept = store.save("me@x.example", vec![with_file.clone()]);
         assert_eq!(kept, [(id, 0)]);
-        let bytes = tilo_test_env::wait_for("the attachment to be kept", || {
+        let bytes = ui::testing::wait_for("the attachment to be kept", || {
             store.attachment("me@x.example", id, 0)
         });
         assert_eq!(bytes, b"%PDF-1.7");
@@ -333,7 +333,7 @@ mod tests {
             store.save("me@x.example", vec![with_file]).is_empty(),
             "what is kept is not written again"
         );
-        let loaded = tilo_test_env::wait_for("the attachment to load as kept", || {
+        let loaded = ui::testing::wait_for("the attachment to load as kept", || {
             Some(store.load("me@x.example")).filter(|loaded| {
                 loaded
                     .first()
@@ -344,7 +344,7 @@ mod tests {
 
         // Mail that is no longer kept takes its attachment files with it.
         assert!(store.save("me@x.example", vec![message(2)]).is_empty());
-        tilo_test_env::wait_until("the attachment to go with its mail", || {
+        ui::testing::wait_until("the attachment to go with its mail", || {
             store.attachment("me@x.example", id, 0).is_none()
         });
     }

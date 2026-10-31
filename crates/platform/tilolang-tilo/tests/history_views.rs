@@ -591,3 +591,68 @@ fn reading_one_entrys_body_diff_stays_within_a_fixed_budget_however_long_the_not
          {large_searches} in {large_chars}"
     );
 }
+
+/// The room calls Ada "Ada Lovelace"; an agent has no name but its kind. The history row shows
+/// the name the avatar beside it shows, never the id the record holds, and the agent reads as
+/// its kind and that it is one.
+struct Named;
+
+impl tilolang_tilo::runtime::NameHost for Named {
+    fn name(&self, who: &tilolang_tilo::runtime::Principal) -> String {
+        match who.0.as_str() {
+            "ada" => "Ada Lovelace".to_owned(),
+            other => tilolang_tilo::names::unnamed(other),
+        }
+    }
+}
+
+/// What the node showing each entry's who says, top to bottom: the label text beside the
+/// avatar, as the row shows it.
+fn labels(section: &UiNode) -> Vec<String> {
+    nodes(section)
+        .into_iter()
+        .filter(|node| node.kind == "ui.Text")
+        .filter_map(|node| match node.props.get("role") {
+            Some(Value::Text(role)) if role == "label" => text(node).map(str::to_owned),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_history_row_names_the_person_as_the_avatar_does_and_an_agent_as_its_name_and_kind() {
+    let (mut ada, notes, _) = two_people();
+    ada.host.runtime().set_name_host(Named);
+    let note = call(&ada, "ada", NOTES_APP, "new_note", vec![notes]);
+    call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "retitle",
+        vec![note.clone(), Value::text("Groceries")],
+    );
+    ada.commit();
+    call(
+        &ada,
+        AGENT,
+        NOTES_APP,
+        "retitle",
+        vec![note.clone(), Value::text("Shopping")],
+    );
+    ada.commit_in_run(AGENT, RUN, "Tidy the notes");
+    let mut editor = ada.host.open_resource(&target(&note), None).unwrap();
+    let section = history(&mut editor);
+    // The run's rename, newest, then Ada's own: the row reads the name the avatar shows, and
+    // the agent as its name plus that it is software.
+    assert_eq!(
+        labels(&section),
+        ["Helper (agent)", "Ada Lovelace"],
+        "the rows name people as the avatars do, never their ids"
+    );
+    assert!(
+        !labels(&section)
+            .iter()
+            .any(|label| label == "ada" || label == AGENT),
+        "no row shows a participant's id"
+    );
+}

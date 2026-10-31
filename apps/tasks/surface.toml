@@ -41,6 +41,7 @@ fields = [
   { path = "issues.*.comments.*.kind", type = { named = "MessageKind" }, readonly = true },
   { path = "issues.*.comments.*.run", type = "int", readonly = true },
   { path = "issues.*.comments.*.lookup", type = "text", readonly = true },
+  { path = "issues.*.comments.*.step", type = "text", readonly = true },
   { path = "issues.*.comments.*.incorporated", type = "bool", readonly = true },
   { path = "issues.*.author", type = "text", readonly = true },
   { path = "issues.*.created_ms", type = "int", readonly = true },
@@ -56,6 +57,7 @@ fields = [
   { path = "issues.*.run.epoch", type = "int" },
   { path = "issues.*.run.agent", type = "text" },
   { path = "issues.*.run.starter", type = "text" },
+  { path = "issues.*.run.delegation", type = { option = "text" } },
   { path = "issues.*.run.paused", type = { option = { named = "PausedRun" } }, stored = "record" },
   { path = "issues.*.run.paused.held", type = "int" },
   { path = "issues.*.run.paused.through", type = "int" },
@@ -199,6 +201,7 @@ params = [
   { name = "subject", required = false, schema = {} },
   { name = "quick", type = "bool", required = false, schema = { type = "boolean" } },
   { name = "chat", type = "bool", required = false, schema = { type = "boolean" } },
+  { name = "delegation", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -450,6 +453,24 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "record-step"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", type = "text", required = true, schema = { type = "string" } },
+  { name = "step", type = { named = "ProgramStep" }, required = true, schema = { type = "object", additionalProperties = false, properties = { answer = { type = "array", items = { type = "string" } }, changes = { type = "array", items = { type = "object", additionalProperties = false, properties = { action = { type = "string" }, resource = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } }, required = ["resource", "action"] } }, outcome = { oneOf = [{ type = "string", const = "done" }, { type = "string", const = "rejected" }, { type = "string", const = "preview" }, { type = "string", const = "asked" }, { type = "string", const = "failed" }] }, planned = { type = "array", items = { type = "object", additionalProperties = false, properties = { action = { type = "string" }, resource = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } }, required = ["resource", "action"] } }, previews = { type = "array", items = { type = "object", additionalProperties = false, properties = { action = { type = "string" }, invocation = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] }, summary = { type = "string" } }, required = ["invocation", "action"] } }, program = { type = "string" }, refs = { type = "array", items = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } } }, required = ["program", "outcome"] } },
+]
+
+[[resources.verbs]]
+id = "record-answer"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", type = "text", required = true, schema = { type = "string" } },
+  { name = "view", required = true, schema = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } },
+]
+
+[[resources.verbs]]
 id = "import"
 kind = "undoable"
 writes = ["record", "issues.*"]
@@ -577,6 +598,7 @@ fields = [
   { name = "kind", type = { named = "MessageKind" } },
   { name = "run", type = "int" },
   { name = "lookup", type = "text" },
+  { name = "step", type = "text" },
   { name = "incorporated", type = "bool" },
 ]
 
@@ -587,6 +609,8 @@ cases = [
   { name = "to_run" },
   { name = "from_run" },
   { name = "lookup" },
+  { name = "step" },
+  { name = "answer" },
 ]
 
 [[resources.types]]
@@ -613,6 +637,18 @@ fields = [
 ]
 
 [[resources.types]]
+name = "ProgramStep"
+fields = [
+  { name = "program", type = "text" },
+  { name = "outcome", type = { named = "StepOutcome" } },
+  { name = "answer", type = { list = "text" } },
+  { name = "refs", type = { list = "any" } },
+  { name = "changes", type = { list = { named = "StepChange" } } },
+  { name = "previews", type = { list = { named = "StepPreview" } } },
+  { name = "planned", type = { list = { named = "StepChange" } } },
+]
+
+[[resources.types]]
 name = "Question"
 fields = [
   { name = "id", type = "text" },
@@ -630,6 +666,7 @@ fields = [
   { name = "epoch", type = "int" },
   { name = "agent", type = "text" },
   { name = "starter", type = "text" },
+  { name = "delegation", type = { option = "text" } },
   { name = "paused", type = { option = { named = "PausedRun" } } },
   { name = "phase", type = { named = "RunPhase" } },
   { name = "model", type = { option = { named = "ModelChoice" } } },
@@ -693,6 +730,31 @@ cases = [
   { name = "in_review" },
   { name = "done" },
   { name = "cancelled" },
+]
+
+[[resources.types]]
+name = "StepChange"
+fields = [
+  { name = "resource", type = "any" },
+  { name = "action", type = "text" },
+]
+
+[[resources.types]]
+name = "StepOutcome"
+cases = [
+  { name = "done" },
+  { name = "rejected" },
+  { name = "preview" },
+  { name = "asked" },
+  { name = "failed" },
+]
+
+[[resources.types]]
+name = "StepPreview"
+fields = [
+  { name = "invocation", type = "any" },
+  { name = "action", type = "text" },
+  { name = "summary", type = "text" },
 ]
 
 [[resources.types]]
