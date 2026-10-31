@@ -271,8 +271,21 @@ pub fn run(args: &[String]) {
         let theme = match Theme::named(&name) {
             Some(theme) => theme,
             None if std::path::Path::new(&name).is_dir() => {
-                tilo_ui::theme_bundle::load_dir(std::path::Path::new(&name))
-                    .unwrap_or_else(|e| crate::registry::fatal(format!("{name}: {e}")))
+                let dir = std::path::Path::new(&name);
+                let document = std::fs::read_to_string(dir.join(tilo_ui::theme_bundle::DOCUMENT))
+                    .unwrap_or_else(|e| crate::registry::fatal(format!("{name}: {e}")));
+                tilo_ui::theme_bundle::load(&document, |set| {
+                    let path = dir.join(format!("{set}.wasm"));
+                    match std::fs::read(&path) {
+                        Ok(bytes) => Ok(Some(bytes)),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                        Err(e) => Err(tilo_ui::theme_bundle::BundleError::Read(format!(
+                            "{}: {e}",
+                            path.display()
+                        ))),
+                    }
+                })
+                .unwrap_or_else(|e| crate::registry::fatal(format!("{name}: {e}")))
             }
             None => crate::registry::fatal(format!("no theme named {name:?}")),
         };
