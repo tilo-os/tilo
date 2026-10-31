@@ -615,23 +615,6 @@ impl Listing {
         self.len().checked_sub(1).and_then(|last| self.get(last))
     }
 
-    /// The listing from `start` on, without reading the items before it: what a reader asking
-    /// where a run of items begins looks through, from the item where they last saw it rather
-    /// than from the first. A listing held reads as its own tail; one read page by page keeps
-    /// its pages and is asked from `start`, so the pages before it cost nothing.
-    pub fn from(&self, start: usize) -> Listing {
-        match &self.paged {
-            Some(paged) => Listing {
-                held: Vec::new(),
-                paged: Some(Rc::new(Tail {
-                    items: Rc::clone(paged),
-                    start,
-                })),
-            },
-            None => Listing::from_items(self.held.get(start..).unwrap_or_default().to_vec()),
-        }
-    }
-
     /// Where the item `id` is: `Some(None)` when it is not in the listing. A listing read page by
     /// page finds it by what orders it, reading a page or two; one that cannot gives `None`
     /// rather than read its pages one by one.
@@ -667,32 +650,6 @@ impl Listing {
     /// The item ids, as owned text.
     pub fn ids(&self) -> Vec<ItemId> {
         self.iter().map(|id| id.to_string()).collect()
-    }
-}
-
-/// A listing from `start` on: the items of `items` at `start` and after, read as they are
-/// asked for ([`Listing::from`]).
-struct Tail {
-    items: Rc<dyn PagedItems>,
-    start: usize,
-}
-
-impl std::fmt::Debug for Tail {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Tail")
-            .field("start", &self.start)
-            .field("len", &self.len())
-            .finish()
-    }
-}
-
-impl PagedItems for Tail {
-    fn len(&self) -> usize {
-        self.items.len().saturating_sub(self.start)
-    }
-
-    fn get(&self, index: usize) -> Option<Rc<str>> {
-        self.items.get(self.start.checked_add(index)?)
     }
 }
 
