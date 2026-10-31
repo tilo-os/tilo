@@ -93,6 +93,15 @@ pub enum PlanError {
     /// No Tilo launcher is installed.
     #[error("no tilo-launcher is installed, so Tilo apps cannot start here")]
     NoLauncher,
+    /// A record launch names something that is not a record id: starting the
+    /// app would open nothing, so the app is not started.
+    #[error("{record} is not a record of {app}")]
+    NotARecord { app: String, record: String },
+    /// Opening content needs the bytes read through the scope of the app
+    /// that handed them over, which a launch string does not carry: refuse
+    /// rather than start an app that shows nothing.
+    #[error("opening content in {app} is not available here")]
+    ContentUnavailable { app: String },
 }
 
 /// A launch as the process it starts.
@@ -170,11 +179,16 @@ impl Planned {
     pub fn of(launch: &Launch, context: &PlanContext<'_>) -> Result<Self, PlanError> {
         match launch {
             Launch::Package { app, open } => Self::package(app, open.as_ref(), context),
-            // Which record or content it opens is the workspace's business;
-            // the app itself is what starts.
-            Launch::Record { app, .. } | Launch::Content { app, .. } => {
-                Self::package(app, None, context)
+            // The record is opened by the app the launch names: the launch
+            // asks it for that record, and the app opens on it.
+            Launch::Record { app, record } => {
+                let open = crate::routing::record(record).ok_or_else(|| PlanError::NotARecord {
+                    app: app.clone(),
+                    record: record.clone(),
+                })?;
+                Self::package(app, Some(&open), context)
             }
+            Launch::Content { app, .. } => Err(PlanError::ContentUnavailable { app: app.clone() }),
             Launch::Host { desktop_id, open } => Self::host(desktop_id, open.as_ref(), context),
             Launch::Window { id } => Err(PlanError::NothingToStart(format!("window {id}"))),
             Launch::Crashed { app } => Err(PlanError::NothingToStart(app.clone())),
@@ -533,6 +547,64 @@ mod tests {
                 "com.spotify.Client"
             ]
         );
+    }
+
+    #[test]
+    fn a_record_launch_opens_the_app_on_that_record() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let room = Room::under(directory.path(), "room-9");
+        let environment = displays();
+        let context = context(&environment, &room);
+        let record = collaboration::record::RecordId::for_file("/home/you/Notes.note");
+        let launch = Launch::parse(&format!("record:so.tilo.notes:{}", record.as_str()))
+            .expect("a record launch");
+        let open = match launch {
+            Launch::Record { record, .. } => crate::routing::record(&record),
+            other => panic!("a record launch: {other:?}"),
+        };
+        let package = Package {
+            id: "so.tilo.notes",
+            title: "Notes",
+            manifest: Path::new("/home/you/.local/share/tilo/apps/so.tilo.notes/manifest.toml"),
+            payload_root: Path::new("/home/you/.local/share/tilo/apps/so.tilo.notes/payload"),
+        };
+        let planned = Planned::planned_package(
+            package,
+            PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
+            open.as_ref(),
+            &context,
+        )
+        .expect("a plan");
+        assert!(
+            planned
+                .args
+                .windows(2)
+                .any(|pair| pair[0] == "--open-uri" && pair[1] == record.uri()),
+            "the app is asked for the record itself: {:?}",
+            planned.args
+        );
+
+        // A record the launch string misspells is refused before any app is
+        // started, rather than starting one that would show nothing.
+        let launch = Launch::parse("record:so.tilo.notes:not a record").expect("a launch");
+        assert!(matches!(
+            Planned::of(&launch, &context),
+            Err(PlanError::NotARecord { .. })
+        ));
+        // A record it names correctly goes on to the app, and stops only
+        // where every launch would: the app is not installed here.
+        let launch =
+            Launch::parse(&format!("record:so.tilo.notes:{}", record.as_str())).expect("a launch");
+        assert!(matches!(
+            Planned::of(&launch, &context),
+            Err(PlanError::NoLauncher | PlanError::NotInstalled(_))
+        ));
+        let launch = Launch::parse(&format!("content:so.tilo.notes:{}", "0".repeat(64)))
+            .expect("a content launch");
+        assert!(matches!(
+            Planned::of(&launch, &context),
+            Err(PlanError::ContentUnavailable { .. })
+        ));
     }
 
     #[test]

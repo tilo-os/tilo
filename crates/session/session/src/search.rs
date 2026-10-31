@@ -29,7 +29,7 @@ use tilo_desktop_search::files_index::FilesIndex;
 use tilo_desktop_search::indexed::IndexedContent;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::catalogue::StoreCatalogue;
-use tilo_desktop_search::providers::files::{FileNames, Files};
+use tilo_desktop_search::providers::files::{FileNames, Files, file_uri};
 use tilo_desktop_search::providers::host_apps::{self, HostApps};
 use tilo_desktop_search::providers::jobs::{JobEntry, Jobs};
 use tilo_desktop_search::providers::places::{Continue, Place, RecentPlaces};
@@ -415,16 +415,24 @@ impl SessionSearch {
                 reason: format!("No workspace holds {id} any more"),
             });
         }
-        let opened = id.file_path().is_some().then(|| id.as_str().to_owned());
+        let path = id.file_path();
         records.bring_here(
             room,
             &package,
             RecordCheckout::new(id, RecordKind::new(kind)),
         );
-        match opened {
-            Some(uri) => self.with_apps(|apps| apps.open_uri(room, &uri)),
-            None => Ok(()),
+        // A record kept as a file is opened as well, as the document it is:
+        // `file:/…` is a record id, not a link, so it is the path the app is
+        // given. It opens after the reference is named, so a file that is
+        // gone leaves the record held and says so.
+        let Some(path) = path else {
+            return Ok(());
+        };
+        if !path.exists() {
+            return Err(DoorError::Failed(format!("{} is gone", path.display())));
         }
+        let uri = file_uri(&path);
+        self.with_apps(|apps| apps.open_uri(room, &uri))
     }
 
     fn with_apps(
@@ -518,6 +526,48 @@ mod tests {
     use tilo_desktop_search::providers::host_apps::{HOST_APPS_SOURCE, HostAppEntry};
 
     use super::*;
+
+    /// The action host a test session reaches: it notes what search opens in
+    /// which room, and carries out nothing else.
+    struct Opening(Rc<std::cell::RefCell<Vec<(String, String)>>>);
+
+    fn unsupported() -> DoorError {
+        DoorError::Unavailable {
+            code: "action_host_unavailable".into(),
+            reason: "The test host runs no actions".into(),
+        }
+    }
+
+    impl AppActions for Opening {
+        fn published(&self) -> Vec<PublishedActions> {
+            Vec::new()
+        }
+
+        fn jobs(&self) -> Vec<JobEntry> {
+            Vec::new()
+        }
+
+        fn invoke(
+            &self,
+            _: RemoteActionTarget,
+            _: serde_json::Map<String, serde_json::Value>,
+        ) -> Result<(), DoorError> {
+            Err(unsupported())
+        }
+
+        fn cancel(&self, _: &str, _: &str, _: &str) -> Result<(), DoorError> {
+            Err(unsupported())
+        }
+
+        fn open_uri(&self, room: &str, uri: &str) -> Result<(), DoorError> {
+            self.0.borrow_mut().push((room.to_owned(), uri.to_owned()));
+            Ok(())
+        }
+
+        fn start_host_app(&self, _: &str) -> Result<(), DoorError> {
+            Err(unsupported())
+        }
+    }
 
     /// The lists a test device has: an installed app and a host app for
     /// each line of `file`.
@@ -651,6 +701,77 @@ mod tests {
                 Err(DoorError::Unavailable { ref code, .. }) if code == "record_not_held"
             ),
             "a record no workspace names is refused: {refused:?}"
+        );
+    }
+
+    /// A record kept as a file is brought here and opened: the row a person
+    /// chose in search leaves the workspace naming the record *and* shows
+    /// them the document, in the app that takes its type.
+    #[test]
+    fn a_file_record_chosen_in_search_is_brought_here_and_opened() {
+        let home = tilo_test_env::TestHome::new().expect("a home");
+        let file = home.home().join("Budget.note");
+        std::fs::write(&file, "what the record holds").expect("the record's file");
+        let record = ui::record::RecordId::for_file(&file);
+        // The workspace that holds it names it in its index.
+        let directory = app_state::room_index_directory(home.data(), "so.tilo.notes", "elsewhere")
+            .expect("an index directory");
+        std::fs::create_dir_all(&directory).expect("the index's directory");
+        let mut index = automerge::AutoCommit::new();
+        assert!(ui::record::room::reference(
+            &mut index,
+            &record,
+            &ui::record::RecordKind::new("document")
+        ));
+        std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
+
+        let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let search = SessionSearch::new(
+            SearchOptions {
+                records: Some(crate::records::Records::of(home.data().to_path_buf())),
+                ..SearchOptions::default()
+            },
+            Some(Rc::new(Opening(Rc::clone(&opened)))),
+        );
+        let row = Target::Invoke(Box::new(
+            InvokeTarget::action(
+                DESKTOP_APP,
+                "here",
+                record_rows::RECORDS_RESOURCE,
+                record_rows::BRING_HERE,
+            )
+            .with_argument(record_rows::RECORD_PARAM, record.as_str())
+            .with_argument(record_rows::KIND_PARAM, "document")
+            .with_argument(record_rows::PACKAGE_PARAM, "so.tilo.notes"),
+        ));
+        search
+            .perform_checked("here", row, &mut |_| Ok(()))
+            .expect("the record is brought here and opened");
+        assert_eq!(
+            opened.borrow().as_slice(),
+            [("here".to_owned(), file_uri(&file))],
+            "the document is opened by its path, not by the record id's `file:/…`"
+        );
+
+        // The file going away leaves the record held and says what is gone.
+        std::fs::remove_file(&file).expect("the file goes");
+        let row = Target::Invoke(Box::new(
+            InvokeTarget::action(
+                DESKTOP_APP,
+                "here",
+                record_rows::RECORDS_RESOURCE,
+                record_rows::BRING_HERE,
+            )
+            .with_argument(record_rows::RECORD_PARAM, record.as_str())
+            .with_argument(record_rows::KIND_PARAM, "document")
+            .with_argument(record_rows::PACKAGE_PARAM, "so.tilo.notes"),
+        ));
+        assert!(
+            matches!(
+                search.perform_checked("here", row, &mut |_| Ok(())),
+                Err(DoorError::Failed(ref reason)) if reason.contains("is gone")
+            ),
+            "a record whose file is gone is still held, and the launch says why it does not open"
         );
     }
 

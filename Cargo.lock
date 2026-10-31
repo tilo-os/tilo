@@ -17589,6 +17589,7 @@ name = "tilo-app-launch"
 version = "0.1.0"
 dependencies = [
  "collab-types",
+ "collaboration",
  "launcher",
  "libc",
  "runtime-portal",

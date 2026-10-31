@@ -347,9 +347,9 @@ fn a_switch_and_a_choice_are_changed_from_search_and_the_choice_is_kept() {
 /// the workspace keeps one, and search reads them all the same way.
 const NOTES: &str = "so.tilo.notes";
 
-/// The record a row brings here: a file-backed document, as a workspace that
-/// is not this one names it.
-const QUARTERLY: &str = "file:/work/Quarterly plan.odt";
+/// The name the document a row brings here is kept under: a file-backed
+/// record, as a workspace that is not this one names it.
+const QUARTERLY: &str = "Quarterly plan.odt";
 
 /// The workspaces the desk shows, by room and by the name it gives it.
 fn workspaces(session: &Session) -> Vec<(String, String)> {
@@ -498,14 +498,17 @@ fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
         .into_iter()
         .find(|(room, _)| *room != here)
         .expect("a workspace that is not the one in front");
-    write_index(&home, NOTES, &other_room, &[(QUARTERLY, "document")]);
+    let document = home.home().join(QUARTERLY);
+    std::fs::write(&document, "what the plan says").unwrap();
+    let record = ui::record::RecordId::for_file(&document);
+    write_index(&home, NOTES, &other_room, &[(record.as_str(), "document")]);
 
     // The row says which workspace holds the record.
-    let row = find_row(&mut session, "quarterly", "Quarterly plan.odt");
+    let row = find_row(&mut session, "quarterly", QUARTERLY);
     assert_eq!(
         row.presentation
             .and_then(|presentation| presentation.detail),
-        Some(format!("in {other_name}, /work/Quarterly plan.odt")),
+        Some(format!("in {other_name}, ~/{QUARTERLY}")),
         "the row says the record is held in a workspace that is not this one"
     );
 
@@ -521,7 +524,8 @@ fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
     });
     assert!(
         within(|| known_in(NOTES, &here).contains(&format!(
-            "{QUARTERLY} {}",
+            "{} {}",
+            record.as_str(),
             ui::record::RecordKind::new("document").as_str()
         ))),
         "this workspace holds the record: {:?}",
@@ -529,10 +533,13 @@ fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
     );
     // A record whose identity is a path is also opened, so bringing it here
     // and opening it are one gesture; the file opens in the workspace the
-    // reference went into.
+    // reference went into, by the address an app takes a document by.
     assert_eq!(
         host.opened.borrow().clone(),
-        vec![(here, QUARTERLY.to_owned())],
+        vec![(
+            here,
+            tilo_desktop_search::providers::files::file_uri(&document)
+        )],
         "the file the record is opens in this workspace"
     );
 }
