@@ -390,8 +390,15 @@ impl Clipboard {
     /// somewhere else, without keeping them: a dictated transcript lives in
     /// the dictation's private draft until they discard it, not in the
     /// clipboard's history. False when the clipboard did not take it.
-    pub(crate) fn copy_for_person(&self, compositor: &mut Compositor, mime: &str, bytes: Vec<u8>) -> bool {
-        if let Err(error) = compositor.set_selection(Selection::Clipboard, vec![(mime.to_owned(), bytes)]) {
+    pub(crate) fn copy_for_person(
+        &self,
+        compositor: &mut Compositor,
+        mime: &str,
+        bytes: Vec<u8>,
+    ) -> bool {
+        if let Err(error) =
+            compositor.set_selection(Selection::Clipboard, vec![(mime.to_owned(), bytes)])
+        {
             tracing::warn!(%error, "the transcript could not be put on the clipboard");
             return false;
         }
