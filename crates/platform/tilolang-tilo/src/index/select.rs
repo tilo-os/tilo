@@ -5,8 +5,9 @@
 //! others are checked item by item, their fields read from the index. A query that one exact
 //! run answers (one value, a range, presence, a named filter) in the collection's order, or in
 //! the order of the column it ranges over, is read page by page as the run: its first page
-//! costs the directory and the pages it shows, whatever the collection's size. Any other is
-//! read whole and sorted.
+//! costs the directory and the pages it shows, whatever the collection's size, and what it
+//! leaves to check is checked as its pages fill ([`Filtered`]). Any other is read whole and
+//! sorted.
 
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -20,7 +21,7 @@ use super::columns::{
 };
 use super::derive::{column_field, member_list};
 use super::lists::Pages;
-use super::merged::{Base, Merged};
+use super::merged::{Base, Filtered, Keep, Merged};
 use super::view::{View, child, index_error};
 use super::{IndexError, Snapshot, TYPE};
 use crate::schema::{ColumnKind, TypeSchema};
@@ -46,7 +47,9 @@ fn conjuncts(pred: Option<&Pred>) -> Result<Option<Vec<&Pred>>, StoreError> {
     Ok(Some(out))
 }
 
-/// The conjunct a column answers best, and how: one exact run before anything else.
+/// The conjunct a column answers best, and how: one exact run before anything else, and
+/// whether that conjunct is a set's membership (whose run an item stands in once, so it is read
+/// page by page like a value's run).
 fn choose(schema: &TypeSchema, conj: &[&Pred], whole_type: bool) -> Option<(usize, Vec<Access>)> {
     let id = |f: &FieldRead| f.spec.id.clone();
     let mut found: Option<(usize, Vec<Access>)> = None;
@@ -54,7 +57,13 @@ fn choose(schema: &TypeSchema, conj: &[&Pred], whole_type: bool) -> Option<(usiz
         let Some(access) = columns::access(schema, c, &id, whole_type) else {
             continue;
         };
-        let single = matches!(access.as_slice(), [a] if a.runs.len() == 1 && a.exact && !a.repeats);
+        // A run of one value in a column an item stands in once, or a membership in a set
+        // (one entry per member, the run of the ones holding it): both name the items a
+        // single value puts in, so both are read page by page.
+        let single = matches!(
+            access.as_slice(),
+            [a] if a.runs.len() == 1 && a.exact && (!a.repeats || membership(c))
+        );
         if single {
             return Some((at, access));
         }
@@ -63,6 +72,12 @@ fn choose(schema: &TypeSchema, conj: &[&Pred], whole_type: bool) -> Option<(usiz
         }
     }
     found
+}
+
+/// Whether `pred` is `f.contains(v)` of a set: the one shape whose run of a value names the
+/// items holding it and nothing else, though a set's items may stand in several runs.
+fn membership(pred: &Pred) -> bool {
+    matches!(pred, Pred::Has(..))
 }
 
 /// The predicate of the conjuncts left to check item by item.
@@ -149,46 +164,28 @@ impl View<'_> {
         let touched = self.changed_items((resource, field), named, &read)?;
         let chosen = choose(schema, &conj, false);
         let order_column = order.and_then(|o| schema.column_of(&o.field));
-        // A run read page by page: one exact run and nothing left to check, in the
-        // collection's order or the order of the column it runs over.
-        if let Some((at, access)) = &chosen
+        // A run read page by page: one exact run, in the collection's order or the order of
+        // the column it runs over. The conjuncts it leaves are checked as its pages fill
+        // ([`Filtered`]), so a filter of several conjuncts costs the entries its first page
+        // reads, not the run's length.
+        let run = if let Some((at, access)) = &chosen
             && let [a] = access.as_slice()
             && let [run] = a.runs.as_slice()
             && a.exact
-            && !a.repeats
-            && conj.len() == 1
+            && (!a.repeats || membership(conj.get(*at).copied().unwrap_or(&Pred::Const(false))))
         {
-            let column = schema.column(&a.column);
-            let descending = order.is_some_and(|o| o.descending);
-            let in_order = match (order, order_column) {
-                (None, _) => columns::is_value_run(run),
-                (Some(_), Some(oc)) => {
-                    column.is_some_and(|c| c.name == oc.name) && ordered(oc.kind)
-                }
-                (Some(_), None) => false,
-            };
-            if in_order {
-                let list = scope_list(resource, field, &a.column);
-                let pages = self.snapshot.pages(&list).map_err(index_error)?;
-                let (start, end) =
-                    run_bounds(self.snapshot, (&list, &pages), column, run).map_err(index_error)?;
-                let base = Base::Slice {
-                    pages,
-                    start,
-                    end,
-                    reversed: descending,
-                };
-                let (added, removed) = self.moved_in_run(
-                    (resource, field),
-                    schema,
-                    (&a.column, conj.get(*at).copied()),
-                    &touched,
-                )?;
-                let locate = self.locate((resource, field), Some((&schema.id, &a.column)));
-                return Ok(Listing::paged(Rc::new(
-                    Merged::new(base, added, &removed).locating(locate),
-                )));
-            }
+            self.paged_run(
+                (resource, field),
+                schema,
+                (&conj, *at, a, run),
+                (order, order_column),
+                (&touched, evaluated),
+            )?
+        } else {
+            None
+        };
+        if let Some(listing) = run {
+            return Ok(listing);
         }
         // Every item in an order a column keeps.
         if conj.is_empty() {
@@ -227,6 +224,72 @@ impl View<'_> {
         )
     }
 
+    /// [`Self::query`]'s run read page by page, when the chosen run is in the collection's order
+    /// or the order of the column it runs over: the entries of that run whose items the other
+    /// conjuncts hold of, `None` when the run is not read that way (another order, or the
+    /// conjunct it answered is not one exact run).
+    fn paged_run(
+        &self,
+        (resource, field): (&str, &str),
+        schema: &TypeSchema,
+        (conj, at, a, run): (&[&Pred], usize, &Access, &(String, String)),
+        (order, order_column): (Option<&Order>, Option<&crate::schema::ColumnSchema>),
+        (touched, evaluated): (&std::collections::BTreeSet<String>, &Cell<u64>),
+    ) -> Result<Option<Listing>, StoreError> {
+        let column = schema.column(&a.column);
+        let descending = order.is_some_and(|o| o.descending);
+        let in_order = match (order, order_column) {
+            (None, _) => columns::is_value_run(run),
+            (Some(_), Some(oc)) => column.is_some_and(|c| c.name == oc.name) && ordered(oc.kind),
+            (Some(_), None) => false,
+        };
+        if !in_order {
+            return Ok(None);
+        }
+        let list = scope_list(resource, field, &a.column);
+        let pages = self.snapshot.pages(&list).map_err(index_error)?;
+        let (start, end) =
+            run_bounds(self.snapshot, (&list, &pages), column, run).map_err(index_error)?;
+        let base = Base::Slice {
+            pages,
+            start,
+            end,
+            reversed: descending,
+        };
+        let (added, removed) = self.moved_in_run(
+            (resource, field),
+            schema,
+            (&a.column, conj.get(at).copied()),
+            touched,
+        )?;
+        let locate = self.locate((resource, field), Some((&schema.id, &a.column)));
+        let run = Merged::new(base, added, &removed);
+        let Some(residual) = rest(conj, Some(at)) else {
+            return Ok(Some(Listing::paged(Rc::new(run.locating(locate)))));
+        };
+        // The listing outlives this read, so it holds the snapshot and the schema itself: a
+        // check of the run reads the index's fields, which hold the open writes too.
+        let Some(keep_schema) = crate::schema::lookup(&schema.id) else {
+            return Ok(None);
+        };
+        let evaluated = evaluated.clone();
+        let resource = resource.to_owned();
+        let snapshot = std::sync::Arc::clone(self.snapshot);
+        let overlay = std::sync::Arc::clone(self.overlay);
+        let keep: Keep = Box::new(move |id: &str| {
+            evaluated.set(evaluated.get().saturating_add(1));
+            let view = View {
+                snapshot: &snapshot,
+                overlay: &overlay,
+            };
+            view.holds(&child(&resource, id), keep_schema, &residual)
+                .unwrap_or(false)
+        });
+        Ok(Some(Listing::paged(Rc::new(
+            Filtered::new(run, keep, end.saturating_sub(start)).locating(locate),
+        ))))
+    }
+
     /// [`Self::query`] read whole: the candidates the chosen access reads (every item when
     /// none), checked against what is left, then ordered. One the open writes touched is
     /// checked against every conjunct, as it is now.
@@ -241,7 +304,10 @@ impl View<'_> {
         let mut candidates: Vec<(String, Rc<str>, bool)> = Vec::new();
         let mut residual_skip = None;
         if let Some((at, access)) = chosen {
-            if access.iter().all(|a| a.exact) {
+            let membership = conj.get(*at).copied().is_some_and(membership);
+            if access.iter().all(|a| a.exact)
+                && (access.first().is_none_or(|a| !a.repeats) || membership)
+            {
                 residual_skip = Some(*at);
             }
             let mut seen: HashSet<Rc<str>> = HashSet::new();

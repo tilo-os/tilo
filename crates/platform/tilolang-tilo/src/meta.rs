@@ -140,6 +140,15 @@ fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
     if let Some(default) = &field.default {
         schema = schema.with_default(default.clone());
     }
+    // Only text names a record: a non-text field declared `title` says nothing, as the row
+    // it would name could not read it.
+    if schema.kind.holds_text() {
+        schema = match field.role.as_deref() {
+            Some("title") => schema.titled(),
+            Some("body") => schema.bodied(),
+            _ => schema,
+        };
+    }
     schema
 }
 
@@ -213,7 +222,11 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
                 parse_ty(&field.ty, &meta.app),
                 Ok(Ty::List(_) | Ty::Tuple(_) | Ty::Map(_) | Ty::Result(..) | Ty::Principal)
             ),
-            MergeKind::Counter => true,
+            // A counter is a column of its value. A set's members are one run per member
+            // (`columns::values`), so membership and presence are runs of its column without
+            // any `filter` naming it: `boxes.contains("inbox")` finds the conversations in one
+            // box by one run, not one by one.
+            MergeKind::Counter | MergeKind::Set => true,
             _ => false,
         };
         // optional-decode: a loaded package's field types all parse (`unreadable_types`).
@@ -228,7 +241,7 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
             name: schema.id.clone(),
             field: Some(schema.id.clone()),
             kind,
-            many: false,
+            many: schema.kind == MergeKind::Set,
             pred: None,
             filter: false,
             cases,

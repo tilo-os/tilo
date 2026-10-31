@@ -3679,7 +3679,7 @@ pub use conversation::{
     ComposerRule, ConversationClock, ConversationDay, ConversationEntryProps, ConversationLine,
     ConversationList, ConversationListProps, ConversationRole, DayBreaks, DayDividerFace,
     DeliveryFace, DeliveryState, DeliveryStep, DescribedConversationList, DraftBook, ListCache,
-    ListFace, ListWork, SavedCopy, UploadProgress,
+    ListFace, ListWork, SavedCopy, UnreadDivider, UnreadDividerProps, UploadProgress,
 };
 pub mod card;
 mod tone;

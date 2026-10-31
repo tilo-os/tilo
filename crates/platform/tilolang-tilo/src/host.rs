@@ -1092,9 +1092,23 @@ impl Host {
     /// something in a field the type now keeps `(previously)` (or, for a type without such a
     /// field, that the migration has not run on), as an action of the package version
     /// ([`crate::authority::migration_principal`]), which records in the same change that it
-    /// ran. Only the room's origin calls it (`Instance::set_origin`). Returns how many ran. A migration that is
-    /// refused or fails leaves its resource as it was, to be tried again the next time.
+    /// ran. A field the new build keeps as `RichText` where the old one kept `Text` has its
+    /// text carried into rich text first, the same words ([`crate::store`]'s
+    /// `upgrade_plain_text`). Only the room's origin calls it (`Instance::set_origin`). Returns
+    /// how many migrations ran. A migration that is refused or fails leaves its resource as it
+    /// was, to be tried again the next time.
     pub fn migrate(&self) -> usize {
+        // The words of a field that became rich text, before any migration reads it, each
+        // record's change committed under the package version's migration principal.
+        for package in self.packages() {
+            let by =
+                crate::authority::migration_principal(&package.meta.app, &package.meta.module_hash);
+            self.inner.store.upgrade_plain_text(
+                &package.meta.app,
+                &package.meta.module_hash,
+                &by.0,
+            );
+        }
         let mut ran: usize = 0;
         for package in self.packages() {
             for migration in package.meta.migrations() {

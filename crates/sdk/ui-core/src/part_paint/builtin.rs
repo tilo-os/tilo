@@ -47,9 +47,6 @@ pub const REFRACTION_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=32.0;
 /// surface, not light on this one.
 pub const LIGHT_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=0.5;
 
-/// The light glass catches on its rim and across its body: daylight.
-pub const LIGHT: Color = Color::WHITE;
-
 static DEFAULT_SET: LazyLock<PainterSet> =
     LazyLock::new(|| PainterSet::new(DEFAULT, Arc::new(Stock { light: false })));
 static GLASS_SET: LazyLock<PainterSet> =
@@ -96,6 +93,8 @@ struct Light {
     refraction: f32,
     edge_highlight: f32,
     specular: f32,
+    /// The light the surface catches, from the theme's tokens.
+    catch: Color,
 }
 
 impl Stock {
@@ -105,12 +104,14 @@ impl Stock {
                 refraction: 0.0,
                 edge_highlight: 0.0,
                 specular: 0.0,
+                catch: tokens.light,
             };
         }
         Light {
             refraction: tokens.param("refraction", 0.0),
             edge_highlight: tokens.param("edge_highlight", 0.0),
             specular: tokens.param("specular", 0.0),
+            catch: tokens.light,
         }
     }
 }
@@ -239,8 +240,8 @@ fn body(size: Size, tokens: &PartTokens) -> RoundedRect {
     )
 }
 
-/// The sheen a glass body catches across its upper body: its light at
-/// `specular` opacity at the top-left, gone past the body's middle.
+/// The sheen a glass body catches across its upper body: the theme's light
+/// at `specular` opacity at the top-left, gone past the body's middle.
 /// Nothing at `0`.
 fn sheen(body: &RoundedRect, light: Light) -> Option<Op> {
     let rect = body.rect();
@@ -256,15 +257,15 @@ fn sheen(body: &RoundedRect, light: Light) -> Option<Op> {
             stops: vec![
                 Stop {
                     offset: 0.0,
-                    color: LIGHT.with_alpha(specular),
+                    color: light.catch.with_alpha(specular),
                 },
                 Stop {
                     offset: 0.45,
-                    color: LIGHT.with_alpha(specular * 0.35),
+                    color: light.catch.with_alpha(specular * 0.35),
                 },
                 Stop {
                     offset: 1.0,
-                    color: LIGHT.with_alpha(0.0),
+                    color: light.catch.with_alpha(0.0),
                 },
             ],
         },
@@ -291,15 +292,15 @@ fn rim(body: &RoundedRect, light: Light) -> Option<Op> {
             stops: vec![
                 Stop {
                     offset: 0.0,
-                    color: LIGHT.with_alpha(edge_highlight),
+                    color: light.catch.with_alpha(edge_highlight),
                 },
                 Stop {
                     offset: 0.5,
-                    color: LIGHT.with_alpha(edge_highlight * 0.12),
+                    color: light.catch.with_alpha(edge_highlight * 0.12),
                 },
                 Stop {
                     offset: 1.0,
-                    color: LIGHT.with_alpha(edge_highlight * 0.35),
+                    color: light.catch.with_alpha(edge_highlight * 0.35),
                 },
             ],
         },

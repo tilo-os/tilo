@@ -1249,6 +1249,15 @@ impl Widget for RichTextLine {
         self.dirty.styled_layout || self.emoji_moved() || self.inner.is_layout_dirty()
     }
 
+    /// The inner field is no child, so it takes the host's inputs from here: a coarse pointer
+    /// makes the field a finger's target tall, as any field is.
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.inner.set_interaction_environment(environment);
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = crate::doc::document_ref(state, path);
         // Realigning the mark-diff snapshot here keeps a remotely-synced edit

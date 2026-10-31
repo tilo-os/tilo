@@ -2271,3 +2271,35 @@ fn a_send_pressed_in_the_frame_of_the_last_keystroke_sends_it_too() {
         "the message has the keystroke typed in the frame of the press"
     );
 }
+
+/// Every node the window composes is one the toolkit describes or the host
+/// builds: the tree a seed puts in a fresh window goes through the same
+/// validator the window applies to each batch an app sends, so a component the
+/// catalogue lacks fails here rather than blanking the window.
+#[test]
+fn the_composed_tree_passes_the_window_s_validator() {
+    use tilo_render_protocol::patch::validate::{PatchLimits, Validator};
+    for app in ["chat", "notes", "tasks", "today"] {
+        let room = Room::seeded(app);
+        let tree = room.composed();
+        let validator = Validator::new(tilo_ui_host::adapter::catalogue(), PatchLimits::default());
+        assert!(
+            validator.node(&tree, 0).is_ok(),
+            "{app}: {}",
+            validator
+                .node(&tree, 0)
+                .err()
+                .map(|refused| refused.to_string())
+                .unwrap_or_default()
+        );
+    }
+    // And the validator does refuse an undescribed component: the check above is not vacuous.
+    let mut probe = Room::seeded("chat").composed();
+    probe.kind = "ui.NoSuchPart".to_owned();
+    assert!(
+        Validator::new(tilo_ui_host::adapter::catalogue(), PatchLimits::default())
+            .node(&probe, 0)
+            .is_err(),
+        "an undescribed component is refused"
+    );
+}

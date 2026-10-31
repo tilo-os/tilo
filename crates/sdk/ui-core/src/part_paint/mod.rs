@@ -151,6 +151,7 @@ pub fn part_tokens(
         ground,
         raised: colors.lift_on(ground, 1.0),
         accent: colors.intent.accent,
+        light: colors.light,
         radius,
         border_width,
         border,

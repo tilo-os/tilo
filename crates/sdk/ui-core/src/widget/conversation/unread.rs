@@ -8,6 +8,8 @@
 
 use vello::kurbo::Rect;
 
+use crate::component::Component;
+
 use crate::chrome::nav_row_height;
 use crate::paint::PaintCtx;
 use crate::theme::Theme;
@@ -67,18 +69,23 @@ impl UnreadDividerFace {
 /// The divider as a widget, for a list built of widgets: a band across its column with its
 /// label at the trailing end, over the first line the reader had not read.
 ///
-/// It is a part of a transcript, never a component an app names: it is not in the toolkit's
-/// catalogue, and `ui.VirtualList(transcript: true)` places it from what the app says is
-/// unread, so every conversation draws the same one.
-#[crate::component::not_a_component(
-    part,
-    "the divider over the first unread line of a transcript, which `ui.VirtualList(transcript: true)` draws"
-)]
+/// A described component, so a host that validates what an app sends builds it: the tilolang
+/// runtime places one per transcript over the row of the item the app named, and the host
+/// knows it from the toolkit's catalogue as it knows every other component.
+#[derive(Component, Default)]
+#[component(name = "UnreadDivider", role = "Group", label = "name")]
+pub struct UnreadDividerProps {
+    /// What it is called, for assistive technology; empty for the toolkit's own word.
+    pub name: Option<String>,
+}
+
+/// [`UnreadDividerProps`], built: an unread divider over a row.
 pub struct UnreadDivider {
     rect: Rect,
     /// It was drawn, and shows the same since: a divider never changes, so it repaints only
     /// where it moved.
     drawn: bool,
+    name: String,
 }
 
 impl UnreadDivider {
@@ -87,13 +94,32 @@ impl UnreadDivider {
         Self {
             rect: Rect::ZERO,
             drawn: false,
+            name: String::new(),
         }
+    }
+
+    /// The height a divider takes, in `theme`: the same as the day divider's band.
+    #[must_use]
+    pub fn height(theme: &Theme) -> f64 {
+        UnreadDividerFace::height(theme)
     }
 }
 
 impl Default for UnreadDivider {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl crate::component::Described for UnreadDivider {
+    type Props = UnreadDividerProps;
+
+    fn from_props(_key: &str, props: UnreadDividerProps) -> Self {
+        Self {
+            rect: Rect::ZERO,
+            drawn: false,
+            name: props.name.unwrap_or_default(),
+        }
     }
 }
 
@@ -150,14 +176,11 @@ impl crate::widget::Widget for UnreadDivider {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        Some(AccessNode::new(Role::Heading { level: 3 }).with_name(UnreadDividerFace::label()))
-    }
-}
-
-impl UnreadDivider {
-    /// The height a divider takes, in `theme`: the same as the day divider's band.
-    #[must_use]
-    pub fn height(theme: &Theme) -> f64 {
-        UnreadDividerFace::height(theme)
+        let name = if self.name.is_empty() {
+            UnreadDividerFace::label()
+        } else {
+            self.name.clone()
+        };
+        Some(AccessNode::new(Role::Heading { level: 3 }).with_name(name))
     }
 }

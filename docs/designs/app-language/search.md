@@ -114,6 +114,15 @@ and three rules cover everything:
   is asked, and the index answers it as the run of that value in the field's column. A board
   showing each column's cards and count reads, per lane, the run's bounds and the page it
   starts on, never every card; no separate grouping syntax is needed.
+- **A filter of several tests reads its run by pages.** One test that a column answers as a
+  run of one value (an equality, a presence, a named filter, `boxes.contains("inbox")` in a
+  set) chooses the run; the other tests in the conjunction (`snoozed_until <= now`,
+  `not muted`) are checked item by item as those pages fill. Filling a page reads the run's
+  pages until it holds a page's worth of items the others hold of, so the first page costs
+  what it examines, not the run's length, and a change that brings one item in (a snooze
+  ending, at the moment it ends) reads the item's own pages. Until the whole run is checked
+  the list's length is the run's count — the most it can have — and says it is up to that
+  many rather than claim it exact.
 - **Versions are indexed too.** Per resource the list index keeps its first and last version
   (who, when, which action: `created(r)`, `updated(r)`), taken change by change from the log,
   and per collection a column of each by time. `items.sort_by(x -> updated(x), desc)` then

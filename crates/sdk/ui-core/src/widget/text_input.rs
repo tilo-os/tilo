@@ -4305,7 +4305,8 @@ impl TextInput {
     }
 
     /// The least height of a wrapping chrome'd field: one band, or
-    /// `min_lines` lines and the vertical inset.
+    /// `min_lines` lines and the vertical inset; a coarse pointer makes it at
+    /// least the touch target, as a single-line field's band is.
     fn multiline_floor(&self, scale: f32) -> f64 {
         if self.plain {
             return 0.0;
@@ -4313,7 +4314,13 @@ impl TextInput {
         let line =
             f64::from(self.effective_font_size() * self.scale_for(scale) * LINE_HEIGHT_RATIO);
         let lines = f64::from(u32::try_from(self.min_lines).unwrap_or(u32::MAX));
-        (lines * line + 2.0 * self.multiline_padding_y()).max(self.band_height)
+        let band = if self.interaction.supports_hover() {
+            self.band_height
+        } else {
+            self.band_height
+                .max(f64::from(self.interaction.minimum_target()))
+        };
+        (lines * line + 2.0 * self.multiline_padding_y()).max(band)
     }
 
     fn masked(&self) -> bool {
