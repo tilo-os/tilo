@@ -5617,7 +5617,6 @@ pub(super) fn left_click(wp: &mut Editor, state: &mut ui::State, pt: Point) {
     Dispatch::new()
         .doc(&mut state.doc)
         .path(&state.root)
-        .handled(moved.handled)
         .focus_target(moved.focus_target)
         .send(&mut Lent(wp), &ui::synthetic_input::mouse_press());
 }
@@ -7591,7 +7590,6 @@ fn the_colour_picker_applies_and_cancels_previews() {
         Dispatch::new()
             .doc(&mut state.doc)
             .path(&state.root)
-            .handled(moved.handled)
             .focus_target(moved.focus_target)
             .send(&mut Lent(wp), &ui::synthetic_input::mouse_press());
         let style_after = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
