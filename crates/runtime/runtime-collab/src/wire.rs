@@ -136,6 +136,25 @@ pub enum Operation {
     Unsubscribe { subscription: u64 },
     /// Close a handle, ending its subscriptions.
     Close { handle: Handle },
+    /// The session's published resources: what its services read and the
+    /// actions that change them, answered as [`Reply::Opened`] with the
+    /// handle the other session calls name. The session is the device's,
+    /// not a room's, so no channel is joined for it.
+    Services,
+    /// `resource`'s reading now, answered as [`Reply::Snapshot`].
+    Snapshot { services: Handle, resource: String },
+    /// Receive `resource`'s reading now and each time it changes. The
+    /// call's id names the subscription in every [`Event::Reading`] it
+    /// delivers.
+    Watch { services: Handle, resource: String },
+    /// Invoke `action` of `resource` with `arguments` (a JSON object, empty
+    /// for none), answered as [`Reply::Receipt`].
+    Invoke {
+        services: Handle,
+        resource: String,
+        action: String,
+        arguments: Vec<u8>,
+    },
 }
 
 /// Who joins which channel.
@@ -492,6 +511,27 @@ pub enum Reply {
         ops: Vec<Vec<u8>>,
         exhausted: bool,
     },
+    /// A [`Operation::Snapshot`]: the services' revision and `resource`'s
+    /// reading as JSON, `None` when no service publishes it.
+    Snapshot {
+        revision: u64,
+        reading: Option<Vec<u8>>,
+    },
+    /// What a [`Operation::Invoke`] did.
+    Receipt(Receipt),
+}
+
+/// What invoking an action of one of the session's published resources did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Receipt {
+    /// It finished on return: the `tilo_actions::ActionOutput` as JSON.
+    Done(Vec<u8>),
+    /// It was taken and runs on the device; its result lands in the
+    /// resource's reading.
+    Accepted,
+    /// The door refused it: the refusal's code (`unknown_action`,
+    /// `unavailable`, `confirmation_required`, ...), and what it says.
+    Refused { code: String, message: String },
 }
 
 /// One event a subscription delivers.
@@ -534,6 +574,13 @@ pub enum Event {
     Realtime(Vec<u8>),
     ApprovedCheck(CheckProgress),
     WorkspaceControl(WorkspaceControlEvent),
+    /// A watched resource's reading changed: it as JSON, and the services'
+    /// revision it was read at. `None` once no service publishes it.
+    Reading {
+        resource: String,
+        revision: u64,
+        reading: Option<Vec<u8>>,
+    },
 }
 
 /// One change of a channel's context.
@@ -609,5 +656,44 @@ mod tests {
         let bytes = FRAMING.encode_value(&event).unwrap();
         let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
         assert_eq!(read, event);
+    }
+
+    #[test]
+    fn the_session_calls_and_their_answers_round_trip() {
+        let invoke = Call {
+            id: 4,
+            request: Operation::Invoke {
+                services: Handle(1),
+                resource: "sound".into(),
+                action: "set-volume".into(),
+                arguments: br#"{"level":0.4}"#.to_vec(),
+            },
+        };
+        let bytes = FRAMING.encode_value(&invoke).unwrap();
+        let read: Call = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
+        assert_eq!(read, invoke);
+
+        let reading = HostFrame::Event {
+            subscription: 4,
+            event: Event::Reading {
+                resource: "sound".into(),
+                revision: 9,
+                reading: Some(b"{}".to_vec()),
+            },
+        };
+        let bytes = FRAMING.encode_value(&reading).unwrap();
+        let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
+        assert_eq!(read, reading);
+
+        let receipt = HostFrame::Reply {
+            id: 4,
+            result: Ok(Reply::Receipt(Receipt::Refused {
+                code: "unavailable".into(),
+                message: "there is no sound output".into(),
+            })),
+        };
+        let bytes = FRAMING.encode_value(&receipt).unwrap();
+        let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
+        assert_eq!(read, receipt);
     }
 }

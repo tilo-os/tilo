@@ -10,8 +10,8 @@ use runtime_portal::NotAvailable;
 
 use crate::wire::{
     Changes, ContextUpdate, Event, Handle, InvocationCall, Join, LiveActivityCall, Operation,
-    Participant, Publication, Read, Reply, Report, Service, SettingsCall, TaskCall, TaskStep,
-    Topic,
+    Participant, Publication, Read, Receipt, Reply, Report, Service, SettingsCall, TaskCall,
+    TaskStep, Topic,
     client::{Answerer, Client, Failure, Subscription},
 };
 use crate::{
@@ -365,6 +365,19 @@ impl CollabClient {
                 handle,
             }),
             descriptors: self.descriptors.clone(),
+        }
+    }
+
+    /// The session's published resources: what its services read and the
+    /// actions that change them, opened on this connection the first time
+    /// one is used. No channel is joined for them — they are the device's,
+    /// not a room's — so an app reads the sound, the displays or the
+    /// settings whether or not it holds a room.
+    #[must_use]
+    pub fn services(&self) -> ServicesHandle {
+        ServicesHandle {
+            client: self.client.clone(),
+            handle: Arc::new(tokio::sync::OnceCell::new()),
         }
     }
 
@@ -1885,12 +1898,173 @@ impl WorkspaceControlHandle {
     }
 }
 
+/// The session's published resources on this connection: what its services
+/// read and the actions that change them. Cheap to clone; the handle it
+/// opens lives as long as the connection.
+#[derive(Clone)]
+pub struct ServicesHandle {
+    client: Client,
+    handle: Arc<tokio::sync::OnceCell<Handle>>,
+}
+
+impl ServicesHandle {
+    /// The session's handle on its published resources, opened on first use.
+    async fn handle(&self) -> Result<Handle, NotAvailable> {
+        let handle = self
+            .handle
+            .get_or_try_init(|| async {
+                match self
+                    .client
+                    .call(Operation::Services)
+                    .await
+                    .map_err(failure)?
+                {
+                    Reply::Opened(handle) => Ok(handle),
+                    other => Err(unexpected(&other)),
+                }
+            })
+            .await?;
+        Ok(*handle)
+    }
+
+    /// What `resource` reads now; `None` when no service publishes it.
+    ///
+    /// # Errors
+    ///
+    /// The host refuses the read or the connection fails.
+    pub async fn snapshot(&self, resource: &str) -> Result<Snapshot, NotAvailable> {
+        let services = self.handle().await?;
+        match self
+            .client
+            .call(Operation::Snapshot {
+                services,
+                resource: resource.to_owned(),
+            })
+            .await
+            .map_err(failure)?
+        {
+            Reply::Snapshot { revision, reading } => Ok(Snapshot {
+                revision,
+                reading: reading.map(json_text).transpose()?,
+            }),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// `resource`'s reading now, and each time it changes.
+    ///
+    /// # Errors
+    ///
+    /// The host refuses the watch or the connection fails.
+    pub async fn watch(&self, resource: &str) -> Result<ReadingStream, NotAvailable> {
+        let services = self.handle().await?;
+        let subscription = self
+            .client
+            .watch(services, resource.to_owned())
+            .await
+            .map_err(failure)?;
+        Ok(ReadingStream {
+            subscription: Arc::new(tokio::sync::Mutex::new(subscription)),
+        })
+    }
+
+    /// Invoke `action` of `resource` with `arguments` (none for an action
+    /// that takes nothing).
+    ///
+    /// # Errors
+    ///
+    /// The host refuses the call or the connection fails. A refusal by the
+    /// door is a [`Receipt::Refused`], not an error: the action exists and
+    /// this is what it said.
+    pub async fn invoke(
+        &self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Receipt, NotAvailable> {
+        let services = self.handle().await?;
+        let encoded = serde_json::to_vec(arguments)
+            .map_err(|error| refused(format!("the action's arguments do not encode: {error}")))?;
+        match self
+            .client
+            .call(Operation::Invoke {
+                services,
+                resource: resource.to_owned(),
+                action: action.to_owned(),
+                arguments: encoded,
+            })
+            .await
+            .map_err(failure)?
+        {
+            Reply::Receipt(receipt) => Ok(receipt),
+            other => Err(unexpected(&other)),
+        }
+    }
+}
+
+/// What a resource read, and the services' revision it was read at: equal
+/// revisions publish the same.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Snapshot {
+    pub revision: u64,
+    pub reading: Option<String>,
+}
+
+/// One change of a watched resource's reading.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reading {
+    pub resource: String,
+    pub revision: u64,
+    /// The reading as JSON; `None` once no service publishes it.
+    pub reading: Option<String>,
+}
+
+/// A watched resource's readings, as it stands and then on each change.
+#[derive(Clone)]
+pub struct ReadingStream {
+    subscription: Arc<tokio::sync::Mutex<Subscription>>,
+}
+
+impl ReadingStream {
+    /// The next reading.
+    ///
+    /// # Errors
+    ///
+    /// The subscription ended.
+    pub async fn read(&self) -> Result<Reading, NotAvailable> {
+        let event = self
+            .subscription
+            .lock()
+            .await
+            .event()
+            .await
+            .map_err(failure)?;
+        match event {
+            Event::Reading {
+                resource,
+                revision,
+                reading,
+            } => Ok(Reading {
+                resource,
+                revision,
+                reading: reading.map(json_text).transpose()?,
+            }),
+            other => Err(unexpected_event(&other)),
+        }
+    }
+}
+
+/// A reading as the text its JSON is.
+fn json_text(bytes: Vec<u8>) -> Result<String, NotAvailable> {
+    String::from_utf8(bytes)
+        .map_err(|error| refused(format!("a reading is not JSON text: {error}")))
+}
+
 /// The channel's presence: what this endpoint shows, and everyone else's.
 #[derive(Clone)]
 pub struct PresenceHandle {
     channel: ChannelHandle,
 }
-
 impl PresenceHandle {
     async fn publish(
         &self,

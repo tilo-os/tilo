@@ -192,7 +192,28 @@ impl Client {
     ///
     /// The host's refusal, or the connection failing.
     pub async fn subscribe(&self, channel: Handle, topic: Topic) -> Result<Subscription, Failure> {
-        let id = self.shared.id();
+        self.subscription(|id| (id, Operation::Subscribe { channel, topic }))
+            .await
+    }
+
+    /// Watch `resource`, one of the session's published ones: its reading
+    /// now as [`Event::Reading`], and again each time it changes.
+    ///
+    /// # Errors
+    ///
+    /// The host's refusal, or the connection failing.
+    pub async fn watch(&self, services: Handle, resource: String) -> Result<Subscription, Failure> {
+        self.subscription(|id| (id, Operation::Watch { services, resource }))
+            .await
+    }
+
+    /// Route the subscription named by `open`'s id before it leaves, so the
+    /// host's events may follow its reply at once.
+    async fn subscription(
+        &self,
+        open: impl FnOnce(u64) -> (u64, Operation),
+    ) -> Result<Subscription, Failure> {
+        let (id, request) = open(self.shared.id());
         let (answer, answered) = oneshot::channel();
         let (deliver, deliveries) = mpsc::unbounded_channel();
         {
@@ -201,8 +222,6 @@ impl Client {
                 return Err(Failure::Closed);
             }
             routes.calls.insert(id, answer);
-            // Routed before the call leaves: the host's events may follow
-            // its reply at once.
             routes.subscriptions.insert(id, deliver);
         }
         let subscription = Subscription {
@@ -210,7 +229,6 @@ impl Client {
             deliveries,
             shared: Arc::downgrade(&self.shared),
         };
-        let request = Operation::Subscribe { channel, topic };
         if self.shared.outgoing.send(Call { id, request }).is_err() {
             self.shared.routes().calls.remove(&id);
             return Err(Failure::Closed);
