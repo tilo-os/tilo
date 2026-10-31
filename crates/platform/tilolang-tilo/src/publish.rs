@@ -13,7 +13,7 @@ use serde_json::Value as Json;
 use tilo_actions::resource::INVALID_ARGUMENTS_TYPE;
 use tilo_actions::{
     ActionArgs, ActionParam, ActionSpec, ActionType, EncodedAction, ExecutionLocus, ParamType,
-    ResourceSpec, Target,
+    ResourceSpec, ResourceViewSpec, Target,
 };
 
 use crate::action::DynAction;
@@ -285,6 +285,9 @@ impl ActionTypes {
             label,
         )
         .with_action(open_spec(id));
+        for view in views_of(&self.meta, type_name) {
+            resource = resource.with_view(view);
+        }
         let Some(of_type) = self.on_type.get(type_name) else {
             return resource;
         };
@@ -295,6 +298,44 @@ impl ActionTypes {
         }
         resource
     }
+}
+
+/// The views a resource of `type_name` is shown through: the package's offered views whose
+/// first parameter is one, each opening through the resource's `open`. The type's default view
+/// is the primary one; a view that shows a resource the same way under a name a person chose is
+/// listed beside it.
+fn views_of(meta: &Meta, type_name: &str) -> Vec<ResourceViewSpec> {
+    let Some(declared) = meta.types.iter().find(|t| t.name == type_name) else {
+        return Vec::new();
+    };
+    let primary = meta.default_view(&declared.id);
+    let of_type = |ty: &str| {
+        matches!(
+            tilolang_runtime::meta::parse_ty(ty, &meta.app),
+            Ok(tilolang_runtime::meta::Ty::Record(key))
+                if key.app == meta.app && key.name == type_name
+        )
+    };
+    meta.offered_views()
+        .filter(|view| view.params.first().is_some_and(|p| of_type(&p.ty)))
+        .map(|view| {
+            let label = if view.name.is_empty() {
+                view.id.clone()
+            } else {
+                view.name.clone()
+            };
+            let mut spec = ResourceViewSpec::new(view.id.clone(), label, "open");
+            if let Some(line) = view
+                .doc
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+            {
+                spec = spec.with_description(line);
+            }
+            spec.with_primary(primary == Some(view.id.as_str()))
+        })
+        .collect()
 }
 
 /// The resource `id` of the type `type_name`, published with the actions of that type.

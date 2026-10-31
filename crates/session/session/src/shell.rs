@@ -180,7 +180,10 @@ impl crate::Session {
         let doors = &self.shared.doors;
         shell.serve(|resource, action, arguments| {
             doors
-                .invoke(&tilo_actions::ActionAddress::new(resource, action), arguments)
+                .invoke(
+                    &tilo_actions::ActionAddress::new(resource, action),
+                    arguments,
+                )
                 .map(drop)
                 .map_err(|error| error.to_string())
         });
@@ -203,10 +206,7 @@ impl crate::Session {
     /// words: a press whose action could not run.
     #[must_use]
     pub fn shell_refusals(&self) -> Vec<String> {
-        self.shell
-            .as_ref()
-            .map(Shell::refusals)
-            .unwrap_or_default()
+        self.shell.as_ref().map(Shell::refusals).unwrap_or_default()
     }
 
     /// Where the shell bar's control named `name` (as assistive technology

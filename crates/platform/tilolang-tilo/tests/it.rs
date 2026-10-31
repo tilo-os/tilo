@@ -20,6 +20,7 @@ mod engines;
 mod fixtures;
 #[cfg(feature = "room")]
 mod history_views;
+mod foreign;
 mod incremental;
 mod index;
 mod items;

@@ -101,3 +101,11 @@ app-list-add-failed = Couldn't add { $name } to your apps
 app-list-locate-failed = Couldn't find { $name }
 app-list-remove-failed = Couldn't remove { $name } from your apps
 app-list-uninstall-failed = Couldn't uninstall { $name }
+
+## What came of asking a sleeping device to wake up.
+device-wake-app-name = Devices
+device-wake-rejoined = { $device } is awake
+device-wake-not-rejoined = { $device } did not wake up
+device-wake-not-rejoined-body = It got a wake-up signal but has not come back. It may be off or out of power.
+device-wake-failed = { $device } could not be woken
+device-wake-failed-body = No wake-up signal could be sent on its network.

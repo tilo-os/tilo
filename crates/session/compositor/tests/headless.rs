@@ -14,6 +14,8 @@
 
 #[path = "headless/harness.rs"]
 mod harness;
+#[path = "headless/session_follow.rs"]
+mod session_follow;
 #[path = "headless/window_icons.rs"]
 mod window_icons;
 

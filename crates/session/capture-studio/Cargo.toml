@@ -29,6 +29,9 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# A test drives the receipt's frames at instants it chooses, so animation
+# cannot move what is on screen between two of them.
+tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 
 [lints]
 workspace = true

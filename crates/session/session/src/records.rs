@@ -127,6 +127,13 @@ impl Records {
         }
     }
 
+    /// Where this device keeps its record indexes, and where a record's
+    /// document is.
+    #[must_use]
+    pub(crate) fn root(&self) -> PathBuf {
+        self.root.clone()
+    }
+
     /// The workspaces this device shows, by room and the name the desk gives
     /// it: what a row says of a record no workspace in front holds.
     pub(crate) fn set_workspaces(&self, workspaces: Vec<(String, String)>) {

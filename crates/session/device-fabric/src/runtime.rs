@@ -22,7 +22,7 @@ use tilo_user_identity::{DeviceCert, RevocationEntry};
 use crate::{
     ClipboardEntry, DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
     FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricError, FabricStamp, OwnerSession,
-    PersonalFabricAction, PersonalFabricActionEnvelope,
+    PersonalFabricAction, PersonalFabricActionEnvelope, WakeRoute,
 };
 
 /// Request ids remembered so a replayed action is refused.
@@ -294,6 +294,43 @@ impl FabricRuntime {
         self.revise()
     }
 
+    /// Take the wake routes this device's interfaces now offer, replacing
+    /// what it offered before: an interface that went away stops being a way
+    /// to wake this machine. Returns whether this device's record changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the routes do not make a valid record.
+    pub fn set_wake_routes(&mut self, routes: Vec<WakeRoute>) -> Result<bool, FabricError> {
+        let Some(local) = &mut self.local else {
+            return Ok(false);
+        };
+        if local.snapshot.presence.wake_routes == routes {
+            return Ok(false);
+        }
+        local.snapshot.presence.wake_routes = routes;
+        self.revise()
+    }
+
+    /// Say the person's session on this device to their other devices:
+    /// whether it is locked, when they last locked or unlocked it themselves
+    /// and when they last used it. Returns whether this device's record
+    /// changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the record does not make a valid snapshot.
+    pub fn set_owner_session(&mut self, session: OwnerSession) -> Result<bool, FabricError> {
+        let Some(local) = &mut self.local else {
+            return Ok(false);
+        };
+        if local.snapshot.presence.session == session {
+            return Ok(false);
+        }
+        local.snapshot.presence.session = session;
+        self.revise()
+    }
+
     /// The fabric as this device last converged it.
     pub fn device_fabric(&self) -> &DeviceFabric {
         &self.fabric
@@ -507,6 +544,37 @@ mod tests {
         assert!(
             runtime.device_fabric().snapshots().contains_key(&local().0),
             "this device's own record is in the fabric it shares"
+        );
+    }
+
+    #[test]
+    fn the_person_s_session_is_this_device_s_record_and_moves_only_when_it_changes() {
+        let mut runtime = runtime();
+        assert!(
+            !runtime
+                .set_owner_session(OwnerSession::default())
+                .expect("a valid record"),
+            "what it said before is not said again"
+        );
+        let session = OwnerSession {
+            locked: true,
+            changed_unix_ms: 1_000,
+            active_unix_ms: 2_000,
+        };
+        assert!(
+            runtime.set_owner_session(session).expect("a valid record"),
+            "a lock of the person's is news for their other devices"
+        );
+        assert!(
+            runtime.changed(),
+            "their devices hear it on the next announcement"
+        );
+        assert_eq!(
+            runtime.device_fabric().snapshots()[&local().0]
+                .presence
+                .session,
+            session,
+            "the record this device shares says it"
         );
     }
 

@@ -208,6 +208,68 @@ impl Runtime {
         self.load_package(wasm, meta)
     }
 
+    /// Load the description of an app this runtime does not run: its types, actions and views,
+    /// and no code. A view takes a resource of it as a parameter, its fields read from the
+    /// readings its app publishes ([`Runtime::set_reading`]); an action of it is a child
+    /// invocation at the app's own door ([`crate::delegate`], [`Runtime::set_invoker`]).
+    ///
+    /// The package is identified by the hash of the description, which stands for the app's
+    /// code authorship until a newer description of it replaces it.
+    ///
+    /// # Errors
+    ///
+    /// `Package` for a description that does not read, or one that reuses another package's
+    /// declaration ids.
+    pub fn load_foreign(&self, meta: Meta) -> Result<PackageId, RuntimeError> {
+        let hash = ModuleHash::of_bytes(&meta.to_json_bytes());
+        let pkg = crate::registry::Package::foreign(hash, meta).map_err(RuntimeError::Package)?;
+        self.core
+            .registry
+            .borrow_mut()
+            .add(pkg)
+            .map(|pkg| pkg.hash.clone())
+            .map_err(RuntimeError::Package)
+    }
+
+    /// The reading of `target`, a resource of an app this runtime does not run, as the
+    /// session's watch last saw it: the JSON its service read. Views that read a field of it
+    /// run again at the next poll. Whether it differs from the reading held before: `false`
+    /// when nothing moved.
+    ///
+    /// # Errors
+    ///
+    /// `Package` when `target` is a resource this runtime holds (it reads its own record), or
+    /// the text is not a reading (JSON holding an object).
+    pub fn set_reading(&self, target: &ResourceRef, reading: &str) -> Result<bool, RuntimeError> {
+        if !crate::foreign::is_foreign(target) {
+            return Err(RuntimeError::Package(format!(
+                "`{}` is held here: its fields run from its own record",
+                target.id_string()
+            )));
+        }
+        let json: Json = serde_json::from_str(reading).map_err(|error| {
+            RuntimeError::Package(format!("the reading of `{}`: {error}", target.id_string()))
+        })?;
+        if !json.is_object() {
+            return Err(RuntimeError::Package(format!(
+                "the reading of `{}` is not an object of its fields",
+                target.id_string()
+            )));
+        }
+        let mut foreign = self.core.foreign.borrow_mut();
+        if !foreign.set_reading(target, json) {
+            return Ok(false);
+        }
+        let generation = foreign.generation(target);
+        drop(foreign);
+        let seen = i64::try_from(generation).unwrap_or(i64::MAX);
+        self.core
+            .view_states
+            .borrow_mut()
+            .set(crate::foreign::reading_key(target), Value::Int(seen));
+        Ok(true)
+    }
+
     /// Evaluate an agent block as `principal`. A view renders and
     /// can be pressed; an action application is invoked, or suggested when the authority asks
     /// (the block's module is the author, so the chain starts with it); data is returned.

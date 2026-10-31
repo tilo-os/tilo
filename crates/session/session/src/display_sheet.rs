@@ -27,12 +27,15 @@ use crate::controls::DISPLAYS_RESOURCE;
 use crate::displays::{self, DisplayMode};
 use crate::keys::Invocations;
 use crate::projection::{ProjectionController, ProjectionStatus, SystemProjectionBackend};
+use crate::projection_video::VideoStream;
 
 /// The display sheet as the session drives it.
 pub struct DisplaySheet {
     /// The sheet's seat; `None` when the sheet did not mount.
     seat: Option<DisplaysSeat>,
     controller: ProjectionController,
+    /// Where a live projection's frames are read from.
+    video: Option<std::path::PathBuf>,
     /// The receiver the person chose on this opening, by id. Its stream
     /// options and its PIN show only once one is chosen or a stream runs.
     chosen: Option<String>,
@@ -49,15 +52,47 @@ impl DisplaySheet {
         socket: Option<std::path::PathBuf>,
         wake: &tilo_service::Wake,
     ) -> Self {
+        let video = crate::projection::video_socket(socket.as_deref());
         Self {
             seat,
             controller: ProjectionController::new(
                 Box::new(SystemProjectionBackend::new(socket)),
                 wake,
             ),
+            video,
             chosen: None,
             searched: None,
         }
+    }
+
+    /// The desktop's frames for a live projection: the projector's video
+    /// socket and the profile its receiver is sent at. `None` when no
+    /// projector session is running, and for the receivers the projector
+    /// shows the desktop to with their own capture — a Miracast or `AirPlay`
+    /// session captures the screen itself.
+    #[must_use]
+    pub(crate) fn video_stream(&self) -> Option<VideoStream> {
+        let (ProjectionStatus::Connecting { device_id }
+        | ProjectionStatus::Connected { device_id }) = &self.controller.status
+        else {
+            return None;
+        };
+        let device = self
+            .controller
+            .devices
+            .iter()
+            .find(|device| &device.id == device_id)?;
+        if !matches!(
+            device.protocol,
+            ProjectionProtocol::Chromecast | ProjectionProtocol::FCast
+        ) {
+            return None;
+        }
+        Some(VideoStream {
+            socket: self.video.clone()?,
+            policy: self.controller.options.stream_policy,
+            asked: self.controller.profile(),
+        })
     }
 
     /// The sheet's seat: whether it is up, what it shows and what it asked;
@@ -430,6 +465,93 @@ fn wireless_layout_of(mode: ProjectionMode) -> DisplayMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn receiver(protocol: tilo_projector::ProjectionProtocol) -> tilo_projector::ProjectionDevice {
+        tilo_projector::ProjectionDevice {
+            id: format!("{protocol:?}"),
+            name: format!("{} display", protocol.label()),
+            protocol,
+            detail: "Test room".into(),
+            modes: ProjectionMode::ALL.to_vec(),
+            addresses: vec!["192.0.2.10".into()],
+            port: 1234,
+        }
+    }
+
+    /// A live projection of a receiver of a protocol that captures the screen
+    /// itself is not streamed to: its own protocol already carries the
+    /// desktop.
+    #[test]
+    fn only_a_receiver_that_cannot_capture_for_itself_is_sent_the_desktops_frames() {
+        let wake: tilo_service::Wake = std::sync::Arc::new(|| ());
+        let dir = tempfile::tempdir().expect("a runtime directory");
+        let control = dir.path().join("control.sock");
+        let mut sheet = DisplaySheet::new(None, Some(control.clone()), &wake);
+
+        assert!(
+            sheet.video_stream().is_none(),
+            "nothing is projected yet, so nothing is streamed"
+        );
+
+        sheet.controller.devices = tilo_projector::ProjectionProtocol::ALL
+            .into_iter()
+            .map(receiver)
+            .collect();
+        for (protocol, sent) in [
+            (tilo_projector::ProjectionProtocol::AirPlay, false),
+            (tilo_projector::ProjectionProtocol::Miracast, false),
+            (tilo_projector::ProjectionProtocol::Chromecast, true),
+            (tilo_projector::ProjectionProtocol::FCast, true),
+        ] {
+            let device_id = format!("{protocol:?}");
+            for live in [
+                ProjectionStatus::Connecting {
+                    device_id: device_id.clone(),
+                },
+                ProjectionStatus::Connected {
+                    device_id: device_id.clone(),
+                },
+            ] {
+                sheet.controller.status = live;
+                assert_eq!(
+                    sheet.video_stream().is_some(),
+                    sent,
+                    "{protocol:?} is streamed the desktop only when it cannot capture it itself"
+                );
+            }
+        }
+
+        sheet.controller.status = ProjectionStatus::Connected {
+            device_id: "Chromecast".into(),
+        };
+        let stream = sheet.video_stream().expect("a live projection is streamed");
+        assert_eq!(
+            stream.socket,
+            crate::projection::video_socket(Some(&control)).expect("the projector's video socket"),
+            "the frames go where the projector reads them"
+        );
+        assert_eq!(
+            stream.policy, sheet.controller.options.stream_policy,
+            "the receiver is sent at the options the person chose"
+        );
+        assert!(
+            stream.asked.is_none(),
+            "until the service reports a ceiling, the person's own choice stands"
+        );
+
+        sheet.controller.status = ProjectionStatus::Idle;
+        assert!(
+            sheet.video_stream().is_none(),
+            "an ended projection streams nothing"
+        );
+        sheet.controller.status = ProjectionStatus::Connected {
+            device_id: "a receiver that left".into(),
+        };
+        assert!(
+            sheet.video_stream().is_none(),
+            "a session of a receiver no longer listed streams nothing"
+        );
+    }
 
     /// The name a layout is chosen by is the one the displays' own action
     /// takes, so a choice at the sheet arranges them.

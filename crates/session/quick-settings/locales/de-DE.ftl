@@ -194,6 +194,7 @@ qs-devices-fabric-unavailable = Das persönliche Gerätenetz ist nicht verfügba
 qs-devices-offline = Offline
 qs-devices-online = Online
 qs-devices-play-here = { $media } hier abspielen
+qs-devices-wake = Aufwecken
 qs-edit-move-down = Nach unten
 qs-edit-move-up = Nach oben
 qs-edit-required = Erforderlich

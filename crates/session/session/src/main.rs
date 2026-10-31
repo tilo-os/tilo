@@ -445,6 +445,10 @@ fn device_options(hosted: bool) -> tilo_session::Options {
         } else {
             ActionPlane::Launcher
         },
+        // A program of this login asks the person at the seat's agent door
+        // to work in a workspace as an agent; a session in another
+        // desktop's window serves none.
+        agent_door: (!hosted).then(tilo_session::agent_door::path).flatten(),
         quick_settings: (!hosted).then(|| {
             QuickSettings::Device(Box::new(|wake| {
                 let device = DeviceHost::os(wake);

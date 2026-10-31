@@ -260,10 +260,24 @@ impl FabricLink for SessionFabric {
             .ok_or_else(|| "media continuity is turned off in this device's settings".to_owned())
     }
 
+    fn share_wake_routes(&self, routes: Vec<tilo_device_fabric::WakeRoute>) {
+        let taken = self.runtime.lock_recover().set_wake_routes(routes);
+        if let Err(error) = taken {
+            tracing::debug!(%error, "this device's wake routes are not shared");
+        }
+    }
+
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
         let taken = self.runtime.lock_recover().share_clipboard(entries);
         if let Err(error) = taken {
             tracing::debug!(%error, "the clipboard is not shared");
+        }
+    }
+
+    fn publish_owner_session(&self, session: tilo_device_fabric::OwnerSession) {
+        let taken = self.runtime.lock_recover().set_owner_session(session);
+        if let Err(error) = taken {
+            tracing::debug!(%error, "this device's session is not said to the others");
         }
     }
 }
@@ -286,46 +300,28 @@ impl crate::Session {
         envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
     ) {
         use tilo_device_fabric::PersonalFabricAction;
+        if self
+            .shared
+            .waking
+            .handle_action(&self.shared, fabric, envelope)
+        {
+            return;
+        }
         if tilo_speaker_service::remote_audio::handle_action(fabric.as_ref(), envelope)
             || tilo_speaker_service::groups::handle_action(fabric.as_ref(), envelope)
         {
             return;
         }
         match &envelope.action {
-            PersonalFabricAction::ResumeMedia {
-                app_id,
-                title,
-                locator,
-                position_ms,
-                resume_playing,
-                ..
-            } => {
-                // What continues on this device follows the same media switch
-                // as what leaves it: with media continuity off here, the
-                // offer is not made.
-                if fabric.require_media().is_ok() {
-                    self.offer_media(
-                        fabric,
-                        envelope,
-                        app_id,
-                        title,
-                        locator,
-                        *position_ms,
-                        *resume_playing,
-                    );
-                }
-            }
-            // The device that offered a session says what became of it, or
-            // stops waiting for it: nothing on this session is holding one
-            // it offered, so there is nothing to settle here. What the
+            PersonalFabricAction::ResumeMedia { .. } => self.offer_media(fabric, envelope),
+            // Nothing on this session holds a media offer, and what the
             // person's devices sent each other before this session ran a
             // fabric — placement, input, accessories, files, notifications,
             // calls, displays, wake, certification — is the shell's
-            // device-fabric runtime's to carry, and this session has none of
-            // it yet, so it is dropped rather than half-acted on. The speaker
-            // services above answer for theirs; these reach here only when
-            // their own preconditions refuse, and nothing else on this
-            // session acts on them.
+            // device-fabric runtime's to carry, so these are dropped rather
+            // than half-acted on. The speaker services above answer for
+            // theirs; the rest reach here only when their own preconditions
+            // refuse.
             PersonalFabricAction::MediaAccepted { .. }
             | PersonalFabricAction::MediaRejected { .. }
             | PersonalFabricAction::MediaCancelled { .. }
@@ -406,12 +402,23 @@ impl crate::Session {
         &self,
         fabric: &tilo_device_fabric::link::SharedLink,
         envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
-        app_id: &str,
-        title: &str,
-        locator: &tilo_device_fabric::MediaSourceLocator,
-        position_ms: u64,
-        playing: bool,
     ) {
+        // What continues on this device follows the same media switch as what
+        // leaves it: with media continuity off here, the offer is not made.
+        if fabric.require_media().is_err() {
+            return;
+        }
+        let PersonalFabricAction::ResumeMedia {
+            app_id,
+            title,
+            locator,
+            position_ms,
+            resume_playing,
+            ..
+        } = &envelope.action
+        else {
+            return;
+        };
         let source = match locator {
             tilo_device_fabric::MediaSourceLocator::Workspace { path } => {
                 media::handoff::HandoffSource::Workspace {
@@ -441,7 +448,7 @@ impl crate::Session {
             clippy::cast_precision_loss,
             reason = "a playhead in a recording is far inside f64's exact integers"
         )]
-        let position_ms = position_ms as f64;
+        let position_ms = *position_ms as f64;
         crate::mount::audio::handoff(
             &self.shared,
             Some(tilo_quick_settings::MediaOffer {
@@ -451,7 +458,7 @@ impl crate::Session {
                 source_label: label,
                 source,
                 position_ms,
-                playing,
+                playing: *resume_playing,
             }),
         );
     }

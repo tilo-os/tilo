@@ -43,6 +43,9 @@ pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
     fn commit_activity_change(&mut self) {}
 }
 
+/// What takes the desk a committing snapshot wrote back to where it is kept.
+type Commit = std::rc::Rc<dyn Fn(&DesktopTree)>;
+
 /// Read-only admitted single-room history. Construct from the actual admitted
 /// owner document, never from a re-encoded desktop cache. The supplied document
 /// is owned so `HistorySource`'s `AutoCommit` cursor cannot touch the live owner.
@@ -51,6 +54,10 @@ pub struct ActivitySnapshot {
     pub desktop: DesktopTree,
     pub doc: AutoCommit,
     room: tilo_desktop_model::RoomId,
+    /// What takes a change the model wrote back to the desk it came from: a
+    /// host that keeps the workspace's own layout applies it here, and a
+    /// host whose history is read only keeps none.
+    commit: Option<Commit>,
 }
 impl ActivitySnapshot {
     /// Snapshot the active room of `desktop` from its admitted owner document.
@@ -59,13 +66,27 @@ impl ActivitySnapshot {
             .active_workspace()
             .ok_or("active workspace unavailable")?
             .room();
-        let mut snapshot = Self { desktop, doc, room };
+        let mut snapshot = Self {
+            desktop,
+            doc,
+            room,
+            commit: None,
+        };
         tilo_desktop_model::projection::apply_admitted_room(
             &mut snapshot.desktop,
             room,
             &snapshot.doc,
         )?;
         Ok(snapshot)
+    }
+
+    /// Hand every change the model writes to `commit`, with the workspace as
+    /// the change left it: a host that keeps the workspace's layout writes
+    /// it back, so undoing or restoring a change reaches the desk itself.
+    #[must_use]
+    pub fn committing(mut self, commit: std::rc::Rc<dyn Fn(&DesktopTree)>) -> Self {
+        self.commit = Some(commit);
+        self
     }
 }
 impl Deref for ActivitySnapshot {
@@ -99,6 +120,15 @@ impl ActivityTree for ActivitySnapshot {
         }
         tilo_desktop_model::projection::apply_admitted_room(&mut self.desktop, self.room, &self.doc)
             .map(|_| ())
+    }
+    fn commit_activity_change(&mut self) {
+        let Some(commit) = self.commit.clone() else {
+            return;
+        };
+        // The change was written into the document: what the desk becomes is
+        // what that document projects, not the tree it projected before.
+        let _ = self.resync_activity_cache();
+        commit(&self.desktop);
     }
 }
 
@@ -154,6 +184,13 @@ pub trait ActivityHost {
     fn save_departures(&self, _departures: &HashMap<u64, WorkspaceDeparture>) {}
     fn mutations_available(&self) -> bool {
         false
+    }
+    /// Whether the host can write `origin`'s history back: undo a change of
+    /// it, restore it to an earlier state. A host that keeps the workspace's
+    /// own layout writes that one; a record only where the host holds the
+    /// writer it is kept by. What it cannot write, the pane does not offer.
+    fn writable(&self, _origin: &index::HistoryOrigin) -> bool {
+        self.mutations_available()
     }
     fn all_workspaces_available(&self) -> bool {
         false

@@ -33,7 +33,9 @@ use smithay::backend::allocator::{Buffer as _, Format, Fourcc};
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::AsRenderElements as _;
 use smithay::backend::renderer::element::RenderElement;
-use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
+use smithay::backend::renderer::element::utils::{
+    Relocate, RelocateRenderElement, RescaleRenderElement,
+};
 use smithay::backend::renderer::{Bind, ExportMem, ImportAll, ImportMem, Offscreen, Renderer};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
@@ -974,6 +976,82 @@ where
     })
 }
 
+/// What `target` shows now, drawn to fit `max` — at most `max`'s width and
+/// height, never larger than the target itself — and read back as rows of
+/// R, G, B, A: one frame of the stream a wireless display is sent. The whole
+/// target is drawn smaller, so a video of the desktop costs what its profile
+/// asks for rather than what the display shows.
+pub(crate) fn read_back_scaled<R, T>(
+    renderer: &mut R,
+    state: &State,
+    target: &Target,
+    max: (u32, u32),
+) -> Result<Screenshot, CaptureError>
+where
+    R: Renderer + ImportAll + ImportMem + Offscreen<T> + Bind<Dmabuf> + ExportMem,
+    R::TextureId: Clone + Send + 'static,
+{
+    let View {
+        scene,
+        scale,
+        transform,
+        size,
+    } = state
+        .view(target)
+        .ok_or_else(|| BackendError("the captured output or window is gone".into()))?;
+    let Some((small, factor)) = scaled_size(size, max) else {
+        return Err(BackendError("the captured output or window is empty".into()).into());
+    };
+    let (elements, clear) = scene_elements(renderer, state, &scene, target, false, scale)
+        .ok_or_else(|| BackendError("the session is locked".into()))?;
+    // Every element is drawn into the smaller frame instead of the target's
+    // own: a scene scaled by one factor is what a stream at that size shows.
+    let scaled: Vec<_> = elements
+        .into_iter()
+        .map(|element| RescaleRenderElement::from_element(element, Point::default(), factor))
+        .collect();
+    let rgba = render_to_memory::<R, T, _>(renderer, small, scale, transform, &scaled, clear)?;
+    Ok(Screenshot {
+        width: u32::try_from(small.w).map_err(|error| BackendError(format!("width: {error}")))?,
+        height: u32::try_from(small.h).map_err(|error| BackendError(format!("height: {error}")))?,
+        rgba,
+    })
+}
+
+/// `source` as a frame that fits `max` — scaled down by one factor, never
+/// up — and that factor. Each side is even and at least two pixels, which is
+/// the smallest an encoder takes.
+fn scaled_size(source: Size<i32, Physical>, max: (u32, u32)) -> Option<(Size<i32, Physical>, f64)> {
+    let (width, height) = (u32::try_from(source.w).ok()?, u32::try_from(source.h).ok()?);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let factor = (f64::from(max.0) / f64::from(width))
+        .min(f64::from(max.1) / f64::from(height))
+        .min(1.0);
+    let frame = Size::<i32, Physical>::from((
+        even(f64::from(width) * factor),
+        even(f64::from(height) * factor),
+    ));
+    // A tiny target keeps its shape: what fits is what the factor gave.
+    let factor = if frame.w == source.w && frame.h == source.h {
+        1.0
+    } else {
+        factor
+    };
+    Some((frame, factor))
+}
+
+/// `value` rounded down to an even whole number of pixels, floored at two.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is clamped to the range of an i32 before the cast"
+)]
+fn even(value: f64) -> i32 {
+    ((value.floor().clamp(0.0, f64::from(i32::MAX)) as i32).max(2)) & !1
+}
+
 /// Draw `elements` into an offscreen image of `size` and read it back as
 /// rows of R, G, B, A.
 pub(crate) fn render_to_memory<R, T, E>(
@@ -1017,6 +1095,32 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A frame drawn for a stream fits the size asked for, keeps the
+    /// desktop's shape and has the even sides an encoder takes.
+    #[test]
+    fn a_streamed_frame_fits_what_was_asked_for() {
+        let (frame, factor) = scaled_size(Size::from((1920, 1080)), (1280, 720)).expect("a frame");
+        assert_eq!((frame.w, frame.h), (1280, 720));
+        assert!(
+            (factor - 2.0 / 3.0).abs() < 1e-9,
+            "the scene is scaled by one factor"
+        );
+
+        // The shorter side decides, so nothing is cut off.
+        let (frame, _) = scaled_size(Size::from((1920, 1080)), (1280, 500)).expect("a frame");
+        assert_eq!((frame.w, frame.h), (888, 500));
+
+        let (frame, _) = scaled_size(Size::from((1365, 768)), (1280, 720)).expect("a frame");
+        assert_eq!((frame.w % 2, frame.h % 2), (0, 0));
+        assert!(frame.w <= 1280 && frame.h <= 720);
+
+        // A screen smaller than the stream is sent as it is, not stretched.
+        let (frame, factor) = scaled_size(Size::from((1920, 1080)), (3840, 2160)).expect("a frame");
+        assert_eq!((frame.w, frame.h, factor), (1920, 1080, 1.0));
+
+        assert!(scaled_size(Size::from((0, 1080)), (1280, 720)).is_none());
+    }
 
     fn layout(width: i32, height: i32, stride: i32) -> ShmLayout {
         ShmLayout {

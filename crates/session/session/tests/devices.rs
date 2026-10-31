@@ -33,17 +33,21 @@ use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_device_fabric::speaker_group::SpeakerFabricState;
 use tilo_device_fabric::unlock::UnlockFabricState;
+use tilo_device_fabric::wake::{self, MagicPackets};
 use tilo_device_fabric::{
     DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
-    FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, MediaSourceLocator, OwnerSession,
-    PersonalFabricAction,
+    FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, Ipv4Subnet, MediaSourceLocator,
+    OwnerSession, PersonalFabricAction, WakeInterfaceKind, WakeRoute,
 };
 use tilo_quick_settings::device::Device;
 use tilo_quick_settings::device::PlayerLink;
 use tilo_quick_settings::device::testing::{Kept, Machine};
 use tilo_quick_settings::hosted::HostedActions;
 use tilo_quick_settings::{QsEffect, RowPart};
-use tilo_session::{AppActions, AppLists, DeviceHost, Lists, Options, QuickSettings, Session};
+use tilo_session::{
+    AppActions, AppLists, DeviceHost, Lists, Options, QuickSettings, Session, WakeInterfaces,
+    WakeSeams,
+};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
@@ -60,12 +64,79 @@ fn laptop() -> DeviceId {
     DeviceId::new("laptop").expect("a device id")
 }
 
+/// A device of the person's asleep off the network.
+fn desk() -> DeviceId {
+    DeviceId::new("desk").expect("a device id")
+}
+
+/// An awake device of the person's on the sleeping one's network.
+fn server() -> DeviceId {
+    DeviceId::new("server").expect("a device id")
+}
+
+/// The network the sleeping device is on.
+const LAN: &str = "192.168.1.0/24";
+/// The network this machine is on, away from home.
+const AWAY: &str = "10.0.0.0/24";
+
+fn subnet(text: &str) -> Ipv4Subnet {
+    let (address, prefix) = text.split_once('/').expect("a subnet");
+    Ipv4Subnet::containing(
+        address.parse().expect("an address"),
+        prefix.parse().expect("a prefix"),
+    )
+    .expect("a subnet")
+}
+
+fn wake_route(mac: u8, on: &str) -> WakeRoute {
+    WakeRoute {
+        mac: [0x52, 0x54, 0, 0, 0, mac],
+        kind: WakeInterfaceKind::Ethernet,
+        magic_packet: true,
+        subnet: Some(subnet(on)),
+    }
+}
+
+/// The packets that left, as they went out.
+#[derive(Default)]
+struct Packets(Mutex<Vec<([u8; 102], Ipv4Subnet)>>);
+
+impl Packets {
+    fn taken(&self) -> Vec<([u8; 102], Ipv4Subnet)> {
+        self.0.lock().expect("the packets").clone()
+    }
+}
+
+impl MagicPackets for Packets {
+    fn send(&self, mac: [u8; 6], subnet: Ipv4Subnet) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .expect("the packets")
+            .push((wake::magic_packet(mac), subnet));
+        Ok(())
+    }
+}
+
+/// This machine's interfaces, fixed so the test does not depend on the
+/// machine running it.
+struct FixedInterfaces(Vec<WakeRoute>);
+
+impl WakeInterfaces for FixedInterfaces {
+    fn routes(&self) -> Vec<WakeRoute> {
+        self.0.clone()
+    }
+}
+
 /// The fabric as a stand-in transport keeps it, and what the session sent
 /// through it.
 #[derive(Default)]
 struct Fabric {
     converged: DeviceFabric,
     sent: Vec<(DeviceId, PersonalFabricAction)>,
+    /// What this device's session said of itself, as its record carries it.
+    published: Option<OwnerSession>,
+    /// The revision the next record a device says of itself is said at.
+    counter: u64,
 }
 
 #[derive(Clone, Default)]
@@ -74,6 +145,10 @@ struct FakeLink {
     identity: Arc<Mutex<Option<DeviceId>>>,
     /// Whether the person lets media move between their devices.
     media: Arc<Mutex<bool>>,
+    /// The person's devices this session has a live session with.
+    online: Arc<Mutex<BTreeSet<DeviceId>>>,
+    /// The wake routes this machine offered its devices.
+    routes: Arc<Mutex<Vec<WakeRoute>>>,
 }
 
 impl FakeLink {
@@ -88,10 +163,95 @@ impl FakeLink {
         link
     }
 
+    /// A device of the person's, awake now, reporting that `mac` on `on`
+    /// wakes it.
+    fn joined_awake_device(&self, device: DeviceId, label: &str, mac: u8, on: &str) {
+        self.put_device(
+            device,
+            label,
+            true,
+            false,
+            vec![wake_route(mac, on)],
+            OwnerSession::default(),
+        );
+    }
+
+    /// A device of the person's, asleep off the network, reporting that
+    /// `mac` on `on` wakes it.
+    fn joined_sleeping_device(&self, device: DeviceId, label: &str, mac: u8, on: &str) {
+        self.put_device(
+            device,
+            label,
+            false,
+            false,
+            vec![wake_route(mac, on)],
+            OwnerSession::default(),
+        );
+    }
+
+    /// The wake routes this machine offered its devices.
+    fn shared_routes(&self) -> Vec<WakeRoute> {
+        self.routes.lock().expect("the routes").clone()
+    }
+
     /// A device of the person's, as it said of itself.
     fn joined_device(&self, device: DeviceId, label: &str, online: bool, display: bool) {
+        self.put_device(
+            device,
+            label,
+            online,
+            display,
+            Vec::new(),
+            OwnerSession::default(),
+        );
+    }
+
+    /// Both of the person's devices on their home network, which is what
+    /// lets one follow a lock on the other.
+    fn joined_at_home(display: bool) -> Self {
+        let link = Self::default();
+        *link.identity.lock().expect("the identity") = Some(this_device());
+        *link.media.lock().expect("the media switch") = true;
+        link.put_device(
+            this_device(),
+            "This computer",
+            true,
+            true,
+            vec![wake_route(1, LAN)],
+            OwnerSession::default(),
+        );
+        link.put_device(
+            laptop(),
+            "Laptop",
+            true,
+            display,
+            vec![wake_route(2, LAN)],
+            OwnerSession::default(),
+        );
+        link
+    }
+
+    /// A device of the person's says of itself what it says now, at a
+    /// revision newer than its last.
+    fn put_device(
+        &self,
+        device: DeviceId,
+        label: &str,
+        online: bool,
+        display: bool,
+        routes: Vec<WakeRoute>,
+        session: OwnerSession,
+    ) {
+        if online {
+            self.online
+                .lock()
+                .expect("the online devices")
+                .insert(device.clone());
+        }
+        let mut fabric = self.fabric.lock().expect("the fabric");
+        fabric.counter = fabric.counter.saturating_add(1);
         let stamp = FabricStamp {
-            counter: 1,
+            counter: fabric.counter,
             device: device.clone(),
         };
         let snapshot = DeviceFabricSnapshot {
@@ -108,8 +268,8 @@ impl FakeLink {
                 },
                 online,
                 last_seen_unix_ms: 0,
-                wake_routes: Vec::new(),
-                session: OwnerSession::default(),
+                wake_routes: routes,
+                session,
                 stamp,
             },
             media: Vec::new(),
@@ -120,12 +280,27 @@ impl FakeLink {
             speakers: SpeakerFabricState::default(),
             unlock: UnlockFabricState::default(),
         };
-        self.fabric
-            .lock()
-            .expect("the fabric")
+        fabric
             .converged
             .upsert(snapshot)
             .expect("the snapshot is valid");
+    }
+
+    /// The session the person's laptop says it has now.
+    fn laptop_session(&self, session: OwnerSession) {
+        self.put_device(
+            laptop(),
+            "Laptop",
+            true,
+            true,
+            vec![wake_route(2, LAN)],
+            session,
+        );
+    }
+
+    /// What this device's session last said of itself.
+    fn published(&self) -> Option<OwnerSession> {
+        self.fabric.lock().expect("the fabric").published
     }
 
     /// What the session sent through the fabric.
@@ -144,7 +319,7 @@ impl FabricLink for FakeLink {
     }
 
     fn online_device_ids(&self) -> BTreeSet<DeviceId> {
-        BTreeSet::new()
+        self.online.lock().expect("the online devices").clone()
     }
 
     fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
@@ -177,10 +352,32 @@ impl FabricLink for FakeLink {
         Ok([0; 16])
     }
 
+    fn share_wake_routes(&self, routes: Vec<WakeRoute>) {
+        *self.routes.lock().expect("the routes") = routes;
+    }
+
     fn require_media(&self) -> Result<(), String> {
         (*self.media.lock().expect("the media switch"))
             .then_some(())
             .ok_or_else(|| "media continuity is off".to_owned())
+    }
+
+    fn publish_owner_session(&self, session: OwnerSession) {
+        self.fabric.lock().expect("the fabric").published = Some(session);
+    }
+}
+
+/// A password the session can check, so it locks when the person's other
+/// devices do.
+struct Sesame;
+
+impl tilo_session::unlock::PasswordVerifier for Sesame {
+    fn verify(&self, _user: &str, password: &str) -> tilo_session::unlock::Verdict {
+        if password == "sesame" {
+            tilo_session::unlock::Verdict::Unlocks
+        } else {
+            tilo_session::unlock::Verdict::Wrong
+        }
     }
 }
 
@@ -227,6 +424,17 @@ struct Harness {
 }
 
 fn session(link: &FakeLink, host: Rc<Host>) -> Harness {
+    session_with(link, host, None, None)
+}
+
+/// The session, with what it sends its wake packets through and which
+/// interfaces it offers to be woken on.
+fn session_with(
+    link: &FakeLink,
+    host: Rc<Host>,
+    packets: Option<Arc<Packets>>,
+    interfaces: Option<Arc<FixedInterfaces>>,
+) -> Harness {
     let reads = Machine::laptop();
     let fabric: SharedLink = Arc::new(link.clone());
     let held: Rc<RefCell<Option<DeviceHost>>> = Rc::default();
@@ -265,6 +473,12 @@ fn session(link: &FakeLink, host: Rc<Host>) -> Harness {
             },
             apps: Some(host),
             fabric: Some(fabric),
+            wake_seams: WakeSeams {
+                packets: packets.map(|packets| packets as Arc<dyn MagicPackets>),
+                interfaces: interfaces.map(|interfaces| interfaces as Arc<dyn WakeInterfaces>),
+            },
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -352,6 +566,70 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
             .collect::<Vec<_>>(),
         [("this-pc", true, true), ("laptop", true, false)],
         "this device is listed too, and says it is this one"
+    );
+}
+
+/// The person's session on their other devices: locking the laptop locks this
+/// one, unlocking it again undoes that where the person was here, and this
+/// device says its own session to theirs while doing so.
+#[test]
+fn the_person_s_lock_follows_their_other_devices() {
+    let _settled = ui::motion::testing::settled();
+    let link = FakeLink::joined_at_home(true);
+    let mut harness = session(&link, Rc::new(Host::default()));
+    // The laptop is locked a moment after the person last touched this one:
+    // this device has not been used since, so the lock is followed. The time
+    // is the laptop's own clock, ahead of this device's by a moment.
+    link.laptop_session(OwnerSession {
+        locked: true,
+        changed_unix_ms: tilo_clock::unix_now_ms().saturating_add(1),
+        active_unix_ms: 0,
+    });
+    for _ in 0..6 {
+        harness
+            .session
+            .step(Duration::from_millis(1100))
+            .expect("step");
+        if harness.session.compositor().locked() {
+            break;
+        }
+    }
+    assert!(
+        harness.session.compositor().locked(),
+        "the laptop's lock locks this device"
+    );
+    let published = link.published().expect("the session says its own state");
+    assert!(published.locked, "this device says it is locked");
+    assert_eq!(
+        published.changed_unix_ms, 0,
+        "a followed lock is not the person's here, and does not spread further"
+    );
+
+    // Unlocking the laptop undoes the lock this device followed, because the
+    // person was here when it locked.
+    link.laptop_session(OwnerSession {
+        locked: false,
+        changed_unix_ms: tilo_clock::unix_now_ms().saturating_add(2),
+        active_unix_ms: 0,
+    });
+    for _ in 0..6 {
+        harness
+            .session
+            .step(Duration::from_millis(1100))
+            .expect("step");
+        if !harness.session.compositor().locked() {
+            break;
+        }
+    }
+    assert!(
+        !harness.session.compositor().locked(),
+        "the laptop's unlock unlocks this device again"
+    );
+    let published = link.published().expect("the session says its own state");
+    assert!(!published.locked);
+    assert_ne!(
+        published.changed_unix_ms, 0,
+        "the person unlocked here, and their other devices are told"
     );
 }
 
@@ -506,6 +784,160 @@ fn a_row_a_device_left_behind_is_a_press_on_nothing() {
     harness.press("phone", RowPart::Row);
     assert!(link.sent().is_empty());
     assert!(host.invoked.borrow().is_empty());
+}
+
+#[test]
+fn a_sleeping_device_is_woken_by_the_device_sharing_its_network() {
+    let _settled = ui::motion::testing::settled();
+    let link = FakeLink::joined(false);
+    link.joined_sleeping_device(desk(), "Desk", 0x0f, LAN);
+    let packets = Arc::new(Packets::default());
+    let interfaces = Arc::new(FixedInterfaces(vec![wake_route(0x03, LAN)]));
+    let mut harness = session_with(
+        &link,
+        Rc::new(Host::default()),
+        Some(Arc::clone(&packets)),
+        Some(interfaces),
+    );
+    harness
+        .session
+        .invoke(CHROME_RESOURCE, "toggle-quick-settings", &Arguments::new())
+        .expect("open quick settings");
+    for _ in 0..40 {
+        harness.step();
+        if harness
+            .device()
+            .state()
+            .device_rows
+            .iter()
+            .any(|row| row.key == "desk")
+        {
+            break;
+        }
+    }
+    let state = harness.device().state();
+    let row = state
+        .device_rows
+        .iter()
+        .find(|row| row.key == "desk")
+        .expect("the sleeping device's row");
+    assert_eq!(row.detail, "Offline");
+    assert_eq!(
+        row.actions,
+        HostedActions::Select("Wake".into()),
+        "a device that reports a way to be woken says what its press does"
+    );
+    assert_eq!(
+        link.shared_routes(),
+        vec![wake_route(0x03, LAN)],
+        "this machine offers its own interfaces to the person's devices"
+    );
+
+    harness.press("desk", RowPart::Action);
+    let sent = packets.taken();
+    assert_eq!(sent.len(), 1, "one packet, not two: {sent:?}");
+    let (packet, on) = sent.first().expect("the packet");
+    assert_eq!(on, &subnet(LAN), "on the network the sleeping device is on");
+    assert_eq!(packet.len(), 102);
+    assert_eq!(packet.get(..6), Some(&[0xFF; 6][..]), "six bytes of ones");
+    assert!(
+        packet
+            .get(6..)
+            .expect("the rest")
+            .chunks(6)
+            .all(|chunk| chunk == [0x52, 0x54, 0, 0, 0, 0x0f]),
+        "then the device's address, sixteen times"
+    );
+    assert!(
+        link.sent().iter().any(|(target, action)| target == &desk()
+            && matches!(action, PersonalFabricAction::WakeProbe { .. })),
+        "and the device is asked whether it came back: {:?}",
+        link.sent()
+    );
+}
+
+#[test]
+fn a_device_on_the_sleeping_device_s_network_is_asked_when_this_one_is_away() {
+    let _settled = ui::motion::testing::settled();
+    let link = FakeLink::joined(false);
+    link.joined_awake_device(server(), "Server", 0x11, LAN);
+    link.joined_sleeping_device(desk(), "Desk", 0x0f, LAN);
+    // This machine is on another network, so it shares nothing to broadcast
+    // on: the device that does sends the packet.
+    let packets = Arc::new(Packets::default());
+    let interfaces = Arc::new(FixedInterfaces(vec![wake_route(0x03, AWAY)]));
+    let mut harness = session_with(
+        &link,
+        Rc::new(Host::default()),
+        Some(Arc::clone(&packets)),
+        Some(interfaces),
+    );
+    harness.press("desk", RowPart::Row);
+
+    assert!(
+        packets.taken().is_empty(),
+        "nothing this machine sends could reach it"
+    );
+    let sent = link.sent();
+    assert_eq!(
+        sent.len(),
+        1,
+        "one request, to the device that can: {sent:?}"
+    );
+    let (target, action) = sent.first().expect("the request");
+    assert_eq!(target, &server());
+    assert_eq!(action, &PersonalFabricAction::WakeDevice { target: desk() });
+}
+
+#[test]
+fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
+    let _settled = ui::motion::testing::settled();
+    let link = FakeLink::joined(false);
+    link.joined_device(desk(), "Desk", false, false);
+    let packets = Arc::new(Packets::default());
+    let interfaces = Arc::new(FixedInterfaces(vec![wake_route(0x03, LAN)]));
+    let host = Rc::new(Host::default());
+    let mut harness = session_with(
+        &link,
+        Rc::clone(&host),
+        Some(Arc::clone(&packets)),
+        Some(interfaces),
+    );
+    harness
+        .session
+        .invoke(CHROME_RESOURCE, "toggle-quick-settings", &Arguments::new())
+        .expect("open quick settings");
+    for _ in 0..40 {
+        harness.step();
+        if harness
+            .device()
+            .state()
+            .device_rows
+            .iter()
+            .any(|row| row.key == "desk")
+        {
+            break;
+        }
+    }
+    let state = harness.device().state();
+    let row = state
+        .device_rows
+        .iter()
+        .find(|row| row.key == "desk")
+        .expect("the sleeping device's row");
+    assert_eq!(
+        row.actions,
+        HostedActions::None,
+        "no wake route of its own: nothing to offer"
+    );
+
+    harness.press("desk", RowPart::Row);
+    assert!(packets.taken().is_empty());
+    assert!(link.sent().is_empty());
+    assert!(
+        !host.invoked.borrow().is_empty(),
+        "its settings open instead"
+    );
 }
 
 /// What the helper says plays here: a browser stream.

@@ -318,6 +318,20 @@ impl Backend for HeadlessBackend {
         crate::capture::read_back::<_, Image<'static, 'static>>(&mut self.renderer, state, target)
     }
 
+    fn read_back_scaled(
+        &mut self,
+        state: &mut State,
+        target: &crate::capture::Target,
+        max: (u32, u32),
+    ) -> Result<Screenshot, crate::capture::CaptureError> {
+        crate::capture::read_back_scaled::<_, Image<'static, 'static>>(
+            &mut self.renderer,
+            state,
+            target,
+            max,
+        )
+    }
+
     fn screenshot(&mut self, _state: &mut State, name: &str) -> Result<Screenshot, BackendError> {
         let output = self
             .outputs

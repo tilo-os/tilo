@@ -1006,12 +1006,31 @@ impl RoomActivityPane {
         }
         if detail.can_compare {
             out.push((HISTORY_COMPARE, t("activity-history-compare")));
-            out.push((HISTORY_RESTORE, t("activity-history-restore")));
+            if self.selection_is_writable(&detail) {
+                out.push((HISTORY_RESTORE, t("activity-history-restore")));
+            }
         }
-        if detail.can_undo && self.selected_agent_run().is_none() {
+        if detail.can_undo
+            && self.selected_agent_run().is_none()
+            && self.selection_is_writable(&detail)
+        {
             out.push((HISTORY_UNDO, t("activity-history-undo")));
         }
         out
+    }
+
+    /// Whether every selected change can be written back here: its history is
+    /// one the host lets the model change.
+    fn selection_is_writable(&self, detail: &HistorySelectionDetail) -> bool {
+        detail.entry_ids.iter().all(|id| {
+            let origin = self
+                .projected_origins
+                .get(id)
+                .map_or(super::index::HistoryOrigin::DesktopTree, |address| {
+                    address.origin.clone()
+                });
+            self.host.writable(&origin)
+        })
     }
 
     pub fn apply_selection_history_action(
@@ -3811,6 +3830,7 @@ fn join_titles(titles: &[String]) -> String {
 // Tests
 // =====================================================================
 
+include!("native_history_tests.rs");
 include!("workspace_activity_tests.rs");
 
 #[cfg(test)]

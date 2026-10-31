@@ -103,3 +103,11 @@ app-list-add-failed = { $name } konnte nicht zu deinen Apps hinzugefügt werden
 app-list-locate-failed = { $name } wurde nicht gefunden
 app-list-remove-failed = { $name } konnte nicht aus deinen Apps entfernt werden
 app-list-uninstall-failed = { $name } konnte nicht deinstalliert werden
+
+## Was aus dem Aufwecken eines schlafenden Geräts wurde.
+device-wake-app-name = Geräte
+device-wake-rejoined = { $device } ist wach
+device-wake-not-rejoined = { $device } ist nicht aufgewacht
+device-wake-not-rejoined-body = Es hat ein Aufwecksignal bekommen, ist aber nicht zurück. Vielleicht ist es aus oder hat keinen Strom.
+device-wake-failed = { $device } konnte nicht aufgeweckt werden
+device-wake-failed-body = In seinem Netzwerk konnte kein Aufwecksignal gesendet werden.

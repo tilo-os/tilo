@@ -465,3 +465,176 @@ fn workspace_settings_pins_an_app_for_the_workspace() {
         "the person chose their own default for .md here"
     );
 }
+
+/// What Chat's record of `room`'s emoji holds, as the device's store keeps
+/// it: read without taking its writer (Chat owns the record), the changes a
+/// window made committed as the store writes them.
+///
+/// Read on a thread of its own: the session's loop never waits on storage
+/// and is told "not yet" instead, while this asks the disk itself, as the
+/// session's own reader of other apps' records does.
+fn chat_emoji(home: &tilo_test_env::TestHome, room: &str) -> Option<Vec<String>> {
+    let data = home.data().to_path_buf();
+    let room = room.to_owned();
+    std::thread::spawn(move || read_chat_emoji(&data, &room))
+        .join()
+        .ok()
+        .flatten()
+}
+
+fn read_chat_emoji(data: &std::path::Path, room: &str) -> Option<Vec<String>> {
+    let record = ui::record::RecordId::parse(&collab_types::workspace_record_id(
+        tilo_app::tilo_workspace_emoji::KIND,
+    ))?
+    .storage_key();
+    let store = app_state::FsStore::new(data.to_path_buf());
+    let stored = durable_store::DurableStore::read(
+        &store,
+        &durable_store::StorageKey::record(tilo_app::tilo_workspace_emoji::OWNER, room, record),
+    )
+    .ok()
+    .flatten()?;
+    // A window appends to the record as it changes it, and this read may land
+    // on a tail it has not finished writing: what came before it is the
+    // record as the last finished write left it, which is what Chat loads.
+    let options = automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore);
+    let doc = automerge::AutoCommit::load_with_options(&stored.bytes, options).ok()?;
+    let state =
+        tilo_app::tilo_resource::Reader::<tilo_app::tilo_workspace_emoji::WorkspaceEmoji>::read(
+            &doc,
+        )
+        .ok()?;
+    Some(
+        state
+            .state()
+            .names()
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+/// The Emoji tab adds a picture the person chooses to the workspace's emoji,
+/// where Chat's record holds it, and removes it from there again.
+#[test]
+fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
+    let _settled = ui::motion::testing::settled();
+    // The device store every app's records are kept in, here a home of the
+    // test's own: what the tab adds reaches no other test's workspace.
+    let home = tilo_test_env::TestHome::new().expect("a home of its own");
+    let picture = home.home().join("wave.png");
+    image::save_buffer(
+        picture.as_path(),
+        &[
+            255, 204, 0, 255, 255, 204, 0, 255, 255, 204, 0, 255, 255, 204, 0, 255,
+        ],
+        2,
+        2,
+        image::ColorType::Rgba8,
+    )
+    .expect("a picture to add");
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    own_workspace(&session, &[]);
+    let room = session.handle().read(|tree| {
+        tree.active_workspace()
+            .expect("a workspace in front")
+            .room()
+            .to_string()
+    });
+    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
+    session.step(Duration::from_millis(1)).unwrap();
+    let mut app = sheet(&session);
+    show_tab(
+        &mut session,
+        &mut app,
+        &WorkspaceSettingsEffect::ShowTab {
+            tab: "emoji".to_owned(),
+        },
+    );
+
+    // Add emoji asks the session's chooser for a picture.
+    press(&mut app, "ws-emoji-add");
+    session.step(Duration::from_millis(1)).unwrap();
+    let picker = session.file_picker().expect("the file chooser").clone();
+    let request = picker.request().expect("the tab asks for a picture");
+    pump(&mut session, &mut [], |_, _| {
+        let listing = picker.listing();
+        !listing.reading && listing.entries.iter().any(|entry| entry.name == "wave.png")
+    });
+    let select = FilePickerEffect::SELECT.id;
+    // The chooser's own resource: "select" is a control of the sheet's tabs
+    // as well, and the action is taken by the app that publishes it.
+    let chooser = publishers(&session, select)
+        .into_iter()
+        .find(|resource| resource.starts_with("file-chooser"))
+        .expect("the chooser publishes choosing");
+    session
+        .invoke(
+            &chooser,
+            select,
+            &arguments(serde_json::json!({
+                "handle": request.handle,
+                "path": picture.to_string_lossy(),
+            })),
+        )
+        .expect("select");
+    pump(&mut session, &mut [], |_, _| picker.listing().can_confirm);
+    session
+        .invoke(
+            &chooser,
+            FilePickerEffect::CONFIRM.id,
+            &arguments(serde_json::json!({ "handle": request.handle })),
+        )
+        .expect("confirm");
+
+    // The tab shows the emoji, and Chat's record holds it: the store commits
+    // what a window changed after a debounce, so what the device holds is
+    // read again until the emoji is in it.
+    pump(&mut session, &mut [], |_, _| {
+        app.settle();
+        app.harness().a11y_node_named(":wave:").is_some()
+    });
+    let held = held_by_chat(&mut session, &home, &room, |held| {
+        held.is_some_and(|names| names.iter().any(|name| name == "wave"))
+    });
+    assert!(
+        held.as_deref()
+            .is_some_and(|names| names.iter().any(|name| name == "wave")),
+        "Chat's record holds the emoji the tab added: {held:?}"
+    );
+
+    // Remove takes it out of the tab and out of Chat's record.
+    press(&mut app, "ws-emoji-remove-wave");
+    session.step(Duration::from_millis(1)).unwrap();
+    pump(&mut session, &mut [], |_, _| {
+        app.settle();
+        app.harness().a11y_node_named(":wave:").is_none()
+    });
+    let held = held_by_chat(&mut session, &home, &room, |held| {
+        held.is_some_and(|names| !names.iter().any(|name| name == "wave"))
+    });
+    assert!(
+        held.as_deref()
+            .is_some_and(|names| !names.iter().any(|name| name == "wave")),
+        "removing the emoji in the tab takes it out of Chat's record: {held:?}"
+    );
+}
+
+/// What Chat's record of `room` holds once `done` says it does, stepping the
+/// session meanwhile: the store commits a window's change after a debounce.
+fn held_by_chat(
+    session: &mut Session,
+    home: &tilo_test_env::TestHome,
+    room: &str,
+    mut done: impl FnMut(Option<&[String]>) -> bool,
+) -> Option<Vec<String>> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let held = chat_emoji(home, room);
+        if done(held.as_deref()) || std::time::Instant::now() >= deadline {
+            return held;
+        }
+        session.step(Duration::from_millis(100)).expect("step");
+    }
+}

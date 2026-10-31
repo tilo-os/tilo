@@ -39,6 +39,10 @@ pub enum HostedActions {
 
 /// One of the person's devices, as the device fabric reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "what the fabric says of this device now: independent facts"
+)]
 pub struct PersonalDevice {
     /// The fabric id, which names the device in the panel's effects.
     pub id: String,
@@ -50,6 +54,9 @@ pub struct PersonalDevice {
     /// It shows, so where its display stands beside this one's is arranged in
     /// its settings pane.
     pub display: bool,
+    /// One of its interfaces wakes on a magic packet, so a device on its
+    /// network can wake it while it sleeps.
+    pub wakeable: bool,
 }
 
 impl PersonalDevice {
@@ -91,6 +98,9 @@ pub fn device_rows(devices: &[PersonalDevice], playing: Option<&str>) -> Vec<Hos
                     "qs-devices-play-here",
                     &[("media", title.into())],
                 )),
+                _ if !device.online && device.wakeable => {
+                    HostedActions::Select(crate::i18n::t("qs-devices-wake"))
+                }
                 _ => HostedActions::None,
             },
         })

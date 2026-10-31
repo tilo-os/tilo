@@ -311,6 +311,13 @@ activity-detail-action-count = { $count } { $count ->
         [one] Aktion
        *[other] Aktionen
     }
+activity-action-mark-viewed = Als gesehen markieren
+activity-action-focused = Melden, was gezeigt wurde
+activity-action-name = Änderungen benennen
+activity-action-move-boundary = Grenze der Arbeitssitzung verschieben
+activity-action-undo-record = Diese Änderung rückgängig machen
+activity-action-choose-source = Morgenquelle wählen
+activity-action-source = Morgenquelle verwenden
 activity-no-resource = Keine Ressource angegeben
 activity-what-changed = Was sich geändert hat
 activity-comparison-counts = { $actions } { $actions ->
@@ -644,6 +651,8 @@ workspace-settings-emoji-tools-loading = Die Bildwerkzeuge werden noch geladen. 
 workspace-settings-emoji-not-a-picture = Nur PNG-, JPEG- und WebP-Bilder können Emoji werden.
 workspace-settings-emoji-too-detailed = Das Bild ist zu detailreich, um in Emoji-Größe scharf zu bleiben. Versuche ein einfacheres.
 workspace-settings-emoji-no-name = Sein Dateiname enthält keine Buchstaben oder Ziffern, nach denen ein Emoji heißen könnte.
+workspace-settings-emoji-too-large = Das Bild ist zu groß, um ein Emoji zu werden. Wähle eines unter 8 MB.
+workspace-settings-emoji-unreadable = Das Bild konnte nicht gelesen werden.
 workspace-settings-role-owner = Eigentümer
 workspace-settings-role-moderator = Moderator
 workspace-settings-role-editor = Bearbeiter

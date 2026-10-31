@@ -17,15 +17,34 @@
 
 use std::fmt;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tilo_lock::MutexRecover as _;
 use tilo_projector::control::{self, ConnectStage, Credential, ProjectorEvent, ProjectorRequest};
-pub use tilo_projector::{ProjectionDevice, ProjectionMode, ProjectionOptions};
+pub use tilo_projector::{CaptureProfile, ProjectionDevice, ProjectionMode, ProjectionOptions};
 
 use crate::i18n::t;
+
+/// The socket the projector reads the desktop's video from, beside its
+/// control socket; a broker of the person's own says so in the environment.
+const VIDEO_SOCKET_ENV: &str = "TILO_PROJECTOR_VIDEO_SOCKET";
+const VIDEO_SOCKET_NAME: &str = "video.sock";
+
+/// Where the projector reads the desktop's frames, for the sheet speaking on
+/// `control` (`None`: the service's own control socket).
+#[must_use]
+pub(crate) fn video_socket(control: Option<&Path>) -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os(VIDEO_SOCKET_ENV) {
+        return Some(PathBuf::from(path));
+    }
+    let control = control
+        .map(Path::to_path_buf)
+        .or_else(control::control_socket)?;
+    control.parent().map(|dir| dir.join(VIDEO_SOCKET_NAME))
+}
 
 /// How long a discovery listens for receivers.
 const DISCOVERY_WINDOW_MS: u64 = 1_500;
@@ -125,7 +144,15 @@ pub trait ProjectionBackend: Send + 'static {
     /// Gives the backend somewhere to report session changes nobody asked
     /// for. Backends without a live service (tests) have none to report.
     fn set_notice_sink(&mut self, _sink: NoticeSink) {}
+
+    /// Gives the backend somewhere to report the profile the projector asks
+    /// the desktop's frames at, as the receiver and the link allow more or
+    /// less. Backends without a live service (tests) ask for none.
+    fn set_profile_sink(&mut self, _sink: ProfileSink) {}
 }
+
+/// Where a backend delivers the [`CaptureProfile`]s the projector asks for.
+pub type ProfileSink = Arc<dyn Fn(CaptureProfile) + Send + Sync>;
 
 /// A session change the backend learns of without being asked: the receiver
 /// went away, or the projection service itself did.
@@ -160,6 +187,7 @@ pub struct SystemProjectionBackend {
     socket: Option<PathBuf>,
     link: Option<ControlLink>,
     notices: Option<NoticeSink>,
+    profiles: Option<ProfileSink>,
 }
 
 impl fmt::Debug for SystemProjectionBackend {
@@ -180,6 +208,7 @@ impl SystemProjectionBackend {
             socket: socket.or_else(control::control_socket),
             link: None,
             notices: None,
+            profiles: None,
         }
     }
 
@@ -196,11 +225,19 @@ impl SystemProjectionBackend {
         let mut reader = writer.try_clone().map_err(Self::unavailable)?;
         let (tx, events) = mpsc::channel();
         let notices = self.notices.clone();
+        let profiles = self.profiles.clone();
         std::thread::Builder::new()
             .name("tilo-projection-events".into())
             .spawn(move || {
                 while let Ok(Some(event)) = control::read_event(&mut reader) {
                     match event {
+                        ProjectorEvent::CaptureProfile(profile) => {
+                            // Nobody waited for this one: the frames of the
+                            // desktop are sent at it from now on.
+                            if let Some(profiles) = profiles.as_ref() {
+                                profiles(profile);
+                            }
+                        }
                         ProjectorEvent::Ended { device_id, error } => {
                             if let Some(notices) = notices.as_ref() {
                                 notices(ProjectionNotice::Ended {
@@ -378,6 +415,12 @@ impl ProjectionBackend for SystemProjectionBackend {
         // A connection opened before this would not report to the sink.
         self.link = None;
     }
+
+    fn set_profile_sink(&mut self, sink: ProfileSink) {
+        self.profiles = Some(sink);
+        // A connection opened before this would not report to the sink.
+        self.link = None;
+    }
 }
 
 enum WorkerCommand {
@@ -403,6 +446,9 @@ pub struct ProjectionController {
     pub status: ProjectionStatus,
     pub options: ProjectionOptions,
     pub selected: usize,
+    /// The profile the projector last asked the desktop's frames at; `None`
+    /// until it says, and for every new session until it does.
+    profile: Arc<Mutex<Option<CaptureProfile>>>,
 }
 
 impl fmt::Debug for ProjectionController {
@@ -431,6 +477,11 @@ impl ProjectionController {
             if event_tx.send(WorkerEvent::Notice(notice)).is_ok() {
                 notice_wake();
             }
+        }));
+        let profile: Arc<Mutex<Option<CaptureProfile>>> = Arc::default();
+        let asked = Arc::clone(&profile);
+        backend.set_profile_sink(Arc::new(move |sent| {
+            *asked.lock_recover() = Some(sent);
         }));
         let spawned = std::thread::Builder::new()
             .name("tilo-projection".into())
@@ -471,7 +522,15 @@ impl ProjectionController {
             status: ProjectionStatus::Idle,
             options: ProjectionOptions::default(),
             selected: 0,
+            profile,
         }
+    }
+
+    /// The profile the projector asks the desktop's frames at, once it said:
+    /// the receiver's and the link's own ceiling.
+    #[must_use]
+    pub fn profile(&self) -> Option<CaptureProfile> {
+        *self.profile.lock_recover()
     }
 
     /// The channel to the worker, once there is one: without a worker the
@@ -513,6 +572,9 @@ impl ProjectionController {
             self.status = ProjectionStatus::Connecting {
                 device_id: device.id,
             };
+            // A new session asks its own profile of the frames; the one the
+            // last receiver asked for says nothing about this one.
+            *self.profile.lock_recover() = None;
             // Do not retain a receiver password in session memory after it
             // has crossed into the broker worker.
             self.options.credential = None;

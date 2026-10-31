@@ -784,6 +784,7 @@ fn a_device_row_press_asks_the_session_for_that_row_and_part() {
                 online: true,
                 local: true,
                 display: true,
+                wakeable: false,
             },
             PersonalDevice {
                 id: "laptop".into(),
@@ -791,6 +792,7 @@ fn a_device_row_press_asks_the_session_for_that_row_and_part() {
                 online: true,
                 local: false,
                 display: true,
+                wakeable: false,
             },
         ],
         Some("Clair de lune"),

@@ -10,7 +10,11 @@ use tilo_service::Started;
 use tilo_surface_host::{Doors, Published};
 use ui::host_operation::ResourceOperationStart;
 
-use crate::{ActionPlane, Options, Plane, Service, Services, plane, surfaces};
+use crate::plane::{DeskAuthority, ShortcutLibrary};
+use crate::{
+    ActionPlane, DesktopHandle, Options, Plane, Service, Services, activity, activity_provider,
+    plane, surfaces,
+};
 
 /// What a service answered, as a caller of the action protocol reads it.
 pub(crate) fn answered(started: Started) -> ResourceOperationStart {
@@ -79,6 +83,9 @@ impl Published for ServiceDoor {
 pub(crate) fn start_action_plane(
     options: &Options,
     live_activities: &std::sync::Arc<runtime_collab::LiveActivities>,
+    handle: &DesktopHandle,
+    shortcuts: std::sync::Arc<ShortcutLibrary>,
+    activity: &activity::Activity,
 ) -> Result<Option<Plane>, Error> {
     let path = match &options.action_plane {
         ActionPlane::Off => return Ok(None),
@@ -91,20 +98,33 @@ pub(crate) fn start_action_plane(
         ActionPlane::At(path) => path.clone(),
     };
     let link = plane::Link::new(options.wake.handle());
+    // What the broker decides against, from this pass on: the desk as it is
+    // before the person touches anything, and every desk it shows after.
+    let desk = std::sync::Arc::new(DeskAuthority::new(handle.read(Clone::clone)));
+    // The workspace's activity, as the apps this session runs read it: the
+    // same model the desk serves its own windows.
+    let activity_wire = activity_provider::wire(activity.requests());
+    activity.serve_apps(std::sync::Arc::clone(&activity_wire));
     let broker = plane::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
         std::sync::Arc::clone(&options.launches),
         options.fabric.clone(),
-        std::sync::Arc::clone(live_activities),
-        // The index search reads is the one apps publish into: a closed
-        // app's content is found from here on.
-        options.search.content.clone(),
+        plane::Hosted {
+            live_activities: std::sync::Arc::clone(live_activities),
+            // The index search reads is the one apps publish into: a closed
+            // app's content is found from here on.
+            content: options.search.content.clone(),
+            desk: std::sync::Arc::clone(&desk),
+            shortcuts,
+            activity: activity_wire,
+        },
     )?;
     Ok(Some(Plane {
         link,
         path,
-        _broker: broker,
+        desk,
+        broker,
     }))
 }
 

@@ -1088,11 +1088,7 @@ impl crate::Shared {
             self.ws_settings_fed.set(None);
             workspace_settings::refresh(
                 self.workspace_settings.as_ref(),
-                &self.handle,
-                &self.person(),
-                &self.app_lists(),
-                &self.ws_settings_fed,
-                self.personal.as_ref(),
+                &self.workspace_settings_feed(),
             );
         }
     }

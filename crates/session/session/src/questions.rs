@@ -764,6 +764,7 @@ fn compose(question: &Question) -> Option<Composed> {
         NETWORK_KIND => network_secrets(&question.handle, details)?,
         CANNOT_JOIN_KIND => cannot_join(&question.handle, details)?,
         tilo_bluetooth_agent::KIND => pairing(&question.handle, details)?,
+        crate::agent_door::KIND => admitted(&question.handle, &who, details)?,
         _ => return None,
     };
     Some(Composed {
@@ -807,7 +808,7 @@ fn who(question: &Question) -> String {
 }
 
 /// What the app `app_id` is called.
-fn app_name(app_id: &str) -> String {
+pub(crate) fn app_name(app_id: &str) -> String {
     let scan = desktop_entry::cache::cached_scan();
     scan.find(app_id)
         .map_or_else(|| app_id.to_owned(), |entry| entry.name.clone())
@@ -853,6 +854,29 @@ fn access(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     let mut dialog = review(handle, title, heading, detail);
     dialog.body = Body::Choices(labels);
     Some((dialog, Plan::Choose(allowances)))
+}
+
+/// The agent door's question: a program of this login wants to work in the
+/// workspace in front as an agent. Answering admits it — as an agent member
+/// of that workspace, or for this connection only — and refusing leaves it
+/// with no access at all.
+fn admitted(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
+    let asked: crate::agent_door::Admission = serde_json::from_value(details).ok()?;
+    let title = words(
+        "agent-door-admission",
+        &[("workspace", &asked.workspace), ("agent", &asked.agent)],
+    );
+    let detail = words("agent-door-admission-detail", &[("agent", &asked.agent)]);
+    let mut dialog = review(handle, title, who.to_owned(), detail);
+    dialog.body = Body::Choices(vec![
+        word("portal-allow-once"),
+        word("portal-allow-session"),
+        word("portal-allow-always"),
+    ]);
+    Some((
+        dialog,
+        Plan::Choose(vec![ALLOW_ONCE, ALLOW_SESSION, ALLOW_ALWAYS]),
+    ))
 }
 
 /// What `capability` is, in the person's words.

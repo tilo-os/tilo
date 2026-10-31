@@ -47,14 +47,14 @@ pub(crate) fn load_at(state: &Path) -> Option<DesktopTree> {
     Some(shape(tree))
 }
 
-/// The desk `tree` describes, as it is kept: what a save writes and a
-/// reader compares.
+/// The desk `tree` describes, as it is kept: what a save writes, what a
+/// reader compares, and what the workspace's history records.
 #[must_use]
-pub(crate) fn text(tree: &DesktopTree) -> Option<String> {
-    serde_json::to_string(&shape(tree.clone())).ok()
+pub(crate) fn value(tree: &DesktopTree) -> Option<serde_json::Value> {
+    serde_json::to_value(shape(tree.clone())).ok()
 }
 
-/// Write `text`, the desk as [`text`] made it, under `state`, replacing the
+/// Write `text`, the desk as [`value`] made it, under `state`, replacing the
 /// one before.
 ///
 /// # Errors
@@ -224,7 +224,8 @@ mod tests {
     fn the_desk_comes_back_as_it_was_left_and_its_windows_open_again() {
         let state = tempfile::tempdir().expect("a state directory");
         let saved = desk();
-        let text = text(&saved).expect("the desk is written");
+        let text = serde_json::to_string(&value(&saved).expect("the desk is written"))
+            .expect("the desk as text");
         save_at(state.path(), &text).expect("the desk is saved");
         assert!(
             !text.contains("surface_id"),
