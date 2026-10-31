@@ -106,7 +106,15 @@ impl RecordSet {
         cache.put_document(key(&self.package_id, &self.home, id), doc, Some(actor))
     }
 
-    pub(super) fn flush_portable(&mut self, only: Option<&RecordId>) -> Result<(), String> {
+    /// Hand the open records to the cache. With `accepted_is_written` the
+    /// cache's "the host has not acknowledged yet" is what a store commit-
+    /// ting on its own thread says for bytes it holds
+    /// ([`RecordSet::try_flush_written`]), not a failure.
+    pub(super) fn flush_portable(
+        &mut self,
+        only: Option<&RecordId>,
+        accepted_is_written: bool,
+    ) -> Result<(), String> {
         let cache = self
             .portable
             .as_ref()
@@ -132,6 +140,9 @@ impl RecordSet {
                 // acknowledgement will come to say so.
                 Ok(()) if edited => cache.durability_changed(&key),
                 Ok(()) => {}
+                Err(e)
+                    if accepted_is_written
+                        && e == crate::portable_storage::PENDING_ACKNOWLEDGEMENT => {}
                 Err(e) => errors.push(format!("{id}: {e}")),
             }
         }

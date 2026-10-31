@@ -459,9 +459,11 @@ impl HistoryOwner {
         }
     }
 
-    pub(crate) fn schedule_committed_history(&self) {
+    /// # Errors
+    /// The record's writer reports a storage failure.
+    pub(crate) fn schedule_committed_history(&self) -> Result<(), String> {
         let (store, checkout) = self.store_checkout();
-        store.schedule_committed_history(&checkout.id);
+        store.schedule_committed_history(&checkout.id)
     }
 }
 

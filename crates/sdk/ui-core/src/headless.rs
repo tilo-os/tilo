@@ -2952,7 +2952,9 @@ impl FrameHarness {
         self.invalidate_local();
         self.pump_component_wakes();
         if let Some(wake) = &self.component_wake {
-            wake.binding.records.tick();
+            if let Err(error) = wake.binding.records.tick() {
+                tracing::error!(%error, "headless record persistence failed");
+            }
             return true;
         }
         match self.records.as_mut() {
@@ -3036,7 +3038,9 @@ impl FrameHarness {
         let before = crate::doc::settle_mark(&self.state.doc);
         self.idle_control_tick();
         if let Some(wake) = &self.component_wake {
-            wake.binding.records.tick();
+            if let Err(error) = wake.binding.records.tick() {
+                tracing::error!(%error, "headless record persistence failed");
+            }
         } else if let Some(set) = self.records.as_mut() {
             set.tick(&mut self.state.doc);
         }

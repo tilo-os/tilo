@@ -575,7 +575,9 @@ impl<C: ChildRecord> ChildrenState<C> {
                 .ok_or_else(|| {
                     ActionError::Refused(format!("the record listing {verb} is not open here"))
                 })??;
-            self.room.store.schedule_committed_history(&record);
+            if let Err(error) = self.room.store.schedule_committed_history(&record) {
+                tracing::error!(%error, "an edited child record could not be saved");
+            }
         }
         self.refresh();
         self.moved();
@@ -868,7 +870,9 @@ impl<C: ChildRecord> ChildrenState<C> {
                 applied
             })
             .ok_or_else(|| ActionError::Refused("the child is not open here".into()))??;
-        self.room.store.schedule_committed_history(&record);
+        if let Err(error) = self.room.store.schedule_committed_history(&record) {
+            tracing::error!(%error, "a created child record could not be saved");
+        }
         self.refresh();
         self.moved();
         Ok(created)

@@ -389,7 +389,7 @@ fn status_polling_and_failed_flushes_keep_pending_edits() {
         ));
         assert!(store.durability_error(&want.id).is_some());
         store.with(&want.id, |doc| doc.put(ROOT, "body", "latest").unwrap());
-        store.tick();
+        store.tick().unwrap();
         let expected = store
             .with(&want.id, automerge::AutoCommit::get_heads)
             .unwrap();

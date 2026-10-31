@@ -66,7 +66,7 @@ impl RecordSaveStatus {
         }
         match cache.flush(key) {
             Ok(()) => Self::Saved,
-            Err(message) if message == "persistence pending host acknowledgement" => Self::Saving,
+            Err(message) if message == portable_storage::PENDING_ACKNOWLEDGEMENT => Self::Saving,
             Err(message) => Self::Failed(message),
         }
     }

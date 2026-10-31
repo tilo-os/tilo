@@ -1486,10 +1486,12 @@ impl RecordSet {
     /// Offer every open record's document to its own writer. The
     /// multi-record twin of [`Self::tick`], for a host with no single live
     /// document to hand in.
-    pub fn tick_open(&mut self) {
+    ///
+    /// # Errors
+    /// A record's cache reports that it could not take the document.
+    pub fn tick_open(&mut self) -> Result<(), String> {
         if self.portable.is_some() {
-            let _ = self.flush_portable(None);
-            return;
+            return self.flush_portable(None, false);
         }
         for slot in self.open.values_mut() {
             if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut()) {
@@ -1497,21 +1499,32 @@ impl RecordSet {
                 saver.request(doc);
             }
         }
+        Ok(())
     }
 
     /// Write out every open record and wait for it to land. The
     /// multi-record twin of [`Self::flush`].
-    pub fn flush_open(&mut self) {
+    ///
+    /// # Errors
+    /// Each record's writer that reports a storage failure, by record.
+    pub fn flush_open(&mut self) -> Result<(), String> {
         if self.portable.is_some() {
-            let _ = self.flush_portable(None);
-            return;
+            return self.flush_portable(None, false);
         }
-        for slot in self.open.values_mut() {
+        let mut errors = Vec::new();
+        for (id, slot) in &mut self.open {
             if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut()) {
                 slot.action_state.commit_for_save(doc);
                 saver.request(doc);
-                saver.flush();
+                if let Err(error) = saver.try_flush() {
+                    errors.push(format!("{id}: {error}"));
+                }
             }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
         }
     }
 
@@ -1583,10 +1596,11 @@ impl RecordSet {
 
     /// Write out everything still pending, live document included, and wait
     /// for it to land.
-    pub fn flush(&mut self, live: &mut AutoCommit) {
-        if let Err(error) = self.try_flush(live) {
-            tracing::error!(%error, "record persistence failed");
-        }
+    ///
+    /// # Errors
+    /// Each record's writer that reports a storage failure, by record.
+    pub fn flush(&mut self, live: &mut AutoCommit) -> Result<(), String> {
+        self.try_flush(live)
     }
 }
 
@@ -2498,9 +2512,13 @@ impl RecordStore {
 
     /// Schedule this already committed History result through its existing writer.
     /// Do not sweep or close unrelated owners' unfinished edits.
-    pub fn schedule_committed_history(&self, id: &RecordId) {
+    ///
+    /// # Errors
+    /// The record's cache reports that it could not take the document, or the
+    /// store is busy and took nothing.
+    pub fn schedule_committed_history(&self, id: &RecordId) -> Result<(), String> {
         let Ok(mut set) = self.0.try_borrow_mut() else {
-            return;
+            return Err("record store is busy".to_string());
         };
         if set.portable.is_some() {
             if set
@@ -2509,18 +2527,19 @@ impl RecordStore {
                 .and_then(|slot| slot.doc.as_ref())
                 .is_some_and(|doc| doc.pending_ops() == 0)
             {
-                let _ = set.flush_portable(Some(id));
+                return set.flush_portable(Some(id), false);
             }
-            return;
+            return Ok(());
         }
         let Some(slot) = set.open.get_mut(id) else {
-            return;
+            return Ok(());
         };
         if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut())
             && doc.pending_ops() == 0
         {
             saver.request(doc);
         }
+        Ok(())
     }
 
     /// Cheap content witness for retained projections over open records.
@@ -2992,7 +3011,7 @@ impl RecordStore {
             .try_borrow_mut()
             .map_err(|_| "record store is busy".to_string())?;
         if set.portable.is_some() {
-            return set.flush_portable(Some(id));
+            return set.flush_portable(Some(id), false);
         }
         let slot = set
             .open
@@ -3017,7 +3036,7 @@ impl RecordStore {
     pub fn try_flush(&self) -> Result<(), String> {
         let mut set = self.0.borrow_mut();
         if set.portable.is_some() {
-            return set.flush_portable(None);
+            return set.flush_portable(None, false);
         }
         set.try_flush_documents(None, Durability::Durable)
     }
@@ -3028,7 +3047,7 @@ impl RecordStore {
     pub fn try_flush_written(&self) -> Result<(), String> {
         let mut set = self.0.borrow_mut();
         if set.portable.is_some() {
-            return set.flush_portable(None);
+            return set.flush_portable(None, true);
         }
         set.try_flush_written()
     }
@@ -3828,13 +3847,19 @@ impl RecordStore {
     }
 
     /// Offer every open record to its writer. Once per idle tick.
-    pub fn tick(&self) {
-        self.0.borrow_mut().tick_open();
+    ///
+    /// # Errors
+    /// A record's cache reports that it could not take the document.
+    pub fn tick(&self) -> Result<(), String> {
+        self.0.borrow_mut().tick_open()
     }
 
     /// Write out every open record and wait for it to land.
-    pub fn flush(&self) {
-        self.0.borrow_mut().flush_open();
+    ///
+    /// # Errors
+    /// Each record's writer that reports a storage failure, by record.
+    pub fn flush(&self) -> Result<(), String> {
+        self.0.borrow_mut().flush_open()
     }
 }
 
@@ -4288,7 +4313,7 @@ mod tests {
             store
                 .with(&checkout.id, |doc| doc.put(ROOT, "value", 1_u64).unwrap())
                 .unwrap();
-            store.tick();
+            store.tick().unwrap();
             let older = store.read(&checkout.id, AutoCommit::base_heads).unwrap();
             store
                 .with(&checkout.id, |doc| doc.put(ROOT, "value", 2_u64).unwrap())
@@ -4503,8 +4528,8 @@ mod tests {
                 (full_writes, appends, p.history.revision())
             };
             store.with(&want.id, |doc| put_text(doc, "body", "one edit"));
-            store.tick();
-            second.tick();
+            store.tick().unwrap();
+            second.tick().unwrap();
             assert!(matches!(
                 second.try_open_record(&want),
                 Ok(RecordOpenOutcome::AlreadyOpen)
@@ -4726,7 +4751,7 @@ mod tests {
                 let mut state = State::new();
                 assert!(set.checkout(&mut state, None, &record));
                 put_text(&mut state.doc, "body", body);
-                set.flush(&mut state.doc);
+                set.flush(&mut state.doc).unwrap();
             }
 
             for (room, expected) in [(a, "private to a"), (b, "private to b")] {
@@ -4786,7 +4811,7 @@ mod tests {
                 set.checkout(&mut state, Some(&mut room), &a);
                 set.checkout(&mut state, Some(&mut room), &b);
                 put_text(&mut state.doc, "body", "b's body");
-                set.flush(&mut state.doc);
+                set.flush(&mut state.doc).unwrap();
             }
 
             // A fresh process: same package, same record ids, nothing else shared.
@@ -4889,7 +4914,7 @@ mod tests {
                         doc.get_heads()
                     })
                     .unwrap();
-                store.flush();
+                store.flush().unwrap();
                 heads
             };
             let store = RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
@@ -4970,8 +4995,8 @@ mod tests {
                 assert!(store.open_existing_record_checked(&checkout).is_err());
                 assert!(store.create_record(&checkout).is_err());
                 assert!(store.read(&checkout.id, |_| ()).is_none());
-                store.tick();
-                store.flush();
+                store.tick().unwrap();
+                store.flush().unwrap();
                 assert_eq!(std::fs::read(&path).unwrap(), payload);
             }
         }
@@ -5268,6 +5293,113 @@ mod tests {
         ));
         assert_eq!(state.doc.pending_ops(), pending);
         assert!(set.active().is_none());
+    }
+
+    /// A store that takes reads and refuses writes once told to, so a flush
+    /// has a failure of the store's own to report.
+    struct RefusingStore {
+        inner: durable_store::MemoryStore,
+        refuse: std::cell::Cell<bool>,
+    }
+
+    impl RefusingStore {
+        fn new() -> Self {
+            Self {
+                inner: durable_store::MemoryStore::new(),
+                refuse: std::cell::Cell::new(false),
+            }
+        }
+    }
+
+    impl durable_store::DurableStore for RefusingStore {
+        fn namespace(&self) -> &str {
+            self.inner.namespace()
+        }
+        fn read(
+            &self,
+            key: &StorageKey,
+        ) -> Result<Option<durable_store::Stored>, durable_store::StoreError> {
+            self.inner.read(key)
+        }
+        fn write(
+            &self,
+            key: &StorageKey,
+            op: durable_store::WriteOp,
+            writer: Option<&[u8]>,
+        ) -> Result<durable_store::Revision, durable_store::StoreError> {
+            if self.refuse.get() {
+                return Err(durable_store::StoreError::Failed {
+                    context: "refusing store".into(),
+                    message: "the disk is full".into(),
+                });
+            }
+            self.inner.write(key, op, writer)
+        }
+        fn durability(
+            &self,
+            key: &StorageKey,
+            revision: durable_store::Revision,
+        ) -> durable_store::Durability {
+            self.inner.durability(key, revision)
+        }
+        fn flush(&self, key: Option<&StorageKey>) -> Result<(), durable_store::StoreError> {
+            self.inner.flush(key)
+        }
+        fn wake_when_settled(
+            &self,
+            key: &StorageKey,
+            wake: durable_store::ReadyWake,
+        ) -> durable_store::SettleWatch {
+            self.inner.wake_when_settled(key, wake)
+        }
+        fn lease(
+            &self,
+            key: &StorageKey,
+        ) -> Result<durable_store::Lease, durable_store::StoreError> {
+            self.inner.lease(key)
+        }
+        fn lease_shared(
+            &self,
+            key: &StorageKey,
+        ) -> Result<durable_store::SharedLease, durable_store::StoreError> {
+            self.inner.lease_shared(key)
+        }
+        fn claim(
+            &self,
+            key: &StorageKey,
+            claimant: &str,
+        ) -> Result<bool, durable_store::StoreError> {
+            self.inner.claim(key, claimant)
+        }
+    }
+
+    /// A save the store refused reaches whoever flushes the record, naming
+    /// it, rather than a log line the caller never sees.
+    #[test]
+    fn a_failed_record_save_reaches_the_caller() {
+        let documents = Rc::new(RefusingStore::new());
+        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+        let store = RecordStore::new(RecordSet::open_in(
+            Rc::clone(&documents) as Rc<dyn DurableStore>,
+            "dev.tilo.refusing-store",
+            "11111111-1111-4111-8111-111111111111",
+        ));
+        assert!(store.open_record(&checkout));
+        store
+            .with(&checkout.id, |doc| put_text(doc, "body", "typed"))
+            .unwrap();
+        assert_eq!(store.flush(), Ok(()), "the store took the first save");
+
+        documents.refuse.set(true);
+        store
+            .with(&checkout.id, |doc| put_text(doc, "body", "typed again"))
+            .unwrap();
+        let error = store.flush().expect_err("the store refused the save");
+        assert!(
+            error.contains(&checkout.id.to_string()),
+            "the failure names the record: {error}"
+        );
+        assert!(error.contains("the disk is full"), "{error}");
     }
 }
 

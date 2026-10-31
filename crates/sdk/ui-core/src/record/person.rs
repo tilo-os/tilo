@@ -428,7 +428,9 @@ impl StoredRecord {
                 }
                 Ok(value)
             })?;
-        self.store.schedule_committed_history(&self.checkout.id);
+        if let Err(error) = self.store.schedule_committed_history(&self.checkout.id) {
+            tracing::error!(%error, "an edited record could not be saved");
+        }
         Ok(result)
     }
 
@@ -452,8 +454,8 @@ impl StoredRecord {
                 step(doc, history, &self.author)
             })
             .unwrap_or(false);
-        if stepped {
-            self.store.schedule_committed_history(&self.checkout.id);
+        if stepped && let Err(error) = self.store.schedule_committed_history(&self.checkout.id) {
+            tracing::error!(%error, "a stepped record could not be saved");
         }
         stepped
     }
@@ -487,8 +489,8 @@ impl StoredRecord {
     /// The bytes are not this record's document.
     pub fn merge_peer_document(&self, document: Vec<u8>) -> Result<bool, String> {
         let changed = self.store.merge_peer_document(&self.checkout, document)?;
-        if changed {
-            self.store.schedule_committed_history(&self.checkout.id);
+        if changed && let Err(error) = self.store.schedule_committed_history(&self.checkout.id) {
+            tracing::error!(%error, "a merged record could not be saved");
         }
         Ok(changed)
     }
