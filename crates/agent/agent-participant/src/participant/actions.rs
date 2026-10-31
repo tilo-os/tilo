@@ -136,7 +136,9 @@ impl AgentParticipant {
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::ConfirmationResponse { .. } => return,
+            | RemoteActionMessage::ConfirmationResponse { .. }
+            | RemoteActionMessage::ResourceWatch { .. }
+            | RemoteActionMessage::ResourceReading { .. } => return,
         };
         match RemoteActionFrame::new(reply).encode() {
             Ok(bytes) => {
