@@ -12,6 +12,7 @@ use vello::peniko::Color;
 
 use crate::theme::{Theme, WindowAppearance};
 use crate::theme_document::{Preset, ThemeDensity, ThemeDocument};
+use crate::tokens::{Emphasis, PresenceHue};
 
 /// JSON id of the distribution-defaults layer. The same layer is also read
 /// from [`DISTRIBUTION_DEFAULTS_KEY`].
@@ -92,6 +93,9 @@ pub const DISTINCT_LETTERS_KEY: &str = "distinct_letters";
 /// `appearance` key: the interface face the person chose, by name, over the
 /// theme's own (`settings_store::appearance::UI_FACE`).
 pub const UI_FACE_KEY: &str = "ui_face";
+/// `appearance` key: the accent the person chose, by a presence hue's name,
+/// over the theme's own (`settings_store::appearance::ACCENT`).
+pub const ACCENT_KEY: &str = "accent";
 /// `appearance` key: how much of the theme's translucency the person keeps,
 /// `1` as the theme sets it and `0` opaque
 /// (`settings_store::appearance::TRANSLUCENCY`).
@@ -326,10 +330,11 @@ impl Default for AccessibilityLayer {
 }
 
 /// The person's own finish over whichever theme is shown: the interface face
-/// they read best, and how much of the theme's translucency they keep. Both
-/// are roles the theme already has ([`PIN_TYPE`], [`PIN_MATERIAL`]); this
-/// layer only says the person would rather have them their way than the
-/// theme's, so no custom theme has to be written for a face or a blur.
+/// they read best, their accent, and how much of the theme's translucency they
+/// keep. All are roles the theme already has ([`PIN_TYPE`], [`PIN_EMPHASIS`],
+/// [`PIN_MATERIAL`]); this layer only says the person would rather have them
+/// their way than the theme's, so no custom theme has to be written for a
+/// face, a colour or a blur.
 ///
 /// A role the distribution pins stays the distribution's, and accessibility
 /// is applied after this (high contrast and "make panels opaque" win).
@@ -338,6 +343,9 @@ pub struct FinishLayer {
     /// Any family name a theme's type role may name; `None` follows the
     /// theme.
     pub ui_face: Option<String>,
+    /// The hue the person wants as the accent; `None` follows the theme's
+    /// emphasis.
+    pub accent: Option<PresenceHue>,
     /// `0` opaque floating chrome, `1` as the theme sets it; `None` follows
     /// the theme.
     pub translucency: Option<f32>,
@@ -363,7 +371,7 @@ impl FinishLayer {
     /// Whether this layer names anything at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.ui_face.is_none() && self.translucency.is_none()
+        self.ui_face.is_none() && self.accent.is_none() && self.translucency.is_none()
     }
 
     /// [`Self::validate`], then trim the face and clamp the translucency into
@@ -376,6 +384,7 @@ impl FinishLayer {
         self.validate()?;
         Ok(Self {
             ui_face: self.ui_face.as_ref().map(|face| face.trim().to_owned()),
+            accent: self.accent,
             translucency: self.translucency.map(|value| {
                 value.clamp(
                     settings_store::appearance::TRANSLUCENCY_MIN,
@@ -393,7 +402,7 @@ pub struct ThemeLayerStack {
     /// The theme the person chose for the current mode. `None` means they
     /// have not chosen one, or chose one this build does not admit.
     pub user_theme: Option<ThemeDocument>,
-    /// The person's own face and translucency over that theme.
+    /// The person's own face, accent and translucency over that theme.
     pub finish: FinishLayer,
     /// Where and for whom the window is shown: the temperature of its
     /// workspace (the person's override for it,
@@ -440,14 +449,18 @@ impl ThemeLayerStack {
     }
 }
 
-/// The person's finish an `appearance` section names: their face and how much
-/// of the theme's translucency they keep. Keys the section does not name (or
-/// names unusably) leave that role to the theme.
+/// The person's finish an `appearance` section names: their face, their
+/// accent and how much of the theme's translucency they keep. Keys the
+/// section does not name (or names unusably) leave that role to the theme.
 fn finish_layer(appearance: Option<&serde_json::Value>) -> FinishLayer {
     let face = appearance
         .and_then(|section| section.get(UI_FACE_KEY))
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
+    let accent = appearance
+        .and_then(|section| section.get(ACCENT_KEY))
+        .and_then(serde_json::Value::as_str)
+        .and_then(PresenceHue::from_id);
     let translucency = appearance
         .and_then(|section| section.get(TRANSLUCENCY_KEY))
         .and_then(serde_json::Value::as_f64)
@@ -462,6 +475,7 @@ fn finish_layer(appearance: Option<&serde_json::Value>) -> FinishLayer {
         .filter(|value| value.is_finite());
     FinishLayer {
         ui_face: face,
+        accent,
         translucency,
     }
 }
@@ -693,10 +707,12 @@ pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
 }
 
 /// The person's finish over the resolved theme: their face for the theme's,
-/// and their share of the theme's translucency — `0` turns the floating
-/// chrome's blur off and its tint opaque, `1` leaves the theme as it is. Both
-/// are roles the theme already has, so a pinned `type` or `material` stays the
-/// distribution's; accessibility is applied after this and still wins.
+/// their accent hue for the theme's emphasis, and their share of the theme's
+/// translucency — `0` turns the floating chrome's blur off and its tint
+/// opaque, `1` leaves the theme as it is. All are roles the theme already has,
+/// so a pinned `type`, `emphasis` or `material` stays the distribution's; a
+/// high-contrast palette has no accent to give; accessibility is applied after
+/// this and still wins.
 fn apply_finish(
     document: &mut ThemeDocument,
     finish: &FinishLayer,
@@ -709,6 +725,16 @@ fn apply_finish(
     if let Some(face) = finish.ui_face {
         if !pinned(PIN_TYPE) {
             document.type_.face = face;
+        }
+    }
+    if let Some(accent) = finish.accent {
+        if !pinned(PIN_EMPHASIS) && !document.palette.high_contrast {
+            // The theme's own derivation from a chosen hue: the fill, its
+            // hover and press, the label on it, the accent ink and every
+            // lift tinted with it, at the contrast its palette keeps.
+            document.emphasis = Emphasis::Tinted {
+                hue: accent.degrees(),
+            };
         }
     }
     if let Some(strength) = finish.translucency {
@@ -1197,14 +1223,20 @@ mod tests {
     }
 
     #[test]
-    fn the_persons_face_and_translucency_are_read_from_settings_over_the_theme() {
+    fn the_persons_face_accent_and_translucency_are_read_from_settings_over_the_theme() {
         let theme = Theme::resolved_from_settings(
-            r#"{"appearance":{"mode":"dark","ui_face":"Hyperlegible","translucency":0.0}}"#,
+            r#"{"appearance":{"mode":"dark","ui_face":"Hyperlegible","accent":"violet","translucency":0.0}}"#,
         );
         assert_eq!(theme.document.type_.face, "Hyperlegible");
         assert_eq!(
             theme.tokens.typography.sans_family,
             crate::text_render::UI_HYPERLEGIBLE_FAMILY
+        );
+        assert_eq!(
+            theme.document.emphasis,
+            Emphasis::Tinted {
+                hue: PresenceHue::Violet.degrees()
+            }
         );
         assert!(
             theme.tokens.colors.surfaces.material_blur_px.abs() < f32::EPSILON,
@@ -1235,6 +1267,17 @@ mod tests {
                 < 1e-4
         );
         assert_eq!(full.document.type_.face, stock.document.type_.face);
+
+        // A name the presence palette does not have leaves the accent the
+        // theme's emphasis gives.
+        let unknown = Theme::resolved_from_settings(
+            r#"{"appearance":{"mode":"dark","accent":"chartreuse"}}"#,
+        );
+        assert_eq!(unknown.document.emphasis, Emphasis::You);
+        assert_eq!(
+            unknown.tokens.colors.intent.accent,
+            stock.tokens.colors.intent.accent
+        );
     }
 
     #[test]
@@ -1252,6 +1295,7 @@ mod tests {
             }),
             finish: FinishLayer {
                 ui_face: Some("Hyperlegible".into()),
+                accent: None,
                 translucency: Some(0.0),
             },
             ..light_stack()
@@ -1264,6 +1308,7 @@ mod tests {
         let opaque = resolve_theme_layers(&ThemeLayerStack {
             finish: FinishLayer {
                 ui_face: None,
+                accent: None,
                 translucency: Some(1.0),
             },
             accessibility: AccessibilityLayer {
@@ -1276,6 +1321,7 @@ mod tests {
         let contrast = resolve_theme_layers(&ThemeLayerStack {
             finish: FinishLayer {
                 ui_face: None,
+                accent: None,
                 translucency: Some(1.0),
             },
             accessibility: AccessibilityLayer {
@@ -1288,6 +1334,163 @@ mod tests {
     }
 
     #[test]
+    fn a_chosen_accent_recolours_the_theme_at_its_hue_and_keeps_every_floor() {
+        use crate::a11y::contrast_ratio;
+        use crate::color::Oklch;
+        for preset in [Preset::Dark, Preset::Light] {
+            for accent in PresenceHue::ALL {
+                let theme = resolve_theme_layers(&ThemeLayerStack {
+                    user_theme: Some(preset.document()),
+                    finish: FinishLayer {
+                        accent: Some(accent),
+                        ..FinishLayer::default()
+                    },
+                    ..ThemeLayerStack::default()
+                });
+                let c = &theme.tokens.colors;
+                assert_eq!(
+                    theme.document.emphasis,
+                    Emphasis::Tinted {
+                        hue: accent.degrees()
+                    }
+                );
+                // The accent is the hue the person chose, and everything the
+                // theme derives from it: the fill's steps, the label on it,
+                // the ink the ring and caret take.
+                let (fill, ink) = (
+                    Oklch::from_color(c.intent.accent),
+                    Oklch::from_color(c.intent.accent_ink),
+                );
+                let off = |hue: f32| {
+                    let d = (hue - accent.degrees()).rem_euclid(360.0);
+                    d.min(360.0 - d)
+                };
+                assert!(off(fill.h) <= 12.0, "{accent:?}: fill at {}°", fill.h);
+                assert!(off(ink.h) <= 12.0, "{accent:?}: ink at {}°", ink.h);
+                assert_eq!(theme.border_focus, c.intent.accent_ink);
+                assert_ne!(c.intent.accent, c.intent.accent_hover);
+                assert_ne!(c.intent.accent_hover, c.intent.accent_pressed);
+                assert!(
+                    contrast_ratio(c.intent.on_accent, c.intent.accent) >= 4.5,
+                    "{accent:?}: the label on the primary fill",
+                );
+                assert!(
+                    contrast_ratio(c.intent.accent, c.surfaces.content) >= 3.0,
+                    "{accent:?}: the primary fill stands off the window",
+                );
+                assert!(
+                    audit(c).is_empty(),
+                    "{accent:?}: {}",
+                    audit(c)
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+
+                // The same colour the theme paints for a person wearing that
+                // hue: one derivation, two ways of naming it.
+                let as_you = resolve_theme_layers(&ThemeLayerStack {
+                    user_theme: Some(preset.document()),
+                    window: WindowAppearance {
+                        workspace_hue: None,
+                        your_colour: Some(accent),
+                        corner_radius: None,
+                    },
+                    ..ThemeLayerStack::default()
+                });
+                assert_eq!(c.intent.accent, as_you.tokens.colors.intent.accent);
+            }
+        }
+
+        // Following the theme leaves the accent the theme has.
+        let stock = resolve_theme_layers(&light_stack());
+        let violet = resolve_theme_layers(&ThemeLayerStack {
+            finish: FinishLayer {
+                accent: Some(PresenceHue::Violet),
+                ..FinishLayer::default()
+            },
+            ..light_stack()
+        });
+        assert_ne!(
+            violet.tokens.colors.intent.accent,
+            stock.tokens.colors.intent.accent
+        );
+        assert_eq!(
+            resolve_theme_layers(&light_stack())
+                .tokens
+                .colors
+                .intent
+                .accent,
+            stock.tokens.colors.intent.accent
+        );
+    }
+
+    #[test]
+    fn a_chosen_accent_gives_way_to_a_pinned_emphasis_and_to_high_contrast() {
+        let pinned = resolve_theme_layers(&ThemeLayerStack {
+            distribution_defaults: Some(DistributionDefaults {
+                document: Some(house()),
+                policy: DistributionPolicy {
+                    pins: vec![PIN_EMPHASIS.into()],
+                },
+                ..DistributionDefaults::default()
+            }),
+            finish: FinishLayer {
+                accent: Some(PresenceHue::Teal),
+                ..FinishLayer::default()
+            },
+            ..light_stack()
+        });
+        assert_eq!(pinned.document.emphasis, house().emphasis);
+        assert_eq!(
+            pinned.tokens.colors.intent.accent,
+            resolve_theme_layers(&ThemeLayerStack {
+                distribution_defaults: Some(DistributionDefaults {
+                    document: Some(house()),
+                    policy: DistributionPolicy {
+                        pins: vec![PIN_EMPHASIS.into()],
+                    },
+                    ..DistributionDefaults::default()
+                }),
+                ..light_stack()
+            })
+            .tokens
+            .colors
+            .intent
+            .accent
+        );
+
+        // High contrast has no accent to give, whichever way it is asked for:
+        // a colourless theme stays one, and accessibility's own high contrast
+        // drops the accent an ordinary theme would have worn.
+        for theme in [
+            resolve_theme_layers(&ThemeLayerStack {
+                user_theme: Some(Preset::HighContrast.document()),
+                finish: FinishLayer {
+                    accent: Some(PresenceHue::Teal),
+                    ..FinishLayer::default()
+                },
+                ..ThemeLayerStack::default()
+            }),
+            resolve_theme_layers(&ThemeLayerStack {
+                finish: FinishLayer {
+                    accent: Some(PresenceHue::Teal),
+                    ..FinishLayer::default()
+                },
+                accessibility: AccessibilityLayer {
+                    high_contrast: true,
+                    ..AccessibilityLayer::default()
+                },
+                ..light_stack()
+            }),
+        ] {
+            assert_eq!(theme.document.emphasis, Emphasis::Inverted);
+            assert!(theme.colors_are_forced());
+        }
+    }
+
+    #[test]
     fn an_unusable_finish_is_not_applied_and_out_of_band_is_clamped() {
         let stock = resolve_theme_layers(&ThemeLayerStack {
             user_theme: Some(Preset::Dark.document()),
@@ -1296,10 +1499,12 @@ mod tests {
         for finish in [
             FinishLayer {
                 ui_face: Some("   ".into()),
+                accent: None,
                 translucency: None,
             },
             FinishLayer {
                 ui_face: None,
+                accent: None,
                 translucency: Some(f32::NAN),
             },
         ] {
@@ -1316,6 +1521,7 @@ mod tests {
         let clamped = resolve_theme_layers(&ThemeLayerStack {
             finish: FinishLayer {
                 ui_face: Some(" Default ".into()),
+                accent: None,
                 translucency: Some(-3.0),
             },
             ..ThemeLayerStack::default()
