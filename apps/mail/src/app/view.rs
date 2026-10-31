@@ -253,7 +253,7 @@ fn answer_effect(
 /// this effect's caller and answers once the window is up; the answer is
 /// the window's, with the content it shows.
 fn open_on_desktop(handed: Effected, group: Option<&str>, cx: &mut EffectCx<Mail>) -> EffectAnswer {
-    use tilo_desktop_model::commands::{RESOURCE, layout};
+    use ui::desktop::{OPEN, PROVIDER, RESOURCE};
     let Effected::Done(handed) = handed else {
         return Err("the attachment was not handed over".into());
     };
@@ -269,7 +269,7 @@ fn open_on_desktop(handed: Effected, group: Option<&str>, cx: &mut EffectCx<Mail
         arguments.insert("place".into(), "tab-of".into());
         arguments.insert("group".into(), group.into());
     }
-    let open = ui::framework::Call::host(layout::PROVIDER, RESOURCE, layout::OPEN).with(arguments);
+    let open = ui::framework::Call::host(PROVIDER, RESOURCE, OPEN).with(arguments);
     Ok(cx.call(&open, move |(), opened, _| {
         let mut answer = opened?.value.unwrap_or_default();
         if let Some(fields) = answer.as_object_mut() {

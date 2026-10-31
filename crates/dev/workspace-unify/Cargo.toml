@@ -1082,6 +1082,7 @@ doc = false
 "tantivy-tokenizer-api-0_7_0" = { package = "tantivy-tokenizer-api", version = "^0.7.0", default-features = false, features = [] }
 "tar-0_4_46" = { package = "tar", version = "^0.4.46", default-features = false, features = ["default", "xattr"] }
 "tasks" = { path = "../../../apps/tasks", default-features = false, features = ["samples"] }
+"tasks-model" = { path = "../../../apps/tasks-model", default-features = false, features = [] }
 "tempfile-3_27_0" = { package = "tempfile", version = "^3.27.0", default-features = false, features = ["default", "getrandom"] }
 "tendril-0_5_1" = { package = "tendril", version = "^0.5.1", default-features = false, features = [] }
 "terminal" = { path = "../../../apps/terminal", default-features = false, features = ["samples"] }
@@ -3535,6 +3536,7 @@ doc = false
 "tantivy-tokenizer-api-0_7_0" = { package = "tantivy-tokenizer-api", version = "^0.7.0", default-features = false, features = [] }
 "tar-0_4_46" = { package = "tar", version = "^0.4.46", default-features = false, features = ["default", "xattr"] }
 "tasks" = { path = "../../../apps/tasks", default-features = false, features = ["samples"] }
+"tasks-model" = { path = "../../../apps/tasks-model", default-features = false, features = [] }
 "tempfile-3_27_0" = { package = "tempfile", version = "^3.27.0", default-features = false, features = ["default", "getrandom"] }
 "tendril-0_5_1" = { package = "tendril", version = "^0.5.1", default-features = false, features = [] }
 "terminal" = { path = "../../../apps/terminal", default-features = false, features = ["samples"] }

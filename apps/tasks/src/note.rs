@@ -7,6 +7,10 @@
 //! its part once in its own history, where that person's undo takes it
 //! back, and the host decides each part with that person's grants. Nothing
 //! here knows how Notes keeps a note.
+//!
+//! The effect vocabulary is the record's ([`crate::model::TasksEffect`]),
+//! shared with whatever else reads the tracker; this module is where Tasks
+//! answers it.
 
 use serde_json::json;
 use ui::framework::{Call, EffectAnswer, EffectCx, Effected};
@@ -14,86 +18,13 @@ use ui::prelude::*;
 use ui::tilo_reference::ResourceRef;
 use ui::tilo_resource::{self, NonBlank};
 
-use crate::model::Tracker;
+pub use crate::model::TasksEffect;
+use crate::model::{NOTES, Tracker};
 
-/// The app that keeps the workspace's notes.
-pub const NOTES: &str = "so.tilo.notes";
 /// Its notebook, the resource that makes a note.
 const NOTEBOOK: &str = "notes.notebook";
-/// The kind of a note, an item of the notebook's pages.
-pub(crate) const NOTE_KIND: &str = "notes.notebook.pages";
 /// The notebook's action that makes a note with a title.
 const NEW_NOTE: &str = "create-page";
-
-/// What Tasks does with other apps' resources.
-#[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "tasks.effect")]
-pub enum TasksEffect {
-    /// Start a project
-    ///
-    /// Open the form a project or an area is made in. It changes nothing on
-    /// its own: a script or an agent that means to make one invokes the
-    /// tracker's own action with a name. It edits nothing, so a viewer may
-    /// open it too.
-    #[effect(kind = "read")]
-    NewProject,
-
-    /// Open issue
-    ///
-    /// Show an issue's page, as choosing it in the list does.
-    #[effect(view, idempotent, item = issues)]
-    #[effect(icon = "circle-dot")]
-    OpenIssue {
-        #[param("The issue")]
-        issue: Id,
-    },
-
-    /// Open as chat
-    ///
-    /// Show an issue as a conversation with its agent, in a window of its
-    /// own: the thread, the run's steps as they come, what it asks, and a
-    /// field to tell it more.
-    #[effect(view, idempotent, item = issues)]
-    #[effect(icon = "message-circle")]
-    OpenChat {
-        #[param("The issue")]
-        issue: Id,
-    },
-
-    /// Write a note
-    ///
-    /// A note in Notes for the issue, titled after it and linked from it.
-    /// Answers the note's resource.
-    #[effect(job, kind = "undoable", item = issues)]
-    WriteNote {
-        #[param("The issue")]
-        issue: Id,
-    },
-
-    /// Show the list
-    ///
-    /// Show every issue, sub-issues under their parent.
-    #[effect(view, idempotent)]
-    ShowList,
-
-    /// Show the board
-    ///
-    /// Show a lane per status.
-    #[effect(view, idempotent)]
-    ShowBoard,
-
-    /// Show the tasks
-    ///
-    /// Show the tasks the tracker holds a run for.
-    #[effect(view, idempotent)]
-    ShowTasks,
-
-    /// Show the threads
-    ///
-    /// Show the tasks that have said something, as their conversations.
-    #[effect(view, idempotent)]
-    ShowThread,
-}
 
 /// Answer `effect`.
 pub(crate) fn handle(effect: TasksEffect, cx: &mut EffectCx<Tracker>) -> EffectAnswer {

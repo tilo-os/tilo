@@ -31,9 +31,9 @@ tilo-actions = { path = "../../crates/collab/actions" }
 # The tracker's run actions, typed: the agent builds each call it makes on
 # an issue (its reports, spend and end) from Tasks' own action arguments, so
 # a renamed or retyped parameter fails to compile rather than being refused
-# at run time. Not keyed `tasks`: that key claims `--features tasks/thin`
-# in the collection build.
-tasks-tracker = { package = "tasks", path = "../tasks" }
+# at run time. It is the record crate, not the app: the same types, verbs and
+# arguments the Tasks window draws, with no window or surface of theirs.
+tasks-model = { path = "../tasks-model" }
 # A skill's selector: the kinds of thing it is for, and what they say.
 tilo-selector = { path = "../../crates/platform/tilo-selector" }
 # The machine this agent runs on, as a run's receipt reports it.

@@ -14,14 +14,17 @@
 //! its project and in whoever's list alike.
 //!
 //! The app draws the record; anything else that needs to read or name issues
-//! (the agent runner) reads this module.
+//! (the agent runner) reads this record crate, so both use one definition of
+//! every type, verb and typed action argument.
 
+mod effect;
 mod issue;
 mod record;
 pub mod run;
 pub mod search;
 mod tracker_area;
 
+pub use effect::{NOTE_KIND, NOTES, TasksEffect};
 pub use issue::{
     AgentRequest, Imported, ImportedMessage, Issue, Link, Message, MessageKind, Said, Status,
     agent_assignee, person_assignee,

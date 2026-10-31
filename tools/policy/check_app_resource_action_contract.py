@@ -1592,6 +1592,54 @@ def shared_framework_host(
     return False
 
 
+def model_crate_host(root: Path, app_dir: Path, manifest: dict, code: str) -> bool:
+    """Whether the app hosts a framework app whose record a model crate declares.
+
+    An app may keep its record in an `apps/*-model` crate (the portability
+    rules let an app depend on one): the types, the verbs and the typed action
+    arguments are then shared with whatever else works the same records, such
+    as the agent that runs a tracker's issues. The app hosts a framework app
+    whose resource that crate declares — `impl ResourceApp for X { type
+    Resource = R; }` in the app, `R` declared with `#[resource]` in the crate
+    — exactly as one that declares `R` locally, so it publishes the same
+    actions and needs no surface of its own.
+
+    Only a normal path dependency the app names is followed, and only one whose
+    directory is an `apps/*-model` crate, so an unrelated library cannot
+    satisfy the contract. The resource the app's own `type Resource` names must
+    be one the crate declares.
+    """
+    hosted: set[str] = set()
+    for match in RESOURCE_APP_IMPL.finditer(code):
+        body = brace_body(code, match.start()) or ""
+        resource = ASSOCIATED_RESOURCE.search(body)
+        if resource is not None:
+            hosted.add(rust_type_name(resource.group(1)))
+    if not hosted:
+        return False
+    for table in runtime_dependency_tables(manifest):
+        for specification in table.values():
+            if not isinstance(specification, dict):
+                continue
+            path = specification.get("path")
+            if not isinstance(path, str):
+                continue
+            dependency = (app_dir / path).resolve()
+            try:
+                dependency.relative_to(root.resolve())
+            except ValueError:
+                continue
+            if not dependency.name.endswith("-model") or not (dependency / "src").is_dir():
+                continue
+            crate = "\n".join(
+                production_code(item.read_text(encoding="utf-8"))
+                for item in sorted((dependency / "src").rglob("*.rs"))
+            )
+            if hosted & declared_resource_names(crate):
+                return True
+    return False
+
+
 def unattached_handler_entries(text: str) -> list[str]:
     """Registry claims with no evidence on the reachable dispatch path."""
     registry = OPERATION_HANDLER_REGISTRY.search(text)
@@ -1904,7 +1952,9 @@ def audit(
             framework_host = (
                 FRAMEWORK_APP.search(combined) is not None
                 and bool(declared_resource_names(combined))
-            ) or shared_framework_host(root, manifest_path.parent, manifest, shipped)
+            ) or shared_framework_host(
+                root, manifest_path.parent, manifest, shipped
+            ) or model_crate_host(root, manifest_path.parent, manifest, combined)
             toolkit_host = TOOLKIT_ACTION_HOST.search(combined) is not None
             # A host with several operations builds its descriptor directly;
             # the toolkit helpers each describe a single operation.

@@ -150,6 +150,7 @@ members = [
     "apps/thumbnails",
     "apps/tilolang",
     "apps/tasks",
+    "apps/tasks-model",
     "apps/totp",
     "apps/tube",
     "apps/typst-editor",

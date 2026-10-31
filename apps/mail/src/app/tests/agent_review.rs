@@ -218,7 +218,7 @@ fn cvs_open_through_the_desktop(
     messages: &[serde_json::Value],
     handed_over: &[(&str, Vec<u8>)],
 ) -> usize {
-    use tilo_desktop_model::commands::{RESOURCE, layout};
+    use ui::desktop::{OPEN, PROVIDER, RESOURCE};
     let desktop = Arc::new(tilo_actions::remote::TestHost::new().completing(|_| {
         tilo_actions::ActionOutput {
             value: Some(serde_json::json!({
@@ -245,9 +245,9 @@ fn cvs_open_through_the_desktop(
         let asked = desktop.take_asked();
         assert_eq!(asked.len(), 1, "one desktop open per CV: {asked:?}");
         let request = &asked[0];
-        assert_eq!(request.target.provider, layout::PROVIDER);
+        assert_eq!(request.target.provider, PROVIDER);
         assert_eq!(request.target.address.resource.as_str(), RESOURCE);
-        assert_eq!(request.target.address.action, layout::OPEN);
+        assert_eq!(request.target.address.action, OPEN);
         let tilo_actions::remote::InvokeArgument::Json(arguments) = &request.argument else {
             panic!("the desktop's open takes typed arguments: {request:?}");
         };
@@ -372,7 +372,7 @@ fn drafts_reach_the_server_and_come_back_as_nothing(
     let mut app = TestApp::<MailShell>::open_data_dir(profile).unwrap();
     app.with_surface(super::MailApp::reach_test_servers)
         .unwrap();
-    let deadline = tilo_test_env::hang_deadline();
+    let deadline = ui::testing::hang_deadline();
     while imap.messages(DRAFTS).len() < CANDIDATES.len() {
         assert!(ui::time::now() < deadline, "the drafts reach the server");
         app.settle();

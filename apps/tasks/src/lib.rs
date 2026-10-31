@@ -31,7 +31,6 @@ mod filter;
 mod issue;
 mod list;
 pub mod locales;
-pub mod model;
 mod note;
 mod program_step;
 mod project;
@@ -44,6 +43,8 @@ mod window_bar;
 
 pub(crate) use filter::Filter;
 
+pub use tasks_model as model;
+
 use ui::framework::{EffectCx, Effected};
 use ui::i18n::I18nManager;
 use ui::prelude::*;
@@ -52,7 +53,7 @@ use ui::widget::{NavItem, NavSection};
 pub use chat::{SCHEME as CHAT_SCHEME, uri as chat_uri};
 pub use model::Tracker;
 use model::area_resource;
-pub use note::{NOTES, TasksEffect};
+pub use model::{NOTES, TasksEffect};
 
 /// What the window shows when no issue is open.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
