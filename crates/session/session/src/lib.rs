@@ -95,7 +95,6 @@ use tilo_desktop::osd::{OSD_RESOURCE, Osd, OsdKind};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::Command;
 use tilo_lock::MutexRecover as _;
-use tilo_quick_settings::QsEffect;
 use tilo_service::Started;
 use tilo_surface_host::{DeskGesture, DesktopHost, Doors, Published, WidgetHost};
 use ui::application::ComponentRunnerInputs;
@@ -304,13 +303,6 @@ pub enum QuickSettings {
     Lent(Rc<dyn PanelHost>),
 }
 
-/// The settings app, which quick settings opens.
-const SETTINGS_APP: &str = "so.tilo.settings";
-
-/// Where Settings installs the local speech models dictation needs: the
-/// page of the models the person's devices run themselves.
-const SPEECH_MODELS_ANCHOR: &str = "settings.section:agent_models";
-
 /// The default for [`Options::session_actions`]: a session that owns no
 /// machine (a test, a screenshot, a session in a window) carries out
 /// nothing.
@@ -439,6 +431,10 @@ struct Shared {
     hosted: bool,
     /// The device behind quick settings, when the session reads one.
     device: Option<DeviceHost>,
+    /// The person's device fabric, while this session runs on one.
+    fabric: Option<tilo_device_fabric::link::SharedLink>,
+    /// The person's devices as the panel was last fed them.
+    devices: mount::devices::Devices,
     /// The power menu, workspace settings, and the questions the session
     /// asks for apps and services, by their seats.
     power: Option<PowerSeat>,
@@ -588,7 +584,7 @@ impl Shared {
         for choice in self.handle.take_host_choices() {
             self.host_action(&choice);
         }
-        self.follow_device();
+        mount::quick_settings::answer(self);
         self.follow_sheets();
         let choices = self.handle.take_search_choices();
         if choices.is_empty() {
@@ -766,151 +762,6 @@ impl Shared {
                 &mut |own| self.doors.invoke(&own.address, &own.arguments).map(drop),
             );
         }
-    }
-
-    fn close_quick_settings(&self) {
-        if let Some(panel) = &self.quick_settings {
-            panel.open.set(false);
-        }
-    }
-
-    /// Take the person where the speech models are set up when the dictation
-    /// card's "Set up" was pressed: Settings at its models page, through the
-    /// action path search rows use; a plain launch opens Settings too when no
-    /// action host runs an app's actions.
-    fn follow_dictation(&self) {
-        if !self.dictation.take_model_setup() {
-            return;
-        }
-        let room = self.active_room();
-        let target =
-            tilo_desktop_search::Target::Invoke(Box::new(tilo_desktop_search::InvokeTarget::open(
-                SETTINGS_APP,
-                room.clone(),
-                SPEECH_MODELS_ANCHOR,
-            )));
-        let opened = self.search.perform_checked(&room, target, &mut |own| {
-            self.doors.invoke(&own.address, &own.arguments).map(drop)
-        });
-        if opened.is_ok() {
-            return;
-        }
-        let launch = Command::Launch {
-            generation: GENERATION.into(),
-            app: SETTINGS_APP.into(),
-        };
-        if let Err(error) = self.handle.dispatch(&launch, GENERATION) {
-            tracing::warn!(%error, "open settings for speech models");
-        }
-    }
-
-    /// Land what the device host read and carry out what the panel asked
-    /// of the desktop.
-    fn follow_device(&self) {
-        let Some(device) = &self.device else {
-            return;
-        };
-        device.set_open(
-            self.quick_settings
-                .as_ref()
-                .is_some_and(|panel| panel.open.get()),
-        );
-        // The audio service's reading is the only one of the sound: the
-        // panel shows it and its effects change it there.
-        mount::audio::land(self);
-        device.pump();
-        for request in device.take_requests() {
-            match request {
-                SessionRequest::Effect(QsEffect::PowerMenu) => {
-                    self.close_quick_settings();
-                    if let Some(power) = &self.power {
-                        power.presentation().open(false);
-                    }
-                }
-                SessionRequest::Effect(QsEffect::LockScreen) => {
-                    self.close_quick_settings();
-                    self.commands.borrow_mut().push(SessionCommand::Lock);
-                }
-                SessionRequest::Effect(QsEffect::OpenNotification { notification }) => {
-                    self.close_quick_settings();
-                    let room = self.active_room();
-                    match self.notifications.borrow().open(notification) {
-                        tilo_desktop_surface::notifications::HistoryActivation::OpenApp {
-                            app_id,
-                            ..
-                        } => self.search.perform(
-                            &room,
-                            tilo_desktop_search::Target::Launch { app: app_id },
-                            &mut |own| self.doors.invoke(&own.address, &own.arguments).map(drop),
-                        ),
-                        other => tracing::debug!(?other, "notification chosen"),
-                    }
-                }
-                SessionRequest::Effect(QsEffect::DismissNotification { notification }) => {
-                    self.notifications
-                        .borrow()
-                        .dismiss(Some(notification), None);
-                }
-                SessionRequest::Effect(QsEffect::DismissNotificationGroup { group }) => {
-                    self.notifications.borrow().dismiss(None, Some(&group));
-                }
-                SessionRequest::Effect(QsEffect::RunNotificationAction {
-                    notification,
-                    action,
-                }) => {
-                    self.notifications
-                        .borrow()
-                        .run_action(notification, &action);
-                }
-                SessionRequest::Effect(QsEffect::ClearNotifications) => {
-                    self.notifications.borrow().clear();
-                }
-                SessionRequest::Effect(QsEffect::UndoClearNotifications) => {
-                    self.notifications.borrow().undo_clear();
-                }
-                SessionRequest::Effect(QsEffect::SetDoNotDisturb { on }) => {
-                    // The switch is persisted, so the settings app and the
-                    // desktop's own menu read the same one; the session's
-                    // settings watch brings it back into every arrival.
-                    if let Err(error) = notifications::SessionNotifications::set_do_not_disturb(on)
-                    {
-                        tracing::warn!(%error, on, "do not disturb not saved");
-                    }
-                }
-                SessionRequest::Effect(QsEffect::OpenSettings { .. }) => {
-                    self.close_quick_settings();
-                    let launch = Command::Launch {
-                        generation: GENERATION.into(),
-                        app: SETTINGS_APP.into(),
-                    };
-                    if let Err(error) = self.handle.dispatch(&launch, GENERATION) {
-                        tracing::warn!(%error, "open settings");
-                    }
-                }
-                // A copy is pasted into the app the panel was opened over,
-                // so the panel closes and the loop puts it on the clipboard
-                // and pastes it once the app has the keyboard again.
-                SessionRequest::Effect(QsEffect::PasteCopy { copy }) => {
-                    self.close_quick_settings();
-                    self.clipboard.ask(mount::clipboard::Ask::Paste(copy));
-                }
-                SessionRequest::Effect(QsEffect::PinCopy { copy, pinned }) => {
-                    self.clipboard.pin(&copy, pinned);
-                }
-                SessionRequest::Effect(QsEffect::RemoveCopy { copy }) => {
-                    self.clipboard.remove(&copy);
-                }
-                SessionRequest::Effect(QsEffect::ClearClipboard) => {
-                    self.clipboard.clear();
-                }
-                other if mount::audio::follow(self, &other) => {}
-                other => {
-                    tracing::debug!(?other, "quick settings asks what the session cannot do yet");
-                }
-            }
-        }
-        self.feed_notifications();
-        self.feed_clipboard();
     }
 
     /// Feed the panel's Clipboard section when it changed: every copy the
@@ -1355,8 +1206,6 @@ pub struct Session {
     /// The apps this session started, told to the portal: which of them run
     /// in one of the launcher's sandboxes.
     launches: std::sync::Arc<Launches>,
-    /// The person's device fabric, while this session runs on one.
-    fabric: Option<tilo_device_fabric::link::SharedLink>,
     /// The plane the apps it runs read and invoke its services on, while it
     /// serves one.
     action_plane: Option<Plane>,
@@ -1744,6 +1593,8 @@ impl Session {
             services,
             hosted: options.hosted,
             device,
+            fabric,
+            devices: mount::devices::Devices::default(),
             power,
             workspace_settings,
             ws_settings_fed: Cell::new(None),
@@ -1827,7 +1678,6 @@ impl Session {
             night_light: (options.config.night_light, options.config.kept),
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
-            fabric,
             action_plane,
             screen_locked: false,
             desktop: options.desktop,
@@ -2310,7 +2160,7 @@ impl Session {
         self.shared.clipboard.step_files();
         // What was copied here reaches the person's other devices, and what
         // they copied there joins the clipboard here.
-        if let Some(fabric) = &self.fabric {
+        if let Some(fabric) = &self.shared.fabric {
             let media_enabled = fabric.require_media().is_ok();
             if self.shared.clipboard.sync_fabric(fabric.as_ref()) {
                 self.shared.feed_clipboard();
@@ -2796,7 +2646,7 @@ impl Session {
             locked,
             Instant::now(),
         );
-        self.shared.follow_dictation();
+        mount::quick_settings::follow_dictation(&self.shared);
         // The picker's picks go into the field the person was typing in,
         // through the same text-input door dictation writes through.
         let origin = self

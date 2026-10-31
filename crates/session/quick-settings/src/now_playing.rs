@@ -57,6 +57,22 @@ pub struct MediaOffer {
     pub playing: bool,
 }
 
+/// What plays here, as another of the person's devices continues it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayingSource {
+    /// The session the hand-over names: the player and its source.
+    pub session_id: String,
+    /// The app that plays it, by package id.
+    pub app_id: String,
+    pub title: String,
+    /// The stream it plays from.
+    pub url: String,
+    /// Where it is, in milliseconds.
+    pub position_ms: u64,
+    /// It plays rather than stands paused.
+    pub playing: bool,
+}
+
 /// One running player.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MediaPlayer {

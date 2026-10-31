@@ -37,7 +37,7 @@ mod view;
 
 pub use effect::QsEffect;
 pub use faces::subline;
-pub use now_playing::{MediaOffer, MediaOutput, MediaPlayer, NowPlaying};
+pub use now_playing::{MediaOffer, MediaOutput, MediaPlayer, NowPlaying, PlayingSource};
 pub use prepare::prepare;
 pub use resource::{Page, QuickSettings, QuickSettingsApp};
 

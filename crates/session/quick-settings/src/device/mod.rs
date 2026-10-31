@@ -241,6 +241,19 @@ impl DeviceHost {
         self.feed();
     }
 
+    /// What plays here in front, when another of the person's devices can
+    /// continue it: what the session hands over when one of their devices is
+    /// pressed. `None` when nothing plays, or the player has no app or no
+    /// source to send.
+    #[must_use]
+    pub fn playing_source(&self) -> Option<crate::PlayingSource> {
+        self.0
+            .players
+            .borrow()
+            .as_ref()
+            .and_then(|players| players.playing_source(Instant::now()))
+    }
+
     /// The host as the panel takes it ([`crate::prepare`]).
     #[must_use]
     pub fn panel(&self) -> Rc<dyn PanelHost> {
