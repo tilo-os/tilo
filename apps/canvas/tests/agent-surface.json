@@ -3809,6 +3809,12 @@
         "ty": "text",
         "description": "A change id from history, or a checkpoint name",
         "nullable": true
+      },
+      {
+        "name": "step",
+        "ty": "text",
+        "description": "A change id from history: undo only the step it is part of",
+        "nullable": true
       }
     ]
   },
@@ -4034,6 +4040,22 @@
             }
           ]
         }
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork/layers/layer-1",
+    "action": "read",
+    "resource_kind": "canvas.artwork.layers",
+    "label": "Read the content",
+    "description": "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content. With version, read frozen historical content and its exact heads without changing the live resource.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "version",
+        "ty": "text",
+        "description": "A change id, exact causal frontier, or checkpoint name (default: current)",
+        "nullable": true
       }
     ]
   },
