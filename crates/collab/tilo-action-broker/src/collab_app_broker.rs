@@ -9988,7 +9988,7 @@ fn bind_socket_stage(
             bound: false,
             published: false,
         };
-        match std::os::unix::net::UnixListener::bind(&stage.socket) {
+        match tilo_files::native::socket::bind(&stage.socket) {
             Ok(listener) => {
                 stage.bound = true;
                 stage.identity = Some(staged_socket_identity(&stage.socket)?);
@@ -10129,7 +10129,7 @@ fn bind_owned_socket(
     private_socket_parent(path)?;
     let lease = acquire_socket_path_lease(path)?;
     match socket_identity(path) {
-        Ok(stale_candidate) => match std::os::unix::net::UnixStream::connect(path) {
+        Ok(stale_candidate) => match tilo_files::native::socket::connect(path) {
             Ok(_) => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::AddrInUse,

@@ -221,7 +221,7 @@ impl SystemProjectionBackend {
             .socket
             .as_ref()
             .ok_or_else(|| Self::unavailable("XDG_RUNTIME_DIR is unavailable"))?;
-        let writer = UnixStream::connect(socket).map_err(Self::unavailable)?;
+        let writer = tilo_files::native::socket::connect(socket).map_err(Self::unavailable)?;
         let mut reader = writer.try_clone().map_err(Self::unavailable)?;
         let (tx, events) = mpsc::channel();
         let notices = self.notices.clone();
@@ -864,11 +864,9 @@ mod tests {
     /// request, and an unrequested end reported.
     #[test]
     fn the_backend_speaks_the_projector_control_socket() {
-        use std::os::unix::net::UnixListener;
-
         let dir = tempfile::tempdir().expect("runtime dir");
         let socket = dir.path().join("control.sock");
-        let listener = UnixListener::bind(&socket).expect("broker socket");
+        let listener = tilo_files::native::socket::bind(&socket).expect("broker socket");
         let receiver = device(ProjectionProtocol::AirPlay);
         let broker_device = receiver.clone();
         let broker = std::thread::spawn(move || {

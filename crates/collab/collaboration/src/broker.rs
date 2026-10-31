@@ -3671,7 +3671,7 @@ impl SessionServices {
         app_id: &str,
         workspace: &str,
     ) -> Result<Self, runtime_portal::NotAvailable> {
-        let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
+        let mut stream = tilo_files::native::socket::connect(socket)?;
         runtime_portal::launch_handoff::write(&mut stream, app_id, workspace)?;
         let fd = std::os::fd::IntoRawFd::into_raw_fd(stream);
         let transport = CollaborationManager::spawn_sdk(

@@ -320,11 +320,7 @@ async fn a_launched_task_agent_takes_its_task_steps_in_its_run() {
             });
             let f = Fixture::with_services(None, vec![steps.clone()]);
             let agent = admit(&f);
-            let route = CrdtRoute::record(
-                TASK_AGENT_APP,
-                room().to_string(),
-                "",
-            );
+            let route = CrdtRoute::record(TASK_AGENT_APP, room().to_string(), "");
             let admitted = verify_join_identity(
                 &route,
                 &agent.presentation(),

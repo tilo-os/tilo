@@ -67,7 +67,7 @@ impl EncoderWorker {
                 let mut encoder_profile = None;
                 while let Ok(frame) = rx.recv() {
                     if stream.is_none()
-                        && let Ok(connected) = UnixStream::connect(&socket_path)
+                        && let Ok(connected) = tilo_files::native::socket::connect(&socket_path)
                     {
                         stream = Some(connected);
                         // A new connection must begin with fresh SPS/PPS.
@@ -315,7 +315,8 @@ mod tests {
         }
         let dir = tempfile::tempdir().expect("a directory for the projector's socket");
         let socket = dir.path().join("video.sock");
-        let listener = UnixListener::bind(&socket).expect("the projector's video socket");
+        let listener =
+            tilo_files::native::socket::bind(&socket).expect("the projector's video socket");
         listener
             .set_nonblocking(true)
             .expect("a non-blocking accept");
@@ -357,7 +358,8 @@ mod tests {
     fn nothing_is_captured_while_no_projection_is_live() {
         let dir = tempfile::tempdir().expect("a directory for the projector's socket");
         let socket = dir.path().join("video.sock");
-        let listener = UnixListener::bind(&socket).expect("the projector's video socket");
+        let listener =
+            tilo_files::native::socket::bind(&socket).expect("the projector's video socket");
         listener
             .set_nonblocking(true)
             .expect("a non-blocking accept");

@@ -82,7 +82,7 @@ impl ServiceLinks {
         instance: u64,
         launch: Option<u32>,
     ) -> Option<OwnedFd> {
-        let mut stream = UnixStream::connect(launcher::services::collab_socket())
+        let mut stream = tilo_files::native::socket::connect(launcher::services::collab_socket())
             .inspect_err(|error| {
                 tracing::warn!(%error, %app, "a window could not reach the collaboration broker");
             })
@@ -105,7 +105,9 @@ impl ServiceLinks {
         let launcher = launcher?;
         self.launches.window_shell_ui(app, launcher);
         let connected = (|| {
-            let mut stream = UnixStream::connect(launcher::services::socket_for(SHELL_UI_SERVICE))?;
+            let mut stream = tilo_files::native::socket::connect(launcher::services::socket_for(
+                SHELL_UI_SERVICE,
+            ))?;
             let mut frame = serde_json::to_vec(&serde_json::json!({
                 "protocol": SHELL_UI_LAUNCH_PROTOCOL,
                 "app_id": app,
@@ -194,7 +196,7 @@ impl AppTabs {
             std::fs::remove_file(&path)
                 .map_err(|error| format!("remove the stale shell-ui socket: {error}"))?;
         }
-        let listener = UnixListener::bind(&path)
+        let listener = tilo_files::native::socket::bind(&path)
             .map_err(|error| format!("bind the shell-ui socket {}: {error}", path.display()))?;
         let (requests, answers) = mpsc::channel();
         let socket = Socket::serve(listener, path, launches, requests, wake)?;
@@ -424,7 +426,7 @@ impl Drop for Socket {
         // The acceptor waits in `accept`; one connection wakes it to see the
         // flag. If nothing can connect it is not waited for.
         if let Some(acceptor) = self.acceptor.take()
-            && UnixStream::connect(&self.path).is_ok()
+            && tilo_files::native::socket::connect(&self.path).is_ok()
         {
             let _ = acceptor.join();
         }
