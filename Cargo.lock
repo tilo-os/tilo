@@ -18774,6 +18774,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-dictation"
+version = "0.1.0"
+dependencies = [
+ "agent-provider-config",
+ "blake3",
+ "bounded-command",
+ "libc",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tempfile",
+ "tilo-accessibility-settings",
+ "tilo-actions",
+ "tilo-media",
+ "tilo-resource",
+ "tilo-service",
+ "tilo-test-env",
+ "tracing",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-doc"
 version = "0.1.0"
 dependencies = [

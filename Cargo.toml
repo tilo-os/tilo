@@ -412,6 +412,7 @@ members = [
     "crates/session/desktop-model",
     "crates/session/desktop-policy",
     "crates/session/desktop-search",
+    "crates/session/dictation",
     "crates/session/app-launch",
     "crates/session/desktop-surface",
     "crates/session/frame-metrics",

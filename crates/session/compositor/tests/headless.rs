@@ -24,8 +24,8 @@ use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
     Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostDrag, HostFrame,
     HostKey, HostLayer, InputEvent, KeyboardLayout, OutputConfig, PadAction, StackPolicy,
-    SurfaceHost, Switch, TabletEvent, TabletPadEvent, TabletPhase, WindowEffect, WindowFrame,
-    WindowInfo, WindowPicture, WindowPolicy,
+    SurfaceHost, Switch, TabletEvent, TabletPadEvent, TabletPhase, TextField, TextFieldRefusal,
+    TextInsertion, WindowEffect, WindowFrame, WindowInfo, WindowPicture, WindowPolicy,
 };
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
@@ -52,7 +52,7 @@ use wayland_protocols::wp::tablet::zv2::client::{
 };
 use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_manager_v3::ZwpTextInputManagerV3, zwp_text_input_v3,
-    zwp_text_input_v3::ZwpTextInputV3,
+    zwp_text_input_v3::{ContentHint, ContentPurpose, ZwpTextInputV3},
 };
 use wayland_protocols::xdg::dialog::v1::client::{
     xdg_dialog_v1::XdgDialogV1, xdg_wm_dialog_v1::XdgWmDialogV1,
@@ -91,6 +91,8 @@ struct Seen {
     field_entered: bool,
     /// The strings the field was made to contain.
     committed: Vec<String>,
+    /// How many times the compositor applied state to the field.
+    field_done: u32,
     input_method_manager: Option<ZwpInputMethodManagerV2>,
     input_method: Option<ZwpInputMethodV2>,
     /// How many times the compositor applied the input method's state: what
@@ -226,6 +228,11 @@ impl TestClient {
     /// Give the window a text field: a `text-input-v3` object on its
     /// surface, waiting for typing.
     fn own_text_field(&mut self) {
+        self.own_text_field_as(ContentHint::empty(), ContentPurpose::Normal);
+    }
+
+    /// Give the window a text field that declares what it takes.
+    fn own_text_field_as(&mut self, hint: ContentHint, purpose: ContentPurpose) {
         let qh = self.queue.handle();
         let manager = self
             .seen
@@ -234,9 +241,30 @@ impl TestClient {
             .expect("zwp_text_input_manager_v3");
         let seat = self.seen.seat.as_ref().expect("wl_seat");
         let field = manager.get_text_input(seat, &qh, ());
+        field.set_content_type(hint, purpose);
         field.enable();
         field.commit();
         self.seen.text_input = Some(field);
+    }
+
+    /// Change what the field declares itself to be, as an app does when the
+    /// person moves to another box.
+    fn set_content_type(&self, hint: ContentHint, purpose: ContentPurpose) {
+        if let Some(field) = self.seen.text_input.as_ref() {
+            field.set_content_type(hint, purpose);
+            field.commit();
+        }
+        self.connection.flush().expect("flush");
+    }
+
+    /// Move the field's caret: a commit that changes what the field
+    /// committed, as any edit does.
+    fn move_caret(&self, x: i32) {
+        if let Some(field) = self.seen.text_input.as_ref() {
+            field.set_cursor_rectangle(x, 0, 1, 20);
+            field.commit();
+        }
+        self.connection.flush().expect("flush");
     }
 
     /// Stop the field from asking for typing.
@@ -1587,6 +1615,7 @@ impl Dispatch<ZwpTextInputV3, ()> for Seen {
             zwp_text_input_v3::Event::CommitString { text: Some(text) } => {
                 seen.committed.push(text);
             }
+            zwp_text_input_v3::Event::Done { .. } => seen.field_done += 1,
             _ => {}
         }
     }
@@ -2496,6 +2525,247 @@ fn a_text_field_waiting_for_typing_is_told_apart_from_the_way_it_is_typed() {
         &mut compositor,
         &mut [&mut client, &mut keyboard],
         |compositor, _| !compositor.text_entry().wants_typing,
+    );
+}
+
+/// A focused window that has no text field yet, and the on-screen keyboard
+/// serving the seat.
+fn window_and_keyboard() -> (Compositor, TestClient, TestClient) {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "form", (200, 100), [0, 255, 0, 255]);
+    // The window takes the keyboard with a click on it.
+    click(&mut compositor, 320.0, 240.0);
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.keyboard_focused
+    });
+    let mut keyboard = TestClient::connect_trusted(&mut compositor);
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |_, clients| {
+            clients[1].seen.input_method_manager.is_some() && clients[1].seen.seat.is_some()
+        },
+    );
+    keyboard.own_input_method();
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |_, clients| clients[1].seen.input_method.is_some(),
+    );
+    (compositor, client, keyboard)
+}
+
+/// Let both sides catch up on what was just sent.
+fn settle(compositor: &mut Compositor, client: &mut TestClient, keyboard: &mut TestClient) {
+    pump(compositor, &mut [client, keyboard], |_, _| true);
+}
+
+/// Wait until the compositor has taken the field's last commit: it tells the
+/// input method so.
+fn committed(
+    compositor: &mut Compositor,
+    client: &mut TestClient,
+    keyboard: &mut TestClient,
+    since: u32,
+) {
+    pump(compositor, &mut [client, keyboard], move |_, clients| {
+        clients[1].seen.ime_done > since
+    });
+}
+
+#[test]
+fn a_field_that_commits_again_is_no_longer_the_one_dictation_bound() {
+    let (mut compositor, mut client, mut keyboard) = window_and_keyboard();
+    assert_eq!(
+        compositor.dictation_field(),
+        Err(TextFieldRefusal::NoField),
+        "no field has the focus"
+    );
+
+    client.own_text_field();
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, clients| {
+            clients[0].seen.field_entered
+                && clients[1].seen.ime_activated
+                && compositor.dictation_field().is_ok()
+        },
+    );
+    let field = compositor.dictation_field().expect("a field to dictate into");
+    assert!(!field.multiline, "an ordinary text box takes one line");
+
+    // The caret moves: the same field, another revision of what it
+    // committed.
+    let done = keyboard.seen.ime_done;
+    client.move_caret(3);
+    committed(&mut compositor, &mut client, &mut keyboard, done);
+    assert!(
+        compositor
+            .dictation_field()
+            .is_ok_and(|now| now.revision != field.revision),
+        "a commit moves the field's revision"
+    );
+    assert_eq!(
+        compositor.insert_dictation(field, "spoken words"),
+        TextInsertion::Changed
+    );
+
+    settle(&mut compositor, &mut client, &mut keyboard);
+    assert!(
+        client.seen.committed.is_empty(),
+        "a field that moved takes nothing"
+    );
+}
+
+#[test]
+fn a_field_that_stops_asking_for_typing_takes_no_dictated_text() {
+    let (mut compositor, mut client, mut keyboard) = window_and_keyboard();
+    client.own_text_field();
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, clients| {
+            clients[0].seen.field_entered
+                && clients[1].seen.ime_activated
+                && compositor.dictation_field().is_ok()
+        },
+    );
+    let field = compositor.dictation_field().expect("a field to dictate into");
+
+    client.release_text_field();
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, _| compositor.dictation_field().is_err(),
+    );
+    assert_eq!(
+        compositor.dictation_field(),
+        Err(TextFieldRefusal::NoField),
+        "the field stopped asking for typing"
+    );
+    assert_eq!(
+        compositor.insert_dictation(field, "spoken words"),
+        TextInsertion::Refused(TextFieldRefusal::NoField)
+    );
+
+    settle(&mut compositor, &mut client, &mut keyboard);
+    assert!(client.seen.committed.is_empty(), "a released field takes nothing");
+}
+
+#[test]
+fn dictation_keeps_out_of_secret_and_terminal_fields() {
+    let (mut compositor, mut client, mut keyboard) = window_and_keyboard();
+    client.own_text_field_as(
+        ContentHint::HiddenText | ContentHint::SensitiveData,
+        ContentPurpose::Password,
+    );
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, clients| {
+            clients[0].seen.field_entered
+                && clients[1].seen.ime_activated
+                && compositor.dictation_field().is_err()
+        },
+    );
+    assert_eq!(compositor.dictation_field(), Err(TextFieldRefusal::Secret));
+
+    // A password field takes no dictated text, and nothing reaches it.
+    let no_field = TextField {
+        id: 0,
+        revision: 0,
+        multiline: false,
+    };
+    assert_eq!(
+        compositor.insert_dictation(no_field, "spoken words"),
+        TextInsertion::Refused(TextFieldRefusal::Secret)
+    );
+    settle(&mut compositor, &mut client, &mut keyboard);
+    assert!(
+        client.seen.committed.is_empty(),
+        "a password field takes nothing"
+    );
+
+    // Digits are a PIN pad: the on-screen keyboard treats them as secret
+    // too.
+    let done = keyboard.seen.ime_done;
+    client.set_content_type(ContentHint::empty(), ContentPurpose::Digits);
+    committed(&mut compositor, &mut client, &mut keyboard, done);
+    assert_eq!(compositor.dictation_field(), Err(TextFieldRefusal::Secret));
+
+    // A terminal's text is commands.
+    let done = keyboard.seen.ime_done;
+    client.set_content_type(ContentHint::empty(), ContentPurpose::Terminal);
+    committed(&mut compositor, &mut client, &mut keyboard, done);
+    assert_eq!(
+        compositor.dictation_field(),
+        Err(TextFieldRefusal::Unsupported)
+    );
+}
+
+#[test]
+fn dictation_tells_a_multiline_field_from_a_one_line_one() {
+    let (mut compositor, mut client, mut keyboard) = window_and_keyboard();
+    client.own_text_field_as(ContentHint::Multiline, ContentPurpose::Normal);
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, clients| {
+            clients[0].seen.field_entered
+                && clients[1].seen.ime_activated
+                && compositor.dictation_field().is_ok()
+        },
+    );
+    assert!(
+        compositor
+            .dictation_field()
+            .expect("a field to dictate into")
+            .multiline,
+        "the field takes more than one line"
+    );
+
+    let done = keyboard.seen.ime_done;
+    client.set_content_type(ContentHint::empty(), ContentPurpose::Normal);
+    committed(&mut compositor, &mut client, &mut keyboard, done);
+    assert!(
+        !compositor
+            .dictation_field()
+            .expect("a field to dictate into")
+            .multiline,
+        "a one-line field is not multiline"
+    );
+}
+
+#[test]
+fn dictation_writes_once_into_the_field_it_bound() {
+    let (mut compositor, mut client, mut keyboard) = window_and_keyboard();
+    client.own_text_field();
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, clients| {
+            clients[0].seen.field_entered
+                && clients[1].seen.ime_activated
+                && compositor.dictation_field().is_ok()
+        },
+    );
+    let field = compositor.dictation_field().expect("a field to dictate into");
+
+    let done = client.seen.field_done;
+    assert_eq!(
+        compositor.insert_dictation(field, "spoken words"),
+        TextInsertion::Inserted
+    );
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |_, clients| clients[0].seen.field_done > done,
+    );
+    assert_eq!(
+        client.seen.committed,
+        vec!["spoken words".to_owned()],
+        "the field took exactly the committed text"
     );
 }
 

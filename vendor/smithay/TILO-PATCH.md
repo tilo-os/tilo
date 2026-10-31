@@ -81,3 +81,23 @@ source `cancelled`, so a move never completed and the source kept the item.
   set; the compositor sends `dnd_finished` once its target read the data.
 
 Remove this once smithay lets a compositor complete drops on its own targets.
+
+## What the focused field committed (`text-input-v3`)
+
+smithay's text-input handle keeps a client's pending state but takes the
+committed state out of it on `commit` and only hands it to the input method,
+so a compositor cannot tell which field has the focus, what it declared, or
+whether it changed since it was looked at.
+
+- `src/wayland/text_input/text_input_handle.rs`: each instance keeps
+  `committed_state` (the serial of the commit that accepted it and the
+  content type it declared; a commit that does not restate the content type
+  keeps the previous one). A commit that is accepted stores it in the same
+  places the handler continues past its "discarding …" returns, a commit
+  that disables the field clears it, and a discarded commit changes nothing.
+  `TextInputHandle::with_active_text_input_committed(f)` reports it for the
+  active instance — the text-input object, its surface, the committed serial
+  and content type — and returns whether there is one.
+
+Remove this once a smithay release keeps committed text-input state, or
+exposes what the focused field declared.

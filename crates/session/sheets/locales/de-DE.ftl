@@ -28,6 +28,31 @@ display-confirm-tool-unknown-title = Diese Anzeigeänderung behalten?
 display-confirm-always = Behalten und bei { $tool } nicht mehr fragen
 display-confirm-a11y-description = Ein Anzeigewerkzeug hat einen Bildschirm geändert, den du gerade benutzt, oder einen Modus gewählt, den er noch nie gezeigt hat. Dabei kann er schwarz bleiben. Eingabe behält die Änderung; Escape oder Abwarten stellt die vorherige Anordnung wieder her.
 
+## Dictation
+
+dictation-title = Diktat
+dictation-ask-title = In dieses Feld diktieren?
+dictation-ask-body = Tilo hört einmal über das Mikrofon zu, nur bis du aufhörst. Vorher wird nichts aufgenommen.
+dictation-ask-caption = Deine Wörter gehen in das Feld, in dem du warst.
+dictation-allow = Erlauben
+dictation-deny = Jetzt nicht
+dictation-preparing = Wird vorbereitet…
+dictation-listening = Hört zu…
+dictation-finish = Einsetzen
+dictation-cancel = Abbrechen
+dictation-finishing = Text wird fertiggestellt…
+dictation-recovery-title = Das Gehörte konnte nicht eingesetzt werden
+dictation-recovery-too-long = Es ist länger, als das Feld auf einmal aufnimmt.
+dictation-recovery-vocabulary = Dein Wörterbuch hat sich während des Diktierens geändert.
+dictation-recovery-refused = Das Feld hat es nicht angenommen.
+dictation-copied = Kopiert.
+dictation-copy = Kopieren
+dictation-discard = Verwerfen
+dictation-unavailable-title = Diktieren ist nicht möglich
+dictation-unavailable-body = Das Mikrofon kann gerade nicht benutzt werden.
+dictation-unavailable-microphone = Eine andere App benutzt gerade das Mikrofon.
+dictation-close = Schließen
+
 ## Shortcut guide
 
 guide-title = Tastenkürzel

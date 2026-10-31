@@ -28,6 +28,31 @@ display-confirm-tool-unknown-title = Keep this display change?
 display-confirm-always = Keep, and don't ask again for { $tool }
 display-confirm-a11y-description = A display tool changed a screen you're using, or picked a mode it hasn't shown before, which can leave it blank. Enter keeps the change; Escape, or waiting, restores the previous layout.
 
+## Dictation
+
+dictation-title = Dictation
+dictation-ask-title = Dictate into this field?
+dictation-ask-body = Tilo will listen through the microphone once, only until you stop. Nothing is recorded before you allow it.
+dictation-ask-caption = Your words go into the field you were in.
+dictation-allow = Allow
+dictation-deny = Not now
+dictation-preparing = Getting ready…
+dictation-listening = Listening…
+dictation-finish = Insert
+dictation-cancel = Cancel
+dictation-finishing = Finishing the text…
+dictation-recovery-title = Couldn't insert what you heard
+dictation-recovery-too-long = It's longer than the field takes at once.
+dictation-recovery-vocabulary = Your dictionary changed while you were dictating.
+dictation-recovery-refused = The field didn't take it.
+dictation-copied = Copied.
+dictation-copy = Copy
+dictation-discard = Discard
+dictation-unavailable-title = Dictation isn't available
+dictation-unavailable-body = The microphone can't be used right now.
+dictation-unavailable-microphone = Another app is using the microphone.
+dictation-close = Close
+
 ## Shortcut guide
 
 guide-title = Keyboard shortcuts
