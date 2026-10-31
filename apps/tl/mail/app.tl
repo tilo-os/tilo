@@ -40,12 +40,16 @@ type Thread (origin: imap.thread) {
     /// Snoozed until this moment: out of the inbox until then, and back once it has come, with
     /// no window open. The epoch when it is not snoozed.
     snoozed_until: Time = Time("1970-01-01T00:00:00Z")
+    /// Muted: the conversation stays out of the inbox while new messages keep coming, as a
+    /// busy conversation is silenced, and it is still found under Muted and All mail.
+    muted: Bool = false
 
     search {
-        filter "Inbox" = boxes.contains("inbox") and snoozed_until <= now (icon: .inbox)
+        filter "Inbox" = boxes.contains("inbox") and snoozed_until <= now and not muted (icon: .inbox)
         filter "Snoozed" = snoozed_until > now (icon: .clock)
         filter labels (icon: .tag)
         filter flagged "Flagged" (icon: .flag)
+        filter muted "Muted" (icon: .bell_off)
         filter "Sent" = boxes.contains("sent") (icon: .send)
         filter "Archive" = boxes.contains("archive") (icon: .archive)
         filter "Junk" = boxes.contains("junk") (icon: .shield)
@@ -233,9 +237,10 @@ action archive(t: Thread) (icon: .archive) {
     t.boxes.add("archive")
 }
 
-/// Moves the conversation back to the inbox.
+/// Moves the conversation back to the inbox, and unmutes it: what a person brings back is what
+/// they want to see again.
 action to_inbox(t: Thread) (icon: .inbox, label: "Move to inbox") {
-    require not t.boxes.any(b -> b == "inbox") "It is in the inbox"
+    require not t.boxes.any(b -> b == "inbox") or t.muted "It is in the inbox"
     for m in t.messages {
         if m.mailbox != "sent" {
             m.mailbox = "inbox"
@@ -245,6 +250,7 @@ action to_inbox(t: Thread) (icon: .inbox, label: "Move to inbox") {
     t.boxes.remove("trash")
     t.boxes.remove("junk")
     t.boxes.add("inbox")
+    t.muted = false
 }
 
 /// Moves the conversation to another mailbox of its account.
@@ -343,6 +349,48 @@ destructive action delete_label(m: Mail, l: Label) (icon: .trash) {
         }
     }
     m.labels.remove(l)
+}
+
+/// Brings a message back to the outbox: it was sent to go at a moment still to come, and it is
+/// a draft again, whatever the moment.
+action cancel_later(d: Draft) (icon: .undo_2, label: "Cancel scheduled send") {
+    require d.sent and not d.recalled "It is not waiting to go"
+    require delivery(d)?.state != "sent" "It went already"
+    withdraw(d, "Scheduled send cancelled")
+    d.sent = false
+    d.recalled = true
+}
+
+/// Sends the message at a moment instead of now: it waits in the outbox until then, as the
+/// person's hold makes a message wait, and goes with no window open. Until it goes it can be
+/// taken back, and bringing it back leaves it a draft.
+action send_later(d: Draft, at: Time) (icon: .clock, label: "Send later") {
+    require not d.sent or d.recalled "This message went already"
+    require d.to != "" "It goes to nobody yet"
+    require at > now "Pick a moment still to come"
+    outside("smtp.send", (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references), at: at)
+    d.send_at = at
+    d.sent = true
+    d.recalled = false
+}
+
+/// Sends the message at nine tomorrow, the moment people reach for most when they write in the
+/// evening and do not want it to arrive then.
+action send_in_the_morning(d: Draft) (icon: .clock, label: "Send tomorrow morning") {
+    send_later(d, dated("tomorrow 9am", now).at ?? now + 18h)
+}
+
+/// Marks every conversation of the account read.
+action mark_all_read(a: Account) (icon: .mail_open, label: "Mark all read") {
+    for t in a.threads {
+        mark_read(t, false)
+    }
+}
+
+/// Mutes the conversation, or unmutes it: a muted one stays out of the inbox until it is
+/// brought back, whatever its new messages do.
+action mute(t: Thread, muted: Bool = not t.muted) (label: if t.muted { "Unmute" } else { "Mute" }, icon: .bell_off, on: t.muted) {
+    t.muted = muted
 }
 
 /// Marks the conversation read, or unread again.
