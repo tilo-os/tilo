@@ -15,10 +15,12 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
-use tilo_desktop::desk_widgets::DeskFold;
+use tilo_desktop::desk_widgets::music::MusicAction as Action;
+use tilo_desktop::desk_widgets::{DeskFold, DeskMusic};
 use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk};
 use tilo_desktop::launchpad::CollaborationLaunchpad;
 use tilo_lock::MutexRecover as _;
+use tilo_quick_settings::QsEffect;
 use tilo_surface_host::{DesktopHost, StripPolicy, desktop_with};
 use ui::desk_widgets::DeskWidgetPrefs;
 
@@ -35,6 +37,45 @@ pub(crate) fn prefs() -> Prefs {
     )))
 }
 
+/// What plays, as the desk's music widget shows it: the song, whether it
+/// plays, and what its controls can do, from the panel's own reading of the
+/// player.
+pub(crate) fn playing(
+    reading: &tilo_quick_settings::NowPlaying,
+) -> tilo_desktop::desk_widgets::music::NowPlaying {
+    tilo_desktop::desk_widgets::music::NowPlaying {
+        title: reading.title.clone(),
+        subtitle: reading.subtitle.clone(),
+        player: reading.player_name.clone(),
+        art: reading.art.clone(),
+        playing: reading.playing,
+        can_toggle: reading.can_toggle,
+        can_previous: reading.can_previous,
+        can_next: reading.can_next,
+        position_ms: reading.position_ms,
+        duration_ms: reading.duration_ms,
+    }
+}
+
+impl crate::Shared {
+    /// Steer the player the panel shows, as the panel's own controls do: the
+    /// music widget's play or pause, previous and next are the panel's
+    /// effects, carried out by what owns the players.
+    pub(crate) fn music(&self, action: Action) {
+        let Some(device) = &self.device else {
+            return;
+        };
+        let effect = match action {
+            Action::PlayPause => QsEffect::PlayPause,
+            Action::Previous => QsEffect::PreviousTrack,
+            Action::Next => QsEffect::NextTrack,
+        };
+        if let Err(error) = device.panel().run(effect) {
+            tracing::debug!(%error, ?action, "the desk's music control did not reach the player");
+        }
+    }
+}
+
 /// Take the choices `document` carries into `prefs`, for the layer drawing
 /// from them.
 pub(crate) fn follow_prefs(prefs: &Prefs, document: &Map<String, Value>) {
@@ -47,7 +88,8 @@ pub(crate) fn follow_prefs(prefs: &Prefs, document: &Map<String, Value>) {
 ///
 /// The widgets share `fold` with the session's keys, which fold an open card
 /// on Escape, and read `overview` to fold it while the overview is over the
-/// desk.
+/// desk. `music` is what plays, as the session reads it from the player
+/// Quick Settings shows.
 pub(crate) fn desk(
     options: &Options,
     notices: tilo_desktop_surface::DesktopNotifications,
@@ -55,6 +97,7 @@ pub(crate) fn desk(
     widgets: Prefs,
     fold: DeskFold,
     overview: Rc<Cell<bool>>,
+    music: DeskMusic,
 ) -> (DesktopHost, StripPolicy, Rc<RefCell<Vec<DesktopAsk>>>) {
     let asks = Rc::new(RefCell::new(Vec::new()));
     let (desktop, policy) = desktop_with(options.salt, options.scale, |mut surface, handle| {
@@ -67,7 +110,8 @@ pub(crate) fn desk(
         )
         .with_fold(fold)
         .with_overview(overview)
-        .with_notices(notices);
+        .with_notices(notices)
+        .with_music(music);
         let beneath = vec![Box::new(layer) as Box<dyn ui::widget::Widget>];
         Box::new(
             DeskLayer::new(

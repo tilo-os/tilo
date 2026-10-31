@@ -34,6 +34,7 @@ use vello::kurbo::{Affine, Point, Rect, Size, Vec2};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::calendar::Month;
+use super::music::{DeskMusic, MusicAction, NowPlaying};
 use super::paint::{self, BAND};
 use super::placement::{self, MARGIN};
 use super::sizing;
@@ -43,9 +44,15 @@ use super::{Context, DeskBoard, Form, Slot};
 use crate::chrome::ChromeIntent;
 use crate::desktop_host::DesktopAsk;
 
-/// The widgets this layer lays out. What is playing joins them with the
-/// player it shows; the system monitor with the readings it is given.
-const SHOWN: [WidgetId; 3] = [WidgetId::Team, WidgetId::Calendar, WidgetId::SystemMonitor];
+/// The widgets this layer lays out, bottom first: music rests in the
+/// bottom-right corner, the people and the date down the right edge and
+/// the machine's load in the bottom-left, so they never overlap.
+const SHOWN: [WidgetId; 4] = [
+    WidgetId::Music,
+    WidgetId::Team,
+    WidgetId::Calendar,
+    WidgetId::SystemMonitor,
+];
 
 /// Which part of a widget a press landed on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +66,8 @@ enum Part {
     Resize,
     /// The row of the person with this roster id.
     Person(String),
+    /// One of the music widget's transport controls.
+    Music(MusicAction),
 }
 
 /// A press being held on a widget: which part it took, where, and what the
@@ -139,6 +148,9 @@ pub struct DeskWidgets {
     undo: Rc<RefCell<BTreeMap<u64, WidgetId>>>,
     /// The widgets an Undo asked back, taken up on the next pass.
     restores: Rc<RefCell<Vec<WidgetId>>>,
+    /// What plays, as the session reads it: the music widget shows it and
+    /// its controls ask for the transport.
+    music: DeskMusic,
 }
 
 /// One widget as laid out: where it is, and which display that is.
@@ -156,6 +168,8 @@ struct Content<'a> {
     month: &'a Month,
     members: &'a [TeamMember],
     reading: Reading,
+    /// What plays, while something does.
+    playing: Option<&'a NowPlaying>,
     cursor: Option<Point>,
 }
 
@@ -166,6 +180,7 @@ struct Painted {
     day: chrono::NaiveDate,
     people: Vec<String>,
     reading: Reading,
+    playing: Option<NowPlaying>,
     prefs: DeskWidgetPrefs,
 }
 
@@ -208,6 +223,7 @@ impl DeskWidgets {
             notices: DesktopNotifications::default(),
             undo: Rc::default(),
             restores: Rc::default(),
+            music: DeskMusic::default(),
         }
     }
 
@@ -224,6 +240,15 @@ impl DeskWidgets {
     #[must_use]
     pub fn with_overview(mut self, up: Rc<Cell<bool>>) -> Self {
         self.overview = up;
+        self
+    }
+
+    /// The same layer showing what plays from `music`, the reading the
+    /// session keeps in step with the player Quick Settings shows.
+    #[must_use]
+    pub fn with_music(mut self, music: DeskMusic) -> Self {
+        self.music = music;
+        self.dirty = true;
         self
     }
 
@@ -381,19 +406,21 @@ impl DeskWidgets {
     }
 
     /// Whether `id` has anything to show right now.
-    fn has_content(id: WidgetId, people: usize) -> bool {
+    fn has_content(id: WidgetId, people: usize, playing: Option<&NowPlaying>) -> bool {
         match id {
             WidgetId::Team => people > 0,
             // The date is always there to show; the machine always offers
             // memory.
             WidgetId::Calendar | WidgetId::SystemMonitor => true,
-            WidgetId::Music => false,
+            // Music is there while something plays, as its person would find
+            // it, and gone when nothing does.
+            WidgetId::Music => playing.is_some(),
         }
     }
 
     /// Where `id`'s resting form and open card are on the display it lives
     /// on, and whether it has anything to show.
-    fn lay(&self, id: WidgetId, people: usize) -> Laid {
+    fn lay(&self, id: WidgetId, people: usize, playing: Option<&NowPlaying>) -> Laid {
         let displays = self.displays();
         let (display, at) = self.home(&displays, id);
         let (monitor, area) = displays
@@ -409,14 +436,17 @@ impl DeskWidgets {
             }
             WidgetId::Calendar => placement::rect_at(area, paint::CALENDAR_GLANCE, at),
             WidgetId::SystemMonitor => placement::rect_at(area, paint::MONITOR_GLANCE, at),
-            WidgetId::Music => Rect::ZERO,
+            WidgetId::Music => match playing {
+                Some(_) => placement::rect_at(area, paint::MUSIC_GLANCE, at),
+                None => Rect::ZERO,
+            },
         };
         let width = self.card_width(id, area);
         let height = sizing::height(id, width, |stage, width| match id {
             WidgetId::Team => paint::team_card_height(stage, people),
             WidgetId::Calendar => paint::calendar_card_height(stage, width),
             WidgetId::SystemMonitor => paint::monitor_card_height(stage),
-            WidgetId::Music => 0.0,
+            WidgetId::Music => paint::music_card_height(stage, width),
         });
         let open = Size::new(width, height + BAND);
         let slot = Slot {
@@ -424,7 +454,7 @@ impl DeskWidgets {
             glance,
             open: placement::open_rect(area, glance, open),
             reach: placement::reach_zone(area, glance),
-            has_content: Self::has_content(id, people),
+            has_content: Self::has_content(id, people, playing),
         };
         Laid {
             slot,
@@ -442,9 +472,10 @@ impl DeskWidgets {
             return false;
         }
         let people = self.team_rows();
+        let playing = self.music.get();
         let laid: Vec<Laid> = SHOWN
             .into_iter()
-            .map(|id| self.lay(id, people.len()))
+            .map(|id| self.lay(id, people.len(), playing.as_ref()))
             .collect();
         let mut slots: Vec<Slot> = laid.iter().map(|laid| laid.slot).collect();
         // On each display, widgets resting on each other step apart from
@@ -534,10 +565,14 @@ impl DeskWidgets {
             Form::Away => Part::Body,
             Form::Glance => {
                 if paint::badge_rect(rect, self.anchor(id)).contains(p) {
-                    Part::Remove
-                } else {
-                    Part::Body
+                    return Part::Remove;
                 }
+                // The music widget's play or pause acts where the song rests;
+                // the rest of it opens the card.
+                if id == WidgetId::Music && paint::music_glance_play(rect).contains(p) {
+                    return Part::Music(MusicAction::PlayPause);
+                }
+                Part::Body
             }
             Form::Open => {
                 if paint::remove_rect(rect).contains(p) {
@@ -568,6 +603,15 @@ impl DeskWidgets {
                         .map(|(_, person)| person.clone())
                     {
                         return Part::Person(person);
+                    }
+                }
+                if id == WidgetId::Music {
+                    let stage = sizing::dominant(id, card.width());
+                    if let Some((action, _)) = paint::music_transport(card, stage)
+                        .into_iter()
+                        .find(|(_, target)| target.contains(p))
+                    {
+                        return Part::Music(action);
                     }
                 }
                 Part::Body
@@ -739,6 +783,7 @@ impl DeskWidgets {
                 .asks
                 .borrow_mut()
                 .push(DesktopAsk::Intent(ChromeIntent::ShowPerson(person))),
+            Part::Music(action) => self.asks.borrow_mut().push(DesktopAsk::Music(action)),
             Part::Body if form == Form::Glance => self.board.open(id),
             // A resize ends where the hand lets go; a click on the handle
             // does nothing, as does a tap on an open card.
@@ -926,6 +971,7 @@ impl DeskWidgets {
     }
 
     fn paint_glance(
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
@@ -937,6 +983,7 @@ impl DeskWidgets {
             month,
             members,
             reading,
+            playing,
             ..
         } = *content;
         paint::paint_glance_ground(scene, transform, theme, slot.id, slot.glance);
@@ -956,7 +1003,19 @@ impl DeskWidgets {
             WidgetId::SystemMonitor => {
                 paint::paint_monitor_glance(scene, transform, text, theme, slot.glance, reading);
             }
-            WidgetId::Music => {}
+            WidgetId::Music => {
+                if let Some(playing) = playing {
+                    paint::paint_music_glance(
+                        scene,
+                        transform,
+                        text,
+                        theme,
+                        slot.glance,
+                        playing,
+                        content.cursor.filter(|_| self.grab.is_none()),
+                    );
+                }
+            }
         }
     }
 
@@ -977,6 +1036,7 @@ impl DeskWidgets {
             month,
             members,
             reading,
+            playing,
             cursor,
         } = *content;
         let open = slot.open;
@@ -1061,7 +1121,20 @@ impl DeskWidgets {
                             scene, transform, text, theme, card, reading, stage,
                         );
                     }
-                    WidgetId::Music => {}
+                    WidgetId::Music => {
+                        if let Some(playing) = playing {
+                            paint::paint_music_card(
+                                scene,
+                                transform,
+                                text,
+                                theme,
+                                card,
+                                playing,
+                                stage,
+                                cursor.filter(|_| self.grab.is_none()),
+                            );
+                        }
+                    }
                 }
                 // The content stays inside the card's shape.
                 let _ = radius;
@@ -1088,11 +1161,19 @@ impl Widget for DeskWidgets {
         // Who is here can change with the tree alone: lay the widget out
         // again for it.
         let people = self.team_rows();
+        let playing = self.music.get();
         let team = self.slot(WidgetId::Team);
         let changed = team.is_some_and(|slot| {
-            let laid = self.lay(WidgetId::Team, people.len());
+            let laid = self.lay(WidgetId::Team, people.len(), playing.as_ref());
             laid.slot.has_content != slot.has_content
         });
+        // What plays came or went: its widget is there, or is not.
+        let music = self.slot(WidgetId::Music);
+        let changed = changed
+            | music.is_some_and(|slot| {
+                let laid = self.lay(WidgetId::Music, people.len(), playing.as_ref());
+                laid.slot.has_content != slot.has_content
+            });
         changed | self.relayout()
     }
 
@@ -1126,6 +1207,7 @@ impl Widget for DeskWidgets {
         self.motion = theme.motion();
         self.tick(now);
         let today = ui::clock::local_now().date_naive();
+        let playing = self.music.get();
         let painted = Painted {
             forms: self
                 .slots
@@ -1135,6 +1217,7 @@ impl Widget for DeskWidgets {
             day: today,
             people: self.team_ids.clone(),
             reading: self.monitor.reading(),
+            playing: playing.clone(),
             prefs: self.prefs.clone(),
         };
         self.dirty = self.painted.as_ref() != Some(&painted);
@@ -1149,6 +1232,7 @@ impl Widget for DeskWidgets {
             month: &month,
             members: &members,
             reading: self.monitor.reading(),
+            playing: playing.as_ref(),
             cursor: self.pointer,
         };
         let drawn: Vec<Slot> = self.slots.iter().map(|slot| self.drawn(slot)).collect();
@@ -1208,7 +1292,7 @@ impl Widget for DeskWidgets {
                 if glance_alpha > f32::EPSILON {
                     paint::with_alpha(scene, at, bounds, glance_alpha, |scene| {
                         paint::paint_glance_ground(scene, at, theme, slot.id, slot.glance);
-                        Self::paint_glance(scene, at, text, theme, &slot, &content);
+                        self.paint_glance(scene, at, text, theme, &slot, &content);
                         if hovered && card_alpha <= f32::EPSILON {
                             let badge = paint::badge_rect(slot.glance, self.anchor(slot.id));
                             let on_badge = self.pointer.is_some_and(|p| badge.contains(p));
@@ -1330,6 +1414,9 @@ impl Widget for DeskWidgets {
             || (self.overview.get() && self.board.opened().is_some())
             // Undo, answered on the toast, reaches the desk this way.
             || !self.restores.borrow().is_empty()
+            // So does what plays: the session writes the reading every frame
+            // it pumps, and the next frame draws it.
+            || self.music.get() != self.painted.as_ref().and_then(|painted| painted.playing.clone())
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1374,6 +1461,16 @@ impl Widget for DeskWidgets {
             .is_showing()
             .then(|| now.checked_add(system_monitor::SAMPLE_EVERY))
             .flatten();
+        // A song that plays moves its playhead: the frame that shows it
+        // comes once a second, from the reading the session keeps current.
+        let playhead = self.music.get().filter(|playing| {
+            playing.playing
+                && playing.progress().is_some()
+                && self.slots.iter().any(|slot| {
+                    slot.id == WidgetId::Music && self.board.form(slot.id) != Form::Away
+                })
+        });
+        let playhead = playhead.and_then(|_| now.checked_add(Duration::from_secs(1)));
         let settling = self
             .offsets
             .values()
@@ -1389,6 +1486,7 @@ impl Widget for DeskWidgets {
             .chain(lifting)
             .chain(day)
             .chain(sample)
+            .chain(playhead)
             .chain(fades)
             .filter(|at| *at > now)
             .min()
@@ -1469,6 +1567,9 @@ mod tests {
         /// The desk's notifications, where a removed widget's Undo is
         /// offered.
         notices: tilo_desktop_surface::DesktopNotifications,
+        /// What plays, as the session keeps it beside its Quick Settings
+        /// reading.
+        music: DeskMusic,
     }
 
     /// A desk with `people` in its workspace, the calendar added, and the
@@ -1500,10 +1601,12 @@ mod tests {
         let fold = super::super::DeskFold::default();
         let overview: Rc<Cell<bool>> = Rc::default();
         let notices = tilo_desktop_surface::DesktopNotifications::default();
+        let music = DeskMusic::default();
         let mut widgets = DeskWidgets::new(handle, "me".into(), Rc::clone(&asks), changes.clone())
             .with_fold(fold.clone())
             .with_overview(Rc::clone(&overview))
-            .with_notices(notices.clone());
+            .with_notices(notices.clone())
+            .with_music(music.clone());
         widgets = widgets.with_source(source).with_prefs(prefs);
         lay_out(&mut widgets, AREA);
         Rig {
@@ -1513,6 +1616,7 @@ mod tests {
             fold,
             overview,
             notices,
+            music,
         }
     }
 
@@ -1884,6 +1988,69 @@ mod tests {
             ),
             "the row opens that person: {asks:?}"
         );
+    }
+
+    #[test]
+    fn the_music_widget_shows_what_plays_and_steers_the_player_it_shows() {
+        let mut rig = rig(&[]);
+        rig.point_at(BARE);
+        assert_eq!(
+            rig.form(WidgetId::Music),
+            Form::Away,
+            "nothing plays: nothing to show"
+        );
+
+        // What the player reports is what the widget shows.
+        rig.music.set(Some(NowPlaying {
+            title: "Clair de lune".into(),
+            subtitle: "Claude Debussy".into(),
+            player: "Music".into(),
+            playing: true,
+            can_toggle: true,
+            can_previous: true,
+            can_next: true,
+            position_ms: 60_000.0,
+            duration_ms: 240_000.0,
+            ..NowPlaying::default()
+        }));
+        rig.widgets.tick(Instant::now());
+        assert_eq!(
+            rig.form(WidgetId::Music),
+            Form::Glance,
+            "the song is on the desk"
+        );
+        let glance = rig.slot(WidgetId::Music).glance;
+
+        // The play control on the glancing widget pauses what plays.
+        assert!(rig.click(centre(paint::music_glance_play(glance))));
+        assert_eq!(
+            rig.asks.borrow().as_slice(),
+            [DesktopAsk::Music(MusicAction::PlayPause)],
+            "the widget asks the session to pause it"
+        );
+
+        // The card it opens carries the whole transport.
+        rig.asks.borrow_mut().clear();
+        assert!(rig.click(centre(glance)));
+        assert_eq!(rig.form(WidgetId::Music), Form::Open);
+        let card = paint::card_rect(rig.slot(WidgetId::Music).open);
+        let stage = sizing::dominant(WidgetId::Music, card.width());
+        let next = paint::music_transport(card, stage)
+            .into_iter()
+            .find(|(action, _)| *action == MusicAction::Next)
+            .map(|(_, rect)| rect)
+            .expect("the open card offers the next song");
+        assert!(rig.click(centre(next)));
+        assert_eq!(
+            rig.asks.borrow().as_slice(),
+            [DesktopAsk::Music(MusicAction::Next)],
+            "skip asks the session for the next song"
+        );
+
+        // The song ends: the widget goes with it.
+        rig.music.set(None);
+        rig.widgets.tick(Instant::now());
+        assert_eq!(rig.form(WidgetId::Music), Form::Away, "nothing plays again");
     }
 
     #[test]

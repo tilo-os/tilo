@@ -14,10 +14,11 @@ use ui::desk_widgets::WidgetId;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Size};
+use vello::kurbo::{Affine, Point, Rect, Size, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
 use super::calendar::{self, Month};
+use super::music::{MusicAction, NowPlaying};
 use super::sizing::Stage;
 use super::system_monitor::Reading;
 use super::team::{self, TeamMember};
@@ -944,4 +945,370 @@ pub(super) fn desk_widget_title(id: WidgetId) -> String {
         WidgetId::Calendar => "desk-widget-calendar",
         WidgetId::SystemMonitor => "desk-widget-system-monitor",
     })
+}
+
+/// The music widget's glance form: the cover, what plays, and its
+/// play/pause and open controls at its end.
+pub(super) const MUSIC_GLANCE: Size = Size::new(268.0, 40.0);
+/// The compact music card's artwork.
+const COMPACT_ART: f64 = ui::tokens::Layout::BASE.desk_art as f64;
+/// The regular music card's height: the song's lines, the playhead and the
+/// transport.
+const MUSIC_ROWS: f64 = 124.0;
+/// One round control on the music widget.
+const CONTROL_SIDE: f64 = 32.0;
+/// The air between two of them.
+const CONTROL_GAP: f64 = ui::tokens::Spacing::BASE.s2 as f64;
+/// The playhead's track.
+const TRACK: f64 = 4.0;
+
+/// The music glance's artwork.
+fn music_glance_art(rect: Rect) -> Rect {
+    Rect::from_center_size(Point::new(rect.x0 + 20.0, rect.center().y), (28.0, 28.0))
+}
+
+/// The play/pause target near the end of the music glance.
+pub(super) fn music_glance_play(rect: Rect) -> Rect {
+    let side = rect.height();
+    Rect::new(
+        rect.x1 - 2.0 * side + 6.0,
+        rect.y0,
+        rect.x1 - side + 6.0,
+        rect.y1,
+    )
+}
+
+/// The open target at the very end of the music glance: a press there opens
+/// the card.
+pub(super) fn music_glance_expand(rect: Rect) -> Rect {
+    let side = rect.height();
+    Rect::new(rect.x1 - side + 6.0, rect.y0, rect.x1, rect.y1)
+}
+
+/// The compact music card's play/pause.
+pub(super) fn music_compact_play(card: Rect) -> Rect {
+    Rect::from_center_size(
+        Point::new(card.x1 - PAD - 20.0, card.center().y),
+        (40.0, 40.0),
+    )
+}
+
+/// The large music card's artwork side at `width`, and the height of the
+/// band it stands in above the song's lines.
+pub(super) fn music_large_art(width: f64) -> (f64, f64) {
+    let side = 180.0f64.min(width - 2.0 * PAD).max(0.0);
+    (side, side + PAD)
+}
+
+/// The music card's height at `stage` and `width`.
+pub(super) fn music_card_height(stage: Stage, width: f64) -> f64 {
+    match stage {
+        Stage::Compact => COMPACT_ART + 2.0 * PAD,
+        Stage::Regular => MUSIC_ROWS,
+        Stage::Large => music_large_art(width).1 + MUSIC_ROWS,
+    }
+}
+
+/// The music card's transport, as the buttons it draws and the rects they
+/// take a press on: previous, play or pause and next at its lower right, or
+/// play or pause alone in the compact card.
+pub(super) fn music_transport(card: Rect, stage: Stage) -> Vec<(MusicAction, Rect)> {
+    if stage == Stage::Compact {
+        return vec![(MusicAction::PlayPause, music_compact_play(card))];
+    }
+    let y = card.y1 - PAD - CONTROL_SIDE;
+    let step = CONTROL_SIDE + CONTROL_GAP;
+    let x = card.x1 - PAD - (3.0 * CONTROL_SIDE + 2.0 * CONTROL_GAP);
+    let previous = Rect::from_origin_size(Point::new(x, y), (CONTROL_SIDE, CONTROL_SIDE));
+    let play = previous + Vec2::new(step, 0.0);
+    let next = play + Vec2::new(step, 0.0);
+    vec![
+        (MusicAction::Previous, previous),
+        (MusicAction::PlayPause, play),
+        (MusicAction::Next, next),
+    ]
+}
+
+/// The playhead's track under the song's lines, and where the lines have
+/// room.
+fn music_track(card: Rect) -> Rect {
+    let y = card.y1 - PAD - CONTROL_SIDE - 12.0 - TRACK;
+    Rect::new(card.x0 + PAD, y, card.x1 - PAD, y + TRACK)
+}
+
+/// A round control on the music widget: a disc under the pointer, its glyph
+/// brighter with it, or the one filled control.
+fn paint_control(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    target: Rect,
+    icon: ui::icons::Icon,
+    hovered: bool,
+    filled: bool,
+) {
+    let colors = &theme.tokens.colors;
+    let disc = Rect::from_center_size(target.center(), (28.0, 28.0));
+    if filled {
+        ui::surface::card(
+            scene,
+            transform,
+            disc,
+            disc.height() / 2.0,
+            if hovered {
+                ui::paint::with_alpha_scaled(colors.text_primary, 0.85)
+            } else {
+                colors.text_primary
+            },
+        );
+    } else if hovered {
+        ui::surface::card(
+            scene,
+            transform,
+            disc,
+            disc.height() / 2.0,
+            ui::paint::with_alpha_scaled(colors.text_primary, 0.1),
+        );
+    }
+    let color = if filled {
+        colors.surfaces.overlay
+    } else if hovered {
+        colors.text_primary
+    } else {
+        colors.text_dim
+    };
+    ui::icons::draw_icon(
+        scene,
+        transform,
+        Rect::from_center_size(target.center(), (14.0, 14.0)),
+        icon,
+        color,
+        1.6,
+    );
+}
+
+/// The icon a play/pause control shows now.
+fn play_icon(playing: bool) -> ui::icons::Icon {
+    if playing {
+        ui::icons::Icon::Pause
+    } else {
+        ui::icons::Icon::Play
+    }
+}
+
+/// The music widget's glance: the cover, what plays, and the two controls
+/// at its end — play or pause, and open.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "widths are bounded by the display; f32 is the shaping precision"
+)]
+pub(super) fn paint_music_glance(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    playing: &NowPlaying,
+    cursor: Option<Point>,
+) {
+    let colors = &theme.tokens.colors;
+    let art = music_glance_art(rect);
+    ui::widget::SongFace::showing(&playing.song()).paint_art(
+        &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+        art,
+        6.0,
+        ui::time::now(),
+    );
+    let play = music_glance_play(rect);
+    let expand = music_glance_expand(rect);
+    let on = |target: Rect| cursor.is_some_and(|p| target.contains(p));
+    paint_control(
+        scene,
+        transform,
+        theme,
+        play,
+        play_icon(playing.playing),
+        on(play),
+        false,
+    );
+    paint_control(
+        scene,
+        transform,
+        theme,
+        expand,
+        ui::icons::Icon::ChevronUp,
+        on(expand),
+        false,
+    );
+    let style = theme
+        .text(TextRole::Caption)
+        .with_weight(TextWeight::Semibold);
+    let line = if playing.subtitle.is_empty() {
+        playing.title.clone()
+    } else {
+        format!("{} \u{b7} {}", playing.title, playing.subtitle)
+    };
+    let x = art.x1 + 8.0;
+    let width = (play.x0 - 4.0 - x).max(1.0) as f32;
+    let line = text.elide_to_width_style(&line, width, &style);
+    let (_, h) = text.measure_style(&line, None, &style);
+    text.draw_style(
+        scene,
+        &line,
+        colors.text_primary,
+        transform.pre_translate((x, rect.center().y - f64::from(h) / 2.0).into()),
+        None,
+        &style,
+    );
+}
+
+/// The compact music card: the song beside its artwork, play or pause at the
+/// end.
+fn paint_music_compact(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    card: Rect,
+    playing: &NowPlaying,
+    cursor: Option<Point>,
+) {
+    let title = theme.text(TextRole::Body).with_weight(TextWeight::Semibold);
+    let caption = theme.text(TextRole::Caption);
+    let face = ui::widget::SongFace::showing(&playing.song());
+    let now = ui::time::now();
+    let art = Rect::from_center_size(
+        Point::new(card.x0 + PAD + COMPACT_ART / 2.0, card.center().y),
+        (COMPACT_ART, COMPACT_ART),
+    );
+    let play = music_compact_play(card);
+    let lines = Rect::new(
+        art.x1 + 10.0,
+        art.y0,
+        (play.x0 - 8.0).max(art.x1 + 11.0),
+        art.y1,
+    );
+    let radius = ui::chrome::ChromeRole::Selector.radius(theme, art.height());
+    face.paint_art(
+        &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+        art,
+        radius,
+        now,
+    );
+    face.paint_lines(
+        &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+        lines,
+        Some((&title, &caption)),
+        now,
+    );
+    paint_control(
+        scene,
+        transform,
+        theme,
+        play,
+        play_icon(playing.playing),
+        cursor.is_some_and(|p| play.contains(p)),
+        true,
+    );
+}
+
+/// The music card: the cover, the song, where it is in it, and the
+/// transport that steers it.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "widths are bounded by the display; f32 is the shaping precision"
+)]
+pub(super) fn paint_music_card(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    card: Rect,
+    playing: &NowPlaying,
+    stage: Stage,
+    cursor: Option<Point>,
+) {
+    if stage == Stage::Compact {
+        paint_music_compact(scene, transform, text, theme, card, playing, cursor);
+        return;
+    }
+    let colors = &theme.tokens.colors;
+    let title = theme.text(TextRole::Body).with_weight(TextWeight::Semibold);
+    let caption = theme.text(TextRole::Caption);
+    let face = ui::widget::SongFace::showing(&playing.song());
+    let now = ui::time::now();
+    let radius = |rect: Rect| ui::chrome::ChromeRole::Selector.radius(theme, rect.height());
+    // From the regular stage up: the cover, the lines beside it or under
+    // it, the playhead under them and the transport at the lower right.
+    let large = stage == Stage::Large;
+    let content = if large {
+        let (_, band) = music_large_art(card.width());
+        Rect::new(card.x0, card.y0 + band, card.x1, card.y1)
+    } else {
+        card
+    };
+    let track = music_track(content);
+    let top = content.y0 + PAD;
+    let bottom = (track.y0 - 8.0).max(top + 1.0);
+    let (art, lines) = if large {
+        // The cover in the band above the lines, centred on the card.
+        let (side, _) = music_large_art(card.width());
+        let art = Rect::from_origin_size(
+            Point::new(card.center().x - side / 2.0, card.y0 + PAD / 2.0),
+            (side, side),
+        );
+        (
+            art,
+            Rect::new(content.x0 + PAD, top, content.x1 - PAD, bottom),
+        )
+    } else {
+        let side = (bottom - top).clamp(0.0, COMPACT_ART);
+        let art = Rect::from_origin_size(Point::new(content.x0 + PAD, top), (side, side));
+        (art, Rect::new(art.x1 + 12.0, top, content.x1 - PAD, bottom))
+    };
+    face.paint_art(
+        &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+        art,
+        radius(art),
+        now,
+    );
+    face.paint_lines(
+        &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+        lines,
+        Some((&title, &caption)),
+        now,
+    );
+    // Where it is in the song, while the player says how long it is.
+    ui::surface::card(
+        scene,
+        transform,
+        track,
+        TRACK / 2.0,
+        ui::paint::with_alpha_scaled(colors.text_dim, 0.25),
+    );
+    if let Some(share) = playing.progress() {
+        let fill = Rect::new(
+            track.x0,
+            track.y0,
+            track.x0 + track.width() * share,
+            track.y1,
+        );
+        ui::surface::card(scene, transform, fill, TRACK / 2.0, colors.text_primary);
+    }
+    for (action, target) in music_transport(card, stage) {
+        let (icon, filled) = match action {
+            MusicAction::Previous => (ui::icons::Icon::SkipBack, false),
+            MusicAction::Next => (ui::icons::Icon::SkipForward, false),
+            MusicAction::PlayPause => (play_icon(playing.playing), true),
+        };
+        paint_control(
+            scene,
+            transform,
+            theme,
+            target,
+            icon,
+            cursor.is_some_and(|p| target.contains(p)),
+            filled,
+        );
+    }
 }

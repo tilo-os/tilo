@@ -41,6 +41,7 @@ use winit::event::{ElementState, Modifiers, WindowEvent};
 
 use crate::about::TiloMenu;
 use crate::chrome::ChromeIntent;
+use crate::desk_widgets::music::MusicAction;
 use crate::desktop_actions::{
     DesktopAction, OPERATION, chrome_resource, desk_resource, launchpad_resource,
 };
@@ -133,6 +134,9 @@ pub enum DesktopAsk {
     /// A desktop shortcut the layers have no part in (search, quick
     /// settings, locking, the magnifier, …): the host's to carry out.
     Shortcut(ShortcutAction),
+    /// The person pressed one of the music widget's controls: the host
+    /// steers the player it shows.
+    Music(MusicAction),
 }
 
 /// Whether the desk shown has no window. Every desk, not only a workspace's

@@ -34,6 +34,7 @@
 //! [`calendar`] and [`team`].
 
 pub mod calendar;
+pub mod music;
 pub mod paint;
 pub mod placement;
 pub mod sizing;
@@ -41,6 +42,7 @@ pub mod system_monitor;
 pub mod team;
 mod widgets;
 
+pub use music::DeskMusic;
 pub use widgets::DeskWidgets;
 
 use std::cell::Cell;

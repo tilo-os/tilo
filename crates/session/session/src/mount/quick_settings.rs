@@ -173,6 +173,11 @@ pub(crate) fn answer(shared: &Shared) {
             }
         }
     }
+    // What plays reaches the desk from the same reading the panel shows, so
+    // the widget and the panel never disagree and neither reads the players
+    // again.
+    let playing = device.state().now_playing;
+    shared.music.set(playing.as_ref().map(crate::desk::playing));
     shared.feed_notifications();
     shared.feed_clipboard();
 }

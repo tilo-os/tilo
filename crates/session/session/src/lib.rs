@@ -467,6 +467,9 @@ struct Shared {
     fabric: Option<tilo_device_fabric::link::SharedLink>,
     /// The person's devices as the panel was last fed them.
     devices: mount::devices::Devices,
+    /// What plays, as the desk's music widget shows it: written from the
+    /// device's reading every frame it is pumped.
+    music: tilo_desktop::desk_widgets::DeskMusic,
     /// The power menu, workspace settings, and the questions the session
     /// asks for apps and services, by their seats.
     power: Option<PowerSeat>,
@@ -609,6 +612,7 @@ impl Shared {
                 DesktopAsk::Launchpad(action) => self.launchpad(action),
                 DesktopAsk::Shortcut(action) => self.shortcut(action),
                 DesktopAsk::HostAction(action) => self.host_action(&action),
+                DesktopAsk::Music(action) => self.music(action),
                 DesktopAsk::LeftWorkspace(name) => workspaces::left_workspace(&self.notices, &name),
                 other => tracing::debug!(?other, "desktop ask the session has no part in yet"),
             }
@@ -1382,6 +1386,10 @@ impl Session {
         // overview folds as it comes over the desk: the desk is under the
         // windows and hears neither itself.
         let fold = tilo_desktop::desk_widgets::DeskFold::default();
+        // What plays, which the desk's music widget shows: the session keeps
+        // it current from the player Quick Settings already reads, so the
+        // widget is a view of that one reading.
+        let music = tilo_desktop::desk_widgets::DeskMusic::default();
         let (desktop, mut policy, asks) = desk::desk(
             &options,
             notices.clone(),
@@ -1389,6 +1397,7 @@ impl Session {
             widget_prefs,
             fold.clone(),
             overview.open_flag(),
+            music.clone(),
         );
         desktop.set_gestures(options.config.gestures);
         desktop.set_theme(presentation.theme);
@@ -1652,6 +1661,7 @@ impl Session {
             device,
             fabric,
             devices: mount::devices::Devices::default(),
+            music,
             power,
             workspace_settings,
             ws_settings_fed: Cell::new(None),
