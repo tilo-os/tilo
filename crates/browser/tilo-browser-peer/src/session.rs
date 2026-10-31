@@ -719,6 +719,7 @@ impl PeerHandle {
             placing: BTreeMap::new(),
             live: BTreeSet::new(),
             outbox: record.outbox.iter().cloned().collect(),
+            resending: BTreeSet::new(),
             record,
             ciphers: Ciphers::new(),
             channels,
@@ -1261,6 +1262,10 @@ struct Task {
     placing: BTreeMap<u64, (String, String)>,
     live: BTreeSet<u64>,
     outbox: VecDeque<OutboxEntry>,
+    /// The outbox entries this session still owes its host on this
+    /// connection: a page that recorded while it was away owes more than the
+    /// transport takes at once, so they go as the host's answers make room.
+    resending: BTreeSet<[u8; 16]>,
     record: PeerRecord,
     ciphers: Ciphers,
     /// This device's membership of the rooms' encrypted channels.
@@ -1758,6 +1763,10 @@ impl Task {
             if !self.settle_channels(Some(&client)).await {
                 return Exit::Lost("host session saturated".into());
             }
+            // What the outbox still owes the host goes as its queue takes it:
+            // every answer from the host, every command, every tick is a
+            // chance to hand it more.
+            self.flush_outbox(&client);
             tokio::select! {
                 biased;
                 command = commands.recv() => match command {
@@ -2137,13 +2146,40 @@ impl Task {
                 })
                 .is_ok();
         }
-        for entry in &self.outbox {
-            sent_ok &= client.send(commit(entry, &self.config.cert)).is_ok();
-        }
+        // What this page recorded while it was away is owed again, oldest
+        // first: as much as the transport takes now, the rest as the host's
+        // answers make room ([`Self::flush_outbox`]).
+        self.resending = self.outbox.iter().map(|entry| entry.op).collect();
+        self.flush_outbox(client);
         for join in self.voice.resume() {
             sent_ok &= client.send(join).is_ok();
         }
         sent_ok
+    }
+
+    /// Hand the host as much of the outbox as its queue takes, oldest first;
+    /// what does not fit stays owed and is sent on the next chance the host's
+    /// answers bring. A page that recorded a lot while it was away owes more
+    /// than the transport holds at once, which is no reason to give up the
+    /// session.
+    fn flush_outbox(&mut self, client: &Link) {
+        let owed: Vec<[u8; 16]> = self
+            .outbox
+            .iter()
+            .map(|entry| entry.op)
+            .filter(|op| self.resending.contains(op))
+            .collect();
+        for op in owed {
+            let Some(entry) = self.outbox.iter().find(|entry| entry.op == op) else {
+                self.resending.remove(&op);
+                continue;
+            };
+            if client.send(commit(entry, &self.config.cert)).is_err() {
+                // The transport takes no more right now.
+                return;
+            }
+            self.resending.remove(&op);
+        }
     }
 
     fn voice_calls(&self, workspace_id: u64, client: Option<&Link>) -> bool {
@@ -3439,6 +3475,7 @@ impl Task {
         let Some(entry) = self.outbox.remove(index) else {
             return;
         };
+        self.resending.remove(&op);
         self.persist();
         let route = entry.route;
         let emitted = route.clone();
