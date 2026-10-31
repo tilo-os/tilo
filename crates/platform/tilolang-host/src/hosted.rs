@@ -340,6 +340,7 @@ impl Hosted {
                     )
                 }),
                 record_loader: None,
+                root: tilolang_tilo::host::RootView::default(),
                 sink: None,
             },
             Rc::new(platform),

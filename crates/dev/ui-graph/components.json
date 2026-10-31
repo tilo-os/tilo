@@ -1765,6 +1765,34 @@
       }
     },
     {
+      "name": "Map",
+      "doc": "Places at points on a pannable, zoomable surface, each a view of its own.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the map is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "pins",
+          "doc": "The pins, in the order the map draws them (the last on top).",
+          "accepts": {
+            "component": "MapPin"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
       "name": "NavList",
       "doc": "The places of an app, in its sidebar: choosing one shows it. Selection follows the person's choice and is reported, never kept by the app beside it.",
       "props": [
@@ -2429,6 +2457,11 @@
         {
           "name": "across",
           "doc": "Scroll sideways instead: a row wider than its column, such as a board's lanes.",
+          "type": "bool"
+        },
+        {
+          "name": "both",
+          "doc": "Scroll both ways: a 2D surface whose content is wider and taller than its column, such as a desk of strips. Takes precedence over `across`.",
           "type": "bool"
         }
       ],
@@ -4183,6 +4216,53 @@
       "semantics": {
         "role": "Button",
         "label": "label"
+      }
+    },
+    {
+      "name": "MapPin",
+      "doc": "One pin of a map, as an instance gives it: its key, its place and the view it shows.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What it is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "x",
+          "doc": "The canvas point of its top-leading corner, in canvas pixels.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "y",
+          "doc": "The canvas y of its top-leading corner, in canvas pixels.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "width",
+          "doc": "How wide it stands, in canvas pixels.",
+          "type": {
+            "option": "int"
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "body",
+          "doc": "What it shows.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
       }
     },
     {

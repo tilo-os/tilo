@@ -3617,6 +3617,8 @@ pub use quick_tile::{QuickTile, QuickTileOutcome, QuickTilePart};
 // widget tree.
 pub mod docked;
 pub use docked::{Docked, DockedProps};
+pub mod map;
+pub use map::{MAP_ZOOM_MAX, MAP_ZOOM_MIN, Map, MapCamera, MapPinProps, MapProps, PinPlace};
 pub mod empty_state;
 pub use empty_state::{EmptyState, EmptyStateContent, EmptyStateLayout, EmptyStateProps};
 pub mod find_bar;
