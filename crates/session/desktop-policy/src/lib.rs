@@ -328,6 +328,13 @@ impl DesktopPolicy {
             .is_some_and(|tab| self.handle.asks_attention(tab))
     }
 
+    /// The tab the desktop gave `window`, once it mapped: the key a shell's well names it by
+    /// (shell.md §8). A dialog has no tab; it floats over the window it belongs to.
+    #[must_use]
+    pub fn tab_of(&self, window: u64) -> Option<TabId> {
+        self.handle.read(|tree| tab_of(tree, window))
+    }
+
     /// Where the windows are as of the surface's last layout pass.
     #[must_use]
     pub fn layout(&self) -> Layout {

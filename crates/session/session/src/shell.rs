@@ -67,6 +67,7 @@ impl Shell {
             band(),
             scale,
             std::sync::Arc::new(move || wake.wake_by_ref()),
+            None,
         );
         let part = Rc::new(RefCell::new(part));
         compositor.add_host(Box::new(Held(Rc::clone(&part))));

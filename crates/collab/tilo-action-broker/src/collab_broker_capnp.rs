@@ -13777,7 +13777,7 @@ impl presence_stream::Server for PresenceStreamServer {
                 }
                 PresencePayload::Arrived => payload.set_arrived(()),
                 PresencePayload::Left => payload.set_left(()),
-                PresencePayload::Availability { .. } => {
+                PresencePayload::Availability { .. } | PresencePayload::Composing { .. } => {
                     return Err(capnp::Error::failed(
                         "desktop presence is never fanned to an app".into(),
                     ));

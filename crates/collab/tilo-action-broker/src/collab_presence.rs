@@ -39,6 +39,10 @@ pub fn to_peer(key: &PresenceKey, payload: &PresencePayload) -> Option<PeerPrese
             state: state.id().to_owned(),
             call: call.clone(),
         },
+        // Composing is the desktop's ("typing here"), carried to peers as its own
+        // ephemeral frame; the apps the local fanout serves hear it as their own
+        // channel presence. Nothing of a draft is ever in it.
+        PresencePayload::Composing { .. } => return None,
     };
     Some(PeerPresence { key, payload })
 }

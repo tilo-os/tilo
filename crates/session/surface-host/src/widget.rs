@@ -41,6 +41,10 @@ pub struct WidgetHost {
     /// with what it shows, so a reader of its resources reads them again
     /// only when this moved.
     revision: u64,
+    /// The wells the tree's places report to as it lays them out: shared
+    /// with the window policy placing the windows they stand for
+    /// ([`crate::WellPolicy`]).
+    wells: Option<ui::widget::Wells>,
 }
 
 impl WidgetHost {
@@ -75,7 +79,26 @@ impl WidgetHost {
             covers: false,
             owed: true,
             revision: 0,
+            wells: None,
         }
+    }
+
+    /// Report the wells of a tree's places ([`ui::widget::WindowWell`]) to
+    /// `wells` as it lays them out: the same handle the window policy
+    /// placing the windows they stand for reads.
+    pub fn install_wells(&mut self, wells: Option<ui::widget::Wells>) {
+        self.wells = wells;
+    }
+
+    /// Lay the tree out with the wells in effect, as `work` runs it: a
+    /// placement made then reports to them, so a policy reading them in the
+    /// same frame sees the windows where the tree just laid them out.
+    fn with_wells<T>(&mut self, work: impl FnOnce(&mut FrameHarness) -> T) -> T {
+        let Some(wells) = self.wells.clone() else {
+            return work(&mut self.host);
+        };
+        let _installed = ui::widget::window_well::install(wells);
+        work(&mut self.host)
     }
 
     /// Cover every output, following them as they come and go: chrome
@@ -132,7 +155,7 @@ impl WidgetHost {
     /// Lay the tree out and draw it now, whether or not a frame is due:
     /// what a caller reading its layout needs first.
     pub fn relayout(&mut self) {
-        self.host.relayout();
+        self.with_wells(ui::headless::FrameHarness::relayout);
         self.owed = true;
     }
 
@@ -295,7 +318,7 @@ impl SurfaceHost for WidgetHost {
     }
 
     fn prepare_frame(&mut self) {
-        let drew = self.host.poll_frame().unwrap_or(false);
+        let drew = self.with_wells(|host| host.poll_frame().unwrap_or(false));
         if !(drew || std::mem::take(&mut self.owed)) {
             return;
         }
