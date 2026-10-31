@@ -421,6 +421,18 @@ impl DesktopPolicy {
             .is_some_and(|tab| self.handle.focus_tab(tab))
     }
 
+    /// Fill the strip with `window`, or give it its width back: what a
+    /// client asks for itself, and what the window menu asks of it. False
+    /// when the desktop holds no such window (a dialog floats over one).
+    pub fn set_maximized(&mut self, window: u64, maximized: bool) -> bool {
+        if self.floating.contains_key(&window) {
+            return false;
+        }
+        self.handle
+            .read(|tree| tab_of(tree, window))
+            .is_some_and(|tab| self.handle.maximize_tab(tab, maximized))
+    }
+
     /// `window` is waiting for the person: its tab says so until they
     /// look at it. False when the desktop holds no such window or it is
     /// the one in front.
@@ -436,6 +448,31 @@ impl DesktopPolicy {
         self.handle
             .read(|tree| tab_of(tree, window))
             .is_some_and(|tab| self.handle.asks_attention(tab))
+    }
+
+    /// The windows the desk shows on the workspace in front, each with the
+    /// id its app announces itself by: what a launch of an app that may
+    /// already be running is decided against. A window still arriving is not
+    /// here, since it has no tab yet.
+    #[must_use]
+    pub fn windows_in_front(&self) -> Vec<(u64, String)> {
+        self.handle.read(|tree| {
+            let Some(workspace) = tree.active_workspace() else {
+                return Vec::new();
+            };
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .filter_map(|tab| match &tab.tile {
+                    TileContent::Foreign { app_id, surface_id } => {
+                        Some((*surface_id, app_id.clone()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
     }
 
     /// Where the windows are as of the surface's last layout pass.

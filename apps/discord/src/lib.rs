@@ -39,7 +39,7 @@ pub const APP_ID: &str = "so.tilo.discord";
 /// The record kind it publishes.
 pub const KIND: &str = "discord.guild";
 
-/// The app's toolkit definition, which a room's host mounts so the bridge
+/// The app's toolkit definition, which a workspace's host mounts so the bridge
 /// bot can work on the guild record.
 #[must_use]
 pub fn definition() -> &'static ui::application::ApplicationDefinition {

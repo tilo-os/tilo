@@ -4,26 +4,29 @@
 //! The portal runs on the desktop services' runtime and the compositor on
 //! the session's loop, so the portal's side ([`ScreenCapture`]) only sends
 //! a request and wakes the loop; the session answers it on its next pass
-//! ([`Captures::serve`]) with a PNG of every display as they show.
+//! ([`Captures::serve`]) with a PNG of what was asked for as it shows.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use tilo_compositor::Compositor;
-use tilo_portal::{Capture, Pending};
+use tilo_portal::{Capture, CaptureTarget, Pending};
 use tilo_service::Wake;
 
+/// What the portal asks for: what to capture, and where the answer goes.
+type Asked = (CaptureTarget, Reply);
+/// The answer: the file, or why there is none.
 type Reply = tokio::sync::oneshot::Sender<Result<PathBuf, String>>;
 
 /// The portal's side: asks the session for a screenshot.
 pub struct ScreenCapture {
-    requests: Sender<Reply>,
+    requests: Sender<Asked>,
     wake: Wake,
 }
 
 /// The session's side: the screenshots asked for, and where they go.
 pub struct Captures {
-    requests: Receiver<Reply>,
+    requests: Receiver<Asked>,
     directory: PathBuf,
 }
 
@@ -51,9 +54,9 @@ pub fn directory() -> PathBuf {
 }
 
 impl Capture for ScreenCapture {
-    fn screenshot(&self) -> Pending<Result<PathBuf, String>> {
+    fn screenshot(&self, target: CaptureTarget) -> Pending<Result<PathBuf, String>> {
         let (reply, answer) = tokio::sync::oneshot::channel();
-        if self.requests.send(reply).is_err() {
+        if self.requests.send((target, reply)).is_err() {
             return Box::pin(async { Err("the session ended".to_owned()) });
         }
         (self.wake)();
@@ -63,18 +66,31 @@ impl Capture for ScreenCapture {
                 .unwrap_or_else(|_| Err("the session ended".to_owned()))
         })
     }
+
+    /// What this session takes: everything the displays show, and the
+    /// window with focus. Picking a window or drawing an area would need a
+    /// selector over the desktop, which the session draws none of.
+    fn targets(&self) -> u32 {
+        CaptureTarget::Screen.bit() | CaptureTarget::ActiveWindow.bit()
+    }
 }
 
 impl Captures {
     /// Answer every screenshot asked for since the last pass.
     pub fn serve(&self, compositor: &mut Compositor) {
-        while let Ok(reply) = self.requests.try_recv() {
-            let _ = reply.send(self.take(compositor));
+        while let Ok((target, reply)) = self.requests.try_recv() {
+            let _ = reply.send(self.take(compositor, target));
         }
     }
 
-    fn take(&self, compositor: &mut Compositor) -> Result<PathBuf, String> {
-        let picture = picture(compositor)?;
+    fn take(&self, compositor: &mut Compositor, target: CaptureTarget) -> Result<PathBuf, String> {
+        let picture = match target {
+            CaptureTarget::Screen => picture(compositor)?,
+            CaptureTarget::ActiveWindow => focused(compositor)?,
+            CaptureTarget::Window | CaptureTarget::Area => {
+                return Err(format!("no selector is drawn to ask for a {target:?}"));
+            }
+        };
         std::fs::create_dir_all(&self.directory).map_err(|error| error.to_string())?;
         let path = unique(&self.directory);
         picture
@@ -82,6 +98,18 @@ impl Captures {
             .map_err(|error| error.to_string())?;
         Ok(path)
     }
+}
+
+/// The window with the keyboard's focus, as the compositor draws it.
+fn focused(compositor: &mut Compositor) -> Result<image::RgbaImage, String> {
+    let identifier = compositor
+        .focused_shareable_window()
+        .ok_or("no window has focus")?;
+    let shot = compositor
+        .read_back(&tilo_compositor::capture::Target::window(identifier))
+        .map_err(|error| error.to_string())?;
+    image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba)
+        .ok_or_else(|| "a frame of the wrong size".to_owned())
 }
 
 /// A fresh file name under `directory`.
@@ -94,7 +122,7 @@ fn unique(directory: &Path) -> PathBuf {
 }
 
 /// Every display on, each at its place in the layout.
-fn picture(compositor: &mut Compositor) -> Result<image::RgbaImage, String> {
+pub(crate) fn picture(compositor: &mut Compositor) -> Result<image::RgbaImage, String> {
     let mut placed = Vec::new();
     for output in compositor.outputs() {
         let Some((x, y, width, _)) = output.rect else {

@@ -41,7 +41,7 @@ chat-emoji-choose = Choose { $name }
 
 # Governed voice status, shared by native and browser hosts.
 chat-call-issue-unavailable = Call audio can't start on this device
-chat-call-issue-denied = You can't join calls in this room
+chat-call-issue-denied = You can't join calls in this workspace
 chat-call-issue-permission-denied = Microphone blocked. Allow it in settings, then unmute.
 chat-call-issue-source-lost = Microphone disconnected
 chat-call-issue-capture-failed = Microphone could not start
@@ -387,7 +387,7 @@ chat-send-message = Send message
 chat-undo = Undo
 chat-retry = Retry
 chat-close = Close
-# A message that did not reach the room; $reason says why.
+# A message that did not reach the workspace; $reason says why.
 chat-not-sent = Not sent: { $reason }
 chat-message-deleted = Message deleted
 chat-message-edited = Edited
@@ -481,6 +481,6 @@ chat-message-bar-delete-now = Delete message now
 chat-message-bar-remove-now = Remove message now
 chat-menu-report-message = Report message
 chat-menu-report-sender = Report sender
-chat-menu-ban = Ban from the room
+chat-menu-ban = Ban from the workspace
 chat-menu-volume = Volume
 chat-attach-share = Share a file

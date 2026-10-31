@@ -59,6 +59,9 @@ pub struct DesktopServices {
         Arc<tilo_tray_host::Tray>,
         tilo_tray_host::watcher::WatcherHandle,
     )>,
+    /// The apps the session sees run, by process: what names a notification's
+    /// sender, shared with the daemon.
+    running: Arc<std::sync::Mutex<std::collections::BTreeMap<u32, String>>>,
 }
 
 impl DesktopServices {
@@ -89,6 +92,7 @@ impl DesktopServices {
         questions.on_change(move || woken());
         let notifications = tilo_notifications_service::Notifications::for_session();
         let roaming = RoamingWifiSlot::default();
+        let running = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
         let (portal, session) = runtime.block_on(on_session_bus(
             &buses.session,
             &questions,
@@ -97,6 +101,7 @@ impl DesktopServices {
             capture,
             side,
             inhibitors,
+            Arc::clone(&running),
         ));
         let tray = runtime.block_on(tray_on(&buses.session));
         if buses.system != Bus::None {
@@ -114,6 +119,7 @@ impl DesktopServices {
             roaming,
             session,
             tray,
+            running,
         })
     }
 
@@ -156,10 +162,23 @@ impl DesktopServices {
         self.portal.as_ref()
     }
 
-    /// An app exited: what it was granted while it ran is forgotten.
+    /// An app exited: what it was granted while it ran is forgotten, and
+    /// its processes no longer name its notifications.
     pub fn app_exited(&self, app_id: &str) {
         if let Some(portal) = &self.portal {
             portal.grants().app_exited(app_id);
+        }
+        self.running
+            .lock_recover()
+            .retain(|_, running| running != app_id);
+    }
+
+    /// The app `pid` shows a window for, as the session sees it: what a
+    /// notification its process sends is attributed to.
+    pub fn note_running_app(&self, pid: u32, app_id: &str) {
+        let mut running = self.running.lock_recover();
+        if running.get(&pid).is_none_or(|known| known != app_id) {
+            running.insert(pid, app_id.to_owned());
         }
     }
 
@@ -294,6 +313,7 @@ async fn on_session_bus(
     capture: Arc<dyn tilo_portal::Capture>,
     side: &PortalSide,
     inhibitors: Option<tilo_power_mgmt::InhibitRegistry>,
+    running: Arc<std::sync::Mutex<std::collections::BTreeMap<u32, String>>>,
 ) -> (
     Option<Portal>,
     Option<(zbus::Connection, tilo_notifications_service::Server)>,
@@ -360,7 +380,7 @@ async fn on_session_bus(
     let daemon = tilo_notifications_service::serve_on(
         connection.clone(),
         notifications.clone(),
-        Arc::new(tilo_notifications_service::NoCallers),
+        Arc::new(crate::notifications::AppCallers::new(running, side.clone())),
     )
     .await;
     let daemon = match daemon {

@@ -409,8 +409,8 @@ impl ChatApp {
             self.huddle_chip_rows = if widths.is_empty() {
                 0
             } else {
-                let room = self.huddle_video().width();
-                pack_rows(&widths, self.chrome.call_gap, room).len()
+                let workspace = self.huddle_video().width();
+                pack_rows(&widths, self.chrome.call_gap, workspace).len()
             };
             self.call
                 .placement
@@ -742,7 +742,7 @@ impl ChatApp {
         if reveal > 0.0 && others > 0 {
             // Fade and progressively reveal the chip strip inside the same
             // animated panel bounds. Chips never pop out before the surface
-            // has made room for them, and collapse cannot paint through the
+            // has made workspace for them, and collapse cannot paint through the
             // rising controls row.
             let controls_top = panel.y1 - c.call_inset - c.call_controls_h;
             let clip = Rect::new(
@@ -864,8 +864,8 @@ impl ChatApp {
             let service = self.call_mark(&p.user).map(|(mark, _)| mark);
             let marks = u8::from(p.mark().is_some()) + u8::from(service.is_some());
             let muted_w = f64::from(marks) * (f64::from(sp.s1) + icon);
-            let room = (x + w - f64::from(sp.s2) - muted_w - name_x).max(0.0);
-            let name = elide(ctx.text, &self.call_name(&p.user), &style, room);
+            let workspace = (x + w - f64::from(sp.s2) - muted_w - name_x).max(0.0);
+            let name = elide(ctx.text, &self.call_name(&p.user), &style, workspace);
             let name_w = width_of(ctx.text, &name, &style);
             line_in(
                 &mut ctx,
@@ -873,8 +873,8 @@ impl ChatApp {
                 &style,
                 theme.text_primary,
                 name_x,
-                Rect::new(name_x, y, name_x + room, y + h),
-                room + 1.0,
+                Rect::new(name_x, y, name_x + workspace, y + h),
+                workspace + 1.0,
             );
             // Where a bridge carries them in from, as on their messages,
             // then their muted microphone.
@@ -1198,8 +1198,8 @@ impl ChatApp {
         let style = theme.text(TextRole::Caption);
         let icon = f64::from(theme.tokens.metrics.icon_sm);
         let gap = f64::from(theme.tokens.metrics.icon_label_gap);
-        let room = (band.width() - icon - gap).max(0.0);
-        let shown = elide(tr, note, &style, room);
+        let workspace = (band.width() - icon - gap).max(0.0);
+        let shown = elide(tr, note, &style, workspace);
         let w = width_of(tr, &shown, &style);
         let x = band.center().x - (icon + gap + w) / 2.0;
         let cy = band.center().y;
@@ -1791,7 +1791,7 @@ struct AvatarSides {
 struct ViewfinderBlock {
     disc_cy: f64,
     side: f64,
-    /// The caption's top, or `None` when the tile has no room for it.
+    /// The caption's top, or `None` when the tile has no workspace for it.
     caption_y: Option<f64>,
 }
 
@@ -1809,17 +1809,17 @@ fn viewfinder_block(
 ) -> Option<ViewfinderBlock> {
     let band_top = tile.y0 + gap;
     let band_bottom = tile.y1 - gap - plate_h - gap;
-    let room = band_bottom - band_top;
-    let with_caption = (room - gap - caption_h).min(sides.wanted);
+    let workspace = band_bottom - band_top;
+    let with_caption = (workspace - gap - caption_h).min(sides.wanted);
     let (side, caption) = if with_caption >= sides.least {
         (with_caption, true)
-    } else if room >= sides.least {
-        (room.min(sides.wanted), false)
+    } else if workspace >= sides.least {
+        (workspace.min(sides.wanted), false)
     } else {
         return None;
     };
     let block_h = side + if caption { gap + caption_h } else { 0.0 };
-    let top = band_top + (room - block_h) / 2.0;
+    let top = band_top + (workspace - block_h) / 2.0;
     Some(ViewfinderBlock {
         disc_cy: top + side / 2.0,
         side,
@@ -2017,12 +2017,12 @@ mod tests {
             assert!(block.side < sides.wanted && block.side >= sides.least);
             assert!(block.caption_y.is_some());
             assert!(fits_all(tile, block));
-            // Room for a disc only.
+            // Space for a disc only.
             let tile = Rect::new(0.0, 0.0, 200.0, 80.0);
             let block = viewfinder_block(tile, sides, caption_h, plate_h, gap).unwrap();
             assert!(block.caption_y.is_none());
             assert!(fits_all(tile, block));
-            // No room for a disc: the plate alone names them.
+            // No workspace for a disc: the plate alone names them.
             let tile = Rect::new(0.0, 0.0, 200.0, 60.0);
             assert!(viewfinder_block(tile, sides, caption_h, plate_h, gap).is_none());
         }

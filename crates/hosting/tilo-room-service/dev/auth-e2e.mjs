@@ -660,10 +660,10 @@ export const CHAT_CHANNEL = `(async () => {
   if (!window) return null;
   const post = tiloMount.actions(undefined, {window}).find(action => action.address.action === 'post');
   if (!post) return null;
-  // An app's action answers at once and a room's own a promise: either way
+  // An app's action answers at once and a workspace's own a promise: either way
   // awaited, so a refusal reads as nothing rather than throwing.
-  const room = await Promise.resolve().then(() => tiloMount.invokeAction('chat.workspace', 'read-room', {}, {window})).catch(() => null);
-  const channel = room?.output?.value?.channels
+  const workspace = await Promise.resolve().then(() => tiloMount.invokeAction('chat.workspace', 'read-workspace', {}, {window})).catch(() => null);
+  const channel = workspace?.output?.value?.channels
     ?.find(({value}) => value.kind === 'text' && !value.archived && !value.conversation_with)?.id;
   return channel ? {window, resource: post.address.resource, channel} : null;
 })()`;
@@ -682,14 +682,14 @@ export const CHAT_WHY = `(async () => {
     return {step: 'actions', error: String(error?.message ?? error)};
   }
   if (!actions.some(action => action.endsWith(' post'))) return {step: 'post', actions: actions.slice(0, 40)};
-  let room;
+  let workspace;
   try {
-    room = await tiloMount.invokeAction('chat.workspace', 'read-room', {}, {window});
+    workspace = await tiloMount.invokeAction('chat.workspace', 'read-workspace', {}, {window});
   } catch (error) {
-    return {step: 'read-room', error: String(error?.message ?? error)};
+    return {step: 'read-workspace', error: String(error?.message ?? error)};
   }
-  const channels = room?.output?.value?.channels;
-  return {step: 'channel', state: room?.state ?? null, error: room?.error ?? null,
+  const channels = workspace?.output?.value?.channels;
+  return {step: 'channel', state: workspace?.state ?? null, error: workspace?.error ?? null,
     channels: Array.isArray(channels) ? channels.map(({id, value}) => ({id, kind: value?.kind, archived: value?.archived, with: value?.conversation_with})) : channels ?? null};
 })()`;
 

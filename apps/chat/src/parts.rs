@@ -1,13 +1,13 @@
 //! The chat's messages as a chain of parts.
 //!
 //! One record cannot hold a chat that runs for months: a record's snapshot
-//! has a size limit, and a newcomer would be sent all of it. So the room's
+//! has a size limit, and a newcomer would be sent all of it. So the workspace's
 //! chat record ([`crate::record::Chat`]) keeps categories, channels, people,
 //! drafts and moderation, and its messages live in numbered part records
 //! ([`ChatPart`]), each a record of its own ([`part`]).
 //!
 //! - **Which part is current.** The part with the highest number a device
-//!   holds is the chain's head. A room's host replays a joining device the
+//!   holds is the chain's head. A workspace's host replays a joining device the
 //!   chat record and the head only; every earlier part is on-demand
 //!   (`neighbour_wire::record_sync`): a device opens it, through the normal
 //!   record sync and the chat record's grants, when someone scrolls back to
@@ -27,7 +27,7 @@
 //!   mark through the head's, however many parts they were away for,
 //!   without holding those parts.
 //!
-//! This module is the contract the model, the window and the room's hosts
+//! This module is the contract the model, the window and the workspace's hosts
 //! (bots, seeding, bridges, moderation) share; change it only with all of
 //! them.
 

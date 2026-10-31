@@ -50,6 +50,7 @@ pub mod policy;
 mod power;
 mod present;
 mod protocols;
+pub mod remote_input;
 pub mod render;
 mod requests;
 pub mod selection;
@@ -1191,9 +1192,67 @@ impl Compositor {
         Ok(self.data.backend.read_back(&mut self.data.state, target)?)
     }
 
+    /// What `region` of the output `name` shows now — its top-left corner
+    /// and size in that output's physical pixels, as shown — read back as
+    /// rows of R, G, B, A.
+    ///
+    /// # Errors
+    /// The display is gone or asleep, or nothing could be rendered.
+    pub fn read_back_region(
+        &mut self,
+        name: &str,
+        region: (i32, i32, i32, i32),
+    ) -> Result<Screenshot, Error> {
+        let (x, y, width, height) = region;
+        self.read_back(&capture::Target::Output {
+            name: name.to_owned(),
+            region: smithay::utils::Rectangle::new(
+                (x, y).into(),
+                (width.max(1), height.max(1)).into(),
+            ),
+        })
+    }
+
     /// The last frame drawn on the output named `name`.
     pub fn screenshot(&mut self, name: &str) -> Result<Screenshot, Error> {
         Ok(self.data.backend.screenshot(&mut self.data.state, name)?)
+    }
+
+    /// Route one input event from another device — a portal
+    /// `RemoteDesktop` or `InputCapture` session, a share, a remote-typing
+    /// link — through the firewall ([`remote_input`]): it reaches the seat
+    /// only while the person allows it.
+    pub fn input_remote(&mut self, event: InputEvent) -> Result<(), Error> {
+        self.data.state.handle_remote_input(event);
+        self.start_asked_drags();
+        self.sync_power();
+        self.display.flush_clients()?;
+        Ok(())
+    }
+
+    /// Cut every remote input: nothing from another device reaches the seat
+    /// until the person allows it again ([`Compositor::allow_remote_input`]).
+    /// The person's own Ctrl+Alt+Escape does this too.
+    pub fn cut_remote_input(&mut self) {
+        self.data.state.remote_input.cut();
+    }
+
+    /// Let remote input in again, after a cut.
+    pub fn allow_remote_input(&mut self) {
+        self.data.state.remote_input.allow();
+    }
+
+    /// Whether remote input is cut.
+    #[must_use]
+    pub fn remote_input_cut(&self) -> bool {
+        self.data.state.remote_input.is_cut()
+    }
+
+    /// Mark every window of `app_id` as private, or no longer: screenshots,
+    /// recordings and share streams show a placeholder where they are,
+    /// while the person's own display keeps showing them as they are.
+    pub fn protect_app(&mut self, app_id: &str, private: bool) {
+        self.data.state.capture.protection.app(app_id, private);
     }
 
     /// The processes whose clients disconnected since the last look: the
@@ -1253,6 +1312,21 @@ impl Compositor {
     /// The window with keyboard focus.
     pub fn focused_window(&self) -> Option<WindowInfo> {
         self.data.state.focused_window()
+    }
+
+    /// The identifier the focused window can be captured under, when it has
+    /// focus and can be captured at all: a capture that names no window
+    /// takes this one.
+    #[must_use]
+    pub fn focused_shareable_window(&self) -> Option<String> {
+        let focused = self.focused_window()?.id;
+        self.data
+            .state
+            .capture
+            .shareable_windows()
+            .into_iter()
+            .find(|(_, info)| info.id == focused)
+            .map(|(identifier, _)| identifier)
     }
 
     /// An activation token for something the session itself did (the

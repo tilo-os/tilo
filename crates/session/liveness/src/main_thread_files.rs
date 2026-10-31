@@ -9,6 +9,11 @@
 //! liveness socket (`{"op":"forbid_main_thread_files"}`), driving the desktop,
 //! and reading what the main thread walked (`{"op":"main_thread_files"}`).
 //!
+//! A test drives it either way: through the liveness socket, or — where the
+//! loop it measures is the test process's own, which a harness without
+//! `libtest` runs — by calling [`arm`] on the main thread and [`report`]
+//! once the scenario is over.
+//!
 //! The audit is a seccomp filter on the main thread alone (no
 //! `SECCOMP_FILTER_FLAG_TSYNC`) whose path system calls are handed, through a
 //! user-notification listener, to a supervisor thread started before the
@@ -247,14 +252,16 @@ fn watched() -> Vec<(libc::c_long, &'static str, usize)> {
 }
 
 /// Arm the audit. Runs on the main thread, which it watches from then on;
-/// a second call answers as the first did.
+/// a second call answers as the first did. The liveness socket's
+/// `forbid_main_thread_files` request calls this on the loop, and a harness
+/// whose loop is the process's main thread calls it itself.
 ///
 /// # Errors
 ///
 /// When called off the main thread, or when the kernel refuses the filter or
 /// its listener: the audit cannot observe the main thread then, and a test
 /// relying on it must fail.
-pub(super) fn arm() -> Result<(), String> {
+pub fn arm() -> Result<(), String> {
     ARMED.get_or_init(install).clone()
 }
 
@@ -264,7 +271,7 @@ pub(super) fn arm() -> Result<(), String> {
 /// # Errors
 ///
 /// When the audit is not armed, or failed to arm.
-pub(super) fn report() -> Result<Vec<FileWalk>, String> {
+pub fn report() -> Result<Vec<FileWalk>, String> {
     match ARMED.get() {
         Some(Ok(())) => {}
         Some(Err(error)) => return Err(error.clone()),

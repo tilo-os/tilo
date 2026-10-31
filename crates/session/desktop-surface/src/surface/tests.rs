@@ -1,6 +1,8 @@
 //! The desktop surface: layout, chrome and input, driven through its real model.
 
 use super::*;
+use crate::navigation::Route;
+use ui::widget::TileContent;
 use ui::winit::dpi::PhysicalPosition;
 
 struct Notices;
@@ -14,7 +16,15 @@ impl TileSource for Notices {
     }
 }
 
-fn desktop(windows: usize) -> (DesktopSurface, DesktopHandle) {
+pub(super) fn desktop(windows: usize) -> (DesktopSurface, DesktopHandle) {
+    desk_with(windows, Box::new(Notices))
+}
+
+/// The same desk, with a source of its own for the windows' content.
+pub(super) fn desk_with(
+    windows: usize,
+    tiles: Box<dyn TileSource>,
+) -> (DesktopSurface, DesktopHandle) {
     let mut minter = IdMinter::new(7);
     let tabs = (0..windows)
         .map(|i| Tab {
@@ -29,7 +39,7 @@ fn desktop(windows: usize) -> (DesktopSurface, DesktopHandle) {
         })
         .collect();
     let tree = seed_tree(&mut minter, "Desk", tabs);
-    DesktopSurface::new(tree, 7, Box::new(Notices))
+    DesktopSurface::new(tree, 7, tiles)
 }
 
 fn held_by(name: &str) -> ui::widget::TabHolder {
@@ -561,6 +571,69 @@ fn clicking_a_window_body_makes_it_active() {
     let clicked = active();
     assert!(clicked.is_some());
     assert_ne!(clicked, first, "the window under the pointer takes focus");
+}
+
+/// A window dragged wider by its trailing edge keeps the width the person
+/// dragged, over the frames that follow.
+#[test]
+fn an_edge_drag_sets_the_width_and_the_strip_keeps_it() {
+    let (surface, handle) = desktop(3);
+    let mut frame =
+        ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1920, 1080));
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let (window, x, y) = frame
+        .widget_mut::<GroupRow>()
+        .and_then(|row| row.groups.first().map(|group| (group.id, group.get_rect())))
+        .map(|(id, rect)| (id, rect.x1 - 3.0, rect.center().y))
+        .expect("a window with a trailing edge to drag");
+    let width = || {
+        handle.read(|tree| {
+            tree.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .find(|group| group.id == window)
+                .map(|group| group.width)
+        })
+    };
+    let before = width();
+    let device_id = ui::winit::event::DeviceId::dummy();
+    frame.send_host_event(&WindowEvent::CursorMoved {
+        device_id,
+        position: PhysicalPosition::new(x, y),
+    });
+    frame.send_host_event(&WindowEvent::MouseInput {
+        device_id,
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    });
+    frame.send_host_event(&WindowEvent::CursorMoved {
+        device_id,
+        position: PhysicalPosition::new(x + 120.0, y),
+    });
+    frame.send_host_event(&WindowEvent::MouseInput {
+        device_id,
+        state: ElementState::Released,
+        button: MouseButton::Left,
+    });
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let dragged = width().expect("the dragged window is still in its strip");
+    assert_ne!(before, Some(dragged), "the drag widens the window");
+    assert!(
+        matches!(dragged, WindowWidth::Fraction(_)),
+        "the strip keeps the width the person dragged, not a tier: {dragged:?}"
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    assert_eq!(
+        width(),
+        Some(dragged),
+        "and it stays over the frames that follow"
+    );
 }
 
 #[test]
@@ -1377,4 +1450,261 @@ fn opening_an_app_finds_the_window_a_desktop_arriving_meanwhile_brings() {
         .find(|entry| entry.route == active)
         .unwrap();
     assert_eq!(focused.app.as_deref(), Some("so.tilo.app1"));
+}
+
+/// A person names a window: the tab shows their name in place of the
+/// window's title, keeps it when the window renames itself, and gives the
+/// window's title back when they clear it.
+#[test]
+fn a_window_takes_the_name_the_person_gives_it_and_gives_it_back() {
+    fn rename(
+        frame: &mut ui::headless::FrameHarness,
+        handle: &DesktopHandle,
+        route: &Route,
+        name: &str,
+    ) {
+        handle
+            .dispatch(
+                &Command::Rename {
+                    generation: "g".into(),
+                    route: route.clone(),
+                    name: name.into(),
+                },
+                "g",
+            )
+            .unwrap();
+        for _ in 0..4 {
+            frame.relayout();
+        }
+    }
+    let (surface, handle) = desktop(2);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1280, 800),
+        Theme::dark(),
+    );
+    frame.relayout();
+    let route = handle.snapshot("g", vec![]).entries[1].route.clone();
+    let label = |handle: &DesktopHandle| {
+        handle
+            .snapshot("g", vec![])
+            .entries
+            .iter()
+            .find(|entry| entry.route == route)
+            .map(|entry| entry.label.clone())
+            .unwrap()
+    };
+    assert_eq!(label(&handle), "App1");
+    rename(&mut frame, &handle, &route, "Quarterly plan");
+    assert_eq!(label(&handle), "Quarterly plan");
+    // The tab the person sees carries the name too.
+    let shown: Vec<String> = frame
+        .root::<DesktopSurface>()
+        .rows
+        .values()
+        .flat_map(|row| row.groups.iter())
+        .flat_map(|group| group.tabs().iter().map(|tab| tab.title.clone()))
+        .collect();
+    assert!(
+        shown.iter().any(|title| title == "Quarterly plan"),
+        "{shown:?}"
+    );
+    // The window's own title still arrives behind the name, and shows once
+    // the name is cleared.
+    handle.read(|tree| {
+        assert!(find_tab(tree, route.ids().unwrap().strip, route.tab.parse().unwrap()).is_some());
+    });
+    rename(&mut frame, &handle, &route, "  ");
+    assert_eq!(label(&handle), "App1");
+    // A name longer than a tab could ever show is refused, and nothing moves.
+    let refusal = handle
+        .dispatch(
+            &Command::Rename {
+                generation: "g".into(),
+                route,
+                name: "x".repeat(navigation::MAX_NAME_CHARS + 1),
+            },
+            "g",
+        )
+        .unwrap_err();
+    assert!(refusal.contains("too long"), "{refusal}");
+}
+
+/// A tile source that counts the windows it builds content for, so a move
+/// that carries a window's live content over is told from one that builds
+/// the window again.
+struct Counted {
+    built: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl TileSource for Counted {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        self.built.set(self.built.get().saturating_add(1));
+        TileHost::new(TileContent::Notice {
+            title: tab.title.clone(),
+            detail: String::new(),
+        })
+    }
+}
+
+fn counted_desktop(
+    windows: usize,
+) -> (
+    DesktopSurface,
+    DesktopHandle,
+    std::rc::Rc<std::cell::Cell<usize>>,
+) {
+    let built = std::rc::Rc::new(std::cell::Cell::new(0));
+    let tiles = Box::new(Counted {
+        built: std::rc::Rc::clone(&built),
+    });
+    let (surface, handle) = desk_with(windows, tiles);
+    (surface, handle, built)
+}
+
+/// Drag the window `tab` of the shown strip out to `release`: the bar
+/// reports the release, as a person letting go of a dragged tab does.
+fn drag_out(frame: &mut ui::headless::FrameHarness, tab: TabId, below: bool) -> bool {
+    let staged = frame.widget_mut::<GroupRow>().is_some_and(|row| {
+        let band = row.get_rect();
+        let x = band.center().x;
+        let y = if below {
+            band.y1 + 60.0
+        } else {
+            band.y0 - 60.0
+        };
+        let Some(group) = row.groups.first_mut() else {
+            return false;
+        };
+        group.bar_mut_for_tests().pending_detach = Some((tab, Point::new(x, y)));
+        true
+    });
+    // The release the bar reports, and the pass that sweeps it into the
+    // row's own detach.
+    frame.send_host_event(&ui::synthetic_input::cursor_moved(900.0, 700.0));
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    staged
+}
+
+/// A window dragged out of its strip lands in the strip below it and the
+/// desk follows it there, live content and all.
+#[test]
+fn a_window_dragged_out_of_its_strip_moves_to_the_strip_below_it() {
+    use tilo_desktop_model::commands::DesktopCommand;
+    let (surface, handle, built) = counted_desktop(2);
+    let mut frame =
+        ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let second = handle
+        .apply_command(&DesktopCommand::CreateStrip {
+            name: "Second".into(),
+        })
+        .unwrap()
+        .expect("a second strip");
+    let (workspace, first) = handle.read(|tree| {
+        let workspace = tree.active_workspace().unwrap();
+        let first = workspace
+            .strips
+            .iter()
+            .map(|strip| strip.id)
+            .find(|&strip| strip != second)
+            .unwrap();
+        (workspace.id, first)
+    });
+    handle
+        .dispatch(
+            &Command::Strip {
+                generation: "g".into(),
+                workspace: workspace.0.to_string(),
+                strip: first.0.to_string(),
+            },
+            "g",
+        )
+        .unwrap();
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    assert_eq!(
+        handle.snapshot("g", vec![]).active_strip.as_deref(),
+        Some(first.0.to_string().as_str())
+    );
+    let built_before = built.get();
+    let (group, tab) = handle.read(|tree| {
+        let strip = tree.workspaces[0]
+            .strips
+            .iter()
+            .find(|strip| strip.id == first)
+            .unwrap();
+        (strip.window_groups[0].id, strip.window_groups[0].tabs[0].id)
+    });
+    assert!(drag_out(&mut frame, tab, true), "the strip is on screen");
+    let (home, shown, focused) = handle.read(|tree| {
+        let home = tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .find(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .any(|group| group.tabs.iter().any(|t| t.id == tab))
+            })
+            .map(|strip| strip.id);
+        (
+            home,
+            tree.active_strip.get(&workspace).copied(),
+            tree.active_group_for(second),
+        )
+    });
+    assert_eq!(home, Some(second), "the window moved into the strip below");
+    assert_eq!(shown, Some(second), "and the desk shows it there");
+    assert!(focused.is_some(), "the moved window is focused there");
+    let strip = handle.read(|tree| {
+        tree.workspaces[0]
+            .strips
+            .iter()
+            .find(|strip| strip.id == first)
+            .unwrap()
+            .clone()
+    });
+    assert!(
+        strip.window_groups.iter().all(|g| g.id != group),
+        "the window it left does not stay empty behind it"
+    );
+    assert_eq!(
+        built.get(),
+        built_before,
+        "the window keeps the application it was running"
+    );
+    assert_eq!(
+        handle.snapshot("g", vec![]).active_strip.as_deref(),
+        Some(second.0.to_string().as_str())
+    );
+}
+
+/// Let go where no strip lies, a dragged window goes back where it was,
+/// and nothing about the desk changes.
+#[test]
+fn a_window_dragged_off_the_only_strip_stays_where_it_was() {
+    let (surface, handle) = desktop(2);
+    let mut frame =
+        ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let before = handle.read(Clone::clone);
+    let tab = before.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+    assert!(drag_out(&mut frame, tab, true), "the strip is on screen");
+    let after = handle.read(Clone::clone);
+    assert_eq!(after.workspaces[0].strips[0].window_groups.len(), 2);
+    assert_eq!(
+        after.workspaces[0].strips[0].window_groups[0].tabs[0].id, tab,
+        "the window is back in its own window"
+    );
+    assert_eq!(after.active_strip, before.active_strip);
 }

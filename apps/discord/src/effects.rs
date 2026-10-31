@@ -3,7 +3,7 @@
 //! A bot's program only sequences steps, so `plan-route` and `plan-event`
 //! work out what an event means ([`crate::bridge`]) and answer the lists
 //! the program loops over, one per verb to invoke. The linking effects
-//! are a person's, run by the room's host for them
+//! are a person's, run by the workspace's host for them
 //! ([`ui::linked_accounts`]): `my-link` says whether they linked their
 //! account, `connect` starts a sign-in on Discord's consent page,
 //! `link-offer` and `accept-link` show and take the account a one-time
@@ -32,13 +32,13 @@ pub enum DiscordEffect {
     /// Connect my Discord account
     ///
     /// Starts signing in on Discord's consent page, which comes back to
-    /// the room's host and links the account to the invoker. Answers the
+    /// the workspace's host and links the account to the invoker. Answers the
     /// page's address, for the asking device alone.
     #[effect(returns, kind = "undoable", member)]
     ConnectAccount,
     /// Read my linked account
     ///
-    /// Whether this room is bridged to a Discord server, and the Discord
+    /// Whether this workspace is bridged to a Discord server, and the Discord
     /// account the reader linked, if any.
     #[effect(kind = "read", returns, audience = "agents", member)]
     MyLink,
@@ -77,7 +77,7 @@ pub enum DiscordEffect {
     /// Find the bot's servers
     ///
     /// The Discord servers the bot with this token is in, by id and name,
-    /// to choose the one this room bridges. The token is used for this one
+    /// to choose the one this workspace bridges. The token is used for this one
     /// request and kept nowhere.
     #[effect(job, returns)]
     FindServers {
@@ -86,9 +86,9 @@ pub enum DiscordEffect {
     },
     /// Bridge a server
     ///
-    /// Gives the room's host the bot token and asks it to run the Discord
-    /// Bridge for this server: the same setup the room's operator gives on
-    /// the command line, through the room's own actions, which decide
+    /// Gives the workspace's host the bot token and asks it to run the Discord
+    /// Bridge for this server: the same setup the workspace's operator gives on
+    /// the command line, through the workspace's own actions, which decide
     /// whether this person may add bots.
     BridgeServer {
         #[param(secret)]
@@ -110,11 +110,13 @@ pub enum DiscordEffect {
     #[effect(kind = "read", returns, audience = "agents")]
     PlanEvent {
         event: Value,
-        #[param("Chat's read-room answer")]
+        #[param("Chat's read-workspace answer")]
         chat: Value,
         #[param("Where avatars and Tilo links point; an install may give none")]
         context: Option<Context>,
-        #[param("The room's members with their roles")]
+        // The host binds this one as `room`; its value is the workspace's
+        // members and their roles.
+        #[param("The workspace's members with their roles")]
         room: Option<Value>,
         #[param("The workspace's emoji: emoji [{name, picture}]")]
         emoji: Option<Value>,
@@ -149,7 +151,7 @@ pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
                 guild,
                 chat,
                 context: &context.clone().unwrap_or_default(),
-                room: room.as_ref().unwrap_or(&Value::Null),
+                workspace: room.as_ref().unwrap_or(&Value::Null),
                 emoji: emoji.as_ref(),
             },
             event,
@@ -159,7 +161,7 @@ pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
 }
 
 /// Discord's consent page for one round trip carrying `state`: the page
-/// the room's host offers ([`Guild::sign_in_page`]) with the state added.
+/// the workspace's host offers ([`Guild::sign_in_page`]) with the state added.
 #[must_use]
 pub fn consent_url(page: &str, state: &str) -> String {
     format!("{page}&state={}", discord_wire::event::query_value(state))

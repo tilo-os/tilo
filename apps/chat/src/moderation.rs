@@ -1,9 +1,9 @@
-//! Banning someone from the room, from their message.
+//! Banning someone from the workspace, from their message.
 //!
-//! Membership is the room's, not chat's: a ban is the room's own `ban`
-//! action on its governance resource (`workspace.permissions:<room>`,
+//! Membership is the workspace's, not chat's: a ban is the workspace's own `ban`
+//! action on its governance resource (`workspace.permissions:<workspace>`,
 //! provider `tilo.workspace`), invoked through the host like any other
-//! action, and decided there by the room's policy (the owner, or a
+//! action, and decided there by the workspace's policy (the owner, or a
 //! Moderator for people ranked below Moderator).
 
 use tilo_actions::InvocationId;
@@ -13,7 +13,7 @@ use tilo_actions::remote::{
 
 use crate::app::ChatApp;
 
-/// The room's governance verb that removes a person and keeps them out.
+/// The workspace's governance verb that removes a person and keeps them out.
 const BAN: &str = "ban";
 
 /// Bans asked for and not answered yet, and the last refusal.
@@ -31,13 +31,13 @@ pub(crate) fn bannable(participant: &str) -> bool {
     participant.len() == 64 && participant.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// The invocation banning `person` from `room`.
-pub(crate) fn ban_request(room: &str, person: &str) -> InvokeRequest {
+/// The invocation banning `person` from `workspace`.
+pub(crate) fn ban_request(workspace: &str, person: &str) -> InvokeRequest {
     let mut argument = serde_json::Map::new();
     argument.insert("person".into(), person.to_ascii_lowercase().into());
     InvokeRequest {
         invocation: InvocationId::new(),
-        target: RemoteActionTarget::room_governance(room, BAN),
+        target: RemoteActionTarget::room_governance(workspace, BAN),
         argument: InvokeArgument::Json(argument),
         context: None,
         confirmation: None,
@@ -56,7 +56,7 @@ impl ChatApp {
         if self.is_me(&author) || !bannable(&author) {
             return;
         }
-        let request = ban_request(self.perms.room(), &author);
+        let request = ban_request(self.perms.workspace(), &author);
         self.moderation.refused = None;
         self.moderation.pending.push(request.invocation);
         self.moderation
@@ -97,13 +97,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_ban_names_the_rooms_governance_and_the_person() {
+    fn a_ban_names_the_workspaces_governance_and_the_person() {
         let person = "ab".repeat(32);
-        let request = ban_request("room-1", &person);
+        let request = ban_request("workspace-1", &person);
         assert_eq!(request.target.provider, "tilo.workspace");
         assert_eq!(
             request.target.address.resource,
-            "workspace.permissions:room-1"
+            "workspace.permissions:workspace-1"
         );
         assert_eq!(request.target.address.action, "ban");
         let InvokeArgument::Json(argument) = request.argument else {

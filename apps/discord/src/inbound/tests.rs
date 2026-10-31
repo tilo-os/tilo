@@ -521,13 +521,13 @@ fn a_ban_blocks_and_hand_made_role_changes_are_reverted() {
         person: "u_ada".into(),
         ..Link::default()
     });
-    let room = json!({"members": [{"person": "u_ada", "role": "editor"}]});
+    let workspace = json!({"members": [{"person": "u_ada", "role": "editor"}]});
     let changed = MemberChanged {
         user_id: "u7".into(),
         roles: vec!["r_own".into()],
         ..MemberChanged::default()
     };
-    let roles = &plan_member(&g, &changed, &room).member_roles[0];
+    let roles = &plan_member(&g, &changed, &workspace).member_roles[0];
     assert_eq!(
         (roles.add.as_slice(), roles.remove.as_slice()),
         (&["r_ed".to_owned()][..], &["r_own".to_owned()][..])

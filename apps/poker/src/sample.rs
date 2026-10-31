@@ -1,5 +1,5 @@
 //! What the capture scenarios stage: a table with the person at it, and a
-//! hand under way. Never written into a real room's table.
+//! hand under way. Never written into a real workspace's table.
 //!
 //! The table is played by the app's own rules — a [`Replica`] applies every
 //! move through the same door a person's does — so what a frame shows is a

@@ -162,6 +162,8 @@ pub struct State {
     /// The frames the windows last drew, by id.
     pub(crate) snapshots: crate::snapshot::Snapshots,
     pub(crate) capture: crate::capture::Capture,
+    /// What input from another device crosses before it reaches the seat.
+    pub(crate) remote_input: crate::remote_input::Firewall,
     /// Outputs turned off by a display configuration: known, not shown.
     pub(crate) disabled_outputs: Vec<Output>,
     pub(crate) idle: crate::power::Idle,
@@ -247,6 +249,7 @@ impl State {
             closing: Vec::new(),
             snapshots: crate::snapshot::Snapshots::default(),
             capture: crate::capture::Capture::new(display),
+            remote_input: crate::remote_input::Firewall::default(),
             disabled_outputs: Vec::new(),
             idle: crate::power::Idle::new(),
             host_keys: HostKeys::default(),
@@ -540,6 +543,30 @@ impl State {
 
     /// Route one input event to the hosted surface or client it belongs to.
     pub(crate) fn handle_input(&mut self, event: InputEvent) {
+        let now = Instant::now();
+        self.remote_input.note_local(now);
+        // The person's own Ctrl+Alt+Escape cuts remote input, and its press
+        // goes no further: the window does not see half a chord.
+        if let InputEvent::Key { keycode, pressed } = event
+            && self.remote_input.chord(keycode, pressed)
+        {
+            tracing::info!("the person cut remote input");
+            return;
+        }
+        self.route_input(event);
+    }
+
+    /// Route one event from another device, if the person allows it now.
+    pub(crate) fn handle_remote_input(&mut self, event: InputEvent) {
+        let now = Instant::now();
+        if let Some(refusal) = self.remote_input.refusal(now, self.locked()) {
+            tracing::debug!(refusal, "remote input refused");
+            return;
+        }
+        self.route_input(event);
+    }
+
+    fn route_input(&mut self, event: InputEvent) {
         self.note_input();
         // What a capture takes never reaches the desktop.
         if let Some(observed) = event.clone().observed((self.pointer.x, self.pointer.y))

@@ -78,7 +78,7 @@ use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
 
 mod capture;
-mod main_thread_files;
+pub mod main_thread_files;
 mod symtab;
 mod wake_trace;
 pub mod watchdog;

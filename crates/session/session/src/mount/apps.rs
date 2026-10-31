@@ -26,7 +26,9 @@ use tilo_actions::remote::{
     workspace_provider_room,
 };
 use tilo_app_launch::routing;
-use tilo_app_launch::{Launch, PlanContext, Planned, Room, SessionEnvironment, Spawner};
+use tilo_app_launch::{
+    Answer, Instance, Launch, PlanContext, Planned, Room, SessionEnvironment, Shown, Spawner,
+};
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_surface_host::{DesktopHost, WidgetHost};
@@ -178,6 +180,45 @@ impl Apps {
         }
     }
 
+    /// What a launch does about the app maybe already showing in `room`:
+    /// `Some(new_window)` to start it, `None` when the window it has was
+    /// raised instead, and nothing starts.
+    ///
+    /// A launch is decided against the windows on the workspace in front,
+    /// which is the one it belongs to. A launch into another room starts its
+    /// own process, as it always has: that room's windows are not showing.
+    fn starting(&self, launch: &Launch, room: &Room) -> Option<bool> {
+        let Some(desktop) = self.desktop.borrow().clone() else {
+            return Some(false);
+        };
+        if room.is_workspace() && self.active_room().id != room.id {
+            return Some(false);
+        }
+        let shown = Shown::new(desktop.with_policy(|policy| policy.windows_in_front()));
+        if shown.is_empty() {
+            // Nothing of this app can be showing on a desk with no windows.
+            return Some(false);
+        }
+        let Some(app) = Instance::of(launch, &desktop_entry::cache::cached_scan()) else {
+            return Some(false);
+        };
+        let window = match app.answer(launch, &shown) {
+            Answer::Start { new_window } => return Some(new_window),
+            Answer::Raise { window } => window,
+        };
+        if !desktop.with_policy(|policy| policy.focus(window)) {
+            // The window went as it was asked for: the app starts again.
+            return Some(false);
+        }
+        desktop.with_widgets(WidgetHost::relayout);
+        tracing::info!(
+            app = %app.id,
+            window,
+            "raised the window the app already has"
+        );
+        None
+    }
+
     /// The room a launch from the desktop belongs to: the workspace in
     /// front, with what the person granted apps in it.
     fn active_room(&self) -> Room {
@@ -218,11 +259,15 @@ impl Apps {
         )
     }
 
-    /// Start `launch` in `room`.
+    /// Start `launch` in `room`, unless the app already has a window there:
+    /// that one is raised and nothing starts.
     ///
     /// # Errors
     /// The launch starts nothing, or the process could not be started.
     pub fn start(&self, launch: &Launch, room: &Room) -> Result<(), DoorError> {
+        let Some(new_window) = self.starting(launch, room) else {
+            return Ok(());
+        };
         let planned = {
             let state = self.state.borrow();
             let context = PlanContext {
@@ -231,6 +276,7 @@ impl Apps {
                 launcher: state.launcher.clone(),
                 identity: state.identity.clone(),
                 render_node: state.render_node.clone(),
+                new_window,
             };
             Planned::of(launch, &context)
         };

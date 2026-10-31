@@ -162,9 +162,9 @@ pub fn source() -> Option<Arc<dyn SettingsSource>> {
 #[must_use]
 pub fn local() -> Option<Arc<Store>> {
     let store = profile(&config_root()?);
-    if let Some(reason) = std::env::current_exe().ok().and_then(|exe| {
+    if let Some(reason) = executable().and_then(|exe| {
         unisolated_test_write(
-            &exe,
+            exe,
             std::env::var_os("TILO_TEST_ENVIRONMENT").is_some(),
             std::env::var_os("XDG_CONFIG_HOME").is_some(),
         )
@@ -172,6 +172,18 @@ pub fn local() -> Option<Arc<Store>> {
         store.refuse_writes(reason);
     }
     Some(store)
+}
+
+/// This process's own executable, resolved the first time it is asked for.
+///
+/// [`std::env::current_exe`] reads `/proc/self/exe`, a path lookup on the
+/// thread that asks; the answer is fixed for the life of the process, and
+/// [`local`] is asked for a stamp on every frame of a session's loop.
+fn executable() -> Option<&'static Path> {
+    static EXECUTABLE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    EXECUTABLE
+        .get_or_init(|| std::env::current_exe().ok())
+        .as_deref()
 }
 
 /// The whole document. Never fails: without settings it is empty, so callers

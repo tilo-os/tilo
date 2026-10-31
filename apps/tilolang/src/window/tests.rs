@@ -1,4 +1,4 @@
-//! The window over a room record, driven the way the framework drives a surface, with the door
+//! The window over a workspace record, driven the way the framework drives a surface, with the door
 //! played by the test: what the window hands over is built, applied to the record and answered.
 
 use serde_json::Value as Json;
@@ -44,7 +44,7 @@ fn rt_text(value: &RtValue) -> String {
 
 const HOST: &str = "tl:host";
 
-struct Room {
+struct Workspace {
     doc: AutoCommit,
     window: Window,
     sink: MemorySink,
@@ -57,29 +57,29 @@ fn task() -> ActionInvoker {
         .acting_for("ada")
 }
 
-impl Room {
-    /// The window of `app` over an empty room.
+impl Workspace {
+    /// The window of `app` over an empty workspace.
     fn new(app: &str) -> Self {
         crate::app::builtin::choose(app);
         let meta = crate::app::builtin::package_named(app).expect("a built-in package");
         let sink = MemorySink::new();
         let window =
             Window::new(meta.app.clone(), "ada".to_owned(), RunMode::Live).with_sink(sink.clone());
-        let mut room = Self {
+        let mut workspace = Self {
             doc: AutoCommit::new(),
             window,
             sink,
         };
-        room.settle();
-        room
+        workspace.settle();
+        workspace
     }
 
     /// The window of `app` with its scenario `scenario` staged, as a capture stages it.
     fn staged(app: &str, scenario: &str) -> Self {
-        let mut room = Self::new(app);
-        room.window.stage(Some(scenario));
-        room.settle();
-        room
+        let mut workspace = Self::new(app);
+        workspace.window.stage(Some(scenario));
+        workspace.settle();
+        workspace
     }
 
     /// The window of `app` with its first scenario staged.
@@ -91,7 +91,7 @@ impl Room {
         Self::staged(app, &scenario)
     }
 
-    /// Fill the room with the first scenario of another package too.
+    /// Fill the workspace with the first scenario of another package too.
     fn seed(&mut self, app: &str) {
         let host = self.window.current_host().expect("the host started");
         let meta = crate::app::builtin::package_named(app).expect("a built-in package");
@@ -99,7 +99,7 @@ impl Room {
             .scenarios
             .first()
             .expect("the package declares a scenario");
-        // A scenario fills its package's root, which a room makes the first time it is wanted.
+        // A scenario fills its package's root, which a workspace makes the first time it is wanted.
         host.root_of(&meta.app).expect("the package has a root");
         host.runtime()
             .invoke_action(
@@ -187,7 +187,7 @@ impl Room {
                 let action = ActionRegistry::with(register_actions)
                     .decode(&encoded)
                     .map_err(|error| error.to_string())?;
-                let context = ActionContext::for_resource("room", "tl.room", "room")
+                let context = ActionContext::for_resource("workspace", "tl.workspace", "workspace")
                     .with_invoker(invoker.clone());
                 apply_local_with_context(
                     &mut self.doc,
@@ -440,7 +440,7 @@ impl Room {
         host.runtime().read(&note, "pinned").unwrap() == RtValue::Bool(true)
     }
 
-    /// The states of the invocations the room record holds.
+    /// The states of the invocations the workspace record holds.
     fn invocation_states(&self) -> Vec<String> {
         let host = self.window.current_host().unwrap();
         tilolang_tilo::action::resource_ids(&self.doc, tilolang_tilo::HOST_APP)
@@ -540,18 +540,18 @@ fn header_labels(shell: &UiNode, slot: &str) -> Vec<String> {
 
 #[test]
 fn a_notebook_is_the_native_list_and_detail_shell_with_the_header_the_platform_fills() {
-    let mut room = Room::seeded("notes");
+    let mut workspace = Workspace::seeded("notes");
     assert!(
-        room.shell().has_overview(),
+        workspace.shell().has_overview(),
         "the notes list is the overview column"
     );
     assert!(
-        room.shell().has_sidebar(),
+        workspace.shell().has_sidebar(),
         "the note's filters are the sidebar's places"
     );
-    let rows = room.rows();
+    let rows = workspace.rows();
     assert!(rows.len() >= 3, "{rows:?}");
-    let shell = room.composed();
+    let shell = workspace.composed();
     assert_eq!(
         shell.props.get("overview_title"),
         Some(&Value::text("All notes"))
@@ -562,11 +562,11 @@ fn a_notebook_is_the_native_list_and_detail_shell_with_the_header_the_platform_f
         "the sort menu, search, and the primary action last"
     );
     // The scenario showed its note; with that closed, the content says so in one sentence.
-    assert!(room.window.detail_target().is_some());
-    room.window.close_detail();
-    room.settle();
-    assert!(room.window.detail_target().is_none());
-    let placeholder = slot_of(&room.composed(), "content")
+    assert!(workspace.window.detail_target().is_some());
+    workspace.window.close_detail();
+    workspace.settle();
+    assert!(workspace.window.detail_target().is_none());
+    let placeholder = slot_of(&workspace.composed(), "content")
         .into_iter()
         .find(|node| node.kind == "ui.EmptyState")
         .cloned()
@@ -582,21 +582,21 @@ fn a_notebook_is_the_native_list_and_detail_shell_with_the_header_the_platform_f
 // default view in the next column, which a narrow window pushes with Back.
 #[test]
 fn activating_a_row_shows_the_item_in_the_next_column_and_back_returns_to_the_list() {
-    let mut room = Room::seeded("notes");
-    let (key, _) = room.rows().remove(1);
-    room.activate(&key);
-    let item = room.item_of(&key);
+    let mut workspace = Workspace::seeded("notes");
+    let (key, _) = workspace.rows().remove(1);
+    workspace.activate(&key);
+    let item = workspace.item_of(&key);
     assert_eq!(
-        room.window.detail_target(),
+        workspace.window.detail_target(),
         Some(&item),
         "the note is shown"
     );
-    let detail = room.window.detail_tree().expect("the note is shown");
+    let detail = workspace.window.detail_tree().expect("the note is shown");
     assert!(
         first_input(&detail).is_some(),
         "the note's editor: {detail:#?}"
     );
-    let selected: Vec<String> = room
+    let selected: Vec<String> = workspace
         .list()
         .list()
         .unwrap()
@@ -606,52 +606,57 @@ fn activating_a_row_shows_the_item_in_the_next_column_and_back_returns_to_the_li
         .collect();
     assert_eq!(selected, std::slice::from_ref(&key), "the row is selected");
     assert!(
-        !room.composed().props.contains_key("title"),
+        !workspace.composed().props.contains_key("title"),
         "the note shows its title as its own, which the header does not repeat"
     );
     // Editing the title changes the row.
-    let input = first_input(&room.composed())
+    let input = first_input(&workspace.composed())
         .expect("the composed editor")
         .key
         .clone();
-    room.window
+    workspace
+        .window
         .act(UiEvent::Edit(input, "Plans for the week".to_owned()));
-    room.settle();
+    workspace.settle();
     assert!(
-        room.rows()
+        workspace
+            .rows()
             .iter()
             .any(|(_, shown)| shown == "Plans for the week"),
         "{:?}",
-        room.rows()
+        workspace.rows()
     );
-    room.window.close_detail();
-    room.settle();
-    assert!(room.window.detail_target().is_none() || room.shell().front_pane() != NavPane::Content);
+    workspace.window.close_detail();
+    workspace.settle();
+    assert!(
+        workspace.window.detail_target().is_none()
+            || workspace.shell().front_pane() != NavPane::Content
+    );
 }
 
 #[test]
 fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_the_door() {
-    let mut room = Room::new("notes");
-    assert_eq!(room.items_of("so.tilo.lang.notes", "items"), 0);
+    let mut workspace = Workspace::new("notes");
+    assert_eq!(workspace.items_of("so.tilo.lang.notes", "items"), 0);
     // An empty notebook offers its primary action and says one sentence.
-    let empty = slot_of(&room.composed(), "overview")
+    let empty = slot_of(&workspace.composed(), "overview")
         .into_iter()
         .find(|node| node.kind == "ui.EmptyState")
         .cloned()
         .expect("the empty notebook says so");
     assert_eq!(empty.props.get("title"), Some(&Value::text("No notes yet")));
     assert_eq!(empty.props.get("action"), Some(&Value::text("New note")));
-    room.header_action("New note");
+    workspace.header_action("New note");
     assert_eq!(
-        room.items_of("so.tilo.lang.notes", "items"),
+        workspace.items_of("so.tilo.lang.notes", "items"),
         1,
         "the action inserted a note"
     );
-    assert_eq!(room.rows().len(), 1);
-    let (key, _) = room.rows().remove(0);
-    let made = room.item_of(&key);
+    assert_eq!(workspace.rows().len(), 1);
+    let (key, _) = workspace.rows().remove(0);
+    let made = workspace.item_of(&key);
     assert_eq!(
-        room.window.detail_target(),
+        workspace.window.detail_target(),
         Some(&made),
         "and the note it made opened beside the list"
     );
@@ -659,7 +664,7 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
 
 /// The published id and action id of the notebook's "New note".
 fn new_note_on_the_door() -> (String, String) {
-    let descriptor = Room::surveyed()
+    let descriptor = Workspace::surveyed()
         .into_iter()
         .find(|d| d.resource_kind == "tl.so.tilo.lang.notes.Notes" && d.action_label == "New note")
         .expect("the notebook publishes New note");
@@ -668,45 +673,48 @@ fn new_note_on_the_door() -> (String, String) {
 
 #[test]
 fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
-    let mut room = Room::new("notes");
+    let mut workspace = Workspace::new("notes");
     let (notebook, new_note) = new_note_on_the_door();
     // An agent's task makes a note: the window stays where the person left it.
-    room.applies_as(Some(task()), &notebook, &new_note, &Json::Null)
+    workspace
+        .applies_as(Some(task()), &notebook, &new_note, &Json::Null)
         .unwrap();
-    assert_eq!(room.items_of("so.tilo.lang.notes", "items"), 1);
+    assert_eq!(workspace.items_of("so.tilo.lang.notes", "items"), 1);
     assert_eq!(
-        room.window.detail_target(),
+        workspace.window.detail_target(),
         None,
         "the agent's note did not open"
     );
     // So does a script on the control socket, which acts as the person but not at the window.
     let script = ActionInvoker::actor("ada".to_owned());
-    room.applies_as(Some(script), &notebook, &new_note, &Json::Null)
+    workspace
+        .applies_as(Some(script), &notebook, &new_note, &Json::Null)
         .unwrap();
-    assert_eq!(room.items_of("so.tilo.lang.notes", "items"), 2);
+    assert_eq!(workspace.items_of("so.tilo.lang.notes", "items"), 2);
     assert_eq!(
-        room.window.detail_target(),
+        workspace.window.detail_target(),
         None,
         "the script's note did not open"
     );
     // The person pressing New note in the window opens what it made, whatever was made before.
-    room.header_action("New note");
-    assert_eq!(room.items_of("so.tilo.lang.notes", "items"), 3);
-    let opened = room
+    workspace.header_action("New note");
+    assert_eq!(workspace.items_of("so.tilo.lang.notes", "items"), 3);
+    let opened = workspace
         .window
         .detail_target()
         .cloned()
         .expect("the person's note opened");
-    let keys: Vec<String> = room.rows().into_iter().map(|(key, _)| key).collect();
+    let keys: Vec<String> = workspace.rows().into_iter().map(|(key, _)| key).collect();
     let theirs = keys
         .iter()
-        .filter(|key| room.item_of(key) == opened)
+        .filter(|key| workspace.item_of(key) == opened)
         .count();
     assert_eq!(theirs, 1, "it is a note of the list");
     // And an agent's note after that leaves the person's open.
-    room.applies_as(Some(task()), &notebook, &new_note, &Json::Null)
+    workspace
+        .applies_as(Some(task()), &notebook, &new_note, &Json::Null)
         .unwrap();
-    assert_eq!(room.window.detail_target(), Some(&opened));
+    assert_eq!(workspace.window.detail_target(), Some(&opened));
 }
 
 #[test]
@@ -732,10 +740,10 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
             sections(child, out);
         }
     }
-    let mut room = Room::new("chat");
+    let mut workspace = Workspace::new("chat");
     assert!(
         node_with(
-            &room.composed(),
+            &workspace.composed(),
             "ui.EmptyState",
             "title",
             "No channels yet"
@@ -743,9 +751,9 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
         .is_some(),
         "an empty workspace says so"
     );
-    room.header_action("New channel");
-    assert_eq!(room.items_of("so.tilo.lang.chat", "items"), 1);
-    let shell = room.composed();
+    workspace.header_action("New channel");
+    assert_eq!(workspace.items_of("so.tilo.lang.chat", "items"), 1);
+    let shell = workspace.composed();
     let item = node_with(&shell, "ui.NavItem", "label", "new-channel")
         .expect("the new channel is in the sidebar, no message written");
     assert_eq!(
@@ -756,7 +764,7 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
         Some("hash"),
         "with the channels' glyph"
     );
-    let seeded = Room::seeded("chat");
+    let seeded = Workspace::seeded("chat");
     let shell = seeded.composed();
     let mut all = Vec::new();
     places(&shell, &mut all);
@@ -791,24 +799,24 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
 
 #[test]
 fn a_filter_case_from_the_sidebar_narrows_the_list_and_titles_it() {
-    let mut room = Room::seeded("notes");
-    let all = room.rows().len();
-    let pinned = room.key_of("ui.NavItem", "label", "Pinned");
-    room.fire(&pinned, "select", None);
-    let shown = room.rows().len();
+    let mut workspace = Workspace::seeded("notes");
+    let all = workspace.rows().len();
+    let pinned = workspace.key_of("ui.NavItem", "label", "Pinned");
+    workspace.fire(&pinned, "select", None);
+    let shown = workspace.rows().len();
     assert!(shown < all, "{shown} of {all}");
     assert_eq!(
-        room.composed().props.get("overview_title"),
+        workspace.composed().props.get("overview_title"),
         Some(&Value::text("Pinned"))
     );
 }
 
 #[test]
 fn a_destructive_row_action_runs_through_the_menu_and_offers_undo() {
-    let mut room = Room::seeded("notes");
-    let before = room.rows().len();
-    let (key, _) = room.rows().remove(0);
-    let list = room.list();
+    let mut workspace = Workspace::seeded("notes");
+    let before = workspace.rows().len();
+    let (key, _) = workspace.rows().remove(0);
+    let list = workspace.list();
     assert!(list.list_mut().unwrap().reveal(&key));
     let area = list.menu_area_mut().expect("the rows share one menu");
     assert!(
@@ -831,21 +839,24 @@ fn a_destructive_row_action_runs_through_the_menu_and_offers_undo() {
         .position(|label| *label == Some("Delete"))
         .unwrap();
     area.choose(delete);
-    room.settle();
-    assert_eq!(room.rows().len(), before - 1);
-    assert!(room.shell().toast_text().is_some(), "the shell offers undo");
+    workspace.settle();
+    assert_eq!(workspace.rows().len(), before - 1);
+    assert!(
+        workspace.shell().toast_text().is_some(),
+        "the shell offers undo"
+    );
 }
 
 #[test]
 fn a_scenario_stages_exactly_its_data_however_many_frames_run() {
-    let mut room = Room::seeded("notes");
-    let staged = room.items_of("so.tilo.lang.notes", "items");
+    let mut workspace = Workspace::seeded("notes");
+    let staged = workspace.items_of("so.tilo.lang.notes", "items");
     for _ in 0..6 {
-        room.settle();
+        workspace.settle();
     }
-    assert_eq!(room.items_of("so.tilo.lang.notes", "items"), staged);
-    assert_eq!(room.rows().len(), staged);
-    let records = tilolang_tilo::action::resource_ids(&room.doc, "so.tilo.lang.notes");
+    assert_eq!(workspace.items_of("so.tilo.lang.notes", "items"), staged);
+    assert_eq!(workspace.rows().len(), staged);
+    let records = tilolang_tilo::action::resource_ids(&workspace.doc, "so.tilo.lang.notes");
     assert_eq!(records.len(), 1, "one notebook");
 }
 
@@ -860,23 +871,23 @@ fn every_package_opens_into_its_shell() {
         {
             continue;
         }
-        let mut room = Room::seeded(built.dir);
-        let tree = room.window.root_tree().expect("the root view runs");
+        let mut workspace = Workspace::seeded(built.dir);
+        let tree = workspace.window.root_tree().expect("the root view runs");
         assert!(
             tilo_ui_host::shell::shell_of(&tree).is_some(),
             "{} builds its shell: {tree:#?}",
             built.dir
         );
-        assert_eq!(room.composed().kind, "ui.NavShell");
-        room.settle();
+        assert_eq!(workspace.composed().kind, "ui.NavShell");
+        workspace.settle();
     }
 }
 
 #[test]
 fn the_published_tree_has_the_host_and_every_record() {
-    // The live window publishes its room while it lives.
-    let _room = Room::seeded("notes");
-    let resources = Room::resources();
+    // The live window publishes its workspace while it lives.
+    let _workspace = Workspace::seeded("notes");
+    let resources = Workspace::resources();
     let kinds: Vec<&str> = resources.iter().map(|r| r.kind.as_str()).collect();
     assert!(kinds.contains(&"tl.host"), "{kinds:?}");
     assert!(kinds.contains(&"tl.so.tilo.lang.notes.Notes"), "{kinds:?}");
@@ -886,8 +897,8 @@ fn the_published_tree_has_the_host_and_every_record() {
 
 #[test]
 fn an_agent_finds_the_hosts_operations_in_the_survey_and_reads_the_catalogue() {
-    let mut room = Room::seeded("letters");
-    let host_actions: Vec<String> = Room::surveyed()
+    let mut workspace = Workspace::seeded("letters");
+    let host_actions: Vec<String> = Workspace::surveyed()
         .into_iter()
         .filter(|d| d.address.resource == HOST)
         .map(|d| d.address.action)
@@ -895,14 +906,16 @@ fn an_agent_finds_the_hosts_operations_in_the_survey_and_reads_the_catalogue() {
     for wanted in ["run-block", "run-flow", "catalogue"] {
         assert!(host_actions.iter().any(|a| a == wanted), "{host_actions:?}");
     }
-    let resources = Room::resources();
+    let resources = Workspace::resources();
     let violations = ui::tilo_actions::validate_surface(
         &resources,
         &ActionRegistry::with(register_actions),
-        &ui::widget::resource_operation_handlers(&room.window),
+        &ui::widget::resource_operation_handlers(&workspace.window),
     );
     assert!(violations.is_empty(), "{violations:#?}");
-    let output = room.agent_invokes(HOST, "catalogue", &Json::Null).unwrap();
+    let output = workspace
+        .agent_invokes(HOST, "catalogue", &Json::Null)
+        .unwrap();
     let text = output
         .value
         .expect("the catalogue is the answer")
@@ -912,25 +925,25 @@ fn an_agent_finds_the_hosts_operations_in_the_survey_and_reads_the_catalogue() {
 
 #[test]
 fn a_view_block_a_value_block_and_a_bad_block_answer_an_agent() {
-    let mut room = Room::seeded("chat");
-    let run = |room: &mut Room, source: &str| {
-        room.agent_invokes(HOST, "run-block", &serde_json::json!({ "source": source }))
+    let mut workspace = Workspace::seeded("chat");
+    let run = |workspace: &mut Workspace, source: &str| {
+        workspace.agent_invokes(HOST, "run-block", &serde_json::json!({ "source": source }))
     };
-    let view = run(&mut room, "column { text(\"Hello from an agent\") }")
+    let view = run(&mut workspace, "column { text(\"Hello from an agent\") }")
         .unwrap()
         .value
         .unwrap();
     assert_eq!(view["kind"], "view", "{view}");
-    let data = run(&mut room, "1 + 2").unwrap().value.unwrap();
+    let data = run(&mut workspace, "1 + 2").unwrap().value.unwrap();
     assert_eq!(data, serde_json::json!({"kind": "data", "value": 3}));
-    let refused = run(&mut room, "nothing.here(").unwrap_err();
+    let refused = run(&mut workspace, "nothing.here(").unwrap_err();
     assert!(refused.contains("does not compile"), "{refused}");
 }
 
 #[test]
 fn the_verbs_of_items_are_published_on_the_door_and_an_agent_calls_them() {
-    let mut room = Room::seeded("notes");
-    let survey = Room::surveyed();
+    let mut workspace = Workspace::seeded("notes");
+    let survey = Workspace::surveyed();
     let pin = survey
         .iter()
         .find(|d| d.resource_kind == "tl.so.tilo.lang.notes.Note" && d.action_label == "Pin")
@@ -940,23 +953,29 @@ fn the_verbs_of_items_are_published_on_the_door_and_an_agent_calls_them() {
         resource.contains('/'),
         "an item is addressed by its path: {resource}"
     );
-    let before = room.pinned(&resource);
-    room.applies_as(Some(task()), &resource, &action, &Json::Null)
-        .unwrap();
-    assert_eq!(room.pinned(&resource), !before, "the agent pinned the note");
-    // What the agent passes wins over the default, which would flip the note back.
-    let pinned = serde_json::json!({ "pinned": !before });
-    room.applies_as(Some(task()), &resource, &action, &pinned)
+    let before = workspace.pinned(&resource);
+    workspace
+        .applies_as(Some(task()), &resource, &action, &Json::Null)
         .unwrap();
     assert_eq!(
-        room.pinned(&resource),
+        workspace.pinned(&resource),
+        !before,
+        "the agent pinned the note"
+    );
+    // What the agent passes wins over the default, which would flip the note back.
+    let pinned = serde_json::json!({ "pinned": !before });
+    workspace
+        .applies_as(Some(task()), &resource, &action, &pinned)
+        .unwrap();
+    assert_eq!(
+        workspace.pinned(&resource),
         !before,
         "an explicit `pinned:` is the outcome"
     );
 
     // A draft's send reaches outside: asked of an agent, it is recorded as a suggestion.
-    let mut desk = Room::seeded("letters");
-    let send = Room::surveyed()
+    let mut desk = Workspace::seeded("letters");
+    let send = Workspace::surveyed()
         .into_iter()
         .find(|d| d.resource_kind == "tl.test.letters.Draft" && d.action_label == "Send")
         .expect("a draft publishes its send");
@@ -977,9 +996,9 @@ fn the_verbs_of_items_are_published_on_the_door_and_an_agent_calls_them() {
     assert!(desk.sink.delivered().is_empty(), "nothing was sent");
 }
 
-/// The first draft on the desk of a letters room.
-fn first_draft(room: &Room) -> tilolang_tilo::runtime::ResourceRef {
-    let host = room.window.current_host().expect("the host started");
+/// The first draft on the desk of a letters workspace.
+fn first_draft(workspace: &Workspace) -> tilolang_tilo::runtime::ResourceRef {
+    let host = workspace.window.current_host().expect("the host started");
     let desk = host.root_of("test.letters").unwrap();
     let RtValue::List(drafts) = host.runtime().read(&desk, "drafts").unwrap() else {
         panic!("the desk lists its drafts");
@@ -992,14 +1011,14 @@ fn first_draft(room: &Room) -> tilolang_tilo::runtime::ResourceRef {
 
 #[test]
 fn a_send_block_from_an_agent_becomes_a_suggested_invocation_a_person_decides() {
-    let mut room = Room::new("chat");
-    room.seed("letters");
-    let host = room.window.current_host().unwrap();
+    let mut workspace = Workspace::new("chat");
+    workspace.seed("letters");
+    let host = workspace.window.current_host().unwrap();
     let source = format!(
         "letters.send(@letters.Draft:{})",
-        first_draft(&room).id_string()
+        first_draft(&workspace).id_string()
     );
-    let output = room
+    let output = workspace
         .agent_invokes(HOST, "run-block", &serde_json::json!({ "source": source }))
         .unwrap()
         .value
@@ -1009,10 +1028,10 @@ fn a_send_block_from_an_agent_becomes_a_suggested_invocation_a_person_decides() 
         output["state"], "suggested",
         "an agent's send asks first: {output}"
     );
-    // The invocation is a resource of the room record, so every replica shows it.
+    // The invocation is a resource of the workspace record, so every replica shows it.
     let id = output["invocation"].as_str().unwrap();
     let invocation = host.invocation_ref(id).unwrap();
-    let in_record = tilolang_tilo::action::resource_ids(&room.doc, tilolang_tilo::HOST_APP);
+    let in_record = tilolang_tilo::action::resource_ids(&workspace.doc, tilolang_tilo::HOST_APP);
     assert!(
         in_record.iter().any(|doc| doc == &invocation.doc),
         "{in_record:?}"
@@ -1029,55 +1048,61 @@ fn a_send_block_from_an_agent_becomes_a_suggested_invocation_a_person_decides() 
         host.runtime().read_invocation(&invocation).unwrap().state,
         "declined"
     );
-    assert!(room.sink.delivered().is_empty());
+    assert!(workspace.sink.delivered().is_empty());
 }
 
-fn person_decides(room: &mut Room, decision: &str, target: &str) -> Result<Json, String> {
-    room.invokes_as(
-        None,
-        HOST,
-        "resolve",
-        &serde_json::json!({"target": target, "decision": decision}),
-    )
-    .map(|output| output.value.unwrap_or_default())
+fn person_decides(workspace: &mut Workspace, decision: &str, target: &str) -> Result<Json, String> {
+    workspace
+        .invokes_as(
+            None,
+            HOST,
+            "resolve",
+            &serde_json::json!({"target": target, "decision": decision}),
+        )
+        .map(|output| output.value.unwrap_or_default())
 }
 
 #[test]
 fn approving_a_pressed_send_through_the_ask_bar_delivers_the_letter_once() {
-    let mut room = Room::seeded("letters");
-    let key = room.rows()[0].0.clone();
-    room.activate(&key);
-    let draft = room
+    let mut workspace = Workspace::seeded("letters");
+    let key = workspace.rows()[0].0.clone();
+    workspace.activate(&key);
+    let draft = workspace
         .window
         .detail_target()
         .cloned()
         .expect("the letter opened");
-    let host = room.window.current_host().unwrap();
+    let host = workspace.window.current_host().unwrap();
     let to = rt_text(&host.runtime().read(&draft, "to").unwrap());
-    let send = node_with(&room.composed(), "ui.Button", "label", "Send")
+    let send = node_with(&workspace.composed(), "ui.Button", "label", "Send")
         .expect("the letter's Send button")
         .key
         .clone();
-    room.window
+    workspace
+        .window
         .act(UiEvent::Fire(send, "press".to_owned(), None));
-    room.settle();
+    workspace.settle();
     assert!(
-        room.window.view().asks().is_some(),
+        workspace.window.view().asks().is_some(),
         "a send asks the person first"
     );
     assert!(
-        room.sink.delivered().is_empty(),
+        workspace.sink.delivered().is_empty(),
         "nothing leaves before they say so"
     );
-    room.window.view().answer(Answer::Allow);
-    room.settle();
-    let delivered = room.sink.delivered();
+    workspace.window.view().answer(Answer::Allow);
+    workspace.settle();
+    let delivered = workspace.sink.delivered();
     assert_eq!(delivered.len(), 1, "{delivered:?}");
     assert_eq!(delivered[0].0, "post");
     assert!(delivered[0].1.to_string().contains(&to), "{delivered:?}");
-    room.settle();
-    room.settle();
-    assert_eq!(room.sink.delivered().len(), 1, "settled once, not again");
+    workspace.settle();
+    workspace.settle();
+    assert_eq!(
+        workspace.sink.delivered().len(),
+        1,
+        "settled once, not again"
+    );
     // The record says it was delivered, so no device queues it again.
     assert_eq!(
         tilolang_tilo::runtime::store::Store::outbox_pending(host.store()).len(),
@@ -1087,13 +1112,13 @@ fn approving_a_pressed_send_through_the_ask_bar_delivers_the_letter_once() {
 
 #[test]
 fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_once() {
-    let mut room = Room::new("chat");
-    room.seed("letters");
-    let host = room.window.current_host().unwrap();
-    let draft = first_draft(&room);
+    let mut workspace = Workspace::new("chat");
+    workspace.seed("letters");
+    let host = workspace.window.current_host().unwrap();
+    let draft = first_draft(&workspace);
     let to = rt_text(&host.runtime().read(&draft, "to").unwrap());
     let source = format!("letters.send(@letters.Draft:{})", draft.id_string());
-    let suggested = room
+    let suggested = workspace
         .agent_invokes(HOST, "run-block", &serde_json::json!({ "source": source }))
         .unwrap()
         .value
@@ -1107,7 +1132,7 @@ fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_onc
         .unwrap();
     assert_eq!(record.author, Principal::new("agent-task:7"));
     // An agent cannot approve what it suggested.
-    let refused = room.invokes_as(
+    let refused = workspace.invokes_as(
         Some(task()),
         HOST,
         "resolve",
@@ -1117,25 +1142,25 @@ fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_onc
         refused.unwrap_err().contains("only a person"),
         "agents never decide"
     );
-    assert!(room.sink.delivered().is_empty());
-    let decided = person_decides(&mut room, "approve", &id).unwrap();
+    assert!(workspace.sink.delivered().is_empty());
+    let decided = person_decides(&mut workspace, "approve", &id).unwrap();
     assert_eq!(decided["state"], "done", "{decided}");
-    let delivered = room.sink.delivered();
+    let delivered = workspace.sink.delivered();
     assert_eq!(delivered.len(), 1, "{delivered:?}");
     assert!(delivered[0].1.to_string().contains(&to), "{delivered:?}");
     // Approving again changes nothing: the suggestion is decided.
-    assert!(person_decides(&mut room, "approve", &id).is_err());
-    room.settle();
-    assert_eq!(room.sink.delivered().len(), 1);
+    assert!(person_decides(&mut workspace, "approve", &id).is_err());
+    workspace.settle();
+    assert_eq!(workspace.sink.delivered().len(), 1);
 }
 
-/// A room of Today with the todo list and the notebook it points at, each with its scenario, and
+/// A workspace of Today with the todo list and the notebook it points at, each with its scenario, and
 /// how many of the todos are done.
-fn today_room() -> (Room, usize) {
-    let mut room = Room::new("today");
-    room.seed("tasks");
-    room.seed("notes");
-    let host = room.window.current_host().unwrap();
+fn today_workspace() -> (Workspace, usize) {
+    let mut workspace = Workspace::new("today");
+    workspace.seed("tasks");
+    workspace.seed("notes");
+    let host = workspace.window.current_host().unwrap();
     let list = host.root_of("so.tilo.lang.tasks").unwrap();
     let RtValue::List(items) = host.runtime().read(&list, "items").unwrap() else {
         panic!("the list holds items");
@@ -1150,11 +1175,11 @@ fn today_room() -> (Room, usize) {
         })
         .count();
     assert!(done > 0, "the saturday list has done items");
-    (room, done)
+    (workspace, done)
 }
 
-fn cleanup_args(room: &Room) -> Json {
-    let host = room.window.current_host().unwrap();
+fn cleanup_args(workspace: &Workspace) -> Json {
+    let host = workspace.window.current_host().unwrap();
     let list = host.root_of("so.tilo.lang.tasks").unwrap().id_string();
     let notebook = host.root_of("so.tilo.lang.notes").unwrap().id_string();
     serde_json::json!({
@@ -1165,9 +1190,9 @@ fn cleanup_args(room: &Room) -> Json {
 
 #[test]
 fn an_agent_runs_a_flow_of_a_trusted_package_and_reads_what_it_returned() {
-    let (mut room, done) = today_room();
-    let args = cleanup_args(&room);
-    let output = room
+    let (mut workspace, done) = today_workspace();
+    let args = cleanup_args(&workspace);
+    let output = workspace
         .agent_invokes(HOST, "run-flow", &args)
         .unwrap()
         .value
@@ -1177,11 +1202,11 @@ fn an_agent_runs_a_flow_of_a_trusted_package_and_reads_what_it_returned() {
 
 #[test]
 fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
-    let (mut room, done) = today_room();
-    // The person narrowed this agent in the room: changes to the todo app ask first.
-    let mut workspace = policy::RoomPolicy::new("room", "ada");
-    workspace.grants.push(agent_answers::grant(
-        "room",
+    let (mut workspace, done) = today_workspace();
+    // The person narrowed this agent in the workspace: changes to the todo app ask first.
+    let mut policy = policy::RoomPolicy::new("workspace", "ada");
+    policy.grants.push(agent_answers::grant(
+        "workspace",
         "agent-task:7",
         (
             &agent_answers::AnswerScope::app("so.tilo.lang.tasks"),
@@ -1190,25 +1215,26 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         policy::Answer::Ask,
         policy::Subject::person("ada"),
     ));
-    let standing = policy::Standing::person(workspace, "ada");
-    room.window
+    let standing = policy::Standing::person(policy, "ada");
+    workspace
+        .window
         .instance
         .set_standing(Rc::new(move || Some(standing.clone())));
-    let todos = room.items_of("so.tilo.lang.tasks", "items");
-    let notes = room.items_of("so.tilo.lang.notes", "items");
-    let args = cleanup_args(&room);
-    let waiting = room
+    let todos = workspace.items_of("so.tilo.lang.tasks", "items");
+    let notes = workspace.items_of("so.tilo.lang.notes", "items");
+    let args = cleanup_args(&workspace);
+    let waiting = workspace
         .agent_invokes(HOST, "run-flow", &args)
         .unwrap()
         .value
         .unwrap();
     assert_eq!(waiting["state"], "suspended", "{waiting}");
     assert!(
-        room.window.view().asks().is_some(),
+        workspace.window.view().asks().is_some(),
         "the window asks the person, as for a press"
     );
     assert_eq!(
-        room.items_of("so.tilo.lang.tasks", "items"),
+        workspace.items_of("so.tilo.lang.tasks", "items"),
         todos,
         "nothing went while it waits"
     );
@@ -1216,7 +1242,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
     // Each removal asks: the flow waits again until the person approved every one.
     let mut approvals = 0;
     let finished = loop {
-        let answer = person_decides(&mut room, "approve", &run).unwrap();
+        let answer = person_decides(&mut workspace, "approve", &run).unwrap();
         approvals += 1;
         if answer["state"] != "suspended" || approvals > done {
             break answer;
@@ -1225,27 +1251,30 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
     assert_eq!(finished["state"], "done", "{finished}");
     assert_eq!(approvals, done, "one approval per removal");
     assert_eq!(
-        room.items_of("so.tilo.lang.tasks", "items"),
+        workspace.items_of("so.tilo.lang.tasks", "items"),
         todos - done,
         "the done ones went, once"
     );
     assert_eq!(
-        room.items_of("so.tilo.lang.notes", "items"),
+        workspace.items_of("so.tilo.lang.notes", "items"),
         notes + 1,
         "and one note says so"
     );
     assert!(
-        person_decides(&mut room, "approve", &run).is_err(),
+        person_decides(&mut workspace, "approve", &run).is_err(),
         "it completes once"
     );
-    room.settle();
-    assert_eq!(room.items_of("so.tilo.lang.tasks", "items"), todos - done);
-    assert_eq!(room.items_of("so.tilo.lang.notes", "items"), notes + 1);
+    workspace.settle();
+    assert_eq!(
+        workspace.items_of("so.tilo.lang.tasks", "items"),
+        todos - done
+    );
+    assert_eq!(workspace.items_of("so.tilo.lang.notes", "items"), notes + 1);
 }
 
 #[test]
 fn search_finds_chat_messages_and_a_hit_opens_their_channel() {
-    let mut room = Room::seeded("chat");
+    let mut workspace = Workspace::seeded("chat");
     let entries = crate::resource::search_entries();
     let hit = entries
         .iter()
@@ -1259,15 +1288,15 @@ fn search_finds_chat_messages_and_a_hit_opens_their_channel() {
             .all(|(text, _)| text.chars().count() <= 80)
     );
     let anchor = hit.anchor.clone().expect("a hit names its resource");
-    let before = format!("{:?}", room.window.instance().detail_tree());
+    let before = format!("{:?}", workspace.window.instance().detail_tree());
     assert!(
         !before.contains("Coffee machine on the third floor is fixed."),
         "the scenario opens another channel"
     );
-    room.window.open_requests().borrow_mut().push(anchor);
-    room.settle();
+    workspace.window.open_requests().borrow_mut().push(anchor);
+    workspace.settle();
     // The messages are rows of the transcript: what the app rendered of them.
-    let channel = room
+    let channel = workspace
         .window
         .instance()
         .detail_tree()
@@ -1280,25 +1309,25 @@ fn search_finds_chat_messages_and_a_hit_opens_their_channel() {
 
 #[test]
 fn search_entries_find_notes_and_open_the_window_at_the_note() {
-    let mut room = Room::seeded("notes");
+    let mut workspace = Workspace::seeded("notes");
     let entries = crate::resource::search_entries();
     assert!(!entries.is_empty());
     let first = &entries[0];
     assert_eq!(first.group.as_deref(), Some("Notes"), "{first:?}");
     let anchor = first.anchor.clone().expect("a hit names its resource");
-    room.window.open_requests().borrow_mut().push(anchor);
-    room.settle();
+    workspace.window.open_requests().borrow_mut().push(anchor);
+    workspace.settle();
     assert!(
-        room.window.detail_target().is_some(),
+        workspace.window.detail_target().is_some(),
         "the hit showed the note"
     );
 }
 
 #[test]
 fn an_action_the_content_shows_as_a_button_is_not_repeated_in_the_header() {
-    let room = Room::seeded("counter");
-    let host = room.window.current_host().unwrap();
-    let target = room.window.instance().root_target().cloned().unwrap();
+    let workspace = Workspace::seeded("counter");
+    let host = workspace.window.current_host().unwrap();
+    let target = workspace.window.instance().root_target().cloned().unwrap();
     let offered: Vec<String> = host
         .runtime()
         .catalogue()
@@ -1311,7 +1340,7 @@ fn an_action_the_content_shows_as_a_button_is_not_repeated_in_the_header() {
     );
     let _ = target;
     assert_eq!(
-        header_labels(&room.composed(), "actions"),
+        header_labels(&workspace.composed(), "actions"),
         ["search"],
         "the counter's buttons are its content's"
     );
@@ -1322,12 +1351,12 @@ fn an_action_the_content_shows_as_a_button_is_not_repeated_in_the_header() {
 // its row's menu.
 #[test]
 fn a_control_bound_to_the_state_an_action_toggles_stands_for_it_in_the_header() {
-    let mut room = Room::seeded("tasks");
+    let mut workspace = Workspace::seeded("tasks");
     assert!(
-        room.window.detail_target().is_some(),
+        workspace.window.detail_target().is_some(),
         "the scenario's item is shown"
     );
-    let header = header_labels(&room.composed(), "actions");
+    let header = header_labels(&workspace.composed(), "actions");
     assert!(
         !header
             .iter()
@@ -1338,7 +1367,7 @@ fn a_control_bound_to_the_state_an_action_toggles_stands_for_it_in_the_header() 
         header.iter().any(|label| label == "Remove"),
         "the rest of the item's actions stay: {header:?}"
     );
-    let menus: Vec<String> = room
+    let menus: Vec<String> = workspace
         .items()
         .into_iter()
         .flat_map(|(_, item)| {
@@ -1365,32 +1394,32 @@ fn a_board_scenario_shows_the_apps_it_attaches_filled_by_their_own_scenarios() {
             walk(child, out);
         }
     }
-    let room = Room::seeded("today");
-    let tree = room.window.root_tree().unwrap();
+    let workspace = Workspace::seeded("today");
+    let tree = workspace.window.root_tree().unwrap();
     let mut cards = Vec::new();
     walk(&tree, &mut cards);
     assert_eq!(cards.len(), 3, "the todo list, the notebook and the chats");
     assert!(
-        room.items_of("so.tilo.lang.tasks", "items") >= 12,
+        workspace.items_of("so.tilo.lang.tasks", "items") >= 12,
         "the list holds its scenario"
     );
     assert!(
-        room.items_of("so.tilo.lang.notes", "items") >= 12,
+        workspace.items_of("so.tilo.lang.notes", "items") >= 12,
         "and the notebook its"
     );
 }
 
 #[test]
 fn a_scenario_that_returns_a_resource_shows_it_beside_the_list() {
-    let mut room = Room::seeded("notes");
-    let shown = room
+    let mut workspace = Workspace::seeded("notes");
+    let shown = workspace
         .window
         .detail_target()
         .cloned()
         .expect("the scenario's note is shown");
-    let host = room.window.current_host().unwrap();
+    let host = workspace.window.current_host().unwrap();
     assert_eq!(tilolang_tilo::instance::title_of(&host, &shown), "Q3 plan");
-    let selected: Vec<String> = room
+    let selected: Vec<String> = workspace
         .list()
         .list()
         .unwrap()
@@ -1398,23 +1427,23 @@ fn a_scenario_that_returns_a_resource_shows_it_beside_the_list() {
         .stored_keys()
         .cloned()
         .collect();
-    let row: Vec<String> = room
+    let row: Vec<String> = workspace
         .rows()
         .into_iter()
         .map(|(key, _)| key)
-        .filter(|key| room.item_of(key) == shown)
+        .filter(|key| workspace.item_of(key) == shown)
         .collect();
     assert_eq!(selected, row, "and its row is the selected one");
 }
 
 #[test]
 fn a_document_that_edits_its_title_shows_it_as_its_own_and_the_header_does_not_repeat_it() {
-    let room = Room::seeded("notes");
+    let workspace = Workspace::seeded("notes");
     assert!(
-        room.window.detail_target().is_some(),
+        workspace.window.detail_target().is_some(),
         "the scenario's note is shown"
     );
-    let shell = room.composed();
+    let shell = workspace.composed();
     assert!(
         !shell.props.contains_key("title"),
         "the note's title is its own, not the header's"
@@ -1429,11 +1458,11 @@ fn a_document_that_edits_its_title_shows_it_as_its_own_and_the_header_does_not_r
 
 #[test]
 fn the_list_renders_only_the_rows_it_shows() {
-    let mut room = Room::seeded("notes");
-    let rows = room.root_rows();
+    let mut workspace = Workspace::seeded("notes");
+    let rows = workspace.root_rows();
     // What the app renders: the rows of the list in its view's tree.
-    let rendered = |room: &Room| -> Vec<String> {
-        let tree = room.window.instance().root_tree().unwrap();
+    let rendered = |workspace: &Workspace| -> Vec<String> {
+        let tree = workspace.window.instance().root_tree().unwrap();
         let list = first_of(&tree, "ui.VirtualList").expect("the list").clone();
         list.children
             .iter()
@@ -1442,19 +1471,19 @@ fn the_list_renders_only_the_rows_it_shows() {
             .collect()
     };
     let len = rows.borrow().len();
-    room.show_rows(0..3);
-    let first = rendered(&room);
+    workspace.show_rows(0..3);
+    let first = rendered(&workspace);
     assert!(
         !first.is_empty() && first.len() < len,
         "the list asked for the rows it shows, {} of {len}",
         first.len()
     );
-    room.show_rows(len - 2..len);
+    workspace.show_rows(len - 2..len);
     let shown: Vec<String> = (len - 2..len)
         .filter_map(|index| rows.borrow().key_at(index))
         .collect();
     assert_eq!(
-        rendered(&room),
+        rendered(&workspace),
         shown,
         "the rows scrolled away are forgotten"
     );
@@ -1482,16 +1511,18 @@ fn first_of<'a>(
 
 #[test]
 fn a_change_to_an_item_reaches_its_shown_row() {
-    let mut room = Room::seeded("notes");
-    let (key, _) = room.rows().remove(0);
-    room.activate(&key);
-    let input = first_input(&room.composed())
+    let mut workspace = Workspace::seeded("notes");
+    let (key, _) = workspace.rows().remove(0);
+    workspace.activate(&key);
+    let input = first_input(&workspace.composed())
         .expect("the note's title")
         .key
         .clone();
-    room.window.act(UiEvent::Edit(input, "Renamed".to_owned()));
-    room.settle();
-    let title = room
+    workspace
+        .window
+        .act(UiEvent::Edit(input, "Renamed".to_owned()));
+    workspace.settle();
+    let title = workspace
         .rows()
         .into_iter()
         .find(|(row, _)| *row == key)
@@ -1501,8 +1532,8 @@ fn a_change_to_an_item_reaches_its_shown_row() {
 
 #[test]
 fn a_rows_checkbox_shows_whether_its_item_is_done_from_its_first_read() {
-    let mut room = Room::staged("tasks", "a busy week");
-    let checked: Vec<bool> = room
+    let mut workspace = Workspace::staged("tasks", "a busy week");
+    let checked: Vec<bool> = workspace
         .items()
         .into_iter()
         .filter_map(|(_, item)| match item.row {
@@ -1542,17 +1573,18 @@ fn widget_with_id<'a>(
 }
 
 /// The content column's scroll.
-fn content_scroll(room: &mut Room) -> &mut ui::widget::Scrollable {
-    room.window
+fn content_scroll(workspace: &mut Workspace) -> &mut ui::widget::Scrollable {
+    workspace
+        .window
         .shell_mut()
         .and_then(|shell| shell.content_mut::<ui::widget::Scrollable>())
         .expect("the content column scrolls")
 }
 
 /// The widgets of the content column.
-fn content_widgets(room: &mut Room) -> Vec<(usize, String)> {
+fn content_widgets(workspace: &mut Workspace) -> Vec<(usize, String)> {
     let mut out = Vec::new();
-    widget_identities(content_scroll(room), &mut out);
+    widget_identities(content_scroll(workspace), &mut out);
     out
 }
 
@@ -1567,31 +1599,31 @@ fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widge
             cards(child, out);
         }
     }
-    let mut room = Room::seeded("today");
+    let mut workspace = Workspace::seeded("today");
     let mut keys = Vec::new();
-    cards(&room.composed(), &mut keys);
+    cards(&workspace.composed(), &mut keys);
     let [todos, notes, chats] = &keys[..] else {
         panic!("the todo list, the notebook and the chats: {keys:?}");
     };
-    let widgets_of = |room: &mut Room, key: &str| {
+    let widgets_of = |workspace: &mut Workspace, key: &str| {
         let mut out = Vec::new();
         widget_identities(
-            widget_with_id(content_scroll(room), key).expect("the card's content"),
+            widget_with_id(content_scroll(workspace), key).expect("the card's content"),
             &mut out,
         );
         out
     };
-    let chats_before = widgets_of(&mut room, chats);
-    let notes_before = widgets_of(&mut room, notes);
-    let todo_before = widgets_of(&mut room, todos);
-    let outside_before: Vec<_> = content_widgets(&mut room)
+    let chats_before = widgets_of(&mut workspace, chats);
+    let notes_before = widgets_of(&mut workspace, notes);
+    let todo_before = widgets_of(&mut workspace, todos);
+    let outside_before: Vec<_> = content_widgets(&mut workspace)
         .into_iter()
         .filter(|widget| !todo_before.contains(widget))
         .collect();
-    content_scroll(&mut room).take_structure_change();
+    content_scroll(&mut workspace).take_structure_change();
 
     // Ticking a todo off changes what the todo card counts and previews, and nothing else.
-    let host = room.window.current_host().unwrap();
+    let host = workspace.window.current_host().unwrap();
     let list = host.root_of("so.tilo.lang.tasks").unwrap();
     let RtValue::List(items) = host.runtime().read(&list, "items").unwrap() else {
         panic!("the list holds items");
@@ -1625,8 +1657,8 @@ fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widge
             (check.as_str(), vec![RtValue::Ref(open.clone())]),
         )
         .unwrap();
-    room.window.commit_planned();
-    room.settle();
+    workspace.window.commit_planned();
+    workspace.settle();
     assert_eq!(
         host.runtime().read(&open.target, "done").ok(),
         Some(RtValue::Bool(true)),
@@ -1634,16 +1666,16 @@ fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widge
     );
 
     assert_eq!(
-        widgets_of(&mut room, chats),
+        widgets_of(&mut workspace, chats),
         chats_before,
         "the chats card is kept"
     );
     assert_eq!(
-        widgets_of(&mut room, notes),
+        widgets_of(&mut workspace, notes),
         notes_before,
         "the notes card is kept"
     );
-    let after = content_widgets(&mut room);
+    let after = content_widgets(&mut workspace);
     let gone: Vec<_> = outside_before
         .iter()
         .filter(|widget| !after.contains(widget))
@@ -1653,9 +1685,9 @@ fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widge
         gone.iter().all(|(_, name)| name == "Card"),
         "only the todo card is replaced: {gone:?}"
     );
-    assert!(widget_with_id(content_scroll(&mut room), todos).is_some());
+    assert!(widget_with_id(content_scroll(&mut workspace), todos).is_some());
     assert_eq!(
-        content_scroll(&mut room).take_structure_change(),
+        content_scroll(&mut workspace).take_structure_change(),
         ui::widget::StructureChange::Described,
         "the frame's damage describes the card it replaced"
     );
@@ -1666,8 +1698,8 @@ fn a_conversation_is_a_transcript_whose_messages_are_built_as_it_shows_them() {
     fn rendered(node: &tilolang_tilo::runtime::UiNode) -> usize {
         usize::from(node.kind == "ui.ListItem") + node.children.iter().map(rendered).sum::<usize>()
     }
-    fn transcript(room: &mut Room) -> &mut DescribedList {
-        let shell = room.window.shell_mut().expect("the shell");
+    fn transcript(workspace: &mut Workspace) -> &mut DescribedList {
+        let shell = workspace.window.shell_mut().expect("the shell");
         let docked = shell
             .content_mut::<ui::widget::Docked>()
             .expect("the conversation above its composer");
@@ -1683,37 +1715,39 @@ fn a_conversation_is_a_transcript_whose_messages_are_built_as_it_shows_them() {
         }
         found.expect("the transcript")
     }
-    let mut room = Room::seeded("chat");
-    let messages = |room: &mut Room| {
-        transcript(room)
+    let mut workspace = Workspace::seeded("chat");
+    let messages = |workspace: &mut Workspace| {
+        transcript(workspace)
             .list()
             .map(|list| ui::widget::ListModel::len(list.model()))
     };
-    let first = messages(&mut room).expect("the conversation's transcript");
-    let before = std::ptr::from_ref(transcript(&mut room)).cast::<()>() as usize;
+    let first = messages(&mut workspace).expect("the conversation's transcript");
+    let before = std::ptr::from_ref(transcript(&mut workspace)).cast::<()>() as usize;
     // Enough messages that the transcript shows only the last of them.
     let sent = 80;
     for n in 0..sent {
-        let (input, button) = composer(&room.composed());
-        room.window
+        let (input, button) = composer(&workspace.composed());
+        workspace
+            .window
             .act(UiEvent::EditRich(input, typed(&format!("Message {n}"))));
-        room.settle();
-        room.window
+        workspace.settle();
+        workspace
+            .window
             .act(UiEvent::Fire(button, "press".to_owned(), None));
-        room.settle();
+        workspace.settle();
     }
     let total = first + sent;
     assert_eq!(
-        messages(&mut room),
+        messages(&mut workspace),
         Some(total),
         "each message is a row more"
     );
     assert_eq!(
-        std::ptr::from_ref(transcript(&mut room)).cast::<()>() as usize,
+        std::ptr::from_ref(transcript(&mut workspace)).cast::<()>() as usize,
         before,
         "of the same transcript"
     );
-    let detail = room.window.instance().detail_tree().unwrap();
+    let detail = workspace.window.instance().detail_tree().unwrap();
     assert!(
         rendered(&detail) < total / 2,
         "only the messages shown are rendered: {} of {total}",
@@ -1723,7 +1757,7 @@ fn a_conversation_is_a_transcript_whose_messages_are_built_as_it_shows_them() {
 
 #[test]
 fn a_transcript_names_each_run_of_one_authors_messages_once_and_marks_where_the_day_changes() {
-    /// The day dividers, the avatars shown and the avatars' rooms kept empty under `widget`.
+    /// The day dividers, the avatars shown and the avatars' workspaces kept empty under `widget`.
     fn marks(widget: &dyn ui::widget::Widget, found: &mut (usize, usize, usize)) {
         match widget.name() {
             "DayDivider" => found.0 += 1,
@@ -1736,12 +1770,12 @@ fn a_transcript_names_each_run_of_one_authors_messages_once_and_marks_where_the_
         }
     }
     // The design channel: Mia twice, Leo, you, the next day Ada and Mia.
-    let mut room = Room::seeded("chat");
+    let mut workspace = Workspace::seeded("chat");
     for _ in 0..3 {
-        room.lay_out();
-        room.settle();
+        workspace.lay_out();
+        workspace.settle();
     }
-    let shell = room.window.shell_mut().expect("the shell");
+    let shell = workspace.window.shell_mut().expect("the shell");
     let docked = shell
         .content_mut::<ui::widget::Docked>()
         .expect("the conversation above its composer");
@@ -1759,7 +1793,7 @@ fn a_transcript_names_each_run_of_one_authors_messages_once_and_marks_where_the_
     assert_eq!(
         found,
         (2, 5, 1),
-        "a divider for each of the two days, an avatar for each of the five runs, and the room of one under the message that continues a run"
+        "a divider for each of the two days, an avatar for each of the five runs, and the workspace of one under the message that continues a run"
     );
 }
 
@@ -1830,9 +1864,12 @@ fn a_changed_value_on_a_page_sets_its_widget_and_keeps_every_other() {
 // next column, and gets what the platform does for every window.
 #[test]
 fn an_app_composes_its_own_list_window_from_the_toolkit_and_the_platform() {
-    let mut room = Room::seeded("handmade");
-    assert!(room.shell().has_overview(), "the books are the overview");
-    let shell = room.composed();
+    let mut workspace = Workspace::seeded("handmade");
+    assert!(
+        workspace.shell().has_overview(),
+        "the books are the overview"
+    );
+    let shell = workspace.composed();
     assert_eq!(
         shell.props.get("overview_title"),
         Some(&Value::text("Shelf"))
@@ -1842,7 +1879,7 @@ fn an_app_composes_its_own_list_window_from_the_toolkit_and_the_platform() {
         ["search", "New book"],
         "the header holds the shelf's primary action"
     );
-    let items = room.items();
+    let items = workspace.items();
     assert_eq!(items.len(), 2);
     let (first_key, first) = &items[0];
     let menu: Vec<&str> = first
@@ -1858,13 +1895,13 @@ fn an_app_composes_its_own_list_window_from_the_toolkit_and_the_platform() {
     let swipe = first.swipe.as_ref().expect("a swipe takes the book off");
     assert!(swipe.destructive);
     // The scenario opened its book beside the list, which selects it.
-    let shown = room
+    let shown = workspace
         .window
         .detail_target()
         .cloned()
         .expect("the book is shown");
-    assert_eq!(room.item_of(first_key), shown);
-    let selected: Vec<String> = room
+    assert_eq!(workspace.item_of(first_key), shown);
+    let selected: Vec<String> = workspace
         .list()
         .list()
         .unwrap()
@@ -1874,22 +1911,25 @@ fn an_app_composes_its_own_list_window_from_the_toolkit_and_the_platform() {
         .collect();
     assert_eq!(selected, std::slice::from_ref(first_key));
     // A destructive action from its menu offers Undo, as from any window.
-    let list = room.list();
+    let list = workspace.list();
     assert!(list.list_mut().unwrap().reveal(first_key));
     let area = list.menu_area_mut().expect("the rows share one menu");
     assert!(area.open_at(ui::vello::kurbo::Point::ZERO, false));
     area.choose(1);
-    room.settle();
-    assert_eq!(room.rows().len(), 1);
-    assert!(room.shell().toast_text().is_some(), "the shell offers undo");
+    workspace.settle();
+    assert_eq!(workspace.rows().len(), 1);
+    assert!(
+        workspace.shell().toast_text().is_some(),
+        "the shell offers undo"
+    );
     // And its primary action shows what it made.
-    room.header_action("New book");
-    let made = room
+    workspace.header_action("New book");
+    let made = workspace
         .window
         .detail_target()
         .cloned()
         .expect("the new book opened");
-    let host = room.window.current_host().unwrap();
+    let host = workspace.window.current_host().unwrap();
     assert_eq!(tilolang_tilo::instance::title_of(&host, &made), "Untitled");
 }
 
@@ -1924,41 +1964,52 @@ fn shows_text(node: &UiNode, text: &str) -> bool {
 
 #[test]
 fn a_later_build_takes_over_in_place_keeping_window_state_selection_and_detail() {
-    let mut room = Room::seeded("notes");
-    let all = room.rows().len();
+    let mut workspace = Workspace::seeded("notes");
+    let all = workspace.rows().len();
     // A place of the sidebar narrows the list: the person's filter.
-    let pinned = room.key_of("ui.NavItem", "label", "Pinned");
-    room.fire(&pinned, "select", None);
-    let filtered = room.rows().len();
+    let pinned = workspace.key_of("ui.NavItem", "label", "Pinned");
+    workspace.fire(&pinned, "select", None);
+    let filtered = workspace.rows().len();
     assert!(filtered < all, "{filtered} of {all}");
-    let (key, _) = room.rows().remove(0);
-    room.activate(&key);
-    let shown = room
+    let (key, _) = workspace.rows().remove(0);
+    workspace.activate(&key);
+    let shown = workspace
         .window
         .detail_target()
         .cloned()
         .expect("a note is shown");
-    let detail = room.window.detail_tree().unwrap();
+    let detail = workspace.window.detail_tree().unwrap();
     assert!(shows_text(&detail, "Write something"), "{detail:#?}");
 
     crate::updates::hand_over(later_notes(|source| {
         source.replace("\"Write something\"", "\"Write anything\"")
     }));
-    room.settle();
+    workspace.settle();
 
-    let detail = room.window.detail_tree().expect("the note is still shown");
+    let detail = workspace
+        .window
+        .detail_tree()
+        .expect("the note is still shown");
     assert!(
         shows_text(&detail, "Write anything"),
         "the new build renders it: {detail:#?}"
     );
-    assert_eq!(room.window.detail_target(), Some(&shown), "the same note");
     assert_eq!(
-        room.composed().props.get("overview_title"),
+        workspace.window.detail_target(),
+        Some(&shown),
+        "the same note"
+    );
+    assert_eq!(
+        workspace.composed().props.get("overview_title"),
         Some(&Value::text("Pinned")),
         "the same place of the sidebar is chosen"
     );
-    assert_eq!(room.rows().len(), filtered, "the list is still filtered");
-    let selected: Vec<String> = room
+    assert_eq!(
+        workspace.rows().len(),
+        filtered,
+        "the list is still filtered"
+    );
+    let selected: Vec<String> = workspace
         .list()
         .list()
         .unwrap()
@@ -1975,9 +2026,9 @@ fn a_later_build_takes_over_in_place_keeping_window_state_selection_and_detail()
 
 #[test]
 fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
-    let mut room = Room::seeded("notes");
-    let notes = room.rows().len();
-    assert!(room.window.detail_target().is_some());
+    let mut workspace = Workspace::seeded("notes");
+    let notes = workspace.rows().len();
+    assert!(workspace.window.detail_target().is_some());
 
     crate::updates::hand_over(later_notes(|source| {
         let source = source
@@ -1998,9 +2049,9 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
                 source.replace(&format!("tags.add(\"{tag}\")"), &format!("tags.add({n})"))
             })
     }));
-    room.settle();
+    workspace.settle();
 
-    let host = room.window.current_host().unwrap();
+    let host = workspace.window.current_host().unwrap();
     let note = host
         .package("so.tilo.lang.notes")
         .and_then(|package| package.meta.types.into_iter().find(|ty| ty.name == "Note"))
@@ -2009,30 +2060,36 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
         note.fields.iter().any(|field| field.ty == "Set<Int>"),
         "the new build runs: {note:?}"
     );
-    assert_eq!(room.rows().len(), notes, "every note is still there");
-    assert_eq!(room.window.detail_target(), None, "the window started over");
+    assert_eq!(workspace.rows().len(), notes, "every note is still there");
+    assert_eq!(
+        workspace.window.detail_target(),
+        None,
+        "the window started over"
+    );
 }
 
 #[test]
 fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
     use ui::widget::Widget as _;
-    let mut room = Room::seeded("tasks");
-    let (key, _) = room.rows().remove(0);
-    room.activate(&key);
-    let detail = room.window.detail_tree().expect("the item is shown");
+    let mut workspace = Workspace::seeded("tasks");
+    let (key, _) = workspace.rows().remove(0);
+    workspace.activate(&key);
+    let detail = workspace.window.detail_tree().expect("the item is shown");
     let input = first_input(&detail).expect("the item's title").key.clone();
     // The list mounts the rows its laid-out height shows, measures them as they are laid out,
     // then holds them.
-    room.lay_out();
-    room.settle();
-    room.lay_out();
-    room.lay_out();
+    workspace.lay_out();
+    workspace.settle();
+    workspace.lay_out();
+    workspace.lay_out();
     let mut typed = String::new();
     for letter in ['p', 'l', 'a', 'n'] {
         typed.push(letter);
-        room.window.act(UiEvent::Edit(input.clone(), typed.clone()));
-        room.settle();
-        let change = room.window.take_structure_change();
+        workspace
+            .window
+            .act(UiEvent::Edit(input.clone(), typed.clone()));
+        workspace.settle();
+        let change = workspace.window.take_structure_change();
         assert!(
             matches!(
                 change,
@@ -2041,7 +2098,7 @@ fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
             "a keystroke rebuilt the window's tree ({change:?}): its row and its field change \
              in place"
         );
-        room.lay_out();
+        workspace.lay_out();
     }
 }
 
@@ -2050,29 +2107,31 @@ fn a_keystroke_repaints_its_field_not_the_window() {
     // The item's column slides in: what a keystroke repaints is asked of the
     // window at rest.
     let _settled = ui::motion::testing::settled();
-    let mut room = Room::seeded("tasks");
-    let (key, _) = room.rows().remove(0);
-    room.activate(&key);
-    let detail = room.window.detail_tree().expect("the item is shown");
+    let mut workspace = Workspace::seeded("tasks");
+    let (key, _) = workspace.rows().remove(0);
+    workspace.activate(&key);
+    let detail = workspace.window.detail_tree().expect("the item is shown");
     let input = first_input(&detail).expect("the item's title").key.clone();
-    room.lay_out();
-    room.settle();
-    room.lay_out();
-    room.draw();
-    let window = room.window.get_rect();
+    workspace.lay_out();
+    workspace.settle();
+    workspace.lay_out();
+    workspace.draw();
+    let window = workspace.window.get_rect();
     let mut typed = String::new();
     for letter in ['p', 'l', 'a', 'n'] {
         typed.push(letter);
-        room.window.act(UiEvent::Edit(input.clone(), typed.clone()));
-        room.settle();
+        workspace
+            .window
+            .act(UiEvent::Edit(input.clone(), typed.clone()));
+        workspace.settle();
         // Drawn where the last layout placed it: the harness lays a window
         // out only by rebuilding it, which the live window does not do for
         // a keystroke.
         let mut scene = ui::vello::Scene::new();
-        room.paint(&mut scene);
+        workspace.paint(&mut scene);
         let mut damage = Vec::new();
-        room.window.collect_damage(&mut damage);
-        room.window.mark_drawn();
+        workspace.window.collect_damage(&mut damage);
+        workspace.window.mark_drawn();
         // The field and the row change; nothing that holds them repaints
         // as a whole (the harness, which presents no frame, leaves the
         // list's column to repaint its box).
@@ -2085,10 +2144,10 @@ fn a_keystroke_repaints_its_field_not_the_window() {
 
 #[test]
 fn a_list_that_asks_for_more_rows_shows_the_ones_it_has_until_they_come() {
-    let mut room = Room::staged("notes", "a week of notes");
-    let rows = room.root_rows();
+    let mut workspace = Workspace::staged("notes", "a week of notes");
+    let rows = workspace.root_rows();
     let len = rows.borrow().len();
-    room.show_rows(0..len);
+    workspace.show_rows(0..len);
     assert_eq!(
         rows.borrow().rendered().len(),
         len,
@@ -2102,14 +2161,14 @@ fn a_list_that_asks_for_more_rows_shows_the_ones_it_has_until_they_come() {
         len,
         "a row is kept until the app forgot it"
     );
-    room.frame();
+    workspace.frame();
     rows.borrow_mut().request_range(0..len);
     assert_eq!(
         rows.borrow().rendered().len(),
         len / 2,
         "what the app forgot is gone, nothing else"
     );
-    room.frame();
+    workspace.frame();
     assert_eq!(rows.borrow().rendered().len(), len, "and every row is back");
 }
 
@@ -2127,9 +2186,9 @@ fn todays_cards_show_their_resources_title_count_and_first_rows() {
         Some(Value::Text(text)) => text.clone(),
         _ => String::new(),
     };
-    let mut room = Room::seeded("today");
+    let mut workspace = Workspace::seeded("today");
     // What the window holds of the view, as the app sent it.
-    let tree = room.window.root_tree().unwrap();
+    let tree = workspace.window.root_tree().unwrap();
     let mut cards = Vec::new();
     walk(&tree, "ui.Card", &mut cards);
     assert_eq!(cards.len(), 3, "the todo list, the notebook and the chats");
@@ -2186,7 +2245,7 @@ fn todays_cards_show_their_resources_title_count_and_first_rows() {
         "the chat card's entries"
     );
     // And the window draws them: a header and a row widget for each.
-    let widgets = content_widgets(&mut room);
+    let widgets = content_widgets(&mut workspace);
     let named = |name: &str| widgets.iter().filter(|(_, n)| n == name).count();
     assert_eq!(named("SectionHeader"), 3, "{widgets:?}");
     assert_eq!(named("ListRow"), shown.len(), "{widgets:?}");
@@ -2194,19 +2253,26 @@ fn todays_cards_show_their_resources_title_count_and_first_rows() {
 
 #[test]
 fn a_send_pressed_in_the_frame_of_the_last_keystroke_sends_it_too() {
-    let mut room = Room::seeded("chat");
-    let (input, send) = composer(&room.composed());
-    room.window
+    let mut workspace = Workspace::seeded("chat");
+    let (input, send) = composer(&workspace.composed());
+    workspace
+        .window
         .act(UiEvent::EditRich(input.clone(), typed("See you at noo")));
-    room.settle();
+    workspace.settle();
     // The last keystroke and the press go to the app in one batch, before the view runs again.
-    room.window
+    workspace
+        .window
         .act(UiEvent::EditRich(input, typed("See you at noon")));
-    room.window
+    workspace
+        .window
         .act(UiEvent::Fire(send, "press".to_owned(), None));
-    room.settle();
-    let host = room.window.current_host().expect("the host started");
-    let channel = room.window.detail_target().expect("the channel").clone();
+    workspace.settle();
+    let host = workspace.window.current_host().expect("the host started");
+    let channel = workspace
+        .window
+        .detail_target()
+        .expect("the channel")
+        .clone();
     let items = |target: &ResourceRef, field: &str| match host.runtime().read(target, field) {
         Ok(RtValue::List(items)) => items
             .into_iter()

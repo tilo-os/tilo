@@ -1,4 +1,4 @@
-//! What the sidebar lists: the room's channels first, then the people the
+//! What the sidebar lists: the workspace's channels first, then the people the
 //! person has a direct conversation with, each once and by name.
 
 use super::*;
@@ -11,10 +11,10 @@ fn contact(key: &str, name: &str, conversation: bool) -> ui::person_chat::Contac
     }
 }
 
-fn app_in_room() -> ChatApp {
+fn app_in_workspace() -> ChatApp {
     let doc = crate::testing::demo_doc();
     let mut app = ChatApp::new_ephemeral();
-    app.attach_room(&doc);
+    app.attach_workspace(&doc);
     app.reload(&doc);
     app
 }
@@ -34,12 +34,12 @@ fn labels(section: &ui::widget::NavSection) -> Vec<String> {
         .collect()
 }
 
-/// A room full of visitors (a public lounge) is not a list of direct
+/// A workspace full of visitors (a public lounge) is not a list of direct
 /// messages: the channels open the sidebar, and only the people this
 /// person writes with follow, below them, in their own section.
 #[test]
 fn channels_open_the_sidebar_and_only_conversations_follow() {
-    let mut app = app_in_room();
+    let mut app = app_in_workspace();
     let mut contacts: Vec<_> = (0..25)
         .map(|i| contact(&format!("{i:064x}"), "", false))
         .collect();
@@ -74,10 +74,10 @@ fn channels_open_the_sidebar_and_only_conversations_follow() {
 }
 
 /// The conversation open now is listed even before its first message,
-/// and a person the room has no name for goes by their tag, never blank.
+/// and a person the workspace has no name for goes by their tag, never blank.
 #[test]
 fn the_open_conversation_is_listed_by_a_name_never_blank() {
-    let mut app = app_in_room();
+    let mut app = app_in_workspace();
     let key = format!("{:064x}", 7);
     app.person_contacts = vec![contact(&key, "", false)];
     app.direct_person = Some(key.clone());

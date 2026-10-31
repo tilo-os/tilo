@@ -1,4 +1,4 @@
-//! Search over the rooms' tilolang resources: the notes, the messages, the todos.
+//! Search over the workspaces' tilolang resources: the notes, the messages, the todos.
 //!
 //! Search is a system service: the window registers one provider over a catalogue it keeps as the
 //! record moves, and says what each hit is. A hit's action is the `open` view action of the
@@ -37,7 +37,7 @@ impl CatalogSearchProvider for Provider {
     }
 }
 
-/// Index what the room holds now: every resource with text, found by that text. Returns what the
+/// Index what the workspace holds now: every resource with text, found by that text. Returns what the
 /// system's persistent index keeps of it: short metadata only, never a prose body.
 pub fn refresh(catalog: &SearchCatalog, host: &Host) -> Vec<IndexEntry> {
     let mut records = Vec::new();
@@ -80,7 +80,7 @@ pub fn refresh(catalog: &SearchCatalog, host: &Host) -> Vec<IndexEntry> {
         );
     }
     if let Err(error) = catalog.replace_all_records(records) {
-        tracing::warn!(?error, "the room could not be indexed for search");
+        tracing::warn!(?error, "the workspace could not be indexed for search");
     }
     entries
 }

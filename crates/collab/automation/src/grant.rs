@@ -854,7 +854,7 @@ mod tests {
             permission(
                 "so.tilo.chat",
                 "chat.workspace",
-                "read-room",
+                "read-workspace",
                 ActionKind::Read,
             ),
         ]);

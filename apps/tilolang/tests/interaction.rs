@@ -229,8 +229,8 @@ fn composer(app: &mut TestApp<TlApp>) -> (f64, f64) {
     center(*inputs.last().expect("the transcript has its composer"))
 }
 
-/// The room's people, as its roster names them to every window in it.
-fn in_the_room(app: &mut TestApp<TlApp>) {
+/// The workspace's people, as its roster names them to every window in it.
+fn in_the_workspace(app: &mut TestApp<TlApp>) {
     let mut presence = ui::presence::PresenceCtx::default();
     for (id, name) in [("u_mia", "Mia"), ("u_leo", "Leo")] {
         presence
@@ -329,27 +329,25 @@ fn draft(app: &mut TestApp<TlApp>) -> String {
         .unwrap_or_default()
 }
 
-/// The room's membership as its policy records it: the person at the window owns it, Mia
-/// edits, Leo views, and the agent `planner` was admitted. Zoe is in the room's roster, but no
+/// The workspace's membership as its policy records it: the person at the window owns it, Mia
+/// edits, Leo views, and the agent `planner` was admitted. Zoe is in the workspace's roster, but no
 /// member.
-fn members_of_the_room(app: &mut TestApp<TlApp>) {
+fn members_of_the_workspace(app: &mut TestApp<TlApp>) {
     use ui::permissions::policy::{self, Role, Subject, roles::AgentPreset};
     let me = app.permissions().standing().person.clone();
-    let room = app.permissions().standing().room().to_owned();
-    let mut workspace = policy::RoomPolicy::new(&room, &me);
-    workspace.members.insert("u_mia".to_owned(), Role::Editor);
-    workspace.members.insert("u_leo".to_owned(), Role::Viewer);
-    workspace.grants.extend(AgentPreset::Contributor.grants(
-        &room,
-        "planner",
-        &Subject::person(&me),
-    ));
-    let standing = policy::Standing::person(workspace, me);
+    let id = app.permissions().standing().room().to_owned();
+    let mut policy = policy::RoomPolicy::new(&id, &me);
+    policy.members.insert("u_mia".to_owned(), Role::Editor);
+    policy.members.insert("u_leo".to_owned(), Role::Viewer);
+    policy
+        .grants
+        .extend(AgentPreset::Contributor.grants(&id, "planner", &Subject::person(&me)));
+    let standing = policy::Standing::person(policy, me);
     app.set_permissions(ui::permissions::PermissionContext::from_standing(
-        &room, standing,
+        &id, standing,
     ));
     let mut presence = ui::presence::PresenceCtx::default();
-    // Mia is here from her laptop, which the room's host paired with her person; Leo is named
+    // Mia is here from her laptop, which the workspace's host paired with her person; Leo is named
     // as himself.
     for (id, name) in [
         ("mia-laptop", "Mia"),
@@ -377,7 +375,7 @@ fn members_of_the_room(app: &mut TestApp<TlApp>) {
 fn the_composers_drawer_offers_the_members_of_the_conversation() {
     let _settled = ui::motion::testing::settled();
     let mut app = staged(DESKTOP);
-    members_of_the_room(&mut app);
+    members_of_the_workspace(&mut app);
     let (x, y) = composer(&mut app);
     app.harness().click_at(x, y);
     app.harness().type_text("@");
@@ -420,10 +418,10 @@ fn the_composers_drawer_offers_the_members_of_the_conversation() {
 }
 
 #[test]
-fn the_composers_drawer_offers_the_rooms_people_and_writes_a_mention_that_is_sent() {
+fn the_composers_drawer_offers_the_workspaces_people_and_writes_a_mention_that_is_sent() {
     let _settled = ui::motion::testing::settled();
     let mut app = staged(DESKTOP);
-    in_the_room(&mut app);
+    in_the_workspace(&mut app);
     let (x, y) = composer(&mut app);
     app.harness().click_at(x, y);
     app.harness().type_text("thanks @");
@@ -431,7 +429,7 @@ fn the_composers_drawer_offers_the_rooms_people_and_writes_a_mention_that_is_sen
     let people = drawer_rows(&mut app);
     assert!(
         people.iter().any(|row| row == "Mia") && people.iter().any(|row| row == "Leo"),
-        "the trigger opens the room's people, with nothing declared by the view: {people:?}"
+        "the trigger opens the workspace's people, with nothing declared by the view: {people:?}"
     );
     app.harness().type_text("mi");
     // No settling: the drawer narrows in the window.
@@ -517,7 +515,7 @@ fn shots() {
             settle(&mut app);
             // The composer's drawer: opened by its trigger, narrowed while typing, saying
             // nothing matches, and the picked mention sent.
-            in_the_room(&mut app);
+            in_the_workspace(&mut app);
             let (cx, cy) = composer(&mut app);
             app.harness().click_at(cx, cy);
             app.harness().type_text("thanks @");

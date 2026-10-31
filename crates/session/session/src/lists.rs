@@ -4,6 +4,7 @@
 //! changes (an install, a desktop entry added, a registry's or Flathub's
 //! catalogue refreshed, a block made), never on the session's thread.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -20,6 +21,10 @@ pub struct AppLists {
     pub host_apps: Vec<HostAppEntry>,
     /// The apps a person can get here: neither installed nor blocked.
     pub catalogue: Vec<app_catalogue::CatalogueEntry>,
+    /// The icon file each installed app's signed manifest names, by package
+    /// id: resolved here so a banner paints an app's artwork without reading
+    /// its manifest on the letter's thread.
+    pub icons: BTreeMap<String, PathBuf>,
 }
 
 impl AppLists {
@@ -43,7 +48,14 @@ impl AppLists {
                 description: None,
             })
             .collect();
-        let scan = desktop_entry::scan::scan();
+        let icons = installed
+            .iter()
+            .filter_map(|app| Some((app.package_id.clone(), app.icon_path()?)))
+            .collect();
+        // The machine's entries through the memoised scan, whose watch this
+        // first read starts: what later asks for an entry's icon or name on
+        // the loop (`crate::app_icons::entry_icon`) finds it read already.
+        let scan = desktop_entry::cache::cached_scan();
         let host_apps = scan
             .entries
             .iter()
@@ -75,6 +87,7 @@ impl AppLists {
             applications,
             host_apps,
             catalogue,
+            icons,
         }
     }
 

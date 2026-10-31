@@ -7,4 +7,4 @@ search-keywords = poker, texas hold'em, holdem, cards, card game, game night, ch
 # What the app does, in one plain phrase (English): the tag line under its
 # name in the Store and in search. No marketing; the packer signs it into the
 # manifest.
-app-tagline = Texas hold'em with everyone in the room
+app-tagline = Texas hold'em with everyone in the workspace

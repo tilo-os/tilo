@@ -31,19 +31,19 @@ fn a_channel_made_under_a_chosen_id_takes_posts_there_and_is_made_once() {
     let mut app = app();
     app.call(
         "create-channel-with-id",
-        json!({"id": "launch-room", "name": "launch"}),
+        json!({"id": "launch-workspace", "name": "launch"}),
     )
     .expect("the channel is made");
     // Naming it again leaves it as it is.
     app.call(
         "create-channel-with-id",
-        json!({"id": "launch-room", "name": "renamed"}),
+        json!({"id": "launch-workspace", "name": "renamed"}),
     )
     .expect("a repeated step is harmless");
     let chat = app.state();
     let made = chat
         .channels
-        .get(&Id::from_raw("launch-room"))
+        .get(&Id::from_raw("launch-workspace"))
         .expect("under the id given");
     assert_eq!(made.name, "launch");
     assert!(
@@ -53,8 +53,8 @@ fn a_channel_made_under_a_chosen_id_takes_posts_there_and_is_made_once() {
         )
         .is_err()
     );
-    crate::testing::mounted_post(&mut app, "launch-room", "first post");
-    let page = read_page(&mut app, "launch-room", None);
+    crate::testing::mounted_post(&mut app, "launch-workspace", "first post");
+    let page = read_page(&mut app, "launch-workspace", None);
     assert_eq!(page["messages"][0]["text"], "first post");
 }
 

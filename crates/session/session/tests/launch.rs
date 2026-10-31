@@ -19,9 +19,35 @@ use std::time::Duration;
 use tilo_actions::ResourceSpec;
 use tilo_compositor::OutputConfig;
 use tilo_desktop::desktop_actions::{DESK_RESOURCE, SEARCH_RESOURCE, WINDOW_KIND};
+use tilo_desktop_policy::Window;
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
 use tilo_session::mount::apps::Apps;
 use tilo_session::{AppActions, AppLists, Lists, Options, SearchOptions, Session};
+
+/// A home of its own with `body` as the desktop entry `desktop_id` starts,
+/// the entry declaring `lines` besides its name and command, and the path
+/// that body was written to.
+fn host_app_declaring(
+    home: &tilo_test_env::TestHome,
+    desktop_id: &str,
+    lines: &str,
+    body: &str,
+) -> std::path::PathBuf {
+    let applications = home.data().join("applications");
+    fs::create_dir_all(&applications).unwrap();
+    let program = home.home().join("probe");
+    tilo_test_env::script(&program, body).unwrap();
+    fs::write(
+        applications.join(desktop_id),
+        format!(
+            "[Desktop Entry]\nType=Application\nName=Probe\n{lines}Exec={} %f\n",
+            program.display()
+        ),
+    )
+    .unwrap();
+    desktop_entry::cache::invalidate();
+    program
+}
 
 /// A home of its own with `body` as the desktop entry `desktop_id` starts,
 /// claiming `mime` when given, and the path that body was written to.
@@ -31,21 +57,8 @@ fn host_app_claiming(
     body: &str,
     mime: Option<&str>,
 ) -> std::path::PathBuf {
-    let applications = home.data().join("applications");
-    fs::create_dir_all(&applications).unwrap();
-    let program = home.home().join("probe");
-    tilo_test_env::script(&program, body).unwrap();
     let claim = mime.map_or_else(String::new, |mime| format!("MimeType={mime}\n"));
-    fs::write(
-        applications.join(desktop_id),
-        format!(
-            "[Desktop Entry]\nType=Application\nName=Probe\n{claim}Exec={} %f\n",
-            program.display()
-        ),
-    )
-    .unwrap();
-    desktop_entry::cache::invalidate();
-    program
+    host_app_declaring(home, desktop_id, &claim, body)
 }
 
 /// A home of its own with `body` as the desktop entry `desktop_id` starts,
@@ -222,4 +235,66 @@ fn an_app_that_stops_on_its_own_leaves_a_notice_in_its_place() {
         })
     });
     assert!(!marker.exists(), "the app never wrote anything");
+}
+
+/// A window of `app` the compositor mapped.
+fn window(id: u64, app: &str) -> Window {
+    Window {
+        id,
+        app_id: Some(app.into()),
+        title: Some(app.into()),
+        ..Window::default()
+    }
+}
+
+#[test]
+fn a_second_launch_raises_the_window_the_app_already_has() {
+    let _settled = ui::motion::testing::settled();
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let socket = home.runtime().join("wayland-7");
+    let launches = home.home().join("launches");
+    host_app_declaring(
+        &home,
+        "org.example.Probe.desktop",
+        "SingleMainWindow=true\n",
+        &format!("#!/bin/sh\nprintf 'ran\\n' >> '{}'\n", launches.display()),
+    );
+
+    let (mut session, _apps) = session(&socket);
+    session.step(Duration::from_millis(1)).unwrap();
+    choose(&mut session, "probe", "Probe");
+    until(&mut session, "the app runs", |_| launches.exists());
+
+    // The app's window is on the desk, showing another app's window in front.
+    session.desktop().with_policy(|policy| {
+        policy.map(window(11, "org.example.Probe")).unwrap();
+        policy.map(window(12, "org.example.Other")).unwrap();
+    });
+    until(&mut session, "both windows are on the desk", |session| {
+        session
+            .desktop()
+            .with_policy(|policy| policy.windows_in_front().len())
+            == 2
+    });
+    assert_eq!(
+        session.desktop().with_policy(|policy| policy.focused()),
+        Some(12),
+        "the other app's window is the one in front"
+    );
+
+    choose(&mut session, "probe", "Probe");
+    // A second process would have written its line by now.
+    for _ in 0..100 {
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    assert_eq!(
+        fs::read_to_string(&launches).unwrap().lines().count(),
+        1,
+        "the app is not started a second time"
+    );
+    assert_eq!(
+        session.desktop().with_policy(|policy| policy.focused()),
+        Some(11),
+        "the window the app already has came to the front"
+    );
 }

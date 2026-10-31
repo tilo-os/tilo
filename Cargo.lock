@@ -18180,6 +18180,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-capture-studio"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "tilo-app",
+ "tilo-callstream",
+ "tilo-media",
+ "tilo-sheets",
+ "tilo-vello",
+ "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-chromium-blocker"
 version = "0.1.0"
 dependencies = [
@@ -21560,6 +21574,7 @@ dependencies = [
  "os-actions",
  "postcard",
  "resvg",
+ "runtime-identity",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -21573,6 +21588,7 @@ dependencies = [
  "tilo-auth",
  "tilo-bluetooth-agent",
  "tilo-bluez",
+ "tilo-capture-studio",
  "tilo-compositor",
  "tilo-connectivity-service",
  "tilo-copy-lint",
@@ -21580,6 +21596,7 @@ dependencies = [
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
+ "tilo-desktop-policy",
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-device-fabric",

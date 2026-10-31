@@ -192,6 +192,42 @@ fn state_file_round_trips_unchanged() {
     assert_eq!(canonical(&rewritten), canonical(&fixture));
 }
 
+/// A state file from before the native owner kept its record beside it loads,
+/// and everything but that record is today's desktop: the record is the one
+/// field that moved, kept aside here until the load hands it to
+/// `state.owner.json` (`persist`). The older file is today's fixture with the
+/// record version 5 kept inside it, the whole of the change between the two.
+#[test]
+fn a_state_file_from_before_the_owner_file_keeps_the_whole_desktop() {
+    let fixture = canonical(&std::fs::read_to_string(fixture_path()).expect("read the fixture"));
+    let mut old = fixture.clone();
+    let record = serde_json::json!({
+        "revision": 0,
+        "rooms": {},
+        "pending": {},
+    });
+    old["native_authority"] = record.clone();
+    let tree: WorkspaceTree = serde_json::from_value(old).expect("an older file loads");
+    assert_eq!(
+        tree.retired_fields.get("native_authority"),
+        Some(&record),
+        "the record this build does not read here is kept, not dropped"
+    );
+    // What the two files load as, less the record the older one carries: the
+    // same desktop, with nothing else changed by the field that moved out.
+    let today: WorkspaceTree = serde_json::from_value(fixture).expect("today's file loads");
+    let mut desktop = canonical(&serde_json::to_string_pretty(&tree).expect("serialize"));
+    desktop
+        .as_object_mut()
+        .expect("a state file is a JSON object")
+        .remove("native_authority");
+    assert_eq!(
+        desktop,
+        serde_json::to_value(&today).expect("serialize"),
+        "an older file's desktop is today's, the record that moved beside it aside"
+    );
+}
+
 // Phase `a_file_from_when_workspaces_kept_tasks_loads_and_keeps_them`:
 // the tree no longer reads a workspace's tasks, but a stored field it
 // does not read is kept exactly as it was, so saving loses nothing.

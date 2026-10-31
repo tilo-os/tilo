@@ -10,6 +10,14 @@ license.workspace = true
 name = "tilo-session"
 path = "src/main.rs"
 
+# The session's loop walks no path after startup. The audit watches the
+# process's main thread, and `libtest` runs every test on a thread of its own,
+# so this target is the process's `main` driving the session itself.
+[[test]]
+name = "main_thread_reads"
+path = "tests/main_thread_reads.rs"
+harness = false
+
 [features]
 # Stamps the developer-entry build marker into the binary so the package's
 # developer session entry can tell a session someone deliberately built from
@@ -54,6 +62,9 @@ tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settin
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-quick-settings = { path = "../quick-settings" }
+# The capture studio the session shows over the desktop, and the recorder
+# that feeds it the compositor's frames.
+tilo-capture-studio = { path = "../capture-studio" }
 tilo-notification-banners = { path = "../notification-banners" }
 tilo-onboarding-host = { path = "../onboarding-host" }
 tilo-sheets = { path = "../sheets" }
@@ -67,6 +78,9 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+# The identity record the launcher bound and the person's own: the directories
+# whose changes a worker follows.
+runtime-identity = { path = "../../runtime/runtime-identity" }
 iroh.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 hex.workspace = true
@@ -123,6 +137,8 @@ zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+# A window the compositor maps, for a test of what a launch does about one.
+tilo-desktop-policy = { path = "../desktop-policy" }
 # The resource effects the tests' own questions are declared with.
 tilo-resource = { path = "../../sdk/tilo-resource" }
 # The stand-in logind and UPower a power test serves over a socket pair.

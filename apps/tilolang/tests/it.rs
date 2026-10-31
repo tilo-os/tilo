@@ -14,6 +14,6 @@ mod door;
 mod marks;
 mod narrow;
 mod opening;
-mod rooms;
 mod support;
 mod sync;
+mod workspaces;

@@ -8,7 +8,7 @@ readers a provider connection:
   timestamps, and retains incremental CRDT text separately from task control.
   Chat projects one stable reply per model turn, including exposed reasoning and
   terminal outcome. Older hosts retain readable progress updates.
-- The host-provided prose assistant writes the room's replicated typed Chat
+- The host-provided prose assistant writes the workspace's replicated typed Chat
   record through the `stream-output` action described below.
 
 Neither presentation path grants authority to execute tools.

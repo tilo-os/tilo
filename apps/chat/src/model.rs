@@ -118,7 +118,7 @@ impl Presence {
     }
 }
 
-/// A collapsible group of the room's channels (Discord-style "category").
+/// A collapsible group of the workspace's channels (Discord-style "category").
 /// Channels carry a `category` id; the special empty id `""` means
 /// "uncategorised" and renders above the first named category.
 #[derive(Clone, Debug)]
@@ -206,7 +206,7 @@ pub struct User {
     pub initials: String,
     pub color_idx: usize,
     pub status: Presence,
-    /// An automated agent acting in the room rather than a person. The
+    /// An automated agent acting in the workspace rather than a person. The
     /// roster draws the distinction; a mention carries it forward.
     pub is_agent: bool,
 }
@@ -346,7 +346,7 @@ impl Message {
     }
 }
 
-/// What an agent in this room has done with a message addressed to it.
+/// What an agent in this workspace has done with a message addressed to it.
 ///
 /// Written by the agent onto its own threaded reply, and updated in place as
 /// the work proceeds. It is deliberately **not** the reply's body: replacing a
@@ -363,7 +363,7 @@ impl Message {
 ///
 /// It says what happened and when, never that anything is happening *now*.
 /// Liveness is a different question with a different answer — whether the
-/// agent is still in the room, which presence answers — because a process that
+/// agent is still in the workspace, which presence answers — because a process that
 /// dies mid-instruction cannot retract a record, and a record that claimed to
 /// be live would go on claiming it forever.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -414,7 +414,7 @@ pub struct AgentReasoning {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRoute {
-    /// A model was asked and its answer was in the room's exported catalogue.
+    /// A model was asked and its answer was in the workspace's exported catalogue.
     Model,
     /// No model decided — the agent matched the request against the words the
     /// apps put on their own operations.
@@ -438,7 +438,7 @@ pub struct AgentStep {
     /// share a sequence; readers then tie-break by the stable [`Self::id`].
     #[serde(default, skip_serializing_if = "is_zero")]
     pub sequence: u64,
-    /// The resource the operation was addressed to, as the room addresses it.
+    /// The resource the operation was addressed to, as the workspace addresses it.
     pub resource: String,
     /// The operation, in the owning app's own words. Falls back to the action
     /// id when the app exports no label — machine vocabulary is worse to read
@@ -656,11 +656,11 @@ pub enum AgentWorkState {
     /// The agent cannot act on it yet: the request names something owned by an
     /// app whose state has not reached this agent.
     ///
-    /// A room arrives one document at a time, so this is a claim about timing
+    /// A workspace arrives one document at a time, so this is a claim about timing
     /// and is spelled as one — it used to be a log line and nothing else,
     /// which made a wait indistinguishable from being ignored.
     Waiting {
-        /// The app being waited on, as the room names it.
+        /// The app being waited on, as the workspace names it.
         app: String,
     },
     /// What the agent decided the request was — in the app's own words, not

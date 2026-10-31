@@ -40,7 +40,7 @@ pub fn key(emoji: &str) -> String {
 ///
 /// - uploading the picture as a server emoji would need Manage
 ///   Expressions, which the bridge does not ask for, and would spend the
-///   server's few emoji slots on whatever anyone in the room reacts with;
+///   server's few emoji slots on whatever anyone in the workspace reacts with;
 /// - a Unicode emoji whose name matches (`:pizza:` as 🍕) would show
 ///   Discord something the person did not pick: a workspace emoji is the
 ///   workspace's own picture, whatever it is called. Matching names would

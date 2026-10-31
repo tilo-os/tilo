@@ -179,6 +179,28 @@ fn a_window_keeps_its_title_in_its_tab() {
     assert_eq!(titles, ["Report.odt"]);
 }
 
+#[test]
+fn the_desk_names_the_windows_in_front_with_their_apps() {
+    let (mut driver, mut policy) = mount();
+    map(&mut driver, &mut policy, 4, "so.tilo.notes");
+    map(&mut driver, &mut policy, 5, "org.gnome.Terminal");
+    assert_eq!(
+        policy.windows_in_front(),
+        [
+            (4, "so.tilo.notes".to_owned()),
+            (5, "org.gnome.Terminal".to_owned())
+        ],
+        "each window with the id its app announces itself by"
+    );
+    policy.unmap(4);
+    settle(&mut driver);
+    assert_eq!(
+        policy.windows_in_front(),
+        [(5, "org.gnome.Terminal".to_owned())],
+        "a window gone is not one a launch could raise"
+    );
+}
+
 fn displays(policy: &mut DesktopPolicy) {
     let output = |monitor: &str, x: f64| Output {
         monitor: monitor.into(),

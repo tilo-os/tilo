@@ -20,11 +20,11 @@ impl ChatApp {
         view.voice_members.clone_from(&parent.voice_members);
         view.me = parent.me.clone();
         view.perms = parent.perms.clone();
-        view.room_names.clone_from(&parent.room_names);
-        view.room_labels.clone_from(&parent.room_labels);
+        view.workspace_names.clone_from(&parent.workspace_names);
+        view.workspace_labels.clone_from(&parent.workspace_labels);
         view.own_label.clone_from(&parent.own_label);
-        view.room_colors.clone_from(&parent.room_colors);
-        view.room_agents.clone_from(&parent.room_agents);
+        view.workspace_colors.clone_from(&parent.workspace_colors);
+        view.workspace_agents.clone_from(&parent.workspace_agents);
         view.capture_agent_presence
             .clone_from(&parent.capture_agent_presence);
         view.agent_authors.clone_from(&parent.agent_authors);

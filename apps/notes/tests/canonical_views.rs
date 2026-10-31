@@ -689,12 +689,12 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         let views = ui::application_view::InstanceViewStore::new(
             f.state_root.clone(),
             "fixture-device",
-            canonical::ROOM,
+            canonical::WORKSPACE,
         )
         .unwrap();
         views.save(&saved).unwrap();
         let path = f.state_root.join(
-            "instance-views/666978747572652d646576696365/666978747572652d726f6f6d/11.postcard",
+            "instance-views/666978747572652d646576696365/666978747572652d776f726b7370616365/11.postcard",
         );
         let original = std::fs::read(&path).unwrap();
         let before = fingerprint(&f, &checkout);

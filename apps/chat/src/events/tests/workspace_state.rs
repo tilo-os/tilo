@@ -1,9 +1,9 @@
-//! What the room shows of its channels, members, reactions and reading
+//! What the workspace shows of its channels, members, reactions and reading
 //! position, driven through the same input and accessibility paths a person uses.
 
 use super::*;
 
-// --- the room's channels, one place -------------------------------
+// --- the workspace's channels, one place -------------------------------
 
 #[test]
 #[allow(
@@ -24,7 +24,7 @@ fn visible_controls_publish_unique_accessible_semantics() {
                     .as_deref()
                     .is_none_or(|name| !name.starts_with("Inbox"))
             }),
-            "one room is one place: no inbox across chat workspaces"
+            "one workspace is one place: no inbox across chat workspaces"
         );
         assert!(
             root.children
@@ -166,13 +166,13 @@ fn a_mention_completed_with_tab_is_sent_as_a_marked_reference() {
     let (mut app, mut doc) = app_with_doc();
     app.focus = Focus::Main;
     app.set_composer_focus();
-    // The editor learns who the room offers at `@` as it is drawn.
+    // The editor learns who the workspace offers at `@` as it is drawn.
     render_frame(&mut app, 1280.0, 720.0);
     let who = app
         .participants()
         .into_iter()
         .find(|participant| !app.is_me(&participant.id) && participant.name.len() > 2)
-        .expect("the demo room has someone to mention");
+        .expect("the demo workspace has someone to mention");
     let prefix: String = who.name.chars().take(2).collect();
     type_str(&mut app, &mut doc, &format!("ping @{prefix}"));
     feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
@@ -378,7 +378,7 @@ fn reactions_toggle_through_the_picker_and_chips_on_the_shared_route() {
 // --- members roster (right flap "members" half was unimplemented) ---
 
 #[test]
-fn the_roster_shows_who_the_room_says_is_here_not_who_once_introduced_themselves() {
+fn the_roster_shows_who_the_workspace_says_is_here_not_who_once_introduced_themselves() {
     use crate::model::Presence;
     let (mut app, _) = app_with_doc();
     let others: Vec<String> = app
@@ -387,7 +387,7 @@ fn the_roster_shows_who_the_room_says_is_here_not_who_once_introduced_themselves
         .filter(|u| !app.is_me(&u.id) && !u.is_agent)
         .map(|u| u.id.clone())
         .collect();
-    assert!(others.len() >= 2, "the sample room has other people");
+    assert!(others.len() >= 2, "the sample workspace has other people");
     for user in &mut app.users {
         user.status = Presence::Online;
     }
@@ -397,11 +397,11 @@ fn the_roster_shows_who_the_room_says_is_here_not_who_once_introduced_themselves
             .find(|(u, _)| u.id == id)
             .map(|(u, _)| u.status)
     };
-    // Without a room the record's word stands.
+    // Without a workspace the record's word stands.
     assert_eq!(status(&app, &others[1]), Some(Presence::Online));
-    // The room knows the first person is here; the second has left.
-    app.room_names.insert(others[0].clone(), "Here".into());
-    app.room_presence_answers = true;
+    // The workspace knows the first person is here; the second has left.
+    app.workspace_names.insert(others[0].clone(), "Here".into());
+    app.workspace_presence_answers = true;
     assert_eq!(status(&app, &others[0]), Some(Presence::Online));
     assert_eq!(
         status(&app, &others[1]),
@@ -414,11 +414,11 @@ fn the_roster_shows_who_the_room_says_is_here_not_who_once_introduced_themselves
     assert_eq!(app.live_status(&me), Presence::Online, "I am here");
 }
 
-/// A room that answers with nobody in it — every visitor closed their tab,
+/// A workspace that answers with nobody in it — every visitor closed their tab,
 /// or this is the first one in — reads as empty rather than as everybody who
 /// ever introduced themselves still being online.
 #[test]
-fn a_room_whose_answer_names_nobody_marks_everyone_else_offline() {
+fn a_workspace_whose_answer_names_nobody_marks_everyone_else_offline() {
     use crate::model::Presence;
     let (mut app, _) = app_with_doc();
     let others: Vec<String> = app
@@ -427,15 +427,15 @@ fn a_room_whose_answer_names_nobody_marks_everyone_else_offline() {
         .filter(|u| !app.is_me(&u.id) && !u.is_agent)
         .map(|u| u.id.clone())
         .collect();
-    assert!(!others.is_empty(), "the sample room has other people");
+    assert!(!others.is_empty(), "the sample workspace has other people");
     for user in &mut app.users {
         user.status = Presence::Online;
     }
     // Presence answered, and the answer names nobody but me.
-    app.adopt_room(&ui::presence::PresenceCtx::default());
+    app.adopt_workspace(&ui::presence::PresenceCtx::default());
     for id in &others {
         assert_eq!(
-            app.live_status(&app.user(id).expect("the room lists them").clone()),
+            app.live_status(&app.user(id).expect("the workspace lists them").clone()),
             Presence::Offline,
             "{id} left, so the roster must not call them online"
         );
@@ -447,14 +447,14 @@ fn a_room_whose_answer_names_nobody_marks_everyone_else_offline() {
 }
 
 #[test]
-fn the_rooms_call_places_its_people_in_the_voice_channel_by_person() {
+fn the_workspaces_call_places_its_people_in_the_voice_channel_by_person() {
     let (mut app, _) = app_with_doc();
     let people = app.users.len();
     service_streams(&mut app, "c_huddle", 3);
     assert_eq!(
         app.roster_rows().len(),
         people,
-        "the roster lists the room's people"
+        "the roster lists the workspace's people"
     );
     let in_call = app.voice_people("c_huddle");
     for index in 1..=3 {
@@ -468,7 +468,7 @@ fn the_rooms_call_places_its_people_in_the_voice_channel_by_person() {
 }
 
 #[test]
-fn a_private_room_keeps_collaboration_controls_out_of_the_header() {
+fn a_private_workspace_keeps_collaboration_controls_out_of_the_header() {
     let mut doc = AutoCommit::new();
     crate::testing::starter(&mut doc, model::ME, "You", "QD");
     let mut app = ChatApp::new_ephemeral();
@@ -479,12 +479,12 @@ fn a_private_room_keeps_collaboration_controls_out_of_the_header() {
 
     assert!(
         app.users.iter().all(|user| app.is_me(&user.id)),
-        "only the local identity is evidenced in a fresh room"
+        "only the local identity is evidenced in a fresh workspace"
     );
     assert_eq!(
         count_hits(&app, |h| matches!(h, Hit::StartCall | Hit::ToggleRightFlap)),
         0,
-        "a private room has no People or call controls in its resting header"
+        "a private workspace has no People or call controls in its resting header"
     );
 }
 
@@ -658,7 +658,7 @@ fn reading_position_drives_unread_state_and_the_return_to_latest_control() {
         let watermark = crate::testing::read_mark(&doc, &app.active_channel, &app.me.id);
 
         // A remote message arrives after the current read boundary. Being in
-        // the room is not enough to acknowledge it once the reader has moved
+        // the workspace is not enough to acknowledge it once the reader has moved
         // back through history.
         crate::testing::apply_part_at(
             &mut doc,

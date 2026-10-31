@@ -1,6 +1,6 @@
 //! The Tilo side as the planners read it: the Chat record's JSON form (a
-//! collection is `[{"id", "value"}]`) of the room's categories and
-//! channels, and the room's member list. Read from JSON rather than Chat's types so the
+//! collection is `[{"id", "value"}]`) of the workspace's categories and
+//! channels, and the workspace's member list. Read from JSON rather than Chat's types so the
 //! connector does not carry Chat's code,.
 
 use serde_json::Value;
@@ -97,9 +97,9 @@ pub struct Person {
     pub avatar: Option<String>,
 }
 
-/// The room's chat: its categories and channels.
+/// The workspace's chat: its categories and channels.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RoomChat {
+pub struct WorkspaceChat {
     pub categories: Vec<Category>,
     pub channels: Vec<Channel>,
     /// The channels holding any message.
@@ -151,8 +151,8 @@ fn json_field(value: &Value, field: &str) -> Value {
     }
 }
 
-impl RoomChat {
-    /// The categories and channels of the room's `chat`, in sidebar order.
+impl WorkspaceChat {
+    /// The categories and channels of the workspace's `chat`, in sidebar order.
     #[must_use]
     pub fn from_chat(chat: &Value) -> Self {
         let categories = entries(chat, "categories")
@@ -341,11 +341,12 @@ pub fn person(chat: &Value, id: &str) -> Option<Person> {
     })
 }
 
-/// The Tilo role of `person` in a `tilo.room` read (`{"members": [{"person",
-/// "role"}]}`), lower case.
+/// The Tilo role of `person` in the workspace's own read (`{"members":
+/// [{"person", "role"}]}`), lower case.
 #[must_use]
-pub fn room_role(room: &Value, person: &str) -> Option<String> {
-    room.get("members")?
+pub fn workspace_role(workspace: &Value, person: &str) -> Option<String> {
+    workspace
+        .get("members")?
         .as_array()?
         .iter()
         .find(|m| m.get("person").and_then(Value::as_str) == Some(person))
@@ -380,8 +381,8 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_rooms_chat_in_order() {
-        let ws = RoomChat::from_chat(&chat());
+    fn reads_the_workspaces_chat_in_order() {
+        let ws = WorkspaceChat::from_chat(&chat());
         assert_eq!(
             ws.categories,
             [Category {
@@ -482,9 +483,12 @@ mod tests {
     }
 
     #[test]
-    fn room_roles_are_lower_case() {
-        let room = json!({"members": [{"person": "u_ada", "role": "Moderator"}]});
-        assert_eq!(room_role(&room, "u_ada").as_deref(), Some("moderator"));
-        assert_eq!(room_role(&room, "u_x"), None);
+    fn workspace_roles_are_lower_case() {
+        let workspace = json!({"members": [{"person": "u_ada", "role": "Moderator"}]});
+        assert_eq!(
+            workspace_role(&workspace, "u_ada").as_deref(),
+            Some("moderator")
+        );
+        assert_eq!(workspace_role(&workspace, "u_x"), None);
     }
 }

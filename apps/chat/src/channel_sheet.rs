@@ -257,7 +257,7 @@ impl ChannelSheet {
         Widget::set_focus(&mut self.topic, host_focused && field == Field::Topic);
     }
 
-    /// Paint the sheet over `window`; `categories` are the room's, in
+    /// Paint the sheet over `window`; `categories` are the workspace's, in
     /// sidebar order.
     #[allow(
         clippy::too_many_lines,

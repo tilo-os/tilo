@@ -276,7 +276,7 @@ impl ChatApp {
         for user in &self.users {
             (&user.id, &user.name).hash(&mut people);
         }
-        let mut colors: Vec<_> = self.room_colors.iter().collect();
+        let mut colors: Vec<_> = self.workspace_colors.iter().collect();
         colors.sort_unstable();
         for color in &colors {
             color.hash(&mut people);
@@ -286,7 +286,7 @@ impl ChatApp {
         for agent in &agents {
             agent.hash(&mut people);
         }
-        self.room_agents.hash(&mut people);
+        self.workspace_agents.hash(&mut people);
         let look = PaintLook {
             theme: theme.clone(),
             transform: tf,

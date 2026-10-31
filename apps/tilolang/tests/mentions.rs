@@ -1,4 +1,4 @@
-//! Rich text as a reader sees it, through the real window: a person by what the room calls
+//! Rich text as a reader sees it, through the real window: a person by what the workspace calls
 //! them, a task by its title now, a time in the reader's zone and language, and a task the
 //! reader does not hold as only being there. Each capture is kept as a PNG at a desktop's and a
 //! phone's width, light and dark, for review against the design language.

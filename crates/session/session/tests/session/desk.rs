@@ -21,7 +21,7 @@ fn parity_dir() -> std::path::PathBuf {
 }
 
 /// Write the screen as `name.png` into [`parity_dir`].
-fn capture(session: &mut Session, name: &str) {
+pub(super) fn capture(session: &mut Session, name: &str) {
     let dir = parity_dir();
     std::fs::create_dir_all(&dir).expect("create the parity directory");
     let shot = session

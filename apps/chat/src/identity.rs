@@ -3,7 +3,7 @@
 //! The id is the one the host gives the view (`ViewCx::me`), the same id
 //! every action that participant takes is signed with, so authorship,
 //! reactions and read watermarks are attributed alike on every replica. What
-//! is resolved here is only how to show that participant before the room
+//! is resolved here is only how to show that participant before the workspace
 //! names them: a display name, a monogram and a colour.
 //!
 //! The demo used by screenshots and tests reads as [`LocalIdentity::demo`],
@@ -127,7 +127,7 @@ fn initials_of(name: &str) -> String {
     if s.is_empty() { "Y".to_string() } else { s }
 }
 
-/// `initials_of`, for a caller that has just learned the name the room
+/// `initials_of`, for a caller that has just learned the name the workspace
 /// gave this participant and has to move the monogram with it.
 pub fn initials_for(name: &str) -> String {
     initials_of(name)

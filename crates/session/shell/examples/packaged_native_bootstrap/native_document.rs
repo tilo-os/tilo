@@ -91,20 +91,37 @@ fn check_retained_publication(
 }
 
 fn read_owner(path: &std::path::Path) -> Result<NativeWorkspaceOwner, Box<dyn std::error::Error>> {
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(u64::try_from(tilo_joined_room::MAX_STATE_BYTES)?.saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > tilo_joined_room::MAX_STATE_BYTES {
-        return Err("scratch state exceeds normal owner bound".into());
-    }
-    let mut state: serde_json::Value = serde_json::from_slice(&bytes)?;
-    let authority: NativeAuthorityStorage = serde_json::from_value(
-        state
-            .get_mut("native_authority")
-            .ok_or("actual native owner record is absent")?
-            .take(),
-    )?;
+    // The record the owner keeps in a file of its own beside the state file,
+    // or, for a state file from before it had one, the record inside it.
+    let beside = tilo_joined_room::owner_file_of(path);
+    let bound = u64::try_from(tilo_joined_room::MAX_STATE_BYTES)?.saturating_add(1);
+    let authority: NativeAuthorityStorage = match std::fs::File::open(&beside) {
+        Ok(file) => {
+            let mut bytes = Vec::new();
+            file.take(bound).read_to_end(&mut bytes)?;
+            if bytes.len() > tilo_joined_room::MAX_STATE_BYTES {
+                return Err("scratch owner record exceeds normal bound".into());
+            }
+            serde_json::from_slice(&bytes)?
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut bytes = Vec::new();
+            std::fs::File::open(path)?
+                .take(bound)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > tilo_joined_room::MAX_STATE_BYTES {
+                return Err("scratch state exceeds normal owner bound".into());
+            }
+            let mut state: serde_json::Value = serde_json::from_slice(&bytes)?;
+            serde_json::from_value(
+                state
+                    .get_mut("native_authority")
+                    .ok_or("actual native owner record is absent")?
+                    .take(),
+            )?
+        }
+        Err(error) => return Err(error.into()),
+    };
     Ok(NativeWorkspaceOwner::restore(
         Arc::new(ReadOnlyStore),
         authority,

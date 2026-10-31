@@ -121,7 +121,7 @@ impl ChatApp {
 
     /// Open the part before the oldest held when the reader reached the top,
     /// a message is looked for or the reader's marks lie in parts not held.
-    /// Run where the room's records take writes (a settle pass).
+    /// Run where the workspace's records take writes (a settle pass).
     pub(crate) fn settle_scrollback(&mut self) {
         let Some(pager) = &mut self.scrollback.pager else {
             return;

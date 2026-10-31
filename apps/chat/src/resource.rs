@@ -27,7 +27,7 @@ pub use crate::record::Chat;
 use crate::record::chat;
 
 impl Chat {
-    /// What search finds in the chat record: the room's channels,
+    /// What search finds in the chat record: the workspace's channels,
     /// categories, reviewed reports and people, each opening the item it
     /// names. The messages are the window's to offer
     /// (`ChatApp::search_entries`): they are kept in parts the record
@@ -64,9 +64,9 @@ impl Chat {
     }
 
     /// What the chat record holds, for a caller that reads it: with no item,
-    /// the room's channels; with a channel, what it is about. Its messages
+    /// the workspace's channels; with a channel, what it is about. Its messages
     /// are kept in parts beside the record: a caller reads them from the
-    /// chain the window publishes, or with `read-room`.
+    /// chain the window publishes, or with `read-workspace`.
     pub fn content(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let Some(item) = item else {
             return Ok(serde_json::json!({
@@ -99,7 +99,7 @@ impl Chat {
 }
 
 /// Chat as every host runs and mounts it: the chat widget is the window
-/// over [`Chat`], kept by the room as its own record.
+/// over [`Chat`], kept by the workspace as its own record.
 pub struct ChatShell;
 
 /// Every named scenario `--shots --scenario NAME` captures.
@@ -160,10 +160,10 @@ impl ResourceApp for ChatShell {
     const ICON: Option<&'static str> = Some("chat");
     const ROOM_RECORD: bool = true;
 
-    /// The chat's messages, kept in parts beside the room's chat record.
+    /// The chat's messages, kept in parts beside the workspace's chat record.
     fn records(records: &mut ui::framework::Records<'_>) {
         records.chain::<crate::parts::ChatPart>();
-        // The workspace's emoji are Chat's: every app of the room opens
+        // The workspace's emoji are Chat's: every app of the workspace opens
         // them, and their changes are decided against Chat's surface.
         records.workspace::<ui::tilo_workspace_emoji::WorkspaceEmoji>();
     }
@@ -203,7 +203,7 @@ impl ResourceApp for ChatShell {
             .with_drafts(drafts);
         // A search hit, or an agent's `open`, shows the item it names.
         cx.on_open(app.opener());
-        // The shell keeps the room's channels as its sidebar, their width,
+        // The shell keeps the workspace's channels as its sidebar, their width,
         // their drawer in a narrow window and their keys; the conversation
         // is the window's point, a reading column beside them.
         let places = ui::widget::NavFeed::new();
@@ -339,7 +339,7 @@ impl ResourceApp for ChatShell {
         })]
     }
 
-    /// A new record's creator, and the room's first channels, `#chat` and
+    /// A new record's creator, and the workspace's first channels, `#chat` and
     /// `#voice`, when it has none: under fixed ids and with the same values
     /// on every device, so concurrent first opens on several devices
     /// converge on exactly those two. A capture's record is its scenario's
@@ -412,7 +412,7 @@ pub(crate) fn part_scenario(
     (Some(start), steps)
 }
 
-/// `long-thread`: three days of messages in the design crit, from the room's
+/// `long-thread`: three days of messages in the design crit, from the workspace's
 /// people, before the conversation the demo shows.
 #[cfg(feature = "samples")]
 fn long_thread_posts(me: &str) -> Vec<(Id, crate::record::Message)> {
@@ -655,7 +655,7 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
                 chat.borrow_mut().answer_effect(effect)
             });
         }
-        // The room answers these: at once from the native host, later in
+        // The workspace answers these: at once from the native host, later in
         // a page. Either way the effect answers when it has.
         ChatEffect::SendDirectMessage { public_key, text } => {
             let reply = ui::person_chat::with_invocation(cx.invocation(), || {
@@ -701,14 +701,16 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             .borrow()
             .export_transcript(&cx.live().get(), channel, format.as_deref());
     }
-    if let ChatEffect::ReadRoom { message, channel } = &effect {
+    if let ChatEffect::ReadWorkspace { message, channel } = &effect {
         let state = cx.live().get();
-        return Ok(ui::framework::Effected::value(crate::effects::read_room(
-            &state,
-            &chat.borrow().held_messages(),
-            message.as_deref(),
-            channel.as_deref(),
-        )));
+        return Ok(ui::framework::Effected::value(
+            crate::effects::read_workspace(
+                &state,
+                &chat.borrow().held_messages(),
+                message.as_deref(),
+                channel.as_deref(),
+            ),
+        ));
     }
     if let Some(url) = crate::external::browser_destination(&effect)? {
         return Ok(cx.thread(

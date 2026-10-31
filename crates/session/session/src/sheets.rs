@@ -22,6 +22,9 @@ pub(crate) struct Sheet<S: Seat> {
     lock_screen: bool,
     /// The displays as the compositor last said they are.
     outputs: Vec<(i32, i32, i32, i32)>,
+    /// The app answers its actions and draws while the sheet is down too: a
+    /// command surface, whose key takes a screenshot without the bar up.
+    always_serving: bool,
 }
 
 impl<S: Seat> Sheet<S> {
@@ -49,7 +52,15 @@ impl<S: Seat> Sheet<S> {
             seat,
             lock_screen: false,
             outputs: Vec::new(),
+            always_serving: false,
         })
+    }
+
+    /// The app keeps running while the sheet is down, and its actions stay
+    /// offered: what it takes is the whole point of the key that asks it.
+    pub(crate) const fn always_serving(mut self) -> Self {
+        self.always_serving = true;
+        self
     }
 
     /// Show it as the lock screen: while the session is locked, over
@@ -111,11 +122,16 @@ impl<S: Seat> Published for Sheet<S> {
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
+        // A sheet that is down shows nothing to read, even one whose
+        // actions stay offered while it is.
+        if !self.drawn() {
+            return Vec::new();
+        }
         self.host.accessible_labels()
     }
 
     fn offered(&self) -> bool {
-        self.open()
+        self.always_serving || self.open()
     }
 
     /// The lock screen up withholds everything else.
@@ -177,7 +193,9 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
 
     fn prepare_frame(&mut self) -> bool {
         self.follow_place();
-        self.drawn() && self.host.prepare_frame()
+        // A command surface answers the actions it is offered even with
+        // nothing of it drawn.
+        (self.drawn() || self.always_serving) && self.host.prepare_frame()
     }
 
     fn cursor(&self) -> tilo_compositor::CursorIcon {

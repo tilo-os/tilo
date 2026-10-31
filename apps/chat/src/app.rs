@@ -48,11 +48,15 @@ use crate::permissions::ChatPermissions;
 // `overlay_tiles` — so it has no fixed fraction.)
 pub(crate) const HUDDLE_VIDEO: (f64, f64, f64, f64) = (0.505, 0.300, 0.250, 0.230);
 
-/// What the room's private conversations and drafts are keyed by. Chat runs
-/// in one Tilo workspace, its room, and holds no workspaces of its own: an
-/// agent conversation, a private draft and a call continuation name the
-/// room they belong to by this one scope.
-pub(crate) const ROOM_SCOPE: &str = "room";
+/// What the workspace's private conversations and drafts are keyed by. Chat's
+/// record is the chat of one Tilo workspace and holds no workspaces of its
+/// own: an agent conversation, a private draft and a call continuation name
+/// the workspace they belong to by this one scope.
+///
+/// The value is part of the key each private draft is stored under in the
+/// person's draft record, so it keeps the value those drafts were stored
+/// under: changing it would leave what the person already typed unfindable.
+pub(crate) const WORKSPACE_SCOPE: &str = "room";
 
 /// Which composer currently owns keystrokes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,7 +137,7 @@ pub struct ChatApp {
     // CRDT projection (rebuilt every sync / after a mutation).
     pub(crate) channels: Vec<Channel>,
     pub(crate) categories: Vec<crate::model::Category>,
-    /// People evidenced in the room's chat: the local person plus authors,
+    /// People evidenced in the workspace's chat: the local person plus authors,
     /// reactors, mentioned people, and voice participants in its channels.
     pub(crate) users: Vec<User>,
     pub(crate) messages: Vec<Message>,
@@ -149,7 +153,7 @@ pub struct ChatApp {
     /// The items a search hit or an agent's `open` asked to show, by their
     /// published ids, shown on the next sync.
     pub(crate) opened: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
-    /// Voice membership per channel of the room (cached from the
+    /// Voice membership per channel of the workspace (cached from the
     /// CRDT each reload so the sidebar can show presence without re-reading).
     pub(crate) voice_members: HashMap<Id, Vec<crate::model::VoiceMember>>,
     /// Cached plain text of the focused drafts, mirrored from the composers.
@@ -183,7 +187,7 @@ pub struct ChatApp {
     /// The action bar's arrival: which message it is over, and its fade.
     pub(crate) message_bar: crate::app::message_bar::BarMotion,
     /// The last message posted from the main composer, by channel: put back
-    /// in the composer if the room refuses it after it was applied here.
+    /// in the composer if the workspace refuses it after it was applied here.
     pub(crate) last_post: Option<(Id, String)>,
     /// The open sheet that makes a channel or a category, or changes a
     /// channel.
@@ -290,7 +294,7 @@ pub struct ChatApp {
     pub(crate) call: CallState,
     pub(crate) native_voice: crate::local_voice::LocalVoice,
     pub(crate) resource_navigation: crate::shared_resources::Navigation,
-    /// Windows shared live into the room ([`crate::live_share`]).
+    /// Windows shared live into the workspace ([`crate::live_share`]).
     pub(crate) live_shares: crate::live_share::LiveShares,
     pub(crate) moderation: crate::moderation::Moderation,
     /// Measured control/header sizes of the expanded call overlay, refreshed
@@ -333,30 +337,30 @@ pub struct ChatApp {
     // multi-participant chat attributes and de-duplicates correctly.
     pub(crate) me: LocalIdentity,
 
-    // The room's answer for who everybody is, refreshed every frame from
-    // presence (see `adopt_room`). A peer never writes its own name into
-    // this map — only what the room says about a participant lands here.
-    pub(crate) room_names: HashMap<Id, String>,
+    // The workspace's answer for who everybody is, refreshed every frame from
+    // presence (see `adopt_workspace`). A peer never writes its own name into
+    // this map — only what the workspace says about a participant lands here.
+    pub(crate) workspace_names: HashMap<Id, String>,
     /// Whether presence answered this frame with who is here (see
-    /// `adopt_room`): the answer decides who is offline, even when it names
+    /// `adopt_workspace`): the answer decides who is offline, even when it names
     /// nobody but this window's own person. A window whose host has no
     /// presence at all (a chat on this device alone) reads the recorded
     /// status instead.
-    pub(crate) room_presence_answers: bool,
-    /// The person each of the room's devices belongs to, where presence
+    pub(crate) workspace_presence_answers: bool,
+    /// The person each of the workspace's devices belongs to, where presence
     /// says: a call's roster names people, presence names their devices,
-    /// and `room_names` carries both so either reads as the same name.
-    pub(crate) room_persons: HashMap<Id, Id>,
-    /// Who the room's presence places in each voice channel.
-    pub(crate) room_voice: HashMap<Id, Vec<Id>>,
-    /// The numbers people who share a name are told apart by, as the room
+    /// and `workspace_names` carries both so either reads as the same name.
+    pub(crate) workspace_persons: HashMap<Id, Id>,
+    /// Who the workspace's presence places in each voice channel.
+    pub(crate) workspace_voice: HashMap<Id, Vec<Id>>,
+    /// The numbers people who share a name are told apart by, as the workspace
     /// resolves them, so every screen in it numbers the same people alike.
-    pub(crate) room_labels: ui::presence::ParticipantLabels,
-    /// What the room calls this window's person, numbered like anyone else.
+    pub(crate) workspace_labels: ui::presence::ParticipantLabels,
+    /// What the workspace calls this window's person, numbered like anyone else.
     pub(crate) own_label: Option<String>,
-    pub(crate) room_colors: HashMap<Id, (u8, u8, u8)>,
-    /// Exact bare Agent ids from the authenticated room roster.
-    pub(crate) room_agents: Vec<Id>,
+    pub(crate) workspace_colors: HashMap<Id, (u8, u8, u8)>,
+    /// Exact bare Agent ids from the authenticated workspace roster.
+    pub(crate) workspace_agents: Vec<Id>,
     /// Explicit shot fixture; never set on the live launch path.
     capture_agent_presence: Option<PresenceCtx>,
     pub(crate) direct_person: Option<String>,
@@ -364,11 +368,11 @@ pub struct ChatApp {
     pub(crate) person_contacts: Vec<ui::person_chat::Contact>,
     pub(crate) person_messages: Vec<ui::person_chat::Message>,
     pub(crate) person_error: Option<String>,
-    /// The conversation being opened, until the room answers.
+    /// The conversation being opened, until the workspace answers.
     pub(crate) person_opening: Option<crate::person_conversation::Opening>,
     /// Opens another one replaced: each lane they open is released.
     pub(crate) person_abandoned: Vec<crate::person_conversation::Opening>,
-    /// The message the composer is sending, until the room accepts it.
+    /// The message the composer is sending, until the workspace accepts it.
     pub(crate) person_sending: Option<crate::person_conversation::Sending>,
     pub(crate) person_body_views: HashMap<String, (String, crate::composer::MessageEditor)>,
     /// Retained direct conversations currently owned by the shared
@@ -388,9 +392,9 @@ pub struct ChatApp {
     // Agent display names of agent-authored messages (`agent_authors` in the
     // document): what every member renders as "<name> (agent)".
     pub(crate) agent_authors: HashMap<Id, String>,
-    /// What the room's host keeps of the files members post, as it says:
+    /// What the workspace's host keeps of the files members post, as it says:
     /// a file it would not take is refused here, in plain words.
-    pub(crate) room_files: crate::record::RoomFiles,
+    pub(crate) workspace_files: crate::record::WorkspaceFiles,
     /// Each shown message body, read-only in the SDK editor, by body size
     /// and message id, with the mention colours it was painted with.
     pub(crate) body_views:
@@ -408,7 +412,7 @@ pub struct ChatApp {
     // for one of them is authored by that participant.
     pub(crate) participant_labels: HashMap<Id, String>,
 
-    // Other spellings of this window's person the room uses. See
+    // Other spellings of this window's person the workspace uses. See
     // `adopt_own_participant`: what was said under one of these is still
     // this person, so their lines go on reading as theirs.
     pub(crate) former_ids: Vec<Id>,
@@ -452,7 +456,7 @@ pub struct ChatApp {
     /// messages by several people under the ids the scenario names.
     pub(crate) staged_start: Option<crate::parts::ChatPart>,
     /// A screenshot scenario's messages still to stage, each with who
-    /// wrote it: staged once the room's records take a write (a frame's
+    /// wrote it: staged once the workspace's records take a write (a frame's
     /// read of the record holds them).
     pub(crate) staged_parts: std::collections::VecDeque<(
         &'static str,
@@ -493,7 +497,7 @@ pub struct ChatApp {
     /// import worker and the image fetcher each hold a clone.
     pub(crate) content: ContentStore,
     /// The attachments' bytes as reads ([`ui::arriving`]): here, on their
-    /// way from the room, or with no device that has them.
+    /// way from the workspace, or with no device that has them.
     pub(crate) content_reads: ui::collaboration::record_content::ContentReads,
     /// When the next attachment on its way steps its placeholder on, as the
     /// last frame painted them.
@@ -614,7 +618,7 @@ impl ChatApp {
     }
 
     /// A demo-reading instance for tests: the demo's own person and its
-    /// default room, attachment bytes in memory.
+    /// default workspace, attachment bytes in memory.
     #[cfg(test)]
     pub(crate) fn new_ephemeral() -> Self {
         let mut app = Self::bare(ContentStore::memory());
@@ -628,7 +632,7 @@ impl ChatApp {
 
     /// Hold the chat's messages in a chain of this window's own, as `me`,
     /// its actions reading the record as the window last read it: a test's
-    /// stand-in for the room's.
+    /// stand-in for the workspace's.
     #[cfg(test)]
     pub(crate) fn attach_detached_chain(&mut self, me: &str) {
         let last_read = std::rc::Rc::clone(&self.last_read);
@@ -639,12 +643,12 @@ impl ChatApp {
         }
     }
 
-    /// Show `room`, a test's chat, reading and writing its messages through
+    /// Show `workspace`, a test's chat, reading and writing its messages through
     /// its chain and refreshing the record its actions read.
     #[cfg(test)]
-    pub(crate) fn attach_room(&mut self, room: &crate::demo::Room) {
-        self.last_read = room.base();
-        if let Some(chain) = room.chain() {
+    pub(crate) fn attach_workspace(&mut self, workspace: &crate::demo::Workspace) {
+        self.last_read = workspace.base();
+        if let Some(chain) = workspace.chain() {
             let me = self.me.id.clone();
             self.attach_chain(chain.as_reader(&me));
         }
@@ -750,14 +754,14 @@ impl ChatApp {
             chrome: Chrome::default(),
             layout_text_scale: 1.0,
             me: LocalIdentity::demo(),
-            room_names: HashMap::new(),
-            room_presence_answers: false,
-            room_persons: HashMap::new(),
-            room_voice: HashMap::new(),
-            room_labels: ui::presence::ParticipantLabels::default(),
+            workspace_names: HashMap::new(),
+            workspace_presence_answers: false,
+            workspace_persons: HashMap::new(),
+            workspace_voice: HashMap::new(),
+            workspace_labels: ui::presence::ParticipantLabels::default(),
             own_label: None,
-            room_colors: HashMap::new(),
-            room_agents: Vec::new(),
+            workspace_colors: HashMap::new(),
+            workspace_agents: Vec::new(),
             capture_agent_presence: None,
             direct_person: None,
             person_subscription: None,
@@ -777,7 +781,7 @@ impl ChatApp {
             conversation_return_requested: false,
             agent_conversation_drag: None,
             agent_authors: HashMap::new(),
-            room_files: crate::record::RoomFiles::default(),
+            workspace_files: crate::record::WorkspaceFiles::default(),
             body_views: std::cell::RefCell::new(HashMap::new()),
             body_text_inset: std::cell::Cell::new(0.0),
             mention_paint_cache: std::cell::RefCell::new(None),
@@ -862,7 +866,7 @@ impl ChatApp {
 
     /// Why a call cannot start here, when it cannot: nothing on this device
     /// answers calls (a desktop no host carries, or one that only watches),
-    /// or the person may not join calls in this room.
+    /// or the person may not join calls in this workspace.
     pub(crate) fn call_refusal(&self) -> Option<String> {
         if !self.voice_service_available() {
             Some(crate::i18n::t("chat-voice-unavailable"))
@@ -894,7 +898,7 @@ impl ChatApp {
         self.perms.can_participate()
     }
 
-    /// Whether the local peer keeps the room's layout: makes, renames,
+    /// Whether the local peer keeps the workspace's layout: makes, renames,
     /// moves, archives and deletes its channels and categories. A member
     /// who may not is not offered it.
     pub(crate) fn keeps_layout(&self) -> bool {
@@ -941,7 +945,7 @@ impl ChatApp {
         self.flush_staged_parts();
     }
 
-    /// Stage what is left of a scenario's messages, until the room's
+    /// Stage what is left of a scenario's messages, until the workspace's
     /// records refuse a write for now.
     pub(crate) fn flush_staged_parts(&mut self) {
         let Some(chain) = self.chain.clone() else {
@@ -1072,7 +1076,7 @@ impl ChatApp {
     }
 
     /// Keep the composers' drafts in the person's own `record`: theirs
-    /// alone, on each of their devices, never in the room.
+    /// alone, on each of their devices, never in the workspace.
     #[must_use]
     pub(crate) fn with_drafts(
         mut self,
@@ -1192,15 +1196,15 @@ impl ChatApp {
     }
 
     /// Whether `id` is this session's own participant, under its own id or
-    /// a spelling the room uses for it.
+    /// a spelling the workspace uses for it.
     pub(crate) fn is_me(&self, id: &str) -> bool {
         id == self.me.id || self.former_ids.iter().any(|f| f == id)
     }
 
     pub(crate) fn agent_display_name(&self, agent: &str) -> String {
-        self.room_names
+        self.workspace_names
             .get(&format!("agent:{agent}"))
-            .or_else(|| self.room_names.get(agent))
+            .or_else(|| self.workspace_names.get(agent))
             .filter(|name| !name.trim().is_empty())
             .cloned()
             .unwrap_or_else(|| crate::i18n::t("chat-agent-kind"))
@@ -1224,7 +1228,7 @@ impl ChatApp {
         self.messages.iter().find(|m| m.id == id)
     }
 
-    /// The room's channels, ordered. Archived channels are hidden from the
+    /// The workspace's channels, ordered. Archived channels are hidden from the
     /// sidebar (they stay in the document and are reachable via Ctrl+K).
     pub(crate) fn ws_channels(&self) -> Vec<&Channel> {
         let mut v: Vec<&Channel> = self.channels.iter().filter(|c| !c.archived).collect();
@@ -1232,7 +1236,7 @@ impl ChatApp {
         v
     }
 
-    /// The room's categories, ordered.
+    /// The workspace's categories, ordered.
     pub(crate) fn ws_categories(&self) -> Vec<&crate::model::Category> {
         let mut v: Vec<&crate::model::Category> = self.categories.iter().collect();
         v.sort_by_key(|c| c.order);
@@ -1240,7 +1244,7 @@ impl ChatApp {
     }
 
     /// The categories the sidebar lists: each one with a channel in it.
-    /// Someone who keeps the room's layout sees the empty ones too, since
+    /// Someone who keeps the workspace's layout sees the empty ones too, since
     /// that is where they add a category's first channel; to everyone else
     /// an empty heading is only noise between the channels.
     pub(crate) fn sidebar_categories(&self) -> Vec<&crate::model::Category> {
@@ -1297,7 +1301,7 @@ impl ChatApp {
     }
 
     /// Keep the active channel and thread pointing at something that exists
-    /// — used after seeding a fresh (real) room whose ids differ from the
+    /// — used after seeding a fresh (real) workspace whose ids differ from the
     /// demo defaults, and after any structural delete. Returns true when the
     /// active channel changed (the caller must reload so the message list
     /// refreshes).
@@ -1321,7 +1325,7 @@ impl ChatApp {
     }
 
     /// The decoded avatar `m`'s bot showed for it, requesting it from the
-    /// content store (and so from the room) until it is there.
+    /// content store (and so from the workspace) until it is there.
     pub(crate) fn shown_avatar(
         &self,
         m: &crate::model::Message,
@@ -1504,7 +1508,7 @@ impl Collaborative for ChatApp {
 
 impl Widget for ChatApp {
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
-        // The record is lent to the settle pass: the room's other records
+        // The record is lent to the settle pass: the workspace's other records
         // take writes now.
         self.flush_staged_parts();
         self.settle_scrollback();
@@ -2295,7 +2299,7 @@ impl Widget for ChatApp {
     /// no longer pins a core.
     fn update(&mut self, _doc: &AppModel, _path: &ModelPath) -> bool {
         let model_changed = self.pump_model();
-        let room_changed = self.take_room();
+        let workspace_changed = self.take_workspace();
         self.settle_attachment_save();
         // The call's video tile is the one child laid out: dragged, handed
         // off or following the grid, it is placed again where it went.
@@ -2307,7 +2311,7 @@ impl Widget for ChatApp {
         }
         // Re-run `sync` once after the first layout so the channel already in
         // view acquires its read receipt on open.
-        std::mem::take(&mut self.read_on_present) || model_changed || room_changed
+        std::mem::take(&mut self.read_on_present) || model_changed || workspace_changed
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2669,11 +2673,11 @@ pub(crate) mod menus;
 pub(crate) mod message_bar;
 mod own_delete;
 mod people;
-mod room;
 #[cfg(feature = "samples")]
 mod scenarios;
 mod submission;
 mod window;
+mod workspace;
 pub(crate) use call_chrome_motion::CallChromeMotion;
 pub(crate) use hits::{Hit, PaintedMessage};
 pub(crate) use menus::{ContextMenu, MenuAction, MenuTarget};

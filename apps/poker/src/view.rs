@@ -168,7 +168,7 @@ fn seat_view(
     let name = people.name(player);
     let you = me == Some(player);
     // Your own seat says so: the name is for the others at the table, and in
-    // a room of one it is only an id.
+    // a workspace of one it is only an id.
     let title = if you {
         plain("poker-seat-you")
     } else {

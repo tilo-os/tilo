@@ -119,14 +119,14 @@ pub enum ChatEffect {
         tag = ui::tilo_actions::DOCUMENT_READ_TAG
     )]
     ReadMessage { message: String },
-    /// Read room
+    /// Read workspace
     ///
-    /// The room's categories and channels and its people as the record
+    /// The workspace's categories and channels and its people as the record
     /// stores them, the names of the workspace's own emoji, and, when
     /// asked, one message with the message it answers or a channel's latest
-    /// messages: what a bot mirroring the room elsewhere works from.
+    /// messages: what a bot mirroring the workspace elsewhere works from.
     #[effect(kind = "read", returns, audience = "agents")]
-    ReadRoom {
+    ReadWorkspace {
         #[param("A message to include, with the message it answers")]
         message: Option<String>,
         #[param("A channel whose latest messages to include, each with the message it answers")]
@@ -194,8 +194,8 @@ pub enum ChatEffect {
     OpenDiscordChannel { server: String, channel: String },
     /// Join call
     ///
-    /// Joins the channel's call muted, listening: being in a room's call is
-    /// for whoever may read the room, as the channel itself is.
+    /// Joins the channel's call muted, listening: being in a workspace's call is
+    /// for whoever may read the workspace, as the channel itself is.
     #[effect(row, kind = "read")]
     JoinCall { channel: String },
     /// Leave call
@@ -206,7 +206,7 @@ pub enum ChatEffect {
     Mute { channel: String },
     /// Unmute
     ///
-    /// Speaks into the call: for whoever may write in the room. The
+    /// Speaks into the call: for whoever may write in the workspace. The
     /// microphone itself is asked for through the device's own prompt.
     #[effect(row, kind = "undoable")]
     Unmute { channel: String },
@@ -246,7 +246,7 @@ pub enum ChatEffect {
     CallStatus { channel: String },
     /// Start a call
     ///
-    /// Joins the room's voice channel, making one when the room has none,
+    /// Joins the workspace's voice channel, making one when the workspace has none,
     /// or reveals the call already running.
     #[effect(idempotent, kind = "read")]
     StartCall,
@@ -317,7 +317,7 @@ impl ChatApp {
                     "videoCapture": false,
                 })));
             }
-            ChatEffect::ReadRoom { .. }
+            ChatEffect::ReadWorkspace { .. }
             | ChatEffect::ReadMessages { .. }
             | ChatEffect::ExportContent { .. } => {
                 return Err("the record answers this read".into());
@@ -447,8 +447,8 @@ impl ChatApp {
         })))
     }
 
-    /// Start a call in the room: join its voice channel, making one first
-    /// when it has none so a text-only room can still huddle.
+    /// Start a call in the workspace: join its voice channel, making one first
+    /// when it has none so a text-only workspace can still huddle.
     /// A call already running is revealed, never closed. The channel is
     /// made through `doc` at once when the caller holds the document (the
     /// header button), else through the dispatcher, and joined once it is
@@ -460,7 +460,7 @@ impl ChatApp {
         if self.refused_call.is_none()
             && let Some(reason) = self.call_refusal()
         {
-            // Said on the call's card, on the room's voice channel if it has
+            // Said on the call's card, on the workspace's voice channel if it has
             // one: no channel is made for a call that cannot start.
             let channel = self
                 .ws_channels()
@@ -485,7 +485,9 @@ impl ChatApp {
             existing
         } else {
             if !self.keeps_layout() {
-                return Err("The room has no voice channel; its moderators make channels".into());
+                return Err(
+                    "The workspace has no voice channel; its moderators make channels".into(),
+                );
             }
             let name = ui::tilo_resource::NonBlank::parse("Voice")
                 .ok_or_else(|| "The voice channel could not be named".to_owned())?;
@@ -501,7 +503,7 @@ impl ChatApp {
                         topic: None,
                     },
                 ));
-                // The channel's id is the room's to mint: the call joins the
+                // The channel's id is the workspace's to mint: the call joins the
                 // voice channel once it is in the document.
                 self.pending_call = Some(String::new());
                 return Ok(());
@@ -698,7 +700,7 @@ impl ChatApp {
         if !self.search_users.iter().any(|item| item.id == user) {
             return Err("person no longer exists".into());
         }
-        // Prefer the room's people when they already evidence this person;
+        // Prefer the workspace's people when they already evidence this person;
         // otherwise open the first conversation where they wrote.
         if !self.users.iter().any(|item| item.id == user)
             && let Some(channel) = self
@@ -840,17 +842,17 @@ pub(crate) fn read_messages(
     }))
 }
 
-/// How many of a channel's latest messages [`read_room`] includes: a
+/// How many of a channel's latest messages [`read_workspace`] includes: a
 /// post's change names its channel, not the message it made, so a bot finds
 /// that message among the channel's newest.
 const READ_LATEST: usize = 20;
 
-/// The answer of [`ChatEffect::ReadRoom`]: the record's own JSON form of
-/// the room's categories and channels, every person, the channels holding
+/// The answer of [`ChatEffect::ReadWorkspace`]: the record's own JSON form of
+/// the workspace's categories and channels, every person, the channels holding
 /// any message (`busy`), the names of the workspace's own emoji (`emoji`,
 /// each written `:name:` in reactions and text), and `message` and the
 /// latest messages of `channel`, each with the message it answers.
-pub(crate) fn read_room(
+pub(crate) fn read_workspace(
     chat: &Chat,
     held: &crate::messages::Messages,
     message: Option<&str>,
@@ -1154,7 +1156,7 @@ impl ChatApp {
         })
     }
 
-    /// Who wrote a message, as the room names them.
+    /// Who wrote a message, as the workspace names them.
     fn author_name(&self, author: &str) -> String {
         self.agent_authors
             .get(author)

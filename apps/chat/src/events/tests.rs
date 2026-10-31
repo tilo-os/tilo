@@ -48,10 +48,10 @@ fn bar_id(app: &ChatApp, hit: Hit) -> String {
     app.bar_entries.entry("", "", hit).id
 }
 
-fn app_with_doc() -> (ChatApp, crate::testing::Room) {
+fn app_with_doc() -> (ChatApp, crate::testing::Workspace) {
     let doc = crate::testing::demo_doc();
     let mut app = ChatApp::new_ephemeral();
-    app.attach_room(&doc);
+    app.attach_workspace(&doc);
     app.reload(&doc);
     (app, doc)
 }
@@ -68,7 +68,7 @@ fn activate_context_menu_action(
         MenuTarget::Channel(_) => MenuAction::for_channel().to_vec(),
         MenuTarget::Category(_) => MenuAction::for_category().to_vec(),
         MenuTarget::Message(_) => MenuAction::for_message().to_vec(),
-        MenuTarget::Room => MenuAction::for_room().to_vec(),
+        MenuTarget::Workspace => MenuAction::for_workspace().to_vec(),
         MenuTarget::CallParticipant(_) => MenuAction::for_call_participant().to_vec(),
     };
     let index = items
@@ -218,7 +218,7 @@ fn channel_context_menu_delete_through_the_palette_action() {
 
 #[test]
 fn with_no_channel_open_the_composer_takes_no_text() {
-    // A chat with no channels yet, as a room opens one its operator named
+    // A chat with no channels yet, as a workspace opens one its operator named
     // none for.
     let mut doc = AutoCommit::new();
     let mut app = ChatApp::new_ephemeral();
@@ -373,7 +373,7 @@ fn composer_edits_the_draft_and_sends_through_the_action_route() {
 }
 
 /// A message of the person's own, sent in `#general`.
-fn send_own(app: &mut ChatApp, doc: &mut crate::testing::Room, text: &str) -> Id {
+fn send_own(app: &mut ChatApp, doc: &mut crate::testing::Workspace, text: &str) -> Id {
     app.active_channel = "c_general".into();
     app.focus = Focus::Main;
     app.thread_open = None;
@@ -383,14 +383,14 @@ fn send_own(app: &mut ChatApp, doc: &mut crate::testing::Room, text: &str) -> Id
     own_message(doc, text).expect("the message was sent")
 }
 
-fn own_message(doc: &crate::testing::Room, text: &str) -> Option<Id> {
+fn own_message(doc: &crate::testing::Workspace, text: &str) -> Option<Id> {
     crate::testing::messages(doc, "c_general")
         .into_iter()
         .find(|message| message.text == text)
         .map(|message| message.id)
 }
 
-fn offers_undo(app: &mut ChatApp, doc: &crate::testing::Room) -> bool {
+fn offers_undo(app: &mut ChatApp, doc: &crate::testing::Workspace) -> bool {
     app.reload(doc);
     render_frame(app, 1440.0, 900.0);
     app.semantic_hits()
@@ -631,10 +631,10 @@ fn a_refused_post_keeps_its_text_and_says_it_was_not_sent() {
     assert_eq!(retries, 1, "Retry stands under the composer");
 }
 
-/// A post the room refuses after this window showed it as sent comes
+/// A post the workspace refuses after this window showed it as sent comes
 /// back to the composer, marked as not sent.
 #[test]
-fn a_post_the_room_refuses_comes_back_to_the_composer() {
+fn a_post_the_workspace_refuses_comes_back_to_the_composer() {
     let (mut app, mut doc) = app_with_doc();
     app.active_channel = "c_general".into();
     app.focus = Focus::Main;
@@ -655,14 +655,14 @@ fn a_post_the_room_refuses_comes_back_to_the_composer() {
     refused.set(Some(ui::framework::Refused {
         action: "post".into(),
         item: None,
-        reason: "the room is receiving too many changes from you".into(),
+        reason: "the workspace is receiving too many changes from you".into(),
         by_room: true,
     }));
     app.settle_refused_post();
     assert_eq!(app.composer_main.value(), "over the budget");
     assert_eq!(
         app.not_sent.as_deref(),
-        Some("the room is receiving too many changes from you")
+        Some("the workspace is receiving too many changes from you")
     );
 }
 
@@ -700,12 +700,12 @@ fn semantic_send_reports_acceptance_only_when_it_appends_a_message() {
     assert_eq!(app.composer_main.value(), "");
     assert!(
         !crate::projection::has_draft(&doc, "c_general"),
-        "a draft never enters the room's record"
+        "a draft never enters the workspace's record"
     );
 }
 
 #[test]
-fn live_start_selects_the_rooms_first_real_channel() {
+fn live_start_selects_the_workspaces_first_real_channel() {
     // Against a real (minimal) starter document whose ids differ from the
     // demo defaults the app boots with, the reload must re-home the
     // active channel and drop the stale demo thread.
@@ -1090,7 +1090,7 @@ fn leaving_a_call_clears_local_service_state_without_rewriting_history() {
     assert_eq!(
         app.voice_in("c_standup").len(),
         2,
-        "the others stay in the room's call"
+        "the others stay in the workspace's call"
     );
     assert_eq!(doc.save(), before);
 }
@@ -1220,7 +1220,7 @@ fn message_lines_keep_a_readable_length_on_a_wide_screen() {
     let wide = Rect::new(0.0, 0.0, 2200.0, 1400.0);
     assert!(
         app.message_text_width(narrow, &theme) < readable,
-        "a narrow column uses the room it has"
+        "a narrow column uses the workspace it has"
     );
     assert!(
         (app.message_text_width(wide, &theme) - readable).abs() < f32::EPSILON,
@@ -1563,7 +1563,7 @@ fn write_real_png(path: &std::path::Path, w: u32, h: u32) {
 
 fn settle_attachment_until(
     app: &mut ChatApp,
-    doc: &mut crate::testing::Room,
+    doc: &mut crate::testing::Workspace,
     channel: &str,
     expected_count: usize,
 ) {
@@ -1668,11 +1668,11 @@ fn files_from_this_device_are_shared_from_their_bytes() {
     );
 }
 
-/// A file the room's host would not take is not posted: the person
-/// reads why (too big, or past what the room takes of their files in
+/// A file the workspace's host would not take is not posted: the person
+/// reads why (too big, or past what the workspace takes of their files in
 /// an hour), never a post whose file reaches nobody.
 #[test]
-fn a_file_the_room_would_not_take_is_refused_in_plain_words() {
+fn a_file_the_workspace_would_not_take_is_refused_in_plain_words() {
     use ui::tilo_resource::Fields as _;
     const MIB: usize = 1024 * 1024;
     let (mut app, mut doc) = app_with_doc();
@@ -1680,7 +1680,7 @@ fn a_file_the_room_would_not_take_is_refused_in_plain_words() {
     app.external_services = false;
     let before = crate::record::Chat::read_fields(&doc.chat, &automerge::ROOT).unwrap();
     let mut after = before.clone();
-    after.files = crate::record::RoomFiles {
+    after.files = crate::record::WorkspaceFiles {
         largest: 4 << 20,
         member_hourly: 6 << 20,
     };
@@ -1694,7 +1694,7 @@ fn a_file_the_room_would_not_take_is_refused_in_plain_words() {
         .unwrap();
     app.reload(&doc);
     let posted = crate::testing::messages(&doc, "c_crit").len();
-    let offer = |app: &mut ChatApp, doc: &mut crate::testing::Room, name: &str, size| {
+    let offer = |app: &mut ChatApp, doc: &mut crate::testing::Workspace, name: &str, size| {
         app.device_files
             .push_back((name.to_owned(), vec![7_u8; size]));
         tilo_test_env::wait_until(name, || {
@@ -1708,7 +1708,7 @@ fn a_file_the_room_would_not_take_is_refused_in_plain_words() {
     offer(&mut app, &mut doc, "big.bin", 4 * MIB + 1);
     assert_eq!(
         app.attachment_status.as_deref(),
-        Some("Not shared: the file is too big; this room takes files up to 4 MiB")
+        Some("Not shared: the file is too big; this workspace takes files up to 4 MiB")
     );
     assert_eq!(crate::testing::messages(&doc, "c_crit").len(), posted);
 
@@ -1720,7 +1720,7 @@ fn a_file_the_room_would_not_take_is_refused_in_plain_words() {
     assert_eq!(
         app.attachment_status.as_deref(),
         Some(
-            "Not shared: you've reached this room's limit of 6 MiB of files an hour; try again later"
+            "Not shared: you've reached this workspace's limit of 6 MiB of files an hour; try again later"
         )
     );
     assert_eq!(crate::testing::messages(&doc, "c_crit").len(), posted + 1);
@@ -2176,7 +2176,7 @@ fn render_frame(app: &mut ChatApp, w: f64, h: f64) {
     app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 }
 
-fn stage_agent_work(app: &mut ChatApp, doc: &mut crate::testing::Room) {
+fn stage_agent_work(app: &mut ChatApp, doc: &mut crate::testing::Workspace) {
     for (author, invoke) in crate::resource::agent_work_steps() {
         crate::testing::apply_as(doc, author, invoke).unwrap();
     }
@@ -2222,7 +2222,7 @@ fn a_typed_character_damages_the_composer_and_a_resize_the_window() {
         app.mark_drawn();
         damage
     };
-    // The room's avatars and attachments decode off the frame and repaint
+    // The workspace's avatars and attachments decode off the frame and repaint
     // the timeline when they land: the frames measured come after every
     // picture asked for has been drawn.
     for _ in 0..3 {
@@ -2230,7 +2230,7 @@ fn a_typed_character_damages_the_composer_and_a_resize_the_window() {
         app.images
             .block_until_idle(std::time::Duration::from_secs(30));
     }
-    assert!(app.images.is_idle(), "the room's pictures settled");
+    assert!(app.images.is_idle(), "the workspace's pictures settled");
     let still = frame(&mut app, w, h);
     assert!(
         still.is_empty(),
@@ -2695,7 +2695,7 @@ fn floating_pins_leave_the_composer_whole() {
 }
 
 mod calls_and_peers;
-mod room_state;
+mod workspace_state;
 
 /// Each Discord guest in the expanded call is their own tile, named as
 /// their bridged messages read, and opens how loud they play here.

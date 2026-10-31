@@ -628,7 +628,7 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
     let read = bot
         .survey()
         .into_iter()
-        .find(|action| action.address.action == "read-room")
+        .find(|action| action.address.action == "read-workspace")
         .expect("a bot is offered Chat's read");
     // A post names its channel, so a bot finds the message among the
     // channel's latest.

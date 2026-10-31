@@ -84,7 +84,7 @@ pub enum NotesEffect {
     },
     /// Export Markdown content
     ///
-    /// Keep a note, or the whole notebook, as a Markdown file in the room's
+    /// Keep a note, or the whole notebook, as a Markdown file in the workspace's
     /// content, its images inside it, and answer its content address. No
     /// file is chosen or written: an agent hands the content on (a mail
     /// attachment, a shared file) instead of reaching this device's disk.

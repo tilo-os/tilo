@@ -1,4 +1,4 @@
-//! How what the person does reaches the room: the one door a verb or a field
+//! How what the person does reaches the workspace: the one door a verb or a field
 //! edit is applied through — at once, as the frame ends, or once they agreed
 //! to a removal — and the chain the chat's messages are read and written
 //! through.

@@ -17,7 +17,7 @@ use tilolang_tilo::tilolang::PackageMeta;
 use ui::framework::{AppName, OpeningCx, OpeningView, ResourceApp, ViewCx};
 use ui::widget::Element;
 
-use crate::resource::Room;
+use crate::resource::Workspace;
 use crate::window::Window;
 
 /// The app the installed package is.
@@ -85,11 +85,11 @@ fn scenario_names(meta: &PackageMeta) -> &'static [&'static str] {
 }
 
 impl ResourceApp for TlApp {
-    type Resource = Room;
+    type Resource = Workspace;
     const ID: &'static str = crate::UNBUNDLED_ID;
     const TITLE: &'static str = "tilolang";
     const ICON: Option<&'static str> = Some("code-editor");
-    // The record is the room's: every package keeps its resources in it.
+    // The record is the workspace's: every package keeps its resources in it.
     const ROOM_RECORD: bool = true;
 
     fn named() -> Option<AppName> {
@@ -111,7 +111,7 @@ impl ResourceApp for TlApp {
         Some(&crate::i18n::CATALOG)
     }
 
-    fn label(_state: &crate::resource::RoomState) -> String {
+    fn label(_state: &crate::resource::WorkspaceState) -> String {
         hosted().map_or_else(|| Self::TITLE.to_owned(), |meta| meta.title.clone())
     }
 
@@ -119,10 +119,10 @@ impl ResourceApp for TlApp {
         hosted().map_or(&[], scenario_names)
     }
 
-    // The first frame shows what the room's indexes hold; the record is read off the frame.
+    // The first frame shows what the workspace's indexes hold; the record is read off the frame.
     const OPENS_BEFORE_RECORD: bool = true;
 
-    /// The window over the room's indexes, kept from an earlier session (or built once the
+    /// The window over the workspace's indexes, kept from an earlier session (or built once the
     /// record is had, the platform's loading state meanwhile).
     fn opening(cx: &OpeningCx<'_>) -> Option<Box<dyn OpeningView>> {
         crate::i18n::ensure();
@@ -142,12 +142,12 @@ impl ResourceApp for TlApp {
                 ui::framework::RunMode::Live,
             )
             .keep_indexes_in(indexes)
-            .in_room(cx.room())
+            .in_workspace(cx.room())
             .opening(cx.record().clone()),
         ))
     }
 
-    fn view(cx: &mut ViewCx<Room>) -> Element {
+    fn view(cx: &mut ViewCx<Workspace>) -> Element {
         crate::i18n::ensure();
         #[cfg(target_os = "linux")]
         if crate::hosted::is_hosted() {
@@ -181,8 +181,8 @@ impl ResourceApp for TlApp {
             if let Some(indexes) = indexes(&cx.storage().files()) {
                 window = window.keep_indexes_in(indexes);
             }
-            if let Some(room) = cx.room() {
-                window = window.in_room(&room);
+            if let Some(workspace) = cx.room() {
+                window = window.in_workspace(&workspace);
             }
             // Another record than the workspace's: the person's own, for a package that keeps
             // each member's.
@@ -214,12 +214,12 @@ impl ResourceApp for TlApp {
     }
 }
 
-/// Where windows keep their rooms' indexes: in the app's cache area, which its host gives it.
+/// Where windows keep their workspaces' indexes: in the app's cache area, which its host gives it.
 pub fn indexes(files: &ui::storage::AppFiles) -> Option<std::path::PathBuf> {
     match files.paths().cache().native_path() {
         Ok(cache) => Some(cache.join("indexes")),
         Err(error) => {
-            tracing::warn!(%error, "no cache area for the rooms' indexes: they are kept in memory");
+            tracing::warn!(%error, "no cache area for the workspaces' indexes: they are kept in memory");
             None
         }
     }

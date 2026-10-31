@@ -44,9 +44,9 @@ fn a_mention_in_a_message_tells_the_person_named_once_and_opens_the_message() {
     }))
     .unwrap();
     let message = ada.said("@Bo the deploy is green");
-    // Bo's device receives the room's records; no chat window is open.
+    // Bo's device receives the workspace's records; no chat window is open.
     bo.sync_with(&mut ada);
-    // As the room sends them: the chat's own record names no identity.
+    // As the workspace sends them: the chat's own record names no identity.
     let chat = AutoCommit::load(&bo.chat.save()).unwrap();
     let part = AutoCommit::load(&bo.part.save()).unwrap();
     let route = RecordId::package_primary().part(0).as_str().to_owned();
@@ -81,7 +81,7 @@ fn a_mention_in_a_message_tells_the_person_named_once_and_opens_the_message() {
     reloaded.restore(&inbox.told_state());
     assert!(reloaded.look(&look, &name).show.is_empty());
 
-    // Someone else in the room, and Ada herself, are told nothing.
+    // Someone else in the workspace, and Ada herself, are told nothing.
     for other in [CY, ADA] {
         let mut inbox = MentionInbox::new([other.to_owned()]);
         assert!(inbox.look(&look, &name).show.is_empty(), "{other}");

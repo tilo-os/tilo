@@ -83,7 +83,7 @@ fields = [
   { path = "moderation.decisions.*.overturned_by", type = { option = "text" } },
   { path = "moderation.decisions.*.overturn_note", type = { option = "text" } },
   { path = "moderation.decisions.*.overturned_at_ms", type = { option = "int" } },
-  { path = "files", type = { named = "RoomFiles" }, readonly = true, stored = "record" },
+  { path = "files", type = { named = "WorkspaceFiles" }, readonly = true, stored = "record" },
   { path = "files.largest", type = "int" },
   { path = "files.member_hourly", type = "int" },
 ]
@@ -549,7 +549,7 @@ fields = [
 ]
 
 [[resources.types]]
-name = "RoomFiles"
+name = "WorkspaceFiles"
 fields = [
   { name = "largest", type = "int" },
   { name = "member_hourly", type = "int" },

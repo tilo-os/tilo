@@ -1,5 +1,5 @@
 //! The states a review capture stages: each scenario name `--shots` can ask
-//! for, built from the room's sample demo so a screenshot of it is the
+//! for, built from the workspace's sample demo so a screenshot of it is the
 //! production view.
 
 use ui::presence::PresenceCtx;
@@ -89,7 +89,7 @@ impl ChatApp {
                 self.call = CallState::default();
             }
             "namesakes" => {
-                // Two people in the room go by one name: everyone sees them
+                // Two people in the workspace go by one name: everyone sees them
                 // numbered alike, in the timeline and the people list.
                 let mut presence = PresenceCtx::empty();
                 presence.set_self_participant(
@@ -134,7 +134,7 @@ impl ChatApp {
                 self.right_flap.open();
                 self.call.join("c_huddle");
                 self.stage_connected_call();
-                // Two people in the room's call beside this one, so the
+                // Two people in the workspace's call beside this one, so the
                 // sidebar shows them under the voice channel.
                 self.native_voice.snapshot.rosters = vec![ui::native_media::Roster {
                     channel_id: "c_huddle".into(),
@@ -144,9 +144,9 @@ impl ChatApp {
                 self.refresh_native_streams();
             }
             "lounge" | "lounge-call" | "lounge-video" | "lounge-share" | "lounge-bridged" => {
-                // A shared room with people in its voice channels: this
+                // A shared workspace with people in its voice channels: this
                 // person in the Design Huddle with their microphone on, three
-                // others beside them and two in the standup, as the room's
+                // others beside them and two in the standup, as the workspace's
                 // call rosters report them before anyone opens a call.
                 self.thread_open = None;
                 self.call.join("c_huddle");
@@ -164,7 +164,7 @@ impl ChatApp {
                 if scenario != "lounge" {
                     huddle.push("u_devon".to_owned());
                 }
-                // Cameras on, and Sora sharing her screen, as the room says.
+                // Cameras on, and Sora sharing her screen, as the workspace says.
                 let video = !matches!(scenario, "lounge" | "lounge-call" | "lounge-bridged");
                 let cameras: Vec<String> = if video {
                     vec![
@@ -226,7 +226,7 @@ impl ChatApp {
                 self.refresh_native_streams();
             }
             "starter" => {
-                // The real first-run room: `#chat` and `#voice`, no demo content.
+                // The real first-run workspace: `#chat` and `#voice`, no demo content.
                 self.thread_open = None;
                 self.call = CallState::default();
             }
@@ -516,7 +516,7 @@ impl ChatApp {
     }
 
     /// The Design Huddle bridged to a Discord voice channel: two people
-    /// there in the call beside the room's, one of them talking.
+    /// there in the call beside the workspace's, one of them talking.
     fn stage_bridged_call(&mut self) {
         let guest = |account: &str, name: &str, avatar: Option<&str>| ui::native_media::Guest {
             id: ui::native_media::Guest::id_of("discord", account),

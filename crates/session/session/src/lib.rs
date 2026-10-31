@@ -28,6 +28,7 @@
 mod a11y_settings;
 mod app_icons;
 pub mod capture;
+mod capture_studio;
 mod chrome;
 mod config;
 mod controls;
@@ -38,6 +39,7 @@ mod display_settings;
 pub mod displays;
 mod env;
 mod i18n;
+pub mod identity;
 mod keys;
 mod lists;
 pub mod mount;
@@ -183,6 +185,9 @@ pub struct Options {
     pub wake: tilo_service::LoopWake,
     /// The screenshots the portal asks for, which the session takes.
     pub captures: Option<capture::Captures>,
+    /// The folder the capture studio keeps its Screenshots folder in;
+    /// `None`: the person's Pictures folder, else their home.
+    pub pictures: Option<std::path::PathBuf>,
     /// The desktop services the session runs beside: what apps sent their
     /// notifications daemon, the questions they ask, and the portal they
     /// serve. The session feeds it what it knows of itself: which apps run
@@ -299,6 +304,7 @@ impl Default for Options {
             verifier: std::sync::Arc::new(unlock::Unavailable),
             wake: tilo_service::LoopWake::default(),
             captures: None,
+            pictures: None,
             desktop: None,
             questions: None,
             portal: None,
@@ -1108,6 +1114,8 @@ pub struct Session {
     unlocking: Unlocking,
     /// The screenshots asked for.
     captures: Option<capture::Captures>,
+    /// The capture studio the session shows, and answers the asks of.
+    capture_studio: Option<capture_studio::CaptureStudio>,
     /// The windows opening and closing.
     windows: window_motion::WindowMotions,
     /// Whether the night light is on, and whether a change is kept in the
@@ -1198,6 +1206,9 @@ impl Session {
         mut options: Options,
         start: impl FnOnce(Box<dyn WindowPolicy>) -> Result<Compositor, Error>,
     ) -> Result<Self, Error> {
+        // The words a notice or a query resolves later, in the person's
+        // language, are read now: the loop that shows them reads no file.
+        i18n::ensure();
         let sources = config::Sources::from_config(&options.config);
         let mut doors = Doors::default();
         // The VPN profiles' kill switch runs for the session's lifetime: a
@@ -1225,8 +1236,10 @@ impl Session {
         ));
         let watched_wallpapers = std::sync::Arc::clone(&wallpapers);
         // Artwork the session resolves off the loop wakes it when it is
-        // ready, so the frame that painted the letter repaints with it.
+        // ready, so the frame that painted the letter repaints with it; the
+        // apps installed here are the lists' to resolve, on their worker.
         app_icons::set_wake(options.wake.handle());
+        app_icons::set_lists(options.search.lists.clone());
         let settings_watch = settings_store::watch::watch_settings(move || {
             let document = settings_store::load();
             *watched.lock_recover() =
@@ -1326,6 +1339,9 @@ impl Session {
             directory,
             lock,
         } = mount_sheets(&mut compositor, &mut doors, &options);
+
+        // The capture studio, over everything it captures.
+        let capture_studio = capture_studio::mount(&mut compositor, &mut doors, &options);
 
         let shortcuts = std::mem::take(&mut options.config.shortcuts);
         // The desktop's own chords win over every app's: the portal's
@@ -1449,6 +1465,7 @@ impl Session {
                 wake: loop_wake,
             },
             captures: options.captures,
+            capture_studio,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
             night_light: (options.config.night_light, options.config.kept),
             portal: options.portal,
@@ -1501,10 +1518,6 @@ impl Session {
     /// # Errors
     /// The compositor or its window did not start.
     pub fn nested(options: Options, config: &NestedConfig) -> Result<Self, Error> {
-        let options = Options {
-            hosted: true,
-            ..options
-        };
         let mut session = Self::new(options, |policy| Compositor::nested(policy, config))?;
         session.warm()?;
         Ok(session)
@@ -1601,6 +1614,13 @@ impl Session {
     #[must_use]
     pub const fn banners(&self) -> &tilo_notification_banners::Link {
         &self.banners
+    }
+
+    /// The desk's notifications: the banners it is showing now and the
+    /// centre it keeps behind them.
+    #[must_use]
+    pub fn notifications(&self) -> tilo_desktop_surface::DesktopNotifications {
+        self.shared.notifications.borrow().desktop()
     }
 
     /// Reach `surface` (a service the session runs in its process) through
@@ -1780,6 +1800,9 @@ impl Session {
         if let Some(captures) = &self.captures {
             captures.serve(&mut self.compositor);
         }
+        if let Some(studio) = &mut self.capture_studio {
+            studio.serve(&mut self.compositor);
+        }
         if let Some(portal) = &mut self.portal {
             portal.serve(&mut self.compositor, &self.shared.handle);
         }
@@ -1870,6 +1893,7 @@ impl Session {
         };
         for (window, _) in self.compositor.windows() {
             if let (Some(pid), Some(app_id)) = (window.pid, window.app_id) {
+                desktop.note_running_app(pid, &app_id);
                 self.pids.insert(pid, app_id);
             }
         }

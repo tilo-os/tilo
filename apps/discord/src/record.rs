@@ -62,7 +62,7 @@ pub struct Guild {
     /// People who went to Discord's consent page to link their account,
     /// by person: the OAuth 2 round trip's state, hashed.
     pub connects: Keyed<Connect>,
-    /// Discord's consent page for signing in through the room's host,
+    /// Discord's consent page for signing in through the workspace's host,
     /// without its state, when the host offers it: then members are
     /// offered "Connect Discord".
     pub sign_in_page: Option<String>,
@@ -529,8 +529,8 @@ fn overwrite_for<'a>(
 }
 
 /// Bring a guild record of version `from` up to this one. Version 1 named
-/// the Chat workspace the server mirrored; Chat runs in its room and keeps
-/// no workspaces now, so the server mirrors the room's chat and the name is
+/// the Chat workspace the server mirrored; Chat runs in its workspace and keeps
+/// no workspaces now, so the server mirrors the workspace's chat and the name is
 /// dropped. Up to version 2 a channel's kind and permission overwrites were
 /// each one JSON string; they are rewritten as the values they held. Up
 /// to version 3 a link began with a code the person sent from Discord;
@@ -578,7 +578,7 @@ fn migrate(
 impl Guild {
     /// Connect a Discord server.
     ///
-    /// Binds this record to one server, mirrored in the room's chat.
+    /// Binds this record to one server, mirrored in the workspace's chat.
     /// The server's layout stays the truth until the import has run.
     #[action(housekeeping)]
     pub fn connect(
@@ -639,7 +639,7 @@ impl Guild {
     ) -> Result<(), Refusal> {
         guard::bot(cx)?;
         // A verb answers the items it created as their resources
-        // (`chat.room/messages/<id>`); the map keys on the item's id.
+        // (`chat.workspace/messages/<id>`); the map keys on the item's id.
         let tilo = tilo.rsplit('/').next().unwrap_or_default().to_owned();
         if tilo.is_empty() || discord.is_empty() {
             return Err(Refusal::new("a mapping joins two ids"));
@@ -1013,7 +1013,7 @@ impl Guild {
         Ok(())
     }
 
-    /// Copy a file from Discord's CDN into the room's content store. The
+    /// Copy a file from Discord's CDN into the workspace's content store. The
     /// worker that performs it fetches only from the CDN it is configured
     /// with, so a URL elsewhere is refused there.
     #[action]
@@ -1044,7 +1044,9 @@ impl Guild {
     ) -> Result<(), Refusal> {
         let person = guard::person(cx)?;
         if self.guild_id.is_empty() {
-            return Err(Refusal::new("this room is not bridged to a Discord server"));
+            return Err(Refusal::new(
+                "this workspace is not bridged to a Discord server",
+            ));
         }
         hex_digest(&state_sha256)?;
         upsert(
@@ -1218,7 +1220,7 @@ impl Guild {
 
     /// Offer signing in with Discord.
     ///
-    /// The room's host offers it, through this consent page (empty for
+    /// The workspace's host offers it, through this consent page (empty for
     /// none): members are then offered "Connect Discord".
     #[action]
     pub fn set_sign_in(
@@ -1515,7 +1517,7 @@ impl Guild {
 
     /// Say why the bridge cannot carry voice now, or that it can again.
     ///
-    /// The room's host reports what Discord answered when the bridge
+    /// The workspace's host reports what Discord answered when the bridge
     /// joined a voice channel, so people see why a call is not carried.
     #[action(housekeeping)]
     pub fn report_voice(
@@ -1644,7 +1646,7 @@ impl Guild {
             Ok(())
         } else {
             Err(Refusal::new(
-                "that Discord account is not linked to anyone in the room",
+                "that Discord account is not linked to anyone in the workspace",
             ))
         }
     }

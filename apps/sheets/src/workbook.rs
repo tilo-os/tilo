@@ -27,7 +27,7 @@ use crate::settings::DocSettings;
 use tilo_locale::Currency;
 
 /// The identity of a new workbook's first sheet. The genesis is the same
-/// change on every device, so two people creating the room's workbook before
+/// change on every device, so two people creating the workspace's workbook before
 /// they sync converge on one first sheet rather than two.
 pub const FIRST_SHEET_ID: &str = "00000000-0000-4000-8000-000000000001";
 

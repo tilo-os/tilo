@@ -15,6 +15,7 @@
 )]
 
 use std::cell::RefCell;
+use std::io::BufRead as _;
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
 use std::rc::Rc;
@@ -31,6 +32,7 @@ use tilo_quick_settings::device::Device;
 use tilo_quick_settings::device::testing::{Kept, Machine};
 use tilo_quick_settings::host::FixtureHost;
 use tilo_quick_settings::scenarios;
+use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{DeviceHost, Options, QuickSettings, Session};
 use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileRequest};
@@ -195,6 +197,31 @@ fn pump(
             "condition not reached"
         );
     }
+}
+
+/// Step `session` with `client` until `asked` answers.
+#[track_caller]
+fn until<T>(
+    session: &mut Session,
+    client: &mut TestClient,
+    mut asked: impl FnMut(&mut Session) -> Option<T>,
+) -> Option<T> {
+    let mut answer = None;
+    pump(session, &mut [client], |session, _| {
+        answer = asked(session);
+        answer.is_some()
+    });
+    answer
+}
+
+/// The control assistive technology names `name` under `node`, by target.
+fn control(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
+    if node.name.as_deref() == Some(name)
+        && let Some(target) = &node.action_target
+    {
+        return Some(target.clone());
+    }
+    node.children.iter().find_map(|child| control(child, name))
 }
 
 fn session() -> Session {
@@ -1818,7 +1845,17 @@ fn the_file_chooser_answers_the_file_chosen_through_its_actions() {
     assert_eq!(answer, Some(FileAnswer::Chosen(vec![beach])));
 }
 
+/// A pixel of a picture, as R, G, B, A.
+fn pixel_at(picture: &image::RgbaImage, x: i32, y: i32) -> [u8; 4] {
+    picture
+        .get_pixel(u32::try_from(x).unwrap(), u32::try_from(y).unwrap())
+        .0
+}
+
 mod questions;
+
+#[path = "session/capture_studio.rs"]
+mod capture_studio;
 
 impl Dispatch<WlRegistry, ()> for Seen {
     fn event(
@@ -2069,7 +2106,7 @@ fn the_portals_screenshot_is_a_picture_of_every_display() {
         tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(capture.screenshot())
+            .block_on(capture.screenshot(tilo_portal::CaptureTarget::Screen))
     });
     let started = std::time::Instant::now();
     while !asked.is_finished() {
@@ -2088,6 +2125,65 @@ fn the_portals_screenshot_is_a_picture_of_every_display() {
             u32::try_from(WIDTH * 2).unwrap(),
             u32::try_from(HEIGHT).unwrap()
         )
+    );
+}
+
+/// A screenshot of the window with focus is that window's own frame: what
+/// its client drew, not the desk around it.
+#[test]
+fn the_portals_screenshot_of_the_active_window_is_that_window_alone() {
+    use tilo_portal::Capture as _;
+
+    let _settled = ui::motion::testing::settled();
+    let directory = tempfile::tempdir().unwrap();
+    let wake = tilo_service::LoopWake::default();
+    let (capture, captures) =
+        tilo_session::capture::channel_to(directory.path().to_owned(), wake.handle());
+    // What a session can be asked for: everything the displays show and
+    // the window with focus. A window or area the person picks would need
+    // a selector, which the session draws none of.
+    assert_eq!(
+        capture.targets(),
+        tilo_portal::CaptureTarget::Screen.bit() | tilo_portal::CaptureTarget::ActiveWindow.bit()
+    );
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            wake,
+            captures: Some(captures),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    let _client = mapped(&mut session, "org.example.Terminal");
+    let asked = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(capture.screenshot(tilo_portal::CaptureTarget::ActiveWindow))
+    });
+    let started = std::time::Instant::now();
+    while !asked.is_finished() {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the screenshot was never answered"
+        );
+        session.step(Duration::from_secs(1)).unwrap();
+    }
+    let path = asked.join().unwrap().expect("a screenshot");
+    let picture = image::open(&path).unwrap().to_rgba8();
+    let (width, height) = picture.dimensions();
+    assert!(
+        width < u32::try_from(WIDTH).unwrap() && height < u32::try_from(HEIGHT).unwrap(),
+        "the window, not the display: {width}x{height}"
+    );
+    #[allow(clippy::cast_possible_wrap, reason = "a window's pixels on a screen")]
+    let (middle_x, middle_y) = ((width / 2) as i32, (height / 2) as i32);
+    assert_eq!(
+        pixel_at(&picture, middle_x, middle_y),
+        [200, 40, 40, 255],
+        "the colour its client drew"
     );
 }
 
@@ -2700,4 +2796,183 @@ fn a_copy_is_listed_pinned_across_a_restart_and_pasted_into_the_app_in_front() {
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut reader, &mut bytes).expect("read the copy");
     assert_eq!(bytes, text);
+}
+
+// =====================================================================
+// Notifications from an app
+// =====================================================================
+
+/// A session bus of its own, as `dbus-run-session` starts one, stopped on
+/// drop.
+struct SessionBus {
+    daemon: std::process::Child,
+    address: String,
+    _directory: tempfile::TempDir,
+}
+
+impl SessionBus {
+    fn start() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let mut daemon = std::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address=1"])
+            .arg(format!(
+                "--address=unix:path={}",
+                directory.path().join("bus").display()
+            ))
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the session bus needs dbus-daemon, which the builder image installs");
+        let mut address = String::new();
+        std::io::BufReader::new(daemon.stdout.take().unwrap())
+            .read_line(&mut address)
+            .unwrap();
+        assert!(!address.trim().is_empty(), "dbus-daemon printed no address");
+        Self {
+            daemon,
+            address: address.trim().to_owned(),
+            _directory: directory,
+        }
+    }
+}
+
+impl Drop for SessionBus {
+    fn drop(&mut self) {
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+    }
+}
+
+/// Send one notification over the freedesktop interface on `address`, as an
+/// app of the session would, and name the id the daemon gave it. The
+/// connection is the app's: it stays open until the caller drops it.
+async fn notify(address: &str, summary: &str, body: &str, timeout: i32) -> (zbus::Connection, u32) {
+    let app = zbus::connection::Builder::address(address)
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let proxy = zbus::Proxy::new(
+        &app,
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+    )
+    .await
+    .unwrap();
+    let reply = proxy
+        .call_method(
+            "Notify",
+            &(
+                "Mail",
+                0_u32,
+                "",
+                summary,
+                body,
+                Vec::<&str>::new(),
+                std::collections::HashMap::<String, zbus::zvariant::OwnedValue>::new(),
+                timeout,
+            ),
+        )
+        .await
+        .unwrap();
+    (app, reply.body().deserialize().unwrap())
+}
+
+/// An app's notification over the freedesktop interface, from the process
+/// whose window the session shows: a banner and a centre entry named after
+/// that app, and the bar's bell counting it.
+#[test]
+fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
+    let _settled = ui::motion::testing::settled();
+    let bus = SessionBus::start();
+    let wake = tilo_service::LoopWake::default();
+    let (side, link) = tilo_session::portal_link::channel(wake.handle());
+    let desktop = Rc::new(
+        DesktopServices::start(
+            &Buses {
+                session: Bus::Address(bus.address.clone()),
+                system: Bus::None,
+            },
+            &wake.handle(),
+            std::sync::Arc::new(tilo_portal::NoCapture),
+            &side,
+            None,
+        )
+        .expect("desktop services"),
+    );
+    let portal = desktop
+        .portal()
+        .map(|serving| link.with_captures(serving.input_captures().clone()));
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            services: desktop.services(),
+            wake,
+            desktop: Some(Rc::clone(&desktop)),
+            portal,
+            collab: false,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+
+    // The app the session knows by its window; the sender's process is the
+    // one that window's client runs in.
+    let mut client = mapped(&mut session, "so.tilo.mail");
+
+    let runtime = desktop.runtime();
+    // It waits for the person: nothing here measures the banner running out.
+    let (app, id) = runtime.block_on(notify(bus.address.as_str(), "New mail", "From Ada", 0));
+
+    pump(&mut session, &mut [&mut client], |session, _| {
+        session.notifications().unread() == 1
+    });
+    let centre = session.notifications();
+    let banners = centre.log();
+    assert_eq!(banners.active().len(), 1, "the notification is a banner");
+    let banner = banners.active()[0].clone();
+    drop(banners);
+    assert_eq!(banner.title, "New mail");
+    assert_eq!(
+        banner.app_id.as_deref(),
+        Some("so.tilo.mail"),
+        "named after the app whose window sent it"
+    );
+    assert_eq!(banner.sender_id, Some(id));
+
+    // The bar's bell counts what is unread.
+    let bell = session.accessible_labels();
+    assert!(
+        bell.iter().any(|label| label == "Notifications, 1 unread"),
+        "the bell says what is unread: {bell:?}"
+    );
+
+    // The person closes the banner on its own control: it is kept in the
+    // centre, named after the same app.
+    let dismiss = until(&mut session, &mut client, |session| {
+        session
+            .banners()
+            .shown()
+            .accessibility
+            .as_ref()
+            .and_then(|node| control(node, "Dismiss"))
+    })
+    .expect("the banner offers a way out");
+    session
+        .banners()
+        .command(tilo_notification_banners::Command::Activate(dismiss));
+    pump(&mut session, &mut [&mut client], |session, _| {
+        session.notifications().log().active().is_empty()
+    });
+    let centre = session.notifications();
+    let history = centre.log();
+    let kept = history
+        .history()
+        .iter()
+        .find(|shown| shown.title == "New mail")
+        .expect("the centre keeps it");
+    assert_eq!(kept.app_id.as_deref(), Some("so.tilo.mail"));
+    assert_eq!(centre.unread(), 1, "and it stays unread until read");
+    drop(app);
 }
