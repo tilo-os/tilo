@@ -15256,6 +15256,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-app-package",
+ "tilo-audio-service",
  "tilo-automerge-fork",
  "tilo-bluez",
  "tilo-capture",
