@@ -35,6 +35,8 @@ tilo-desktop-surface = { path = "../desktop-surface" }
 tilo-desktop-search = { path = "../desktop-search" }
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
 tilo-clock = { path = "../../platform/tilo-clock" }
+# The models an agent may plan with: the person's own provider settings.
+agent-provider-config = { path = "../../agent/provider-config" }
 ed25519-dalek.workspace = true
 durable-store = { path = "../../system/durable-store" }
 # The emoji picker's catalogue, search, skin tones and recents.

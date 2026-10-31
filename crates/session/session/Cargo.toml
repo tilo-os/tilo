@@ -39,6 +39,7 @@ tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-surface = { path = "../desktop-surface" }
 # The desk's window policy, whose tab calls an app's asks are answered with.
 tilo-desktop-policy = { path = "../desktop-policy" }
+desktop-policy = { path = "../../system/desktop-policy", default-features = false }
 tilo-desktop-search = { path = "../desktop-search", features = ["indexes", "settings", "catalogue"] }
 tilo-dictation = { path = "../dictation" }
 app-catalogue = { path = "../../packaging/app-catalogue" }
@@ -88,6 +89,8 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # a grant signed for this person's key joins it.
 tilo-workspace-join = { path = "../../collab/workspace-join" }
 tilo-clock = { path = "../../platform/tilo-clock" }
+# The models an agent may plan with: the person's own provider settings.
+agent-provider-config = { path = "../../agent/provider-config" }
 # The sanctioned blocking HTTP client, which installs the crypto provider.
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking", "json"] }
 reqwest = { workspace = true, features = ["blocking", "json"] }

@@ -18532,6 +18532,7 @@ dependencies = [
 name = "tilo-desktop"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
  "blake3",
  "chat",
  "chrono",
@@ -21435,12 +21436,14 @@ dependencies = [
 name = "tilo-session"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
  "app-catalogue",
  "app-cli",
  "block-devices",
  "bounded-command",
  "chrono",
  "collab-types",
+ "desktop-policy",
  "durable-store",
  "ed25519-dalek 3.0.0",
  "emoji",

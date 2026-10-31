@@ -46,6 +46,19 @@ impl Answer {
     }
 }
 
+impl Answer {
+    /// The answer a [`Display`](fmt::Display) wrote, if it is one.
+    #[must_use]
+    pub fn parse(key: &str) -> Option<Self> {
+        match key {
+            "deny" => Some(Self::Deny),
+            "ask" => Some(Self::Ask),
+            "allow" => Some(Self::Allow),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for Answer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {

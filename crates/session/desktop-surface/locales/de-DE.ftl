@@ -834,6 +834,7 @@ workspace-settings-agent-model = Modell
 workspace-settings-agent-model-default = Der Standard: { $model }
 workspace-settings-agent-model-none = Kein Modell in den Einstellungen gewählt
 workspace-settings-agent-model-use = Verwenden
+workspace-settings-agent-model-option = { $model } von { $provider }
 workspace-settings-agent-model-in-use = In Verwendung
 workspace-settings-agent-access-empty = Noch keine Apps in diesem Arbeitsbereich.
 workspace-settings-answer-allow = Erlauben
