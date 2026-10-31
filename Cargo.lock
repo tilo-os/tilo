@@ -21509,6 +21509,7 @@ dependencies = [
  "tilo-polkit-agent",
  "tilo-portal",
  "tilo-power-mgmt",
+ "tilo-projector",
  "tilo-quick-settings",
  "tilo-relay-protocol",
  "tilo-resource",

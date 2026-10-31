@@ -1,7 +1,8 @@
 //! The sheets the session lends its seats to: the power menu, a workspace's
 //! settings, the directory, the portal apps open links through, the file
-//! picker, the guide and the lock screen — each mounted over the desktop and
-//! what it shows, and handed to the session as the seat it speaks through.
+//! picker, the guide, the display sheet and the lock screen — each mounted
+//! over the desktop and what it shows, and handed to the session as the seat
+//! it speaks through.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -10,6 +11,7 @@ use tilo_compositor::Compositor;
 use tilo_sheets::Seat as _;
 use tilo_sheets::directory::DirectorySeat;
 use tilo_sheets::display_confirm::ConfirmSeat;
+use tilo_sheets::displays::DisplaysSeat;
 use tilo_sheets::file_picker::FilePickerSeat;
 use tilo_sheets::lock::LockSeat;
 use tilo_sheets::portal::PortalSeat;
@@ -31,6 +33,7 @@ pub(crate) struct Sheets {
     pub(crate) file_picker: Option<FilePickerSeat>,
     pub(crate) lock: Option<LockSeat>,
     pub(crate) display_confirm: Option<ConfirmSeat>,
+    pub(crate) displays: Option<DisplaysSeat>,
     pub(crate) shortcut_guide: Option<GuideSeat>,
 }
 
@@ -112,6 +115,16 @@ pub(crate) fn mount_sheets(
     if let Some(confirm) = &display_confirm {
         confirm.presentation().cover_every_display();
     }
+    // Where the desktop appears: the layouts and the wireless displays it
+    // streams to.
+    let displays = mount_sheet(
+        compositor,
+        doors,
+        tilo_sheets::displays::definition(),
+        DisplaysSeat::default(),
+        who,
+        options,
+    );
     // Last, so it covers every other sheet, the guide among them: the lock
     // screen shows no key of the desktop behind it.
     let lock = mount_lock_screen(compositor, doors, who, options);
@@ -123,6 +136,7 @@ pub(crate) fn mount_sheets(
         file_picker,
         lock,
         display_confirm,
+        displays,
         shortcut_guide,
     }
 }

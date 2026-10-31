@@ -42,6 +42,7 @@ mod dictation;
 mod directory;
 mod display_confirm;
 mod display_settings;
+mod display_sheet;
 pub mod displays;
 mod downloaded;
 mod emoji;
@@ -58,6 +59,7 @@ mod notifications;
 mod panels;
 mod plane;
 pub mod portal_link;
+mod projection;
 mod questions;
 mod records;
 mod rotation;
@@ -214,6 +216,10 @@ pub struct Options {
     pub wake: tilo_service::LoopWake,
     /// The screenshots the portal asks for, which the session takes.
     pub captures: Option<capture::Captures>,
+    /// Where the wireless display service answers: its control socket.
+    /// `None`: the service's own, which the session's first request
+    /// activates.
+    pub projector: Option<std::path::PathBuf>,
     /// The folder the capture studio keeps its Screenshots folder in;
     /// `None`: the person's Pictures folder, else their home.
     pub pictures: Option<std::path::PathBuf>,
@@ -371,6 +377,7 @@ impl Default for Options {
             verifier: std::sync::Arc::new(unlock::Unavailable),
             wake: tilo_service::LoopWake::default(),
             captures: None,
+            projector: None,
             pictures: None,
             desktop: None,
             questions: None,
@@ -1370,6 +1377,9 @@ pub struct Session {
     displays: display_settings::Displays,
     /// The question about a display change, and the answers it takes.
     confirmation: display_confirm::Confirmation,
+    /// The display sheet: where the desktop appears, and the wireless
+    /// displays it streams to.
+    display_sheet: display_sheet::DisplaySheet,
     /// Which way up the device is held, and the lock that pins the panel.
     rotation: rotation::Rotation,
     /// The keyboard input sources, and the one that types.
@@ -1614,6 +1624,7 @@ impl Session {
             directory,
             lock,
             display_confirm,
+            displays: display_seat,
             shortcut_guide: guide_seat,
         } = mount::sheets::mount_sheets(&mut compositor, &mut doors, &options);
 
@@ -1653,8 +1664,13 @@ impl Session {
             shortcuts,
             portal_shortcuts,
             guide_keys,
-            Rc::clone(&controller),
-            Rc::clone(&controller_keys),
+            KeyContext {
+                controller: Rc::clone(&controller),
+                controller_keys: Rc::clone(&controller_keys),
+                displays: display_seat
+                    .as_ref()
+                    .map(|seat| tilo_sheets::Seat::presentation(seat).clone()),
+            },
             options.scale,
         );
 
@@ -1809,6 +1825,11 @@ impl Session {
             surface_apps,
             displays: display_settings::Displays::default(),
             confirmation: display_confirm::Confirmation::default(),
+            display_sheet: display_sheet::DisplaySheet::new(
+                display_seat,
+                options.projector.clone(),
+                &options.wake.handle(),
+            ),
             rotation: rotation::Rotation::mount(options.accelerometer),
             sources,
             ended: false,
@@ -2132,6 +2153,13 @@ impl Session {
         self.shared.display_confirm.as_ref()
     }
 
+    /// The display sheet: the layouts the attached displays allow and the
+    /// wireless displays the desktop can be streamed to, as it shows them.
+    #[must_use]
+    pub fn display_sheet(&self) -> Option<&tilo_sheets::displays::DisplaysSeat> {
+        self.display_sheet.seat()
+    }
+
     /// Whether setup is up: it withholds the desktop until it is done.
     #[must_use]
     pub fn setup_up(&self) -> bool {
@@ -2203,6 +2231,11 @@ impl Session {
                 &self.shared.notices,
             );
         }
+        self.display_sheet.follow(
+            &self.compositor.outputs(),
+            self.displays.awaiting_confirmation().is_some(),
+            &self.shared.invocations,
+        );
         let place = self.sheet_place();
         self.place_sheets(place);
         // Each round can ask for another (a key's shortcut the chrome
@@ -2344,6 +2377,7 @@ impl Session {
                 .display_confirm
                 .as_ref()
                 .map(tilo_sheets::Seat::presentation),
+            self.display_sheet.presentation(),
             shared.lock.as_ref().map(tilo_sheets::Seat::presentation),
             self.capture_studio
                 .as_ref()
@@ -2600,6 +2634,14 @@ impl Session {
                 {
                     tracing::warn!(%error, ?mode, "the displays were not arranged");
                 }
+                Ok(())
+            }
+            SessionCommand::OpenDisplaySheet => {
+                self.display_sheet.open();
+                Ok(())
+            }
+            SessionCommand::CloseDisplaySheet => {
+                self.display_sheet.close();
                 Ok(())
             }
             SessionCommand::Magnifier(step) => {
@@ -2949,6 +2991,16 @@ fn mount_setup(
     })
 }
 
+/// What the session's keys answer with besides the shortcut table: the
+/// controller the person last drove the desktop with, whether the keys
+/// being routed are that controller's own, and the display sheet Super+P
+/// puts up.
+struct KeyContext {
+    controller: Rc<Cell<Option<ui::ControllerFamily>>>,
+    controller_keys: Rc<Cell<bool>>,
+    displays: Option<tilo_sheets::Presentation>,
+}
+
 /// The hardware keys' readout above the apps, and the session's own
 /// resources and the keys it answers wherever the keyboard is: above every
 /// surface, so offered every press first.
@@ -2958,8 +3010,11 @@ fn mount_controls(
     shortcuts: Rc<RefCell<ui::shortcut_table::ShortcutConfig>>,
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
     guide: GuideKeys,
-    controller: Rc<Cell<Option<ui::ControllerFamily>>>,
-    controller_keys: Rc<Cell<bool>>,
+    KeyContext {
+        controller,
+        controller_keys,
+        displays,
+    }: KeyContext,
     scale: f64,
 ) -> (Rc<RefCell<Vec<SessionCommand>>>, Invocations) {
     let readout = Rc::new(RefCell::new(Readout::new(scale)));
@@ -2975,6 +3030,7 @@ fn mount_controls(
         Rc::clone(&invocations),
         portal,
         guide,
+        displays,
         controller,
         controller_keys,
     )));

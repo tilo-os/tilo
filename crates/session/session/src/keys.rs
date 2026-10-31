@@ -282,6 +282,9 @@ pub(crate) struct SessionKeys {
     /// The desktop's shortcut table, shared with the shortcut guide so the
     /// guide explains the chords the keys resolve against.
     shortcuts: Rc<RefCell<ShortcutConfig>>,
+    /// The display sheet's presentation: Super+P puts it up while it is not
+    /// there, and once it is, the chord moves inside it instead.
+    displays: Option<tilo_sheets::Presentation>,
     invocations: Invocations,
     /// The apps' shortcuts, which work wherever the keyboard is.
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
@@ -304,11 +307,13 @@ impl SessionKeys {
         invocations: Invocations,
         portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
         guide: GuideKeys,
+        displays: Option<tilo_sheets::Presentation>,
         controller: Rc<Cell<Option<ui::ControllerFamily>>>,
         controller_keys: Rc<Cell<bool>>,
     ) -> Self {
         Self {
             shortcuts,
+            displays,
             invocations,
             portal,
             guide,
@@ -316,6 +321,29 @@ impl SessionKeys {
             controller,
             controller_keys,
         }
+    }
+
+    /// Whether `key` is the display sheet's chord, which puts the sheet up:
+    /// Super+P, as the desktop's fixed table names it. A sheet that is up is
+    /// not opened again: what is drawn takes the chord and moves the
+    /// highlight inside it.
+    fn opens_the_display_sheet(&self, key: &HostKey) -> bool {
+        let Some(displays) = &self.displays else {
+            return false;
+        };
+        if displays.is_drawn() {
+            return false;
+        }
+        let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
+        let ui::winit::keyboard::Key::Character(letter) = &logical else {
+            return false;
+        };
+        let state = modifiers.state();
+        letter.eq_ignore_ascii_case("p")
+            && state.super_key()
+            && !state.shift_key()
+            && !state.control_key()
+            && !state.alt_key()
     }
 
     /// The app shortcut a press of `key` is, as its published resource.
@@ -352,6 +380,11 @@ impl SessionKeys {
         }
         if locked {
             return None;
+        }
+        // Super+P is the display sheet's, as it is on every desktop: the
+        // keys the fixed table names come before any app's chord.
+        if self.opens_the_display_sheet(key) {
+            return Some((Invocation::new(DISPLAYS, "open-sheet"), KeyClaim::Take));
         }
         // An app's bound shortcut is the person's answer to its sheet: it
         // is pressed like the desktop's own chords are.
@@ -503,6 +536,7 @@ mod tests {
             Invocations::default(),
             None,
             GuideKeys::default(),
+            None,
             Rc::new(Cell::new(None)),
             Rc::new(Cell::new(false)),
         )
@@ -518,6 +552,7 @@ mod tests {
             Invocations::default(),
             None,
             guide.clone(),
+            None,
             Rc::new(Cell::new(None)),
             Rc::new(Cell::new(false)),
         );

@@ -49,6 +49,11 @@ pub enum SessionCommand {
     Magnifier(Magnify),
     /// Use the displays together this way.
     Displays { mode: DisplayMode },
+    /// Put the display sheet up, where the layouts and the wireless
+    /// displays are chosen.
+    OpenDisplaySheet,
+    /// Take the display sheet down.
+    CloseDisplaySheet,
     /// Turn the night light on (`Some(true)`), off, or (`None`) the other
     /// way from how it is.
     NightLight { on: Option<bool> },
@@ -205,6 +210,18 @@ fn displays_resource() -> ResourceSpec {
             |_| SessionCommand::Displays {
                 mode: DisplayMode::Next,
             },
+        ))
+        .with_action(action(
+            "open-sheet",
+            t("session-displays-open-sheet"),
+            Vec::new(),
+            |_| SessionCommand::OpenDisplaySheet,
+        ))
+        .with_action(action(
+            "close-sheet",
+            t("session-displays-close-sheet"),
+            Vec::new(),
+            |_| SessionCommand::CloseDisplaySheet,
         ))
         .with_action(action(
             "set-mode",
