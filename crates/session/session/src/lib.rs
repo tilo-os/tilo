@@ -135,7 +135,7 @@ pub use launches::Launches;
 pub use lists::{AppLists, Lists};
 pub use mount::vpn::KillSwitch;
 pub use mount::wake::{Seams as WakeSeams, WakeInterfaces};
-pub use options::{ActionPlane, Options, QuickSettings, no_session_actions};
+pub use options::{ActionPlane, Machine, Options, QuickSettings, no_session_actions};
 use options::{open_engine, start_collaboration};
 pub use records::Records;
 pub use rotation::Accelerometer;
@@ -237,7 +237,7 @@ struct Shared {
     /// pass who sits here and what the room in front admits.
     agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
     /// It runs in a window of a desktop it did not start (see
-    /// [`Options::hosted`]).
+    /// [`Options::machine`]).
     hosted: bool,
     /// The device behind quick settings, when the session reads one.
     device: Option<DeviceHost>,
@@ -1051,7 +1051,7 @@ impl Session {
         let mut compositor = start(Box::new(policy))?;
         // A session in a window of another desktop runs no idle timers: that
         // desktop owns idle, blanking, locking and suspend.
-        compositor.set_hosted(options.hosted);
+        compositor.set_hosted(!options.machine.is_owned());
         // What the services take in wakes the loop instead of waiting for
         // its next pass.
         options.wake.bind(compositor.waker());
@@ -1425,7 +1425,7 @@ impl Session {
             readings,
             services,
             agent_runs,
-            hosted: options.hosted,
+            hosted: !options.machine.is_owned(),
             device,
             fabric,
             devices: mount::devices::Devices::default(),
@@ -1492,7 +1492,7 @@ impl Session {
         let loop_wake = compositor.waker();
         // Signing in does not change the login screens; what the person
         // changes here afterwards does, where they let it follow.
-        let comforts = (!options.hosted).then(|| {
+        let comforts = options.machine.is_owned().then(|| {
             let wake = loop_wake.clone();
             mount::comforts::Mirror::mount(std::path::PathBuf::from(tilo_auth::SOCKET), move || {
                 wake.wake_by_ref();

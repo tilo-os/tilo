@@ -21,10 +21,6 @@ use crate::{
 use tilo_desktop_surface::DesktopHandle;
 
 /// What a session starts with.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each is an independent part of what a session is lent"
-)]
 pub struct Options {
     /// Seeds the desktop's ids, so two devices never mint the same.
     pub salt: u16,
@@ -114,9 +110,8 @@ pub struct Options {
     /// The surface apps the session runs as its own processes, each a client
     /// of its compositor.
     pub surfaces: Vec<surfaces::Surface>,
-    /// It runs in a window of a desktop it did not start: that desktop owns
-    /// idle, blanking, locking and suspend, so this one runs none of them.
-    pub hosted: bool,
+    /// Which machine this session draws on (see [`Machine`]).
+    pub machine: Machine,
     /// The machine's power: the policy the person's settings resolved, the
     /// service over logind that acts on it and what holds it awake. Without
     /// one, this session runs no idle, lid, key or battery policy — it is a
@@ -158,6 +153,29 @@ pub struct Options {
     /// admitted here; one given is a run channel a test plays the agent's
     /// side of.
     pub agent_runs: Option<std::sync::Arc<tilo_agent_runs::AgentRuns>>,
+}
+
+/// Which machine a session draws on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Machine {
+    /// This one: the session owns idle, blanking, locking and suspend, the
+    /// device's controllers and services, and the session actions it carries
+    /// out reach this machine.
+    #[default]
+    Owned,
+    /// A desktop this session did not start, in whose window it runs: that
+    /// desktop owns idle, blanking, locking and suspend, so this one runs none
+    /// of them and no session action of its reaches the machine under the
+    /// window.
+    Window,
+}
+
+impl Machine {
+    /// Whether this session owns the machine it draws on.
+    #[must_use]
+    pub const fn is_owned(self) -> bool {
+        matches!(self, Self::Owned)
+    }
 }
 
 /// Where a session serves its apps the resources its services publish.
@@ -289,7 +307,7 @@ impl Default for Options {
             questions: None,
             portal: None,
             surfaces: Vec::new(),
-            hosted: false,
+            machine: Machine::default(),
             power: None,
             state: None,
             collab: true,

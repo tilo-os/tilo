@@ -903,7 +903,7 @@ fn a_session_in_a_window_runs_no_idle_timers() {
     let mut hosted = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            hosted: true,
+            machine: tilo_session::Machine::Window,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -945,7 +945,7 @@ fn a_session_in_a_window_takes_no_power_on_its_host() {
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            hosted: true,
+            machine: tilo_session::Machine::Window,
             session_actions: record_session_action,
             user: "ada".to_owned(),
             verifier: std::sync::Arc::new(Sesame),

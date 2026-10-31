@@ -58,8 +58,8 @@ pub(crate) fn mount_sheets(
         // switching user, suspending or restarting, and a session that
         // cannot check a password offers no locking.
         power.set_offers(tilo_sheets::power::Offers {
-            user_switching: !options.hosted,
-            host_power: !options.hosted,
+            user_switching: options.machine.is_owned(),
+            host_power: options.machine.is_owned(),
             locking: options.verifier.available(),
             hangs_from: 0.0,
         });

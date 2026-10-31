@@ -178,8 +178,12 @@ fn start(
     // A session in a window of another desktop runs on that desktop's
     // machine: its services stay off the host's daemons, its device stays
     // the host's, and no session action it takes reaches the host.
-    let hosted = matches!(backend, Backend::Nested);
-    let (mut services, _following) = services(&wake, power.clone(), hosted);
+    let machine = if matches!(backend, Backend::Nested) {
+        tilo_session::Machine::Window
+    } else {
+        tilo_session::Machine::Owned
+    };
+    let (mut services, _following) = services(&wake, power.clone(), machine);
     let (capture, captures) =
         tilo_session::capture::channel_to(tilo_session::capture::directory(), wake.handle());
     // The portal's side of the desktop, which the session answers.
@@ -223,8 +227,8 @@ fn start(
         desktop,
         portal,
         power,
-        hosted,
-        ..device_options(hosted)
+        machine,
+        ..device_options(machine)
     };
     let mut session = match start_session(backend, options, size) {
         Ok(session) => session,
@@ -425,31 +429,32 @@ fn desktop_services(
 
 /// What the session reads of this device: its configuration, search, quick
 /// settings over its own backends and the players, its session actions and
-/// who unlocks it. A session in a window of another desktop (`hosted`)
-/// reads no device of its own and carries out no session action: the
-/// window's machine is the host's.
+/// who unlocks it. A session in a window of another desktop
+/// ([`tilo_session::Machine::Window`]) reads no device of its own and
+/// carries out no session action: the window's machine is the host's.
 #[cfg(target_os = "linux")]
-fn device_options(hosted: bool) -> tilo_session::Options {
+fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
     use tilo_quick_settings::device::PlayerLink;
     use tilo_session::{
         ActionPlane, DeviceHost, KillSwitch, Options, QuickSettings, SessionConfig,
     };
+    let owned = machine.is_owned();
     Options {
         config: SessionConfig::load(),
         search: search_options(),
         // The apps this session starts reach its services over the socket
         // the launcher hands them; a session inside another desktop's
         // window leaves that desktop's own socket alone.
-        action_plane: if hosted {
-            ActionPlane::Off
-        } else {
+        action_plane: if owned {
             ActionPlane::Launcher
+        } else {
+            ActionPlane::Off
         },
         // A program of this login asks the person at the seat's agent door
         // to work in a workspace as an agent; a session in another
         // desktop's window serves none.
-        agent_door: (!hosted).then(tilo_session::agent_door::path).flatten(),
-        quick_settings: (!hosted).then(|| {
+        agent_door: owned.then(tilo_session::agent_door::path).flatten(),
+        quick_settings: owned.then(|| {
             QuickSettings::Device(Box::new(|wake| {
                 let device = DeviceHost::os(wake);
                 match PlayerLink::helper() {
@@ -462,13 +467,13 @@ fn device_options(hosted: bool) -> tilo_session::Options {
         // The controllers in the room drive the desktop of the session that
         // owns the machine; a session in another desktop's window leaves
         // them to that desktop.
-        controllers: (!hosted).then_some(tilo_session::controllers::Source::Machine),
-        session_actions: if hosted {
-            tilo_session::no_session_actions
-        } else {
+        controllers: owned.then_some(tilo_session::controllers::Source::Machine),
+        session_actions: if owned {
             os_actions::perform_session_action
+        } else {
+            tilo_session::no_session_actions
         },
-        lock_power: !hosted,
+        lock_power: owned,
         // The lock screen is the session's own app: started when the session
         // locks, and shown in place of the desk until a password lifts it.
         surfaces: lock_screen(),
@@ -477,7 +482,7 @@ fn device_options(hosted: bool) -> tilo_session::Options {
         state: tilo_paths::state_dir(),
         // A session in a window of another desktop leaves the machine's
         // traffic to the session that owns it.
-        kill_switch: (!hosted).then(KillSwitch::machine),
+        kill_switch: owned.then(KillSwitch::machine),
         ..Options::default()
     }
 }
@@ -558,7 +563,7 @@ type Following = Vec<Box<dyn std::any::Any>>;
 fn services(
     wake: &tilo_service::LoopWake,
     power: Option<tilo_session_power::PowerLink>,
-    hosted: bool,
+    machine: tilo_session::Machine,
 ) -> (Vec<Box<dyn tilo_session::Service>>, Following) {
     use std::sync::Arc;
     use tilo_connectivity_service::{Connectivity, device::OsDevice};
@@ -571,7 +576,7 @@ fn services(
     // What this session ran into: the list as the resource's reading and
     // each record's text as its own, which Settings reads as an app does.
     services.push(Box::new(tilo_crash_records::CrashRecords::new()));
-    if hosted {
+    if !machine.is_owned() {
         return (services, following);
     }
     if let Some(link) = power {
