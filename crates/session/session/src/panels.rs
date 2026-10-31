@@ -1,21 +1,15 @@
 //! The session's surface apps on their layers above the windows: where
 //! each goes on the outputs, and when it shows.
 
-use std::cell::Cell;
 use std::rc::Rc;
-use std::time::Instant;
 
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
+use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop::topbar::TOPBAR_HEIGHT_PX;
 use tilo_surface_host::{AppHost, Placement, Published};
 use ui::host_operation::ResourceOperationStart;
 use ui::kurbo::Rect;
-
-/// The width of a popover panel (quick settings), logical pixels.
-const POPOVER_WIDTH: i32 = 380;
-/// The gap between a popover and the edges of its output.
-const MARGIN: i32 = 8;
 
 /// The bar's height, whole logical pixels.
 fn bar_height() -> i32 {
@@ -31,6 +25,21 @@ fn bar_height() -> i32 {
 /// cluster is on.
 fn first(outputs: &[(i32, i32, i32, i32)]) -> Option<(i32, i32, i32, i32)> {
     outputs.first().copied()
+}
+
+/// The rect the stack places a surface at, as a placement at `scale`.
+fn placed(place: Rect, scale: f64) -> Placement {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a placed surface is at most a few thousand logical pixels"
+    )]
+    let (x, y, w, h) = (
+        place.x0.round() as i32,
+        place.y0.round() as i32,
+        place.width().round() as i32,
+        place.height().round() as i32,
+    );
+    placement(x, y, w, h, scale)
 }
 
 /// A rectangle in logical pixels as a placement at `scale`.
@@ -74,27 +83,32 @@ impl tilo_quick_settings::host::PanelHost for Tap {
     }
 }
 
-/// An app the bar opens below its right end, shown while `open` holds; a
-/// press anywhere else closes it.
+/// An app the bar opens under its right end, or beside the caret that asked
+/// for it: it shows while the stack has its surface up, stands where the
+/// stack places it, and a press anywhere else closes it — the session's
+/// reader of presses outside the overlays does that, so nothing here
+/// decides it.
 pub(crate) struct Popover {
     host: AppHost,
-    open: Rc<Cell<bool>>,
-    /// When a press outside last closed it.
-    dismissed: Rc<Cell<Option<Instant>>>,
+    overlays: Overlays,
 }
 
 impl Popover {
-    pub(crate) fn new(
-        app: ui::App,
-        open: Rc<Cell<bool>>,
-        dismissed: Rc<Cell<Option<Instant>>>,
-        scale: f64,
-    ) -> Self {
+    pub(crate) fn new(app: ui::App, overlays: Overlays, scale: f64) -> Self {
+        let place = overlays.place(Slot::QuickSettings);
+        let start = place.map_or_else(
+            || placement(0, 0, 1, 1, scale),
+            |place| placed(place, scale),
+        );
         Self {
-            host: AppHost::new(app, placement(0, 0, POPOVER_WIDTH, 1, scale)),
-            open,
-            dismissed,
+            host: AppHost::new(app, start),
+            overlays,
         }
+    }
+
+    /// Whether the stack has this popover up.
+    fn open(&self) -> bool {
+        self.overlays.is_open(Slot::QuickSettings)
     }
 }
 
@@ -116,7 +130,7 @@ impl Published for Popover {
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
-        if self.open.get() {
+        if self.open() {
             self.host.accessible_labels()
         } else {
             Vec::new()
@@ -126,7 +140,7 @@ impl Published for Popover {
 
 impl SurfaceHost for Popover {
     fn layers(&self) -> Vec<HostLayer> {
-        if self.open.get() {
+        if self.open() {
             self.host.layers()
         } else {
             Vec::new()
@@ -136,11 +150,11 @@ impl SurfaceHost for Popover {
     /// Whether what the panel shows is a secret — its Wi-Fi passphrase field
     /// with a value in it — and so never leaves the display in a capture.
     fn withholds_captures(&self) -> bool {
-        self.open.get() && self.host.withholds_captures()
+        self.open() && self.host.withholds_captures()
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
-        self.open.get() && self.host.accepts_pointer(x, y)
+        self.open() && self.host.accepts_pointer(x, y)
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
@@ -159,14 +173,8 @@ impl SurfaceHost for Popover {
         self.host.pointer_axis(horizontal, vertical);
     }
 
-    fn pressed_elsewhere(&mut self) {
-        if self.open.replace(false) {
-            self.dismissed.set(Some(Instant::now()));
-        }
-    }
-
     fn wants_keyboard(&self) -> bool {
-        self.open.get()
+        self.overlays.target() == tilo_desktop::overlays::Target::Surface(Slot::QuickSettings)
     }
 
     fn key(&mut self, key: &HostKey) {
@@ -174,6 +182,15 @@ impl SurfaceHost for Popover {
     }
 
     fn prepare_frame(&mut self) -> bool {
+        // It stands where the stack places it: under the bar's trailing end,
+        // or beside the caret that asked for it.
+        if let Some(place) = self.overlays.place(Slot::QuickSettings) {
+            let scale = self.host.placement().scale;
+            let place = placed(place, scale);
+            if self.host.placement() != place {
+                self.host.set_placement(place);
+            }
+        }
         // Kept current while hidden too: what it offers follows the
         // readings it was lent, open or not. Nothing is drawn unless
         // something changed.
@@ -190,23 +207,6 @@ impl SurfaceHost for Popover {
 
     fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
         self.host.set_backdrops(images);
-    }
-
-    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
-        let Some((x, y, w, h)) = first(outputs) else {
-            return;
-        };
-        let top = y.saturating_add(bar_height());
-        let scale = self.host.placement().scale;
-        self.host.set_placement(placement(
-            x.saturating_add(w)
-                .saturating_sub(POPOVER_WIDTH)
-                .saturating_sub(MARGIN),
-            top,
-            POPOVER_WIDTH,
-            h.saturating_sub(bar_height()).saturating_sub(MARGIN),
-            scale,
-        ));
     }
 }
 
@@ -445,8 +445,8 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
         self.0.borrow_mut().pointer_axis(horizontal, vertical);
     }
 
-    fn pressed_elsewhere(&mut self) {
-        self.0.borrow_mut().pressed_elsewhere();
+    fn pressed_elsewhere(&mut self, x: f64, y: f64) {
+        self.0.borrow_mut().pressed_elsewhere(x, y);
     }
 
     fn claim_key(&mut self, key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim {

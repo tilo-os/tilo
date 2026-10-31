@@ -44,6 +44,7 @@ use crate::desktop_actions::{
 };
 use crate::emoji_picker::{EmojiLink, EmojiPicker};
 use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction};
+use crate::overlays::{Overlays, Slot};
 use crate::overview::{OverviewHost, workspace_cards};
 use crate::overview_panel::{OverviewPanel, OverviewPick};
 use crate::shortcuts::{page_chord, page_shortcut_action};
@@ -689,11 +690,12 @@ pub struct DesktopChrome {
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// What a host's bar source raised, carried out on the next update.
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
-    /// Whether the chrome takes the keyboard, as of its last update or
-    /// event.
-    keyboard: Rc<Cell<bool>>,
-    /// Whether the reader's focus is on the chrome rather than on the desk's
-    /// windows, as the overlay that is up takes the keyboard.
+    /// The surfaces the chrome draws, as the session's overlay stack holds
+    /// them: which are up, what kind each is, and which holds the keyboard.
+    overlays: Overlays,
+    /// Whether the reader's focus sits on the chrome, as the focus framework
+    /// put it there; cleared as soon as no surface the chrome draws holds the
+    /// keyboard, which the stack says.
     focused: bool,
 }
 
@@ -777,16 +779,25 @@ impl DesktopChrome {
             rect: Rect::ZERO,
             asks: Rc::default(),
             intents: Rc::default(),
-            keyboard: Rc::default(),
+            overlays: Overlays::new(),
             focused: false,
         }
     }
 
-    /// Set while keys should come to the chrome rather than the window in
-    /// front ([`Self::wants_keyboard`]), for a host routing keys.
+    /// The surfaces the chrome draws, as the session's stack holds them.
     #[must_use]
-    pub fn keyboard(&self) -> Rc<Cell<bool>> {
-        Rc::clone(&self.keyboard)
+    pub const fn overlays(&self) -> &Overlays {
+        &self.overlays
+    }
+
+    /// Publish the chrome's surfaces to `overlays`: the session's stack, which
+    /// says which of them holds the keyboard and what a press outside them
+    /// closes.
+    #[must_use]
+    pub fn with_overlays(mut self, overlays: Overlays) -> Self {
+        self.overlays = overlays;
+        self.publish_overlays();
+        self
     }
 
     /// Keep the emoji picker's openings, picks and recents through `link`: the
@@ -854,40 +865,31 @@ impl DesktopChrome {
         self.tilo_menu.is_open() || self.workspace_menu.is_open()
     }
 
-    /// Let the open menus take what they cover, in the order they stand;
-    /// true when one took `event`.
-    fn menu_event(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut EventCtx<'_>,
-        [tilo_menu, workspace_menu]: [NodeId; 2],
-    ) -> bool {
-        if self.workspace_menu.is_open() {
-            self.workspace_menu
-                .handle_event(event, &mut ctx.reborrow(ctx.path, workspace_menu));
-            if *ctx.handled {
-                return true;
+    /// Say what the chrome's own surfaces are to the stack: which are up and
+    /// which are gone. Reached from everywhere they open, close or take a
+    /// key, so the stack's answer — which of them holds the keyboard, what a
+    /// press outside one closes — is what the chrome shows.
+    fn publish_overlays(&mut self) {
+        for (slot, open) in [
+            (Slot::Switcher, self.switcher.is_active()),
+            (Slot::Emoji, self.emoji.is_open()),
+            (Slot::WorkspaceMenu, self.workspace_menu.is_open()),
+            (Slot::TiloMenu, self.tilo_menu.is_open()),
+            (Slot::Overview, self.overview.is_open()),
+            (Slot::Strips, self.navigator.takes_keys()),
+        ] {
+            if open == self.overlays.is_open(slot) {
+                continue;
+            }
+            if open {
+                self.overlays.open(slot, None);
+            } else {
+                self.overlays.close(slot);
             }
         }
-        if self.tilo_menu.is_open() {
-            self.tilo_menu
-                .handle_event(event, &mut ctx.reborrow(ctx.path, tilo_menu));
-            if *ctx.handled {
-                return true;
-            }
+        if !self.is_focusable() {
+            self.focused = false;
         }
-        false
-    }
-
-    /// Whether keys should come here rather than to the window in front:
-    /// a menu, the overview, the emoji picker or the strip switcher is up.
-    #[must_use]
-    pub fn wants_keyboard(&self) -> bool {
-        self.menu_open()
-            || self.overview.is_open()
-            || self.emoji.is_open()
-            || self.navigator.takes_keys()
-            || self.switcher.is_active()
     }
 
     /// The chrome's own accessibility node: the group over the desk that
@@ -895,22 +897,12 @@ impl DesktopChrome {
     /// the overview, the menus) are children widgets, which the host's walk
     /// exports on its own.
     fn accessibility_group(&self) -> ui::a11y::AccessNode {
+        let holds = self.is_focusable();
         ui::a11y::AccessNode::new(ui::a11y::Role::Group).with_state(
             ui::a11y::AccessState::new()
-                .focusable(self.is_focusable())
+                .focusable(holds)
                 .focused(self.focused),
         )
-    }
-
-    /// Take the keyboard while an overlay of the chrome's own is up, and hand
-    /// it back — the reader's focus with it — once none is. Reached from
-    /// everywhere the chrome's overlays open, close or take a key.
-    fn take_keyboard(&mut self) {
-        let wanted = self.wants_keyboard();
-        self.keyboard.set(wanted);
-        if !wanted {
-            self.focused = false;
-        }
     }
 
     /// The painted overlays on screen now, bottom to top — the order a
@@ -946,7 +938,7 @@ impl DesktopChrome {
             place.caret,
             &ui::i18n::I18nManager::current_locale(),
         );
-        self.take_keyboard();
+        self.publish_overlays();
     }
 
     /// The display the person is working on, while the desk spans several:
@@ -971,7 +963,7 @@ impl DesktopChrome {
     /// Close the emoji picker without inserting anything.
     pub fn close_emoji(&mut self) {
         self.emoji.close();
-        self.take_keyboard();
+        self.publish_overlays();
     }
 
     /// Super+. opens the picker, and closes it again while it is up.
@@ -2283,7 +2275,7 @@ impl Widget for DesktopChrome {
         }
         changed |= self.emoji.needs_redraw();
         self.observe_navigation();
-        self.take_keyboard();
+        self.publish_overlays();
         if let Some(open) = &self.overview_open {
             open.set(self.overview.is_open());
         }
@@ -2454,12 +2446,22 @@ impl Widget for DesktopChrome {
             }
             self.note_emoji_picks();
             *ctx.handled = true;
-            self.take_keyboard();
+            self.publish_overlays();
             return;
         }
-        // The menus take what they cover, the keyboard and the press that
-        // dismisses them.
-        if self.menu_event(event, ctx, [*tilo_menu, *workspace_menu]) {
+        // The bar's menus take what they cover, the keyboard and the press
+        // that dismisses them, in the order the stack stands them: the
+        // workspace's over the Tilo mark's.
+        if self.overlays.is_open(Slot::WorkspaceMenu) {
+            self.workspace_menu
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *workspace_menu));
+        }
+        if !*ctx.handled && self.overlays.is_open(Slot::TiloMenu) {
+            self.tilo_menu
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *tilo_menu));
+        }
+        if *ctx.handled {
+            self.publish_overlays();
             return;
         }
         // While the switcher is open every key is the switcher's, and the
@@ -2473,7 +2475,7 @@ impl Widget for DesktopChrome {
             );
             if self.take_switcher(outcome) {
                 *ctx.handled = true;
-                self.take_keyboard();
+                self.publish_overlays();
                 return;
             }
         }
@@ -2481,12 +2483,14 @@ impl Widget for DesktopChrome {
         // the desktop's chords, as any field's typing does.
         if self.navigation_event(event, ctx.scale_factor, *ctx.modifiers) {
             *ctx.handled = true;
+            self.publish_overlays();
             return;
         }
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && self.chord(key, ctx.modifiers)
         {
             *ctx.handled = true;
+            self.publish_overlays();
             return;
         }
         // The open overview takes the keyboard and what it covers; the bar
@@ -2513,7 +2517,7 @@ impl Widget for DesktopChrome {
                 }
             }
         }
-        self.take_keyboard();
+        self.publish_overlays();
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -2527,11 +2531,11 @@ impl Widget for DesktopChrome {
         children
     }
 
-    /// Focus reaches the chrome while an overlay of its own takes the
-    /// keyboard, so a reader standing in the emoji card stays there as the
-    /// chrome rebuilds under it rather than falling back to the window.
+    /// Focus reaches the chrome while a surface it draws holds the keyboard,
+    /// so a reader standing in the emoji card stays there as the chrome
+    /// rebuilds under it rather than falling back to the window.
     fn is_focusable(&self) -> bool {
-        self.wants_keyboard()
+        self.overlays.target().slot().is_some_and(Slot::is_chrome)
     }
 
     fn set_focus(&mut self, focused: bool) {

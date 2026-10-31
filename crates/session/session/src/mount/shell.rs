@@ -10,17 +10,22 @@
 //! door and invokes the same verbs, so the menu a person sees and the menu a
 //! script drives are one thing.
 //!
+//! The same service publishes the surface stack — `desktop:overlays` — which
+//! says what stands over the windows and in what order, and the keyboard's
+//! target, `desktop:focus`, which derives from it. A surface is opened and
+//! closed by name, with the place it hangs at when it is anchored to one.
+//!
 //! What is kept here is only what a reading cannot derive: which window the
 //! menu is for and where the person put it. The rows themselves are the
 //! desk's, asked for on every read, so a menu left open while its window
 //! changes offers what that window offers now.
 
-use std::cell::Cell;
 use std::rc::Rc;
 
 use serde::Serialize;
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
+use tilo_desktop::overlays::{Anchor as Place, Overlays, Slot};
 use tilo_desktop_model::TabId;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::active_route;
@@ -34,11 +39,23 @@ pub const WINDOW_MENU: &str = "desktop:window-menu";
 /// What kind of resource [`WINDOW_MENU`] is.
 pub const WINDOW_MENU_KIND: &str = "desktop.window-menu";
 
-/// The shell's own state, as the session holds it.
-///
-/// It starts with the window menu: the rest of the shell's presentation —
-/// focus, the overlay stack, which strip each display shows — joins it as
-/// each moves behind its own verbs.
+/// What stands over the windows, and in what order, in the session's
+/// catalogue: the surface stack.
+pub const OVERLAYS: &str = "desktop:overlays";
+
+/// What kind of resource [`OVERLAYS`] is.
+pub const OVERLAYS_KIND: &str = "desktop.overlays";
+
+/// What holds the keyboard, in the session's catalogue: the window in front,
+/// or the surface over it.
+pub const FOCUS: &str = "desktop:focus";
+
+/// What kind of resource [`FOCUS`] is.
+pub const FOCUS_KIND: &str = "desktop.focus";
+
+/// The window menu's state, as the session holds it: the rest of the shell's
+/// presentation — focus, the surface stack, which strip each display shows —
+/// is in the stack beside it.
 #[derive(Debug, Default)]
 pub struct ShellState {
     /// The window whose menu is up, and where it stands: `None` while no
@@ -61,23 +78,6 @@ impl ShellState {
     #[must_use]
     pub fn menu_tab(&self) -> Option<TabId> {
         self.menu.as_ref().map(|menu| menu.tab)
-    }
-}
-
-/// Whether the shell's window menu is up, as the verbs set it and the keys
-/// read it: Escape closes it, and until it is closed no press is the window's.
-#[derive(Clone, Debug, Default)]
-pub struct MenuOpen(Rc<Cell<bool>>);
-
-impl MenuOpen {
-    /// Whether it is up.
-    #[must_use]
-    pub fn get(&self) -> bool {
-        self.0.get()
-    }
-
-    fn set(&self, open: bool) {
-        self.0.set(open);
     }
 }
 
@@ -110,6 +110,34 @@ pub enum ShellEffect {
         /// The row's id, as the reading lists it.
         #[param("The row to choose")]
         row: String,
+    },
+}
+
+/// What the surface stack offers: opening and closing a surface by name.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.desktop.overlays")]
+pub enum OverlayEffect {
+    /// Open a surface
+    ///
+    /// Named as the reading names it; the session's own surfaces only. A
+    /// surface already up moves to where it is asked to stand.
+    #[effect(own_device, icon = "layers")]
+    Open {
+        /// The surface, as the reading names it.
+        #[param("The surface to open, as the reading names it")]
+        slot: String,
+        /// Where to hang it, as the reading gives it back: `at:x,y` over the
+        /// thing it acts on, `beside:x0,y0,x1,y1,gap` clear of it. Its own
+        /// place by default.
+        #[param("Where to hang it, as \"at:x,y\" or \"beside:x0,y0,x1,y1,gap\"")]
+        anchor: Option<String>,
+    },
+    /// Close a surface
+    #[effect(own_device, idempotent)]
+    Close {
+        /// The surface, as the reading names it.
+        #[param("The surface to close, as the reading names it")]
+        slot: String,
     },
 }
 
@@ -150,36 +178,95 @@ impl From<WindowMenuRow> for Row {
     }
 }
 
+/// The surface stack as it reads: what stands over the windows, topmost
+/// first.
+#[derive(Debug, Serialize)]
+struct Stack {
+    stack: Vec<Surface>,
+}
+
+/// One open surface.
+#[derive(Debug, Serialize)]
+struct Surface {
+    slot: &'static str,
+    role: &'static str,
+    anchor: String,
+    modality: &'static str,
+    owner: String,
+    lifecycle: &'static str,
+    size: Extent,
+    /// Where the host places it, for a surface whose anchor and size settle a
+    /// rect. A surface its own view places has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    place: Option<Area>,
+}
+
+/// How much of a display a surface takes, in logical pixels.
+#[derive(Debug, Serialize)]
+struct Extent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    width: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    height: Option<f64>,
+}
+
+/// Where a surface stands.
+#[derive(Debug, Serialize)]
+struct Area {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+/// What holds the keyboard.
+#[derive(Debug, Serialize)]
+struct Focus {
+    /// `window`, or `overlay:<slot>`.
+    target: String,
+    /// The surface, while one holds it.
+    surface: Option<&'static str>,
+}
+
+/// The surface `text` names, as the readings and the verbs spell it.
+fn named(text: &str) -> Result<Slot, DoorError> {
+    Slot::named(text.trim()).ok_or_else(|| DoorError::Unavailable {
+        code: "unknown-surface".into(),
+        reason: format!("{text} is not a surface"),
+    })
+}
+
 /// The shell's resources, read from the desk and from the state the session
 /// keeps beside it.
 pub struct Shell {
     handle: DesktopHandle,
     state: ShellState,
-    open: MenuOpen,
+    /// The surfaces over the desk: what stands where, which holds the
+    /// keyboard, and what a press outside one closes.
+    overlays: Overlays,
 }
 
 impl Shell {
-    /// The shell over `handle`, saying whether its menu is up through
-    /// `open`.
+    /// The shell over `handle`, publishing the surfaces in `overlays`.
     #[must_use]
-    pub fn new(handle: DesktopHandle, open: MenuOpen) -> Self {
+    pub fn new(handle: DesktopHandle, overlays: Overlays) -> Self {
         Self {
             handle,
             state: ShellState::default(),
-            open,
+            overlays,
         }
     }
 
-    /// Mount it as one of the session's services, and say whether its menu
-    /// is up through the `open` keys read.
+    /// Mount it as one of the session's services, publishing the surfaces in
+    /// `overlays`.
     pub fn mount(
         services: &Rc<std::cell::RefCell<tilo_service::Services>>,
         handle: &DesktopHandle,
-        open: MenuOpen,
+        overlays: Overlays,
     ) {
         services
             .borrow_mut()
-            .add(Box::new(Self::new(handle.clone(), open)));
+            .add(Box::new(Self::new(handle.clone(), overlays)));
     }
 
     /// The tab of the window in front: the active group's, in the strip on
@@ -244,15 +331,75 @@ impl Shell {
                 reason: "That window offers nothing".into(),
             });
         }
+        let at = anchor.unwrap_or((0.0, 0.0));
         self.state.menu = Some(OpenMenu { tab, anchor });
-        self.open.set(true);
+        self.overlays.open(
+            Slot::WindowMenu,
+            Some(Place::At(ui::kurbo::Point::new(at.0, at.1))),
+        );
         Ok(())
     }
 
     /// Close the menu, if one is up.
     fn close(&mut self) {
         self.state.menu = None;
-        self.open.set(false);
+        self.overlays.close(Slot::WindowMenu);
+    }
+
+    /// Open a surface the session itself puts up, at `anchor` or where it
+    /// stands by itself. The desktop's own chrome keeps the rest: its menus,
+    /// the picker, the overview and the strip ribbon open and close with the
+    /// widgets that draw them, and say so to the same stack.
+    fn open_surface(&self, slot: &str, anchor: Option<&str>) -> Result<(), DoorError> {
+        let slot = named(slot)?;
+        if !slot.session_closes() {
+            return Err(DoorError::Unavailable {
+                code: "not-mine".into(),
+                reason: format!(
+                    "The desktop shows {} itself, in the widget that owns it",
+                    slot.as_str()
+                ),
+            });
+        }
+        if slot == Slot::WindowMenu {
+            return Err(DoorError::Unavailable {
+                code: "use-window-menu".into(),
+                reason: "The window menu opens from \"desktop:window-menu\", which names \
+                         the window it is for"
+                    .into(),
+            });
+        }
+        let anchor = anchor
+            .map(|text| {
+                Place::parse(text).ok_or_else(|| DoorError::Unavailable {
+                    code: "unknown-anchor".into(),
+                    reason: format!("{text} is not a place to hang a surface"),
+                })
+            })
+            .transpose()?;
+        self.overlays.open(slot, anchor);
+        Ok(())
+    }
+
+    /// Close a surface the session itself puts up.
+    fn close_surface(&mut self, slot: &str) -> Result<(), DoorError> {
+        let slot = named(slot)?;
+        if !slot.session_closes() {
+            return Err(DoorError::Unavailable {
+                code: "not-mine".into(),
+                reason: format!(
+                    "The desktop shows {} itself, in the widget that owns it",
+                    slot.as_str()
+                ),
+            });
+        }
+        if slot == Slot::WindowMenu {
+            // The menu keeps its window and place beside the stack; both go
+            // together.
+            self.close();
+        }
+        self.overlays.close(slot);
+        Ok(())
     }
 
     /// Choose row `row` of the open menu, as the desk would send it.
@@ -281,35 +428,54 @@ impl Shell {
 
 impl Service for Shell {
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![offer::<ShellEffect>(ResourceSpec::new(
-            WINDOW_MENU,
-            WINDOW_MENU_KIND,
-            "Window menu",
-        ))]
+        vec![
+            offer::<ShellEffect>(ResourceSpec::new(
+                WINDOW_MENU,
+                WINDOW_MENU_KIND,
+                "Window menu",
+            )),
+            offer::<OverlayEffect>(ResourceSpec::new(OVERLAYS, OVERLAYS_KIND, "Surfaces")),
+            ResourceSpec::new(FOCUS, FOCUS_KIND, "Keyboard focus"),
+        ]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
-        if resource != WINDOW_MENU {
-            return None;
+        match resource {
+            WINDOW_MENU => Some(reading(&self.window_menu())),
+            OVERLAYS => Some(reading(&Stack {
+                stack: self
+                    .overlays
+                    .entries()
+                    .into_iter()
+                    .map(|entry| Surface {
+                        slot: entry.slot.as_str(),
+                        role: entry.role.as_str(),
+                        anchor: entry.anchor.as_str(),
+                        modality: entry.modality.as_str(),
+                        owner: entry.owner.as_str(),
+                        lifecycle: entry.lifecycle.as_str(),
+                        size: Extent {
+                            width: entry.size.width,
+                            height: entry.size.height,
+                        },
+                        place: entry.place.map(|place| Area {
+                            x: place.x0,
+                            y: place.y0,
+                            w: place.width(),
+                            h: place.height(),
+                        }),
+                    })
+                    .collect(),
+            })),
+            FOCUS => {
+                let target = self.overlays.target();
+                Some(reading(&Focus {
+                    target: target.as_str(),
+                    surface: target.slot().map(Slot::as_str),
+                }))
+            }
+            _ => None,
         }
-        let Some(menu) = &self.state.menu else {
-            return Some(reading(&Reading {
-                tab: None,
-                anchor: None,
-                rows: Vec::new(),
-            }));
-        };
-        let tab = menu.tab;
-        Some(reading(&Reading {
-            tab: Some(tab.to_string()),
-            anchor: self.anchor(tab, menu.anchor),
-            rows: self
-                .handle
-                .window_menu(tab)
-                .into_iter()
-                .map(Row::from)
-                .collect(),
-        }))
     }
 
     fn invoke(
@@ -318,16 +484,50 @@ impl Service for Shell {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, DoorError> {
-        if resource != WINDOW_MENU {
-            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
-        }
-        match decode::<ShellEffect>(&self.resources(), resource, action, arguments)? {
-            ShellEffect::Open { tab, anchor } => {
-                self.open(tab.as_deref(), anchor.as_deref())?;
+        match resource {
+            WINDOW_MENU => {
+                match decode::<ShellEffect>(&self.resources(), resource, action, arguments)? {
+                    ShellEffect::Open { tab, anchor } => {
+                        self.open(tab.as_deref(), anchor.as_deref())?;
+                    }
+                    ShellEffect::Close => self.close(),
+                    ShellEffect::Choose { row } => self.choose(&row)?,
+                }
             }
-            ShellEffect::Close => self.close(),
-            ShellEffect::Choose { row } => self.choose(&row)?,
+            OVERLAYS => {
+                match decode::<OverlayEffect>(&self.resources(), resource, action, arguments)? {
+                    OverlayEffect::Open { slot, anchor } => {
+                        self.open_surface(&slot, anchor.as_deref())?;
+                    }
+                    OverlayEffect::Close { slot } => self.close_surface(&slot)?,
+                }
+            }
+            _ => return Err(DoorError::Unknown(ActionAddress::new(resource, action))),
         }
         Ok(Started::Done(ActionOutput::default()))
+    }
+}
+
+impl Shell {
+    /// The window menu as the desk offers it now.
+    fn window_menu(&self) -> Reading {
+        let Some(menu) = &self.state.menu else {
+            return Reading {
+                tab: None,
+                anchor: None,
+                rows: Vec::new(),
+            };
+        };
+        let tab = menu.tab;
+        Reading {
+            tab: Some(tab.to_string()),
+            anchor: self.anchor(tab, menu.anchor),
+            rows: self
+                .handle
+                .window_menu(tab)
+                .into_iter()
+                .map(Row::from)
+                .collect(),
+        }
     }
 }

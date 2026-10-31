@@ -54,7 +54,7 @@ impl BrowserShell {
             || self.picker.is_open()
             || self.people_open
             || self.profile.is_open()
-            || self.top.wants_keyboard();
+            || self.top.overlays().target().slot().is_some();
         busy.then_some(Quiet::Busy)
     }
 

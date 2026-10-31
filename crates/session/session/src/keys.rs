@@ -20,6 +20,7 @@ use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
 use tilo_desktop::desk_widgets::DeskFold;
 use tilo_desktop::desktop_actions::CHROME_RESOURCE;
 use tilo_desktop::osd::{OSD_RESOURCE, Osd, OsdKind};
+use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_surface_host::DeskGesture;
 use ui::host_operation::ResourceOperationStart;
 use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
@@ -28,7 +29,7 @@ use xkeysym::key as keysyms;
 use crate::Shared;
 use crate::displays;
 use crate::mount::services::answered;
-use crate::mount::shell::{MenuOpen, WINDOW_MENU};
+use crate::mount::shell::OVERLAYS;
 /// One published action to invoke, with its arguments.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Invocation {
@@ -328,19 +329,20 @@ impl GuideKeys {
 }
 
 /// What stands over the desk and what the keys owe it: Escape folds the card
-/// a desk widget has open, and closes the shell's window menu while it is up.
-/// Neither hears keys itself, so both say here what theirs are worth.
+/// a desk widget has open, and closes the topmost surface of the stack that
+/// answers Escape. Neither hears keys itself, so both say here what theirs
+/// are worth.
 #[derive(Clone, Default)]
 pub(crate) struct DeskKeys {
     fold: DeskFold,
-    menu: MenuOpen,
+    overlays: Overlays,
 }
 
 impl DeskKeys {
-    /// The desk's fold and the shell's window menu, as the session holds them.
+    /// The desk's fold and the surfaces over it, as the session holds them.
     #[must_use]
-    pub(crate) fn new(fold: DeskFold, menu: MenuOpen) -> Self {
-        Self { fold, menu }
+    pub(crate) fn new(fold: DeskFold, overlays: Overlays) -> Self {
+        Self { fold, overlays }
     }
 }
 
@@ -365,9 +367,10 @@ pub(crate) struct SessionKeys {
     /// is under the windows and hears no keys itself, so it says here what
     /// its keys are worth.
     fold: DeskFold,
-    /// Whether the shell's window menu is up, which Escape closes: while it
-    /// is, a press is the menu's and not the window's.
-    menu: MenuOpen,
+    /// What stands over the desk: Escape closes the topmost surface that
+    /// answers it, and while one holds the keyboard a press is that
+    /// surface's and not the window's.
+    overlays: Overlays,
     /// The shortcut resources whose chords are held down, by key.
     held: RefCell<BTreeMap<u32, String>>,
     /// The controller the person last drove the desktop with, which a press
@@ -401,7 +404,7 @@ impl SessionKeys {
             portal,
             guide,
             fold: desk.fold,
-            menu: desk.menu,
+            overlays: desk.overlays,
             held: RefCell::new(BTreeMap::new()),
             controller,
             controller_keys,
@@ -414,11 +417,13 @@ impl SessionKeys {
         key.unmodified_keysym == keysyms::Escape && self.fold.is_open()
     }
 
-    /// Whether `key` closes the shell's window menu: Escape, while the menu
-    /// is up. The menu is drawn elsewhere, so this surface is the one that
-    /// hears it.
-    fn closes_the_menu(&self, key: &HostKey) -> bool {
-        key.unmodified_keysym == keysyms::Escape && self.menu.get()
+    /// The surface `key` closes, by the stack's dismissal table: Escape, for
+    /// the topmost surface that answers it. The surface is drawn elsewhere,
+    /// so this surface is the one that hears it.
+    fn closes_the_top_surface(&self, key: &HostKey) -> Option<Slot> {
+        (key.unmodified_keysym == keysyms::Escape)
+            .then(|| self.overlays.escape())
+            .flatten()
     }
 
     /// Whether `key` is the display sheet's chord, which puts the sheet up:
@@ -614,7 +619,7 @@ impl SurfaceHost for SessionKeys {
                     .map_or(KeyClaim::Pass, |(_, claim)| claim);
             }
         }
-        if self.closes_the_menu(key) {
+        if self.closes_the_top_surface(key).is_some() {
             return KeyClaim::Take;
         }
         if self.folds_the_desk(key) {
@@ -652,10 +657,10 @@ impl SurfaceHost for SessionKeys {
             self.guide_key(key);
             return;
         }
-        if self.closes_the_menu(key) {
+        if let Some(slot) = self.closes_the_top_surface(key) {
             self.invocations
                 .borrow_mut()
-                .push(Invocation::new(WINDOW_MENU, "close"));
+                .push(Invocation::new(OVERLAYS, "close").with("slot", slot.as_str()));
             return;
         }
         if self.folds_the_desk(key) {
@@ -1183,7 +1188,7 @@ mod tests {
             Presses::default(),
             None,
             GuideKeys::default(),
-            DeskKeys::new(fold.clone(), MenuOpen::default()),
+            DeskKeys::new(fold.clone(), Overlays::new()),
             None,
             Rc::new(Cell::new(None)),
             Rc::new(Cell::new(false)),

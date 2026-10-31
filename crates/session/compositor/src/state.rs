@@ -883,6 +883,13 @@ impl State {
     }
 
     pub(crate) fn pointer_button(&mut self, button: u32, pressed: bool, serial: Serial, time: u32) {
+        // Every surface hears the press end, before any of them acts on the
+        // button: a press and what it is still doing are over together.
+        if !pressed {
+            for host in &mut self.hosts {
+                host.press_ended(self.pointer.x, self.pointer.y);
+            }
+        }
         if self.drag_button(button, pressed, serial, time) {
             return;
         }
@@ -890,7 +897,7 @@ impl State {
             let target = self.pointer_target;
             for (index, host) in self.hosts.iter_mut().enumerate() {
                 if target != PointerTarget::Host(index) {
-                    host.pressed_elsewhere();
+                    host.pressed_elsewhere(self.pointer.x, self.pointer.y);
                 }
             }
         }
