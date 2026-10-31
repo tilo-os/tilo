@@ -309,6 +309,39 @@ pub fn diff(old: &wire::Node, new: &wire::Node, out: &mut Vec<wire::Patch>) {
     diff_node(old, new, &mut Vec::new(), out);
 }
 
+/// The node at `path` (keys below the root) of `node`, when each key on the way names one child.
+#[must_use]
+pub fn at<'a>(node: &'a wire::Node, path: &[String]) -> Option<&'a wire::Node> {
+    path.iter().try_fold(node, |node, key| {
+        let mut named = node.children.iter().filter(|child| child.key == *key);
+        let child = named.next()?;
+        named.next().is_none().then_some(child)
+    })
+}
+
+/// The node at `path` (keys below the root) of `node`.
+pub fn at_mut<'a>(node: &'a mut wire::Node, path: &[String]) -> Option<&'a mut wire::Node> {
+    path.iter().try_fold(node, |node, key| {
+        node.children.iter_mut().find(|child| child.key == *key)
+    })
+}
+
+/// The patches that bring `old`, the node at `path` of the tree the window holds, to `new`,
+/// appended to `out`; `false`, and nothing appended, when `new` is another node (another kind
+/// or key) or its children's keys are not unique: then the tree is diffed whole.
+pub fn diff_at(
+    old: &wire::Node,
+    new: &wire::Node,
+    path: &[String],
+    out: &mut Vec<wire::Patch>,
+) -> bool {
+    if old.kind != new.kind || old.key != new.key || !unique(old) || !unique(new) {
+        return false;
+    }
+    diff_node(old, new, &mut path.to_vec(), out);
+    true
+}
+
 /// Whether the keys of each node's children are unique, all the way down: what patches by
 /// key need.
 fn unique(node: &wire::Node) -> bool {

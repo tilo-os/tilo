@@ -405,7 +405,7 @@ impl Hosted {
     /// Deliver one invocation as the broker does, and wait until the instance answers it.
     fn invoke(
         &mut self,
-        invoker: Option<ActionInvoker>,
+        invoker: Option<&ActionInvoker>,
         ambient: Option<&ActionContext>,
         resource: &str,
         action: &str,
@@ -423,9 +423,7 @@ impl Hosted {
                 ui::tilo_actions::ARGUMENTS_JSON_PREFIX,
                 serde_json::Value::Object(arguments.clone())
             )),
-            actor: invoker
-                .as_ref()
-                .map_or_else(|| "ada".to_owned(), |invoker| invoker.actor.clone()),
+            actor: invoker.map_or_else(|| "ada".to_owned(), |invoker| invoker.actor.clone()),
             context: ambient.cloned().map(Box::new),
         });
         for _ in 0..2000 {
@@ -453,7 +451,7 @@ impl Hosted {
     }
 
     /// The published descriptors.
-    fn published(&mut self) -> Vec<(String, String, String)> {
+    fn published(&self) -> Vec<(String, String, String)> {
         self.host
             .instances()
             .next()
@@ -540,7 +538,7 @@ impl Window for Hosted {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) {
-        self.invoke(invoker, ambient, resource, action, arguments);
+        self.invoke(invoker.as_ref(), ambient, resource, action, arguments);
     }
 
     fn read<R>(&mut self, read: impl FnOnce(&mut ui::tilo_resource::Doc) -> R) -> R {

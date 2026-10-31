@@ -49,6 +49,7 @@ pub use crate::widget::floating_surface::PanelAlign;
 
 /// The body of an option menu: no content widget.
 #[derive(Clone, Copy, Debug, Default)]
+#[crate::component::not_a_component(part, "a popover with no body of its own")]
 pub struct NoContent;
 
 impl Widget for NoContent {
@@ -642,6 +643,7 @@ impl<C: Widget> Popover<C> {
 /// The body of a prompt popover ([`Popover::prompt`]): a caption, one
 /// field and a hint under it. Enter submits what was typed; Escape closes
 /// the popover without it.
+#[crate::component::not_a_component(part, "the body of a prompt popover")]
 pub struct PopoverPrompt {
     caption: String,
     hint: String,

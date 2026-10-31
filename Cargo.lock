@@ -327,6 +327,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shell",
+ "tasks",
  "tempfile",
  "tilo-action-policy",
  "tilo-actions",
@@ -21830,6 +21831,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-theme-bauhaus"
+version = "0.1.0"
+dependencies = [
+ "tilo-theme-sdk",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-theme-sdk"
+version = "0.1.0"
+dependencies = [
+ "kurbo",
+ "peniko",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-thumbnail"
 version = "0.1.0"
 dependencies = [
@@ -22029,6 +22047,8 @@ dependencies = [
  "tilo-spellcheck",
  "tilo-startup-metrics",
  "tilo-test-env",
+ "tilo-theme-bauhaus",
+ "tilo-theme-sdk",
  "tilo-tts",
  "tilo-ui",
  "tilo-ui-graph",
@@ -22050,6 +22070,8 @@ dependencies = [
  "unicode-script",
  "url",
  "uuid",
+ "wasmi",
+ "wat",
  "wgpu",
  "wgpu-hal",
  "windows 0.62.2",
@@ -22725,6 +22747,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tilo-automerge",
  "tilo-automerge-fork",
@@ -22732,6 +22755,7 @@ dependencies = [
  "tilo-reference",
  "tilo-resource",
  "tilolang",
+ "tracing",
  "wasmi",
  "wasmtime",
  "wat",

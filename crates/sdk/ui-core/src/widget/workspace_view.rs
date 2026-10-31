@@ -14,6 +14,7 @@ pub enum WorkspaceSwitchDirection {
     Down,
 }
 
+#[crate::component::not_a_component(shell, "the workspace's windows")]
 pub struct WorkspaceView {
     workspace_count: usize,
     active_index: usize,

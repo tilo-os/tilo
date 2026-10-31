@@ -294,6 +294,10 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
     };
     match mount_in_process(&request, &inputs) {
         Some(tilo_desktop::resolver::TileResolution::App(..)) => return "App",
+        // A packaged first-party app is its own window (71408ea066d): the
+        // tab waits for the app's process, and resolves to the app, never to
+        // a placeholder card.
+        Some(tilo_desktop::resolver::TileResolution::Opening) => return "App",
         Some(_) => return "Notice",
         None => {}
     }

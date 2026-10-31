@@ -804,6 +804,10 @@ impl crate::resources::PublishesResources for Card {
 /// Standard actions in declaration/focus order: secondaries, then primary.
 /// Unspecified buttons use measured content sizing; explicit sizes remain manual.
 /// Each wrapped line aligns to the trailing edge.
+#[crate::component::not_a_component(
+    part,
+    "the action row of a card or a dialog, built from their actions"
+)]
 pub struct Actions {
     parts: Parts,
 }
@@ -903,6 +907,10 @@ impl CardWidth {
 /// Reflows its cards into equal, aligned columns by width. Each row is as
 /// tall as its tallest card; cards share the row's height so their footers
 /// line up, and a row of short cards stays short.
+#[crate::component::not_a_component(
+    part,
+    "`ui.CardGrid` (`DescribedCardGrid`) is its described form, over cards of its own"
+)]
 pub struct CardGrid {
     cards: Vec<Element>,
     width: CardWidth,
@@ -910,6 +918,12 @@ pub struct CardGrid {
     gap: f64,
     rect: Rect,
     child_nodes: Vec<NodeId>,
+    /// What the grid is, for assistive technology: a list of the cards' names.
+    name: Option<String>,
+    /// Whether the cards were changed by the keyed operations ([`Self::insert_card`],
+    /// [`Self::remove_card`], [`Self::move_card`], [`Self::replace_card`]) since the last frame:
+    /// a change the frame's damage describes, rather than a rebuild of the grid.
+    structure: crate::widget::StructureChange,
 }
 
 impl CardGrid {
@@ -921,7 +935,84 @@ impl CardGrid {
             gap: 0.0,
             rect: Rect::ZERO,
             child_nodes: Vec::new(),
+            name: None,
+            structure: crate::widget::StructureChange::None,
         }
+    }
+
+    /// What the grid is, for assistive technology.
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// [`Self::with_accessible_name`] for a grid already built.
+    pub fn set_accessible_name(&mut self, name: impl Into<String>) {
+        self.name = Some(name.into());
+    }
+
+    /// How many cards it shows.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.cards.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.cards.is_empty()
+    }
+
+    #[must_use]
+    pub fn card(&self, index: usize) -> Option<&Element> {
+        self.cards.get(index)
+    }
+
+    /// The card at `index`, to change it in place: what it reports of the change is its own.
+    pub fn card_mut(&mut self, index: usize) -> Option<&mut Element> {
+        self.cards.get_mut(index)
+    }
+
+    /// Show `card` at `index` instead of the one there, which it returns. The change is
+    /// described to the window, so the other cards stay mounted where they are.
+    pub fn replace_card(&mut self, index: usize, card: Element) -> Option<Element> {
+        let slot = self.cards.get_mut(index)?;
+        self.structure = self
+            .structure
+            .join(crate::widget::StructureChange::Described);
+        Some(std::mem::replace(slot, card))
+    }
+
+    /// Insert `card` at `index` (at the end past it), described as [`Self::replace_card`] is.
+    pub fn insert_card(&mut self, index: usize, card: Element) {
+        let index = index.min(self.cards.len());
+        self.cards.insert(index, card);
+        self.structure = self
+            .structure
+            .join(crate::widget::StructureChange::Described);
+    }
+
+    /// Take the card at `index` out. Described as [`Self::replace_card`] is.
+    pub fn remove_card(&mut self, index: usize) -> Option<Element> {
+        if index >= self.cards.len() {
+            return None;
+        }
+        self.structure = self
+            .structure
+            .join(crate::widget::StructureChange::Described);
+        Some(self.cards.remove(index))
+    }
+
+    /// Move the card at `from` to `to`. Described as [`Self::replace_card`] is.
+    pub fn move_card(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.cards.len() {
+            return;
+        }
+        let card = self.cards.remove(from);
+        self.cards.insert(to.min(self.cards.len()), card);
+        self.structure = self
+            .structure
+            .join(crate::widget::StructureChange::Described);
     }
 
     #[must_use]
@@ -1091,12 +1182,35 @@ impl Widget for CardGrid {
         "CardGrid"
     }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::Role;
+        self.name.as_ref().map(|name| {
+            let children = self
+                .cards
+                .iter()
+                .filter_map(|card| card.accessibility())
+                .collect();
+            crate::a11y::AccessNode::new(Role::List)
+                .with_name(name.clone())
+                .with_children(children)
+        })
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
-        let mut dirty = false;
+        let mut dirty = std::mem::take(&mut self.structure).rebuilds();
         for card in &mut self.cards {
             dirty |= card.take_structure_dirty();
         }
         dirty
+    }
+
+    /// What the keyed card operations did, joined with what the cards report.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        let mut change = std::mem::take(&mut self.structure);
+        for card in &mut self.cards {
+            change = change.join(card.take_structure_change());
+        }
+        change
     }
 }
 
@@ -1104,4 +1218,6 @@ impl Widget for CardGrid {
 mod tests;
 
 mod component;
+mod grid_component;
 pub use component::CardProps;
+pub use grid_component::{CardGridCardProps, CardGridProps, DescribedCardGrid};

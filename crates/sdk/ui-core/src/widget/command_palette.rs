@@ -614,6 +614,7 @@ type EntryFilter = Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>;
               modes) set individually by callers — bundling them into a \
               bitflag or sub-struct would not make any call site clearer"
 )]
+#[crate::component::not_a_component(system, "the palette is the system's")]
 pub struct CommandPalette {
     entries: Vec<CommandEntry>,
     /// Labels and descriptions of `entries`, indexed while they stay the

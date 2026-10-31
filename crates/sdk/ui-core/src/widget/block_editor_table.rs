@@ -112,6 +112,10 @@ struct Resize {
 // Widget
 // ===========================================================================
 
+#[crate::component::not_a_component(
+    part,
+    "a table block of the block editor, which a document's body edits"
+)]
 pub struct Table {
     id: String,
 

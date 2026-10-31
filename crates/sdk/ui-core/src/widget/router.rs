@@ -276,6 +276,10 @@ fn advance_revision(revision: &mut u64) -> Result<(), RouteError> {
 type RouteFactory = dyn FnMut(&str, &Theme, &RouteHandle) -> Result<Element, String>;
 
 /// A retained single-screen host driven by an explicit [`RouteHandle`].
+#[crate::component::not_a_component(
+    framework,
+    "moving between a window's views is the window's; the language writes `open`"
+)]
 pub struct Router {
     handle: RouteHandle,
     factory: Box<RouteFactory>,

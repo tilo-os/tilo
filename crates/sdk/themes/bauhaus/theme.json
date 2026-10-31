@@ -1,0 +1,36 @@
+{
+  "schema_version": 8,
+  "id": "bauhaus",
+  "name": "Bauhaus",
+  "palette": {
+    "dark": false,
+    "hue": 85.0,
+    "chroma": 0.010,
+    "surfaces": { "base": 0.90, "content": 0.975, "sidebar": 0.945, "inspector": 0.945, "raised": 0.93, "overlay": 0.985 },
+    "ink": { "primary": 0.16, "secondary": 0.40, "tertiary": 0.53 },
+    "status": {
+      "danger": { "lightness": 0.52, "chroma": 0.13 },
+      "warning": { "lightness": 0.54, "chroma": 0.12 },
+      "success": { "lightness": 0.52, "chroma": 0.12 },
+      "info": { "lightness": 0.52, "chroma": 0.11 }
+    }
+  },
+  "emphasis": { "kind": "tinted", "hue": 28.0 },
+  "presence": { "lightness": 0.58, "chroma": 0.15 },
+  "shape": { "window_radius": 0.0, "border": { "width": 2.0, "ink": "strong" } },
+  "density": { "spacing": 1.0 },
+  "type": {
+    "face": "Default", "reading": "New Computer Modern", "base_size": 14.0,
+    "contrast": 1.2,
+    "weights": { "body": "regular", "label": "semibold", "heading": "bold" }
+  },
+  "motion": { "character": 1.0, "curve": "none", "duration_scale": 1.0 },
+  "material": {
+    "window": { "painter": "bauhaus" },
+    "control": { "painter": "bauhaus", "shadow": 3.0 },
+    "floating": { "painter": "bauhaus", "levels": 4.0, "depth": 0.14 },
+    "bar": { "painter": "bauhaus", "levels": 3.0, "depth": 0.2 },
+    "selector": { "strip": "opaque", "rim_span": 0.0, "rim_alpha": 0.0, "hover_alpha": 0.75 }
+  },
+  "depth": { "kind": "none" }
+}

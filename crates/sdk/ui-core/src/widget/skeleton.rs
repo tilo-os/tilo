@@ -24,6 +24,10 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{MediaAspect, RowShape, TaffyTreeExt, Widget};
 
+#[path = "skeleton_component.rs"]
+mod component;
+pub use component::{SkeletonForm, SkeletonProps};
+
 /// What a skeleton stands in for: the geometry of the content that will
 /// replace it, the box a read on its way reserves.
 #[derive(Clone, Copy, Debug, PartialEq)]
