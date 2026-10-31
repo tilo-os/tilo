@@ -20,8 +20,9 @@ pub mod wire;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 #[cfg(feature = "engine")]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 #[cfg(feature = "engine")]
 use engine::{AccountSource, EngineConnector};
