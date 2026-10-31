@@ -1148,12 +1148,12 @@ mod tests {
     /// of its frame budget; each must land in one turn.
     #[test]
     fn each_change_is_one_turn() {
+        type Change = (&'static str, fn(&mut DeskReading));
         let (mut part, link) = part();
         for _ in 0..4 {
             part.prepare_frame();
         }
         let mut now = reading();
-        type Change = (&'static str, fn(&mut DeskReading));
         let changes: [Change; 3] = [
             ("minute", |r| r.clock = "4:29 PM".to_owned()),
             ("notification", |r| r.unread = 1),

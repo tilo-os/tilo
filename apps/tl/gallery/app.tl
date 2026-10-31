@@ -235,7 +235,7 @@ view release_board(r: Release) {
 /// The basics, looked after by the person looking.
 scenario "basics" {
     let g = root Gallery
-    g.basics.insert(Basics(title: "Basics", owner: .some(invoker)))
+    g.basics.insert(Basics(title: "Basics", owner: .some(invoker), updated: 2026-06-30T09:00Z))
 }
 
 /// A team's backlog a week into a release.
