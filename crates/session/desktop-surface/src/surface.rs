@@ -65,8 +65,8 @@ pub use history::{ActivityModel, ActivityPaneCode, HistorySource, OpenActivity, 
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
 pub use personal_ask::PersonalAsk;
 pub use search::{
-    HostAction, HostActionSource, SearchHost, SearchHostFeed, SearchRow, is_host_offer,
-    search_chord_keys,
+    HostAction, HostActionSource, SearchHost, SearchHostFeed, SearchRow, TypedField,
+    TypedInsertion, TypedRefusal, is_host_offer, search_chord_keys,
 };
 pub use seed::seed_tree;
 pub use tile_content::tile_app_kind;
@@ -199,6 +199,11 @@ struct Shared {
     /// The open search's query and rows, as last shown.
     search_query: String,
     search_rows: Vec<search::SearchRow>,
+    /// The field the person types into in the desktop itself, as last
+    /// shown, and the text committed into it from outside the keyboard,
+    /// taken on the next update pass.
+    typed_field: Result<search::TypedField, search::TypedRefusal>,
+    typed_ask: Option<search::TypedAsk>,
     /// The ask about the person themselves the bar shows from their avatar.
     personal_ask: Option<personal_ask::PersonalAsk>,
     personal_ask_revision: u64,
@@ -845,6 +850,8 @@ impl DesktopSurface {
             search_asks: Vec::new(),
             search_query: String::new(),
             search_rows: Vec::new(),
+            typed_field: Err(search::TypedRefusal::NoField),
+            typed_ask: None,
             personal_ask: None,
             personal_ask_revision: 0,
             arrivals: Vec::new(),

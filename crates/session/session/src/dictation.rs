@@ -7,7 +7,8 @@
 //! part of it: it carries the person's keys and the sheet's answers into the
 //! service, shows what it says on the sheet, and is the one place that reads
 //! the focused field and writes into it — the compositor's text-input
-//! boundary.
+//! boundary for what the apps it shows draw, and the desktop's own published
+//! field for the search the session draws itself.
 //!
 //! Nothing here answers consent. The card's buttons answer the sheet's own
 //! seat ([`DictationSeat`]), and the service refuses an answer that names
@@ -19,6 +20,7 @@ use std::time::Instant;
 
 use settings_store::hardware::ShortcutAction;
 use tilo_compositor::{Compositor, TEXT_MIME, TextField, TextFieldRefusal, TextInsertion};
+use tilo_desktop_surface::{DesktopHandle, TypedField, TypedInsertion, TypedRefusal};
 use tilo_dictation::{
     DictationError, DictationLink, DictationService, DictationStatus, Field, FieldRefusal,
     Insertion, Request, SessionId, Target,
@@ -92,6 +94,7 @@ impl Dictation {
     pub(crate) fn step(
         &self,
         compositor: &mut Compositor,
+        own: &dyn OwnFields,
         clipboard: &Clipboard,
         locked: bool,
         now: Instant,
@@ -104,9 +107,9 @@ impl Dictation {
         for request in self.link.take_requests() {
             self.ask(request, now);
         }
-        let mut fields = Fields(compositor);
+        let mut fields = Fields { compositor, own };
         self.link.advance(&mut fields, now);
-        self.answer(compositor, clipboard, locked, now);
+        self.answer(compositor, own, clipboard, locked, now);
         self.show();
     }
 
@@ -168,6 +171,7 @@ impl Dictation {
     fn answer(
         &self,
         compositor: &mut Compositor,
+        own: &dyn OwnFields,
         clipboard: &Clipboard,
         locked: bool,
         now: Instant,
@@ -181,7 +185,7 @@ impl Dictation {
             }
             match answer {
                 Answer::Allow(id) => {
-                    let mut fields = Fields(compositor);
+                    let mut fields = Fields { compositor, own };
                     if let Err(error) = self.link.allow(SessionId::new(id), &mut fields, now) {
                         self.link.failed(error);
                     }
@@ -332,14 +336,51 @@ const fn recognizer_failure(reason: &str) -> Failure {
     }
 }
 
-/// The focused text field, as the dictation names it: the one thing that
-/// reads it and writes into it.
-struct Fields<'a>(&'a mut Compositor);
+/// The fields dictation may write into, in the session's terms: what the
+/// compositor's text-input boundary sees, and what the session draws itself.
+///
+/// One target, one contract: a dictation binds a field and its revision, and
+/// text goes in only while that is still the field the person types into.
+struct Fields<'a> {
+    compositor: &'a mut dyn CompositorFields,
+    own: &'a dyn OwnFields,
+}
 
 impl Target for Fields<'_> {
     fn field(&mut self) -> Result<Field, FieldRefusal> {
-        self.0
-            .dictation_field()
+        // What the session draws itself stands over the windows it shows:
+        // while the person types into the desk's own search, that is the
+        // field. It answers whether it owns the keys at all, so a refusal
+        // there never falls through into a window behind it.
+        match self.own.field() {
+            Some(field) => field,
+            None => self.compositor.field(),
+        }
+    }
+
+    fn insert(&mut self, field: Field, text: &str) -> Insertion {
+        if field.id & OWN_FIELD != 0 {
+            return self.own.insert(field, text);
+        }
+        self.compositor.insert(field, text)
+    }
+}
+
+/// The identity space of the fields the session draws itself: above the
+/// compositor's, so a field dictation bound is never taken for another.
+const OWN_FIELD: u64 = 1 << 63;
+
+/// The compositor's fields, translated into the dictation's terms. The
+/// compositor reads them at the text-input boundary of the apps it shows.
+trait CompositorFields {
+    fn field(&self) -> Result<Field, FieldRefusal>;
+
+    fn insert(&mut self, field: Field, text: &str) -> Insertion;
+}
+
+impl CompositorFields for Compositor {
+    fn field(&self) -> Result<Field, FieldRefusal> {
+        self.dictation_field()
             .map_err(|refusal| match refusal {
                 TextFieldRefusal::NoField => FieldRefusal::NoField,
                 TextFieldRefusal::Secret => FieldRefusal::Secret,
@@ -358,13 +399,61 @@ impl Target for Fields<'_> {
             revision: field.revision,
             multiline: field.multiline,
         };
-        match self.0.insert_dictation(field, text) {
+        match self.insert_dictation(field, text) {
             TextInsertion::Inserted => Insertion::Inserted,
             TextInsertion::Changed => Insertion::Changed,
             TextInsertion::Refused(refusal) => Insertion::Refused(match refusal {
                 TextFieldRefusal::NoField => FieldRefusal::NoField,
                 TextFieldRefusal::Secret => FieldRefusal::Secret,
                 TextFieldRefusal::Unsupported => FieldRefusal::Unsupported,
+            }),
+        }
+    }
+}
+
+/// The fields the session draws itself, which no compositor's text-input
+/// boundary sees: the desktop's own search.
+pub(crate) trait OwnFields {
+    /// The field the session draws that takes the typing, or `None` when
+    /// nothing of its own does and the windows' fields stand. It answers
+    /// `Some` with a refusal while something of the session's holds the keys
+    /// without a field to write into, so nothing behind it takes the words.
+    fn field(&self) -> Option<Result<Field, FieldRefusal>>;
+
+    fn insert(&self, field: Field, text: &str) -> Insertion;
+}
+
+impl OwnFields for DesktopHandle {
+    fn field(&self) -> Option<Result<Field, FieldRefusal>> {
+        match self.typed_field() {
+            Ok(field) => Some(Ok(Field {
+                id: field.id | OWN_FIELD,
+                revision: field.revision,
+                multiline: field.multiline,
+            })),
+            // The open search takes the keys even where its own field does
+            // not: its rows, not a window behind them, are what the person
+            // sees.
+            Err(refusal) if self.search_open() => Some(Err(match refusal {
+                TypedRefusal::Secret => FieldRefusal::Secret,
+                TypedRefusal::NoField => FieldRefusal::NoField,
+            })),
+            Err(_) => None,
+        }
+    }
+
+    fn insert(&self, field: Field, text: &str) -> Insertion {
+        let typed = TypedField {
+            id: field.id & !OWN_FIELD,
+            revision: field.revision,
+            multiline: field.multiline,
+        };
+        match self.commit_typed(typed, text) {
+            TypedInsertion::Inserted => Insertion::Inserted,
+            TypedInsertion::Changed => Insertion::Changed,
+            TypedInsertion::Refused(refusal) => Insertion::Refused(match refusal {
+                TypedRefusal::NoField => FieldRefusal::NoField,
+                TypedRefusal::Secret => FieldRefusal::Secret,
             }),
         }
     }
@@ -396,5 +485,171 @@ fn mount_sheet(
             tracing::warn!(%error, "dictation sheet not mounted");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const COMPOSITOR_FIELD: Field = Field {
+        id: 7,
+        revision: 3,
+        multiline: false,
+    };
+    const OWN_FIELD_STATE: Field = Field {
+        id: OWN_FIELD | 1,
+        revision: 9,
+        multiline: false,
+    };
+
+    #[derive(Default)]
+    struct FakeCompositor {
+        field: Option<Field>,
+        inserted: RefCell<Vec<(Field, String)>>,
+    }
+
+    impl CompositorFields for FakeCompositor {
+        fn field(&self) -> Result<Field, FieldRefusal> {
+            self.field.ok_or(FieldRefusal::NoField)
+        }
+
+        fn insert(&mut self, field: Field, text: &str) -> Insertion {
+            self.inserted.borrow_mut().push((field, text.to_owned()));
+            Insertion::Inserted
+        }
+    }
+
+    struct FakeOwn {
+        field: Option<Result<Field, FieldRefusal>>,
+        inserted: RefCell<Vec<(Field, String)>>,
+    }
+
+    impl OwnFields for FakeOwn {
+        fn field(&self) -> Option<Result<Field, FieldRefusal>> {
+            self.field
+        }
+
+        fn insert(&self, field: Field, text: &str) -> Insertion {
+            // A field that moved since it was bound takes nothing, as the
+            // desk's own field rechecks its revision.
+            if self.field != Some(Ok(field)) {
+                return Insertion::Changed;
+            }
+            self.inserted.borrow_mut().push((field, text.to_owned()));
+            Insertion::Inserted
+        }
+    }
+
+    fn own(field: Result<Field, FieldRefusal>) -> FakeOwn {
+        FakeOwn {
+            field: Some(field),
+            inserted: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn without_own_field() -> FakeOwn {
+        FakeOwn {
+            field: None,
+            inserted: RefCell::new(Vec::new()),
+        }
+    }
+
+    #[test]
+    fn the_desks_own_field_stands_over_the_compositors() {
+        let mut compositor = FakeCompositor {
+            field: Some(COMPOSITOR_FIELD),
+            ..FakeCompositor::default()
+        };
+        let own = own(Ok(OWN_FIELD_STATE));
+        let mut fields = Fields {
+            compositor: &mut compositor,
+            own: &own,
+        };
+        assert_eq!(fields.field(), Ok(OWN_FIELD_STATE));
+        assert_eq!(fields.insert(OWN_FIELD_STATE, "hello"), Insertion::Inserted);
+        assert_eq!(
+            own.inserted.borrow().as_slice(),
+            [(OWN_FIELD_STATE, "hello".to_owned())]
+        );
+        assert!(
+            compositor.inserted.borrow().is_empty(),
+            "the app's field behind the desk is not typed into"
+        );
+    }
+
+    #[test]
+    fn without_an_own_field_the_compositors_field_is_dictated_into() {
+        let mut compositor = FakeCompositor {
+            field: Some(COMPOSITOR_FIELD),
+            ..FakeCompositor::default()
+        };
+        let own = without_own_field();
+        let mut fields = Fields {
+            compositor: &mut compositor,
+            own: &own,
+        };
+        assert_eq!(fields.field(), Ok(COMPOSITOR_FIELD));
+        assert_eq!(
+            fields.insert(COMPOSITOR_FIELD, "hello"),
+            Insertion::Inserted
+        );
+        assert_eq!(
+            compositor.inserted.borrow().as_slice(),
+            [(COMPOSITOR_FIELD, "hello".to_owned())]
+        );
+        assert!(own.inserted.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_secret_own_field_is_refused_rather_than_skipped() {
+        let mut compositor = FakeCompositor {
+            field: Some(COMPOSITOR_FIELD),
+            ..FakeCompositor::default()
+        };
+        let own = own(Err(FieldRefusal::Secret));
+        let mut fields = Fields {
+            compositor: &mut compositor,
+            own: &own,
+        };
+        assert_eq!(fields.field(), Err(FieldRefusal::Secret));
+    }
+
+    #[test]
+    fn a_desk_holding_the_keys_without_a_field_takes_none_either() {
+        let mut compositor = FakeCompositor {
+            field: Some(COMPOSITOR_FIELD),
+            ..FakeCompositor::default()
+        };
+        // The search's rows take the keys, so no window behind them does.
+        let own = own(Err(FieldRefusal::NoField));
+        let mut fields = Fields {
+            compositor: &mut compositor,
+            own: &own,
+        };
+        assert_eq!(fields.field(), Err(FieldRefusal::NoField));
+    }
+
+    #[test]
+    fn text_goes_where_the_field_it_bound_lives() {
+        let mut compositor = FakeCompositor {
+            field: Some(COMPOSITOR_FIELD),
+            ..FakeCompositor::default()
+        };
+        // The field moved on since the dictation bound it.
+        let own = own(Ok(Field {
+            revision: 10,
+            ..OWN_FIELD_STATE
+        }));
+        let mut fields = Fields {
+            compositor: &mut compositor,
+            own: &own,
+        };
+        assert_eq!(fields.insert(OWN_FIELD_STATE, "late"), Insertion::Changed);
+        assert!(own.inserted.borrow().is_empty());
+        assert!(
+            compositor.inserted.borrow().is_empty(),
+            "the text does not fall through into another field"
+        );
     }
 }

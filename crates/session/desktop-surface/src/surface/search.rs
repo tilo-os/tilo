@@ -63,6 +63,78 @@ pub struct SearchHostFeed {
     pub usage: Option<tilo_desktop_search::Usage>,
 }
 
+/// The field the person types into in the desktop itself: the open search's
+/// query field, where text committed from outside the keyboard (a
+/// dictation's) may go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypedField {
+    /// The field's identity for the desktop's life.
+    pub id: u64,
+    /// The revision of its text and selection: any edit or caret move since
+    /// moves it, so committed text can tell whether the field is still the
+    /// one it was meant for.
+    pub revision: u64,
+    /// The field takes more than one line.
+    pub multiline: bool,
+}
+
+/// Why the desktop's own field may not take committed text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypedRefusal {
+    /// The desktop has no field the person types into.
+    NoField,
+    /// The field takes a secret, so words spoken elsewhere never go into it.
+    Secret,
+}
+
+/// What became of committed text in the desktop's own field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypedInsertion {
+    /// The field took the text.
+    Inserted,
+    /// The field is no longer the one the text was meant for: nothing went
+    /// in.
+    Changed,
+    /// The field may not take committed text any more.
+    Refused(TypedRefusal),
+}
+
+/// Text committed into the desktop's own field, for the next update pass.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct TypedAsk {
+    /// The field the text was committed into, and its revision then.
+    field: TypedField,
+    text: String,
+}
+
+/// The identity of the search query field, for the desktop's life.
+const QUERY_FIELD: u64 = 1;
+
+/// The key the query field's revision is fingerprinting with: it never
+/// leaves the process, and only says whether the field moved.
+const TYPING_KEY: &[u8; 32] = b"desktop typing field revision 1!";
+
+/// The open search's query field, as committed text may write into it. The
+/// palette draws it in the desktop itself, so no text-input boundary of the
+/// windows the desk shows ever sees it.
+fn typed_field(
+    search: &tilo_desktop_search::LazyDesktopSearch,
+) -> Result<TypedField, TypedRefusal> {
+    let Some(field) = search.query_field(TYPING_KEY) else {
+        return Err(TypedRefusal::NoField);
+    };
+    if field.secret {
+        return Err(TypedRefusal::Secret);
+    }
+    let mut revision = [0u8; 8];
+    revision.copy_from_slice(&field.fingerprint[..8]);
+    Ok(TypedField {
+        id: QUERY_FIELD,
+        revision: u64::from_le_bytes(revision),
+        multiline: field.multiline,
+    })
+}
+
 /// A host that adds to the desktop's search and carries out what is chosen
 /// there that only it can: running an action by address through its action
 /// host, starting an app, opening an address.
@@ -289,6 +361,33 @@ impl DesktopHandle {
             .borrow_mut()
             .search_asks
             .push(SearchAsk::Query(query));
+    }
+
+    /// The field the person types into in the desktop itself, as of the last
+    /// update pass: the open search's query field.
+    ///
+    /// # Errors
+    /// Returns why the desktop has no field to write into: none takes typing,
+    /// or the one that does takes a secret.
+    pub fn typed_field(&self) -> Result<TypedField, TypedRefusal> {
+        self.shared.borrow().typed_field
+    }
+
+    /// Write committed text (a dictation's) into `field`, on the next update
+    /// pass, if the person is still typing into it then.
+    #[must_use]
+    pub fn commit_typed(&self, field: TypedField, text: &str) -> TypedInsertion {
+        let mut shared = self.shared.borrow_mut();
+        match shared.typed_field {
+            Ok(current) if current == field => {}
+            Ok(_) => return TypedInsertion::Changed,
+            Err(refusal) => return TypedInsertion::Refused(refusal),
+        }
+        shared.typed_ask = Some(TypedAsk {
+            field,
+            text: text.to_owned(),
+        });
+        TypedInsertion::Inserted
     }
 
     /// Choose the open search's row `index` ([`Self::search_rows`]), with
@@ -663,8 +762,29 @@ impl DesktopSurface {
             }
             self.structure_dirty = true;
         }
+        let ask = self.shared.borrow_mut().typed_ask.take();
+        if let Some(ask) = ask {
+            self.commit_typed(&ask);
+        }
         self.follow_search();
         self.publish_search_rows();
+    }
+
+    /// Write text committed into the desktop's own field, if the person is
+    /// still typing into the field it was meant for.
+    fn commit_typed(&mut self, ask: &TypedAsk) {
+        if !self.search.is_open() {
+            return;
+        }
+        // The field may have taken an edit or moved its caret since the text
+        // was committed: then the text is not the person's to review any
+        // more and goes nowhere, as a dictation into a field that moved.
+        if typed_field(&self.search) != Ok(ask.field) {
+            return;
+        }
+        if self.search.commit_query_text(&ask.text) {
+            self.structure_dirty = true;
+        }
     }
 
     /// Keep what the open search shows where the desktop publishes it.
@@ -687,9 +807,15 @@ impl DesktopSurface {
         } else {
             String::new()
         };
+        let typed = if self.search.is_open() {
+            typed_field(&self.search)
+        } else {
+            Err(TypedRefusal::NoField)
+        };
         let mut shared = self.shared.borrow_mut();
         shared.search_rows = rows;
         shared.search_query = query;
+        shared.typed_field = typed;
     }
 
     /// After the palette handled input (an event, or an assistive

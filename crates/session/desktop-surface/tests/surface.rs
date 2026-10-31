@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use tilo_desktop_model::{IdMinter, Tab, TileContent, WindowWidth, Workspace};
 use tilo_desktop_surface::navigation::{Command, Route};
-use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
+use tilo_desktop_surface::{
+    DesktopHandle, DesktopSurface, TileSource, TypedInsertion, TypedRefusal, seed_tree,
+};
 use ui::widget::TileHost;
 
 struct Notices(Rc<Cell<usize>>);
@@ -1438,6 +1440,63 @@ fn find<'a>(
 
 fn labels(snapshot: &tilo_desktop_surface::navigation::Snapshot) -> Vec<String> {
     snapshot.entries.iter().map(|e| e.label.clone()).collect()
+}
+
+#[test]
+fn text_committed_into_the_open_search_goes_in_at_the_caret() {
+    let (mut driver, handle, _) = mount();
+    handle.open_search(None);
+    driver.relayout();
+    let field = handle
+        .typed_field()
+        .expect("the open search's query field takes committed text");
+    assert_eq!(
+        handle.commit_typed(field, "sheets"),
+        TypedInsertion::Inserted
+    );
+    driver.relayout();
+    assert_eq!(handle.search_rows().0, "sheets");
+
+    let moved = handle.typed_field().expect("still the field");
+    assert_ne!(
+        moved.revision, field.revision,
+        "the field moved with the text committed into it"
+    );
+    assert_eq!(
+        handle.commit_typed(field, " again"),
+        TypedInsertion::Changed,
+        "text meant for a field that moved goes nowhere"
+    );
+    driver.relayout();
+    assert_eq!(handle.search_rows().0, "sheets");
+
+    assert_eq!(
+        handle.commit_typed(moved, " writer"),
+        TypedInsertion::Inserted
+    );
+    driver.relayout();
+    assert_eq!(handle.search_rows().0, "sheets writer");
+}
+
+#[test]
+fn nothing_of_the_desktops_takes_committed_text_while_search_is_closed() {
+    let (mut driver, handle, _) = mount();
+    assert_eq!(handle.typed_field(), Err(TypedRefusal::NoField));
+    handle.toggle_search();
+    driver.relayout();
+    let field = handle.typed_field().expect("the open search's field");
+    handle.toggle_search();
+    driver.relayout();
+    assert_eq!(
+        handle.typed_field(),
+        Err(TypedRefusal::NoField),
+        "the field went with the search"
+    );
+    assert_eq!(
+        handle.commit_typed(field, "late"),
+        TypedInsertion::Refused(TypedRefusal::NoField),
+        "text committed after the field went goes nowhere"
+    );
 }
 
 #[test]

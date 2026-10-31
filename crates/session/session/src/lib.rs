@@ -2254,6 +2254,7 @@ impl Session {
         let locked = self.compositor.locked();
         self.shared.dictation.step(
             &mut self.compositor,
+            &self.shared.handle,
             &self.shared.clipboard,
             locked,
             Instant::now(),

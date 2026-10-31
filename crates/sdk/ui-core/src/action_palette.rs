@@ -164,6 +164,21 @@ pub struct SearchAdvance {
     pub generation: u64,
 }
 
+/// The palette's query field, as text committed from outside the keyboard
+/// (an input method's, or a dictation's) may write into it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QueryField {
+    /// Fingerprint of the field's text and selection
+    /// ([`crate::ime::edit_fingerprint`]): any edit or caret move since moves
+    /// it, so committed text can tell whether the field is still the one it
+    /// was meant for.
+    pub fingerprint: [u8; 32],
+    /// The field takes a secret, so words spoken elsewhere never go into it.
+    pub secret: bool,
+    /// The field takes more than one line.
+    pub multiline: bool,
+}
+
 /// How activating one row resolves.
 #[derive(Clone)]
 enum RowResolution {
@@ -1116,13 +1131,13 @@ impl ActionPalette {
         self.pending_dispatch = None;
         self.history_review_required = false;
         self.pending_nav = None;
-        self.field = self.query_field();
+        self.field = self.new_query_field();
         self.focus_part(0);
         self.rebuild("");
     }
 
     /// The query field, showing the scope the palette is narrowed to.
-    fn query_field(&self) -> SearchField {
+    fn new_query_field(&self) -> SearchField {
         let mut field = self
             .field_source
             .build()
@@ -1248,6 +1263,58 @@ impl ActionPalette {
         }
         self.field.set_query(q);
         self.rebuild(q);
+    }
+
+    /// The palette's query field while it takes typing, as text committed
+    /// from outside the keyboard may write into it: the field a dictation
+    /// binds before it listens. `None` while the palette is closed, while
+    /// something else on it takes the keyboard, and while an input method
+    /// composes.
+    pub fn query_field(&self, key: &[u8; 32]) -> Option<QueryField> {
+        if !self.is_presented() {
+            return None;
+        }
+        let content = self.field.ime_content()?;
+        if !self.field.is_focused() || self.field.is_composing() {
+            return None;
+        }
+        let (anchor, focus) = self.field.selection_anchor_focus_or_caret();
+        Some(QueryField {
+            fingerprint: crate::ime::edit_fingerprint(self.field.value(), anchor, focus, key),
+            secret: content.is_secret(),
+            multiline: self.field.ime_multiline(),
+        })
+    }
+
+    /// Write committed text (an input method's, or a dictation's) into the
+    /// query field at the caret, as the input method's commit does, and
+    /// search what it now holds. Returns whether the field took the text:
+    /// it does not while it asks for a typed name, takes a secret, or is
+    /// not focused.
+    #[must_use]
+    pub fn commit_query_text(&mut self, text: &str) -> bool {
+        if !self.is_presented() || !self.field.is_focused() {
+            return false;
+        }
+        if self
+            .field
+            .ime_content()
+            .is_some_and(|content| content.is_secret())
+        {
+            return false;
+        }
+        self.field.insert_at_cursor(text);
+        self.field.take_dirty();
+        // What typing into the field does next: a host-driven palette narrows
+        // the rows it was fed (a step keeps its query aside), a plain one
+        // searches its own.
+        if self.hosts_rows() {
+            self.committed_host_text();
+            return true;
+        }
+        let query = self.field.value().to_owned();
+        self.rebuild(&query);
+        true
     }
 
     /// The labels currently shown, in display order (for tests / diagnostics).
@@ -3080,7 +3147,7 @@ impl ActionPalette {
         self.confirm = None;
         self.reset_controls();
         // Restore the query field and result set.
-        self.field = self.query_field();
+        self.field = self.new_query_field();
         self.focus_part(0);
         self.rebuild("");
     }

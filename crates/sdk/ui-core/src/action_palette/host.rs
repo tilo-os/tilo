@@ -1063,6 +1063,16 @@ impl ActionPalette {
         }
     }
 
+    /// Narrow the host's rows by what the field holds now, after text was
+    /// committed into it from outside the keyboard: the same the person's
+    /// typing does.
+    pub(crate) fn committed_host_text(&mut self) {
+        if self.host_step.is_none() {
+            self.planned_host_rows();
+        }
+        self.structure_dirty = true;
+    }
+
     /// The field a host's palette asks in: the card's own first row, embedded
     /// in its header, with no clear button (Escape clears).
     fn host_field(&self) -> SearchField {
