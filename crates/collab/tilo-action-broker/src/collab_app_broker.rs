@@ -67,6 +67,7 @@ mod policy_turn_tests;
 mod private_draft;
 #[cfg(target_os = "linux")]
 mod process_binding;
+mod published;
 mod published_invocation;
 mod resolved_invocation;
 mod route_holds;

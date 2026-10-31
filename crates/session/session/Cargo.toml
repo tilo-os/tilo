@@ -83,6 +83,16 @@ postcard = { workspace = true, features = ["use-std"] }
 hex.workspace = true
 os-actions = { path = "../../system/os-actions" }
 tilo-service = { path = "../service" }
+# The broker that serves the socket this session's apps speak on, and the
+# provider seam it asks for what the services publish.
+tilo-action-broker = { path = "../../collab/tilo-action-broker" }
+# The kernel-attested custody of an executing app process a launch is
+# admitted by.
+runtime-portal = { path = "../../runtime/runtime-portal" }
+# The wire the apps speak to the session's services, and where the launcher
+# hands out its socket.
+runtime-collab = { path = "../../runtime/runtime-collab" }
+launcher = { path = "../../packaging/launcher" }
 # The machine's power: the idle, lid, key and battery policy and the service
 # over logind that acts on it.
 tilo-session-power = { path = "../power-service" }

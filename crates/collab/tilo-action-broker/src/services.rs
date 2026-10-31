@@ -1,9 +1,11 @@
 //! Explicit host services. These are process-owned capabilities, never wire flags.
 mod own_device;
 pub mod person_chat;
+mod published;
 mod room_nodes;
 mod task_execution;
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
+pub use published::{Caller, PublishedResources, Reading, ResourceWatch};
 pub use room_nodes::{RoomNodeActions, RoomNodeAsk, RoomNodeOutcome};
 pub use task_execution::{
     NativeTaskActionRequirement, NativeTaskBinding, Preview, PreviewSide, TRACKER_APP,
@@ -1770,6 +1772,10 @@ pub struct HostServices {
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
     pub launcher: Option<Arc<dyn LauncherServices>>,
+    /// The resources this session's services publish, which the apps it
+    /// admits read, watch and invoke. Without it those calls are refused:
+    /// a host that publishes nothing serves its apps no resources.
+    pub published: Option<Arc<dyn PublishedResources>>,
     pub workspace_governance: Option<Arc<dyn WorkspaceGovernanceServices>>,
     pub shortcut_library: Option<Arc<dyn ShortcutLibraryServices>>,
     /// The device's keyboard shortcuts on the action door. Without it

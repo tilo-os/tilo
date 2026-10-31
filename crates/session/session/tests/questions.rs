@@ -11,7 +11,9 @@
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    reason = "test fixtures: a failed step is the assertion"
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion, and the session \
+              outlives every call made into it"
 )]
 
 use std::collections::BTreeMap;

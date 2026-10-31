@@ -11,7 +11,8 @@
     clippy::indexing_slicing,
     clippy::struct_excessive_bools,
     clippy::arithmetic_side_effects,
-    reason = "test fixtures: a failed step is the assertion"
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
 use std::cell::RefCell;

@@ -59,6 +59,10 @@ struct State {
     identity: Option<PathBuf>,
     /// The GPU the compositor renders on, for an app to render on the same.
     render_node: Option<PathBuf>,
+    /// The session's launch records, once it has lent them: what its broker
+    /// admits a connection by, and so what each launch it makes is written
+    /// into.
+    launches: Option<std::sync::Arc<crate::Launches>>,
 }
 
 impl Apps {
@@ -89,6 +93,7 @@ impl Apps {
                 launcher,
                 identity: None,
                 render_node: None,
+                launches: None,
             }),
         }
     }
@@ -107,6 +112,13 @@ impl Apps {
         state.environment.x11_display = x11.as_ref().map(|(display, _)| display.clone());
         state.environment.x11_authority = x11.and_then(|(_, authority)| authority);
         state.environment.session_bus = session_bus;
+    }
+
+    /// The session's launch records: each app started from here on is
+    /// written into them, so its connection to the session's services is
+    /// admitted for the launch that made it.
+    pub fn lend_launches(&self, launches: std::sync::Arc<crate::Launches>) {
+        self.state.borrow_mut().launches = Some(launches);
     }
 
     /// The desktop the person works on, which the launches come from.
@@ -285,10 +297,11 @@ impl Apps {
         let started = self.state.borrow_mut().spawner.start(&planned);
         match started {
             Ok(started) => {
-                self.state
-                    .borrow_mut()
-                    .running
-                    .insert(started.id, launch.id());
+                let mut state = self.state.borrow_mut();
+                state.running.insert(started.id, launch.id());
+                if let Some(launches) = &state.launches {
+                    launches.started(started.pid, &planned.app, &room.id);
+                }
                 tracing::info!(
                     app = %planned.app,
                     pid = started.pid,

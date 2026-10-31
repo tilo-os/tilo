@@ -2144,6 +2144,9 @@ pub(super) struct WireConnection {
     /// only holds the channels opened for it.
     service: Option<Rc<AppConnection>>,
     channels: RefCell<HashMap<Handle, Rc<ChannelSession>>>,
+    /// The handle this connection opened on the session's published
+    /// resources, once it asked for them.
+    published: Cell<Option<Handle>>,
     next_handle: Cell<u64>,
     subscriptions: RefCell<HashMap<u64, (Handle, tokio::task::AbortHandle)>>,
     /// The workspace control sessions subscriptions hold, for their input.
@@ -2181,6 +2184,7 @@ impl WireConnection {
         let connection = Rc::new(Self {
             service,
             channels: RefCell::default(),
+            published: Cell::default(),
             next_handle: Cell::new(1),
             subscriptions: RefCell::default(),
             controls: RefCell::default(),
@@ -2218,6 +2222,71 @@ impl WireConnection {
             .get(&handle)
             .cloned()
             .ok_or_else(|| format!("no channel {} on this connection", handle.0))
+    }
+
+    /// What this connection reaches of the session's published resources,
+    /// and for whom: the app and workspace its launcher named, when this
+    /// host publishes anything at all.
+    fn publishing(
+        &self,
+    ) -> Result<
+        (
+            std::sync::Arc<dyn crate::services::PublishedResources>,
+            crate::services::Caller,
+        ),
+        String,
+    > {
+        let unlaunched = || "this connection speaks for no launched app".to_owned();
+        let service = self.service.as_ref().ok_or_else(unlaunched)?;
+        let published = service
+            .state
+            .services
+            .published
+            .clone()
+            .ok_or_else(|| "this host publishes no resources".to_owned())?;
+        let launch = service.lease.local_media.as_ref().ok_or_else(unlaunched)?;
+        Ok((
+            published,
+            crate::services::Caller {
+                app_id: launch.app_id.clone(),
+                workspace: launch.workspace_id.clone(),
+            },
+        ))
+    }
+
+    /// This connection's hold on the session's published resources: one
+    /// handle per connection, the same one every time it asks.
+    fn open_published(&self) -> Handle {
+        if let Some(handle) = self.published.get() {
+            return handle;
+        }
+        let handle = Handle(self.next_handle.get());
+        self.next_handle.set(handle.0.wrapping_add(1));
+        self.published.set(Some(handle));
+        handle
+    }
+
+    /// Refuse a call that names a handle this connection does not hold on the
+    /// session's published resources.
+    fn holds_published(&self, handle: Handle) -> Result<(), String> {
+        (self.published.get() == Some(handle))
+            .then_some(())
+            .ok_or_else(|| "this connection does not hold the session's published resources".into())
+    }
+
+    /// Let go of what this connection held on the published resources: the
+    /// handle it opened, and the reads of them it watched through it.
+    fn close_published(&self) {
+        let Some(handle) = self.published.take() else {
+            return;
+        };
+        self.subscriptions.borrow_mut().retain(|_, (of, task)| {
+            let held = *of == handle;
+            if held {
+                task.abort();
+            }
+            !held
+        });
     }
 
     /// Answer one call. A reply, and the events a subscription it starts
@@ -2374,6 +2443,23 @@ impl WireConnection {
                     async move { answer?.await.map(Reply::Admitted).map_err(Refusal::refusal) },
                 )
             }
+            Operation::Snapshot { services, resource } => Box::pin(super::published::read(
+                self.holds_published(services)
+                    .and_then(|()| self.publishing())
+                    .map(|(published, caller)| published.snapshot(&caller, &resource)),
+            )),
+            Operation::Invoke {
+                services,
+                resource,
+                action,
+                arguments,
+            } => Box::pin(super::published::invoke(
+                self.holds_published(services)
+                    .and_then(|()| self.publishing())
+                    .map(|(published, caller)| {
+                        published.invoke(&caller, &resource, &action, arguments)
+                    }),
+            )),
             request => {
                 let result = self.dispatch(id, request);
                 let _ = self.frames.send(HostFrame::Reply { id, result });
@@ -2421,6 +2507,10 @@ impl WireConnection {
             | Operation::Admit { .. }
             | Operation::ControlInput { .. }
             | Operation::Launch { .. } => Err("answered when done".into()),
+            // Both are answered by `call`, which waits for the session.
+            Operation::Snapshot { .. } | Operation::Invoke { .. } => {
+                Err("answered when done".into())
+            }
             Operation::Publish {
                 channel,
                 publication: Publication::Report(report),
@@ -2667,7 +2757,33 @@ impl WireConnection {
                 task.abort();
                 Ok(Reply::Done)
             }
+            Operation::Services => {
+                self.publishing()?;
+                Ok(Reply::Opened(self.open_published()))
+            }
+            Operation::Watch { services, resource } => {
+                self.holds_published(services)?;
+                let (published, caller) = self.publishing()?;
+                if self.subscriptions.borrow().contains_key(&id) {
+                    return Err(format!("subscription {id} is already live"));
+                }
+                let (readings, deliveries) = mpsc::unbounded_channel();
+                let watch = published.watch(&caller, &resource, readings);
+                let task = super::published::serving(
+                    published,
+                    watch,
+                    deliveries,
+                    self.frames.clone(),
+                    id,
+                );
+                self.subscriptions.borrow_mut().insert(id, (services, task));
+                Ok(Reply::Subscribed)
+            }
             Operation::Close { handle } => {
+                if self.published.get() == Some(handle) {
+                    self.close_published();
+                    return Ok(Reply::Done);
+                }
                 self.channels
                     .borrow_mut()
                     .remove(&handle)
