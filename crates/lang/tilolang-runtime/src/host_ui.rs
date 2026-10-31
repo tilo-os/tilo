@@ -314,7 +314,9 @@ impl Core {
         };
         let root = self.with_view(|vs| {
             let root = shown_nodes(vs, &key, &shown, &phrase);
-            // What a field held before reads quieter than what it holds now.
+            // What a field held before reads quieter than what it holds now. A rich text
+            // cannot take it (its component declares no such prop): its before side says
+            // what the change took away by striking those runs.
             if side == "before"
                 && let Some(node) = vs.nodes.get_mut(root)
                 && node.kind == "ui.Text"
@@ -620,6 +622,17 @@ fn shown_nodes(
             text_node(vs, key, Value::Text(phrase(id)), false)
         }
         "case" => chip_node(vs, key.to_owned(), value, extra),
+        // A rich text a change made: its paragraphs, drawn by the shared rich text
+        // component, the runs it inserted marked and the runs it deleted struck.
+        "rich" => push_node(
+            vs,
+            Made {
+                kind: "ui.RichText",
+                key: key.to_owned(),
+                props: vec![("value", value)],
+                children: Vec::new(),
+            },
+        ),
         "text" if value.as_text().is_some_and(str::is_empty) => {
             text_node(vs, key, Value::Text(phrase("tilolang-empty-value")), true)
         }

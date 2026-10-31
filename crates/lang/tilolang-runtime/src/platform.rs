@@ -494,7 +494,9 @@ impl Core {
                     })
                     .collect::<HResult<_>>()?,
             ),
-            (_, Value::Rich(rich)) => one("text", Value::Text(rich.written_text()), None),
+            // A rich text a change made: its paragraphs, the runs it inserted marked and the
+            // runs it deleted struck, shown by the shared rich text component.
+            (_, Value::Rich(rich)) => one("rich", Value::Rich(rich.clone()), None),
             (_, Value::Text(text)) => one("text", Value::Text(text.clone()), None),
             (_, other) => {
                 return trap(format!(

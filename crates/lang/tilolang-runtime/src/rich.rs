@@ -375,6 +375,148 @@ pub fn read_under(doc: &AutoCommit, obj: &ObjId) -> RichValue {
     }
 }
 
+/// The mark a run the change inserted carries (`tilo_doc`'s and ui-core's `strong`, drawn
+/// bold) and the one a run it deleted carries (`strike`, drawn struck): the two ways a
+/// diff marks its runs, in the one form the editor and every reader of rich text know.
+pub const INSERTED: &str = "strong";
+pub const DELETED: &str = "strike";
+
+impl RichValue {
+    /// What a change made of one paragraph, as its two sides show it: `before` and `after`
+    /// are the paragraph's text at the two sides of the change, and `inserted`/`deleted`
+    /// are the ranges of each the change wrote and removed, as it recorded them.
+    ///
+    /// The before side reads the paragraph as it read and strikes what the change deleted;
+    /// the after side reads it as it reads and marks what the change inserted. Each is one
+    /// paragraph of its own: a note of a hundred paragraphs with one word typed in the
+    /// fortieth shows the fortieth, never the other ninety-nine.
+    #[must_use]
+    pub fn sides(
+        block: &BlockView,
+        before: &str,
+        after: &str,
+        inserted: &[(usize, usize, String)],
+        deleted: &[(usize, usize, String)],
+    ) -> (Self, Self) {
+        (
+            Self {
+                blocks: vec![marked_block(block, before, deleted, DELETED)],
+            },
+            Self {
+                blocks: vec![marked_block(block, after, inserted, INSERTED)],
+            },
+        )
+    }
+
+    /// This text with each paragraph cut to what its own marking leaves: the marked runs,
+    /// with `words` words of the paragraph around each, so a change deep in a long paragraph
+    /// reads with its context and not with the paragraph. A paragraph with no marked run is
+    /// no part of the change and is left out.
+    #[must_use]
+    pub fn related(&self, words: usize) -> Self {
+        let blocks = self
+            .blocks
+            .iter()
+            .map(|block| {
+                let mut out = block.clone();
+                let chars: Vec<char> = block.text.chars().collect();
+                let marked: Vec<(usize, usize)> = block
+                    .marks
+                    .iter()
+                    .filter(|m| m.name == INSERTED || m.name == DELETED)
+                    .map(|m| (m.start, m.end))
+                    .collect();
+                if marked.is_empty() {
+                    out.text.clear();
+                    out.marks.clear();
+                    return out;
+                }
+                let (mut from, mut to) = (
+                    marked.iter().map(|(s, _)| *s).min().unwrap_or(0),
+                    marked.iter().map(|(_, e)| *e).max().unwrap_or(0),
+                );
+                for _ in 0..words {
+                    from = from.saturating_sub(1);
+                    while from > 0 && chars.get(from).is_some_and(|c| c.is_whitespace()) {
+                        from = from.saturating_sub(1);
+                    }
+                }
+                for _ in 0..words {
+                    to = to.saturating_add(1).min(chars.len());
+                    while to < chars.len() && chars.get(to).is_some_and(|c| !c.is_whitespace()) {
+                        to = to.saturating_add(1);
+                    }
+                }
+                let mut window: String = String::new();
+                if from > 0 {
+                    window.push('…');
+                    window.push(' ');
+                }
+                window.extend(chars.get(from..to).unwrap_or_default());
+                if to < chars.len() {
+                    window.push(' ');
+                    window.push('…');
+                }
+                let prefix: usize = if from > 0 { 2 } else { 0 };
+                out.text = window;
+                out.marks = block
+                    .marks
+                    .iter()
+                    .filter(|m| m.start >= from && m.end <= to)
+                    .map(|m| MarkSpan {
+                        start: m.start.saturating_sub(from).saturating_add(prefix),
+                        end: m.end.saturating_sub(from).saturating_add(prefix),
+                        ..m.clone()
+                    })
+                    .collect();
+                out
+            })
+            .filter(|block| !block.text.is_empty())
+            .collect();
+        Self { blocks }
+    }
+}
+
+/// `block` as one side of a change reads it: its text `text`, with the runs `ranges` names/// covered by the mark `name` (`strong` for an insertion, `strike` for a deletion) and the
+/// paragraph's own marks beside them.
+fn marked_block(
+    block: &BlockView,
+    text: &str,
+    ranges: &[(usize, usize, String)],
+    name: &str,
+) -> BlockView {
+    let mut marks: Vec<MarkSpan> = block
+        .marks
+        .iter()
+        .filter(|mark| mark.end <= text.chars().count())
+        .cloned()
+        .collect();
+    for (start, end, _) in ranges {
+        if start < end {
+            // Runs of one kind that meet read as one mark, so a word typed one character
+            // after another is one run of marked text.
+            match marks.last_mut() {
+                Some(last) if last.name == name && last.end == *start => last.end = *end,
+                _ => marks.push(MarkSpan {
+                    start: *start,
+                    end: *end,
+                    name: name.to_owned(),
+                    value: MarkValue::Bool(true),
+                }),
+            }
+        }
+    }
+    marks.sort_by_key(|span| (span.start, span.end));
+    BlockView {
+        id: block.id.clone(),
+        kind: block.kind.clone(),
+        text: text.to_owned(),
+        marks,
+        attrs: block.attrs.clone(),
+        children: Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,6 +533,114 @@ mod tests {
         assert_eq!(v.at_anchor("2").map(|b| b.text.as_str()), Some("first"));
         assert_eq!(v.at_anchor("¶3").map(|b| b.text.as_str()), Some("Outro"));
         assert!(v.at_anchor("¶9").is_none());
+    }
+
+    /// The runs of `v`'s first paragraph covered by the mark `name`, as text.
+    fn runs(v: &RichValue, name: &str) -> Vec<String> {
+        v.blocks[0]
+            .marks
+            .iter()
+            .filter(|m| m.name == name)
+            .map(|m| {
+                v.blocks[0]
+                    .text
+                    .chars()
+                    .skip(m.start)
+                    .take(m.end.saturating_sub(m.start))
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_change_shows_its_insertions_marked_and_its_deletions_struck() {
+        let block = RichValue::from_text("Groceries and milk").blocks[0].clone();
+        // What the change recorded: the word it removed and the one it wrote.
+        let deleted = [(14, 18, "milk".to_owned())];
+        let inserted = [(14, 19, "bread".to_owned())];
+        let (was, now) = RichValue::sides(
+            &block,
+            "Groceries and milk",
+            "Groceries and bread",
+            &inserted,
+            &deleted,
+        );
+        assert_eq!(was.blocks[0].text, "Groceries and milk");
+        assert_eq!(now.blocks[0].text, "Groceries and bread");
+        assert_eq!(runs(&was, DELETED), ["milk"]);
+        assert!(
+            runs(&was, INSERTED).is_empty(),
+            "before marks nothing written"
+        );
+        assert_eq!(runs(&now, INSERTED), ["bread"]);
+        assert!(runs(&now, DELETED).is_empty(), "after strikes nothing");
+    }
+
+    #[test]
+    fn a_word_replaced_reads_as_the_word_not_its_letters() {
+        // "sourdough" and "bread" share letters, which a character diff of the two texts
+        // would mark as untyped; what the change recorded is the word it wrote, whole.
+        let block = RichValue::from_text("Oat milk and bread").blocks[0].clone();
+        let deleted = [(13, 18, "bread".to_owned())];
+        let inserted = [(13, 22, "sourdough".to_owned())];
+        let (was, now) = RichValue::sides(
+            &block,
+            "Oat milk and bread",
+            "Oat milk and sourdough",
+            &inserted,
+            &deleted,
+        );
+        assert_eq!(runs(&now, INSERTED), ["sourdough"]);
+        assert_eq!(runs(&was, DELETED), ["bread"]);
+    }
+
+    #[test]
+    fn characters_typed_one_after_another_are_one_marked_run() {
+        let block = RichValue::from_text("a").blocks[0].clone();
+        let inserted = [
+            (1, 2, "x".to_owned()),
+            (2, 3, "y".to_owned()),
+            (3, 4, "z".to_owned()),
+        ];
+        let (_, now) = RichValue::sides(&block, "a", "axyz", &inserted, &[]);
+        assert_eq!(runs(&now, INSERTED), ["xyz"], "one run, not one per key");
+    }
+
+    #[test]
+    fn a_long_paragraph_cuts_to_the_change_and_a_few_words_of_context() {
+        let block = RichValue::from_text("x").blocks[0].clone();
+        let before =
+            "the quick brown fox jumps over the lazy dog and then runs far away into the wood";
+        let after =
+            "the quick brown fox leaps over the lazy dog and then runs far away into the wood";
+        let at = after.find("leaps").unwrap_or(0);
+        let inserted = [(at, at + 5, "leaps".to_owned())];
+        let deleted = [(at, at + 5, "jumps".to_owned())];
+        let (was, now) = RichValue::sides(&block, before, after, &inserted, &deleted);
+        let cut = now.related(2);
+        assert_eq!(cut.blocks.len(), 1);
+        assert!(
+            cut.blocks[0].text.starts_with('…'),
+            "{:?}",
+            cut.blocks[0].text
+        );
+        assert!(
+            cut.blocks[0].text.ends_with('…'),
+            "{:?}",
+            cut.blocks[0].text
+        );
+        assert!(
+            cut.blocks[0].text.contains("leaps"),
+            "{:?}",
+            cut.blocks[0].text
+        );
+        assert!(
+            cut.blocks[0].text.chars().count() < now.blocks[0].text.chars().count() / 2,
+            "a few words, not the paragraph: {:?}",
+            cut.blocks[0].text
+        );
+        let struck = was.related(2);
+        assert!(struck.blocks[0].text.contains("jumps"), "{struck:?}");
     }
 
     #[test]
