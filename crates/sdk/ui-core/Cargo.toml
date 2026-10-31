@@ -310,7 +310,6 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The collaborative filesystem's records and history protocol, read by the
 # file history and conflict widgets.
 fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }
-channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto" }
 # The canonical document model. `history_source` reads a live document's
 # change graph through `tilo_resource::history`, materialises past versions
 # with `tilo_doc::snapshot::at` and

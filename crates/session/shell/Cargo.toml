@@ -89,7 +89,6 @@ bench = false
 required-features = ["test-support"]
 
 [dependencies]
-tilo-handoff = { path = "../../platform/tilo-handoff" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # HTTPS to the hosts and web sites of workspaces this computer reaches over
 # the web: their entry, admission door and host routes.
@@ -441,11 +440,6 @@ futures-util = { workspace = true, features = ["io"] }
 # use for the same envelopes / keys.
 postcard = { workspace = true, features = ["alloc"] }
 
-# Search infrastructure.
-# `walkdir` powers the files provider's name-index walker + the content
-# indexer.
-walkdir.workspace = true
-tar.workspace = true
 # Tilo's search layer: the providers' retained indexes, and the files
 # provider's on-disk content index.
 tilo-search = { path = "../../sdk/search", features = ["disk"] }
@@ -470,8 +464,6 @@ tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
 tilo-output-passes = { path = "../output-passes", features = ["test-support"] }
 # The radio fixture and panel hooks the chrome tests drive Quick Settings with.
 tilo-quick-settings = { path = "../quick-settings", features = ["test-support"] }
-# The clipboard bridge tests speak futures-io over tokio sockets (`compat`).
-tokio-util.workspace = true
 # Drives the secret agent from a stand-in NetworkManager into the sheet.
 tilo-network-secret-agent = { path = "../network-secret-agent", features = ["test-support"] }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
@@ -497,8 +489,6 @@ app-cli = { path = "../../packaging/app-cli" }
 greeter = { path = "../greeter" }
 # Private native-pair acceptance uses the governed host's real voice relay.
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
-# Signs the TPM quotes the disk-unlock auto-approval tests verify.
-p256 = { version = "0.14", features = ["ecdsa"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 # Pairing-broker tests talk to a local broker on a loaded runner; the
 # toolkit's test support bounds that exchange only against a hang.
