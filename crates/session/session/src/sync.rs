@@ -71,6 +71,9 @@ pub struct OwnPresence {
     pub status: Option<String>,
     /// How available they say they are.
     pub availability: Availability,
+    /// The voice channel they are in here, if any: what everyone else's
+    /// roster says beside their face.
+    pub call: Option<ui::CallPresence>,
     /// Whose view they follow, by that member's publisher.
     pub following: Option<String>,
 }
@@ -174,6 +177,8 @@ impl Peer {
             wave: self.wave.clone(),
             layout: None,
             following: self.following.clone(),
+            availability: Some(self.availability.id().to_owned()),
+            call: self.call.as_ref().map(ui::CallPresence::encode),
         }
     }
 }
@@ -709,6 +714,12 @@ impl Client {
         self.enrolled.try_iter().collect()
     }
 
+    /// What this session says of itself here now.
+    #[must_use]
+    pub fn own(&self) -> OwnPresence {
+        self.own.borrow().clone()
+    }
+
     /// What this session says of itself: changed here, it is said again in
     /// the room in front. Whether it changed.
     pub fn set_own(&self, own: OwnPresence) -> bool {
@@ -718,6 +729,18 @@ impl Client {
         *self.own.borrow_mut() = own;
         self.say_again();
         true
+    }
+
+    /// This device joined `call`, or left it (`None`): said again in the
+    /// room in front, so everyone here reads which channel this person is
+    /// in beside their face. Whether that changed anything.
+    pub fn in_call(&self, call: Option<ui::CallPresence>) -> bool {
+        let mut own = self.own.borrow().clone();
+        if own.call == call {
+            return false;
+        }
+        own.call = call;
+        self.set_own(own)
     }
 
     /// Follow `tree`'s workspaces: take part in the room of each, leave the
@@ -799,8 +822,11 @@ impl Client {
         heard
     }
 
-    /// Take one thing the plane heard, and hand the desktop who is here now.
-    fn hear(&self, event: NetEvent) {
+    /// Take one thing the plane heard, and hand the desktop who is here now:
+    /// who said they are here, what they said of themselves, where their
+    /// pointer went. A session's loop calls this for everything the peer
+    /// actor hands it.
+    pub fn hear(&self, event: NetEvent) {
         self.keep_personal(&event);
         if let Some(fabric) = &self.fabric {
             match &event {
@@ -1013,7 +1039,7 @@ impl Client {
             PeerPresencePayload::Arrived,
             PeerPresencePayload::Availability {
                 state: own.availability.id().to_owned(),
-                call: None,
+                call: own.call.as_ref().map(ui::CallPresence::encode),
             },
         ];
         if let Some(status) = own.status {
@@ -1183,6 +1209,8 @@ impl Client {
             wave: self.sent_wave.borrow().clone(),
             layout: None,
             following: own.following,
+            availability: Some(own.availability.id().to_owned()),
+            call: own.call.as_ref().map(ui::CallPresence::encode),
         }
     }
 
@@ -1214,6 +1242,15 @@ impl Client {
         people
     }
 
+    /// A client taking part in no transport: it publishes nowhere and hears
+    /// only what it is handed ([`Self::hear`]). A session given one
+    /// (`Options::sync`) takes part in the plane this client does, so what a
+    /// test hands it is what the desktop shows.
+    #[must_use]
+    pub fn untethered(publisher: EndpointId, own: OwnPresence) -> Self {
+        Self::planeless(publisher, own, Vec::new(), Reachability::default()).0
+    }
+
     /// A session taking part in a plane with no transport, for tests that
     /// hand it what it would have heard and read what it would have said.
     #[cfg(test)]
@@ -1237,6 +1274,17 @@ impl Client {
     /// [`Self::offline_at`] with the relays the real client holds back.
     #[cfg(test)]
     fn offline_reaching(
+        publisher: EndpointId,
+        own: OwnPresence,
+        hosts: Vec<EndpointAddr>,
+        reachability: Reachability,
+    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Outgoing>) {
+        Self::planeless(publisher, own, hosts, reachability)
+    }
+
+    /// A client of a plane with no transport: what both the real client and
+    /// [`Self::untethered`] are, at their middle.
+    fn planeless(
         publisher: EndpointId,
         own: OwnPresence,
         hosts: Vec<EndpointAddr>,
@@ -2012,6 +2060,112 @@ mod tests {
         sync.hear(presence(1, ROOM, in_voice(None)));
         sync.hear(presence(2, ROOM, in_voice(None)));
         assert!(sync.calls().is_empty());
+    }
+
+    /// How available a peer says they are is the roster's: their face dims
+    /// while they are away or idle, and says so in words.
+    #[test]
+    fn a_peer_away_is_away_on_the_roster() {
+        let (sync, _said) = session("Quinten", Some(0x04));
+        sync.hear(hello(1, 0xaa, "Framework 16"));
+        sync.hear(here(1));
+
+        let away = |state: &str| PeerPresencePayload::Availability {
+            state: state.to_owned(),
+            call: None,
+        };
+        sync.hear(presence(1, ROOM, away("away")));
+
+        let mut tree = desk(ROOM);
+        let people = sync.show(&mut tree, &|_| None);
+        assert_eq!(people[0].availability, ui::Availability::Away);
+        assert!(people[0].availability.dims());
+        let rows = tilo_desktop::collaborators::collaborator_roster_rows(&tree, "me");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].availability, ui::Availability::Away);
+
+        // Back at their machine, and heads down: the face lightens, and
+        // says what they chose.
+        sync.hear(presence(1, ROOM, away("focusing")));
+        let mut tree = desk(ROOM);
+        sync.show(&mut tree, &|_| None);
+        let rows = tilo_desktop::collaborators::collaborator_roster_rows(&tree, "me");
+        assert_eq!(rows[0].availability, ui::Availability::Focusing);
+        assert!(!rows[0].availability.dims());
+    }
+
+    /// A call this device joins is said in the room, so everyone else's
+    /// roster shows this person in that channel.
+    #[test]
+    fn a_call_this_device_joins_reaches_a_peer_s_roster() {
+        let (mine, mut said) = session("Quinten", Some(0x04));
+        while said.try_recv().is_ok() {}
+        let voice = ui::CallPresence {
+            channel: "c_voice".to_owned(),
+            name: "Voice".to_owned(),
+        };
+        assert!(mine.in_call(Some(voice.clone())));
+
+        // A peer's session in the same room, handed everything this device
+        // said there.
+        let own = OwnPresence {
+            label: "Ada".into(),
+            ..OwnPresence::default()
+        };
+        let (theirs, _theirs_said) = Client::offline(device(0xe0), own);
+        theirs.follow_desktop(&desk(ROOM));
+        let mut said_the_call = false;
+        while let Ok(command) = said.try_recv() {
+            let Outgoing::Publish { ws, msg } = command else {
+                continue;
+            };
+            if let NeighbourMsg::AppPresenceV2 { presence, .. } = &*msg
+                && matches!(
+                    &presence.payload,
+                    PeerPresencePayload::Availability { call: Some(call), .. }
+                        if ui::CallPresence::decode(call).as_ref() == Some(&voice)
+                )
+            {
+                said_the_call = true;
+            }
+            theirs.hear(NetEvent::Msg {
+                ws,
+                peer: mine.publisher(),
+                membership_epoch: None,
+                replayed: false,
+                msg: *msg,
+            });
+        }
+        assert!(said_the_call, "this device said which channel it is in");
+
+        let mut tree = desk(ROOM);
+        let people = theirs.show(&mut tree, &|_| None);
+        assert_eq!(people.len(), 1);
+        assert_eq!(
+            people[0].call.as_ref().map(|call| call.name.as_str()),
+            Some("Voice")
+        );
+        let rows = tilo_desktop::collaborators::collaborator_roster_rows(&tree, "me");
+        assert_eq!(rows[0].call.as_deref(), Some("Voice"));
+
+        // Out of the call, the peer's roster says nothing of a channel.
+        while said.try_recv().is_ok() {}
+        assert!(mine.in_call(None));
+        while let Ok(command) = said.try_recv() {
+            let Outgoing::Publish { ws, msg } = command else {
+                continue;
+            };
+            theirs.hear(NetEvent::Msg {
+                ws,
+                peer: mine.publisher(),
+                membership_epoch: None,
+                replayed: false,
+                msg: *msg,
+            });
+        }
+        let mut tree = desk(ROOM);
+        let people = theirs.show(&mut tree, &|_| None);
+        assert!(people[0].call.is_none());
     }
 
     #[test]

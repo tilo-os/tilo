@@ -71,6 +71,7 @@ pub mod notices;
 mod notifications;
 mod owner_session;
 mod panels;
+mod people;
 mod plane;
 pub mod portal_link;
 mod projection;
@@ -289,6 +290,10 @@ pub struct Options {
     /// here in each workspace's room, over Iroh. Off, this desktop has no
     /// collaborators but its own person.
     pub collab: bool,
+    /// A collaboration plane to take part in instead of starting one: a
+    /// session a test hands the presence a room would have carried
+    /// ([`sync::Client::untethered`]), which says nothing on a network.
+    pub sync: Option<Rc<sync::Client>>,
     /// The person's device fabric, when this session runs on one: what was
     /// copied here is shared with their other devices through it, and what
     /// they copied there joins the clipboard here.
@@ -360,6 +365,9 @@ fn start_collaboration(
     media: fabric::MediaContinuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
 ) -> Option<Rc<sync::Client>> {
+    if let Some(sync) = &options.sync {
+        return Some(Rc::clone(sync));
+    }
     if !options.collab {
         return None;
     }
@@ -419,6 +427,7 @@ impl Default for Options {
             person: "person".into(),
             presentation: ComponentRunnerInputs::from_native_process,
             shell_bar: false,
+            sync: None,
             quick_settings: None,
             controllers: None,
             config: SessionConfig::default(),
@@ -610,6 +619,9 @@ struct Shared {
     /// The chrome above the windows as the session hosts it: where its
     /// bars stand on the displays, read back for the tests that drive them.
     chrome: Rc<RefCell<WidgetHost>>,
+    /// Who is here, as the bar's faces open it: the roster it shows and
+    /// where everyone else's pointer is.
+    people: Rc<RefCell<people::People>>,
     /// The monitors of the displays a fullscreen window owns, which the
     /// bars read.
     fullscreen: Rc<RefCell<Vec<String>>>,
@@ -657,6 +669,14 @@ impl Shared {
                     }
                 }
                 DesktopAsk::Intent(ChromeIntent::ShowQuickSettings) => self.show_quick_settings(),
+                // The bar's faces, the launcher's Happening now header and a
+                // press on someone in a banner all open who is here.
+                DesktopAsk::Intent(ChromeIntent::ToggleCollaborators) => {
+                    self.people.borrow().toggle();
+                }
+                DesktopAsk::Intent(ChromeIntent::ShowPerson(person)) => {
+                    self.people.borrow().show_person(&person);
+                }
                 // The floating clock: what the person pressed there is
                 // Clocks' own to carry out, or the bar's to put away.
                 DesktopAsk::Intent(ChromeIntent::ClockCommand {
@@ -1510,6 +1530,9 @@ impl Session {
                     .ok()
             })
             .flatten();
+        // Who is here, over the windows: the roster the bar's faces open and
+        // where everyone else's pointer is.
+        let people = people::mount(&mut compositor, &mut doors, &options, &handle, sync.clone());
 
         let banners = mount_banners(&mut compositor, &mut doors, &notices, &options);
 
@@ -1786,6 +1809,7 @@ impl Session {
             emoji,
             shortcut_guide,
             chrome,
+            people,
             fullscreen,
             controller,
             controller_keys,

@@ -39,6 +39,17 @@ pub struct Collaborator {
     /// device: it is shown among their devices, never as someone else.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_device: bool,
+    /// How available they said they were, in the presence wire's own word
+    /// (`available`, `focusing`, `away`, `idle`). `None` when nothing said
+    /// of them: they are then shown as available, as a face without a word
+    /// beside it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub availability: Option<String>,
+    /// The voice channel they are in, as their presence carries it: the
+    /// channel's id, a line break, its name (`ui::CallPresence::encode`).
+    /// `None` when they are in no call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<String>,
 }
 
 impl Collaborator {
@@ -55,6 +66,8 @@ impl Collaborator {
             invited: false,
             session: None,
             own_device: false,
+            availability: None,
+            call: None,
         }
     }
 
@@ -105,6 +118,15 @@ impl Collaborator {
     #[must_use]
     pub fn as_invited(mut self) -> Self {
         self.invited = true;
+        self
+    }
+
+    /// What their presence says of them: the word for how available they
+    /// are and, when they are in voice, the channel's own text.
+    #[must_use]
+    pub fn with_presence(mut self, availability: impl Into<String>, call: Option<String>) -> Self {
+        self.availability = Some(availability.into());
+        self.call = call;
         self
     }
 }

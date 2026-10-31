@@ -572,6 +572,11 @@ pub struct TopBarChrome {
     /// Same index as `collaborator_initials`: the roster id presence knows
     /// them by (idle, in a call, a wave's bounce).
     collaborator_ids: Vec<String>,
+    /// Same index as `collaborator_initials`: how available each face said
+    /// they are and whether they are in a call, as the roster they were read
+    /// from says. `None` for a face the roster says nothing of, which the
+    /// presence beside the bar answers instead.
+    collaborator_presence: Vec<Option<(ui::Availability, bool)>>,
     /// Same index as `collaborator_initials`: how each face looks now, read
     /// from presence at each draw.
     face_looks: Vec<FaceLook>,
@@ -733,6 +738,7 @@ impl TopBarChrome {
             collaborator_colors: Vec::new(),
             collaborator_agents: Vec::new(),
             collaborator_ids: Vec::new(),
+            collaborator_presence: Vec::new(),
             face_looks: Vec::new(),
             face_rects: Vec::new(),
             call_since: None,
@@ -1132,6 +1138,7 @@ impl TopBarChrome {
         self.collaborator_colors.clear();
         self.collaborator_agents.clear();
         self.collaborator_ids.clear();
+        self.collaborator_presence.clear();
         let now = tilo_clock::unix_now();
         // Counted with the same `present` filter as the avatars, so the
         // overflow chip agrees with the row.
@@ -1156,6 +1163,19 @@ impl TopBarChrome {
                     active_ws, c, now,
                 ));
             self.collaborator_ids.push(c.id.clone());
+            self.collaborator_presence.push(
+                c.availability
+                    .as_deref()
+                    .and_then(ui::Availability::from_id)
+                    .map(|availability| {
+                        let in_call = c
+                            .call
+                            .as_deref()
+                            .and_then(ui::CallPresence::decode)
+                            .is_some();
+                        (availability, in_call)
+                    }),
+            );
         }
         self.collaborator_overflow = peer_count.saturating_sub(self.collaborator_initials.len());
         self.sync_strips(tree);
