@@ -799,6 +799,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/bundle.rs",
   "crates/platform/tilolang-tilo/tests/chat.rs",
   "crates/platform/tilolang-tilo/tests/fixtures.rs",
+  "crates/platform/tilolang-tilo/tests/history_views.rs",
   "crates/platform/tilolang-tilo/tests/legacy.rs",
   "crates/platform/tilolang-tilo/tests/legibility.rs",
   "crates/platform/tilolang-tilo/tests/outbox.rs",
@@ -808,6 +809,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/scenarios.rs",
   "crates/platform/tilolang-tilo/tests/task.rs",
   "crates/platform/tilolang-tilo/tests/tasks.rs",
+  "crates/platform/tilolang-tilo/tests/undo_own.rs",
   "crates/platform/tilolang-tilo/tests/views_migration.rs",
 ]
 
@@ -1423,12 +1425,22 @@ readers = [
 [[cargo]]
 package = "tilo-session"
 # The first-boot unit the image ships, and the components that name where
-# each binary is installed.
+# each binary is installed; the shell package it compiles from source.
 inputs = [
+  "apps/tl/shell/",
   "os/usr/lib/systemd/system/shell-firstboot.service",
   "os/components.toml",
 ]
-readers = ["crates/session/session/tests/firstboot.rs"]
+readers = [
+  "crates/session/session/src/shell.rs",
+  "crates/session/session/tests/firstboot.rs",
+]
+
+[[cargo]]
+package = "tilo-surface-host"
+# The shell surface tests drive the shell package compiled from its source.
+inputs = ["apps/tl/shell/"]
+readers = ["crates/session/surface-host/src/shell_part.rs"]
 
 
 [[cargo]]
