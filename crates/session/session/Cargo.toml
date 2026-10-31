@@ -73,6 +73,14 @@ tilo-capture-studio = { path = "../capture-studio" }
 tilo-notification-banners = { path = "../notification-banners" }
 tilo-onboarding-host = { path = "../onboarding-host" }
 tilo-sheets = { path = "../sheets" }
+# The directory of public workspaces a site serves: what joins list and
+# what a site's door and directory answer.
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# The sanctioned blocking HTTP client, which installs the crypto provider.
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking", "json"] }
+reqwest = { workspace = true, features = ["blocking", "json"] }
+toml.workspace = true
+url.workspace = true
 # Who is here: the session's own membership of each workspace's room, on the
 # collaboration plane's peer actor.
 tilo-network-actor = { path = "../network-actor" }
@@ -163,13 +171,14 @@ tilo-resource = { path = "../../sdk/tilo-resource" }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
 zbus = { workspace = true, features = ["tokio", "p2p"] }
 tilo-test-env = { path = "../../dev/test-env" }
+# A site's entry and directory served over loopback, for what joins list.
+test-http = { path = "../../dev/test-http" }
 # What `NetworkManager` says, fed in rather than read from a bus.
 tilo-nm = { path = "../../system/tilo-nm" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
 futures-util.workspace = true
 tempfile.workspace = true
 tilo-copy-lint = { path = "../../dev/copy-lint" }
-url.workspace = true
 tilo-audio-service = { path = "../audio-service" }
 tilo-onboarding = { path = "../onboarding" }
 # The prepared-setup and journal fixtures: what a device holds before setup runs.

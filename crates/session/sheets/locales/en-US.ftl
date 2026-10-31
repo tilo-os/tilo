@@ -181,6 +181,23 @@ directory-joining = Joining…
 directory-join-named = Join { $name }
 directory-open-named = Open { $name }
 directory-try-again = Try again
+directory-community-tag = { $host }'s own
+directory-already-joining = You're already joining { $name }. It opens as soon as it's ready.
+directory-join-failed = Couldn't join { $name }: { $error }
+directory-join-failed-line = Didn't join: { $error }
+directory-here-now = { $count } here now
+directory-active-today = Active today
+directory-active-week = Active this week
+directory-quiet = Quiet lately
+directory-members = { $count ->
+    [one] 1 member
+   *[other] { $count } members
+}
+directory-joins-as = You join as { $role }
+directory-role-viewer = a viewer
+directory-role-commenter = a commenter
+directory-role-editor = an editor
+directory-role-moderator = a moderator
 
 ## Display sheet
 display-sheet-title = Display

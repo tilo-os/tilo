@@ -35,6 +35,7 @@ mod controls;
 mod desk_layout;
 pub mod desktop_services;
 mod dictation;
+mod directory;
 mod display_settings;
 pub mod displays;
 mod env;
@@ -408,6 +409,9 @@ struct Shared {
     file_picker: Option<FilePickerSeat>,
     /// The workspaces this computer may join or open.
     directory: Option<DirectorySeat>,
+    /// What the sites this computer knows list as public workspaces, read
+    /// on a worker of its own.
+    directory_store: directory::Store,
     /// The lock screen, while the session is locked.
     lock: Option<LockSeat>,
     /// The desktop's own notices: what the session tells the person, such as
@@ -574,7 +578,11 @@ impl Shared {
         match id {
             NEW_WORKSPACE => self.new_workspace(),
             WORKSPACE_SETTINGS => self.open_workspace_settings(),
-            JOIN_WORKSPACE => workspaces::open_directory(self.directory.as_ref(), &self.handle),
+            JOIN_WORKSPACE => workspaces::open_directory(
+                self.directory.as_ref(),
+                &self.handle,
+                &self.directory_store,
+            ),
             LEAVE_WORKSPACE => self.leave_workspace(),
             choice => identity::answered(choice),
         }
@@ -1011,7 +1019,7 @@ impl Shared {
                 }
             }
         }
-        workspaces::follow_directory(self.directory.as_ref(), &self.handle);
+        workspaces::follow_directory(self.directory.as_ref(), &self.handle, &self.directory_store);
         if let Some(settings) = &self.workspace_settings {
             for effect in settings.take_asked() {
                 match effect {
@@ -1589,6 +1597,7 @@ impl Session {
             power,
             workspace_settings,
             directory,
+            directory_store: directory::Store::default(),
             portal,
             file_picker,
             lock,

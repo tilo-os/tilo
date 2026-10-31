@@ -180,6 +180,23 @@ directory-joining = Wird beigetreten…
 directory-join-named = { $name } beitreten
 directory-open-named = { $name } öffnen
 directory-try-again = Erneut versuchen
+directory-community-tag = von { $host }
+directory-already-joining = Du trittst { $name } bereits bei. Es öffnet sich, sobald es bereit ist.
+directory-join-failed = { $name } konnte nicht beigetreten werden: { $error }
+directory-join-failed-line = Nicht beigetreten: { $error }
+directory-here-now = { $count } gerade hier
+directory-active-today = Heute aktiv
+directory-active-week = Diese Woche aktiv
+directory-quiet = Zuletzt ruhig
+directory-members = { $count ->
+    [one] 1 Mitglied
+   *[other] { $count } Mitglieder
+}
+directory-joins-as = Du trittst als { $role } bei
+directory-role-viewer = Betrachter
+directory-role-commenter = Kommentierende
+directory-role-editor = Bearbeitende
+directory-role-moderator = Moderierende
 
 ## Display sheet
 display-sheet-title = Anzeige

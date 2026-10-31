@@ -11,9 +11,9 @@ use tilo_desktop_surface::{
     notifications::{Notification, NotificationIconKind},
 };
 use tilo_sheets::Seat as _;
-use tilo_sheets::directory::{
-    Directory, DirectoryEffect, DirectorySeat, Listing, ListingAction, Status,
-};
+use tilo_sheets::directory::{DirectoryEffect, DirectorySeat};
+
+use crate::directory;
 
 /// Offer, in the workspace menu and in search, what only the session can do
 /// about workspaces: making one, joining one, leaving this one, and its
@@ -50,43 +50,35 @@ pub(crate) fn publish_host_actions(handle: &DesktopHandle) {
     ]);
 }
 
-/// The directory's rows: the workspaces this computer holds, which the
-/// person opens from it. A site's public ones arrive with the workspace
-/// directory.
-pub(crate) fn listings(handle: &DesktopHandle) -> Vec<Listing> {
-    handle.read(|tree| {
-        tree.workspaces
-            .iter()
-            .map(|workspace| Listing {
-                key: workspace.id.0.to_string(),
-                name: workspace.name.clone(),
-                action: ListingAction::Open,
-                ..Listing::default()
-            })
-            .collect()
-    })
-}
-
-/// Show the workspaces this computer may join or open.
-pub(crate) fn open_directory(seat: Option<&DirectorySeat>, handle: &DesktopHandle) {
+/// Show the workspaces this computer may join or open: the ones it holds,
+/// and what the sites' directories list.
+pub(crate) fn open_directory(
+    seat: Option<&DirectorySeat>,
+    handle: &DesktopHandle,
+    directory: &directory::Store,
+) {
     let Some(seat) = seat else {
         return;
     };
     seat.clear_query();
-    seat.show(Directory {
-        status: Status::Listed,
-        listings: listings(handle),
-        note: None,
-    });
+    seat.show(directory::view(directory, handle));
     seat.presentation().open(false);
+    directory.ask(None);
 }
 
-/// Carry out what the directory asked: opening a workspace this computer
-/// holds, and closing it.
-pub(crate) fn follow_directory(seat: Option<&DirectorySeat>, handle: &DesktopHandle) {
+/// Carry out what the directory asked: reading a site's directory again,
+/// opening a workspace this computer holds, and closing it.
+pub(crate) fn follow_directory(
+    seat: Option<&DirectorySeat>,
+    handle: &DesktopHandle,
+    directory: &directory::Store,
+) {
     let Some(seat) = seat else {
         return;
     };
+    if directory.answered() {
+        seat.show(directory::view(directory, handle));
+    }
     for effect in seat.take_asked() {
         match effect {
             DirectoryEffect::Open { key } => {
@@ -102,12 +94,29 @@ pub(crate) fn follow_directory(seat: Option<&DirectorySeat>, handle: &DesktopHan
                     // admits: say so where the person picked it, and leave
                     // the directory up to pick another.
                     tracing::warn!(%error, %key, "workspace directory open");
-                    let mut directory = seat.directory();
-                    directory.note = Some(error);
-                    seat.show(directory);
+                    directory.set_note(Some(error));
+                    seat.show(directory::view(directory, handle));
                     continue;
                 }
                 seat.presentation().close();
+            }
+            DirectoryEffect::Look { text } => {
+                if let Some(site) = typed_site(&text) {
+                    // A site the person typed is asked for what it lists,
+                    // and the sheet says it is being read until the worker
+                    // answers.
+                    directory.ask(Some(site));
+                    seat.show(directory::view(directory, handle));
+                } else {
+                    tracing::debug!(
+                        %text,
+                        "the workspace directory looks up a site, a link or a code"
+                    );
+                }
+            }
+            DirectoryEffect::Refresh => {
+                directory.ask(None);
+                seat.show(directory::view(directory, handle));
             }
             DirectoryEffect::Done => {
                 seat.presentation().close();
@@ -118,6 +127,14 @@ pub(crate) fn follow_directory(seat: Option<&DirectorySeat>, handle: &DesktopHan
             ),
         }
     }
+}
+
+/// The site `text` names, when what was typed into the search is one: a
+/// word that is no address looks at the list instead.
+fn typed_site(text: &str) -> Option<String> {
+    let text = text.trim();
+    (!text.is_empty() && text.contains('.') && !text.chars().any(char::is_whitespace))
+        .then(|| text.to_owned())
 }
 
 /// Say the person left the workspace `name`, and what became of its
