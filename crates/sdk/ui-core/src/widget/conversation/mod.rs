@@ -41,6 +41,10 @@ pub mod delivery;
 pub mod draft;
 pub mod earlier;
 pub mod list;
+mod list_component;
+pub use list_component::{
+    ConversationEntryProps, ConversationListProps, DescribedConversationList,
+};
 pub mod unread;
 
 pub use attachment::{

@@ -1,7 +1,5 @@
-ActivityTimeline
 Autocomplete
 CandlestickChart
-CardGrid
 CartesianPlot
 CategoryChart
 Chart
@@ -11,8 +9,6 @@ CodeEditor
 ColorPicker
 ColorSwatchPicker
 ControlRow
-ConversationList
-DataTable
 DateField
 DatePicker
 DistributionChart
@@ -54,7 +50,6 @@ TimePicker
 Toggle
 ToggleGroup
 Treemap
-TreeView
 VideoPlayer
 ViewTabs
 WebView

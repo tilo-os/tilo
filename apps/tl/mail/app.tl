@@ -258,7 +258,9 @@ action answer(t: Thread, body: Text) -> Draft (icon: .reply) {
     require body.len() > 0 "Say something first"
     let m = root Mail
     let last = t.messages.last()
-    let said = if let l = last { "\n\nOn {l.received}, {l.from_name} wrote:\n\n> {l.body}" } else { "" }
+    let said = if let l = last {
+        "\n\nOn {l.received}, {l.from_name} wrote:\n\n> {l.body}"
+    } else { "" }
     let d = m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), body: "{body}{said}", in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
     send(d)
     d
