@@ -13,8 +13,9 @@ use tilo_resource::Effect;
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.dictation.session")]
 pub enum DictationAction {
-    /// Ask to dictate into the field the person is typing in. The person is
-    /// asked to allow the microphone for that dictation first.
+    /// Dictate into the field the person is typing in, or insert what was
+    /// heard when a dictation is already listening. The person is asked to
+    /// allow the microphone for that dictation first.
     #[effect(
         own_device,
         attended,

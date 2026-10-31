@@ -74,6 +74,9 @@ struct Recovery {
 #[derive(Default)]
 pub struct Dictation {
     next: u64,
+    /// The last dictation asked for, so its card can name a failure that left
+    /// no dictation behind.
+    last_id: Option<SessionId>,
     preparation: Option<Preparation>,
     session: Option<Session>,
     recognition: Option<Recognition>,
@@ -111,6 +114,12 @@ impl Dictation {
             };
         }
         self.last_failure.map_or(DictationStatus::Idle, DictationStatus::Unavailable)
+    }
+
+    /// The last dictation asked for: the one a failure card is about.
+    #[must_use]
+    pub const fn last_id(&self) -> Option<SessionId> {
+        self.last_id
     }
 
     /// The dictation this is about: the running one, the one being prepared,
@@ -302,7 +311,9 @@ impl Dictation {
 
     /// Stop what `id` asked for. A late answer cannot cancel its successor.
     pub fn cancel(&mut self, id: SessionId) -> bool {
-        if self.id() != Some(id) {
+        // A failure that left no dictation behind is still the person's to
+        // close, by the id of the dictation that failed.
+        if self.id().or(self.last_id) != Some(id) {
             return false;
         }
         self.discard_recovery();
@@ -372,7 +383,9 @@ impl Dictation {
             .next
             .checked_add(1)
             .ok_or(DictationError::SessionIdsExhausted)?;
-        Ok(SessionId::new(self.next))
+        let id = SessionId::new(self.next);
+        self.last_id = Some(id);
+        Ok(id)
     }
 
     fn keep(&mut self, reason: RecoveryReason, id: SessionId, text: Zeroizing<String>, now: Instant) {
@@ -657,6 +670,7 @@ mod tests {
         let now = Instant::now();
         Dictation {
             next: 1,
+            last_id: Some(SessionId::new(1)),
             preparation: None,
             session: Some(Session {
                 id: SessionId::new(1),
@@ -872,6 +886,12 @@ mod tests {
             dictation.status(),
             DictationStatus::Unavailable(DictationError::NoEditableField)
         );
+        // The card names the dictation that failed, and closing it clears the
+        // failure even though no dictation is left behind.
+        let failed = dictation.last_id().expect("the dictation asked for");
+        assert_eq!(dictation.id(), None);
+        assert!(dictation.cancel(failed), "the person closes the failure");
+        assert_eq!(dictation.status(), DictationStatus::Idle);
     }
 
     #[test]

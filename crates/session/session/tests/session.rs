@@ -456,6 +456,9 @@ fn a_window_fades_in_as_it_opens_and_its_last_frame_fades_out_as_it_closes() {
 mod keys {
     pub const TAB: u32 = 15;
     pub const A: u32 = 30;
+    pub const D: u32 = 32;
+    pub const LEFT_SHIFT: u32 = 42;
+    pub const ESCAPE: u32 = 1;
     pub const LEFT_META: u32 = 125;
     pub const VOLUME_UP: u32 = 115;
     pub const MUTE: u32 = 113;
@@ -2975,4 +2978,59 @@ fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
     assert_eq!(kept.app_id.as_deref(), Some("so.tilo.mail"));
     assert_eq!(centre.unread(), 1, "and it stays unread until read");
     drop(app);
+}
+
+#[test]
+fn the_dictation_key_shows_the_session_s_own_card_and_escape_closes_it() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let mut client = mapped(&mut session, "org.example.Editor");
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        clients[0].seen.keyboard_focused
+    });
+    let before = session.accessible_labels();
+    key(&mut session, keys::LEFT_META, true);
+    key(&mut session, keys::LEFT_SHIFT, true);
+    tap(&mut session, keys::D);
+    key(&mut session, keys::LEFT_SHIFT, false);
+    key(&mut session, keys::LEFT_META, false);
+    pump(&mut session, &mut [&mut client], |session, _| {
+        session
+            .read("dictation:session")
+            .is_some_and(|reading| reading["session"].is_number())
+    });
+    assert_eq!(
+        session.read("dictation:session").expect("dictation reads")["status"],
+        "preparing",
+        "the key asks for a dictation"
+    );
+    let labels = session.accessible_labels().join("\n");
+    assert!(
+        labels.contains("Checking the focused editable field"),
+        "the card is up on the session's own sheet: {labels}"
+    );
+    assert_ne!(session.accessible_labels(), before, "and it is new");
+
+    // Escape is the card's to answer, and the person's typing is not: the
+    // field they were in keeps seeing every other key.
+    tap(&mut session, keys::A);
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        clients[0].seen.keys.contains(&(keys::A, true))
+    });
+    tap(&mut session, keys::ESCAPE);
+    pump(&mut session, &mut [&mut client], |session, _| {
+        session
+            .read("dictation:session")
+            .is_some_and(|reading| reading["status"] == "idle")
+    });
+    let labels = session.accessible_labels().join("\n");
+    assert!(
+        !labels.contains("Checking the focused editable field"),
+        "the card is gone: {labels}"
+    );
+    assert!(
+        !client.seen.keys.iter().any(|(code, _)| *code == keys::ESCAPE),
+        "Escape was the card's, never the window's: {:?}",
+        client.seen.keys
+    );
 }

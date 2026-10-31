@@ -126,7 +126,6 @@ impl Dictation {
                     self.start(now);
                 }
             },
-            Request::Start => self.start(now),
             Request::Finish => {
                 if let Some(id) = self.link.id() {
                     let _ = self.link.stop_recording(id);
@@ -230,7 +229,7 @@ impl Dictation {
             _ => None,
         };
         let prompt = Prompt {
-            id: self.link.id()?.get(),
+            id: self.link.id().or_else(|| self.link.last_id())?.get(),
             stage,
             draft: self.preview(),
             failure: self.link.failure().map(failure),

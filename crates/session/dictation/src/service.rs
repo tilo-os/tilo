@@ -42,8 +42,6 @@ pub fn dictation_resource() -> ResourceSpec {
 pub enum Request {
     /// The dictation key: start one, or finish the one listening.
     Toggle,
-    /// Start a dictation: the person is asked to allow the microphone.
-    Start,
     /// Stop recording and insert what was heard.
     Finish,
     /// Stop recording and throw away what was heard.
@@ -89,6 +87,12 @@ impl DictationLink {
     #[must_use]
     pub fn id(&self) -> Option<SessionId> {
         self.dictation.borrow().id()
+    }
+
+    /// The last dictation asked for: the one a failure card is about.
+    #[must_use]
+    pub fn last_id(&self) -> Option<SessionId> {
+        self.dictation.borrow().last_id()
     }
 
     /// Why the last dictation did not run.
@@ -285,7 +289,9 @@ impl Service for DictationService {
         let published = self.resources();
         let action = decode::<DictationAction>(&published, resource, action, arguments)?;
         self.link.request(match action {
-            DictationAction::Start => Request::Start,
+            // The palette's entry does what the key does: start a dictation,
+            // or insert what is heard when one is listening.
+            DictationAction::Start => Request::Toggle,
             DictationAction::Finish => Request::Finish,
             DictationAction::Cancel => Request::Cancel,
             DictationAction::DiscardTranscript => Request::DiscardTranscript,
@@ -378,8 +384,8 @@ mod tests {
                 "recovery": null,
             })
         );
-        link.request(Request::Start);
-        assert_eq!(link.take_requests(), vec![Request::Start]);
+        link.request(Request::Toggle);
+        assert_eq!(link.take_requests(), vec![Request::Toggle]);
         assert!(link.take_requests().is_empty());
     }
 
@@ -390,7 +396,7 @@ mod tests {
             .invoke(DICTATION, "start", &Map::new())
             .expect("start is offered");
         assert_eq!(started, Started::Done(ActionOutput::default()));
-        assert_eq!(link.take_requests(), vec![Request::Start]);
+        assert_eq!(link.take_requests(), vec![Request::Toggle]);
         assert_eq!(
             service.invoke(DICTATION, "allow", &Map::new()),
             Err(DoorError::Unknown(ActionAddress::new(DICTATION, "allow"))),
