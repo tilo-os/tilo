@@ -1149,6 +1149,10 @@ impl ShellPart {
     /// across the top `band` logical pixels of the outputs at `scale`, kept in step with the
     /// session through `link`; `waker` wakes the session's loop when work the instance waits
     /// for is ready.
+    ///
+    /// The views' wells ([`ui::widget::Wells`]) report to `wells`, the handle the window policy
+    /// placing the windows they stand for shares (`crate::WellPolicy`); `None` for a part with
+    /// no windows of its own (the bar).
     #[must_use]
     pub fn new(
         app: &str,
@@ -1158,6 +1162,7 @@ impl ShellPart {
         band: u32,
         scale: f64,
         waker: Waker,
+        wells: Option<ui::widget::Wells>,
     ) -> Self {
         let placement = Placement {
             origin: (0, 0),
@@ -1191,7 +1196,8 @@ impl ShellPart {
         let record = tilo_resource::Doc::new();
         instance.sync(Some(&record));
         let window = AppWindow::part(Box::new(window_end));
-        let widgets = WidgetHost::new(Box::new(window), placement, false);
+        let mut widgets = WidgetHost::new(Box::new(window), placement, false);
+        widgets.install_wells(wells);
         let mut part = Self {
             widgets,
             instance,
@@ -1582,6 +1588,7 @@ mod tests {
             32,
             1.0,
             std::sync::Arc::new(|| {}),
+            None,
         );
         part.outputs_changed(&[(0, 0, 1280, 800)]);
         for _ in 0..4 {
