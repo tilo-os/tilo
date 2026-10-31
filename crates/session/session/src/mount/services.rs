@@ -93,13 +93,23 @@ impl Published for ServiceDoor {
     }
 }
 
+/// What the plane decides against on the collaboration side: what each of
+/// this device's rooms revokes, the client to the person's collaboration
+/// plane when there is one, and the broker and keys a room's sealed records
+/// are opened with.
+pub(crate) struct Collaboration<'a> {
+    pub revocations: crate::engine::Revocations,
+    pub sync: Option<&'a crate::sync::Client>,
+    pub sealed: Sealed,
+}
+
 /// The plane the apps read and invoke this session's services on, when it
 /// serves one: the socket the launcher hands its apps, and the link the loop
 /// answers their calls through.
 ///
-/// The broker it serves on is `channels`, the one the session's channel
-/// service gates a room's sealed records with, and `keys` is where an
-/// endpoint asks for a record's keys.
+/// The broker it serves on is `collaboration`'s, which the session's channel
+/// service gates a room's sealed records with, and whose keys an endpoint
+/// asks a record's keys from.
 pub(crate) fn start_action_plane(
     options: &Options,
     live_activities: &std::sync::Arc<runtime_collab::LiveActivities>,
@@ -107,10 +117,13 @@ pub(crate) fn start_action_plane(
     shortcuts: std::sync::Arc<ShortcutLibrary>,
     activity: &activity::Activity,
     agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
-    revocations: crate::engine::Revocations,
-    sync: Option<&crate::sync::Client>,
-    sealed: Sealed,
+    collaboration: Collaboration<'_>,
 ) -> Result<Option<Plane>, Error> {
+    let Collaboration {
+        revocations,
+        sync,
+        sealed,
+    } = collaboration;
     let path = match &options.action_plane {
         ActionPlane::Off => return Ok(None),
         ActionPlane::Launcher => {

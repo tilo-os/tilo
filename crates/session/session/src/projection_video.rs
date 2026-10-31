@@ -275,7 +275,6 @@ fn raise_profile(value: CaptureProfile, ceiling: CaptureProfile) -> CaptureProfi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::net::UnixListener;
 
     use tilo_compositor::{OutputConfig, StackPolicy};
     use tilo_projector::{DisplayResolutionLimit, VideoPacket};

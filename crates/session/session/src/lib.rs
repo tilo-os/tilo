@@ -1290,11 +1290,13 @@ impl Session {
             std::sync::Arc::new(shortcut_library),
             &activity,
             std::sync::Arc::clone(&agent_runs),
-            std::sync::Arc::clone(&revocations),
-            sync.as_deref(),
-            plane::Sealed {
-                broker: std::sync::Arc::clone(&channels_broker),
-                keys: engine.as_ref().map(|engine| engine.keys()),
+            mount::services::Collaboration {
+                revocations: std::sync::Arc::clone(&revocations),
+                sync: sync.as_deref(),
+                sealed: plane::Sealed {
+                    broker: std::sync::Arc::clone(&channels_broker),
+                    keys: engine.as_ref().map(|engine| engine.keys()),
+                },
             },
         )?;
         // The agent door: a program of this login asks here to work in a
