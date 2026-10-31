@@ -82,7 +82,8 @@ pub(crate) struct Run {
     pub(crate) driven: bool,
     /// What the room holds, when the record the window opened was not on
     /// this device: the view shows once it arrived.
-    pub(crate) room: Option<ui_core::arriving::Arriving<(), ui_core::room_sync::RoomUnreachable>>,
+    pub(crate) room:
+        Option<ui_core::arriving::Arriving<(), ui_core::workspace_sync::WorkspaceUnreachable>>,
 }
 
 /// The arguments, the app's own options, the file and the playback handoff
@@ -184,9 +185,11 @@ impl Run {
 
     /// The same run, its view waiting for what the room holds (`room`)
     /// when its record was not on this device.
-    pub(crate) fn awaiting_room(
+    pub(crate) fn awaiting_workspace(
         mut self,
-        room: Option<ui_core::arriving::Arriving<(), ui_core::room_sync::RoomUnreachable>>,
+        room: Option<
+            ui_core::arriving::Arriving<(), ui_core::workspace_sync::WorkspaceUnreachable>,
+        >,
     ) -> Self {
         self.room = room;
         self

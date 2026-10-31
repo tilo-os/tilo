@@ -124,17 +124,17 @@ struct ActionDirectoryCursor {
 }
 
 #[cfg(test)]
-mod room_record_launch_tests {
+mod record_index_launch_tests {
     use super::App;
-    use crate::record::{RecordCheckout, RecordId, RecordKind, RecordSet, room};
+    use crate::record::{RecordCheckout, RecordId, RecordKind, RecordSet, index};
     use crate::{State, widget::Text};
     use automerge::AutoCommit;
 
     #[test]
-    fn launch_reads_existing_room_index_without_opening_its_records() {
+    fn launch_reads_the_existing_index_without_opening_its_records() {
         let entry = RecordCheckout::new(RecordId::minted(), RecordKind::new("annotation-set"));
         let mut room_index = AutoCommit::new();
-        assert!(room::reference(&mut room_index, &entry.id, &entry.kind));
+        assert!(index::reference(&mut room_index, &entry.id, &entry.kind));
 
         let app = App::new(State::new(), Box::new(Text::new("PDF")))
             .with_records(RecordSet::in_memory().with_home("room-a"), room_index);

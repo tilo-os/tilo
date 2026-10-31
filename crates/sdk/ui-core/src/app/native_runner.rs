@@ -2731,7 +2731,7 @@ impl AppHandler {
         let culled = culling.is_some();
         let cull_frame = culling.as_mut().map(crate::draw_cull::Culling::begin);
         let draw_phase = slow_event::phase("draw");
-        crate::room_sync::frame_drawing();
+        crate::workspace_sync::frame_drawing();
         let drawn = draw_frame_content_with(
             app,
             &mut scene,
@@ -2748,9 +2748,9 @@ impl AppHandler {
             None => &mut scene,
         };
         // An empty state waiting for its room's first sync turns a spinner
-        // no widget's damage covers (`crate::room_sync`): a new pose damages
+        // no widget's damage covers (`crate::workspace_sync`): a new pose damages
         // its slot, in scene pixels.
-        let spinner_damage = crate::room_sync::take_spinner_damage();
+        let spinner_damage = crate::workspace_sync::take_spinner_damage();
         let (transform, window_rect, t_draw_us) =
             (drawn.transform, drawn.window_rect, drawn.draw_us);
         // The tooltip's material blurs what is under it, which repaints this
@@ -4300,10 +4300,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.held_frame = None;
             request_primary_redraw();
         }
-        // A turning waiting spinner (`crate::room_sync`) takes its next pose:
+        // A turning waiting spinner (`crate::workspace_sync`) takes its next pose:
         // a frame paints it and damages its slot alone, with no sync, no
         // layout and no frames between poses.
-        let spinner_pose = crate::room_sync::next_pose();
+        let spinner_pose = crate::workspace_sync::next_pose();
         let spinner_due = spinner_pose.is_some_and(|at| at <= crate::time::now());
         if spinner_due {
             request_primary_redraw();
@@ -4455,7 +4455,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 askers.push("presence".to_owned());
             }
             if spinner_due {
-                askers.push("room-sync-spinner".to_owned());
+                askers.push("workspace-sync-spinner".to_owned());
             }
             if held_due {
                 askers.push("held-frame".to_owned());

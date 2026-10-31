@@ -7,7 +7,7 @@
 //! ([`crate::shell::room_records::RoomRecords::reference`]) — no bytes
 //! move, no id is minted, and hydration remains in this room's document
 //! scope. Copying is a different, deliberate verb
-//! ([`ui::record::room::duplicate`]). A
+//! ([`ui::record::index::duplicate`]). A
 //! record whose identity is a path is also opened, since bringing and
 //! opening are meant to be the same gesture.
 //!

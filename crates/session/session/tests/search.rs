@@ -510,7 +510,7 @@ fn write_index(home: &tilo_test_env::TestHome, package: &str, room: &str, rows: 
     for (id, kind) in rows {
         let id = ui::record::RecordId::parse(id).expect("a record id");
         assert!(
-            ui::record::room::reference(&mut index, &id, &ui::record::RecordKind::new(*kind)),
+            ui::record::index::reference(&mut index, &id, &ui::record::RecordKind::new(*kind)),
             "the index names {id}"
         );
     }

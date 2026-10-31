@@ -5,14 +5,14 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 18
+version = 19
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
 sources = [
     "crates/sdk/ui-core/src/floating_surface.rs",
     "crates/sdk/ui-core/src/pick_wire.rs",
-    "crates/sdk/ui-core/src/room_sync.rs",
+    "crates/sdk/ui-core/src/workspace_sync.rs",
     "crates/sdk/ui-core/src/window_toolbar.rs",
     "crates/sdk/ui-core/src/window_share.rs",
     "crates/sdk/ui-core/src/widget/toast.rs",
@@ -259,9 +259,9 @@ ScopeDecl = "tilo_resource::ScopeDecl: an object of `anchor` (the resource or pa
 "FloatingSurfaceHostMessage::appearance" = "struct"
 "FloatingSurfaceHostMessage::appearance.corner_radius" = "Option<f32> optional"
 "FloatingSurfaceHostMessage::appearance.network_status" = "Option<HostNetworkStatus> optional"
-"FloatingSurfaceHostMessage::appearance.room_sync" = "Option<RoomSync> optional"
 "FloatingSurfaceHostMessage::appearance.theme" = "Option<ThemeDocument> optional"
 "FloatingSurfaceHostMessage::appearance.workspace_hue" = "Option<f32> optional"
+"FloatingSurfaceHostMessage::appearance.workspace_sync" = "Option<WorkspaceSync> optional"
 "FloatingSurfaceHostMessage::appearance.your_colour" = "Option<String> optional"
 "FloatingSurfaceHostMessage::capture_protection_applied" = "struct"
 "FloatingSurfaceHostMessage::capture_protection_applied.generation" = "u64"
@@ -502,18 +502,6 @@ ScopeDecl = "tilo_resource::ScopeDecl: an object of `anchor` (the resource or pa
 "ResourceView.app" = "String"
 "ResourceView.record" = "String"
 "ResourceView.resource" = "String"
-"RoomSync" = "struct"
-"RoomSync.cannot_keep_writes" = "bool optional"
-"RoomSync.state" = "RoomSyncState"
-"RoomSync.unsynced_writes" = "u32 optional"
-"RoomSync.workspace" = "String optional"
-"RoomSync.writable" = "Option<bool> optional"
-"RoomSyncState" = "enum external"
-"RoomSyncState::connecting" = "unit"
-"RoomSyncState::device_needs_update" = "unit"
-"RoomSyncState::host_needs_update" = "unit"
-"RoomSyncState::synced" = "unit"
-"RoomSyncState::unreachable" = "unit"
 "SearchCount" = "struct"
 "SearchCount.shown" = "u32"
 "SearchCount.total" = "u32"
@@ -738,3 +726,15 @@ ScopeDecl = "tilo_resource::ScopeDecl: an object of `anchor` (the resource or pa
 "WorkGroup.id" = "String"
 "WorkGroup.kind" = "String"
 "WorkGroup.label" = "String"
+"WorkspaceSync" = "struct"
+"WorkspaceSync.cannot_keep_writes" = "bool optional"
+"WorkspaceSync.state" = "WorkspaceSyncState"
+"WorkspaceSync.unsynced_writes" = "u32 optional"
+"WorkspaceSync.workspace" = "String optional"
+"WorkspaceSync.writable" = "Option<bool> optional"
+"WorkspaceSyncState" = "enum external"
+"WorkspaceSyncState::connecting" = "unit"
+"WorkspaceSyncState::device_needs_update" = "unit"
+"WorkspaceSyncState::host_needs_update" = "unit"
+"WorkspaceSyncState::synced" = "unit"
+"WorkspaceSyncState::unreachable" = "unit"

@@ -177,9 +177,10 @@ impl App {
         if let Some(reported) = reported {
             return Some(Cow::Borrowed(reported));
         }
-        // Writes this device holds for the room's hosts, which none of them
-        // carries now or kept: not yet synced, as the room's sync says.
-        if let Some(unsynced) = crate::room_sync::unsynced_status() {
+        // Writes this device holds for the workspace's hosts, which none of
+        // them carries now or kept: not yet synced, as the workspace's sync
+        // says.
+        if let Some(unsynced) = crate::workspace_sync::unsynced_status() {
             return Some(Cow::Owned(unsynced));
         }
         // A change still on its way to the history says nothing.

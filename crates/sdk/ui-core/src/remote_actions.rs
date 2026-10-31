@@ -348,7 +348,7 @@ impl RemoteActions {
         let session = matches!(self.lock().transport, Transport::Session);
         let governance = target.is_some_and(|target| target.provider == ROOM_GOVERNANCE_PROVIDER);
         if session && governance {
-            if let Some(sync) = crate::room_sync::current() {
+            if let Some(sync) = crate::workspace_sync::current() {
                 let workspace = sync.workspace.trim();
                 if !workspace.is_empty() {
                     return Source::host(workspace);

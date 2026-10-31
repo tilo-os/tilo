@@ -594,7 +594,7 @@ def start_session(state: Path, out: Path, tapps: list[Path], tag: str, native: s
     log = open(out / f"session-{tag}.log", "w")
     proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
                             env={**os.environ, "RUST_LOG": os.environ.get(
-        "RUST_LOG", "warn,tilo::launch_latency=info,tilo::room_sync=info")})
+        "RUST_LOG", "warn,tilo::launch_latency=info,tilo::workspace_sync=info")})
     until("the session", lambda: ready.is_file() or proc.poll() is not None, 300, 0.5)
     if proc.poll() is not None:
         raise Failed(f"the session ended ({proc.returncode}); see {out / f'session-{tag}.log'}")

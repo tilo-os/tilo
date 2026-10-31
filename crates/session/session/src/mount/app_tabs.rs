@@ -54,8 +54,8 @@ use ui::floating_surface::{
     FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
     HostNetworkStatus,
 };
-use ui::room_sync::RoomSync;
 use ui::theme::ThemeDocument;
+use ui::workspace_sync::WorkspaceSync;
 
 use crate::Launches;
 use crate::mount::apps::Apps;
@@ -195,7 +195,7 @@ struct Delivered {
     window: WindowAppearance,
     theme: ThemeDocument,
     network: Option<HostNetworkStatus>,
-    room: Option<RoomSync>,
+    sync: Option<WorkspaceSync>,
 }
 
 /// What a connection said that this service answers.
@@ -272,25 +272,25 @@ impl AppTabs {
 
     /// Give every open window the appearance of the desk it stands on: the
     /// temperature of its workspace, the person's colour, the theme, and its
-    /// room's sync state, each when it differs from what that window was
-    /// last told. A window opens with one, and gets another whenever any of
+    /// workspace's sync state, each when it differs from what that window
+    /// was last told. A window opens with one, and gets another whenever any of
     /// it changes; a pass that changes nothing writes nothing.
     pub fn publish_window_warmth(
         &mut self,
         appearance_of: impl Fn(&str) -> WindowAppearance,
-        room_of: impl Fn(&str) -> Option<RoomSync>,
+        sync_of: impl Fn(&str) -> Option<WorkspaceSync>,
         theme: &Theme,
         network: HostNetworkStatus,
     ) {
         for link in self.links.values_mut() {
             let network = link.network_allowed.then_some(network);
             let window = appearance_of(&link.app);
-            let room = room_of(&link.app);
+            let sync = sync_of(&link.app);
             let unchanged = link.told.as_ref().is_some_and(|last| {
                 last.window == window
                     && last.theme == theme.document
                     && last.network == network
-                    && last.room == room
+                    && last.sync == sync
             });
             if unchanged {
                 continue;
@@ -298,12 +298,12 @@ impl AppTabs {
             let mut message = FloatingSurfaceHostMessage::appearance_with_theme(&window, theme);
             if let FloatingSurfaceHostMessage::Appearance {
                 network_status,
-                room_sync,
+                workspace_sync,
                 ..
             } = &mut message
             {
                 *network_status = network;
-                room_sync.clone_from(&room);
+                workspace_sync.clone_from(&sync);
             }
             let written = link
                 .writer

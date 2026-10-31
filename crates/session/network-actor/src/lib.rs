@@ -26,11 +26,11 @@ pub mod media_caps;
 pub mod native_ingress;
 mod opened_records;
 pub mod private_messages;
-pub mod room_sync;
 pub mod services;
 #[cfg(any(test, feature = "test-support"))]
 pub mod siblings;
 pub mod workspace_control;
+pub mod workspace_sync;
 
 /// Wakes the compositor loop; on the native backend, a calloop ping.
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
@@ -2556,7 +2556,7 @@ impl ActorState {
                 .get(&(ws, peer))
                 .is_some_and(|runtime| runtime.native_scope.is_some())
         {
-            crate::room_sync::synced(ws);
+            crate::workspace_sync::synced(ws);
         }
         // The room's host replayed what it retains: the sealed writes it
         // replayed are queued for the broker ahead of this.

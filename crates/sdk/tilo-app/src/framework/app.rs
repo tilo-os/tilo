@@ -813,7 +813,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     // the app's view says nothing about it. Holdings already here (no
     // shell hosts the window, or the room synced) need no stand-in.
     let content: Element = match awaiting {
-        Some(holdings) if room_pending(&holdings) => cx.arriving_room(&holdings, A::view),
+        Some(holdings) if workspace_pending(&holdings) => cx.arriving_workspace(&holdings, A::view),
         _ => A::view(&mut cx),
     };
     let live = permissions.is_some();
@@ -834,8 +834,8 @@ pub(crate) fn build_root<A: ResourceApp>(
 }
 
 /// Whether the room's holdings are still on their way.
-fn room_pending(
-    holdings: &ui_core::arriving::Arriving<(), ui_core::room_sync::RoomUnreachable>,
+fn workspace_pending(
+    holdings: &ui_core::arriving::Arriving<(), ui_core::workspace_sync::WorkspaceUnreachable>,
 ) -> bool {
     holdings.with(|room| room.ready().is_none())
 }
@@ -1207,8 +1207,8 @@ fn create_component(
         // the room may hold it, so the view waits for what the room holds.
         None => Run::live(context.content().cloned())
             .in_private(context.is_private())
-            .awaiting_room(
-                matches!(target, LaunchTarget::PrimaryNew).then(ui_core::room_sync::holdings),
+            .awaiting_workspace(
+                matches!(target, LaunchTarget::PrimaryNew).then(ui_core::workspace_sync::holdings),
             ),
     };
     if let Some(file) = &file {

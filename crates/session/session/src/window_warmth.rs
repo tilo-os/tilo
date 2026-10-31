@@ -24,8 +24,8 @@ use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::warmth::WindowWarmth;
 use ui::Theme;
 use ui::floating_surface::HostNetworkStatus;
-use ui::room_sync::RoomSync;
 use ui::tokens::PresenceHue;
+use ui::workspace_sync::WorkspaceSync;
 
 use crate::mount::app_tabs::AppTabs;
 use crate::wallpapers::Wallpapers;
@@ -103,7 +103,7 @@ impl Windows {
             let persons = RefCell::new(HashMap::new());
             tabs.publish_window_warmth(
                 |app| self.warmth.appearance_of(tree, app, &self.theme),
-                |app| room_sync(tree, app, person, &persons),
+                |app| workspace_sync(tree, app, person, &persons),
                 &self.theme,
                 network,
             );
@@ -113,12 +113,12 @@ impl Windows {
 
 /// Where the room `app`'s window stands with its peers, and whether that
 /// window may write it: the same answer that opened the app writable.
-fn room_sync(
+fn workspace_sync(
     tree: &DesktopTree,
     app: &str,
     person: &str,
     persons: &RefCell<HashMap<RoomId, String>>,
-) -> Option<RoomSync> {
+) -> Option<WorkspaceSync> {
     let workspace = tree.workspace_holding_app(app)?;
     let room = workspace.room();
     let person = persons
@@ -126,7 +126,7 @@ fn room_sync(
         .entry(room)
         .or_insert_with(|| crate::identity::person_in(&room.to_string(), person))
         .clone();
-    tilo_network_actor::room_sync::told(
+    tilo_network_actor::workspace_sync::told(
         tilo_network_actor::room_topic_id(room),
         &workspace.name,
         workspace.app_writes_at(&person, app, tilo_clock::unix_now()),

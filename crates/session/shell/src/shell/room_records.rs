@@ -5,7 +5,7 @@
 //! id without granting another room's document. Hydration resolves the name
 //! under this room's storage and collaboration scope, so equal ids cannot
 //! alias state across rooms. Copying is the separately-named
-//! [`ui::record::room::duplicate`].
+//! [`ui::record::index::duplicate`].
 //!
 //! The corpus has two halves: **held** is the rooms' own index documents;
 //! **observed** is what apps have written, found by a background scan

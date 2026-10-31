@@ -786,7 +786,7 @@ mod tests {
         std::fs::create_dir_all(&directory).expect("the index's directory");
         let mut index = automerge::AutoCommit::new();
         let kept = ui::record::RecordId::parse("file:/work/Kept.odt").expect("a record id");
-        assert!(ui::record::room::reference(
+        assert!(ui::record::index::reference(
             &mut index,
             &kept,
             &ui::record::RecordKind::new("document")
@@ -835,7 +835,7 @@ mod tests {
             .expect("an index directory");
         std::fs::create_dir_all(&directory).expect("the index's directory");
         let mut index = automerge::AutoCommit::new();
-        assert!(ui::record::room::reference(
+        assert!(ui::record::index::reference(
             &mut index,
             &record,
             &ui::record::RecordKind::new("document")

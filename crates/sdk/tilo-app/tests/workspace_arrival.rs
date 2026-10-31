@@ -11,9 +11,9 @@ use tilo_app::advanced::Scene;
 use tilo_app::app::AppSurface;
 use tilo_app::framework::testing::{TestApp, drive_live_window};
 use tilo_app::prelude::*;
-use tilo_app::room_sync::{self, RoomSync, RoomSyncState};
 use tilo_app::winit::dpi::PhysicalSize;
 use tilo_app::winit::window::CursorIcon;
+use tilo_app::workspace_sync::{self, WorkspaceSync, WorkspaceSyncState};
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Board {
@@ -52,8 +52,8 @@ impl ResourceApp for Boards {
     }
 }
 
-fn sync(state: RoomSyncState) -> RoomSync {
-    RoomSync {
+fn sync(state: WorkspaceSyncState) -> WorkspaceSync {
+    WorkspaceSync {
         state,
         workspace: "Lounge".into(),
         writable: None,
@@ -64,8 +64,8 @@ fn sync(state: RoomSyncState) -> RoomSync {
 
 #[test]
 fn the_rooms_record_waits_for_the_rooms_first_sync() {
-    room_sync::hosted_by_shell();
-    room_sync::set(Some(sync(RoomSyncState::Connecting)));
+    workspace_sync::hosted_by_shell();
+    workspace_sync::set(Some(sync(WorkspaceSyncState::Connecting)));
     let mut app = TestApp::<Boards>::new().unwrap();
     app.harness().relayout();
     assert_eq!(
@@ -74,7 +74,7 @@ fn the_rooms_record_waits_for_the_rooms_first_sync() {
         "the room may hold the record: the view waits for it"
     );
     assert!(
-        room_sync::set(Some(sync(RoomSyncState::Synced))),
+        workspace_sync::set(Some(sync(WorkspaceSyncState::Synced))),
         "the first sync changes what the window shows"
     );
     app.harness().relayout();
@@ -106,13 +106,13 @@ impl AppSurface for Window {
 
 #[test]
 fn a_window_shows_the_rooms_record_in_the_frame_after_its_first_sync() {
-    room_sync::hosted_by_shell();
-    room_sync::set(Some(sync(RoomSyncState::Connecting)));
+    workspace_sync::hosted_by_shell();
+    workspace_sync::set(Some(sync(WorkspaceSyncState::Connecting)));
     drive_live_window::<Boards, _>(|app| {
         let mut scene = Scene::new();
         app.surface_frame(&Window, &mut scene);
         assert_eq!(VIEWS.with(Cell::get), 0, "the view waits for the room");
-        room_sync::set(Some(sync(RoomSyncState::Synced)));
+        workspace_sync::set(Some(sync(WorkspaceSyncState::Synced)));
         scene.reset();
         app.surface_frame(&Window, &mut scene);
         assert!(
@@ -142,14 +142,14 @@ impl ResourceApp for ButtonBoards {
 /// buttons work from then on, as they do when the room synced at once.
 #[test]
 fn a_button_works_after_a_first_sync_slow_enough_to_show_the_skeleton() {
-    room_sync::hosted_by_shell();
-    room_sync::set(Some(sync(RoomSyncState::Connecting)));
+    workspace_sync::hosted_by_shell();
+    workspace_sync::set(Some(sync(WorkspaceSyncState::Connecting)));
     let mut app = TestApp::<ButtonBoards>::new().unwrap();
     app.harness().relayout();
     // Past the grace, the arrival shows its skeleton.
     std::thread::sleep(tilo_app::arriving::GRACE + tilo_app::time::Duration::from_millis(50));
     app.harness().relayout();
-    assert!(room_sync::set(Some(sync(RoomSyncState::Synced))));
+    assert!(workspace_sync::set(Some(sync(WorkspaceSyncState::Synced))));
     assert!(
         app.harness()
             .wait_until(tilo_app::time::Duration::from_secs(30), |harness| {

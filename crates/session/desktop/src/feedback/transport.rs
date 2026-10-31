@@ -626,7 +626,7 @@ impl CanonicalReceiptSource for CanonicalRecord {
         }
         self.records
             .read(&self.record, |doc| {
-                let scope = ui::record::room_scope(doc);
+                let scope = ui::record::workspace_scope(doc);
                 if scope
                     .as_deref()
                     .is_some_and(|room| room != submission.destination.room)

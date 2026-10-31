@@ -472,8 +472,8 @@ fn paint_empty_state(
     }
     // A room that has not synced with its host is not empty: whatever the
     // app would say about nothing being here, say what is going on instead
-    // (`crate::room_sync`).
-    let waiting = crate::room_sync::waiting();
+    // (`crate::workspace_sync`).
+    let waiting = crate::workspace_sync::waiting();
     let mut waiting_spinner = None;
     let mut waiting_step = None;
     let replaced;
@@ -523,7 +523,7 @@ fn paint_empty_state(
 
     if let Some(slot) = hero {
         if let Some((step, next)) = waiting_step {
-            crate::room_sync::spinner_painted(step, next, transform.transform_rect_bbox(slot));
+            crate::workspace_sync::spinner_painted(step, next, transform.transform_rect_bbox(slot));
         }
         if let Some(spinner) = spinner {
             spinner.set_rect(slot);
@@ -1319,7 +1319,7 @@ impl EmptyState {
         if rect.width() <= 0.0
             || rect.height() <= 0.0
             || content.action_label.is_none()
-            || crate::room_sync::waiting().is_some_and(|waiting| !waiting.keeps_action())
+            || crate::workspace_sync::waiting().is_some_and(|waiting| !waiting.keeps_action())
         {
             return None;
         }
@@ -1358,7 +1358,7 @@ impl EmptyState {
     /// it is, unless a room that has not synced says so in its place.
     fn lists_action(&self) -> bool {
         self.resolved.2.is_some()
-            && crate::room_sync::waiting().is_none_or(|waiting| waiting.keeps_action())
+            && crate::workspace_sync::waiting().is_none_or(|waiting| waiting.keeps_action())
     }
 
     fn content(&self) -> EmptyStateContent<'_> {
@@ -1682,8 +1682,8 @@ impl Widget for EmptyState {
         // name and the message its description so a screen reader announces
         // both without the caller wiring anything.
         // A room that has not synced says what the screen says in its place,
-        // without the app's action (`crate::room_sync`).
-        let waiting = crate::room_sync::waiting();
+        // without the app's action (`crate::workspace_sync`).
+        let waiting = crate::workspace_sync::waiting();
         let (title, message, busy) = waiting.as_ref().map_or(
             (
                 &self.resolved.0,
@@ -2810,7 +2810,7 @@ mod tests {
 
     #[test]
     fn an_empty_state_in_a_room_that_never_synced_says_so_and_offers_nothing_of_the_apps() {
-        use crate::room_sync::{RoomSync, RoomSyncState};
+        use crate::workspace_sync::{WorkspaceSync, WorkspaceSyncState};
         let theme = crate::theme::Theme::dark();
         let mut text = crate::text_render::TextRenderer::new();
         let mut scene = vello::Scene::new();
@@ -2828,7 +2828,7 @@ mod tests {
             )
         };
         let told = |state| {
-            Some(RoomSync {
+            Some(WorkspaceSync {
                 state,
                 workspace: "Lounge".into(),
                 writable: None,
@@ -2837,42 +2837,42 @@ mod tests {
             })
         };
 
-        crate::room_sync::set(told(RoomSyncState::Connecting));
-        let _ = crate::room_sync::take_spinner_damage();
+        crate::workspace_sync::set(told(WorkspaceSyncState::Connecting));
+        let _ = crate::workspace_sync::take_spinner_damage();
         assert!(
             paint(&mut scene).is_none(),
             "before the first sync the app's own empty state, and its action, wait"
         );
         assert!(
-            crate::room_sync::take_spinner_damage().is_some_and(|slot| {
+            crate::workspace_sync::take_spinner_damage().is_some_and(|slot| {
                 rect.contains(slot.center()) && slot.area() < rect.area() / 4.0
             }),
             "the connecting state turns a spinner and damages its slot alone"
         );
 
-        crate::room_sync::set(told(RoomSyncState::Unreachable));
+        crate::workspace_sync::set(told(WorkspaceSyncState::Unreachable));
         assert!(
             paint(&mut scene).is_some(),
             "with its host out of reach the person works here: the app's action stays"
         );
         assert!(
-            crate::room_sync::take_spinner_damage().is_none(),
+            crate::workspace_sync::take_spinner_damage().is_none(),
             "a host out of reach is no wait to spin through"
         );
 
-        crate::room_sync::set(told(RoomSyncState::HostNeedsUpdate));
+        crate::workspace_sync::set(told(WorkspaceSyncState::HostNeedsUpdate));
         assert!(paint(&mut scene).is_none());
         assert!(
-            crate::room_sync::take_spinner_damage().is_none(),
+            crate::workspace_sync::take_spinner_damage().is_none(),
             "a host that has to update is no wait to spin through"
         );
 
-        crate::room_sync::set(told(RoomSyncState::Synced));
+        crate::workspace_sync::set(told(WorkspaceSyncState::Synced));
         assert!(
             paint(&mut scene).is_some(),
             "once the room synced, its emptiness is the app's to say"
         );
-        crate::room_sync::set(None);
+        crate::workspace_sync::set(None);
         assert!(
             paint(&mut scene).is_some(),
             "a room with no host is the app's"
@@ -2924,11 +2924,11 @@ mod tests {
     }
 
     #[test]
-    fn a_screen_reader_hears_what_the_screen_says_before_the_room_synced() {
-        use crate::room_sync::{RoomSync, RoomSyncState};
+    fn a_screen_reader_hears_what_the_screen_says_before_the_workspace_synced() {
+        use crate::workspace_sync::{WorkspaceSync, WorkspaceSyncState};
         let empty = EmptyState::new("No notes yet").with_action("New note");
         let told = |state| {
-            Some(RoomSync {
+            Some(WorkspaceSync {
                 state,
                 workspace: "Lounge".into(),
                 writable: None,
@@ -2937,17 +2937,17 @@ mod tests {
             })
         };
 
-        crate::room_sync::set(told(RoomSyncState::Connecting));
+        crate::workspace_sync::set(told(WorkspaceSyncState::Connecting));
         let waiting = Widget::accessibility(&empty).unwrap();
         assert_eq!(
             waiting.name.as_deref(),
-            Some(crate::room_sync::waiting().unwrap().title.as_str())
+            Some(crate::workspace_sync::waiting().unwrap().title.as_str())
         );
         assert!(waiting.name.as_deref().unwrap().contains("Lounge"));
         assert!(waiting.state.busy, "the connecting state is on its way");
         assert!(waiting.children.is_empty(), "the app's action waits too");
 
-        crate::room_sync::set(told(RoomSyncState::Unreachable));
+        crate::workspace_sync::set(told(WorkspaceSyncState::Unreachable));
         let unreachable = Widget::accessibility(&empty).unwrap();
         assert!(unreachable.name.as_deref().unwrap().contains("Lounge"));
         assert!(!unreachable.state.busy, "nothing is on its way");
@@ -2964,7 +2964,7 @@ mod tests {
             "the person works on what is here"
         );
 
-        crate::room_sync::set(told(RoomSyncState::Synced));
+        crate::workspace_sync::set(told(WorkspaceSyncState::Synced));
         let empty_room = Widget::accessibility(&empty).unwrap();
         assert_eq!(empty_room.name.as_deref(), Some("No notes yet"));
         assert!(!empty_room.state.busy);
@@ -2975,7 +2975,7 @@ mod tests {
                 .and_then(|action| action.name.as_deref()),
             Some("New note")
         );
-        crate::room_sync::set(None);
+        crate::workspace_sync::set(None);
     }
 }
 

@@ -387,7 +387,7 @@ fn named_in(store: &dyn DurableStore, package: &str, room: &str) -> Vec<RecordCh
     // as of the last write that completed.
     let options = LoadOptions::new().on_partial_load(OnPartialLoad::Ignore);
     match AutoCommit::load_with_options(&stored.bytes, options) {
-        Ok(doc) => ui::record::room::discoverable_references(&doc),
+        Ok(doc) => ui::record::index::discoverable_references(&doc),
         Err(error) => {
             tracing::warn!(%error, package, room, "a room's index does not load");
             Vec::new()

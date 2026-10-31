@@ -1,7 +1,7 @@
 //! Transfer: the explicit verb that takes a record across a room boundary.
 //!
 //! A record id names a document only inside the room that hydrates it
-//! ([`super::room_scope`]), so nothing crosses rooms by reference. Transfer
+//! ([`super::workspace_scope`]), so nothing crosses rooms by reference. Transfer
 //! is the counterpart of [`super::room::duplicate`] for a document that
 //! already has content: the destination room receives the record's whole
 //! change graph under a fresh id of its own, re-scoped to that room, with
@@ -293,7 +293,7 @@ pub fn validate_import(
         .filter(|found| &found.id == id)
         .ok_or(RecordOpenError::IdentityMismatch)?;
     validate_identity(&doc, &checkout, room)?;
-    if super::room_scope(&doc).as_deref() != Some(room) {
+    if super::workspace_scope(&doc).as_deref() != Some(room) {
         return Err(RecordOpenError::IdentityMismatch.into());
     }
     if doc
@@ -669,7 +669,7 @@ pub fn provenance(doc: &AutoCommit) -> Vec<RecordId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record::{RecordOwners, RecordStore, room_scope};
+    use crate::record::{RecordOwners, RecordStore, workspace_scope};
     use automerge::ROOT;
 
     const PACKAGE: &str = "so.tilo.transfer-test";
@@ -789,7 +789,7 @@ mod tests {
             body(&destination).as_deref(),
             Some("first draft, last words")
         );
-        assert_eq!(room_scope(&destination).as_deref(), Some(TO));
+        assert_eq!(workspace_scope(&destination).as_deref(), Some(TO));
         assert!(matches!(
             read(&store, PACKAGE, FROM, &origin),
             Err(TransferError::Open(RecordOpenError::Retired))
