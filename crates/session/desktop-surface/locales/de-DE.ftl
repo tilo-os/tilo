@@ -311,6 +311,13 @@ activity-detail-action-count = { $count } { $count ->
         [one] Aktion
        *[other] Aktionen
     }
+activity-action-mark-viewed = Als gesehen markieren
+activity-action-focused = Melden, was gezeigt wurde
+activity-action-name = Änderungen benennen
+activity-action-move-boundary = Grenze der Arbeitssitzung verschieben
+activity-action-undo-record = Diese Änderung rückgängig machen
+activity-action-choose-source = Morgenquelle wählen
+activity-action-source = Morgenquelle verwenden
 activity-no-resource = Keine Ressource angegeben
 activity-what-changed = Was sich geändert hat
 activity-comparison-counts = { $actions } { $actions ->

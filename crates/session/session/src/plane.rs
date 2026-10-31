@@ -23,15 +23,16 @@ use serde_json::Map;
 use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
 use tilo_action_broker::collab_outbound::PeerPublisher;
 use tilo_action_broker::services::{
-    Caller, HostServices, PublishedResources, Reading, ResourceWatch, SearchIndexServices,
-    ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
-    WorkspaceAuthority, WorkspaceAuthorityHandle,
+    Caller, HostServices, HostStepServices, PublishedResources, Reading, ResourceWatch,
+    SearchIndexServices, ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore,
+    SpeakerChange, SpeakerServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
 };
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Services, Started, Wake};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::activity_provider::ActivityWire;
 use crate::launches::Launches;
 
 /// A watch the loop keeps: the resource an app connection watches, and what
@@ -235,6 +236,18 @@ impl SearchIndexServices for ContentIndex {
     }
 }
 
+/// What this session hands the broker besides the link and the launcher: the
+/// board every app's live activity shows on, the index its publications land
+/// in, the desk it decides a room against, the shortcuts it saves and runs,
+/// and the workspace's activity it serves.
+pub struct Hosted {
+    pub live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
+    pub content: Option<std::sync::Arc<AppContentIndex>>,
+    pub desk: std::sync::Arc<DeskAuthority>,
+    pub shortcuts: std::sync::Arc<ShortcutLibrary>,
+    pub activity: std::sync::Arc<ActivityWire>,
+}
+
 /// Serve the session's published resources to the apps on `socket`: the
 /// broker admits each connection by the launch `launches` recorded, asks
 /// `link` for what the services publish, hands Settings the speaker groups
@@ -251,13 +264,10 @@ pub fn serve(
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
     fabric: Option<tilo_device_fabric::link::SharedLink>,
-    live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
-    content: Option<std::sync::Arc<AppContentIndex>>,
-    desk: std::sync::Arc<DeskAuthority>,
-    shortcuts: std::sync::Arc<ShortcutLibrary>,
+    hosted: Hosted,
 ) -> std::io::Result<BrokerHandle> {
-    let services = host_services(link, launches, fabric, live_activities, content, shortcuts);
-    let membership: WorkspaceAuthorityHandle = desk;
+    let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.desk) as _;
+    let services = host_services(link, launches, fabric, hosted);
     tilo_action_broker::collab_broker::spawn_with_services(
         socket,
         Some(membership),
@@ -380,10 +390,15 @@ fn host_services(
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
     fabric: Option<tilo_device_fabric::link::SharedLink>,
-    live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
-    content: Option<std::sync::Arc<AppContentIndex>>,
-    shortcuts: std::sync::Arc<ShortcutLibrary>,
+    hosted: Hosted,
 ) -> HostServices {
+    let Hosted {
+        live_activities,
+        content,
+        desk: _,
+        shortcuts,
+        activity,
+    } = hosted;
     let speakers: Option<std::sync::Arc<dyn SpeakerServices>> = fabric.map(|fabric| {
         std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
     });
@@ -404,6 +419,9 @@ fn host_services(
         // A shortcut a person saves lands on the desk, and a shortcut's run
         // executes on the session's runtime.
         shortcut_library: Some(shortcut_library),
+        // The workspace's activity: what the Activity app shows, served by
+        // the desk's own model.
+        host_steps: vec![activity as std::sync::Arc<dyn HostStepServices>],
         ..HostServices::default()
     }
 }
@@ -567,6 +585,13 @@ mod tests {
         }
     }
 
+    /// The activity's door, which these tests serve nothing on.
+    fn requests() -> tilo_desktop_surface::session::ActivityRequests {
+        tilo_desktop_surface::session::activity_requests(std::sync::Arc::new(
+            std::sync::atomic::AtomicBool::new(false),
+        ))
+    }
+
     fn services(fabric: Option<tilo_device_fabric::link::SharedLink>) -> HostServices {
         let wake: Wake = std::sync::Arc::new(|| ());
         let link = Link::new(wake);
@@ -574,10 +599,22 @@ mod tests {
             link,
             std::sync::Arc::new(Launches::default()),
             fabric,
-            std::sync::Arc::new(runtime_collab::LiveActivities::default()),
-            None,
-            library(),
+            hosted(None),
         )
+    }
+
+    /// What a session with no index and no desk of its own hands the broker:
+    /// the services under test, and the empty desk it decides against.
+    fn hosted(content: Option<std::sync::Arc<AppContentIndex>>) -> Hosted {
+        Hosted {
+            live_activities: std::sync::Arc::new(runtime_collab::LiveActivities::default()),
+            content,
+            desk: std::sync::Arc::new(DeskAuthority::new(
+                tilo_desktop_model::DesktopTree::default(),
+            )),
+            shortcuts: library(),
+            activity: crate::activity_provider::wire(requests()),
+        }
     }
 
     /// A shortcut library whose runs would execute on a runtime of the
@@ -607,9 +644,7 @@ mod tests {
             Link::new(std::sync::Arc::new(|| ())),
             std::sync::Arc::new(Launches::default()),
             None,
-            std::sync::Arc::new(runtime_collab::LiveActivities::default()),
-            Some(std::sync::Arc::clone(&content)),
-            library(),
+            hosted(Some(std::sync::Arc::clone(&content))),
         );
         let search_index = services
             .search_index

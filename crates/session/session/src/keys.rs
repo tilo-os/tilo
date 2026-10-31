@@ -22,7 +22,6 @@ use tilo_desktop::osd::OsdKind;
 use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
 use xkeysym::key as keysyms;
 
-
 /// One published action to invoke, with its arguments.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Invocation {

@@ -299,6 +299,13 @@ activity-detail-action-count = { $count } { $count ->
         [one] action
        *[other] actions
     }
+activity-action-mark-viewed = Mark as viewed
+activity-action-focused = Say what was shown
+activity-action-name = Name changes
+activity-action-move-boundary = Move work session boundary
+activity-action-undo-record = Undo this change
+activity-action-choose-source = Choose morning source
+activity-action-source = Use morning source
 activity-no-resource = No resource declared
 activity-what-changed = What changed
 activity-comparison-counts = { $actions } { $actions ->

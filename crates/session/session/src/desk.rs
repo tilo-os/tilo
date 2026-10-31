@@ -92,6 +92,7 @@ pub(crate) fn follow_prefs(prefs: &Prefs, document: &Map<String, Value>) {
 /// Quick Settings shows.
 pub(crate) fn desk(
     options: &Options,
+    activity: &crate::activity::Activity,
     notices: tilo_desktop_surface::DesktopNotifications,
     pictures: Arc<Wallpapers>,
     widgets: Prefs,
@@ -101,6 +102,10 @@ pub(crate) fn desk(
 ) -> (DesktopHost, StripPolicy, Rc<RefCell<Vec<DesktopAsk>>>) {
     let asks = Rc::new(RefCell::new(Vec::new()));
     let (desktop, policy) = desktop_with(options.salt, options.scale, |mut surface, handle| {
+        // The desk's windows ask it for the workspace's activity, and the
+        // apps running beside it ask the same model through the broker.
+        surface.set_history_source(Box::new(activity.clone()));
+        surface.serve_activity(activity.requests());
         surface.set_notifications(notices.clone());
         let layer = tilo_desktop::desk_widgets::DeskWidgets::new(
             handle.clone(),

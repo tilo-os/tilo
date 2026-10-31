@@ -26,6 +26,8 @@
 #![cfg(target_os = "linux")]
 
 mod a11y_settings;
+mod activity;
+mod activity_provider;
 mod app_icons;
 mod app_sheets;
 mod automation;
@@ -38,6 +40,7 @@ pub mod controller_nav;
 pub mod controllers;
 mod controls;
 mod desk;
+mod desk_history;
 mod desk_layout;
 pub mod desktop_services;
 mod dictation;
@@ -55,6 +58,7 @@ mod held;
 mod here;
 mod i18n;
 pub mod identity;
+mod kept;
 mod keys;
 mod launches;
 mod lists;
@@ -442,6 +446,9 @@ struct QuickSettingsPanel {
 struct Shared {
     handle: DesktopHandle,
     desktop: DesktopHost,
+    /// The workspace's activity: the desk's changes, and the records its
+    /// apps keep.
+    activity: activity::Activity,
     /// Who sits here, as the desk's rules and the workspaces' governance
     /// name them.
     person: String,
@@ -519,6 +526,9 @@ struct Shared {
     /// changing (a drag, a rename) is written once in a while rather than
     /// every frame.
     kept: RefCell<Option<(String, Instant)>>,
+    /// The desk as the history last recorded it: what changed since is one
+    /// change of the workspace.
+    recorded: RefCell<Option<serde_json::Value>>,
     /// Where the desk and its pictures are kept between sessions.
     state: Option<std::path::PathBuf>,
     /// The pictures the desk shows, by workspace.
@@ -925,11 +935,15 @@ impl Shared {
     /// them and the strips and displays they are laid out on, so the next
     /// session starts here.
     fn keep_desk_now(&self) {
+        let tree = self.handle.read(Clone::clone);
+        let Some(value) = desk_layout::value(&tree) else {
+            return;
+        };
+        self.record_desk(&value);
         let Some(state) = &self.state else {
             return;
         };
-        let tree = self.handle.read(Clone::clone);
-        let Some(text) = desk_layout::text(&tree) else {
+        let Some(text) = serde_json::to_string(&value).ok() else {
             return;
         };
         let unchanged = self
@@ -946,8 +960,17 @@ impl Shared {
         *self.kept.borrow_mut() = Some((text, Instant::now()));
     }
 
-    /// [`Self::keep_desk_now`], once in a while.
+    /// [`Self::keep_desk_now`], once in a while: what the workspace's
+    /// history records still counts every change, since a drag or a rename
+    /// is one change of the workspace however many frames it takes.
     fn keep_desk(&self) {
+        let tree = self.handle.read(Clone::clone);
+        let Some(value) = desk_layout::value(&tree) else {
+            return;
+        };
+        if !self.record_desk(&value) {
+            return;
+        }
         let now = Instant::now();
         if self
             .kept
@@ -958,6 +981,65 @@ impl Shared {
             return;
         }
         self.keep_desk_now();
+    }
+
+    /// Record the desk as the workspace's history has it, when it changed
+    /// since the last record: whether it did. The same desk is one change,
+    /// however often it is looked at.
+    fn record_desk(&self, value: &serde_json::Value) -> bool {
+        if self.recorded.borrow().as_ref() == Some(value) {
+            return false;
+        }
+        self.activity.record_desk(value, activity::now_seconds());
+        *self.recorded.borrow_mut() = Some(value.clone());
+        true
+    }
+
+    /// Take up what the workspace's history wrote back and what the person
+    /// opened from it, and tell the apps following it what moved.
+    fn serve_activity(&self) {
+        if let Some(tree) = self.activity.take_restored() {
+            self.handle.replace_tree(tree);
+        }
+        for (room, target) in self.activity.take_openings() {
+            self.open_from_history(&room, &target);
+        }
+        self.activity.tell_followers();
+        if self.activity.take_woken() {
+            // A window asked the activity model something: the desk draws a
+            // frame, which serves it.
+            self.desktop.with_widgets(WidgetHost::relayout);
+        }
+    }
+
+    /// Open what the person chose in the history: the app that holds it,
+    /// showing it.
+    fn open_from_history(
+        &self,
+        room: &tilo_desktop_model::RoomId,
+        target: &ui::HistoryResourceTarget,
+    ) {
+        let Some(apps) = &self.launch else {
+            return;
+        };
+        let Some(app) = target.app_id.as_deref() else {
+            return;
+        };
+        let open = if let Some(path) = target.id.strip_prefix("file:") {
+            Some(tilo_app_launch::Open::File(std::path::PathBuf::from(path)))
+        } else if target.id.contains("://") {
+            Some(tilo_app_launch::Open::Uri(target.id.clone()))
+        } else {
+            None
+        };
+        let launch = tilo_app_launch::Launch::Package {
+            app: app.to_owned(),
+            open,
+        };
+        let room = apps.room_named(&room.to_string());
+        if let Err(error) = apps.start(&launch, &room) {
+            tracing::debug!(%error, %app, "an app is not opened from the history");
+        }
     }
 
     /// Carry out what the person chose in the sheets.
@@ -1430,8 +1512,18 @@ impl Session {
         // it current from the player Quick Settings already reads, so the
         // widget is a view of that one reading.
         let music = tilo_desktop::desk_widgets::DeskMusic::default();
+        // The workspace's activity: the desk's own log, and the records its
+        // apps keep in the store. The desk records into it, the model reads
+        // it, and the apps this session runs reach the same model.
+        let activity = activity::Activity::new(
+            options.state.as_deref(),
+            options.person.clone(),
+            options.search.records.as_ref().map(records::Records::root),
+            options.search.lists.clone(),
+        );
         let (desktop, mut policy, asks) = desk::desk(
             &options,
+            &activity,
             notices.clone(),
             std::sync::Arc::clone(&wallpapers),
             widget_prefs,
@@ -1661,6 +1753,7 @@ impl Session {
             &live_activities,
             &handle,
             std::sync::Arc::new(shortcut_library),
+            &activity,
         )?;
         let automation = automation::Automation::new(
             options.state.as_deref(),
@@ -1715,6 +1808,7 @@ impl Session {
         let shared = Shared {
             handle,
             desktop,
+            activity,
             person: options.person.clone(),
             search,
             launch: options.launch,
@@ -1748,6 +1842,7 @@ impl Session {
             clock,
             tray,
             kept: RefCell::new(None),
+            recorded: RefCell::new(None),
             state: options.state.clone(),
             wallpapers,
             lock_power: options.lock_power,
@@ -2232,6 +2327,9 @@ impl Session {
     /// the gestures it took, the actions keys asked for, and what those
     /// asked in turn.
     fn settle(&mut self) -> Result<(), Error> {
+        // What the history wrote back reaches the desk before anything reads
+        // it, and what the person opened from it starts from here.
+        self.shared.serve_activity();
         self.follow_collaboration();
         self.follow_automation();
         self.shared.follow_personal();
