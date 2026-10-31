@@ -76,6 +76,25 @@ pub fn keyboard_visible(preference: OnScreenKeyboard, entry: TextEntry) -> bool 
     }
 }
 
+/// Whether the on-screen keyboard runs at all: an app of the session is
+/// started for it while the person may want it, and the keyboard it draws
+/// comes and goes with [`keyboard_visible`].
+///
+/// It runs while it may be needed rather than only while it shows, because a
+/// field's focus reaches an input method only once one is connected: a
+/// keyboard started on the tap into a field would leave that tap unheard, and
+/// the person tapping again.
+#[must_use]
+pub fn keyboard_runs(preference: OnScreenKeyboard, entry: TextEntry) -> bool {
+    match preference {
+        OnScreenKeyboard::Always => true,
+        OnScreenKeyboard::Never => false,
+        // Once the machine can be typed on by touching it: nothing is
+        // started for a desktop driven by a keyboard and a pointer.
+        OnScreenKeyboard::Auto => entry.touch_available,
+    }
+}
+
 /// The stored colour filter as the compositor's.
 fn color_filter(filter: StoredFilter) -> ColorFilter {
     match filter {
@@ -282,6 +301,7 @@ mod tests {
         TextEntry {
             wants_typing,
             on_the_glass,
+            touch_available: on_the_glass,
         }
     }
 
@@ -309,6 +329,24 @@ mod tests {
             OnScreenKeyboard::Never,
             entry(true, true)
         ));
+    }
+
+    #[test]
+    fn the_on_screen_keyboard_runs_wherever_the_glass_can_be_touched() {
+        // Automatic: not on a desktop typed on by a keyboard and a pointer.
+        assert!(!keyboard_runs(OnScreenKeyboard::Auto, entry(false, false)));
+        // And on one that can be touched, field or no field: the tap into a
+        // field finds a keyboard already serving the seat.
+        let touchable = TextEntry {
+            touch_available: true,
+            ..entry(false, false)
+        };
+        assert!(keyboard_runs(OnScreenKeyboard::Auto, touchable));
+        assert!(!keyboard_visible(OnScreenKeyboard::Auto, touchable));
+        // Always: running before anything was touched.
+        assert!(keyboard_runs(OnScreenKeyboard::Always, entry(false, false)));
+        // Never: not even where the glass is touched.
+        assert!(!keyboard_runs(OnScreenKeyboard::Never, touchable));
     }
 
     #[test]

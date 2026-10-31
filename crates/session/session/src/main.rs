@@ -478,9 +478,11 @@ fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
             tilo_session::no_session_actions
         },
         lock_power: owned,
-        // The lock screen is the session's own app: started when the session
-        // locks, and shown in place of the desk until a password lifts it.
-        surfaces: lock_screen(),
+        // The lock screen and the on-screen keyboard are the session's own
+        // apps: the screen is started when the session locks, and the
+        // keyboard whenever the person may want it, under the hands they
+        // type with.
+        surfaces: surfaces(),
         user: std::env::var("USER").unwrap_or_default(),
         verifier: tilo_session::unlock::installed(),
         state: tilo_paths::state_dir(),
@@ -489,6 +491,19 @@ fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
         kill_switch: owned.then(KillSwitch::machine),
         ..Options::default()
     }
+}
+
+/// The surface apps the session starts itself: its lock screen and its
+/// on-screen keyboard, each when what it shows is wanted. A machine without
+/// either loses that surface, never the session.
+#[cfg(target_os = "linux")]
+fn surfaces() -> Vec<tilo_session::surfaces::Surface> {
+    let mut surfaces = lock_screen();
+    match tilo_session::keyboard::surface() {
+        Ok(keyboard) => surfaces.push(keyboard),
+        Err(error) => eprintln!("tilo-session: no on-screen keyboard: {error}"),
+    }
+    surfaces
 }
 
 /// The lock screen, when one is installed: the app whose window asks the

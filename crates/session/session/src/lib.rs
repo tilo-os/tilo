@@ -65,6 +65,7 @@ mod held;
 mod here;
 mod i18n;
 pub mod identity;
+pub mod keyboard;
 mod keys;
 mod launches;
 mod lists;
@@ -283,6 +284,9 @@ struct Shared {
     directory_store: directory::Store,
     /// The lock, as the session publishes it for the lock screen to show.
     lock: lock_service::Lock,
+    /// The on-screen keyboard, as the session publishes it for its app to
+    /// show where the person types.
+    keyboard: keyboard::Keyboard,
     /// This device's side of the person's session on their devices: what it
     /// says of its own lock and what it has followed from theirs.
     owner_session: owner_session::SessionFollow,
@@ -825,6 +829,13 @@ pub struct Session {
     /// Whether the night light is on, and whether a change is kept in the
     /// person's settings.
     night_light: (bool, bool),
+    /// When the on-screen keyboard runs, as the person chose: never, over a
+    /// field they touch, or always.
+    keyboard_preference: tilo_accessibility_settings::OnScreenKeyboard,
+    /// Where the keyboard's app stands, while the person may want it: a
+    /// keyboard on another display, or on one that changed size, is started
+    /// again where they type.
+    keyboard_run: keyboard::Run,
     /// The portal's link to the loop, while the portal serves.
     portal: Option<portal_link::SessionLink>,
     /// The apps this session started, told to the portal: which of them run
@@ -1410,6 +1421,9 @@ impl Session {
         // screen shows and publishes it, so the screen is an app of the
         // session's like any other.
         let lock = lock_service::Lock::default();
+        // The on-screen keyboard's state, published the same way: the app of
+        // the session draws what the session says it does.
+        let keyboard = keyboard::Keyboard::default();
         let mut started = std::mem::take(&mut options.services);
         started.push(Box::new(desk_service));
         // A service that records who changed what records the person's, not
@@ -1441,6 +1455,9 @@ impl Session {
         // the reading says where each display stands.
         let displays_service =
             displays::Displays::mount(&services, options.backlights.take(), Rc::clone(&commands));
+        services
+            .borrow_mut()
+            .add(Box::new(keyboard::KeyboardService::new(keyboard.clone())));
         // Dictation joins the services: its recognizer, microphone and
         // consent are only the session's, and the sheet asks about them.
         let dictation =
@@ -1497,6 +1514,7 @@ impl Session {
             portal,
             file_picker,
             lock,
+            keyboard,
             owner_session: owner_session::SessionFollow::default(),
             display_confirm,
             notices: notices.clone(),
@@ -1576,6 +1594,8 @@ impl Session {
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
             warmth,
             night_light: (options.config.night_light, options.config.kept),
+            keyboard_preference: options.config.on_screen_keyboard,
+            keyboard_run: keyboard::Run::default(),
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             action_plane,
@@ -1661,10 +1681,10 @@ impl Session {
         self.follow_displays()?;
         self.follow_fullscreen();
         for surface in &self.surface_apps {
-            // The lock screen is started when the session locks: its window
-            // asks for the lock as it opens, so one started here would lock
-            // the session at once.
-            if surface.lock {
+            // The lock screen is started when the session locks and the
+            // on-screen keyboard when the person may need it: what their
+            // windows show is never the desk's to open.
+            if surface.lock || surface.name == keyboard::SURFACE {
                 continue;
             }
             let room = self.shared.active_room();
@@ -2087,6 +2107,7 @@ impl Session {
         }
         self.follow_owner_session()?;
         self.follow_lock()?;
+        self.follow_keyboard();
         if let Some(captures) = &self.captures {
             captures.serve(&mut self.compositor, self.capture_studio.as_mut());
         }

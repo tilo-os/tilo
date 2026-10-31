@@ -145,6 +145,9 @@ impl Session {
                 .take();
             if let Some(config) = next {
                 a11y_settings::apply(&mut self.compositor, &config.a11y)?;
+                // The keyboard is started or stopped by the choice the
+                // person made in this change, on this pass's displays.
+                self.keyboard_preference = config.on_screen_keyboard;
                 if let Some(link) = &self.machine.link {
                     link.set_policy(config.power);
                     apply(&mut self.compositor, link);
