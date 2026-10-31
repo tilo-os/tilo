@@ -558,7 +558,8 @@ impl ChannelEncryption {
         for (channel, entry) in &mut self.unopened {
             match &mut entry.retry {
                 None => {
-                    let opens = stored && takes_part(&*self.directory, device, entry.room, *channel);
+                    let opens =
+                        stored && takes_part(&*self.directory, device, entry.room, *channel);
                     if recheck && opens {
                         changed.push((*channel, true));
                     }

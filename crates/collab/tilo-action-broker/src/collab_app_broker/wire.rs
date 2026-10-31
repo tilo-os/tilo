@@ -862,8 +862,7 @@ impl JoinedChannel {
         let refused = || BrokerError::failed("private service-session request refused".into());
         // Only the person's own app connection: never an agent's or a
         // host's. Which app may ask what is decided per request.
-        if self.verified_identity.agent_id.is_some()
-            || self.verified_identity.host_scope.is_some()
+        if self.verified_identity.agent_id.is_some() || self.verified_identity.host_scope.is_some()
         {
             return Err(refused());
         }
