@@ -110,10 +110,14 @@ fn sections(view: &SidebarView<'_>) -> Vec<NavSection> {
                     NavItem::new(request_id(ci, ri), &request.name).badge(request.method.as_str())
                 })
                 .collect();
-            NavSection::new(collection_section_id(&collection.id), &collection.name, items)
-                .collapsible()
-                .trailing_action(NavAction::new(RENAME, Icon::Pencil, "Rename collection"))
-                .empty_caption("No saved requests")
+            NavSection::new(
+                collection_section_id(&collection.id),
+                &collection.name,
+                items,
+            )
+            .collapsible()
+            .trailing_action(NavAction::new(RENAME, Icon::Pencil, "Rename collection"))
+            .empty_caption("No saved requests")
         })
         .collect();
     if sections.is_empty() {
@@ -200,9 +204,10 @@ pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHan
         });
     // A collection's header renames it, through the form its effect opens.
     if let Some(rename) = sink.actions.borrow().as_ref().and_then(|actions| {
-        actions.effect_binding(ApiTesterEffect::RENAME_COLLECTION.try_map(|section: String| {
-            section.strip_prefix("collection:").map(str::to_owned)
-        }))
+        actions.effect_binding(
+            ApiTesterEffect::RENAME_COLLECTION
+                .try_map(|section: String| section.strip_prefix("collection:").map(str::to_owned)),
+        )
     }) {
         list = list.section_action(RENAME, rename);
     }
