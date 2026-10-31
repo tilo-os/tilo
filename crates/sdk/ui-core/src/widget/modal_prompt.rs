@@ -45,6 +45,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::{ControlSize, TextInput, Widget};
 
 /// Renders `caption → label → field`, where caption and label are optional.
+#[crate::component::not_a_component(system, "the body of the system's prompts")]
 pub struct PromptBody {
     caption: String,
     label: String,

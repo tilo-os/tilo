@@ -148,7 +148,7 @@ fn undone_is_empty(doc: &AutoCommit) -> bool {
 }
 
 #[test]
-fn a_new_step_ends_redo_and_somebody_elses_later_edit_refuses_undo() {
+fn a_new_step_ends_redo_and_somebody_elses_later_value_survives_undo() {
     let mut doc = document();
     add(&mut doc, ALICE, "a1", "red");
     add(&mut doc, ALICE, "a2", "green");
@@ -160,23 +160,25 @@ fn a_new_step_ends_redo_and_somebody_elses_later_edit_refuses_undo() {
     recolour(&mut doc, ALICE, "a1", "pink");
     recolour(&mut doc, BOB, "a1", "black");
     add(&mut doc, ALICE, "a4", "grey");
-    let refused = verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 2, plain)).unwrap_err();
-    assert!(refused.contains("changed since"), "{refused}");
-    assert_eq!(colour(&doc, "a1").as_deref(), Some("black"));
-    assert!(
-        ids(&doc).contains(&"a4".to_owned()),
-        "a refusal writes nothing"
+    let undone = verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 2, plain)).unwrap();
+    assert_eq!(undone.len(), 2, "both steps count as undone");
+    assert_eq!(
+        colour(&doc, "a1").as_deref(),
+        Some("black"),
+        "Bob's later colour stays"
     );
+    assert!(!ids(&doc).contains(&"a4".to_owned()), "her own mark went");
 }
 
 #[test]
-fn undoing_the_step_that_made_a_shared_container_is_refused_not_destructive() {
+fn undoing_the_step_that_made_a_shared_container_leaves_the_container_standing() {
     let mut doc = AutoCommit::new();
     add(&mut doc, ALICE, "a1", "red");
     add(&mut doc, BOB, "b1", "blue");
-    let refused = verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 1, plain)).unwrap_err();
-    assert!(refused.contains("changed since by"), "{refused}");
-    assert_eq!(ids(&doc), ["a1", "b1"], "Bob's mark stays");
+    let undone = verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 1, plain)).unwrap();
+    assert_eq!(undone.len(), 1);
+    assert!(ids(&doc).contains(&"b1".to_owned()), "Bob's mark stays");
+    assert!(undo_preview(&doc, &scope(ALICE), 1).is_empty());
 }
 
 #[test]

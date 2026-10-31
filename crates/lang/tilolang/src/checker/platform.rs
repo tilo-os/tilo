@@ -88,6 +88,16 @@ impl Checker<'_> {
         }
     }
 
+    /// `steps(r)`: the history of `r` as people read it, newest first: consecutive versions by
+    /// the same person, or by the same task run, folded into one `host.Step`. Which versions
+    /// fold is the platform's rule, the same in every app's history, so no view writes it.
+    pub(super) fn builtin_steps(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(r) = self.resource_arg("steps", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(Imp::Steps, vec![r], Ty::List(Box::new(host_ty("Step"))))
+    }
+
     /// `unseen(r)`: the versions of `r` the person looking has not seen, oldest first: those a
     /// task run or an agent made after the person's seen mark of `r` and after their own last
     /// change of it (task-legibility.md §2, §4). A view that reads it runs again when either
@@ -439,10 +449,93 @@ impl Checker<'_> {
             .type_info(key)
             .and_then(|info| info.field(&name.name))
             .map_or(Ty::Error, |f| f.ty.clone());
+        if ty == Ty::View {
+            return Some(self.shown_value(b, &key.name, name));
+        }
         let at = Ex::new(Ek::I32(i32::try_from(index).unwrap_or(0)), Ty::Bool);
         let (imp, c) = super::load_op(&ty, Imp::TupleGetI, Imp::TupleGetF, Imp::TupleGetH);
         let raw = if c.is_some() { Ty::Int } else { ty.clone() };
         Some(super::conv(c, Ex::host(imp, vec![b, at], raw), ty))
+    }
+
+    /// `c.before` or `c.after` of a `host.Change`: what the field held, shown as its type shows
+    /// it, a node of the view placed where the expression stands. Its key is the place in the
+    /// source with the identity of the enclosing items, as every node's is.
+    fn shown_value(&mut self, b: Ex, ty: &str, name: &ast::Ident) -> Ex {
+        if self.st.ctx != super::Ctx::View {
+            let who = self.st.ctx.word();
+            self.err(
+                "E061",
+                name.span,
+                format!(
+                    "`{}` of a `host.{ty}` is shown in a view; {who} reads `field` and the version's `fields`",
+                    name.name
+                ),
+            );
+            return Ex::error();
+        }
+        let side = Ex::new(Ek::I32(i32::from(name.name == "after")), Ty::Bool);
+        let key = self.keyed(&format!(
+            "{}.{}~{}{}",
+            self.st.view_id, self.st.prefix, name.name, name.span.start
+        ));
+        Ex::host(Imp::ChangeView, vec![b, side, key], Ty::View)
+    }
+
+    /// `undo(v)` of a `host.Version`, or `undo(run)` of a `host.TaskRun`: the action that takes
+    /// the step back, or every step of the run, through the platform's history (`undo`), as
+    /// the person who applies it. Applied from a view, on a control: `button(undo(v))`.
+    pub(super) fn builtin_undo(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if self.st.ctx != super::Ctx::View {
+            let who = self.st.ctx.word();
+            self.err(
+                "E067",
+                span,
+                format!("`undo(v)` is applied from a view, on a control; {who} cannot undo"),
+            );
+            return Ex::error();
+        }
+        let [a] = args else {
+            self.err(
+                "E022",
+                span,
+                "`undo` takes one version or task run: `undo(v)`, `undo(v.task)`",
+            );
+            return Ex::error();
+        };
+        if a.name.is_some() {
+            self.err(
+                "E022",
+                a.value.span,
+                "`undo` takes the version or run by position: `undo(v)`",
+            );
+        }
+        let what = self.expr(&a.value, None);
+        let (version, run) = (host_ty("Version"), host_ty("TaskRun"));
+        let of = match &what.ty {
+            Ty::Error => return Ex::error(),
+            ty if *ty == version => 0,
+            ty if *ty == run => 1,
+            Ty::Option(inner) if **inner == run => {
+                self.err(
+                    "E020",
+                    a.value.span,
+                    "a version's `task` is `.none` for a change made outside a run: `if let run = v.task { button(undo(run)) }`",
+                );
+                return Ex::error();
+            }
+            other => {
+                let t = self.show(other);
+                self.err(
+                    "E020",
+                    a.value.span,
+                    format!("`undo` takes a `host.Version` or a `host.TaskRun`; this is {t}"),
+                );
+                return Ex::error();
+            }
+        };
+        let of = Ex::new(Ek::I32(of), Ty::Bool);
+        Ex::host(Imp::ActUndo, vec![what, of], Ty::Action)
     }
 
     /// `e.label()`, `e.icon()` or `e.name()` of a value of a declared enum: what a control shows

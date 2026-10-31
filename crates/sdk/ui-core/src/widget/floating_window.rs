@@ -108,6 +108,10 @@ enum Drag {
     clippy::struct_excessive_bools,
     reason = "independent retained interaction flags model modal, chrome, and hover state"
 )]
+#[crate::component::not_a_component(
+    shell,
+    "a window the shell places; apps have no floating windows"
+)]
 pub struct FloatingWindow<C: Widget> {
     title: String,
     content: C,

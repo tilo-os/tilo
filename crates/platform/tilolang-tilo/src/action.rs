@@ -337,6 +337,47 @@ impl DynAction {
         out
     }
 
+    /// Where this action placed items, in order: each item (as the runtime writes it), the
+    /// resource holding the collection it is in, that collection's field, and the item's type
+    /// when the action made it. What a removed item's version says of where it stood.
+    #[must_use]
+    pub fn placed(&self) -> Vec<(String, String, String, Option<String>)> {
+        let mut out = Vec::new();
+        for edit in &self.edits {
+            let mut edit = edit;
+            while let DynEdit::In { edit: inner, .. } = edit {
+                edit = inner;
+            }
+            let (id, item, at, ty) = match edit {
+                DynEdit::Insert {
+                    id,
+                    item,
+                    at,
+                    record,
+                } => (
+                    id,
+                    item,
+                    at,
+                    record
+                        .get(crate::schema::TYPE_KEY)
+                        .and_then(Json::as_str)
+                        .map(str::to_owned),
+                ),
+                DynEdit::Place { id, item, at, .. } => (id, item, at, None),
+                _ => continue,
+            };
+            if let Some(place) = Placement::decode(at).as_ref().and_then(Placement::place) {
+                out.push((
+                    format!("{id}/{item}"),
+                    holder_of(id, place),
+                    place.field.clone(),
+                    ty,
+                ));
+            }
+        }
+        out
+    }
+
     /// What this action did to each resource it changed (as the runtime writes them), in order
     /// of first mention: made it, changed which of its fields, or removed it. A removed
     /// resource has a version too, so who removed it stays answerable; a resource it made and

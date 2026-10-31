@@ -300,6 +300,7 @@ pub fn apply(press: Press) -> Option<Subject> {
 /// ([`NavShell::bottom_band`](crate::widget::NavShell::bottom_band)) or as
 /// the Jobs page — and reads [`Band::presses`] in its update. The widget
 /// owns no state of its own beyond its rows: what it shows is the registry.
+#[crate::component::not_a_component(system, "the band of long work the system shows (HIG 10)")]
 pub struct Band {
     inner: Column,
     presses: Presses,

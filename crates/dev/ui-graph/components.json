@@ -3,51 +3,261 @@
   "toolkit": "0.1.0",
   "components": [
     {
-      "name": "Text",
-      "doc": "Words on the page, set in one of the design system's text roles. What it says is content, never looked up as interface copy.",
+      "name": "SearchButton",
+      "doc": "The one search affordance an app puts in its chrome: an icon button that opens the platform search over the whole app. It never draws a field, and a window bar that searches for the window takes its place.",
+      "semantics": {
+        "role": "Button"
+      }
+    },
+    {
+      "name": "Avatar",
+      "doc": "Who someone is, at a glance: their picture, or their initials on their own colour. A thing or a group shows a glyph on a neutral square.",
       "props": [
         {
-          "name": "value",
-          "doc": "What it says.",
+          "name": "who",
+          "doc": "The person or agent it shows.",
+          "type": {
+            "option": "principal"
+          },
+          "positional": true
+        },
+        {
+          "name": "name",
+          "doc": "What it is called when it shows no one: a group, a thing. Its initials and colour come from it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "glyph",
+          "doc": "A glyph instead of initials, on a neutral square: a group, an app.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "square",
+          "doc": "A square rather than a circle: an account or a site, not a person.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "name"
+      }
+    },
+    {
+      "name": "Badge",
+      "doc": "A small pill on another element: how many new things there are, a dot for something new, a short status (\"Owner\", \"Beta\"), or the mark of unsaved changes. It is never pressed.",
+      "props": [
+        {
+          "name": "text",
+          "doc": "A short status in a word: \"Owner\", \"Beta\".",
+          "type": {
+            "option": "text"
+          },
+          "positional": true
+        },
+        {
+          "name": "count",
+          "doc": "How many new things there are, in your colour: nothing at 0, \"99+\" past 99.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "dot",
+          "doc": "Something new, without a number: a dot in your colour.",
+          "type": "bool"
+        },
+        {
+          "name": "modified",
+          "doc": "Unsaved changes: a dot in the primary ink, which is nobody's and not new.",
+          "type": "bool"
+        },
+        {
+          "name": "tone",
+          "doc": "A status the pill means, washed into it. A text badge is neutral unless said.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Tone",
+                "cases": [
+                  "neutral",
+                  "success",
+                  "warning",
+                  "danger",
+                  "info"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "StaticText",
+        "label": "text"
+      }
+    },
+    {
+      "name": "Banner",
+      "doc": "A message that stays in the page until it is resolved or dismissed: \"You're offline\", \"This file changed on disk\", \"Storage is almost full\". Its kind decides its glyph and colour; it carries a title, a message under it, up to two actions inside its box, and a dismiss button. It opens and closes in place, what follows moving with its edge.",
+      "props": [
+        {
+          "name": "title",
+          "doc": "What happened, in a short sentence.",
           "type": "text",
           "required": true,
           "positional": true
         },
         {
-          "name": "role",
-          "doc": "What the text is, which sets its size, weight and face: `body` unless said.",
+          "name": "message",
+          "doc": "What it means or what to do, under the title.",
           "type": {
-            "choice": {
-              "name": "TextRole",
-              "cases": [
-                "display",
-                "large_title",
-                "title",
-                "heading",
-                "subheading",
-                "body",
-                "label",
-                "caption",
-                "reading",
-                "code"
-              ]
+            "option": "text"
+          }
+        },
+        {
+          "name": "kind",
+          "doc": "What kind of message it is: `neutral` unless said. A warning or an error is announced at once; the others when assistive technology is idle.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "BannerKind",
+                "cases": [
+                  "neutral",
+                  "info",
+                  "success",
+                  "warning",
+                  "error"
+                ]
+              }
             }
           }
         },
         {
-          "name": "numeric",
-          "doc": "A number that changes: tabular figures, so it does not jitter as it changes.",
-          "type": "bool"
+          "name": "icon",
+          "doc": "A glyph instead of the kind's own.",
+          "type": {
+            "option": "icon"
+          }
         },
         {
-          "name": "secondary",
-          "doc": "What it says stands beside the content it is about, in secondary ink: \"edited\" after a message, \"Pinned\" over it.",
-          "type": "bool"
+          "name": "action",
+          "doc": "The label of its main action, at its trailing edge: \"Retry\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "secondary_action",
+          "doc": "The label of a second action, before the main one: \"Details\".",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "act",
+          "doc": "Its main action was pressed."
+        },
+        {
+          "name": "secondary_act",
+          "doc": "Its second action was pressed."
+        },
+        {
+          "name": "dismiss",
+          "doc": "Its dismiss button was pressed: stop showing it. A banner with this has the button, and closes as it is pressed."
         }
       ],
       "semantics": {
-        "role": "Label",
-        "label": "value"
+        "role": "Group",
+        "label": "title"
+      }
+    },
+    {
+      "name": "RichText",
+      "doc": "Rich text, shown: its paragraphs with their formatting, and each reference in it as the reader's own inline view of what it refers to (a person with their name, a channel, a task with its number), resolved under their permissions. Activating a reference opens it.",
+      "props": [
+        {
+          "name": "value",
+          "doc": "The text it shows.",
+          "type": "rich_text",
+          "required": true,
+          "positional": true
+        }
+      ],
+      "events": [
+        {
+          "name": "open_reference",
+          "doc": "A reference in the text was activated, carrying the reference. Without one, the reference is opened.",
+          "value": "text"
+        }
+      ],
+      "semantics": {
+        "role": "Document"
+      }
+    },
+    {
+      "name": "Board",
+      "doc": "Cards in lanes, side by side: a kanban board, a pipeline, tasks by status. Dragging a card to another place in its lane or into another lane is reported by the card or lane it lands at; each card also opens, and offers its commands on its context menu, so nothing needs a drag.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the board is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "lanes",
+          "doc": "The lanes, in order.",
+          "accepts": {
+            "component": "BoardLane"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
+      "name": "Breadcrumb",
+      "doc": "Where a page is, as the path to it: each place it is in, a chevron between them, the page itself last. Pressing a place goes there. Where the path does not fit, its middle gives way first, the first place and the page itself staying.",
+      "props": [
+        {
+          "name": "root_icon",
+          "doc": "A glyph before the first place: a drive, Home.",
+          "type": {
+            "option": "icon"
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "segments",
+          "doc": "The places, outermost first; the last is the page itself, which is not pressed.",
+          "accepts": {
+            "component": "BreadcrumbSegment"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "edit",
+          "doc": "The empty space after the last place was pressed: offer the path as a field to type in."
+        }
+      ],
+      "semantics": {
+        "role": "Group"
       }
     },
     {
@@ -131,6 +341,268 @@
       }
     },
     {
+      "name": "Card",
+      "doc": "A summary of one thing on a surface of its own: a dashboard's tile, a resource's preview. Pressing it opens what it stands for.",
+      "props": [
+        {
+          "name": "title",
+          "doc": "What the card stands for, named in its head.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "count",
+          "doc": "How many things the card lists, as a count beside its title.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "item",
+          "doc": "The resource the card summarizes.",
+          "type": {
+            "option": "resource"
+          },
+          "positional": true
+        },
+        {
+          "name": "selected",
+          "doc": "Whether it is the selected one among its peers.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "body",
+          "doc": "What the card shows, in order.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "activate",
+          "doc": "The card was pressed: open what it stands for."
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "title",
+        "presents": "item"
+      }
+    },
+    {
+      "name": "ChangeMark",
+      "doc": "What someone else changed of a resource that the person looking has not seen yet: who, in which task run, and whether they made, changed or removed it. The host fills all but `of` from the resource's versions; activating it shows what they did.",
+      "props": [
+        {
+          "name": "of",
+          "doc": "The resource whose changes it marks.",
+          "type": {
+            "option": "resource"
+          },
+          "positional": true
+        },
+        {
+          "name": "by",
+          "doc": "Who made the newest change the person has not seen.",
+          "type": {
+            "option": "principal"
+          }
+        },
+        {
+          "name": "run",
+          "doc": "The task run it was part of, as its task is titled.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "kind",
+          "doc": "What they did: `created`, `changed` or `removed`.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "count",
+          "doc": "How many changes of it the person has not seen.",
+          "type": "int"
+        },
+        {
+          "name": "window",
+          "doc": "It marks a window, in its header: it says how many changes and by whom.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "activate",
+          "doc": "Activated: show what they did, at the run that did it."
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "run"
+      }
+    },
+    {
+      "name": "EmojiPicker",
+      "doc": "A button that opens the emoji picker beside it; the emoji picked is reported (`on pick(e)`).",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the button is called; \"Add reaction\" unless it says.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "pick",
+          "doc": "An emoji was picked: carries it.",
+          "value": "text"
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "label"
+      }
+    },
+    {
+      "name": "Quote",
+      "doc": "A message quoted where another answers it, or in the reply banner over the composer: a rule at its leading edge, who wrote it and the start of what it says. With `dismiss` it has a close button (the banner: \"stop replying\").",
+      "props": [
+        {
+          "name": "excerpt",
+          "doc": "The start of what the quoted message says.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "author",
+          "doc": "Who wrote it.",
+          "type": {
+            "option": "principal"
+          }
+        },
+        {
+          "name": "caption",
+          "doc": "What the quote is to the message (`Replying to`), shown before the author.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "dismiss",
+          "doc": "The close button was pressed. Without it there is no close button."
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "excerpt"
+      }
+    },
+    {
+      "name": "Reactions",
+      "doc": "The reactions on something: a pill per emoji with how many reacted, yours drawn on; pressing one adds or takes back your reaction, and the add button opens the emoji picker for another. Each reports the emoji (`on toggle(e)`).",
+      "props": [
+        {
+          "name": "reactions",
+          "doc": "Who reacted, by emoji: the reactions as the message holds them (`Map<Text, Set<Principal>>`).",
+          "type": {
+            "map": {
+              "key": "text",
+              "value": {
+                "set": "principal"
+              }
+            }
+          }
+        },
+        {
+          "name": "emoji",
+          "doc": "The emoji reacted with, in the order they were first used: the older form, with `by`, read while `reactions` is not given.",
+          "type": {
+            "list": "text"
+          },
+          "positional": true
+        },
+        {
+          "name": "by",
+          "doc": "Who reacted with each of `emoji`, in the same order.",
+          "type": {
+            "list": {
+              "list": "principal"
+            }
+          }
+        },
+        {
+          "name": "can_react",
+          "doc": "Whether the person may react; they may unless it says not.",
+          "type": {
+            "option": "bool"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "toggle",
+          "doc": "An emoji was pressed or picked: carries it. Your reaction with it is added, or taken back when you had reacted with it.",
+          "value": "text"
+        }
+      ],
+      "semantics": {
+        "role": "Toolbar"
+      }
+    },
+    {
+      "name": "Chip",
+      "doc": "A compact pill for a tag, a filter or a token: what a note is tagged with, a recipient, an applied filter. Pressing it opens or applies what it names; a chip that can be taken away has a trailing remove button; a filter chip shows whether it is on.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What it names, in a word or two.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "icon",
+          "doc": "A glyph before the label, for a chip that names an action rather than a value.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "selected",
+          "doc": "Whether the filter it stands for is on; without it the chip is no filter.",
+          "type": {
+            "option": "bool"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "press",
+          "doc": "It was pressed: open or apply what it names."
+        },
+        {
+          "name": "remove",
+          "doc": "Its remove button was pressed: take it away. A chip with this has the button."
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "label"
+      }
+    },
+    {
       "name": "MenuButton",
       "doc": "A button that opens a menu of commands under it: a header's More button, a sort menu.",
       "props": [
@@ -197,37 +669,19 @@
       }
     },
     {
-      "name": "SearchButton",
-      "doc": "The one search affordance an app puts in its chrome: an icon button that opens the platform search over the whole app. It never draws a field, and a window bar that searches for the window takes its place.",
-      "semantics": {
-        "role": "Button"
-      }
-    },
-    {
-      "name": "Scroll",
-      "doc": "A body that scrolls under its column's fixed header: its content as tall as it is, the part of it the column has room for shown.",
-      "props": [
-        {
-          "name": "follow_end",
-          "doc": "Open at the end of the content and stay there while it grows, unless the person scrolled away from the end: a conversation's transcript, whose newest line is last.",
-          "type": "bool"
-        },
-        {
-          "name": "across",
-          "doc": "Scroll sideways instead: a row wider than its column, such as a board's lanes.",
-          "type": "bool"
-        }
-      ],
+      "name": "DisclosureBand",
+      "doc": "Content a view shows only while something is open (a tile's details under it, a row's section), standing in a column. When the view starts showing it, it unrolls from its top while what follows moves down with its edge; when the view stops, it rolls up. Under reduced motion it lands at once.",
       "slots": [
         {
           "name": "content",
-          "doc": "What scrolls.",
+          "doc": "What it shows, in order.",
           "accepts": "view",
+          "many": true,
           "default": true
         }
       ],
       "semantics": {
-        "role": "ScrollView"
+        "role": "Group"
       }
     },
     {
@@ -251,228 +705,255 @@
       }
     },
     {
-      "name": "TextInput",
-      "doc": "A field to type text into, bound to the text it edits. Each edit is spliced into that text, never written over it, so people typing in the same text at once all keep what they typed.",
+      "name": "EmptyState",
+      "doc": "What a place says while it holds nothing: one sentence, and at most one action that starts filling it.",
       "props": [
-        {
-          "name": "placeholder",
-          "doc": "What to type, shown while it is empty.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "lines",
-          "doc": "Room for this many lines: the field wraps and grows with what is typed.",
-          "type": {
-            "option": "int"
-          }
-        },
         {
           "name": "title",
-          "doc": "The title of the document the window is for, edited in place as its large title.",
-          "type": "bool"
-        },
-        {
-          "name": "enabled",
-          "doc": "Whether it can be typed into now.",
-          "type": "bool"
-        },
-        {
-          "name": "changed_by",
-          "doc": "Someone else changed the text and the person has not seen it yet: the field takes their colour. The host sets it, from what the field is bound to (task-legibility §3).",
-          "type": {
-            "option": "principal"
-          }
-        },
-        {
-          "name": "previous",
-          "doc": "What the text was before that change, said when the field is hovered.",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "events": [
-        {
-          "name": "submit",
-          "doc": "Enter was pressed: what was typed is done (a quick add's entry). With it, Enter ends the text rather than breaking its line; Shift+Enter still breaks a wrapping field's line."
-        }
-      ],
-      "bindings": [
-        {
-          "name": "value",
-          "doc": "The text it edits.",
-          "type": "text",
-          "merge": "splice"
-        }
-      ],
-      "semantics": {
-        "role": "TextInput",
-        "label": "placeholder"
-      }
-    },
-    {
-      "name": "RichInput",
-      "doc": "A field to type rich text into, bound to the rich text it edits: each reference a completion picks is written as a reference, which every reader sees as their own inline view of what it names.",
-      "props": [
-        {
-          "name": "placeholder",
-          "doc": "What to type, shown while it is empty.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "enabled",
-          "doc": "Whether it can be typed into now.",
-          "type": "bool"
-        },
-        {
-          "name": "speakers",
-          "doc": "Who spoke last in what it writes into, newest first: whom its `@` drawer offers first, under \"In this conversation\". The system gives it to every rich input.",
-          "type": {
-            "list": "principal"
-          }
-        },
-        {
-          "name": "people",
-          "doc": "Who can read what it writes into: whom its `@` drawer offers, under \"Members\". The system gives it to every rich input; given no one, the drawer offers the room's roster.",
-          "type": {
-            "list": "principal"
-          }
-        }
-      ],
-      "events": [
-        {
-          "name": "submit",
-          "doc": "Enter was pressed: what was written is done (a composer's message is sent). With it, Enter sends rather than breaking the line; Shift+Enter still breaks it."
-        }
-      ],
-      "bindings": [
-        {
-          "name": "value",
-          "doc": "The rich text it edits.",
-          "type": "rich_text",
-          "merge": "rich"
-        }
-      ],
-      "semantics": {
-        "role": "TextInput",
-        "label": "placeholder"
-      }
-    },
-    {
-      "name": "Reactions",
-      "doc": "The reactions on something: a pill per emoji with how many reacted, yours drawn on; pressing one adds or takes back your reaction, and the add button opens the emoji picker for another. Each reports the emoji (`on toggle(e)`).",
-      "props": [
-        {
-          "name": "reactions",
-          "doc": "Who reacted, by emoji: the reactions as the message holds them (`Map<Text, Set<Principal>>`).",
-          "type": {
-            "map": {
-              "key": "text",
-              "value": {
-                "set": "principal"
-              }
-            }
-          }
-        },
-        {
-          "name": "emoji",
-          "doc": "The emoji reacted with, in the order they were first used: the older form, with `by`, read while `reactions` is not given.",
-          "type": {
-            "list": "text"
-          },
-          "positional": true
-        },
-        {
-          "name": "by",
-          "doc": "Who reacted with each of `emoji`, in the same order.",
-          "type": {
-            "list": {
-              "list": "principal"
-            }
-          }
-        },
-        {
-          "name": "can_react",
-          "doc": "Whether the person may react; they may unless it says not.",
-          "type": {
-            "option": "bool"
-          }
-        }
-      ],
-      "events": [
-        {
-          "name": "toggle",
-          "doc": "An emoji was pressed or picked: carries it. Your reaction with it is added, or taken back when you had reacted with it.",
-          "value": "text"
-        }
-      ],
-      "semantics": {
-        "role": "Toolbar"
-      }
-    },
-    {
-      "name": "EmojiPicker",
-      "doc": "A button that opens the emoji picker beside it; the emoji picked is reported (`on pick(e)`).",
-      "props": [
-        {
-          "name": "label",
-          "doc": "What the button is called; \"Add reaction\" unless it says.",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "events": [
-        {
-          "name": "pick",
-          "doc": "An emoji was picked: carries it.",
-          "value": "text"
-        }
-      ],
-      "semantics": {
-        "role": "Button",
-        "label": "label"
-      }
-    },
-    {
-      "name": "Quote",
-      "doc": "A message quoted where another answers it, or in the reply banner over the composer: a rule at its leading edge, who wrote it and the start of what it says. With `dismiss` it has a close button (the banner: \"stop replying\").",
-      "props": [
-        {
-          "name": "excerpt",
-          "doc": "The start of what the quoted message says.",
+          "doc": "Why it is empty, in one short sentence: \"No notes yet\".",
           "type": "text",
           "required": true,
           "positional": true
         },
         {
-          "name": "author",
-          "doc": "Who wrote it.",
-          "type": {
-            "option": "principal"
-          }
-        },
-        {
-          "name": "caption",
-          "doc": "What the quote is to the message (`Replying to`), shown before the author.",
+          "name": "message",
+          "doc": "One more sentence under it, when the first does not say enough.",
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "icon",
+          "doc": "A large glyph above the title: the app's, or the kind of thing that would be here.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "action",
+          "doc": "The label of the one action that fills it: \"New note\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "inline",
+          "doc": "Sit within the content, as a list without rows, rather than fill the window.",
+          "type": "bool"
         }
       ],
       "events": [
         {
-          "name": "dismiss",
-          "doc": "The close button was pressed. Without it there is no close button."
+          "name": "act",
+          "doc": "The action was pressed."
         }
       ],
       "semantics": {
         "role": "Group",
-        "label": "excerpt"
+        "label": "title"
+      }
+    },
+    {
+      "name": "BarGauge",
+      "doc": "A labelled level as a bar: a disk's use, a quota, a battery. Its label stands over the track's start and its readout over its end; the fill turns warning, then danger, as it fills, unless the share has no status.",
+      "props": [
+        {
+          "name": "value",
+          "doc": "How full it is, from 0 to 1.",
+          "type": "float",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "label",
+          "doc": "What it measures: \"Storage\", \"Memory\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "readout",
+          "doc": "The reading over the track's end: \"412 GB of 512 GB\". Unless said, the share as a percentage is announced.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "neutral",
+          "doc": "A share with no status (storage by kind, a quota with room): the plain fill, never a status colour.",
+          "type": "bool"
+        },
+        {
+          "name": "warning",
+          "doc": "Where the fill turns warning, from 0 to 1: 0.6 unless said.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "danger",
+          "doc": "Where the fill turns danger, from 0 to 1: 0.85 unless said.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "compact",
+          "doc": "Smaller label and readout, for a dense grid of gauges.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "ProgressBar",
+        "label": "label"
+      }
+    },
+    {
+      "name": "ProgressRing",
+      "doc": "How full something is, as a ring: a countdown, a download, the one hero reading of a screen (a speed test). A regular or large ring holds its readout and what it measures.",
+      "props": [
+        {
+          "name": "value",
+          "doc": "How full it is, from 0 to 1.",
+          "type": "float",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "readout",
+          "doc": "The readout inside the ring: \"42%\", \"23\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "caption",
+          "doc": "What the readout measures, under it: \"seconds\", \"downloaded\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "size",
+          "doc": "How large it is: `regular` unless said, `small` inline beside text without a readout, `large` for the one hero reading of a screen.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "ProgressRingSize",
+                "cases": [
+                  "small",
+                  "regular",
+                  "large"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "A status the fill means: a failed transfer stays danger.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Tone",
+                "cases": [
+                  "neutral",
+                  "success",
+                  "warning",
+                  "danger",
+                  "info"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "level",
+          "doc": "A measured level rather than progress: the fill turns warning, then danger, as it fills.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "ProgressBar",
+        "label": "caption"
+      }
+    },
+    {
+      "name": "Icon",
+      "doc": "One glyph from the icon set, in the theme's ink: a kind of thing beside its name, a status mark. It says nothing to assistive technology, so the words beside it carry the meaning.",
+      "props": [
+        {
+          "name": "icon",
+          "doc": "The glyph.",
+          "type": "icon",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "size",
+          "doc": "How large it is: `regular` beside a row's label unless said, `small` beside a caption, `large` beside a title.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "IconSize",
+                "cases": [
+                  "small",
+                  "regular",
+                  "large"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "secondary",
+          "doc": "Recede beside its label, in secondary ink.",
+          "type": "bool"
+        },
+        {
+          "name": "accent",
+          "doc": "Take the accent's ink, for the one glyph that marks what is chosen.",
+          "type": "bool"
+        },
+        {
+          "name": "tone",
+          "doc": "A status the glyph means, in that status's colour: a passed check, a warning sign.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Tone",
+                "cases": [
+                  "neutral",
+                  "success",
+                  "warning",
+                  "danger",
+                  "info"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image"
+      }
+    },
+    {
+      "name": "InputHint",
+      "doc": "The keys of a shortcut as drawn keycaps, in the person's own keyboard legends (\"Strg\" on a German keyboard, the Command key on a Mac), beside the command it runs. Never a typed string.",
+      "props": [
+        {
+          "name": "keys",
+          "doc": "The keys of the chord, modifiers first: `[\"Ctrl\", \"Shift\", \"P\"]`.",
+          "type": {
+            "list": "text"
+          },
+          "required": true,
+          "positional": true
+        }
+      ],
+      "semantics": {
+        "role": "StaticText"
       }
     },
     {
@@ -580,38 +1061,38 @@
       }
     },
     {
-      "name": "VirtualList",
-      "doc": "A long list of rows that costs only the rows on screen: each is built when it scrolls into view. Selection follows the person's choice and is reported with the item it shows; the list is one focus stop.",
+      "name": "NavList",
+      "doc": "The places of an app, in its sidebar: choosing one shows it. Selection follows the person's choice and is reported, never kept by the app beside it.",
       "props": [
         {
-          "name": "name",
-          "doc": "What the list is, for assistive technology.",
+          "name": "title",
+          "doc": "What the places are, as a heading over them.",
           "type": {
             "option": "text"
           }
         },
         {
-          "name": "selection_follows_focus",
-          "doc": "Moving through the rows with the keyboard selects them, as a list whose selection shows beside it does; a click or a tap on a row then activates it, as choosing an entry of an overview does.",
-          "type": "bool"
+          "name": "selected",
+          "doc": "The key of the place shown now.",
+          "type": {
+            "option": "text"
+          }
         },
         {
-          "name": "in_column",
-          "doc": "The list is a column's whole body: its rows' text starts where the column's header starts its title.",
-          "type": "bool"
-        },
-        {
-          "name": "transcript",
-          "doc": "A conversation: each row stands in the page column, the list opens at its newest row and follows it.",
+          "name": "rail",
+          "doc": "A compact rail of icons that fits beside the content at every width.",
           "type": "bool"
         }
       ],
       "slots": [
         {
-          "name": "rows",
-          "doc": "The items, in order.",
+          "name": "items",
+          "doc": "The places, in order: places, and sections of them under a heading.",
           "accepts": {
-            "component": "ListItem"
+            "one_of": [
+              "NavItem",
+              "NavSection"
+            ]
           },
           "many": true,
           "default": true
@@ -620,36 +1101,13 @@
       "events": [
         {
           "name": "select",
-          "doc": "A row was selected: carries the item it shows.",
-          "value": "resource"
-        },
-        {
-          "name": "activate",
-          "doc": "A row was activated (a click, Enter, an assistive technology): carries the item it shows.",
-          "value": "resource"
-        }
-      ],
-      "state": [
-        {
-          "name": "selection",
-          "doc": "The selected rows, by key.",
-          "type": {
-            "option": {
-              "list": "text"
-            }
-          }
-        },
-        {
-          "name": "scroll",
-          "doc": "How far the list is scrolled, in logical pixels.",
-          "type": {
-            "option": "float"
-          }
+          "doc": "A place was chosen; carries its key.",
+          "value": "text"
         }
       ],
       "semantics": {
-        "role": "List",
-        "label": "name"
+        "role": "Tree",
+        "label": "title"
       }
     },
     {
@@ -779,53 +1237,390 @@
       }
     },
     {
-      "name": "NavList",
-      "doc": "The places of an app, in its sidebar: choosing one shows it. Selection follows the person's choice and is reported, never kept by the app beside it.",
+      "name": "DisclosureRow",
+      "doc": "A row whose body opens in place under it: a device's details, a run's log, a setting's options. Its chevron turns as it opens, and what follows moves down with it. A press on the row, Enter or Space opens and closes it.",
       "props": [
         {
           "name": "title",
-          "doc": "What the places are, as a heading over them.",
+          "doc": "What the row is, on its first line.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "secondary",
+          "doc": "A line under the title, in secondary ink.",
           "type": {
             "option": "text"
           }
         },
         {
-          "name": "selected",
-          "doc": "The key of the place shown now.",
+          "name": "side",
+          "doc": "A quiet line at the far end of the title's line: who did it and when.",
           "type": {
             "option": "text"
           }
         },
         {
-          "name": "rail",
-          "doc": "A compact rail of icons that fits beside the content at every width.",
-          "type": "bool"
+          "name": "icon",
+          "doc": "A glyph before the title: the kind of thing it is.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "who",
+          "doc": "A person before the title, as an avatar: who did the work the row stands for.",
+          "type": {
+            "option": "principal"
+          }
+        },
+        {
+          "name": "signal",
+          "doc": "How strong a radio network's signal is, before the title, for a row that is a network.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "SignalLevel",
+                "cases": [
+                  "unknown",
+                  "weak",
+                  "fair",
+                  "good",
+                  "strong"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "expanded",
+          "doc": "Whether the row is open. Unless given, the row keeps it.",
+          "type": {
+            "option": "bool"
+          }
         }
       ],
       "slots": [
         {
-          "name": "items",
-          "doc": "The places, in order: places, and sections of them under a heading.",
+          "name": "body",
+          "doc": "What opens under the row, in order.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        },
+        {
+          "name": "trailing",
+          "doc": "One control on the row's trailing edge, before the chevron (a device's Connect): it acts without opening the row.",
+          "accepts": "view"
+        }
+      ],
+      "events": [
+        {
+          "name": "toggle",
+          "doc": "The row was opened or closed; carries whether it is open now.",
+          "value": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "label": "title"
+      }
+    },
+    {
+      "name": "Facts",
+      "doc": "Separate facts in one row, each an optional glyph and its text, with space between them and no separator glyph: \"12 files\", \"3 MB\", \"Edited today\" are three facts. Where the row is too narrow, the facts that matter least give way first.",
+      "slots": [
+        {
+          "name": "facts",
+          "doc": "The facts, in order.",
           "accepts": {
-            "one_of": [
-              "NavItem",
-              "NavSection"
-            ]
+            "component": "Fact"
           },
           "many": true,
           "default": true
         }
       ],
-      "events": [
+      "semantics": {
+        "role": "List"
+      }
+    },
+    {
+      "name": "KeyHints",
+      "doc": "Shortcuts and what they do, side by side: each hint the drawn keycaps of a chord and its label (\"Enter Save\", \"Esc Cancel\"), in the person's own keyboard legends. Never a sentence with a separator glyph.",
+      "slots": [
         {
-          "name": "select",
-          "doc": "A place was chosen; carries its key.",
-          "value": "text"
+          "name": "hints",
+          "doc": "The hints, in order.",
+          "accepts": {
+            "component": "KeyHint"
+          },
+          "many": true,
+          "default": true
         }
       ],
       "semantics": {
-        "role": "Tree",
+        "role": "Group"
+      }
+    },
+    {
+      "name": "TextStack",
+      "doc": "A title over a secondary line, with an optional third line under it, in fixed roles and at fixed gaps: a file's name over its folder, a person over their role. Each line is one line, cut short with an ellipsis; two facts never share a line.",
+      "props": [
+        {
+          "name": "title",
+          "doc": "The first line, in the body's medium weight.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "secondary",
+          "doc": "The line under the title, in secondary ink.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "tertiary",
+          "doc": "A third line, in tertiary ink.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "A status the secondary line means, in its colour: \"Failed\" in danger.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Tone",
+                "cases": [
+                  "neutral",
+                  "success",
+                  "warning",
+                  "danger",
+                  "info"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "dense",
+          "doc": "A dense row's or a bar's stack: a smaller title.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Group",
         "label": "title"
+      }
+    },
+    {
+      "name": "ProgressBar",
+      "doc": "How far something is: a transfer, an import, a sync. Without a value it is under way with no known end, a segment sliding across the track. A measured level (a disk, a quota) turns warning and then danger as it fills.",
+      "props": [
+        {
+          "name": "value",
+          "doc": "The share done, from 0 to 1. Without it the bar is under way with no known end.",
+          "type": {
+            "option": "float"
+          },
+          "positional": true
+        },
+        {
+          "name": "label",
+          "doc": "What is under way (\"Uploading\"). A named bar announces its progress to assistive technology without taking focus.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "A status the fill means: a failed transfer stays danger.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Tone",
+                "cases": [
+                  "neutral",
+                  "success",
+                  "warning",
+                  "danger",
+                  "info"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "level",
+          "doc": "A measured level rather than progress: the fill turns warning, then danger, as it fills.",
+          "type": "bool"
+        },
+        {
+          "name": "warning",
+          "doc": "Where a level turns warning, from 0 to 1: 0.6 unless said.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "danger",
+          "doc": "Where a level turns danger, from 0 to 1: 0.85 unless said.",
+          "type": {
+            "option": "float"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "ProgressBar",
+        "label": "label"
+      }
+    },
+    {
+      "name": "PropertyList",
+      "doc": "Facts about one thing, a label beside each value: a contact's details, a file's.",
+      "props": [
+        {
+          "name": "striped",
+          "doc": "Shade every other row, for a long list read across.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "properties",
+          "doc": "The facts, in order.",
+          "accepts": {
+            "component": "Property"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "List"
+      }
+    },
+    {
+      "name": "Time",
+      "doc": "A moment shown as how long ago it was, or how far ahead: `2 min ago`, `Yesterday`, `in 3 min`, in the person's language and time zone. It changes when what it says does, and wakes the window for nothing else.",
+      "props": [
+        {
+          "name": "at",
+          "doc": "The moment.",
+          "type": "time",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "role",
+          "doc": "What the text is, which sets its size and weight: `body` unless said.",
+          "type": {
+            "choice": {
+              "name": "TextRole",
+              "cases": [
+                "display",
+                "large_title",
+                "title",
+                "heading",
+                "subheading",
+                "body",
+                "label",
+                "caption",
+                "reading",
+                "code"
+              ]
+            }
+          }
+        },
+        {
+          "name": "secondary",
+          "doc": "It stands beside the content it is about, in secondary ink: when a change was made.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Label"
+      }
+    },
+    {
+      "name": "RichInput",
+      "doc": "A field to type rich text into, bound to the rich text it edits: each reference a completion picks is written as a reference, which every reader sees as their own inline view of what it names.",
+      "props": [
+        {
+          "name": "placeholder",
+          "doc": "What to type, shown while it is empty.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether it can be typed into now.",
+          "type": "bool"
+        },
+        {
+          "name": "speakers",
+          "doc": "Who spoke last in what it writes into, newest first: whom its `@` drawer offers first, under \"In this conversation\". The system gives it to every rich input.",
+          "type": {
+            "list": "principal"
+          }
+        },
+        {
+          "name": "people",
+          "doc": "Who can read what it writes into: whom its `@` drawer offers, under \"Members\". The system gives it to every rich input; given no one, the drawer offers the room's roster.",
+          "type": {
+            "list": "principal"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "submit",
+          "doc": "Enter was pressed: what was written is done (a composer's message is sent). With it, Enter sends rather than breaking the line; Shift+Enter still breaks it."
+        }
+      ],
+      "bindings": [
+        {
+          "name": "value",
+          "doc": "The rich text it edits.",
+          "type": "rich_text",
+          "merge": "rich"
+        }
+      ],
+      "semantics": {
+        "role": "TextInput",
+        "label": "placeholder"
+      }
+    },
+    {
+      "name": "Scroll",
+      "doc": "A body that scrolls under its column's fixed header: its content as tall as it is, the part of it the column has room for shown.",
+      "props": [
+        {
+          "name": "follow_end",
+          "doc": "Open at the end of the content and stay there while it grows, unless the person scrolled away from the end: a conversation's transcript, whose newest line is last.",
+          "type": "bool"
+        },
+        {
+          "name": "across",
+          "doc": "Scroll sideways instead: a row wider than its column, such as a board's lanes.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "content",
+          "doc": "What scrolls.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "ScrollView"
       }
     },
     {
@@ -877,415 +1672,41 @@
       }
     },
     {
-      "name": "EmptyState",
-      "doc": "What a place says while it holds nothing: one sentence, and at most one action that starts filling it.",
+      "name": "ObjectHeader",
+      "doc": "The head of a detail view: an avatar or a glyph, the thing's name as a title and one caption line under it, \"Ada Lovelace\" over \"ada@example.org\", a password's site over its address.",
       "props": [
         {
           "name": "title",
-          "doc": "Why it is empty, in one short sentence: \"No notes yet\".",
+          "doc": "The thing's name.",
           "type": "text",
           "required": true,
           "positional": true
         },
         {
-          "name": "message",
-          "doc": "One more sentence under it, when the first does not say enough.",
+          "name": "caption",
+          "doc": "One line under the name: an address, a URL, a kind.",
           "type": {
             "option": "text"
+          }
+        },
+        {
+          "name": "who",
+          "doc": "A person before the name, as their avatar.",
+          "type": {
+            "option": "principal"
           }
         },
         {
           "name": "icon",
-          "doc": "A large glyph above the title: the app's, or the kind of thing that would be here.",
-          "type": {
-            "option": "icon"
-          }
-        },
-        {
-          "name": "action",
-          "doc": "The label of the one action that fills it: \"New note\".",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "inline",
-          "doc": "Sit within the content, as a list without rows, rather than fill the window.",
-          "type": "bool"
-        }
-      ],
-      "events": [
-        {
-          "name": "act",
-          "doc": "The action was pressed."
-        }
-      ],
-      "semantics": {
-        "role": "Group",
-        "label": "title"
-      }
-    },
-    {
-      "name": "Card",
-      "doc": "A summary of one thing on a surface of its own: a dashboard's tile, a resource's preview. Pressing it opens what it stands for.",
-      "props": [
-        {
-          "name": "title",
-          "doc": "What the card stands for, named in its head.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "count",
-          "doc": "How many things the card lists, as a count beside its title.",
-          "type": {
-            "option": "int"
-          }
-        },
-        {
-          "name": "item",
-          "doc": "The resource the card summarizes.",
-          "type": {
-            "option": "resource"
-          },
-          "positional": true
-        },
-        {
-          "name": "selected",
-          "doc": "Whether it is the selected one among its peers.",
-          "type": "bool"
-        }
-      ],
-      "slots": [
-        {
-          "name": "body",
-          "doc": "What the card shows, in order.",
-          "accepts": "view",
-          "many": true,
-          "default": true
-        }
-      ],
-      "events": [
-        {
-          "name": "activate",
-          "doc": "The card was pressed: open what it stands for."
-        }
-      ],
-      "semantics": {
-        "role": "Group",
-        "label": "title",
-        "presents": "item"
-      }
-    },
-    {
-      "name": "PropertyList",
-      "doc": "Facts about one thing, a label beside each value: a contact's details, a file's.",
-      "props": [
-        {
-          "name": "striped",
-          "doc": "Shade every other row, for a long list read across.",
-          "type": "bool"
-        }
-      ],
-      "slots": [
-        {
-          "name": "properties",
-          "doc": "The facts, in order.",
-          "accepts": {
-            "component": "Property"
-          },
-          "many": true,
-          "default": true
-        }
-      ],
-      "semantics": {
-        "role": "List"
-      }
-    },
-    {
-      "name": "Avatar",
-      "doc": "Who someone is, at a glance: their picture, or their initials on their own colour. A thing or a group shows a glyph on a neutral square.",
-      "props": [
-        {
-          "name": "who",
-          "doc": "The person or agent it shows.",
-          "type": {
-            "option": "principal"
-          },
-          "positional": true
-        },
-        {
-          "name": "name",
-          "doc": "What it is called when it shows no one: a group, a thing. Its initials and colour come from it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "glyph",
-          "doc": "A glyph instead of initials, on a neutral square: a group, an app.",
+          "doc": "A glyph before the name: the kind of thing it is.",
           "type": {
             "option": "icon"
           }
         },
         {
           "name": "square",
-          "doc": "A square rather than a circle: an account or a site, not a person.",
+          "doc": "The avatar is square: an account or a site, not a person.",
           "type": "bool"
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "name"
-      }
-    },
-    {
-      "name": "Board",
-      "doc": "Cards in lanes, side by side: a kanban board, a pipeline, tasks by status. Dragging a card to another place in its lane or into another lane is reported by the card or lane it lands at; each card also opens, and offers its commands on its context menu, so nothing needs a drag.",
-      "props": [
-        {
-          "name": "name",
-          "doc": "What the board is, for assistive technology.",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "slots": [
-        {
-          "name": "lanes",
-          "doc": "The lanes, in order.",
-          "accepts": {
-            "component": "BoardLane"
-          },
-          "many": true,
-          "default": true
-        }
-      ],
-      "semantics": {
-        "role": "Group",
-        "label": "name"
-      }
-    },
-    {
-      "name": "Chip",
-      "doc": "A compact pill for a tag, a filter or a token: what a note is tagged with, a recipient, an applied filter. Pressing it opens or applies what it names; a chip that can be taken away has a trailing remove button; a filter chip shows whether it is on.",
-      "props": [
-        {
-          "name": "label",
-          "doc": "What it names, in a word or two.",
-          "type": "text",
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "icon",
-          "doc": "A glyph before the label, for a chip that names an action rather than a value.",
-          "type": {
-            "option": "icon"
-          }
-        },
-        {
-          "name": "selected",
-          "doc": "Whether the filter it stands for is on; without it the chip is no filter.",
-          "type": {
-            "option": "bool"
-          }
-        }
-      ],
-      "events": [
-        {
-          "name": "press",
-          "doc": "It was pressed: open or apply what it names."
-        },
-        {
-          "name": "remove",
-          "doc": "Its remove button was pressed: take it away. A chip with this has the button."
-        }
-      ],
-      "semantics": {
-        "role": "Button",
-        "label": "label"
-      }
-    },
-    {
-      "name": "ChangeMark",
-      "doc": "What someone else changed of a resource that the person looking has not seen yet: who, in which task run, and whether they made, changed or removed it. The host fills all but `of` from the resource's versions; activating it shows what they did.",
-      "props": [
-        {
-          "name": "of",
-          "doc": "The resource whose changes it marks.",
-          "type": {
-            "option": "resource"
-          },
-          "positional": true
-        },
-        {
-          "name": "by",
-          "doc": "Who made the newest change the person has not seen.",
-          "type": {
-            "option": "principal"
-          }
-        },
-        {
-          "name": "run",
-          "doc": "The task run it was part of, as its task is titled.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "kind",
-          "doc": "What they did: `created`, `changed` or `removed`.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "count",
-          "doc": "How many changes of it the person has not seen.",
-          "type": "int"
-        },
-        {
-          "name": "window",
-          "doc": "It marks a window, in its header: it says how many changes and by whom.",
-          "type": "bool"
-        }
-      ],
-      "events": [
-        {
-          "name": "activate",
-          "doc": "Activated: show what they did, at the run that did it."
-        }
-      ],
-      "semantics": {
-        "role": "Button",
-        "label": "run"
-      }
-    },
-    {
-      "name": "RichText",
-      "doc": "Rich text, shown: its paragraphs with their formatting, and each reference in it as the reader's own inline view of what it refers to (a person with their name, a channel, a task with its number), resolved under their permissions. Activating a reference opens it.",
-      "props": [
-        {
-          "name": "value",
-          "doc": "The text it shows.",
-          "type": "rich_text",
-          "required": true,
-          "positional": true
-        }
-      ],
-      "events": [
-        {
-          "name": "open_reference",
-          "doc": "A reference in the text was activated, carrying the reference. Without one, the reference is opened.",
-          "value": "text"
-        }
-      ],
-      "semantics": {
-        "role": "Document"
-      }
-    },
-    {
-      "name": "Property",
-      "doc": "One fact of a property list: what it is, and its value.",
-      "props": [
-        {
-          "name": "label",
-          "doc": "What the fact is: \"Due\", \"Owner\".",
-          "type": "text",
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "value",
-          "doc": "The fact.",
-          "type": "text",
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "copyable",
-          "doc": "A trailing action that copies the value.",
-          "type": "bool"
-        }
-      ],
-      "semantics": {
-        "role": "ListItem",
-        "label": "label"
-      }
-    },
-    {
-      "name": "NavItem",
-      "doc": "One place in a navigation list.",
-      "props": [
-        {
-          "name": "key",
-          "doc": "What names the place across changes: what selection reports.",
-          "type": "text",
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "label",
-          "doc": "What the place is called.",
-          "type": "text",
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "icon",
-          "doc": "Its glyph.",
-          "type": {
-            "option": "icon"
-          }
-        },
-        {
-          "name": "count",
-          "doc": "How many things it holds.",
-          "type": {
-            "option": "int"
-          }
-        }
-      ],
-      "events": [
-        {
-          "name": "select",
-          "doc": "The place was chosen: what choosing it does, beside the list's own `select`."
-        }
-      ],
-      "semantics": {
-        "role": "TreeItem",
-        "label": "label"
-      }
-    },
-    {
-      "name": "NavSection",
-      "doc": "A group of places under a heading in a navigation list: a category of channels, a folder of notebooks. A collapsible one folds away under its heading.",
-      "props": [
-        {
-          "name": "title",
-          "doc": "What the places are, as the heading over them.",
-          "type": "text",
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "collapsible",
-          "doc": "Whether its heading folds it away.",
-          "type": "bool"
-        }
-      ],
-      "slots": [
-        {
-          "name": "items",
-          "doc": "The places, in order.",
-          "accepts": {
-            "component": "NavItem"
-          },
-          "many": true,
-          "default": true
         }
       ],
       "semantics": {
@@ -1294,45 +1715,521 @@
       }
     },
     {
-      "name": "MenuItem",
-      "doc": "One command of a menu: what it shows, and what choosing it does.",
+      "name": "StatusLine",
+      "doc": "A status in a sentence: a dot in the status's colour and a caption beside it, \"Engine running\", \"3 containers stopped\". For a list's footer or a detail's state; it is never pressed.",
       "props": [
         {
-          "name": "label",
-          "doc": "What choosing it does, in a word or two.",
+          "name": "text",
+          "doc": "The sentence: \"Synced 2 minutes ago\".",
           "type": "text",
           "required": true,
           "positional": true
         },
         {
-          "name": "icon",
-          "doc": "A glyph before the label, for recognition; the label stays its name.",
+          "name": "status",
+          "doc": "What state it says: `active` (running, connected, healthy) unless said, `warning` (needs attention soon), `error` (failed, or offline unexpectedly), `idle` (present but inactive).",
           "type": {
-            "option": "icon"
+            "option": {
+              "choice": {
+                "name": "RowStatus",
+                "cases": [
+                  "active",
+                  "warning",
+                  "error",
+                  "idle"
+                ]
+              }
+            }
           }
         },
         {
-          "name": "destructive",
-          "doc": "It takes something away: drawn as destructive, and undone rather than confirmed.",
+          "name": "who",
+          "doc": "A person whose presence it says, in their colour, instead of a status.",
+          "type": {
+            "option": "principal"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "StaticText",
+        "label": "text"
+      }
+    },
+    {
+      "name": "SignalMeter",
+      "doc": "How strong a radio signal is (a Wi-Fi network, a mobile network), as four bars of rising height, one icon square in size. It names itself by its level: \"Strong signal\".",
+      "props": [
+        {
+          "name": "level",
+          "doc": "How strong the signal is: `unknown` fills no bar.",
+          "type": {
+            "choice": {
+              "name": "SignalLevel",
+              "cases": [
+                "unknown",
+                "weak",
+                "fair",
+                "good",
+                "strong"
+              ]
+            }
+          },
+          "required": true,
+          "positional": true
+        }
+      ],
+      "semantics": {
+        "role": "Image"
+      }
+    },
+    {
+      "name": "Skeleton",
+      "doc": "The shape of content still on its way, drawn where it will stand and at its size, so nothing moves when it arrives. It never shimmers, and it says \"Loading\" to assistive technology.",
+      "props": [
+        {
+          "name": "shape",
+          "doc": "What it stands in for: `text` unless said.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "SkeletonForm",
+                "cases": [
+                  "text",
+                  "row",
+                  "media",
+                  "chip",
+                  "page"
+                ]
+              }
+            }
+          },
+          "positional": true
+        },
+        {
+          "name": "lines",
+          "doc": "How many lines: of text (3 unless said), or under a row's title (none unless said).",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "leading",
+          "doc": "What leads a row: a mark, an avatar or a tile.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "RowLeadingShape",
+                "cases": [
+                  "none",
+                  "mark",
+                  "avatar",
+                  "tile"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "aspect",
+          "doc": "The shape of a media card's art: `square` unless said.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "MediaAspect",
+                "cases": [
+                  "square",
+                  "wide",
+                  "portrait",
+                  "circle"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Generic"
+      }
+    },
+    {
+      "name": "Spinner",
+      "doc": "Something under way whose length is not known: four dots turning. It holds still under reduced motion. Where the share done is known, a progress bar or ring says how far it is.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What is under way (\"Loading messages\"), as assistive technology names it.",
+          "type": {
+            "option": "text"
+          },
+          "positional": true
+        },
+        {
+          "name": "beside",
+          "doc": "Size it to one line of this text, for a spinner beside a status line. Unless said it stands alone at its own size.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "TextRole",
+                "cases": [
+                  "display",
+                  "large_title",
+                  "title",
+                  "heading",
+                  "subheading",
+                  "body",
+                  "label",
+                  "caption",
+                  "reading",
+                  "code"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Spinner",
+        "label": "label"
+      }
+    },
+    {
+      "name": "StatGroup",
+      "doc": "A set of stat tiles that reflows by width: all in one row when they fit, then half per row (a 2 by 2 for four), then one per row. The tiles are separated by space, never boxed.",
+      "slots": [
+        {
+          "name": "tiles",
+          "doc": "The tiles, in order.",
+          "accepts": {
+            "component": "StatTile"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group"
+      }
+    },
+    {
+      "name": "StatTile",
+      "doc": "One number and what it measures, on the content ground: a dashboard's reading, a backup's size. A tile reads top to bottom: its label, the value with its unit, a note, which way it moved, and a sparkline of its recent readings. A tile that opens a detail is pressed.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the number measures, in sentence case: \"Active users\".",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "value",
+          "doc": "The number, as it reads: \"1,284\", \"99.9\".",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "unit",
+          "doc": "Its unit, after the value: \"GB\", \"ms\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "note",
+          "doc": "A neutral qualifier read with the value: \"of 2 TB\", \"estimated\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "change",
+          "doc": "How it changed, beside an arrow of its trend: \"12% this week\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "trend",
+          "doc": "Which way it moved: `up` unless said, when it has a change. Whether that is good is its tone, not the arrow.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Trend",
+                "cases": [
+                  "up",
+                  "down",
+                  "flat"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "The state of what it measures, as a ticker down its leading edge: a failed backup is danger, a healthy tunnel success.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Tone",
+                "cases": [
+                  "neutral",
+                  "success",
+                  "warning",
+                  "danger",
+                  "info"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "hero",
+          "doc": "The one hero number of a screen, set large.",
           "type": "bool"
         },
         {
-          "name": "checked",
-          "doc": "Whether it is the one chosen now, in a menu of choices (a sort order).",
+          "name": "samples",
+          "doc": "Its recent readings, oldest first, as a sparkline under it.",
           "type": {
-            "option": "bool"
+            "list": "float"
+          }
+        },
+        {
+          "name": "selected",
+          "doc": "Whether it is the selected one, when it opens a detail.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "activate",
+          "doc": "The tile was pressed: open its detail."
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "label"
+      }
+    },
+    {
+      "name": "Text",
+      "doc": "Words on the page, set in one of the design system's text roles. What it says is content, never looked up as interface copy.",
+      "props": [
+        {
+          "name": "value",
+          "doc": "What it says.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "role",
+          "doc": "What the text is, which sets its size, weight and face: `body` unless said.",
+          "type": {
+            "choice": {
+              "name": "TextRole",
+              "cases": [
+                "display",
+                "large_title",
+                "title",
+                "heading",
+                "subheading",
+                "body",
+                "label",
+                "caption",
+                "reading",
+                "code"
+              ]
+            }
+          }
+        },
+        {
+          "name": "numeric",
+          "doc": "A number that changes: tabular figures, so it does not jitter as it changes.",
+          "type": "bool"
+        },
+        {
+          "name": "secondary",
+          "doc": "What it says stands beside the content it is about, in secondary ink: \"edited\" after a message, \"Pinned\" over it.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Label",
+        "label": "value"
+      }
+    },
+    {
+      "name": "TextInput",
+      "doc": "A field to type text into, bound to the text it edits. Each edit is spliced into that text, never written over it, so people typing in the same text at once all keep what they typed.",
+      "props": [
+        {
+          "name": "placeholder",
+          "doc": "What to type, shown while it is empty.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "lines",
+          "doc": "Room for this many lines: the field wraps and grows with what is typed.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "title",
+          "doc": "The title of the document the window is for, edited in place as its large title.",
+          "type": "bool"
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether it can be typed into now.",
+          "type": "bool"
+        },
+        {
+          "name": "changed_by",
+          "doc": "Someone else changed the text and the person has not seen it yet: the field takes their colour. The host sets it, from what the field is bound to (task-legibility §3).",
+          "type": {
+            "option": "principal"
+          }
+        },
+        {
+          "name": "previous",
+          "doc": "What the text was before that change, said when the field is hovered.",
+          "type": {
+            "option": "text"
           }
         }
       ],
       "events": [
         {
-          "name": "choose",
-          "doc": "It was chosen."
+          "name": "submit",
+          "doc": "Enter was pressed: what was typed is done (a quick add's entry). With it, Enter ends the text rather than breaking its line; Shift+Enter still breaks a wrapping field's line."
+        }
+      ],
+      "bindings": [
+        {
+          "name": "value",
+          "doc": "The text it edits.",
+          "type": "text",
+          "merge": "splice"
         }
       ],
       "semantics": {
-        "role": "MenuItem",
-        "label": "label"
+        "role": "TextInput",
+        "label": "placeholder"
+      }
+    },
+    {
+      "name": "Toolbar",
+      "doc": "A strip of commands: plain buttons in a row, groups split by hairlines, toggles that stand lifted while on. However narrow the window, every command stays reachable: those that do not fit go to a More menu at the end, the least important first.",
+      "props": [
+        {
+          "name": "vertical",
+          "doc": "Stand the commands in a column rather than a row.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "items",
+          "doc": "Its commands, separators and spacers, in order.",
+          "accepts": {
+            "one_of": [
+              "ToolbarButton",
+              "ToolbarSeparator",
+              "ToolbarSpacer"
+            ]
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Toolbar"
+      }
+    },
+    {
+      "name": "VirtualList",
+      "doc": "A long list of rows that costs only the rows on screen: each is built when it scrolls into view. Selection follows the person's choice and is reported with the item it shows; the list is one focus stop.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the list is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "selection_follows_focus",
+          "doc": "Moving through the rows with the keyboard selects them, as a list whose selection shows beside it does; a click or a tap on a row then activates it, as choosing an entry of an overview does.",
+          "type": "bool"
+        },
+        {
+          "name": "in_column",
+          "doc": "The list is a column's whole body: its rows' text starts where the column's header starts its title.",
+          "type": "bool"
+        },
+        {
+          "name": "transcript",
+          "doc": "A conversation: each row stands in the page column, the list opens at its newest row and follows it.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "rows",
+          "doc": "The items, in order.",
+          "accepts": {
+            "component": "ListItem"
+          },
+          "many": true,
+          "default": true
+        },
+        {
+          "name": "removed",
+          "doc": "Items someone else removed that the person has not seen go: each a row after the items, its title struck through. The UI host places them.",
+          "accepts": {
+            "component": "ListItem"
+          },
+          "many": true
+        }
+      ],
+      "events": [
+        {
+          "name": "select",
+          "doc": "A row was selected: carries the item it shows.",
+          "value": "resource"
+        },
+        {
+          "name": "activate",
+          "doc": "A row was activated (a click, Enter, an assistive technology): carries the item it shows.",
+          "value": "resource"
+        }
+      ],
+      "state": [
+        {
+          "name": "selection",
+          "doc": "The selected rows, by key.",
+          "type": {
+            "option": {
+              "list": "text"
+            }
+          }
+        },
+        {
+          "name": "scroll",
+          "doc": "How far the list is scrolled, in logical pixels.",
+          "type": {
+            "option": "float"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "List",
+        "label": "name"
       }
     },
     {
@@ -1370,125 +2267,6 @@
       ],
       "semantics": {
         "role": "Toolbar"
-      }
-    },
-    {
-      "name": "SwipeAction",
-      "doc": "What swiping a row across does: one command on its item, uncovered under the row as it moves.",
-      "props": [
-        {
-          "name": "label",
-          "doc": "What it does, in a word or two.",
-          "type": "text",
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "icon",
-          "doc": "The glyph the swipe uncovers: a bin for a destructive command and a check for another, unless said.",
-          "type": {
-            "option": "icon"
-          }
-        },
-        {
-          "name": "destructive",
-          "doc": "It takes something away: drawn as destructive, and undone rather than confirmed.",
-          "type": "bool"
-        }
-      ],
-      "events": [
-        {
-          "name": "swipe",
-          "doc": "The swipe completed."
-        }
-      ],
-      "semantics": {
-        "role": "Button",
-        "label": "label"
-      }
-    },
-    {
-      "name": "ListItem",
-      "doc": "One item of a virtual list: the resource its row shows, the row, and what the row offers on the item.",
-      "props": [
-        {
-          "name": "item",
-          "doc": "The resource the row shows: what selecting or activating the row reports.",
-          "type": {
-            "option": "resource"
-          }
-        },
-        {
-          "name": "presence",
-          "doc": "Who else is at the item now (a collaborator's or an agent's lens on it), shown on the row.",
-          "type": {
-            "option": "principal"
-          }
-        },
-        {
-          "name": "author",
-          "doc": "Who wrote it, in a transcript: the list shows their avatar, their name and the time over each run of their consecutive messages, so the row holds only what they wrote.",
-          "type": {
-            "option": "principal"
-          }
-        },
-        {
-          "name": "time",
-          "doc": "When it was written, in a transcript: the time beside its author's name, and a divider over the first message of each day.",
-          "type": {
-            "option": "time"
-          }
-        }
-      ],
-      "slots": [
-        {
-          "name": "menu",
-          "doc": "What the item offers on its context menu (a right-click, the Menu key or a long press opens it, and selects the row): each of its allowed actions, after the menu the row's view placed (`attached`) and without those that menu placed already, so every action stays reachable.",
-          "accepts": {
-            "one_of": [
-              "MenuItem",
-              "MenuSeparator",
-              "EmojiBar"
-            ]
-          },
-          "many": true
-        },
-        {
-          "name": "swipe",
-          "doc": "What swiping the row from its trailing edge does, unless its view says (`attached`).",
-          "accepts": {
-            "component": "SwipeAction"
-          }
-        },
-        {
-          "name": "attached",
-          "doc": "What the row's view attached to it (`ui.ContextMenu`, `ui.HoverToolbar`, `ui.Swipe` anywhere in the row's view): its own menu, first in the row's menu; a toolbar shown while the row is hovered or holds focus; a swipe either way.",
-          "accepts": {
-            "one_of": [
-              "ContextMenu",
-              "HoverToolbar",
-              "Swipe"
-            ]
-          },
-          "many": true
-        },
-        {
-          "name": "change",
-          "doc": "What someone else changed of the item that the person has not seen yet: the row shows it, in their colour, on its trailing edge. The UI host places it (task-legibility §3).",
-          "accepts": {
-            "component": "ChangeMark"
-          }
-        },
-        {
-          "name": "row",
-          "doc": "The row: a `ui.ListRow`, or any view.",
-          "accepts": "view",
-          "default": true
-        }
-      ],
-      "semantics": {
-        "role": "ListItem",
-        "presents": "item"
       }
     },
     {
@@ -1674,6 +2452,445 @@
       "semantics": {
         "role": "ListItem",
         "label": "title",
+        "presents": "item"
+      }
+    },
+    {
+      "name": "BreadcrumbSegment",
+      "doc": "One place of a path: what it is called, and going there.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the place is called: \"Documents\".",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "item",
+          "doc": "The resource the place is: going there opens it.",
+          "type": {
+            "option": "resource"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "activate",
+          "doc": "The place was pressed: go there."
+        }
+      ],
+      "semantics": {
+        "role": "Link",
+        "label": "label",
+        "presents": "item"
+      }
+    },
+    {
+      "name": "MenuItem",
+      "doc": "One command of a menu: what it shows, and what choosing it does.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What choosing it does, in a word or two.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "icon",
+          "doc": "A glyph before the label, for recognition; the label stays its name.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "destructive",
+          "doc": "It takes something away: drawn as destructive, and undone rather than confirmed.",
+          "type": "bool"
+        },
+        {
+          "name": "checked",
+          "doc": "Whether it is the one chosen now, in a menu of choices (a sort order).",
+          "type": {
+            "option": "bool"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "choose",
+          "doc": "It was chosen."
+        }
+      ],
+      "semantics": {
+        "role": "MenuItem",
+        "label": "label"
+      }
+    },
+    {
+      "name": "SwipeAction",
+      "doc": "What swiping a row across does: one command on its item, uncovered under the row as it moves.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What it does, in a word or two.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "icon",
+          "doc": "The glyph the swipe uncovers: a bin for a destructive command and a check for another, unless said.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "destructive",
+          "doc": "It takes something away: drawn as destructive, and undone rather than confirmed.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "swipe",
+          "doc": "The swipe completed."
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "label"
+      }
+    },
+    {
+      "name": "NavSection",
+      "doc": "A group of places under a heading in a navigation list: a category of channels, a folder of notebooks. A collapsible one folds away under its heading.",
+      "props": [
+        {
+          "name": "title",
+          "doc": "What the places are, as the heading over them.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "collapsible",
+          "doc": "Whether its heading folds it away.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "items",
+          "doc": "The places, in order.",
+          "accepts": {
+            "component": "NavItem"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "title"
+      }
+    },
+    {
+      "name": "NavItem",
+      "doc": "One place in a navigation list.",
+      "props": [
+        {
+          "name": "key",
+          "doc": "What names the place across changes: what selection reports.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "label",
+          "doc": "What the place is called.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "icon",
+          "doc": "Its glyph.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "count",
+          "doc": "How many things it holds.",
+          "type": {
+            "option": "int"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "select",
+          "doc": "The place was chosen: what choosing it does, beside the list's own `select`."
+        }
+      ],
+      "semantics": {
+        "role": "TreeItem",
+        "label": "label"
+      }
+    },
+    {
+      "name": "Fact",
+      "doc": "One fact of a row of facts: its text, and a glyph before it.",
+      "props": [
+        {
+          "name": "text",
+          "doc": "The fact, in a few words: \"3 MB\".",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "icon",
+          "doc": "A glyph before it, from the icon set.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "priority",
+          "doc": "How long it stays where the row is narrow: higher stays longer, and of equal ones the last gives way first.",
+          "type": "int"
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "label": "text"
+      }
+    },
+    {
+      "name": "KeyHint",
+      "doc": "One hint of a strip: the keys of a chord and what pressing them does.",
+      "props": [
+        {
+          "name": "keys",
+          "doc": "The keys of the chord, modifiers first: `[\"Ctrl\", \"S\"]`.",
+          "type": {
+            "list": "text"
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "label",
+          "doc": "What pressing them does, in a word or two: \"Save\".",
+          "type": "text",
+          "required": true,
+          "positional": true
+        }
+      ],
+      "semantics": {
+        "role": "StaticText",
+        "label": "label"
+      }
+    },
+    {
+      "name": "Property",
+      "doc": "One fact of a property list: what it is, and its value.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the fact is: \"Due\", \"Owner\".",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "value",
+          "doc": "The fact.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "copyable",
+          "doc": "A trailing action that copies the value.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "label": "label"
+      }
+    },
+    {
+      "name": "ToolbarButton",
+      "doc": "One command of a toolbar: pressing it does one thing, or opens its menu.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What it does, in a word or two. A command with a glyph shows only the glyph, the label naming it to assistive technology, in its tooltip and in the More menu.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "icon",
+          "doc": "A glyph instead of the label.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "toggled",
+          "doc": "A command that is on or off (bold, a panel shown), and whether it is on: on, it stands lifted, and it is a checked row in the More menu.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether it can be pressed now. A command with nothing to do never can.",
+          "type": "bool"
+        },
+        {
+          "name": "dot",
+          "doc": "A dot at its corner: something new behind it.",
+          "type": "bool"
+        },
+        {
+          "name": "priority",
+          "doc": "How long it stays in the row where the window is narrow: higher stays longer, and of equal ones the last goes to the More menu first.",
+          "type": "int"
+        },
+        {
+          "name": "joined",
+          "doc": "It goes with the command before it (zoom out, zoom in): the two go to the More menu together, never one alone.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "menu",
+          "doc": "The commands of a menu it opens instead of doing one thing: Sort, Insert, View.",
+          "accepts": {
+            "component": "MenuItem"
+          },
+          "many": true
+        }
+      ],
+      "events": [
+        {
+          "name": "press",
+          "doc": "It was pressed (a click, Enter or Space, the More menu, an assistive technology)."
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "label"
+      }
+    },
+    {
+      "name": "ToolbarSeparator",
+      "doc": "A hairline between groups of a toolbar's commands. It never stands at the start or the end of what is shown.",
+      "semantics": {
+        "role": "Separator"
+      }
+    },
+    {
+      "name": "ToolbarSpacer",
+      "doc": "The room left in a toolbar, between the commands before it and those after it, which it pushes to the far end.",
+      "semantics": {
+        "role": "Generic"
+      }
+    },
+    {
+      "name": "ListItem",
+      "doc": "One item of a virtual list: the resource its row shows, the row, and what the row offers on the item.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The resource the row shows: what selecting or activating the row reports.",
+          "type": {
+            "option": "resource"
+          }
+        },
+        {
+          "name": "presence",
+          "doc": "Who else is at the item now (a collaborator's or an agent's lens on it), shown on the row.",
+          "type": {
+            "option": "principal"
+          }
+        },
+        {
+          "name": "author",
+          "doc": "Who wrote it, in a transcript: the list shows their avatar, their name and the time over each run of their consecutive messages, so the row holds only what they wrote.",
+          "type": {
+            "option": "principal"
+          }
+        },
+        {
+          "name": "time",
+          "doc": "When it was written, in a transcript: the time beside its author's name, and a divider over the first message of each day.",
+          "type": {
+            "option": "time"
+          }
+        },
+        {
+          "name": "removed",
+          "doc": "The item was removed and the person has not seen it go: the row stands in for it, its title struck through, at the row's own height. The UI host places such rows.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "menu",
+          "doc": "What the item offers on its context menu (a right-click, the Menu key or a long press opens it, and selects the row): each of its allowed actions, after the menu the row's view placed (`attached`) and without those that menu placed already, so every action stays reachable.",
+          "accepts": {
+            "one_of": [
+              "MenuItem",
+              "MenuSeparator",
+              "EmojiBar"
+            ]
+          },
+          "many": true
+        },
+        {
+          "name": "swipe",
+          "doc": "What swiping the row from its trailing edge does, unless its view says (`attached`).",
+          "accepts": {
+            "component": "SwipeAction"
+          }
+        },
+        {
+          "name": "attached",
+          "doc": "What the row's view attached to it (`ui.ContextMenu`, `ui.HoverToolbar`, `ui.Swipe` anywhere in the row's view): its own menu, first in the row's menu; a toolbar shown while the row is hovered or holds focus; a swipe either way.",
+          "accepts": {
+            "one_of": [
+              "ContextMenu",
+              "HoverToolbar",
+              "Swipe"
+            ]
+          },
+          "many": true
+        },
+        {
+          "name": "change",
+          "doc": "What someone else changed of the item that the person has not seen yet: the row shows it, in their colour, on its trailing edge. The UI host places it (task-legibility §3).",
+          "accepts": {
+            "component": "ChangeMark"
+          }
+        },
+        {
+          "name": "row",
+          "doc": "The row: a `ui.ListRow`, or any view.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
         "presents": "item"
       }
     }

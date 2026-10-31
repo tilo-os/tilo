@@ -170,6 +170,7 @@ pub enum NativeViewAccessibility {
     clippy::struct_excessive_bools,
     reason = "mount, focus, enabled, and native visibility are independent platform states"
 )]
+#[crate::component::not_a_component(system, "a native surface the host composes")]
 pub struct NativeView {
     backend: Box<dyn NativeViewBackend>,
     accessibility: NativeViewAccessibility,

@@ -195,6 +195,13 @@ impl CapnpBrokerState {
         self: &std::sync::Arc<Self>,
         reask: &ChildReask<'_>,
     ) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
+        if let Some(steps) = super::host_steps::for_provider(&self.services, reask.target.provider)
+            .filter(|steps| steps.for_tasks())
+        {
+            return self
+                .start_native_host_step(reask, steps.as_ref())
+                .map_err(capnp::Error::failed);
+        }
         if !reask.target.provider.is_empty() {
             return self
                 .launch_native_task_action(reask)
@@ -263,6 +270,100 @@ impl CapnpBrokerState {
         Ok((job.id, update))
     }
 
+    /// Start `reask`'s child, a host step marked for tasks (a task's
+    /// programs), as a step of its run: through the run's
+    /// [`super::TaskRunHost`], the one run-admitted path the agent door's
+    /// connections take, so the run reads it back
+    /// ([`Self::native_host_step_observation`]).
+    fn start_native_host_step(
+        self: &Arc<Self>,
+        reask: &ChildReask<'_>,
+        steps: &dyn crate::services::HostStepServices,
+    ) -> Result<(u64, tilo_actions::InvocationUpdate), String> {
+        let request = tilo_actions::remote::InvokeRequest {
+            invocation: reask.invocation,
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: reask.target.provider.to_owned(),
+                address: tilo_actions::ActionAddress::new(
+                    reask.target.resource,
+                    reask.target.action,
+                ),
+            },
+            argument: reask
+                .target
+                .argument
+                .map_or(tilo_actions::remote::InvokeArgument::None, |text| {
+                    tilo_actions::remote::InvokeArgument::Text(text.into())
+                }),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            appearance: None,
+            wait_ms: None,
+        };
+        self.run_task_host(reask)?
+            .invoke_host_step(steps, &request)
+            .map_err(|error| error.to_string())?;
+        self.native_host_step_observation(reask.run_id, reask.invocation)?
+            .ok_or_else(|| "the task's step was taken but is not recorded".into())
+    }
+
+    /// The host `reask`'s run takes its host steps through, made for the
+    /// run at its first one, on the agent's own channel.
+    fn run_task_host(
+        self: &Arc<Self>,
+        reask: &ChildReask<'_>,
+    ) -> Result<super::TaskRunHost, String> {
+        let run = self.task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)?;
+        let known = self
+            .run_task_hosts
+            .lock()
+            .map_err(|_| "task run hosts unavailable")?
+            .get(&reask.run_id)
+            .cloned();
+        if let Some(host) = known {
+            return Ok(host);
+        }
+        let admitted = reask.caller.current(self)?;
+        let host = self.launched_task_run_host(
+            (reask.peer_id, reask.caller.route().clone(), admitted),
+            (reask.run_id, &run.lease, &run.task_id),
+        )?;
+        Ok(self
+            .run_task_hosts
+            .lock()
+            .map_err(|_| "task run hosts unavailable")?
+            .entry(reask.run_id)
+            .or_insert(host)
+            .clone())
+    }
+
+    /// A host step `run`'s agent took as a step of it, by `invocation`:
+    /// `None` when it took none by that id.
+    pub(super) fn native_host_step_observation(
+        &self,
+        run_id: u64,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<Option<(u64, tilo_actions::InvocationUpdate)>, String> {
+        let caller = self
+            .run_task_hosts
+            .lock()
+            .map_err(|_| "task run hosts unavailable")?
+            .get(&run_id)
+            .map(|host| host.caller().clone());
+        let Some(caller) = caller else {
+            return Ok(None);
+        };
+        let Some(job) = self.remote_job(&caller, &invocation) else {
+            return Ok(None);
+        };
+        let update = self
+            .invocation_status(job)
+            .ok_or("the task's step has no broker state")?;
+        Ok(Some((job, update)))
+    }
+
     /// What a native task's request finds of its child: `None` when it has
     /// not started (the request starts it), else the child's state as
     /// [`Self::native_task_observation`] reports it. With `wait`, a running
@@ -278,6 +379,11 @@ impl CapnpBrokerState {
         let observe = || {
             let run =
                 self.task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)?;
+            if super::host_steps::for_provider(&self.services, reask.target.provider)
+                .is_some_and(|steps| steps.for_tasks())
+            {
+                return self.native_host_step_observation(reask.run_id, reask.invocation);
+            }
             self.native_task_observation(&run, reask.invocation, reask.target, reask.caller)
         };
         let (observed, wait) = match (observe().map_err(capnp::Error::failed)?, wait) {

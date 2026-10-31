@@ -1,3 +1,4 @@
+pub mod brand;
 pub mod colors;
 pub mod contrast;
 pub mod density;
@@ -70,6 +71,9 @@ pub struct Tokens {
     pub finishes: RoleFinishes,
     /// How surfaces are outlined.
     pub border: Border,
+    /// The colour the border is drawn in, resolved from its ink by the
+    /// theme; `None` where surfaces keep the design language's hairlines.
+    pub border_color: Option<vello::peniko::Color>,
     /// How surfaces stand off what is below them; the elevation above is
     /// already this depth's.
     pub depth: Depth,
@@ -112,6 +116,7 @@ impl Tokens {
                 RoleFinishes::STOCK
             },
             border: Border::STOCK,
+            border_color: None,
             depth: Depth::STOCK,
         }
     }

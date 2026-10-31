@@ -1,7 +1,9 @@
 //! An agent's run on an issue.
 //!
-//! An issue assigned to an agent is queued work; a person's `approve-run`
-//! starts run *n*+1, which acts for that person. The agent reports its phase
+//! A person who asks an agent, or gives it an issue, starts run *n*+1 then,
+//! acting for them; work an agent hands on waits for a person's
+//! `approve-run`. The run has no cap of its own: what bounds it is the
+//! budget its person sets. The agent reports its phase
 //! and its findings with the run verbs, which post into the issue's thread,
 //! asks before an action whose answer is "ask first", and finishes. Each of
 //! these is an action on the tracker, so who may approve, steer, answer or
@@ -18,10 +20,6 @@ pub const MAX_TOTAL_MS: u64 = 7_200_000;
 /// envelope admits (`collab_types::task_budget::MAX_RUN_TURNS`, held equal
 /// by the shell's tracker-runs test).
 pub const MAX_TURNS: u64 = 10_000;
-/// The model turns an agent chat's run may take ([`Budget::chat`]).
-pub const CHAT_TURNS: u64 = 300;
-/// The longest turn of an agent chat's run: three minutes.
-pub const CHAT_TURN_MS: u64 = 180_000;
 /// Most per-step receipts a run keeps: the rest of the run still counts
 /// towards its totals and its budget, only their receipts are not listed.
 pub const MAX_SPEND_STEPS: u64 = 64;
@@ -143,20 +141,6 @@ pub struct Budget {
 }
 
 impl Budget {
-    /// The budget an agent chat starts with: room for a long task of many
-    /// items (eight mails of about fifteen steps each, with reading on and
-    /// re-reading), as long as a run may take, and a turn long enough for a
-    /// reasoning model. It limits no spending: that is the person's to set.
-    #[must_use]
-    pub fn chat() -> Self {
-        Self {
-            turn_ms: CHAT_TURN_MS,
-            total_ms: MAX_TOTAL_MS,
-            max_turns: Some(CHAT_TURNS),
-            ..Self::default()
-        }
-    }
-
     /// Whether a turn ceiling is one a run may have.
     #[must_use]
     pub fn admits_turns(max_turns: Option<u64>) -> bool {

@@ -21,8 +21,70 @@ use crate::tokens::finish::{Border, Depth, Finish, RoleFinishes};
 use crate::tokens::palette::{Emphasis, Palette, Tone};
 use crate::tokens::selector::SelectorFinish;
 
-/// The one schema this build reads and writes.
+/// The schema this build writes.
 pub const THEME_SCHEMA_VERSION: u32 = 8;
+
+/// Every schema this build reads. A document of an older one is read as
+/// the current schema: every role added since takes its stock value, and
+/// the document is written back at [`THEME_SCHEMA_VERSION`] the next time
+/// it is saved. A schema leaves this list only with a reader that still
+/// resolves its documents as they were.
+pub const THEME_SCHEMAS_READ: &[u32] = &[7, THEME_SCHEMA_VERSION];
+
+/// Reads `schema_version`: a schema in [`THEME_SCHEMAS_READ`] is read as
+/// the current one; any other is kept so [`ThemeDocument::validate`]
+/// refuses it.
+fn read_schema<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    let version = u32::deserialize(deserializer)?;
+    Ok(if THEME_SCHEMAS_READ.contains(&version) {
+        THEME_SCHEMA_VERSION
+    } else {
+        version
+    })
+}
+
+/// Schema 7's material: one floating finish, as a blur and a tint.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MaterialV7 {
+    blur: f32,
+    tint_opacity: f32,
+    selector: SelectorFinish,
+}
+
+impl From<MaterialV7> for ThemeMaterial {
+    /// The floating role keeps exactly the blur and tint schema 7 built
+    /// it with; every other role takes its stock finish, as schema 7 had
+    /// no way to name one.
+    fn from(old: MaterialV7) -> Self {
+        Self {
+            floating: Finish::Translucent {
+                blur: old.blur,
+                tint: old.tint_opacity,
+                saturation: 1.0,
+            },
+            selector: old.selector,
+            ..Self::STOCK
+        }
+    }
+}
+
+/// `material` as either schema writes it.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum MaterialWire {
+    Current(ThemeMaterial),
+    V7(MaterialV7),
+}
+
+fn read_material<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<ThemeMaterial, D::Error> {
+    Ok(match MaterialWire::deserialize(deserializer)? {
+        MaterialWire::Current(material) => material,
+        MaterialWire::V7(old) => old.into(),
+    })
+}
 
 /// The window tile's radius, from which every other radius derives
 /// concentrically (`crate::tokens::Radii::from_window_radius`; `0` makes
@@ -309,6 +371,9 @@ impl ThemeMaterial {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeDocument {
+    /// Read through [`THEME_SCHEMAS_READ`]: an older schema it lists is
+    /// held as the current one.
+    #[serde(deserialize_with = "read_schema")]
     pub schema_version: u32,
     pub id: String,
     pub name: String,
@@ -322,6 +387,7 @@ pub struct ThemeDocument {
     #[serde(rename = "type")]
     pub type_: ThemeType,
     pub motion: ThemeMotion,
+    #[serde(deserialize_with = "read_material")]
     pub material: ThemeMaterial,
     /// How surfaces stand off what is below them.
     #[serde(default)]
@@ -864,6 +930,70 @@ mod tests {
         assert_eq!(block.material.roles().opaque(), block.material.roles());
     }
 
+    /// A theme a person saved at schema 7 keeps applying: it is read as
+    /// the current schema, resolves to exactly the theme it built before,
+    /// and is written back at the current schema.
+    #[test]
+    fn a_schema_7_document_resolves_as_it_did_and_saves_as_the_current_schema() {
+        const EMBER_V7: &str = include_str!("../tests/fixtures/themes/ember-schema-7.json");
+        assert!(THEME_SCHEMAS_READ.contains(&7));
+        let old: ThemeDocument = serde_json::from_str(EMBER_V7).expect("schema 7 is read");
+        assert_eq!(old.validate(), Ok(()));
+        assert_eq!(old.schema_version, THEME_SCHEMA_VERSION);
+
+        // What schema 7 built: its blur and tint on floating chrome, and
+        // every role it could not name at its stock value.
+        let mut current: serde_json::Value = serde_json::from_str(EMBER_V7).unwrap();
+        current["schema_version"] = serde_json::json!(THEME_SCHEMA_VERSION);
+        current["material"] = serde_json::json!({
+            "floating": { "painter": "default", "blur": 30.0, "tint": 0.8, "saturation": 1.0 },
+            "selector": current["material"]["selector"].clone(),
+        });
+        let current: ThemeDocument = serde_json::from_value(current).unwrap();
+        assert_eq!(old, current);
+        let theme = crate::theme::Theme::from_document(&old).expect("admitted");
+        let surfaces = &theme.tokens.colors.surfaces;
+        assert!((surfaces.material_blur_px - 30.0).abs() < f32::EPSILON);
+        assert!((surfaces.material_opacity - 0.8).abs() < f32::EPSILON);
+        assert_eq!(
+            theme.tokens,
+            crate::theme::Theme::from_document(&current).unwrap().tokens
+        );
+
+        // The stock dark theme as schema 7 wrote it resolves to Dark.
+        let mut dark = serde_json::to_value(Preset::Dark.document()).unwrap();
+        dark["schema_version"] = serde_json::json!(7);
+        dark["shape"] = serde_json::json!({ "window_radius": dark["shape"]["window_radius"] });
+        for added in ["contrast", "weights"] {
+            dark["type"].as_object_mut().unwrap().remove(added);
+        }
+        for added in ["curve", "duration_scale"] {
+            dark["motion"].as_object_mut().unwrap().remove(added);
+        }
+        dark.as_object_mut().unwrap().remove("depth");
+        dark["material"] = serde_json::json!({
+            "blur": crate::tokens::colors::MATERIAL_BLUR_PX,
+            "tint_opacity": crate::tokens::colors::MATERIAL_ALPHA,
+            "selector": dark["material"]["selector"].clone(),
+        });
+        let dark: ThemeDocument = serde_json::from_value(dark).expect("schema 7 is read");
+        assert_eq!(
+            crate::theme::Theme::from_document(&dark).unwrap().tokens,
+            crate::theme::Theme::dark().tokens
+        );
+
+        let saved = serde_json::to_value(&old).unwrap();
+        assert_eq!(saved["schema_version"], THEME_SCHEMA_VERSION);
+        assert!(saved["material"].get("blur").is_none());
+        assert_eq!(serde_json::from_value::<ThemeDocument>(saved).unwrap(), old);
+
+        // A schema the list does not name is still refused.
+        let mut unknown: serde_json::Value = serde_json::from_str(EMBER_V7).unwrap();
+        unknown["schema_version"] = serde_json::json!(6);
+        let unknown: ThemeDocument = serde_json::from_value(unknown).unwrap();
+        assert_eq!(unknown.validate(), Err("unsupported theme schema"));
+    }
+
     #[test]
     fn every_material_round_trips_on_a_whole_document() {
         let glass = Finish::Glass {
@@ -952,7 +1082,7 @@ mod tests {
         let colors =
             Colors::as_authored(&doc.palette, doc.emphasis, doc.presence, PresenceHue::Blue);
         let spread = material_spread(&colors, colors.surfaces.content);
-        assert!(spread < MATERIAL_SPREAD && spread >= 1.0, "{spread}");
+        assert!((1.0..MATERIAL_SPREAD).contains(&spread), "{spread}");
         for ground in worst_grounds(&colors, &doc.material.roles(), SurfaceRole::Window) {
             for (ink, floor) in [(colors.text_dim, 4.5), (colors.text_tertiary, 3.0)] {
                 let ratio = crate::color::contrast_ratio(ink, ground);

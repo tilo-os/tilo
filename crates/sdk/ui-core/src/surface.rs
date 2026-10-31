@@ -19,7 +19,7 @@ use vello::peniko::{Color, Fill, ImageBrush, ImageData as Image};
 
 use crate::ColorCompat;
 use crate::theme::Theme;
-use crate::tokens::{Colors, Shadow};
+use crate::tokens::{Colors, Optics, Shadow};
 use tilo_lock::MutexRecover as _;
 
 /// Shared silhouette for lightweight desktop floats. The asymmetry is only
@@ -1105,16 +1105,16 @@ pub fn separator_rect(x0: f64, x1: f64, y: f64, inset: f64) -> Option<Rect> {
     Some(Rect::new(a, top, b, top + 1.0))
 }
 
-/// The sheen a glass body catches across its upper body: light at
-/// `specular` opacity at the top-left, gone past the body's middle. Nothing
-/// at `0`.
-pub fn sheen(scene: &mut Scene, transform: Affine, body: &RoundedRect, specular: f32) {
+/// The sheen a glass body catches across its upper body: its light at
+/// `optics.specular` opacity at the top-left, gone past the body's middle.
+/// Nothing at `0`.
+pub fn sheen(scene: &mut Scene, transform: Affine, body: &RoundedRect, optics: Optics) {
     use vello::peniko::{ColorStop, Gradient};
     let rect = body.rect();
+    let (specular, light) = (optics.specular, optics.light);
     if specular <= 0.0 || rect.width() <= 2.0 || rect.height() <= 2.0 {
         return;
     }
-    let light = Color::WHITE;
     let sheen = Gradient::new_linear(
         (rect.x0, rect.y0),
         (rect.x0 + rect.width() * 0.3, rect.y0 + rect.height() * 0.6),
@@ -1139,15 +1139,15 @@ pub fn sheen(scene: &mut Scene, transform: Affine, body: &RoundedRect, specular:
 }
 
 /// The lit rim of a glass body: its outermost pixel row, brightest along
-/// the top edge at `edge_highlight` opacity, fading down the sides and
-/// catching a little bounced light at the foot. Nothing at `0`.
-pub fn rim_light(scene: &mut Scene, transform: Affine, body: &RoundedRect, edge_highlight: f32) {
+/// the top edge at `optics.edge_highlight` opacity, fading down the sides
+/// and catching a little bounced light at the foot. Nothing at `0`.
+pub fn rim_light(scene: &mut Scene, transform: Affine, body: &RoundedRect, optics: Optics) {
     use vello::peniko::{ColorStop, Gradient};
     let rect = body.rect();
+    let (edge_highlight, light) = (optics.edge_highlight, optics.light);
     if edge_highlight <= 0.0 || rect.width() <= 2.0 || rect.height() <= 2.0 {
         return;
     }
-    let light = Color::WHITE;
     let rim = Gradient::new_linear((rect.x0, rect.y0), (rect.x0, rect.y1)).with_stops(
         &[
             ColorStop {
@@ -1178,17 +1178,8 @@ pub fn rim_light(scene: &mut Scene, transform: Affine, body: &RoundedRect, edge_
 /// own hairlines ([`crate::tokens::BorderInk::Hairline`]).
 #[must_use]
 pub fn border(theme: &Theme) -> Option<(f64, Color)> {
-    let border = theme.tokens.border;
-    if !border.outlines() {
-        return None;
-    }
-    let colors = &theme.tokens.colors;
-    let ink = match border.ink {
-        crate::tokens::BorderInk::Hairline => return None,
-        crate::tokens::BorderInk::Standard => colors.border_standard,
-        crate::tokens::BorderInk::Strong => colors.text_tertiary,
-    };
-    Some((f64::from(border.width), ink))
+    let ink = theme.tokens.border_color?;
+    Some((f64::from(theme.tokens.border.width), ink))
 }
 
 /// Stroke the theme's border ([`border`]) wholly inside `body`. Returns
@@ -1246,8 +1237,8 @@ pub fn control_face(
     scene.fill(Fill::NonZero, transform, fill, None, body);
     if rest {
         let optics = finish.optics();
-        sheen(scene, transform, body, optics.specular);
-        rim_light(scene, transform, body, optics.edge_highlight);
+        sheen(scene, transform, body, optics);
+        rim_light(scene, transform, body, optics);
     }
     paint_border(scene, transform, body, theme)
 }

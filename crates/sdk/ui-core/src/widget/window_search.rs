@@ -499,6 +499,7 @@ pub fn search_chord(
 }
 
 /// The window bar's search: a control that expands into a field in place.
+#[crate::component::not_a_component(system, "system search")]
 pub struct WindowSearch {
     presence: Presence,
     field: SearchField,

@@ -365,6 +365,17 @@ impl CapnpBrokerState {
         self.tracker_runs(&run.cluster_id)
             .ok_or("the tracker is unavailable")?
             .check_agent(&run.cluster_id, &current)?;
+        // A run its own agent finished (its `finish-run`, done or failed) is
+        // over, not cancelled: the report that ended it is a child of it still
+        // being followed to its result, and the agent then reports to the host
+        // how it ended. Reading that as a cancellation cancelled the report
+        // itself, so a run that answered at once could not say it had.
+        if !current.active && current.finished_by_agent {
+            return Ok(runtime_collab::TaskRunStatus {
+                cancelled: false,
+                control: None,
+            });
+        }
         if !current.active {
             self.cancel_native_children(run)?;
             return Ok(runtime_collab::TaskRunStatus {

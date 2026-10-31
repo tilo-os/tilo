@@ -804,6 +804,10 @@ impl crate::resources::PublishesResources for Card {
 /// Standard actions in declaration/focus order: secondaries, then primary.
 /// Unspecified buttons use measured content sizing; explicit sizes remain manual.
 /// Each wrapped line aligns to the trailing edge.
+#[crate::component::not_a_component(
+    part,
+    "the action row of a card or a dialog, built from their actions"
+)]
 pub struct Actions {
     parts: Parts,
 }

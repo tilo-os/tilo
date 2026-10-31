@@ -84,6 +84,7 @@ struct Drag {
 }
 
 /// A row that swipes sideways to run an action. See the [module docs](self).
+#[crate::component::not_a_component(part, "a row's swipe, from `ui.Swipe` and its `swipe` slot")]
 pub struct SwipeRow {
     content: Element,
     /// Uncovered by dragging towards the trailing edge.

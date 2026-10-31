@@ -252,6 +252,10 @@ pub(crate) fn offer_sync_status(root: &mut dyn Widget, status: Option<&WindowSta
 /// ([`Self::paint`]) and lists it among its children for assistive
 /// technology.
 #[derive(Debug, Default)]
+#[crate::component::not_a_component(
+    shell,
+    "window chrome and titles are the system's (AGENTS.md principle 3)"
+)]
 pub struct HeaderStatus {
     text: Option<String>,
     rect: Rect,

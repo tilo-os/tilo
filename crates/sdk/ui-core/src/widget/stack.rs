@@ -19,6 +19,7 @@ use winit::event::WindowEvent;
 /// and the layer's geometry is owned by the layer. If a caller needs the
 /// stack itself to anchor, add an opt-in that maps to `inset` on the child
 /// node rather than changing this default.
+#[crate::component::not_a_component(layout, "the language's `stack`")]
 pub struct Stack {
     children: Vec<Box<dyn Widget>>,
     rect: vello::kurbo::Rect,

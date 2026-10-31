@@ -25,6 +25,10 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::text::centered_text_top;
 
+#[path = "breadcrumb_component.rs"]
+mod component;
+pub use component::{BreadcrumbProps, BreadcrumbSegmentProps};
+
 /// The separator between two segments: a chevron from the one icon set,
 /// at the small glyph size, never a typed character.
 fn separator_width(theme: &Theme) -> f64 {
@@ -485,7 +489,9 @@ impl crate::widget::controls::ActionControls for Breadcrumb {
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.choice.as_mut().and_then(super::view_choice::ViewChoice::take)
+        self.choice
+            .as_mut()
+            .and_then(super::view_choice::ViewChoice::take)
     }
 
     fn refresh_control_action_availability(

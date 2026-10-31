@@ -884,6 +884,10 @@ enum Content {
 /// closure), owns the zoom/pan input, and paints scrollbars on top. See the
 /// module docs for when to prefer the standalone [`ViewportState`] kernel
 /// instead.
+#[crate::component::not_a_component(
+    framework,
+    "the viewport around a painted document's Rust drawing code"
+)]
 pub struct DocumentViewport {
     state: ViewportState,
     content: Content,

@@ -15,6 +15,10 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::InputHint;
 
+#[path = "key_hint_component.rs"]
+mod component;
+pub use component::{KeyHintProps, KeyHintsProps};
+
 /// One hint: the keys of a chord, as printed on the keyboard, and what
 /// pressing them does.
 #[derive(Clone, Debug, PartialEq)]

@@ -298,6 +298,7 @@ pub fn form(root: Box<dyn Widget>, form: ActionForm) -> Box<dyn Widget> {
 type Immediate = Box<dyn FnMut(&[u8]) -> Result<ActionOutput, String>>;
 
 /// Transparent retained root that publishes and executes one app resource.
+#[crate::component::not_a_component(framework, "hosts a resource's actions for the framework")]
 pub struct ResourceActionHost {
     root: Box<dyn Widget>,
     resource: ResourceSpec,

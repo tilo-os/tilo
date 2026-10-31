@@ -113,6 +113,13 @@ pub struct Button {
     /// The theme roles the cached face was painted from, so a theme change
     /// that keeps the layout (dark to light, a new emphasis) repaints it.
     last_theme: Option<ThemeKey>,
+    /// The container's motion between states, on the toolkit's clock, as
+    /// the theme's painter set moves it ([`crate::part_paint`]).
+    motion: crate::part_paint::PartMotion,
+    /// The shape the theme's painter set drew the container as, relative
+    /// to `rect`'s origin: where the button takes the pointer. `None`: its
+    /// hit rect.
+    painted_hit: Option<vello::kurbo::BezPath>,
 }
 
 /// The theme roles a button face reads.
@@ -124,6 +131,7 @@ type ThemeKey = (
     vello::peniko::Color,
     vello::peniko::Color,
     u32,
+    u64,
 );
 
 fn theme_key(theme: &Theme) -> ThemeKey {
@@ -136,6 +144,9 @@ fn theme_key(theme: &Theme) -> ThemeKey {
         colors.semantic.danger,
         colors.intent.accent_ink,
         theme.tokens.radii.control.to_bits(),
+        theme
+            .painter(crate::tokens::SurfaceRole::Control)
+            .map_or(0, crate::part_paint::PainterSet::id),
     )
 }
 
@@ -197,6 +208,8 @@ impl Button {
             interaction: crate::interaction::InteractionEnvironment::default(),
             last_state: (false, false, false, true),
             last_theme: None,
+            motion: crate::part_paint::PartMotion::new(crate::part_paint::States::REST),
+            painted_hit: None,
         }
     }
 
@@ -1231,10 +1244,26 @@ struct FacePaint<'a> {
     interact: ButtonInteract,
     content: FaceContent<'a>,
     metrics: &'a FaceMetrics,
+    /// Where the container is in its motion between states.
+    moment: crate::part_paint::Moment,
+}
+
+/// The container states of a face in `interact`, `on` for a toggle that is
+/// on.
+fn container_states(interact: ButtonInteract, on: bool) -> crate::part_paint::States {
+    use crate::part_paint::States;
+    States::REST
+        .with(States::HOVERED, interact.hovered)
+        .with(States::PRESSED, interact.pressed)
+        .with(States::FOCUSED, interact.focused)
+        .with(States::DISABLED, interact.disabled)
+        .with(States::ON, on)
 }
 
 impl FacePaint<'_> {
-    fn paint(&self, ctx: &mut PaintCtx<'_>) {
+    /// Paint the face. Returns the shape the theme's painter set drew the
+    /// container as, where it drew one: the button takes the pointer there.
+    fn paint(&self, ctx: &mut PaintCtx<'_>) -> Option<vello::kurbo::BezPath> {
         let theme = ctx.theme;
         let disabled = self.interact.disabled;
         let on = self.on && !disabled;
@@ -1259,19 +1288,50 @@ impl FacePaint<'_> {
             self.rect
         };
         let shape = RoundedRect::from_rect(face_rect, radius);
+        let set = theme.painter(crate::tokens::SurfaceRole::Control);
         // Disabled is the rest face under one group alpha (HIG §9.5), the
-        // same signal every other control gives.
+        // same signal every other control gives. A painter set's container
+        // may take any shape in the face's rect.
         if disabled {
+            let clip = if set.is_some() {
+                RoundedRect::from_rect(face_rect, 0.0)
+            } else {
+                shape
+            };
             ctx.scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
                 crate::widget::DISABLED_ALPHA,
                 ctx.transform,
-                &shape,
+                &clip,
             );
         }
-        let bordered = crate::surface::control_face(ctx.scene, ctx.transform, &shape, fill, theme);
+        let painted = set.and_then(|set| {
+            crate::part_paint::paint_part(
+                ctx.scene,
+                ctx.transform,
+                face_rect,
+                (
+                    set,
+                    crate::part_paint::Part::ButtonContainer,
+                    crate::tokens::SurfaceRole::Control,
+                ),
+                self.moment,
+                &crate::part_paint::part_tokens(
+                    theme,
+                    crate::tokens::SurfaceRole::Control,
+                    (fill, ink, edge.unwrap_or(vello::peniko::Color::TRANSPARENT)),
+                    theme.tokens.colors.surfaces.content,
+                ),
+                theme,
+            )
+        });
+        // A painted container draws its own edge; a border stands in for
+        // the rest edge.
+        let bordered = painted.is_some()
+            || crate::surface::control_face(ctx.scene, ctx.transform, &shape, fill, theme);
         let edge = if bordered { None } else { edge };
+        let hit = painted.and_then(|painted| painted.hit);
         let hint = hint_ink(theme, self.role, ink, fill);
         self.content.paint(ctx, self.rect, self.metrics, ink, hint);
         if disabled {
@@ -1283,6 +1343,17 @@ impl FacePaint<'_> {
         let outline = crate::surface::edge_outline(face_rect, radius);
         if self.interact.focused && !disabled {
             let ring = theme.tokens.colors.intent.accent_ink;
+            // The ring follows a painted shape.
+            if let Some(hit) = &hit {
+                ctx.scene.stroke(
+                    &vello::kurbo::Stroke::new(FOCUS_RING_WIDTH),
+                    ctx.transform,
+                    ring,
+                    None,
+                    hit,
+                );
+                return Some(hit.clone());
+            }
             ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(FOCUS_RING_WIDTH),
                 ctx.transform,
@@ -1316,6 +1387,7 @@ impl FacePaint<'_> {
                 &outline,
             );
         }
+        hit
     }
 }
 
@@ -1554,6 +1626,7 @@ impl Button {
                 menu: false,
             },
             metrics: &metrics,
+            moment: crate::part_paint::Moment::settled(container_states(face.interact, face.on)),
         }
         .paint(&mut PaintCtx::new(scene, transform, text_renderer, theme));
     }
@@ -1597,6 +1670,15 @@ impl Button {
             }
             .intrinsic_width(&self.metrics, text, self.face_height()),
         )
+    }
+
+    /// Whether `point` activates the button: inside the shape the theme's
+    /// painter set drew it as, or else its hit rect ([`Self::hit_rect`]).
+    fn takes(&self, point: Point) -> bool {
+        match &self.painted_hit {
+            Some(hit) => crate::part_paint::hit_contains(hit, point - self.rect.origin().to_vec2()),
+            None => self.hit_rect().contains(point),
+        }
     }
 
     /// Where a pointer activates the button: the face, grown about its
@@ -1818,9 +1900,27 @@ impl Widget for Button {
             self.dirty = true;
             self.last_theme = Some(key);
         }
+        let interact = ButtonInteract {
+            hovered: self.is_hovered,
+            pressed: self.press.is_held(),
+            focused: self.focus_visible(),
+            disabled: !self.effectively_enabled(),
+        };
+        let on = self.is_toggled();
+        let now = crate::time::now();
+        let set = theme.painter(crate::tokens::SurfaceRole::Control);
+        // The toolkit's own button changes state at once.
+        self.motion.go(
+            container_states(interact, on),
+            (set, crate::part_paint::Part::ButtonContainer),
+            crate::part_paint::Transition::None,
+            theme.reduce_motion,
+            now,
+        );
+        let moment = self.motion.at(now);
         // The disabled group alpha is painted into the face, so appending
         // it applies none: a second layer would dim a disabled face twice.
-        if !self.dirty && !self.face.is_empty() {
+        if !self.dirty && moment.settled && !self.face.is_empty() {
             self.face.append(out_scene, out_transform, self.rect);
             crate::widget::draw_gate_and_peer_focus(
                 self,
@@ -1849,6 +1949,7 @@ impl Widget for Button {
                 theme,
                 &face,
             );
+            self.painted_hit = None;
             self.face.append(out_scene, out_transform, self.rect);
             crate::widget::draw_gate_and_peer_focus(
                 self,
@@ -1860,17 +1961,14 @@ impl Widget for Button {
             return;
         }
         let (label, hint) = self.content();
-        let on = self.is_toggled();
-        FacePaint {
+        let hit = FacePaint {
             rect: self.rect,
             role: self.role,
             confirms: false,
             on,
             interact: ButtonInteract {
-                hovered: self.is_hovered,
-                pressed: self.press.is_held(),
-                focused: self.focus_visible(),
                 disabled: !enabled,
+                ..interact
             },
             content: FaceContent {
                 flush: self.role.flush() && !label.is_empty(),
@@ -1885,6 +1983,7 @@ impl Widget for Button {
                 menu: self.opens_menu,
             },
             metrics: &metrics,
+            moment,
         }
         .paint(&mut PaintCtx::new(
             self.face.repaint(self.rect),
@@ -1892,12 +1991,14 @@ impl Widget for Button {
             text_renderer,
             theme,
         ));
+        self.painted_hit = hit.map(|hit| Affine::translate(-self.rect.origin().to_vec2()) * hit);
         self.face.append(out_scene, out_transform, self.rect);
         crate::widget::draw_gate_and_peer_focus(self, out_scene, out_transform, theme, presence);
     }
 
     fn needs_redraw(&self) -> bool {
         self.dirty
+            || self.motion.moving(crate::time::now())
             || self.i18n_revision != crate::i18n::I18nManager::revision()
             || (
                 self.is_hovered,
@@ -1947,7 +2048,7 @@ impl Widget for Button {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = ctx.logical(position);
-                let hover = self.hit_rect().contains(logical_pos);
+                let hover = self.takes(logical_pos);
                 // A hover change is a repaint (`needs_redraw` compares the
                 // state), not consumed input: a parent that stops at the
                 // first handled child must still deliver this move to the
@@ -2041,7 +2142,7 @@ impl Widget for Button {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.hit_rect().contains(point) {
+        if self.takes(point) {
             Some(winit::window::CursorIcon::Pointer)
         } else {
             None

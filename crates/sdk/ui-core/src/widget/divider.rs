@@ -33,6 +33,7 @@ pub enum DividerAxis {
     Vertical,
 }
 
+#[crate::component::not_a_component(layout, "the language's `divider`")]
 pub struct Divider {
     axis: DividerAxis,
     thickness: f32,

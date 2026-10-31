@@ -716,6 +716,7 @@ struct AddRow {
     clippy::struct_excessive_bools,
     reason = "focus, selection, scrolling, and invalidation are independent table states"
 )]
+#[crate::component::not_a_component(part, "the body of a data table")]
 pub struct DataTableCore {
     test_id: String,
     /// Choosing a row, published as the table's view action `select`.
