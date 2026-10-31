@@ -67,6 +67,7 @@ mod keys;
 mod launches;
 mod lists;
 mod lock_screen;
+pub mod messages;
 pub mod mount;
 pub mod notices;
 mod notifications;
@@ -1447,6 +1448,8 @@ impl Session {
         let intents = Rc::new(RefCell::new(Vec::new()));
         let engine = open_engine(&options, &handle);
         let sync = start_collaboration(&options, media, engine.clone());
+        // The person's private messages, carried by that same endpoint.
+        let _messages = mount::services::mount_messages(&mut options, sync.as_deref());
         // The person's own workspaces, which their other devices hold with
         // them: kept beside the desk, and opened when this computer knows
         // whose they are.

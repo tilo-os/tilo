@@ -132,6 +132,54 @@ pub(crate) fn start_action_plane(
     }))
 }
 
+/// The person's private messages, published beside the other services: the
+/// conversations this device keeps and the action that sends a text. It
+/// answers peers on this session's own endpoint, so it is mounted with the
+/// collaboration plane and only there.
+pub(crate) fn mount_messages(
+    options: &mut Options,
+    sync: Option<&crate::sync::Client>,
+) -> Option<crate::messages::Messages> {
+    let sync = sync?;
+    let service = match crate::messages::Messages::new(&options.wake) {
+        Ok(service) => service,
+        Err(error) => {
+            tracing::warn!(%error, "private messages do not start");
+            return None;
+        }
+    };
+    if let Some(identity) = crate::sync::device_identity() {
+        service.act_as(identity, hex::encode(sync.publisher().as_bytes()));
+    }
+    service
+        .reached_at(serde_json::to_value(sync.endpoint_addr()).unwrap_or(serde_json::Value::Null));
+    // The lane this device's endpoint carries, bound when the peer actor
+    // hands it over: until then a send says this device carries none.
+    if let Some(answer) = sync.private_messages() {
+        let binding = service.clone();
+        let thread = std::thread::Builder::new()
+            .name("tilo-messages-bind".into())
+            .spawn(move || {
+                match answer.blocking_recv() {
+                    Ok(transport) => {
+                        if let Err(error) = binding.bind(transport) {
+                            tracing::warn!(?error, "private messages answer no peer");
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "no endpoint carries private messages");
+                    }
+                }
+                binding.wake();
+            });
+        if let Err(error) = thread {
+            tracing::warn!(%error, "private messages answer no peer");
+        }
+    }
+    options.services.push(Box::new(service.clone()));
+    Some(service)
+}
+
 /// The services, published on the door.
 pub(crate) fn mount_services(
     doors: &mut Doors,

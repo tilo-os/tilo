@@ -21548,6 +21548,7 @@ dependencies = [
  "tilo-liveness",
  "tilo-lock",
  "tilo-media",
+ "tilo-messaging",
  "tilo-nearby-service",
  "tilo-net",
  "tilo-network-actor",

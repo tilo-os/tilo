@@ -470,6 +470,8 @@ pub(crate) enum Outgoing {
         target: Option<EndpointId>,
         payload: PersonalFabricPayload,
     },
+    /// Ask for the lane this device's private texts travel on.
+    PrivateMessages(tokio::sync::oneshot::Sender<tilo_network_actor::private_messages::Transport>),
     /// The session is going: stop the peer actor.
     Stop,
 }
@@ -930,6 +932,19 @@ impl Client {
         self.fabric
             .as_ref()
             .map(|fabric| Arc::clone(fabric) as tilo_device_fabric::link::SharedLink)
+    }
+
+    /// Ask the peer actor for this device's lane of private texts: the
+    /// messages between people, carried by this endpoint. `None` when the
+    /// actor is gone.
+    #[must_use]
+    pub fn private_messages(
+        &self,
+    ) -> Option<tokio::sync::oneshot::Receiver<tilo_network_actor::private_messages::Transport>>
+    {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        self.outgoing.send(Outgoing::PrivateMessages(reply)).ok()?;
+        Some(answer)
     }
 
     /// The actions one of the person's devices sent this one since the last
@@ -1680,6 +1695,10 @@ async fn carry_out(
         }
         // Redeemed beside this loop, which never waits on a host.
         Outgoing::Enroll(_) => true,
+        Outgoing::PrivateMessages(reply) => plane
+            .send(tilo_network_actor::NetCmd::PrivateMessages(reply))
+            .await
+            .is_ok(),
         Outgoing::Stop => return None,
     })
 }

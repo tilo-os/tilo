@@ -193,6 +193,8 @@ tilo-portal = { path = "../portal", features = ["pipewire"] }
 # portal grants through, so every launcher finds an app's view to bind.
 tilo-documents = { path = "../../system/documents", features = ["mount"] }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# What a private message is sent and refused with, as the endpoint lane names it.
+tilo-messaging = { path = "../../platform/tilo-messaging" }
 tilo-notifications-service = { path = "../notifications-service" }
 tilo-polkit-agent = { path = "../polkit-agent" }
 tilo-network-secret-agent = { path = "../network-secret-agent" }
