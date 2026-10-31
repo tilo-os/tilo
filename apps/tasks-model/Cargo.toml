@@ -20,6 +20,10 @@ serde.workspace = true
 serde_json.workspace = true
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+
+# The workspace-hack's native feature set does not build for wasm32, and the
+# browser builds the desktop, and so this model, for it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
