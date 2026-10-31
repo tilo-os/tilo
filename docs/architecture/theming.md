@@ -83,11 +83,12 @@ and a theme sets them through one document:
 | `palette` | Neutral hue and chroma (≤ 0.010), the lightness of `base`, `content`, `sidebar`, `inspector`, `raised`, `overlay`, three ink tiers, four muted status tones, light or dark, high contrast | `surfaces.*`, `text_primary` / `text_dim` / `text_tertiary`, `semantic.*`, `border_standard`, the neutral ramp, state veneers, `content_edge` | `tokens/palette.rs` (`Palette`), `tokens/colors.rs` (`Colors::as_authored`) |
 | `emphasis` | `inverted` (default) or `tinted { hue }` | `intent.inverted`, `inverted_hover`, `on_inverted` (primary actions, on switches, filled tracks), `intent.selection`, `selection_hover`, `Colors::lift_on` (the selection lift) | `tokens/palette.rs` (`Emphasis`) |
 | `presence` | Lightness and chroma of the twelve presence hues (hues stay 30° apart) | `presence` (`PresencePalette`), and through it `intent.you`, `selection_tint`, `border_focus` | `tokens/colors.rs` |
-| `shape` | `window_radius` | `radii.{tile, panel, control, item, detail}` derived concentrically (`Radii::from_window_radius`) | `tokens/radii.rs` |
+| `shape` | `window_radius`; `border`: the outline every surface carries, its `width` and `ink` (`hairline`, `standard` or `strong`) | `radii.{tile, panel, control, item, detail}` derived concentrically (`Radii::from_window_radius`), the surface outline | `tokens/radii.rs`, `tokens/finish.rs` (`Border`) |
 | `density` | `spacing`, a multiple of the 4 px scale | `spacing.s0`–`s16`; `Metrics` (pointer targets, control heights) stay put | `tokens/spacing.rs` |
-| `type` | `face` (a built-in face by name, `Default` or `Hyperlegible`, or any family name), `reading` (a reading face by name, `New Computer Modern`, `Libertinus`, `Literata`, `EB Garamond` or `Source Serif`, or any family name), `base_size`, `distinct_letters` (optional; absent follows the face: on with Hyperlegible) | `typography.sans_family`, `typography.serif_family` (the `Reading` role's face, set in the optical cut its size calls for), the body size every `TextRole` derives from (`Theme::text(role)`), `typography.distinct_letters` (every look-alike set apart in all text, `docs/typography.md`) | `tokens/typography.rs` (`UiFace`, `ReadingFace`, `Typography::set_face`, `Typography::set_reading_face`), `theme_document.rs` (`ThemeType::distinguishes_letters`) |
-| `motion` | `character`: 0 calm, 1 stock, 2 lively | the shared UI springs, `motion_character` | `tokens/motion.rs` |
-| `material` | `blur`, `tint_opacity` of floating chrome; `selector`: what the window group's tab strip is made of (`floating` or `opaque`), the active selector's lit rim (`rim_span`, `rim_alpha`) and the hover film's opacity (`hover_alpha`, admitted only where a hover clears the selection step) | `surfaces.material_blur_px`, `surfaces.material_opacity`, `surfaces.material`, `tokens.selector` | `tokens/colors.rs`, `tokens/selector.rs`, `backdrop.rs`, `chrome/selector.rs` |
+| `type` | `face` (a built-in face by name, `Default` or `Hyperlegible`, or any family name), `reading` (a reading face by name, `New Computer Modern`, `Libertinus`, `Literata`, `EB Garamond` or `Source Serif`, or any family name), `base_size`, `distinct_letters` (optional; absent follows the face: on with Hyperlegible), `contrast` (the spread of role sizes, 0.5–1.5, stock 1), `weights` of the `body`, `label` and `heading` tiers | `typography.sans_family`, `typography.serif_family` (the `Reading` role's face, set in the optical cut its size calls for), the body size every `TextRole` derives from (`Theme::text(role)`), `typography.distinct_letters` (every look-alike set apart in all text, `docs/typography.md`) | `tokens/typography.rs` (`UiFace`, `ReadingFace`, `Typography::set_face`, `Typography::set_reading_face`), `theme_document.rs` (`ThemeType::distinguishes_letters`) |
+| `motion` | `character`: 0 calm, 1 stock, 2 lively; `curve` (`spring`, `eased` or `none`); `duration_scale` | the shared UI springs, `motion_character` | `tokens/motion.rs`, `theme_document.rs` (`ThemeMotion`) |
+| `material` | For each surface role (`window`, `control`, `floating`, `bar`) the painter set that draws it and its parameters: `block` (flat, square, borders only), `default` (opaque, or translucent given `blur`, `tint`, `saturation`) or `glass` (translucent plus `refraction` at the rim, `edge_highlight`, `specular`); `selector`: what the window group's tab strip is made of (`floating` or `opaque`), the active selector's lit rim (`rim_span`, `rim_alpha`) and the hover film's opacity (`hover_alpha`, admitted only where a hover clears the selection step) | `RoleFinishes`, `surfaces.material`, `tokens.selector` | `tokens/finish.rs` (`Finish`, `RoleFinishes`), `tokens/selector.rs`, `backdrop.rs`, `chrome/selector.rs` |
+| `depth` | `shadow { strength }`, `outline` or `none`: how a raised surface stands off what is below it | the elevation shadows | `tokens/finish.rs` (`Depth`) |
 
 Not theme roles, by design: there is no accent and no app colour (an app
 has no brand colour in this language), no per-widget colour, no way to
@@ -104,11 +105,11 @@ at the palette's hue and chroma, so a hue never moves contrast.
 ### Data, versioned
 
 The document is `ThemeDocument`
-(`crates/sdk/ui-core/src/theme_document.rs`, `THEME_SCHEMA_VERSION` = 7):
+(`crates/sdk/ui-core/src/theme_document.rs`, `THEME_SCHEMA_VERSION` = 8):
 
 ```json
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "id": "ember",
   "name": "Ember",
   "palette": {
@@ -121,14 +122,20 @@ The document is `ThemeDocument`
   },
   "emphasis": { "kind": "tinted", "hue": 40.0 },
   "presence": { "lightness": 0.74, "chroma": 0.14 },
-  "shape": { "window_radius": 14.0 },
+  "shape": { "window_radius": 14.0, "border": { "width": 1.0, "ink": "hairline" } },
   "density": { "spacing": 1.0 },
-  "type": { "face": "Noto Sans", "reading": "Literata", "base_size": 14.0 },
-  "motion": { "character": 1.0 },
+  "type": { "face": "Noto Sans", "reading": "Literata", "base_size": 14.0,
+            "contrast": 1.0, "weights": { "body": "regular", "label": "medium", "heading": "semibold" } },
+  "motion": { "character": 1.0, "curve": "spring", "duration_scale": 1.0 },
   "material": {
-    "blur": 24.0, "tint_opacity": 0.72,
+    "window": { "painter": "default" },
+    "control": { "painter": "default" },
+    "floating": { "painter": "default", "blur": 24.0, "tint": 0.72, "saturation": 1.0 },
+    "bar": { "painter": "glass", "blur": 24.0, "tint": 0.25, "saturation": 1.7,
+             "refraction": 10.0, "edge_highlight": 0.35, "specular": 0.12 },
     "selector": { "strip": "floating", "rim_span": 0.55, "rim_alpha": 0.22, "hover_alpha": 0.75 }
-  }
+  },
+  "depth": { "kind": "shadow", "strength": 1.0 }
 }
 ```
 
@@ -136,10 +143,13 @@ The document is `ThemeDocument`
 pure grey until the workspace it is shown in gives it one.
 
 Built-in presets, distribution defaults, the user's themes and every file
-Theme Studio exports are this document. Unknown fields are refused, and a
-document of any other schema version is not admitted: the layer it sits on
-contributes nothing and the layers below it apply. There is no migration
-from older schemas.
+Theme Studio exports are this document. Unknown fields are refused. A new
+schema version only adds fields with stock values, so a document of an
+older version this build lists as read (schema 7 and 8 today) is admitted,
+read with stock values for what it does not say, and written back at the
+current version when it is next saved. A document of any other version is
+not admitted: the layer it sits on contributes nothing and the layers below
+it apply.
 
 The shipped presets (`Preset`, `Theme::ALL`):
 
@@ -220,8 +230,10 @@ focused, selected, disabled, dragging, changed-by-someone).
 - **Window effects** (open, close, minimise, focus) and window frames use the
   same painter interface in the compositor (`WindowEffect`, `WindowFrame`).
 
-Glass and Block are built-in painter sets, written against the same SDK as any
-third-party theme.
+Glass and Block are built-in painter sets. Today they are parameterised
+painters inside `ui-core`, selected per surface role by the document's
+`material`; with the painter SDK they become painters written against the
+same SDK as any third-party theme.
 
 ## Live surfaces
 
@@ -402,7 +414,7 @@ that **no theme and no app can reproduce**:
 
 Verified against the code at the time of writing:
 
-- **The document and its presets.** `ThemeDocument` schema 6 with the
+- **The document and its presets.** `ThemeDocument` schema 8 with the
   roles above; `Preset` ships Dark (default, chroma 0), Dark cool, Dark
   graphite, Dark soft, Light and both high-contrast palettes;
   `Theme::from_document` builds a theme, `Theme::named` finds a preset.
@@ -425,9 +437,16 @@ Verified against the code at the time of writing:
   identity-derived hue, paints its chrome and the person's own avatar in it,
   and sends it to every app window; collaborators receive it with the
   person's presence and paint them in it.
-- **The material.** Blur and tint opacity are theme roles read by the
-  backdrop pass; reduce transparency, forced colours and the high-contrast
-  palettes keep floating chrome opaque. The selector finish
+- **The material.** Each surface role names its painter set (`block`,
+  `default`, `glass`) in `material`, and one path (`fill_role`,
+  `control_face`) paints windows, menus, buttons, fields, dropdowns, toggle
+  groups and the top bar from it. Glass adds a lens refraction pass, a rim
+  light and a specular sheen. Glass, Glass light, Block and Block light ship
+  as documents in `crates/sdk/ui-core/themes/`. Legibility is checked
+  against the worst backdrop each material can show (`audit_materials`), and
+  `tilolang layout-check --theme NAME` lays a view out under a theme. Reduce
+  transparency, forced colours and the high-contrast palettes keep floating
+  chrome opaque. The selector finish
   (`material.selector`) is read by `chrome::paint_selector`; the same three
   make the tab strip solid and drop the rim.
 - **Theme Studio** (`apps/themes`) edits the document role by role with
