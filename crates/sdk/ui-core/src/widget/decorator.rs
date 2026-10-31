@@ -632,6 +632,7 @@ decorator_trait! {
 concrete_decorator_widget!(super::nav_list::NavList);
 concrete_decorator_widget!(super::media_transport::MediaTransport);
 concrete_decorator_widget!(super::window_search::QueryView);
+concrete_decorator_widget!(super::tab_strip_component::TabStrip);
 
 #[cfg(test)]
 #[path = "decorator_tests.rs"]
