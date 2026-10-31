@@ -3291,6 +3291,29 @@ impl PresenceHandle {
         Ok(())
     }
 
+    /// Whether the local participant is composing a message under `key_bytes` (a channel, a
+    /// direct conversation): a draft is being typed, never what it says. `false` says they
+    /// stopped, so no reader is left "typing" after the window closes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
+    pub async fn publish_composing(
+        &self,
+        key_bytes: &[u8],
+        composing: bool,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_composing_request();
+        {
+            let mut b = req.get();
+            b.set_key_bytes(key_bytes);
+            b.set_composing(composing);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
     /// Publish an invocation-scoped semantic interaction. The broker derives
     /// the actor from this authenticated handle; the JSON carries only the
     /// versioned action/target lifecycle from `tilo_actions`.
@@ -3423,6 +3446,11 @@ pub enum PresencePayload {
     /// enclosing broker-attributed [`PresenceEvent::user_id`], never this
     /// caller-controlled payload.
     InteractionJson(String),
+    /// The sender is composing a message under the event's key (a channel, a
+    /// direct conversation): a draft is being typed, never what it says.
+    Composing {
+        composing: bool,
+    },
     Status {
         text: String,
         automatic: bool,
@@ -3500,6 +3528,7 @@ fn decode_presence_payload(
             start: r.get_start(),
             end: r.get_end(),
         },
+        W::Composing(composing) => PresencePayload::Composing { composing },
         W::Following(target) => PresencePayload::Following {
             target: target
                 .ok()
