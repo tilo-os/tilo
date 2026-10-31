@@ -79,7 +79,7 @@ fn a_strip_keeps_its_pills_while_its_events_change() {
         "a retitled tab builds the strip again, and shows the new title"
     );
     let strip = TabStrip::from_props("frame", {
-        let mut p = props(tabs.clone(), 0);
+        let mut p = props(tabs, 0);
         p.tabs[0].title = Some("Renamed".to_owned());
         p
     });

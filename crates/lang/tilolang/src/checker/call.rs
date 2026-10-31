@@ -565,7 +565,6 @@ impl Checker<'_> {
         }
     }
 
-    /// `Todo(title: "x")`: a record value, not yet a resource.
     /// Whether a field of type `ty` holds a resource: any resource (`host.Resource`), one
     /// resource type, or any of a union's.
     fn is_any_resource_field(ty: &Ty) -> bool {
@@ -598,6 +597,7 @@ impl Checker<'_> {
         }
     }
 
+    /// `Todo(title: "x")`: a record value, not yet a resource.
     fn construct(&mut self, key: &TypeKey, args: &[ast::Arg]) -> Ex {
         let env = self.env;
         let Some(info) = env.type_info(key) else {

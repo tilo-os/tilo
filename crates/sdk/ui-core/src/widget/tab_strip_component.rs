@@ -168,11 +168,7 @@ fn active_id(order: &[(u64, TabItemProps)], active: Option<&str>) -> u64 {
 /// survive the round trip.
 #[must_use]
 pub fn pack_point(x: f64, y: f64) -> i64 {
-    let clamp = |v: f64| {
-        i64::try_from(v.max(0.0).round() as u32)
-            .unwrap_or(999_999)
-            .min(999_999)
-    };
+    let clamp = |v: f64| i64::from(v.max(0.0).round() as u32).min(999_999);
     clamp(y) * 1_000_000 + clamp(x)
 }
 
@@ -187,6 +183,7 @@ pub fn unpack_point(packed: i64) -> (f64, f64) {
 
 /// One strip's tabs, as its view gave them: what a pill reports, by its
 /// resource.
+#[derive(Default)]
 struct Tabs {
     /// Each tab's resource, by the strip's id for it.
     resources: HashMap<u64, String>,
@@ -234,17 +231,6 @@ impl Events {
             "reorder" => self.reorder.fire(Some(value(Some(at)))),
             "detach" => self.detach.fire(Some(value(Some(at)))),
             _ => {}
-        }
-    }
-}
-
-impl Default for Tabs {
-    fn default() -> Self {
-        Self {
-            resources: HashMap::new(),
-            order: Vec::new(),
-            props: None,
-            events: Events::default(),
         }
     }
 }
