@@ -273,20 +273,18 @@ impl Clock {
 ///
 /// # Errors
 /// A message saying which token does not fit: a filter the type lacks, a value its filter does
-/// not take, text (which search answers, not a query of one type).
+/// not take.
 pub fn resolve(
     query: &Query,
     ty: &TypeMeta,
     enums: &[EnumMeta],
     clock: &Clock,
 ) -> Result<Resolved, String> {
-    if let Some(word) = query.text.first() {
-        return Err(format!(
-            "`{word}` is text to search for; a query of {} sets its filters (`is:`, `key:value`), and text is searched across types",
-            ty.name
-        ));
-    }
     let mut all = Vec::new();
+    // Free text finds the type's own `Text` fields: each word must appear inside one of them.
+    if !query.text.is_empty() {
+        all.push(text_pred(&query.text, ty));
+    }
     for term in &query.terms {
         all.push(term_pred(term, ty, enums, clock)?);
     }
@@ -300,6 +298,37 @@ pub fn resolve(
         _ => Pred::And(all),
     };
     Ok(Resolved { pred, order })
+}
+
+/// Free text as a predicate over the type's text fields: the conjunction of each word being
+/// found inside some one of them, so `launch plan` finds a body holding both. A type with no
+/// text field holds none of it.
+fn text_pred(words: &[String], ty: &TypeMeta) -> Pred<String> {
+    let fields: Vec<&str> = ty
+        .fields
+        .iter()
+        .filter(|f| matches!(f.ty.trim(), "Text" | "RichText"))
+        .map(|f| f.id.as_str())
+        .collect();
+    let each: Vec<Pred<String>> = words
+        .iter()
+        .map(|word| {
+            let anywhere: Vec<Pred<String>> = fields
+                .iter()
+                .map(|field| Pred::Text((*field).to_owned(), word.clone()))
+                .collect();
+            match anywhere.len() {
+                0 => Pred::Const(false),
+                1 => anywhere.into_iter().next().unwrap_or(Pred::Const(false)),
+                _ => Pred::Or(anywhere),
+            }
+        })
+        .collect();
+    match each.len() {
+        0 => Pred::Const(true),
+        1 => each.into_iter().next().unwrap_or(Pred::Const(true)),
+        _ => Pred::And(each),
+    }
 }
 
 fn filter_keys(ty: &TypeMeta) -> String {
@@ -318,7 +347,18 @@ fn term_pred(
     clock: &Clock,
 ) -> Result<Pred<String>, String> {
     let Some(key) = &term.key else {
-        return any_identifier(&term.value, ty);
+        // A word alone is an identifier where the type holds one (`jane@x.com`), text where it
+        // holds text (`launch`): the same word is both kinds and each type holds what it has.
+        if ty
+            .search
+            .filters
+            .iter()
+            .any(|f| f.kind == FilterKind::Identifier)
+            && identifier::normalize_pattern(&term.value).is_ok()
+        {
+            return any_identifier(&term.value, ty);
+        }
+        return Ok(text_pred(std::slice::from_ref(&term.value), ty));
     };
     if let Some(filter) = ty.search.filter(key) {
         return filter_pred(filter, &term.value, enums, clock)

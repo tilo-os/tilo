@@ -46,6 +46,9 @@ tilolang-mail = { path = "../tilolang-mail", default-features = false }
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["test-support", "broker-transport", "native"] }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 tilolang = { path = "../../lang/tilolang" }
+# The session's persistent search index, and the source a search reads it through: a tilolang
+# app's published entries are found by a word of their text through it.
+tilo-desktop-search = { path = "../../session/desktop-search", features = ["indexes"] }
 automerge.workspace = true
 tilo-automerge.workspace = true
 tempfile.workspace = true
