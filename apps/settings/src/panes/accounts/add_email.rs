@@ -123,9 +123,16 @@ impl AccountsArea {
                 },
                 None,
             )?)
-        } else {
+        } else if root.explicit().is_some() {
+            // A profile outside a session (a test, `--data-dir`) keeps its
+            // own vault; only its own root's is opened.
             root.seal_password(&accounts::AccountId::from(config.email.clone()), &password)?;
             Sealing::Done
+        } else {
+            return Err(
+                "This device's account custody is unavailable, so the account's password cannot be kept"
+                    .into(),
+            );
         };
         *self.adding.borrow_mut() = Some(AddingEmail {
             sealing,

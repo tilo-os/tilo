@@ -915,6 +915,11 @@ impl BarrierReplies {
 }
 
 enum SdkCommand {
+    /// One private service request to the session on `route`, the app's own
+    /// route. A window asks as soon as it is built, which the live launch
+    /// does while the route is still joining: the `Hello` naming the route
+    /// was queued before it, so the loop has joined it by the time it
+    /// serves the request.
     BrowserServiceSession {
         route: RouteSpec,
         command: runtime_collab::BrowserServiceSessionCommand,
@@ -2922,6 +2927,26 @@ impl CollaborationManager {
                 committed_history_fixture: Some(history),
                 join_gates: std::collections::VecDeque::from([gate]),
                 room_status: Some(status),
+                // The session's answer to the app's private requests, as the
+                // custodian gives it: sealing stores, release answers with
+                // the secret, anything else is not the session's.
+                service_sessions: Some(Arc::new(|command| match command {
+                    runtime_collab::BrowserServiceSessionCommand::StoreAccountSecret {
+                        account,
+                        ..
+                    } => Ok(
+                        runtime_collab::BrowserServiceSessionReply::AccountSecretStored {
+                            account: account.clone(),
+                        },
+                    ),
+                    runtime_collab::BrowserServiceSessionCommand::ReleaseAccountSecret {
+                        account,
+                    } => Ok(runtime_collab::BrowserServiceSessionReply::AccountSecret {
+                        account: account.clone(),
+                        password: zeroize::Zeroizing::new("released-secret".into()),
+                    }),
+                    _ => Err("the session serves no such request".into()),
+                })),
                 ..tests::Captures::default()
             })),
             ..tests::FakeBroker::default()
@@ -4126,10 +4151,27 @@ async fn drive_shovel(
                 wake,
                 reply,
             } => {
-                let result = if let Some(route) = routes
-                    .get_mut(&spec.channel_id())
-                    .filter(|route| route.spec == spec)
-                {
+                // The app announced its route in a `Hello` queued before it
+                // asked, so the loop has joined it by now however long the
+                // join took. The route the connection serves is the app's
+                // current primary route (its record's), which a bound
+                // component may have moved since the request was made. A
+                // route that did not join answers as unavailable rather than
+                // leaving the window's receipt open.
+                let fallback = primary
+                    .as_ref()
+                    .and_then(|key| routes.get(key))
+                    .filter(|route| {
+                        route.spec.app_id == spec.app_id && route.spec.cluster_id == spec.cluster_id
+                    })
+                    .map(|route| route.spec.channel_id());
+                let key = fallback.unwrap_or_else(|| spec.channel_id());
+                let joined = routes.get_mut(&key).filter(|route| {
+                    route.spec == spec
+                        || (route.spec.app_id == spec.app_id
+                            && route.spec.cluster_id == spec.cluster_id)
+                });
+                let result = if let Some(route) = joined {
                     tokio::time::timeout(
                         Duration::from_secs(10),
                         route.channel.browser_service_session_command(&command),
@@ -7426,6 +7468,20 @@ mod tests {
         /// The channel service whose changes `channelKeysChanged` follows;
         /// without one the call is unimplemented, as on an older broker.
         pub key_changes: Option<Arc<tokio::sync::watch::Sender<u64>>>,
+        /// Answers this channel's private service requests, as the session
+        /// does on an app's route; without one the call is unimplemented,
+        /// as on a broker with no custodian behind it.
+        #[allow(clippy::type_complexity, reason = "one fixture hook")]
+        pub service_sessions: Option<
+            Arc<
+                dyn Fn(
+                        &runtime_collab::BrowserServiceSessionCommand,
+                    )
+                        -> Result<runtime_collab::BrowserServiceSessionReply, String>
+                    + Send
+                    + Sync,
+            >,
+        >,
     }
 
     pub struct DocumentSendGate {
@@ -7847,6 +7903,42 @@ mod tests {
                 None => Promise::err(capnp::Error::unimplemented(
                     "fixture has no invocation".into(),
                 )),
+            }
+        }
+
+        fn browser_service_session_command(
+            self: Rc<Self>,
+            params: channel_handle::BrowserServiceSessionCommandParams,
+            mut results: channel_handle::BrowserServiceSessionCommandResults,
+        ) -> Promise<(), capnp::Error> {
+            use runtime_collab::BrowserServiceSessionCommand;
+            let decoded = params
+                .get()
+                .and_then(|params| params.get_command())
+                .and_then(|bytes| {
+                    BrowserServiceSessionCommand::decode(bytes)
+                        .map_err(|error| capnp::Error::failed(error.into()))
+                });
+            let reply = match decoded {
+                Ok(command) => {
+                    let hook = self.captures.lock().unwrap().service_sessions.clone();
+                    match hook {
+                        Some(serve) => serve(&command),
+                        None => Err("fixture has no custodian".into()),
+                    }
+                }
+                Err(error) => return Promise::err(error),
+            };
+            match reply.map_err(capnp::Error::failed).and_then(|reply| {
+                reply
+                    .encode()
+                    .map_err(|error| capnp::Error::failed(error.into()))
+            }) {
+                Ok(bytes) => {
+                    results.get().set_reply(&bytes);
+                    Promise::ok(())
+                }
+                Err(error) => Promise::err(error),
             }
         }
 

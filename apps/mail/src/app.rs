@@ -226,12 +226,6 @@ impl AccountsPersist {
         }
     }
 
-    /// The accounts stored there; none when nothing is.
-    fn load(&self) -> AccountStore {
-        self.root()
-            .map_or_else(AccountStore::new, |root| AccountStore::load_in(&root))
-    }
-
     /// Persist `accounts` to the target this variant names.
     fn persist(&self, accounts: &AccountStore) -> std::io::Result<()> {
         match self.root() {
@@ -658,12 +652,13 @@ impl MailApp {
             .config_root()
             .map_or(AccountsPersist::Disabled, AccountsPersist::Profile);
         // In a session the accounts' secrets are the session's to release;
-        // this sandbox holds no vault of the person's to open.
+        // this sandbox holds no vault of the person's to open. A profile of
+        // its own (a test, `--data-dir`) has one, and opens it.
         let custody = crate::custody::SecretRelease::capture();
         let accounts = match (&custody, persist.root()) {
+            (_, None) => AccountStore::new(),
             (Some(_), Some(root)) => AccountStore::load_without_secrets_in(&root),
-            (Some(_), None) => AccountStore::new(),
-            (None, _) => persist.load(),
+            (None, Some(root)) => AccountStore::load_in(&root),
         };
         let shared = MailState::shared(MailState::new_live(
             accounts,
