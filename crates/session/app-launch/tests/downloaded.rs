@@ -2,6 +2,17 @@
 //! add it, the app it becomes with its own artwork, the entry that says its
 //! file is gone, and the ways back — as the session's registry serves them.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    reason = "test fixtures: a failed step is the assertion, and a window's \
+              process is invented from a counter"
+)]
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -184,10 +195,7 @@ fn an_added_program_shows_its_artwork() {
     let offer = offer_at(&program, &mut service);
     assert_eq!(offer.name, "Dropped Tool");
     assert_eq!(offer.kind, wire::DownloadedKind::AppImage);
-    let artwork = offer
-        .artwork
-        .clone()
-        .expect("the artwork its folder brings");
+    let artwork = offer.artwork.expect("the artwork its folder brings");
     assert!(Path::new(&artwork).is_file(), "{artwork} is a file");
 
     service

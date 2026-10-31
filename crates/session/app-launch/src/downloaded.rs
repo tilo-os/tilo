@@ -170,7 +170,7 @@ impl Handle {
         if !window.names_itself() {
             return;
         }
-        self.jobs.run(move |core| core.opened(window, None));
+        self.jobs.run(move |core| core.opened(&window, None));
     }
 
     /// A window named itself and its process is `facts`, already read: what
@@ -180,7 +180,7 @@ impl Handle {
         if !window.names_itself() {
             return;
         }
-        self.jobs.run(move |core| core.opened(window, Some(facts)));
+        self.jobs.run(move |core| core.opened(&window, Some(facts)));
     }
 
     /// The window is gone: an offer waits for the program's last one.
@@ -281,7 +281,7 @@ impl Downloaded {
 impl Core {
     /// Record `window`, and look at its program unless this process was
     /// looked at already. Returns whether anything a reader sees changed.
-    fn opened(&self, window: ObservedWindow, facts: Option<ProcessFacts>) -> bool {
+    fn opened(&self, window: &ObservedWindow, facts: Option<ProcessFacts>) -> bool {
         let Some(pid) = window.pid else {
             return false;
         };
@@ -293,7 +293,8 @@ impl Core {
             {
                 *open = open.saturating_sub(1);
             }
-            *state.open.entry(pid).or_default() += 1;
+            let open = state.open.entry(pid).or_default();
+            *open = open.saturating_add(1);
             state.looked.insert(pid)
         };
         if !look {
@@ -302,10 +303,14 @@ impl Core {
         let Some(facts) = facts.or_else(|| downloaded::process_facts(pid)) else {
             return false;
         };
-        self.look(&window, &facts)
+        self.look(window, &facts)
     }
 
     /// What the program behind `window` is, and what to do about it.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the offer and the window it came from are recorded in one hold, so the same program opened twice makes one offer"
+    )]
     fn look(&self, window: &ObservedWindow, facts: &ProcessFacts) -> bool {
         let (Some(store), Some(home)) = (&self.store, &self.home) else {
             return false;
@@ -315,7 +320,7 @@ impl Core {
         };
         // An app of the machine's own that names this window — an installed
         // one, a hand-written entry — is already in the person's list.
-        if self.installed(&window.app_id) {
+        if installed(&window.app_id) {
             return false;
         }
         // A copy only its window names joins the entry another copy of the
@@ -398,6 +403,10 @@ impl Core {
 
     /// Read the entries again: the apps the person has, and the files that
     /// went missing since the last scan.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the read apps and the missing ones are saved in one hold, and the files are followed after it"
+    )]
     fn rebuild(&self) -> bool {
         let (generation, scan) = desktop_entry::cache::cached_scan_snapshot();
         let apps: Vec<wire::DownloadedApp> = scan.entries.iter().filter_map(app).collect();
@@ -458,20 +467,6 @@ impl Core {
             desktop_entry::cache::refresh();
         }
         changed
-    }
-
-    /// Whether an entry of the machine's own names the window `app_id`.
-    fn installed(&self, app_id: &str) -> bool {
-        desktop_entry::cache::cached_scan()
-            .entries
-            .iter()
-            .any(|entry| {
-                entry.downloaded.is_none()
-                    && entry
-                        .window_identities()
-                        .iter()
-                        .any(|identity| identity.eq_ignore_ascii_case(app_id))
-            })
     }
 
     /// Add the program `file` to the person's apps.
@@ -612,9 +607,8 @@ impl Core {
 
 impl Service for Downloaded {
     fn resources(&self) -> Vec<ResourceSpec> {
-        let state = self.handle.core.state.lock_recover();
-        let apps: Vec<ResourceSpec> = state
-            .apps
+        let apps = self.handle.core.state.lock_recover().apps.clone();
+        let apps: Vec<ResourceSpec> = apps
             .iter()
             .map(|app| {
                 let mut resource =
@@ -741,6 +735,20 @@ fn kind(kind: ProgramKind) -> wire::DownloadedKind {
         ProgramKind::AppImage => wire::DownloadedKind::AppImage,
         ProgramKind::Program => wire::DownloadedKind::Program,
     }
+}
+
+/// Whether an entry of the machine's own names the window `app_id`.
+fn installed(app_id: &str) -> bool {
+    desktop_entry::cache::cached_scan()
+        .entries
+        .iter()
+        .any(|entry| {
+            entry.downloaded.is_none()
+                && entry
+                    .window_identities()
+                    .iter()
+                    .any(|identity| identity.eq_ignore_ascii_case(app_id))
+        })
 }
 
 /// The app `entry` is, when it is one of a downloaded program.
