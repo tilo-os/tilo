@@ -1,9 +1,9 @@
 //! A package whose field changed from `Text` to `RichText`: the records keep their words.
 //!
 //! The Notes fixture (`tests/legacy/notes.hex`) was written by the build that kept a note's
-//! body as plain text. Opened by a build that keeps it as rich text, every note's body survives
-//! with the same words, an edit after the upgrade lands as a rich splice, and running the
-//! upgrade again writes nothing.
+//! body as plain text. Opened by the Notes shipped now, which keeps it as rich text, every
+//! note's body survives with the same words, an edit after the upgrade lands as a rich splice,
+//! and running the upgrade again writes nothing.
 
 use automerge::AutoCommit;
 use tilolang_runtime::meta::FieldKind;
@@ -13,44 +13,10 @@ use tilolang_runtime::value::ResourceRef;
 use crate::fixtures::Replica;
 
 const APP: &str = "so.tilo.lang.notes";
-const OLD: &str = include_str!("../../../../apps/tl/notes/app.tl");
-const OLD_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
-
-/// The same package, its note's body kept as rich text: what a new build ships. The views and
-/// the scenario follow the type: the row shows the body's first line (`excerpt`), the editor
-/// edits it with the shared rich input, and the scenario's notes say their body as rich text.
-fn rich_notes() -> (String, &'static str) {
-    let mut source = OLD.replace("body: Text (body)", "body: RichText (body)");
-    source = source.replace("secondary: n.body,", "secondary: n.body.excerpt,");
-    source = source.replace(
-        "ui.TextInput(value: n.body, placeholder: \"Write something\", lines: 8)",
-        "rich_input(bind: n.body, placeholder: \"Write something\")",
-    );
-    // Every note the scenario makes says its body as rich text.
-    source = wrap_rich_bodies(&source);
-    assert!(source.contains("body: RichText (body)"), "{source}");
-    assert!(source.contains("body: RichText(\""), "{source}");
-    (source, OLD_IDS)
-}
-
-/// `source` with every `body: "text"` of a note's construction said as `body: RichText("text")`.
-fn wrap_rich_bodies(source: &str) -> String {
-    let mut out = String::with_capacity(source.len());
-    let mut rest = source;
-    while let Some((head, tail)) = rest.split_once("body: \"") {
-        out.push_str(head);
-        out.push_str("body: RichText(\"");
-        let Some((text, after)) = tail.split_once('"') else {
-            out.push_str(tail);
-            return out;
-        };
-        out.push_str(text);
-        out.push_str("\")");
-        rest = after;
-    }
-    out.push_str(rest);
-    out
-}
+/// The Notes package, its note's body kept as rich text: the build the fixture's records are
+/// opened by, and the one the upgrade brings them to.
+const SOURCE: &str = include_str!("../../../../apps/tl/notes/app.tl");
+const IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
 
 /// The saved room a fixture holds as hex.
 fn saved(hex: &str) -> AutoCommit {
@@ -139,8 +105,7 @@ fn plain_bodies(doc: &AutoCommit, ids: &[String]) -> Vec<String> {
 
 /// The id the package's ids lock gives the declaration `name`.
 fn locked(name: &str) -> String {
-    OLD_IDS
-        .lines()
+    IDS.lines()
         .find_map(|line| {
             line.strip_prefix(name)
                 .and_then(|rest| rest.strip_prefix(" = "))
@@ -190,8 +155,7 @@ fn rich_body(replica: &Replica, id: &str) -> (FieldValue, ResourceRef) {
 /// notes: nothing is written yet, the notes still hold the plain text the old build wrote.
 fn room() -> (Replica, Vec<String>) {
     let room = saved(include_str!("legacy/notes.hex"));
-    let (source, lock) = rich_notes();
-    let replica = Replica::new("ada", room, &[(source.as_str(), lock)]).0;
+    let replica = Replica::new("ada", room, &[(SOURCE, IDS)]).0;
     assert!(
         replica.host.take_committed().is_empty(),
         "opening the room wrote nothing"

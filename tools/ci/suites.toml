@@ -819,6 +819,8 @@ readers = [
   "crates/platform/tilolang-tilo/tests/task.rs",
   "crates/platform/tilolang-tilo/tests/tasks.rs",
   "crates/platform/tilolang-tilo/tests/undo_own.rs",
+  "crates/platform/tilolang-tilo/tests/upgrade_fields.rs",
+  "crates/platform/tilolang-tilo/tests/upgrade_it.rs",
   "crates/platform/tilolang-tilo/tests/views_migration.rs",
 ]
 

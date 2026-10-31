@@ -23,7 +23,7 @@ type Task {
     /// The moment on that day it is due at, if it has one.
     at: Option<Time> = .none
     /// Anything worth remembering about it.
-    notes: Text (body)
+    notes: RichText (body)
     /// Who is doing it.
     assignee: Option<Principal> = .none
     /// The project it belongs to; none while it waits in the inbox.
@@ -58,7 +58,7 @@ type Step {
 type Project {
     name: Text (title)
     /// What it is for, and anything worth remembering about it.
-    notes: Text (body)
+    notes: RichText (body)
     /// Whether its window shows its tasks as a board, a lane per section, or as a list.
     board: Bool = false
 }
@@ -505,7 +505,7 @@ view task_page(t: Task) {
                 on submit: add_step(tasks, t, step).then(set(step, ""))
             }
         }
-        input(bind: t.notes, placeholder: "Add notes", lines: 6)
+        rich_input(bind: t.notes, placeholder: "Add notes")
         std.history(t)
     }
 }
@@ -514,18 +514,18 @@ view task_page(t: Task) {
 /// due today, some of it done.
 scenario "a busy week" -> Task {
     let mia = person("Mia")
-    let flat = tasks.projects.insert(Project(name: "Move flat", notes: "Keys on the 15th. The van is booked for the morning."))
+    let flat = tasks.projects.insert(Project(name: "Move flat", notes: RichText("Keys on the 15th. The van is booked for the morning.")))
     let launch = tasks.projects.insert(Project(name: "Website launch"))
     tasks.items.insert(Task(title: "Take the bins out", done: true))
     tasks.items.insert(Task(title: "Buy oat milk and eggs", due: 2026-06-30))
-    let call = tasks.items.insert(Task(title: "Call the landlord about the boiler", notes: "Ask whether Tuesday morning works for the engineer.", due: 2026-06-30, at: 2026-06-30T09:00Z, priority: .high))
+    let call = tasks.items.insert(Task(title: "Call the landlord about the boiler", notes: RichText("Ask whether Tuesday morning works for the engineer."), due: 2026-06-30, at: 2026-06-30T09:00Z, priority: .high))
     tasks.items.insert(Task(title: "Book a haircut", due: 2026-06-29))
     tasks.items.insert(Task(title: "Reply to Mia about Sunday lunch", due: 2026-07-01))
     tasks.items.insert(Task(title: "Order boxes and tape", project: flat, due: 2026-07-02))
     tasks.items.insert(Task(title: "Give notice to the electricity company", project: flat, due: 2026-07-04, priority: .medium))
     tasks.items.insert(Task(title: "Measure the new bedroom", project: flat))
     tasks.items.insert(Task(title: "Pack the books", project: flat, done: true))
-    let copy = tasks.items.insert(Task(title: "Write the launch post", project: launch, due: 2026-07-06, priority: .urgent, notes: "Lead with the offline editor, then sharing."))
+    let copy = tasks.items.insert(Task(title: "Write the launch post", project: launch, due: 2026-07-06, priority: .urgent, notes: RichText("Lead with the offline editor, then sharing.")))
     tasks.steps.insert(Step(title: "Outline", done: true, task: copy))
     tasks.steps.insert(Step(title: "First draft", task: copy))
     tasks.steps.insert(Step(title: "Screenshots", task: copy))
@@ -540,7 +540,7 @@ scenario "a busy week" -> Task {
 /// A launch post half written: its window, with the steps it was broken into, one done.
 scenario "a task's steps" -> Task {
     let launch = tasks.projects.insert(Project(name: "Website launch"))
-    let copy = tasks.items.insert(Task(title: "Write the launch post", project: launch, due: 2026-07-06, priority: .urgent, notes: "Lead with the offline editor, then sharing."))
+    let copy = tasks.items.insert(Task(title: "Write the launch post", project: launch, due: 2026-07-06, priority: .urgent, notes: RichText("Lead with the offline editor, then sharing.")))
     tasks.steps.insert(Step(title: "Outline", done: true, task: copy))
     tasks.steps.insert(Step(title: "First draft, with the quotes from the beta testers", task: copy))
     tasks.steps.insert(Step(title: "Screenshots", task: copy))
@@ -556,7 +556,7 @@ scenario "all done" {
 
 /// A move a week away, on its project's board: a lane per stage, the tasks in each.
 scenario "a project board" -> Project {
-    let flat = tasks.projects.insert(Project(name: "Move flat", notes: "Keys on the 15th.", board: true))
+    let flat = tasks.projects.insert(Project(name: "Move flat", notes: RichText("Keys on the 15th."), board: true))
     let packing = tasks.sections.insert(Section(name: "Packing", project: flat))
     let booked = tasks.sections.insert(Section(name: "Booked", project: flat))
     tasks.items.insert(Task(title: "Measure the new bedroom", project: flat))
