@@ -108,7 +108,7 @@ pub use tilo_quick_settings::host::PanelHost;
 pub use tilo_service::{Service, Services};
 
 use controls::SessionControls;
-use keys::{Invocations, SessionKeys};
+use keys::{GuideKeys, Invocations, SessionKeys};
 use panels::{Banners, Held, Popover, Readout};
 use search::SessionSearch;
 use setup::Setup;
@@ -1520,12 +1520,21 @@ impl Session {
         if let Some(portal) = &portal_shortcuts {
             portal.set_shortcut_table(shortcuts.borrow().clone());
         }
-        let shortcut_guide = shortcut_guide::ShortcutGuide::new(guide_seat, Rc::clone(&shortcuts));
+        // The guide's keys while it is up: the key surface holds back what
+        // would act behind the guide and hands it the chord it waits for.
+        let guide_keys = GuideKeys::default();
+        let shortcut_guide = shortcut_guide::ShortcutGuide::new(
+            guide_seat,
+            Rc::clone(&shortcuts),
+            guide_keys.clone(),
+            portal_shortcuts.clone(),
+        );
         let (commands, invocations) = mount_controls(
             &mut compositor,
             &mut doors,
             shortcuts,
             portal_shortcuts,
+            guide_keys,
             options.scale,
         );
 
@@ -2705,6 +2714,7 @@ fn mount_controls(
     doors: &mut Doors,
     shortcuts: Rc<RefCell<ui::shortcut_table::ShortcutConfig>>,
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
+    guide: GuideKeys,
     scale: f64,
 ) -> (Rc<RefCell<Vec<SessionCommand>>>, Invocations) {
     let readout = Rc::new(RefCell::new(Readout::new(scale)));
@@ -2719,6 +2729,7 @@ fn mount_controls(
         shortcuts,
         Rc::clone(&invocations),
         portal,
+        guide,
     )));
     (commands, invocations)
 }
