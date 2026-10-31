@@ -349,6 +349,23 @@ class AppPortabilityTests(unittest.TestCase):
         )
 
 
+    def test_a_source_the_build_script_includes_is_build_code(self):
+        # `build.rs` includes a scanner by `#[path]` to generate the crate's
+        # registry; the crate itself never declares it, so it ships nothing
+        # and its file reads are not the app's.
+        self.write(
+            "crates/sdk/ui-core/Cargo.toml",
+            '[package]\nname = "tilo-ui"\n',
+        )
+        self.write("crates/sdk/ui-core/src/lib.rs", "pub fn run() {}\n")
+        self.write(
+            "crates/sdk/ui-core/build.rs",
+            '#[path = "scan.rs"]\nmod scan;\nfn main() { let _ = scan::scan(); }\n',
+        )
+        self.write("crates/sdk/ui-core/scan.rs", "pub fn scan() -> String { std::fs::read_to_string(\"x\").unwrap_or_default() }\n")
+        self.assertEqual([f.rule for f in self.findings("tilo-ui")], [])
+
+
 class BaselineTests(unittest.TestCase):
     def counts(self, apps=None, sdk=None):
         return {"apps": apps or {}, "sdk": sdk or {}}

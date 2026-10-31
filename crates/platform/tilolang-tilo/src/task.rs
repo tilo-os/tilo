@@ -632,6 +632,14 @@ impl Store for TaskStore {
         Vec::new()
     }
 
+    fn outbox_next_held(&self) -> Option<String> {
+        None
+    }
+
+    fn outbox_withdraw(&mut self, _: &DocId, _: &str, _: &ChangeNote) -> Result<usize, StoreError> {
+        Err(StoreError::Invalid(WRITES_NOTHING.into()))
+    }
+
     fn outbox_mark(
         &mut self,
         _: &OutboxEntry,

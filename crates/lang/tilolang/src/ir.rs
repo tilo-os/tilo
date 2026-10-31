@@ -43,6 +43,9 @@ pub struct Expr {
 pub enum Ek {
     Int(i64),
     Float(f64),
+    /// `10s`: a length of time, as its seconds. Only where a length of time is a value (the
+    /// moment an outside effect is held until); a filter's is resolved by the query instead.
+    Duration(i64),
     Bool(bool),
     /// A raw `i32` constant (an index or a count in the host ABI).
     I32(i32),

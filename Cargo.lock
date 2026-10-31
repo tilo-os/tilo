@@ -9589,7 +9589,6 @@ dependencies = [
  "tilo-contact-directory",
  "tilo-contact-directory-engine",
  "tilo-content",
- "tilo-desktop-model",
  "tilo-doc-codecs",
  "tilo-document",
  "tilo-mail-engine",

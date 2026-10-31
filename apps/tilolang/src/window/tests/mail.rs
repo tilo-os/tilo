@@ -340,6 +340,7 @@ fn a_reply_goes_out_through_the_outbox_once_the_server_takes_it() {
     let servers = servers();
     let mut room = room_with(account(&servers));
     synced(&mut room);
+    hold_for(&mut room, 0);
     let plan = room.thread("Launch plan");
     let RtValue::Ref(draft) = room.press("reply", vec![RtValue::resource(&plan)]) else {
         panic!("a reply is a draft");
@@ -398,6 +399,296 @@ fn editor_of(room: &Room, draft: &ResourceRef) -> String {
     format!("{:?}", view.tree())
 }
 
+/// Hold a sent message for `secs` seconds: the person's setting, written where Mail keeps it,
+/// as a step of theirs in the record.
+fn hold_for(room: &mut Room, secs: i64) {
+    let root = room.host().root_of(APP).expect("the root");
+    let meta = crate::app::builtin::package_named("mail").expect("the mail package");
+    let field = meta
+        .types
+        .iter()
+        .find(|t| t.name == "Mail")
+        .and_then(|t| t.fields.iter().find(|f| f.name == "hold"))
+        .expect("Mail keeps a hold")
+        .id
+        .clone();
+    use ui::tilo_resource::Edit;
+    let edit = Edit::new(
+        vec![ui::tilo_resource::Segment::Field(field)],
+        ui::tilo_resource::EditOp::Set {
+            value: serde_json::json!(secs),
+        },
+    );
+    let action = tilolang_tilo::action::DynAction {
+        app: APP.to_owned(),
+        kind: format!("tl.{APP}.Mail"),
+        action_id: "$edit".to_owned(),
+        args: serde_json::Value::Null,
+        authorship: tilolang_tilo::action::Authorship::default(),
+        edits: vec![tilolang_tilo::action::DynEdit::Edit {
+            id: root.doc.clone(),
+            edit,
+        }],
+    };
+    let context =
+        ui::tilo_actions::ActionContext::for_resource(&root.doc, &action.kind, &action.kind)
+            .with_app(APP, "tilolang")
+            .with_invoker(ui::tilo_actions::ActionInvoker::actor("ada".to_owned()));
+    ui::tilo_actions::apply_local_with_context(
+        &mut room.doc,
+        &action,
+        action.encode().expect("it encodes"),
+        Some(b"ada"),
+        context,
+    )
+    .expect("the hold is written");
+    room.doc.commit();
+    room.settle();
+}
+
+/// A reply to the conversation `subject`, sent: the draft it made.
+fn sent_reply(room: &mut Room, subject: &str) -> ResourceRef {
+    let plan = room.thread(subject);
+    let RtValue::Ref(draft) = room.press("reply", vec![RtValue::resource(&plan)]) else {
+        panic!("a reply is a draft");
+    };
+    let draft = (*draft.target).clone();
+    room.press("send", vec![RtValue::resource(&draft)]);
+    draft
+}
+
+#[test]
+fn a_sent_message_waits_for_the_persons_hold_before_it_goes() {
+    let servers = servers();
+    let mut room = room_with(account(&servers));
+    synced(&mut room);
+    hold_for(&mut room, 600);
+    let draft = sent_reply(&mut room, "Launch plan");
+    room.settle();
+    // It is held: nothing went, and it says how it stands.
+    assert!(room.flag(&draft, "sent"));
+    assert!(
+        servers.smtp.sent().is_empty(),
+        "a held message does not go yet"
+    );
+    assert_eq!(delivery_of(&room, &draft).unwrap().0, "held");
+    let shown = editor_of(&room, &draft);
+    assert!(shown.contains("Sending in a moment"), "{shown}");
+}
+
+#[test]
+fn a_held_message_is_taken_back_and_never_goes() {
+    let servers = servers();
+    let mut room = room_with(account(&servers));
+    synced(&mut room);
+    hold_for(&mut room, 600);
+    let draft = sent_reply(&mut room, "Launch plan");
+    assert_eq!(delivery_of(&room, &draft).unwrap().0, "held");
+
+    // Its author takes it back: it never leaves, and it is a draft again.
+    room.press("undo_send", vec![RtValue::resource(&draft)]);
+    room.settle();
+    assert!(!room.flag(&draft, "sent"), "it is a draft again");
+    assert!(
+        room.flag(&draft, "recalled"),
+        "and it says it was taken back"
+    );
+    assert_eq!(delivery_of(&room, &draft).unwrap().0, "withdrawn");
+    for _ in 0..20 {
+        room.settle();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(servers.smtp.sent().is_empty(), "it never went");
+}
+
+#[test]
+fn a_message_that_went_cannot_be_taken_back() {
+    let servers = servers();
+    let mut room = room_with(account(&servers));
+    synced(&mut room);
+    // No hold: it goes at once.
+    hold_for(&mut room, 0);
+    let draft = sent_reply(&mut room, "Launch plan");
+    room.until("the server to take the message", |_| {
+        servers.smtp.sent().len() == 1
+    });
+    room.until("the outbox to settle", |room| {
+        room.host().store().outbox_pending_count() == 0
+    });
+    let meta = crate::app::builtin::package_named("mail").expect("the mail package");
+    let action = meta
+        .actions
+        .iter()
+        .find(|a| a.name == "undo_send")
+        .expect("undo_send");
+    let refused = room.host().runtime().invoke_action(
+        &Principal::new("ada"),
+        (action.id.as_str(), vec![RtValue::resource(&draft)]),
+    );
+    assert!(refused.is_err(), "a message that went is not taken back");
+    assert_eq!(servers.smtp.sent().len(), 1);
+}
+
+#[test]
+fn the_window_wakes_when_a_held_message_is_due() {
+    let servers = servers();
+    let mut room = room_with(account(&servers));
+    synced(&mut room);
+    hold_for(&mut room, 600);
+    let draft = sent_reply(&mut room, "Launch plan");
+    room.settle();
+    // The window waits for the moment the message is due, not for nothing.
+    let wait = room
+        .window
+        .instance()
+        .wakes_in()
+        .expect("a held message sets the window's next wake");
+    assert!(
+        wait > std::time::Duration::from_secs(500),
+        "it waits for the hold: {wait:?}"
+    );
+    assert_eq!(delivery_of(&room, &draft).unwrap().0, "held");
+}
+
+/// The row of `message` in the conversation `thread`, as activating its list row made it: what
+/// it shows, and the keys of the controls under the row's fold.
+fn message_rows(room: &mut Room, thread: &ResourceRef) -> Vec<Vec<String>> {
+    let row = room
+        .items()
+        .into_iter()
+        .find(|(_, item)| {
+            item.item
+                .as_ref()
+                .is_some_and(|shown| shown.0 == thread.id_string())
+        })
+        .map(|(key, _)| key)
+        .expect("the inbox lists the conversation");
+    room.activate(&row);
+    let detail = room
+        .window
+        .instance()
+        .view(tilo_render_protocol::patch::Lane::Detail)
+        .expect("the view runs");
+    let list = first_kind(detail.borrow().tree(), "ui.VirtualList").expect("a transcript");
+    let len = detail.borrow().list_len(&list).unwrap_or(0);
+    let mut out = Vec::new();
+    for index in 0..len {
+        let shown = detail
+            .borrow_mut()
+            .row(&list, index)
+            .expect("a row renders")
+            .cloned();
+        let mut texts = Vec::new();
+        if let Some(shown) = &shown {
+            texts_in(shown, &mut texts);
+        }
+        out.push(texts);
+    }
+    room.settle();
+    out
+}
+
+// USER REQUIREMENT: a reply's quotation of the message it answers folds in the conversation, as
+// Gmail and Apple Mail fold it, so a thread reads as what each person said.
+#[test]
+fn a_replys_quotation_folds_in_the_conversation() {
+    let servers = servers();
+    let mut room = room_with(account(&servers));
+    synced(&mut room);
+    hold_for(&mut room, 0);
+    let plan = room.thread("Launch plan");
+    // A message of the conversation that answers another, as the composer makes one: what it
+    // says, then the message it answers quoted under it, as its sender's client wrote it.
+    let replies = room.refs(&plan, "messages");
+    let reply = replies[1].clone();
+    add_quote(
+        &mut room,
+        &reply,
+        "The fifth works for the beta.",
+        "Here is the draft plan.",
+    );
+    let rows = message_rows(&mut room, &plan);
+    let reply = rows.iter().find(|texts| {
+        texts
+            .iter()
+            .any(|t| t.contains("The fifth works for the beta."))
+    });
+    let reply = reply.unwrap_or_else(|| {
+        panic!("the conversation shows the reply's quotation folded: {rows:#?}")
+    });
+    assert!(
+        reply
+            .iter()
+            .any(|t| t == "Show quoted text" || t == "Hide quoted text"),
+        "the quotation folds under a control: {reply:#?}"
+    );
+    assert!(
+        !reply.iter().any(|t| t.contains("Here is the draft plan.")),
+        "the quotation is folded away until it is opened: {reply:#?}"
+    );
+    // The first message of the conversation quotes nothing: it has no fold.
+    let first = &rows[0];
+    assert!(
+        !first
+            .iter()
+            .any(|t| t == "Show quoted text" || t == "Hide quoted text"),
+        "a message that quotes nothing has no fold: {first:#?}"
+    );
+}
+
+/// Say `said` in the message `message`, quoting `quote` under it, as a client that answers
+/// writes it: a step of the person's in the record.
+fn add_quote(room: &mut Room, message: &ResourceRef, said: &str, quote: &str) {
+    let meta = crate::app::builtin::package_named("mail").expect("the mail package");
+    let field = |ty: &str, name: &str| {
+        meta.types
+            .iter()
+            .find(|t| t.name == ty)
+            .and_then(|t| t.fields.iter().find(|f| f.name == name))
+            .expect("the field")
+            .id
+            .clone()
+    };
+    let body = format!(
+        "{said}\r\n\r\nOn 2026-06-30, Grace Hopper wrote:\r\n> {}",
+        quote.replace('\n', "\r\n> ")
+    );
+    let edit = ui::tilo_resource::Edit::new(
+        vec![
+            ui::tilo_resource::Segment::Item(ui::tilo_resource::Id::from_raw(
+                message.item.as_deref().expect("the message is an item"),
+            )),
+            ui::tilo_resource::Segment::Field(field("Message", "body")),
+        ],
+        ui::tilo_resource::EditOp::Replace { text: body },
+    );
+    let action = tilolang_tilo::action::DynAction {
+        app: APP.to_owned(),
+        kind: format!("tl.{APP}.Message"),
+        action_id: "$edit".to_owned(),
+        args: serde_json::Value::Null,
+        authorship: tilolang_tilo::action::Authorship::default(),
+        edits: vec![tilolang_tilo::action::DynEdit::Edit {
+            id: message.doc.clone(),
+            edit,
+        }],
+    };
+    let context =
+        ui::tilo_actions::ActionContext::for_resource(&message.doc, &action.kind, &action.kind)
+            .with_app(APP, "tilolang")
+            .with_invoker(ui::tilo_actions::ActionInvoker::actor("ada".to_owned()));
+    ui::tilo_actions::apply_local_with_context(
+        &mut room.doc,
+        &action,
+        action.encode().expect("it encodes"),
+        Some(b"ada"),
+        context,
+    )
+    .expect("the message says it");
+    room.doc.commit();
+    room.settle();
+}
+
 /// How the draft `draft` stands on its way out, as `delivery(d)` reads it.
 fn delivery_of(room: &Room, draft: &ResourceRef) -> Option<(String, String)> {
     use tilolang_tilo::runtime::store::Store as _;
@@ -425,6 +716,7 @@ fn a_message_waits_to_go_online_and_goes_when_the_network_is_back() {
         Arc::clone(&reconnected),
     );
     synced(&mut room);
+    hold_for(&mut room, 0);
     let plan = room.thread("Launch plan");
     let RtValue::Ref(draft) = room.press("reply", vec![RtValue::resource(&plan)]) else {
         panic!("a reply is a draft");
@@ -504,6 +796,7 @@ fn an_instance_without_network_syncs_and_sends_through_the_mail_connector() {
     let connector = connector_for(account(&servers));
     let mut room = room_attached(&connector);
     synced(&mut room);
+    hold_for(&mut room, 0);
     let plan = room.thread("Launch plan");
     let RtValue::Ref(draft) = room.press("reply", vec![RtValue::resource(&plan)]) else {
         panic!("a reply is a draft");
@@ -650,6 +943,7 @@ fn a_reply_typed_in_the_conversation_goes_out_once_quoting_the_message_it_answer
     let servers = servers();
     let mut room = room_with(account(&servers));
     synced(&mut room);
+    hold_for(&mut room, 0);
     let plan = room.thread("Launch plan");
     let thread = RtValue::resource(&plan);
     room.press("answer", vec![thread, RtValue::text("Thursday suits me.")]);
