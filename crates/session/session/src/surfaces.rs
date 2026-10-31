@@ -1071,4 +1071,108 @@ mod tests {
         assert!(Anchor::default().is_empty());
         assert!(!(Anchor::TOP | Anchor::BOTTOM).is_empty());
     }
+    /// A door that serves one reading, and how often it was asked for it.
+    struct Stand {
+        revision: u64,
+        reading: serde_json::Value,
+        reads: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl ActionDoor for Stand {
+        fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
+            Vec::new()
+        }
+
+        fn read(&mut self, resource: &str) -> Option<serde_json::Value> {
+            self.reads.set(self.reads.get().saturating_add(1));
+            (resource == "sound").then(|| self.reading.clone())
+        }
+
+        fn revision(&mut self) -> Option<u64> {
+            Some(self.revision)
+        }
+
+        fn invoke(
+            &mut self,
+            address: &tilo_actions::ActionAddress,
+            _arguments: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<ResourceOperationStart, tilo_actions::DoorError> {
+            Err(tilo_actions::DoorError::Unknown(address.clone()))
+        }
+    }
+
+    fn following(resource: &str) -> Connection {
+        let (ours, _theirs) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
+        let mut connection = Connection::of(ours);
+        connection.watched.push(resource.to_owned());
+        connection
+    }
+
+    #[test]
+    fn a_reading_is_sent_when_it_moves_and_not_before() {
+        let reads = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let mut door = Stand {
+            revision: 1,
+            reading: serde_json::json!({ "volume": 0.5 }),
+            reads: std::rc::Rc::clone(&reads),
+        };
+        let mut connection = following("sound");
+
+        // The first turn sends the reading it stands at.
+        publish_readings(&mut connection, &mut door, Some(1));
+        assert_eq!(
+            connection.readings.get("sound"),
+            Some(&Some(String::from(r#"{"volume":0.5}"#))),
+            "the reading is sent as the state's JSON"
+        );
+        assert_eq!(
+            door.revision, 1,
+            "the door's revision is left as the session read it"
+        );
+
+        // A door that did not move is not read again, so a still desktop
+        // costs nothing per frame.
+        publish_readings(&mut connection, &mut door, Some(1));
+        assert_eq!(reads.get(), 1, "an unmoved door is read once");
+
+        // One that moved is read, and the reading that changed is sent.
+        door.reading = serde_json::json!({ "volume": 0.25 });
+        publish_readings(&mut connection, &mut door, Some(2));
+        assert_eq!(reads.get(), 2, "a moved door is read again");
+        assert_eq!(
+            connection.readings.get("sound"),
+            Some(&Some(String::from(r#"{"volume":0.25}"#)))
+        );
+    }
+
+    #[test]
+    fn a_resource_nothing_publishes_is_sent_as_no_reading() {
+        let reads = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let mut door = Stand {
+            revision: 7,
+            reading: serde_json::Value::Null,
+            reads: std::rc::Rc::clone(&reads),
+        };
+        let mut connection = following("nothing");
+        publish_readings(&mut connection, &mut door, Some(7));
+        assert_eq!(
+            connection.readings.get("nothing"),
+            Some(&None),
+            "a surface is told the resource is not served rather than left waiting"
+        );
+    }
+
+    #[test]
+    fn a_surface_that_follows_nothing_is_never_read_for() {
+        let reads = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let mut door = Stand {
+            revision: 1,
+            reading: serde_json::Value::Null,
+            reads: std::rc::Rc::clone(&reads),
+        };
+        let mut connection = following("sound");
+        connection.watched.clear();
+        publish_readings(&mut connection, &mut door, Some(1));
+        assert_eq!(reads.get(), 0);
+    }
 }
