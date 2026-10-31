@@ -385,7 +385,9 @@ impl Widget for ShellOverlayHost {
             let state = chrome.borrow();
             let records = state.records().clone();
             drop(state);
-            records.tick();
+            if let Err(error) = records.tick() {
+                tracing::error!(%error, "shell record persistence failed");
+            }
         }
         steps.mark("documents-and-records");
         // Before the prompt pump, so a request arriving this frame is on
