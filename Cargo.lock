@@ -22061,6 +22061,8 @@ dependencies = [
  "unicode-script",
  "url",
  "uuid",
+ "wasmi",
+ "wat",
  "wgpu",
  "wgpu-hal",
  "windows 0.62.2",

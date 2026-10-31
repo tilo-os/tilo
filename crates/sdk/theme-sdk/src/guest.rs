@@ -53,6 +53,7 @@ pub fn call(painter: &dyn PartPainter, len: u32) -> u64 {
             Some(Request::Transition { part, from, to }) => {
                 wire::transition_answer(painter.transition(part, from, to))
             }
+            Some(Request::Params) => wire::params_answer(&painter.params()),
             None => Vec::new(),
         };
         *buffer = answer;

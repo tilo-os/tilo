@@ -87,7 +87,7 @@ and a theme sets them through one document:
 | `density` | `spacing`, a multiple of the 4 px scale | `spacing.s0`–`s16`; `Metrics` (pointer targets, control heights) stay put | `tokens/spacing.rs` |
 | `type` | `face` (a built-in face by name, `Default` or `Hyperlegible`, or any family name), `reading` (a reading face by name, `New Computer Modern`, `Libertinus`, `Literata`, `EB Garamond` or `Source Serif`, or any family name), `base_size`, `distinct_letters` (optional; absent follows the face: on with Hyperlegible), `contrast` (the spread of role sizes, 0.5–1.5, stock 1), `weights` of the `body`, `label` and `heading` tiers | `typography.sans_family`, `typography.serif_family` (the `Reading` role's face, set in the optical cut its size calls for), the body size every `TextRole` derives from (`Theme::text(role)`), `typography.distinct_letters` (every look-alike set apart in all text, `docs/typography.md`) | `tokens/typography.rs` (`UiFace`, `ReadingFace`, `Typography::set_face`, `Typography::set_reading_face`), `theme_document.rs` (`ThemeType::distinguishes_letters`) |
 | `motion` | `character`: 0 calm, 1 stock, 2 lively; `curve` (`spring`, `eased` or `none`); `duration_scale` | the shared UI springs, `motion_character` | `tokens/motion.rs`, `theme_document.rs` (`ThemeMotion`) |
-| `material` | For each surface role (`window`, `control`, `floating`, `bar`) the painter set that draws it and its parameters: `block` (flat, square, borders only), `default` (opaque, or translucent given `blur`, `tint`, `saturation`) or `glass` (translucent plus `refraction` at the rim, `edge_highlight`, `specular`); `selector`: what the window group's tab strip is made of (`floating` or `opaque`), the active selector's lit rim (`rim_span`, `rim_alpha`) and the hover film's opacity (`hover_alpha`, admitted only where a hover clears the selection step) | `RoleFinishes`, `surfaces.material`, `tokens.selector` | `tokens/finish.rs` (`Finish`, `RoleFinishes`), `tokens/selector.rs`, `backdrop.rs`, `chrome/selector.rs` |
+| `material` | For each surface role (`window`, `control`, `floating`, `bar`) the painter set that draws it and its parameters: `block` (flat, square, borders only), `default` (opaque, or translucent given `blur`, `tint`, `saturation`) or `glass` (translucent plus `refraction` at the rim, `edge_highlight`, `specular`); `selector`: what the window group's tab strip is made of (`floating` or `opaque`), the active selector's lit rim (`rim_span`, `rim_alpha`) and the hover film's opacity (`hover_alpha`, admitted only where a hover clears the selection step) | `RoleFinishes`, `surfaces.material`, `tokens.selector` | `tokens/finish.rs` (`Finish`: a painter set and its parameters; `RoleFinishes`), `part_paint/builtin.rs`, `tokens/selector.rs`, `backdrop.rs`, `chrome/selector.rs` |
 | `depth` | `shadow { strength }`, `outline` or `none`: how a raised surface stands off what is below it | the elevation shadows | `tokens/finish.rs` (`Depth`) |
 
 Not theme roles, by design: there is no accent and no app colour (an app
@@ -142,6 +142,18 @@ The document is `ThemeDocument`
 `palette.hue` may be absent: the palette then has no hue of its own and is
 pure grey until the workspace it is shown in gives it one.
 
+Each `material` role is a **finish**: `painter` names a painter set and the
+other keys are that set's parameters. A set declares its parameters
+(`ParamSpec`): each has a name, an optional default, an **admitted** band
+that a document may state it in, and a **usable** band, no wider, that the
+theme is built at. A document that leaves out a parameter with no default,
+states one the set does not declare, or states a value outside the admitted
+band is refused. A value outside the usable band is clamped when the theme
+is built. `default`, `glass` and `block` are the toolkit's built-in sets
+(`part_paint::builtin`), and those names are reserved. A theme's own set
+registers under any other name (`register_painter_set`), and a set named by
+a document but not installed is refused like an unknown field.
+
 Built-in presets, distribution defaults, the user's themes and every file
 Theme Studio exports are this document. Unknown fields are refused. A new
 schema version only adds fields with stock values, so a document of an
@@ -169,10 +181,12 @@ The shipped presets (`Preset`, `Theme::ALL`):
 every number finite and inside the band its role admits (chroma ≤ 0.010,
 ink on the ink side of every surface, status chroma ≤ 0.13, presence
 lightness 0.35–0.90 and chroma 0.04–0.20, window radius 0–40, density
-0.5–2, base size 10–24, motion 0–2, blur 0–64, tint opacity 0.6–1). A value
-admitted but outside the usable band (radius above 28, density outside
-0.75–1.5, base size outside 12–18, blur above 48) is clamped when the theme
-is built.
+0.5–2, base size 10–24, motion 0–2, and every material parameter inside the
+admitted band its painter set declares; the built-in sets admit blur 0–64,
+tint 0–1, saturation 0–2, refraction 0–32, edge highlight and specular
+0–0.5). A value admitted but outside the usable band (radius above 28,
+density outside 0.75–1.5, base size outside 12–18, blur above 48) is
+clamped when the theme is built.
 
 Legibility is measured on the materialized colours against the floors in
 `tokens/contrast.rs` (`FLOORS`). They are WCAG 2.x ratios, and text floors
@@ -230,10 +244,34 @@ focused, selected, disabled, dragging, changed-by-someone).
 - **Window effects** (open, close, minimise, focus) and window frames use the
   same painter interface in the compositor (`WindowEffect`, `WindowFrame`).
 
-Glass and Block are built-in painter sets. Today they are parameterised
-painters inside `ui-core`, selected per surface role by the document's
-`material`; with the painter SDK they become painters written against the
-same SDK as any third-party theme.
+**The SDK and the host.** `tilo-theme-sdk` (`crates/sdk/theme-sdk`) is the
+interface: `PartPainter` (`paint`, `params`, `transition`), the scene a
+painter returns (fills, strokes, layers; solid, gradient, pattern and
+backdrop brushes) and the wire bytes a wasm painter exchanges. The host is
+`part_paint` in `ui-core`. It resolves a part's tokens, draws the painted
+scene, fills a backdrop brush from the backdrop pass and holds it in the
+material's band, caches settled parts and runs transitions. A backdrop
+brush takes a glaze: the painter's own ops, drawn over the sample and under
+the band, which the host applies last.
+
+**Built-in sets.** Default, Glass and Block (`part_paint::builtin`)
+implement the same `PartPainter` and draw through the same host as a
+theme's own set. Each draws the four surface parts (window ground, floating
+panel, bar body, control face) and leaves the rest to the toolkit.
+
+**Sets loaded from wasm.** A theme's set is a module built against the SDK
+(`export_painter!`). `part_paint::wasm` loads it:
+
+- The module may import nothing, so it has no clock, no I/O and no host to
+  ask; a module that imports anything is refused.
+- It runs on wasmi.
+- Each call has a fuel budget (`FUEL_PER_CALL`) and the memory is capped
+  (`MAX_MEMORY`).
+- Its answers are decoded as untrusted bytes, bounded by `MAX_ANSWER`.
+- A call that traps, runs out of fuel or answers malformed bytes leaves the
+  part to the Default set, and the set is not called again.
+
+The module's declared parameters are read once, at load.
 
 ## Live surfaces
 
