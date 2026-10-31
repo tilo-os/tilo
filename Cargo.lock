@@ -21909,6 +21909,7 @@ dependencies = [
  "serde_json",
  "tilo-action-policy",
  "tilo-compositor",
+ "tilo-desktop-model",
  "tilo-desktop-policy",
  "tilo-desktop-surface",
  "tilo-render-protocol",

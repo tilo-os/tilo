@@ -511,6 +511,9 @@ impl WindowPolicy for StripPolicy {
                 if let Some(title) = &window.title {
                     desk.policy.retitle(window.id, title);
                 }
+                if let Some(app_id) = &window.app_id {
+                    desk.policy.set_app_id(window.id, app_id);
+                }
             }
             if !gone.is_empty() {
                 desk.host.relayout();

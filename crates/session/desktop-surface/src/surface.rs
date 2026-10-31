@@ -114,6 +114,11 @@ pub trait TileSource {
         None
     }
 
+    /// The person reopened `tab` where they closed it, and its window is
+    /// gone: the tab holds the app that opens it again, and waits for that
+    /// app's window to take it. What the source needs to ask for the app.
+    fn reopened(&mut self, _workspace: &Workspace, _tab: &Tab) {}
+
     /// The applications desktop search offers to open, each an id
     /// [`Self::launch`] accepts, followed by those this desktop cannot run
     /// (`unavailable` set), which search lists with their reason.
@@ -1573,9 +1578,18 @@ impl DesktopSurface {
                     // it takes a window a peer added, and the strip comes to
                     // it as it does to a launched one.
                     Admitted::Reopen(workspace) => {
-                        if let Some(reopened) = shared.tree.reopen_closed(workspace) {
-                            self.reveal = Some((reopened.strip, reopened.group));
-                            shared.replaced = true;
+                        let Some(reopened) = shared.tree.reopen_closed(workspace) else {
+                            continue;
+                        };
+                        self.reveal = Some((reopened.strip, reopened.group));
+                        shared.replaced = true;
+                        // The window that closed is gone for good, so the tab
+                        // comes back as the app that opens it again: the app is
+                        // asked for, and the window that comes takes this tab.
+                        if let Some((workspace, tab)) =
+                            find_tab(&shared.tree, reopened.strip, reopened.tab)
+                        {
+                            self.tiles.reopened(workspace, tab);
                         }
                     }
                     Admitted::Strip(workspace, strip) => {

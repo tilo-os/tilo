@@ -13,7 +13,9 @@
 use tilo_compositor::{
     Compositor, LayoutRect, OutputConfig, SurfaceHost as _, WindowInfo, WindowPolicy as _,
 };
-use tilo_surface_host::desktop;
+use tilo_desktop_model::TileContent;
+use tilo_desktop_policy::DesktopPolicy;
+use tilo_surface_host::{DesktopHost, desktop};
 
 fn output() -> Vec<LayoutRect> {
     vec![LayoutRect::new((0, 0).into(), (1280, 800).into())]
@@ -26,6 +28,29 @@ fn window(id: u64, app: &str) -> WindowInfo {
         title: Some(app.into()),
         ..WindowInfo::default()
     }
+}
+
+/// Every tab the desk holds, in tree order: its id, what it shows and what it
+/// holds.
+fn tabs(host: &DesktopHost) -> Vec<(u64, String, TileContent)> {
+    host.with_policy(|policy| {
+        policy.handle().read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .map(|tab| (tab.id, tab.title.clone(), tab.tile.clone()))
+                .collect()
+        })
+    })
+}
+
+/// The tab of the window `id`, when the desk holds one.
+fn window_tab(host: &DesktopHost, id: u64) -> Option<(u64, String, TileContent)> {
+    tabs(host).into_iter().find(
+        |(_, _, tile)| matches!(tile, TileContent::Foreign { surface_id, .. } if *surface_id == id),
+    )
 }
 
 #[test]
@@ -238,4 +263,103 @@ fn a_window_that_asks_to_cover_the_screen_fills_its_strip_and_gives_it_back() {
         assert!(!policy.request(&first, &request));
         assert!(!maximized());
     }
+}
+
+/// An X11 client's window is a tab of the strip, named by its class and
+/// showing its own title, focused as it opens. Its title reaches the tab as
+/// the client changes it, and so does its class: a window renamed to another
+/// program is that program's window. Its close goes through the tab's close,
+/// which a reopen undoes with the app asked for again.
+#[test]
+fn an_x11_window_is_a_tab_of_its_class_that_retitles_and_reopens() {
+    let _settled = ui::motion::testing::settled();
+    let (host, mut policy) = desktop(7, 1.0);
+    let outputs = output();
+    let mut xterm = WindowInfo {
+        id: 9,
+        app_id: Some("XTerm".into()),
+        title: Some("user@host: ~".into()),
+        ..WindowInfo::default()
+    };
+    let size = policy
+        .initial_size(&xterm, &outputs)
+        .expect("a tab to fill");
+    let at = policy.place(&xterm, size, &outputs);
+    let mut mapped = vec![(xterm.clone(), LayoutRect::new(at, size.into()))];
+    policy.arrange(&mapped, &outputs).unwrap();
+
+    let (_, title, shown) = window_tab(&host, 9).expect("the window opened a tab");
+    assert_eq!(
+        shown,
+        TileContent::Foreign {
+            app_id: "XTerm".into(),
+            surface_id: 9
+        },
+        "a window is known by its class, as any window is by its app"
+    );
+    assert_eq!(title, "user@host: ~", "and shows its own title");
+    assert_eq!(
+        policy.focused(),
+        Some(9),
+        "the window that opens takes focus"
+    );
+
+    // The client retitles itself, as a terminal does on every prompt.
+    xterm.title = Some("vim ~/notes".into());
+    mapped = vec![(xterm.clone(), LayoutRect::new(at, size.into()))];
+    policy.arrange(&mapped, &outputs).unwrap();
+    let (tab, title, _) = window_tab(&host, 9).unwrap();
+    assert_eq!(title, "vim ~/notes", "the title follows the window");
+
+    // The client says it is another program: the tab belongs to that one now.
+    xterm.app_id = Some("Thunderbird".into());
+    mapped = vec![(xterm.clone(), LayoutRect::new(at, size.into()))];
+    policy.arrange(&mapped, &outputs).unwrap();
+    let (renamed, _, shown) = window_tab(&host, 9).expect("the same tab, another app");
+    assert_eq!(renamed, tab, "renaming a window is no new tab");
+    assert!(
+        matches!(shown, TileContent::Foreign { ref app_id, .. } if app_id == "Thunderbird"),
+        "the tab follows the class the client set: {shown:?}"
+    );
+
+    // The client closes its window: the tab goes through the close every
+    // close goes through, remembered so a reopen undoes it.
+    policy.arrange(&[], &outputs).unwrap();
+    assert!(window_tab(&host, 9).is_none(), "the tab went with it");
+    assert!(
+        tabs(&host).is_empty(),
+        "and its group, it was the group's only tab"
+    );
+    assert!(
+        policy.take_close_requests().is_empty(),
+        "the window closed itself"
+    );
+
+    assert!(
+        host.with_policy(DesktopPolicy::reopen_closed),
+        "the newest close is undone"
+    );
+    // The desk carries the command out on its next pass, as it does for the
+    // session's loop.
+    host.with_widgets(tilo_surface_host::WidgetHost::relayout);
+    let (reopened, title, shown) = tabs(&host).pop().expect("the tab is back");
+    assert_eq!(reopened, tab, "the window comes back in its own tab");
+    assert_eq!(title, "vim ~/notes", "named as the person left it");
+    assert!(
+        matches!(
+            shown,
+            TileContent::LocalApp { ref app_id, ref label, .. }
+                if app_id == "Thunderbird" && label == "vim ~/notes"
+        ),
+        "and holds the app that opens it again: {shown:?}"
+    );
+    assert_eq!(
+        host.take_launches(),
+        ["Thunderbird"],
+        "the app is asked for again, by the name its window announced"
+    );
+    assert!(
+        host.take_launches().is_empty(),
+        "one reopen asks for it once"
+    );
 }

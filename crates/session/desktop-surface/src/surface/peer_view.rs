@@ -1566,6 +1566,10 @@ impl crate::TileSource for PeerTiles {
         self.inner.launch(workspace, id, app)
     }
 
+    fn reopened(&mut self, workspace: &Workspace, tab: &Tab) {
+        self.inner.reopened(workspace, tab);
+    }
+
     fn search_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
         self.inner.search_applications()
     }

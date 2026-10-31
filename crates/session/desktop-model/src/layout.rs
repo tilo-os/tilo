@@ -254,6 +254,22 @@ impl Tab {
         true
     }
 
+    /// The window says it belongs to `app_id` now: an X11 client renamed its
+    /// class, or an app set its id after its window opened. The tab belongs
+    /// to that app from here on. Returns whether it is another app than the
+    /// one the tab holds: a window claiming the same app again (clients
+    /// re-send it) is no change.
+    pub fn set_window_app_id(&mut self, app_id: &str) -> bool {
+        let TileContent::Foreign { app_id: held, .. } = &mut self.tile else {
+            return false;
+        };
+        if held == app_id {
+            return false;
+        }
+        app_id.clone_into(held);
+        true
+    }
+
     /// A person names the tab `name`. A blank name clears their name, and
     /// the tab shows its window's latest title again. Returns whether
     /// anything changed.
