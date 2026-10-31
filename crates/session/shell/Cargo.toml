@@ -218,7 +218,7 @@ tilo-cli-kit = { path = "../../runtime/cli" }
 # the shell's own surface, not a user app.
 launcher-app = { path = "../../../apps/launcher" }
 tilo-messaging = { path = "../../platform/tilo-messaging" }
-accounts = { path = "../../system/accounts" }
+accounts = { path = "../../system/accounts", features = ["person"] }
 tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
 # The messaging service's door.
 tilo-messaging-service = { path = "../messaging-service", default-features = false }

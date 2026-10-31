@@ -4,6 +4,13 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The account type id of an email account in the person's accounts.
+pub const TYPE_ID: &str = "email";
+
+/// The app that keeps email accounts: the one the session's custody
+/// releases an email account's secret to.
+pub const KEEPER: &str = "so.tilo.mail";
+
 /// How an account authenticates to its IMAP/SMTP servers. Password is the
 /// classic user+secret; OAuth is the modern token flow the big providers now
 /// **require** (Gmail and Outlook block plain-password IMAP), so those

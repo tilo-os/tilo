@@ -3,6 +3,8 @@ mod actions;
 mod agent_review;
 mod attachments;
 mod compose;
+#[cfg(feature = "live")]
+mod custody;
 mod presentation;
 mod shell;
 mod sync;
