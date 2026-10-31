@@ -925,7 +925,6 @@ reference-open = Open { $label }
 change-field = Changed by { $who }
 change-field-before = Changed by { $who }. Before: { $before }
 # The mark on a row or wherever a view places it: who, and the task run it was part of.
-change-mark-run = { $who } · { $run }
 change-mark-who = { $who }
 # What the mark says when read out or hovered: what they did.
 change-mark-created = Made by { $who }

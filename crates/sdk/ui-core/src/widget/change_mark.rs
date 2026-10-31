@@ -119,31 +119,36 @@ impl ChangeMarkProps {
         } = self;
         let by = by?;
         let who = by.name.clone();
-        let label = match run.filter(|run| !run.is_empty()) {
-            _ if window => crate::i18n::widget_format(
-                "change-window",
-                &[("count", count.max(1).into()), ("who", who.clone().into())],
-            ),
-            Some(run) => crate::i18n::widget_format(
-                "change-mark-run",
-                &[("who", who.clone().into()), ("run", run.into())],
-            ),
-            None => crate::i18n::widget_format("change-mark-who", &[("who", who.clone().into())]),
-        };
         let did = match kind.as_deref() {
             Some("created") => "change-mark-created",
             Some("removed") => "change-mark-removed",
             _ => "change-mark-changed",
+        };
+        let what = crate::i18n::widget_format(did, &[("who", who.clone().into())]);
+        // The face says who changed it, so the pill's text says the run alone: one fact each,
+        // never two joined into one line.
+        let run = run.filter(|run| !run.is_empty());
+        let label = match run.as_deref() {
+            _ if window => crate::i18n::widget_format(
+                "change-window",
+                &[("count", count.max(1).into()), ("who", who.clone().into())],
+            ),
+            Some(run) => run.to_owned(),
+            None => crate::i18n::widget_format("change-mark-who", &[("who", who.clone().into())]),
+        };
+        let tooltip = match run {
+            Some(run) => crate::i18n::widget_format(
+                "change-mark-in-run",
+                &[("what", what.into()), ("run", run.into())],
+            ),
+            None => what,
         };
         let hue = PresenceHue::of_identity(&by.identity);
         let chip = Chip::new(label)
             .with_id(key.to_owned())
             .with_face(who.clone(), face_colour(hue))
             .style(ChipStyle::Tinted(Tone::Presence(hue)))
-            .tooltip(crate::i18n::widget_format(
-                did,
-                &[("who", who.clone().into())],
-            ))
+            .tooltip(tooltip)
             .with_accessible_name(crate::i18n::widget_format(
                 "change-mark-open",
                 &[("who", who.into())],
