@@ -1463,6 +1463,26 @@ fn endpoint_for(
     Ok((builder, iroh::endpoint::default_relay_mode().relay_map()))
 }
 
+/// The runtime the collaboration plane's thread runs on: two workers of its
+/// own, so what the plane settles never waits behind what a session shows.
+fn plane_runtime(
+    ready: &std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
+) -> Option<tokio::runtime::Runtime> {
+    match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => Some(runtime),
+        Err(error) => {
+            let _ = ready.send(Err(format!(
+                "no runtime for the collaboration plane: {error}"
+            )));
+            None
+        }
+    }
+}
+
 /// The thread: bind the endpoint, run the peer actor, and carry what it
 /// hears to the session's loop until it is told to stop.
 fn run(
@@ -1475,18 +1495,8 @@ fn run(
     wake: Arc<dyn Fn() + Send + Sync>,
     link: Arc<ChannelLink>,
 ) {
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            let _ = ready.send(Err(format!(
-                "no runtime for the collaboration plane: {error}"
-            )));
-            return;
-        }
+    let Some(runtime) = plane_runtime(&ready) else {
+        return;
     };
     runtime.block_on(async move {
         let lookup = iroh::address_lookup::memory::MemoryLookup::new();

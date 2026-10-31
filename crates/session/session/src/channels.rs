@@ -103,7 +103,13 @@ impl Channels {
             access
         });
         let pump = spawn_pump(access, Arc::clone(engine), Arc::clone(&link), link.park())?;
-        engine.attach_link(Arc::clone(&link));
+        // Every room this device already holds reads its roster: the plane
+        // carries a room's window streams between the devices it admits from
+        // the moment it runs, not only from the room's next change.
+        for room in engine.rooms() {
+            link.room_changed(room);
+        }
+        engine.attach_link(link);
         Ok(Self { _pump: pump })
     }
 }
@@ -147,6 +153,9 @@ impl ChannelLink {
     /// plane is gone.
     pub(crate) fn attach(&self, outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>) {
         *self.outgoing.lock_recover() = Some(outgoing);
+        // What was told before the plane ran was told to no one: every room
+        // this device holds is read and told again.
+        self.park.poke();
     }
 
     /// Wake whatever unsettles the groups: a frame arrived, or a room moved.
@@ -186,6 +195,12 @@ impl ChannelLink {
     pub(crate) fn room_changed(&self, room: RoomId) {
         self.changed.lock_recover().insert(room);
         self.park.poke();
+    }
+
+    /// Read `room` again on a later pass, without waking the pump to it: a
+    /// roster that was not told stays untold until it is.
+    fn changed_again(&self, room: RoomId) {
+        self.changed.lock_recover().insert(room);
     }
 
     /// The rooms that moved since the last call, in a stable order.
@@ -282,20 +297,34 @@ impl Rosters {
     /// and what it sends or would be sent is refused from then on.
     fn sweep(&mut self, link: &ChannelLink, engine: &Engine) {
         for room in link.take_changed() {
-            let ws = room_topic_id(room);
-            let Ok(roster) = roster_of(engine, room) else {
-                // A room whose state is gone, or whose governance cannot be
-                // read yet, tells no roster: the one it had stays until a
-                // pass reads it again.
+            if !engine.holds(room) {
+                // The room is gone here, and what the plane held of it went
+                // with the leave.
+                self.told.remove(&room_topic_id(room));
+                continue;
+            }
+            if let Ok(roster) = roster_of(engine, room) {
+                self.tell(link, room, roster);
+            } else {
+                // A room whose governance cannot be read yet tells no
+                // roster: the one it had stays until a pass reads it.
                 tracing::debug!(%room, "no roster to tell");
-                continue;
-            };
-            if !self.moved(ws, &roster) {
-                continue;
+                link.changed_again(room);
             }
-            if link.tell_roster(ws, roster.clone()) {
-                self.told.insert(ws, roster);
-            }
+        }
+    }
+
+    /// Tell the plane `room`'s `roster`, and remember it as told only when
+    /// the plane took it: one it did not take is read again on a later pass.
+    fn tell(&mut self, link: &ChannelLink, room: RoomId, roster: Roster) {
+        let ws = room_topic_id(room);
+        if !self.moved(ws, &roster) {
+            return;
+        }
+        if link.tell_roster(ws, roster.clone()) {
+            self.told.insert(ws, roster);
+        } else {
+            link.changed_again(room);
         }
     }
 }
@@ -574,8 +603,8 @@ mod tests {
     #[test]
     fn a_roster_moves_only_when_its_devices_do() {
         let room = room_topic_id(RoomId::new());
-        let device = iroh::EndpointId::from_bytes(&[7; 32]).expect("a device");
-        let other = iroh::EndpointId::from_bytes(&[9; 32]).expect("another device");
+        let device = iroh::SecretKey::from_bytes(&[7; 32]).public();
+        let other = iroh::SecretKey::from_bytes(&[9; 32]).public();
         let mut rosters = Rosters::default();
         let one: Roster = vec![(device, None)];
         let both: Roster = vec![(device, None), (other, None)];
@@ -588,6 +617,34 @@ mod tests {
         assert!(
             rosters.moved(room, &one),
             "a device the room removed leaves, and the plane is told"
+        );
+    }
+
+    /// A roster the plane did not take is not remembered as told: the room is
+    /// read again and the roster told when the plane takes it.
+    #[test]
+    fn a_roster_the_plane_did_not_take_is_told_again() {
+        let link = ChannelLink::new();
+        let room = RoomId::new();
+        let device = iroh::SecretKey::from_bytes(&[7; 32]).public();
+        let mut rosters = Rosters::default();
+        rosters.tell(&link, room, vec![(device, None)]);
+        assert_eq!(
+            link.take_changed(),
+            vec![room],
+            "the plane took nothing, so the room is read again"
+        );
+
+        let (outgoing, mut sent) = tokio::sync::mpsc::unbounded_channel();
+        link.attach(outgoing);
+        rosters.tell(&link, room, vec![(device, None)]);
+        assert!(
+            link.take_changed().is_empty(),
+            "once the plane takes the roster, the room is not read again"
+        );
+        assert!(
+            matches!(sent.try_recv(), Ok(Outgoing::Roster { .. })),
+            "and the plane was told it"
         );
     }
 

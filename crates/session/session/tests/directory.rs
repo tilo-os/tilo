@@ -1255,11 +1255,10 @@ fn join_the_lounge(session: &mut Session, lounge: &Lounge) {
 /// The line the lounge's chat holds here, as the person reads it: `None`
 /// until this computer may open the record's sealed history.
 fn chat_here(session: &Session, room: &str) -> Option<String> {
-    let record = match session.read_record(room, CHAT, CHAT_RECORD) {
-        Ok(Some(record)) => record,
-        // The room may hold nothing yet, and until this computer is admitted
-        // to the record's channel its writes are not this computer's to open.
-        Ok(None) | Err(_) => return None,
+    // The room may hold nothing yet, and until this computer is admitted to
+    // the record's channel its writes are not this computer's to open.
+    let Ok(Some(record)) = session.read_record(room, CHAT, CHAT_RECORD) else {
+        return None;
     };
     let chat = automerge::AutoCommit::load(&record).ok()?;
     let (text, _) = chat.get(automerge::ROOT, "text").ok()??;
