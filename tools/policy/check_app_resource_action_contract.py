@@ -134,7 +134,7 @@ CONTROL_CALLBACKS = frozenset(
         "on_name_group", "on_navigate", "on_open_entry", "on_outcome", "on_remove",
         "on_rename", "on_retry",
         "on_revert", "on_row_action", "on_row_click", "on_save",
-        "on_section_action", "on_seek", "on_select", "on_station", "on_submit",
+        "on_section_action", "on_select", "on_station", "on_submit",
         "on_toggle", "on_undo_band",
     }
 )
@@ -178,6 +178,8 @@ NOT_CONTROL_CALLBACKS = {
     "on_row_click_view": "answers the table's published view action for the row clicked",
     "on_submit_view": "answers the field's published view action for the text submitted",
     "on_change_view": "answers the control's published view action for the value its person set",
+    "on_toggle_view": "answers the chip's published view action for the flip its person made",
+    "on_remove_view": "answers the chip's published view action for the removal its person made",
     "on_enter_default": "the surrounding dialog's default action reaching a host that has no "
     "dialog around the body, not a control of the prompt's own",
 }

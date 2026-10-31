@@ -857,25 +857,6 @@ impl Chip {
         self.selected = on;
     }
 
-    /// Run `f` with the new selection whenever a person flips the chip
-    /// (implies [`selectable`](Self::selectable)): a host that keeps its
-    /// filters elsewhere hears of each change without draining.
-    #[must_use]
-    pub fn on_toggle(mut self, f: impl FnMut(bool) + 'static) -> Self {
-        self.selectable = true;
-        self.on_toggle = Some(Box::new(f));
-        self
-    }
-
-    /// Run `f` whenever a person presses the "×" (implies
-    /// [`removable`](Self::removable)).
-    #[must_use]
-    pub fn on_remove(mut self, f: impl FnMut() + 'static) -> Self {
-        self.removable = true;
-        self.on_remove = Some(Box::new(f));
-        self
-    }
-
     /// Flip the chip's selection as the chip's published view action
     /// `toggle` (implies [`selectable`](Self::selectable)): a person's press,
     /// a screen reader, a script and an agent flip it through the same
