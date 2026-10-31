@@ -1908,6 +1908,8 @@ mod bars;
 mod chrome;
 #[path = "session/lock.rs"]
 mod lock;
+#[path = "session/lock_recovery.rs"]
+mod lock_recovery;
 mod questions;
 #[path = "session/workspace_settings.rs"]
 mod workspace_settings;

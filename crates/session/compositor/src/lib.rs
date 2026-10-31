@@ -387,6 +387,19 @@ impl Compositor {
         self.data.state.locked()
     }
 
+    /// Whether the session locked itself — idle, a key or a command — rather
+    /// than a lock client holding it: its own lock screen is what the person
+    /// sees, and what it puts up again when that leaves the screen.
+    pub fn session_locked(&self) -> bool {
+        self.data.state.idle.session.is_locked()
+    }
+
+    /// Whether the session's own lock screen is drawing now. While the
+    /// session is locked, this is the screen the person unlocks on.
+    pub fn lock_screen_drawn(&self) -> bool {
+        self.data.state.lock_screen_drawn()
+    }
+
     /// Whether a surface of the session's own takes the keyboard now: a
     /// palette, the overview or the shortcut guide, which see keys before
     /// any client does.

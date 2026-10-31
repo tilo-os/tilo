@@ -62,6 +62,15 @@ impl State {
         self.lock.locked || self.idle.session.is_locked()
     }
 
+    /// Whether the session's own lock screen is drawing: a hosted lock
+    /// screen with layers to show. A lock client's surfaces are its own,
+    /// and show without it.
+    pub(crate) fn lock_screen_drawn(&self) -> bool {
+        self.hosts
+            .iter()
+            .any(|host| host.lock_screen() && !host.layers().is_empty())
+    }
+
     /// Whether the window with the keyboard is fullscreen: it covers its
     /// display and, being a game or a video, owns the input that plays it.
     pub(crate) fn fullscreen(&self) -> bool {

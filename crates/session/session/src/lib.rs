@@ -154,6 +154,19 @@ const GENERATION: &str = "session";
 /// toggle of it is that same press, not a new ask to open it.
 const DISMISS_GRACE: Duration = Duration::from_millis(300);
 
+/// How long a locked session may show no lock screen before the session puts
+/// it up again: the frame that follows putting it up is drawn in the same
+/// turn, so nothing of it for a moment is nothing of it at all.
+const LOCK_SCREEN_GRACE: Duration = Duration::from_millis(500);
+
+/// How many times the session puts the lock screen up within one lock before
+/// it lifts the lock. Putting it up is the same path every time — the sheet
+/// the session has, shown again, or a sheet mounted as it was at the start —
+/// so three tries cover a screen that went away once or twice, and a screen
+/// that needs more than that is not staying up at all: the machine is better
+/// unlocked than locked behind it.
+const LOCK_SCREEN_TRIES: u32 = 3;
+
 /// How often the desk is written while it changes.
 const KEEP_DESK_EVERY: Duration = Duration::from_secs(2);
 
@@ -490,6 +503,9 @@ struct Shared {
     directory_store: directory::Store,
     /// The lock screen, while the session is locked.
     lock: Option<LockSeat>,
+    /// What mounted the lock screen, to mount it again when a lock finds it
+    /// gone.
+    lock_mount: mount::sheets::LockMount,
     /// The desktop's own notices: what the session tells the person, such as
     /// leaving a workspace.
     notices: tilo_desktop_surface::DesktopNotifications,
@@ -1237,6 +1253,10 @@ pub struct Session {
     comforts: Option<mount::comforts::Mirror>,
     /// Checking the passwords the lock screen was given.
     unlocking: Unlocking,
+    /// How long the lock has had no lock screen, and how many times the
+    /// session put it up again: a lock is lifted rather than left with
+    /// nothing that can unlock it.
+    lock_watch: LockWatch,
     /// The screenshots asked for.
     captures: Option<capture::Captures>,
     /// The capture studio the session shows, and answers the asks of.
@@ -1313,6 +1333,18 @@ struct Unlocking {
     ),
     /// Wakes the loop when a verdict lands.
     wake: std::task::Waker,
+}
+
+/// The lock screen's absence while the session is locked, and what the
+/// session did about it: a screen that does not come back must not leave the
+/// machine locked with nothing able to unlock it.
+#[derive(Default)]
+struct LockWatch {
+    /// When the lock screen was found gone, if it is.
+    gone_since: Option<Instant>,
+    /// How many times the session has put the lock screen up again for the
+    /// lock in force.
+    raised: u32,
 }
 
 impl Session {
@@ -1540,6 +1572,7 @@ impl Session {
             file_picker,
             directory,
             lock,
+            lock_mount,
             display_confirm,
             displays: display_seat,
             shortcut_guide: guide_seat,
@@ -1675,6 +1708,7 @@ impl Session {
             portal,
             file_picker,
             lock,
+            lock_mount,
             display_confirm,
             notices: notices.clone(),
             clock,
@@ -1745,6 +1779,7 @@ impl Session {
                 verdicts: std::sync::mpsc::channel(),
                 wake: loop_wake,
             },
+            lock_watch: LockWatch::default(),
             captures: options.captures,
             capture_studio,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
@@ -2050,6 +2085,13 @@ impl Session {
     #[must_use]
     pub fn power_menu(&self) -> Option<&PowerSeat> {
         self.shared.power.as_ref()
+    }
+
+    /// The lock screen's seat, while the session has one: whether it is up,
+    /// and what it shows.
+    #[must_use]
+    pub fn lock_screen(&self) -> Option<&LockSeat> {
+        self.shared.lock.as_ref()
     }
 
     /// The add sheet's seat: the program the person is asked about, when
@@ -2413,22 +2455,24 @@ impl Session {
     }
 
     /// Follow the session's lock: put the lock screen up when it locks
-    /// and down when it unlocks, keep its clock current, check the
-    /// passwords it was given off the loop, and lift the lock for one that
-    /// unlocks. A suspend the idle timers asked for goes to the system.
+    /// and down when it unlocks, put it back when its app or the host
+    /// drawing it is gone, keep its clock current, check the passwords it
+    /// was given off the loop, and lift the lock for one that unlocks. A
+    /// suspend the idle timers asked for goes to the system.
     fn follow_lock(&mut self) -> Result<(), Error> {
         use tilo_compositor::SessionTransition;
-        let lock = self.shared.lock.clone();
         for event in self.compositor.take_session_events() {
             match event {
                 SessionTransition::Locked => {
-                    if let Some(lock) = &lock {
+                    // The lock screen shows afresh, and is mounted when the
+                    // session has none.
+                    if let Some(lock) = &self.shared.lock {
                         lock.lifted();
-                        lock.presentation().open(true);
                     }
+                    self.raise_lock_screen();
                 }
                 SessionTransition::Unlocked => {
-                    if let Some(lock) = &lock {
+                    if let Some(lock) = self.shared.lock.clone() {
                         lock.lifted();
                         lock.presentation().close();
                         lock.presentation().gone();
@@ -2448,7 +2492,13 @@ impl Session {
                 _ => {}
             }
         }
-        let Some(lock) = lock.filter(|lock| lock.presentation().is_open()) else {
+        self.keep_lock_screen()?;
+        let Some(lock) = self
+            .shared
+            .lock
+            .clone()
+            .filter(|lock| lock.presentation().is_open())
+        else {
             return Ok(());
         };
         // What the screen asked of the session besides unlocking.
@@ -2500,6 +2550,68 @@ impl Session {
             return self.follow_lock();
         }
         Ok(())
+    }
+
+    /// Keep the lock screen on the screen while the session is locked. The
+    /// compositor draws nothing but the lock screen while it is locked, so a
+    /// screen whose app or host is gone leaves the desk's background showing
+    /// and no way to unlock: it is put up again, and a screen that will not
+    /// stay up lifts the lock rather than leave the machine locked with
+    /// nothing able to unlock it.
+    fn keep_lock_screen(&mut self) -> Result<(), Error> {
+        // A lock client's lock is the client's: its surfaces are what it
+        // shows, and nothing of the session's is put over them.
+        if !self.compositor.session_locked() {
+            self.lock_watch = LockWatch::default();
+            return Ok(());
+        }
+        if self.compositor.lock_screen_drawn() {
+            // The screen is there. The tries it took to get it back stand for
+            // this lock; the next one starts afresh.
+            self.lock_watch.gone_since = None;
+            return Ok(());
+        }
+        // Nothing of the lock screen is on the screen. The frame that
+        // follows putting it up is drawn in the same turn, so this is only
+        // believed once it has been so for a moment.
+        let Some(gone_since) = self.lock_watch.gone_since else {
+            self.lock_watch.gone_since = Some(Instant::now());
+            return Ok(());
+        };
+        if gone_since.elapsed() < LOCK_SCREEN_GRACE {
+            return Ok(());
+        }
+        if self.lock_watch.raised >= LOCK_SCREEN_TRIES {
+            tracing::error!(
+                raised = self.lock_watch.raised,
+                "the lock screen would not stay up: the lock is lifted rather than left with no way to unlock it"
+            );
+            self.lock_watch = LockWatch::default();
+            self.compositor.unlock()?;
+            // An unlock lands as a transition: follow it at once.
+            return self.follow_lock();
+        }
+        self.lock_watch.raised = self.lock_watch.raised.saturating_add(1);
+        self.lock_watch.gone_since = None;
+        self.raise_lock_screen();
+        Ok(())
+    }
+
+    /// Put the lock screen up: its presentation open, and its sheet mounted
+    /// when the session has none. The one way a screen reaches the locked
+    /// session, for the lock that starts and for one that comes back.
+    fn raise_lock_screen(&mut self) {
+        if let Some(lock) = self.shared.lock.clone() {
+            // What was typed into it and what it was asked stay as they
+            // were: only the showing is asked for again.
+            lock.presentation().open(true);
+            return;
+        }
+        let mounted = self
+            .shared
+            .lock_mount
+            .mount(&mut self.compositor, &mut self.shared.doors);
+        self.shared.lock = mounted;
     }
 
     /// What the device says about itself, as the lock screen shows it.

@@ -21,6 +21,7 @@ use tilo_sheets::shortcut_guide::GuideSeat;
 use tilo_sheets::uninstall::UninstallSeat;
 use tilo_sheets::workspace_settings::WorkspaceSettingsSeat;
 use tilo_surface_host::Doors;
+use ui::application::ComponentRunnerInputs;
 
 use crate::Options;
 use crate::panels::Held;
@@ -34,6 +35,9 @@ pub(crate) struct Sheets {
     pub(crate) portal: Option<PortalSeat>,
     pub(crate) file_picker: Option<FilePickerSeat>,
     pub(crate) lock: Option<LockSeat>,
+    /// What mounted the lock screen, to mount it again when a lock finds its
+    /// screen gone.
+    pub(crate) lock_mount: LockMount,
     pub(crate) display_confirm: Option<ConfirmSeat>,
     pub(crate) displays: Option<DisplaysSeat>,
     pub(crate) shortcut_guide: Option<GuideSeat>,
@@ -132,7 +136,8 @@ pub(crate) fn mount_sheets(
     let (add_app, uninstall) = mount_app_questions(compositor, doors, who, options);
     // Last, so it covers every other sheet, the guide among them: the lock
     // screen shows no key of the desktop behind it.
-    let lock = mount_lock_screen(compositor, doors, who, options);
+    let lock_mount = LockMount::of(options);
+    let lock = lock_mount.mount(compositor, doors);
     Sheets {
         power,
         workspace_settings,
@@ -140,6 +145,7 @@ pub(crate) fn mount_sheets(
         portal,
         file_picker,
         lock,
+        lock_mount,
         display_confirm,
         displays,
         shortcut_guide,
@@ -204,31 +210,48 @@ fn mount_sheet<S: tilo_sheets::Seat + 'static>(
     }
 }
 
-/// The lock screen, hosted over nothing while the session is locked; its
-/// seat, when it mounted.
-fn mount_lock_screen(
-    compositor: &mut Compositor,
-    doors: &mut Doors,
-    who: (&str, &str),
-    options: &Options,
-) -> Option<LockSeat> {
-    match Sheet::mount(
-        tilo_sheets::lock::definition(),
-        LockSeat::default(),
-        who,
-        (options.presentation)(),
-        options.scale,
-    ) {
-        Ok(sheet) => {
-            let seat = sheet.seat().clone();
-            let sheet = Rc::new(RefCell::new(sheet.locking()));
-            compositor.add_host(Box::new(Held(Rc::clone(&sheet))));
-            doors.add(sheet);
-            Some(seat)
+/// What mounts the lock screen: the device and person it belongs to and the
+/// presentation it draws in. Kept beside its seat, so a lock whose screen is
+/// gone gets one the same way it got the first.
+#[derive(Clone)]
+pub(crate) struct LockMount {
+    device: String,
+    person: String,
+    presentation: fn() -> ComponentRunnerInputs,
+    scale: f64,
+}
+
+impl LockMount {
+    pub(crate) fn of(options: &Options) -> Self {
+        Self {
+            device: options.device.clone(),
+            person: options.person.clone(),
+            presentation: options.presentation,
+            scale: options.scale,
         }
-        Err(error) => {
-            tracing::warn!(%error, "lock screen not mounted");
-            None
+    }
+
+    /// Mount the lock screen, hosted over nothing while the session is
+    /// locked, and return its seat.
+    pub(crate) fn mount(&self, compositor: &mut Compositor, doors: &mut Doors) -> Option<LockSeat> {
+        match Sheet::mount(
+            tilo_sheets::lock::definition(),
+            LockSeat::default(),
+            (&self.device, &self.person),
+            (self.presentation)(),
+            self.scale,
+        ) {
+            Ok(sheet) => {
+                let seat = sheet.seat().clone();
+                let sheet = Rc::new(RefCell::new(sheet.locking()));
+                compositor.add_host(Box::new(Held(Rc::clone(&sheet))));
+                doors.add(sheet);
+                Some(seat)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "lock screen not mounted");
+                None
+            }
         }
     }
 }
