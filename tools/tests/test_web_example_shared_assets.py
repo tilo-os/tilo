@@ -10,6 +10,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class SharedWebAssets(unittest.TestCase):
+    def setUp(self):
+        if shutil.which('node') is None:
+            self.skipTest('the shared web assets are built by Node.js, which is not installed here')
+
     def fixture(self, root, examples):
         (root / 'tools/ci').mkdir(parents=True)
         (root / 'tools/ci/build-web-examples.sh').write_bytes((ROOT / 'tools/ci/build-web-examples.sh').read_bytes())
