@@ -283,6 +283,10 @@ pub struct Options {
     /// here in each workspace's room, over Iroh. Off, this desktop has no
     /// collaborators but its own person.
     pub collab: bool,
+    /// A collaboration plane to take part in instead of starting one: a
+    /// session a test hands the presence a room would have carried
+    /// ([`sync::Client::untethered`]), which says nothing on a network.
+    pub sync: Option<Rc<sync::Client>>,
     /// The person's device fabric, when this session runs on one: what was
     /// copied here is shared with their other devices through it, and what
     /// they copied there joins the clipboard here.
@@ -354,6 +358,9 @@ fn start_collaboration(
     media: fabric::MediaContinuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
 ) -> Option<Rc<sync::Client>> {
+    if let Some(sync) = &options.sync {
+        return Some(Rc::clone(sync));
+    }
     if !options.collab {
         return None;
     }
@@ -412,6 +419,7 @@ impl Default for Options {
             device: "this-device".into(),
             person: "person".into(),
             presentation: ComponentRunnerInputs::from_native_process,
+            sync: None,
             quick_settings: None,
             controllers: None,
             config: SessionConfig::default(),

@@ -38,9 +38,13 @@ impl Shared {
                             person,
                             now,
                         ),
-                        // Whether they are at their machine is not something
-                        // the desk's collaborators say yet.
-                        away: false,
+                        // Idle and away dim their face everywhere else; the
+                        // launcher says it in words.
+                        away: person
+                            .availability
+                            .as_deref()
+                            .and_then(ui::Availability::from_id)
+                            .is_some_and(ui::Availability::dims),
                         tab: person.active_tab,
                     };
                     let mut people: Vec<PersonHere> = workspace
