@@ -672,6 +672,14 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
         let mut status_changed = false;
         let mut sends = vec![];
         for entry in &mut self.owners {
+            if !entry.publishes {
+                // A record this app only reads: what changes in it here —
+                // the in-memory replica's genesis among it — is never sent.
+                // The identity service signs no change of another app's
+                // record, and a refused signature would stop the whole
+                // bridge instead of this record alone.
+                continue;
+            }
             if entry.opening {
                 if !manager.document_route_publishable(&entry.route) {
                     // Its whole document goes out once the route opens.

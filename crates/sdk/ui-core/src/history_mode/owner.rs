@@ -55,6 +55,14 @@ pub(crate) enum OwnerKind {
         store: RecordStore,
         checkout: RecordCheckout,
         lifetime: Weak<RecordOwnerLifetime>,
+        /// Whether this app publishes the record's changes: the identity
+        /// service signs a change on a route only for the app of that
+        /// route, for a record of the person's whose kind its surface
+        /// declares, or for one of the room's workspace records
+        /// ([`StoredRecord::publishes`](crate::record::StoredRecord::publishes)).
+        /// A record this app only reads is merged from its route, never
+        /// published on it.
+        publishes: bool,
     },
 }
 impl HistoryOwner {
@@ -83,16 +91,31 @@ impl HistoryOwner {
             OwnerKind::Record { .. } => None,
         }
     }
+    /// `record`, held by this app, which `publishes` its changes when it is
+    /// the app that may ([`Self::publishes_record`]): a record it only
+    /// reads is joined and merged from its route, never published on it.
     pub(crate) fn record(
         store: RecordStore,
         checkout: RecordCheckout,
         lifetime: &Rc<RecordOwnerLifetime>,
+        publishes: bool,
     ) -> Self {
         Self(OwnerKind::Record {
             store,
             checkout,
             lifetime: Rc::downgrade(lifetime),
+            publishes,
         })
+    }
+
+    /// Whether this app publishes what changes in the record behind this
+    /// owner ([`Self::record`]). A component owner is the window's own
+    /// document, which it publishes.
+    pub(crate) fn publishes_record(&self) -> bool {
+        match &self.0 {
+            OwnerKind::Component(_) => true,
+            OwnerKind::Record { publishes, .. } => *publishes,
+        }
     }
     pub(crate) fn lifetime_id(&self) -> Option<uuid::Uuid> {
         match &self.0 {
@@ -111,11 +134,13 @@ impl HistoryOwner {
                     store: a,
                     checkout: ac,
                     lifetime: al,
+                    ..
                 },
                 OwnerKind::Record {
                     store: b,
                     checkout: bc,
                     lifetime: bl,
+                    ..
                 },
             ) => a.same_owner(b) && ac == bc && Weak::ptr_eq(al, bl),
             _ => false,
@@ -133,6 +158,7 @@ impl HistoryOwner {
                 store,
                 checkout,
                 lifetime,
+                ..
             } => {
                 if !lifetime.upgrade().is_some_and(|life| life.active.get()) {
                     return Err(HistoryRegistrationError::UnsupportedOwner);
@@ -160,6 +186,7 @@ impl HistoryOwner {
                 store,
                 checkout,
                 lifetime,
+                ..
             } => (
                 store,
                 checkout,
@@ -292,6 +319,7 @@ impl HistoryOwner {
                 store,
                 checkout,
                 lifetime,
+                ..
             } => {
                 if !lifetime.upgrade().is_some_and(|life| life.active.get()) {
                     return Err(HistoryRegistrationError::UnsupportedOwner);
@@ -332,7 +360,7 @@ mod publication_tests {
             crate::record::RecordKind::new("different-kind"),
         );
         let lifetime = RecordOwnerLifetime::new();
-        let owner = HistoryOwner::record(store, stale, &lifetime);
+        let owner = HistoryOwner::record(store, stale, &lifetime, true);
 
         assert!(matches!(
             owner.prepare_publication(&AutoCommit::new(), &[], true, false),
@@ -508,7 +536,7 @@ impl RecordOwnerFixture {
             .unwrap();
         store.require_invocation_provenance(&checkout).unwrap();
         let lifetime = RecordOwnerLifetime::new();
-        let owner = HistoryOwner::record(store.clone(), checkout.clone(), &lifetime);
+        let owner = HistoryOwner::record(store.clone(), checkout.clone(), &lifetime, true);
         Self {
             _temp: temp,
             _owners: owners,
