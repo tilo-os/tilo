@@ -26571,6 +26571,8 @@ dependencies = [
  "ash",
  "ashpd",
  "async-channel 2.5.0",
+ "atspi-common",
+ "atspi-proxies",
  "base16ct 0.2.0",
  "base16ct 1.0.0",
  "base64 0.22.1",

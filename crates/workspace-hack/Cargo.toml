@@ -25,6 +25,8 @@ anstream = { version = "1" }
 anyhow = { version = "1" }
 arrayvec = { version = "0.7" }
 async-channel = { version = "2" }
+atspi-common = { path = "../../vendor/atspi-common", default-features = false, features = ["wrappers", "zbus"] }
+atspi-proxies = { path = "../../vendor/atspi-proxies", default-features = false, features = ["tokio", "wrappers"] }
 base16ct-6f8ce4dd05d13bba = { package = "base16ct", version = "0.2", default-features = false, features = ["alloc"] }
 base16ct-dff4ba8e3ae991db = { package = "base16ct", version = "1", default-features = false, features = ["alloc"] }
 base64 = { version = "0.22" }
@@ -270,6 +272,8 @@ anstream = { version = "1" }
 anyhow = { version = "1" }
 arrayvec = { version = "0.7" }
 async-channel = { version = "2" }
+atspi-common = { path = "../../vendor/atspi-common", default-features = false, features = ["wrappers", "zbus"] }
+atspi-proxies = { path = "../../vendor/atspi-proxies", default-features = false, features = ["tokio", "wrappers"] }
 base16ct-6f8ce4dd05d13bba = { package = "base16ct", version = "0.2", default-features = false, features = ["alloc"] }
 base16ct-dff4ba8e3ae991db = { package = "base16ct", version = "1", default-features = false, features = ["alloc"] }
 base64 = { version = "0.22" }
