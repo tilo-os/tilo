@@ -102,13 +102,11 @@ use tilo_desktop::desktop_actions::{CHROME_RESOURCE, DESK_RESOURCE};
 use tilo_desktop::desktop_host::{
     DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, WORKSPACE_SETTINGS,
 };
-use tilo_desktop::launchpad::LaunchpadAction;
-use tilo_desktop::osd::{OSD_RESOURCE, Osd, OsdKind};
+use tilo_desktop::osd::{Osd, OsdKind};
 use tilo_desktop_surface::DesktopHandle;
-use tilo_desktop_surface::navigation::Command;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Started;
-use tilo_surface_host::{DeskGesture, DesktopHost, Doors, WidgetHost};
+use tilo_surface_host::{DesktopHost, Doors, WidgetHost};
 use ui::application::ComponentRunnerInputs;
 use ui::host_operation::ResourceOperationStart;
 use ui::shortcut_table::ShortcutAction;
@@ -137,13 +135,12 @@ pub use tilo_service::{Service, Services};
 
 use keys::{GuideKeys, Invocations};
 use mount::panels::{KeyContext, mount_controls, mount_device, mount_setup};
-use mount::services::{answered, mount_services, start_action_plane};
+use mount::services::{mount_services, start_action_plane};
 use panels::{Banners, Held};
 use plane::Plane;
 use search::SessionSearch;
 use setup::Setup;
 use tilo_app_launch::Doors as WindowDoors;
-use tilo_desktop_search::providers::places::Place;
 use tilo_sheets::Seat as _;
 use tilo_sheets::directory::DirectorySeat;
 use tilo_sheets::display_confirm::ConfirmSeat;
@@ -304,6 +301,11 @@ pub struct Options {
     /// this session serves no agents (a test, or a session in a window of
     /// another desktop).
     pub agent_door: Option<std::path::PathBuf>,
+    /// The runs of what people ask this session's agents to do. Without one
+    /// the session keeps its own, which its broker delivers to the agents
+    /// admitted here; one given is a run channel a test plays the agent's
+    /// side of.
+    pub agent_runs: Option<std::sync::Arc<tilo_agent_runs::AgentRuns>>,
 }
 
 /// Where a session serves its apps the resources its services publish.
@@ -320,7 +322,6 @@ pub enum ActionPlane {
     /// own socket alone.
     At(std::path::PathBuf),
 }
-
 
 /// Where quick settings reads the device from.
 pub enum QuickSettings {
@@ -440,6 +441,7 @@ impl Default for Options {
             kill_switch: None,
             action_plane: ActionPlane::default(),
             agent_door: None,
+            agent_runs: None,
             launches: std::sync::Arc::default(),
             drives: None,
         }
@@ -485,6 +487,9 @@ struct Shared {
     /// The system services, reached for their readings; their actions go
     /// through the door like every other.
     services: Rc<RefCell<Services>>,
+    /// The runs of what people ask this session's agents to do, fed every
+    /// pass who sits here and what the room in front admits.
+    agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
     /// It runs in a window of a desktop it did not start (see
     /// [`Options::hosted`]).
     hosted: bool,
@@ -731,109 +736,6 @@ impl Shared {
             ),
             LEAVE_WORKSPACE => self.leave_workspace(),
             choice => identity::answered(choice),
-        }
-    }
-
-    /// Host the desktop's search, with its kept history and what the
-    /// session publishes.
-    fn start_search(&self) {
-        self.handle
-            .set_search_host(Rc::clone(&self.search) as Rc<dyn tilo_desktop_surface::SearchHost>);
-        if let Some(kept) = self.services.borrow().read(search::HISTORY) {
-            self.search.restore(&kept);
-        }
-        self.observe();
-    }
-
-    /// Hand search what the session publishes when it changed: read after
-    /// a frame, as the desk cannot read its own tree while it opens search.
-    fn observe(&self) {
-        // Who is here changes faster than what is published: people and
-        // calls come and go between two door revisions, so the empty
-        // palette's first group is read every pass.
-        self.search.set_here(self.here_now());
-        // The workspaces as this frame shows them, before the door revision
-        // decides whether the rest is worth reading again: a record held by
-        // another workspace is offered under that workspace's name.
-        self.search.set_workspaces(self.handle.read(|tree| {
-            tree.workspaces
-                .iter()
-                .map(|workspace| (workspace.room().to_string(), workspace.name.clone()))
-                .collect()
-        }));
-        let now = self.doors.revision();
-        if now.is_some() && *self.observed.borrow() == now {
-            return;
-        }
-        self.observed.replace(now);
-        let tabs = self.handle.read(|tree| {
-            let mut tabs = Vec::new();
-            for workspace in &tree.workspaces {
-                let room = workspace.room().to_string();
-                for tab in workspace
-                    .strips
-                    .iter()
-                    .flat_map(|strip| &strip.window_groups)
-                    .flat_map(|group| &group.tabs)
-                {
-                    tabs.push((tab.id, room.clone(), tab_app(&tab.tile), tab.title.clone()));
-                }
-            }
-            tabs
-        });
-        self.record_places(&tabs);
-        let open_tabs = tabs.iter().map(|(tab, ..)| *tab).collect();
-        // The downloaded programs, as their registry publishes them: search
-        // lists them from the one registry the app sheets read too.
-        let downloaded = self
-            .services
-            .borrow()
-            .read(tilo_app_launch::downloaded::RESOURCE)
-            .and_then(|reading| serde_json::from_value(reading).ok());
-        self.search
-            .observe(&self.doors.resources(), open_tabs, downloaded);
-        self.keep_history();
-    }
-
-    /// Where each app's window is now, for search's Continue: a window
-    /// whose title changed since it was last seen was at a new place.
-    fn record_places(&self, tabs: &[(u64, String, Option<String>, String)]) {
-        let mut seen = self.places_seen.borrow_mut();
-        seen.retain(|tab, _| tabs.iter().any(|(open, ..)| open == tab));
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs());
-        for (tab, room, app, title) in tabs {
-            let Some(app) = app else { continue };
-            if title.trim().is_empty() || seen.get(tab) == Some(title) {
-                continue;
-            }
-            seen.insert(*tab, title.clone());
-            self.search.record_place(Place {
-                app: app.clone(),
-                room: room.clone(),
-                tab: *tab,
-                label: title.clone(),
-                value: String::new(),
-                anchor: None,
-                at: now,
-                device: None,
-            });
-        }
-    }
-
-    /// Keep what changed of search's history in its settings section,
-    /// through the section's field edits; without a settings service it
-    /// lasts as long as the session.
-    fn keep_history(&self) {
-        for edit in self.search.take_unkept() {
-            let kept = self
-                .services
-                .borrow_mut()
-                .invoke(search::HISTORY, "field-edit", &edit);
-            if let Some(Err(error)) = kept {
-                tracing::warn!(%error, "search history not kept");
-            }
         }
     }
 
@@ -1176,135 +1078,6 @@ impl Shared {
             | ShortcutAction::DictationCancel => self.dictation.shortcut(action),
             ShortcutAction::ShortcutHelp => self.shortcut_guide.toggle(),
             other => tracing::debug!(?other, "shortcut the session has no part in yet"),
-        }
-    }
-
-    /// What the touchpad gestures the desktop took asked, as the chrome's
-    /// published actions.
-    fn follow_gestures(&self) {
-        let gestures = self.desktop.take_gestures();
-        let mut invocations = self.invocations.borrow_mut();
-        for gesture in gestures {
-            invocations.push(match gesture {
-                DeskGesture::StepWindow(steps) => Invocation::shortcut(if steps < 0 {
-                    ShortcutAction::FocusPreviousWindow
-                } else {
-                    ShortcutAction::FocusNextWindow
-                }),
-                DeskGesture::StepStrip(steps) => {
-                    Invocation::new(CHROME_RESOURCE, "step-strip").with("steps", steps)
-                }
-                DeskGesture::SwitchWorkspace(delta) => {
-                    Invocation::new(CHROME_RESOURCE, "switch-workspace").with("delta", delta)
-                }
-                DeskGesture::Overview(open) => Invocation::new(
-                    CHROME_RESOURCE,
-                    if open {
-                        "show-overview"
-                    } else {
-                        "hide-overview"
-                    },
-                ),
-            });
-        }
-    }
-
-    /// Run the published actions keys and gestures asked for, through the
-    /// door every caller uses.
-    ///
-    /// The lock screen withholds the hosted surfaces' actions while it is
-    /// up; the keys that work there are the device's own (a level, the
-    /// power key), and the services publishing those still run.
-    fn run_invocations(&self, locked: bool) -> bool {
-        let invocations = std::mem::take(&mut *self.invocations.borrow_mut());
-        let ran = !invocations.is_empty();
-        for invocation in invocations {
-            let outcome = self
-                .doors
-                .invoke(&invocation.address, &invocation.arguments)
-                .or_else(|error| {
-                    if !locked {
-                        return Err(error);
-                    }
-                    self.services
-                        .borrow_mut()
-                        .invoke(
-                            invocation.address.resource.as_str(),
-                            invocation.address.action.as_str(),
-                            &invocation.arguments,
-                        )
-                        .map(|result| result.map(answered))
-                        .unwrap_or(Err(error))
-                });
-            match outcome {
-                Ok(_) => {
-                    if let Some(kind) = invocation.readout {
-                        self.show_readout(self.reading(kind));
-                    }
-                }
-                Err(error) => tracing::debug!(
-                    ?error,
-                    address = %invocation.address.encode(),
-                    "nothing carried out a key's action"
-                ),
-            }
-        }
-        ran
-    }
-
-    /// The readout of `kind` as the device reads now.
-    fn reading(&self, kind: OsdKind) -> Osd {
-        let readings = self.readings.borrow();
-        let state = readings
-            .as_ref()
-            .map(tilo_quick_settings::host::Feed::current);
-        let (level, on) = match (kind, state) {
-            (OsdKind::Volume, Some(state)) => (state.volume_level(), !state.volume_muted()),
-            (OsdKind::Microphone, Some(state)) => (
-                0.0,
-                !state
-                    .microphone
-                    .as_ref()
-                    .is_some_and(|microphone| microphone.muted),
-            ),
-            (OsdKind::Brightness, Some(state)) => (state.brightness, true),
-            (OsdKind::AirplaneMode, Some(state)) => (0.0, state.radios.airplane_mode),
-            _ => (0.0, true),
-        };
-        Osd { kind, level, on }
-    }
-
-    /// Show `osd` through the readout's published action.
-    fn show_readout(&self, osd: Osd) {
-        let Ok(serde_json::Value::Object(arguments)) = serde_json::to_value(osd) else {
-            return;
-        };
-        let address = ActionAddress::new(OSD_RESOURCE, "show");
-        if let Err(error) = self.doors.invoke(&address, &arguments) {
-            tracing::debug!(?error, "no readout shown");
-        }
-    }
-
-    /// A card of the empty desk's launchpad: its app, else the desktop's
-    /// search, which finds what to open.
-    fn launchpad(&self, action: LaunchpadAction) {
-        match action {
-            LaunchpadAction::Activity => self
-                .intents
-                .borrow_mut()
-                .push(ChromeIntent::ShowActivity(None)),
-            other => match other.app_target() {
-                Some((app, _)) => {
-                    let launch = Command::Launch {
-                        generation: GENERATION.into(),
-                        app: app.into(),
-                    };
-                    if let Err(error) = self.handle.dispatch(&launch, GENERATION) {
-                        tracing::warn!(%error, app, "launchpad");
-                    }
-                }
-                None => self.handle.open_search(None),
-            },
         }
     }
 }
@@ -1777,12 +1550,19 @@ impl Session {
             .build()?;
         let (shortcut_library, saved_shortcuts) =
             plane::ShortcutLibrary::new(automation_runtime.handle().clone());
+        // The runs people ask of this session's agents: the session keeps
+        // its own, or plays the run channel a test handed it. Its broker
+        // delivers them, and it is one of the session's services.
+        let agent_runs = options.agent_runs.take().unwrap_or_else(|| {
+            std::sync::Arc::new(tilo_agent_runs::AgentRuns::new(Some(options.wake.handle())))
+        });
         let action_plane = start_action_plane(
             &options,
             &live_activities,
             &handle,
             std::sync::Arc::new(shortcut_library),
             &activity,
+            std::sync::Arc::clone(&agent_runs),
         )?;
         // The agent door: a program of this login asks here to work in a
         // workspace as an agent, and the person answers on their sheets. It
@@ -1849,6 +1629,11 @@ impl Session {
             action_plane.as_ref().map(|plane| plane.path.clone()),
         );
         let services = mount_services(&mut doors, std::mem::take(&mut options.services));
+        services
+            .borrow_mut()
+            .add(Box::new(tilo_agent_runs::Served::new(
+                std::sync::Arc::clone(&agent_runs),
+            )));
         // Dictation joins the services: its recognizer, microphone and
         // consent are only the session's, and the sheet asks about them.
         let dictation =
@@ -1883,6 +1668,7 @@ impl Session {
             commands,
             readings,
             services,
+            agent_runs,
             hosted: options.hosted,
             device,
             fabric,
@@ -3099,6 +2885,7 @@ impl Session {
         self.follow_displays()?;
         self.follow_fullscreen();
         {
+            self.shared.feed_agent_runs();
             let mut services = self.shared.services.borrow_mut();
             services.poll();
             if let Some(plane) = &self.action_plane {

@@ -86,6 +86,7 @@ pub(crate) fn start_action_plane(
     handle: &DesktopHandle,
     shortcuts: std::sync::Arc<ShortcutLibrary>,
     activity: &activity::Activity,
+    agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
 ) -> Result<Option<Plane>, Error> {
     let path = match &options.action_plane {
         ActionPlane::Off => return Ok(None),
@@ -118,6 +119,9 @@ pub(crate) fn start_action_plane(
             desk: std::sync::Arc::clone(&desk),
             shortcuts,
             activity: activity_wire,
+            // The runs the broker delivers to the agents admitted here, and
+            // hears back what they report of them.
+            agent_runs: Some(agent_runs),
         },
     )?;
     Ok(Some(Plane {

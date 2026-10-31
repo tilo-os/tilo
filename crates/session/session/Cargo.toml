@@ -164,6 +164,9 @@ tilo-session-power = { path = "../power-service" }
 tilo-power-mgmt = { path = "../../system/power" }
 # The records of a session that stopped, and the news of one that did.
 tilo-crash-records = { path = "../crash-records" }
+# The runs of what people ask this session's agents to do: what the agent
+# composer and a run's window follow, and what the broker delivers a run on.
+tilo-agent-runs = { path = "../agent-runs" }
 # The watchdog that ends a session whose main loop stopped for good.
 tilo-liveness = { path = "../liveness" }
 # The room left on the person's filesystems, for the storage notice.

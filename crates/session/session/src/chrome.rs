@@ -15,14 +15,17 @@ use tilo_desktop::chrome::{
 };
 use tilo_desktop::desktop_host::DesktopRules;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome};
+use tilo_desktop::launchpad::LaunchpadAction;
 use tilo_desktop::topbar::{Placement, TopBarChrome};
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_model::commands::{DesktopCommand, Standing, may_command, may_create_workspace};
 use tilo_desktop_model::ownership::Authors;
+use tilo_desktop_surface::navigation::Command;
 use tilo_desktop_surface::notifications::Notification;
 use tilo_desktop_surface::{DesktopHandle, DesktopNotifications};
 use tilo_surface_host::{Placement as SurfacePlacement, WidgetHost};
 
+use crate::GENERATION;
 use crate::notifications::NoticeSignals;
 
 /// The app whose live activity the bar shows as its clock.
@@ -558,6 +561,31 @@ pub(crate) fn host(
     host.with_window_pictures(Rc::new(move || pictures.pictures()))
         .covering_outputs()
         .with_keyboard(keyboard)
+}
+
+impl crate::Shared {
+    /// A card of the empty desk's launchpad: its app, else the desktop's
+    /// search, which finds what to open.
+    pub(crate) fn launchpad(&self, action: LaunchpadAction) {
+        match action {
+            LaunchpadAction::Activity => self
+                .intents
+                .borrow_mut()
+                .push(ChromeIntent::ShowActivity(None)),
+            other => match other.app_target() {
+                Some((app, _)) => {
+                    let launch = Command::Launch {
+                        generation: GENERATION.into(),
+                        app: app.into(),
+                    };
+                    if let Err(error) = self.handle.dispatch(&launch, GENERATION) {
+                        tracing::warn!(%error, app, "launchpad");
+                    }
+                }
+                None => self.handle.open_search(None),
+            },
+        }
+    }
 }
 
 #[cfg(test)]

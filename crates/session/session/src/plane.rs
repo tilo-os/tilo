@@ -22,6 +22,7 @@ use runtime_collab::wire::{Event, Receipt};
 use serde_json::Map;
 use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
 use tilo_action_broker::collab_outbound::PeerPublisher;
+use tilo_action_broker::services::TrackerRuns;
 use tilo_action_broker::services::{
     Caller, HostServices, HostStepServices, PublishedResources, Reading, ResourceWatch,
     SearchIndexServices, ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore,
@@ -239,13 +240,15 @@ impl SearchIndexServices for ContentIndex {
 /// What this session hands the broker besides the link and the launcher: the
 /// board every app's live activity shows on, the index its publications land
 /// in, the desk it decides a room against, the shortcuts it saves and runs,
-/// and the workspace's activity it serves.
+/// the workspace's activity it serves, and the runs of what people ask its
+/// agents.
 pub struct Hosted {
     pub live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
     pub content: Option<std::sync::Arc<AppContentIndex>>,
     pub desk: std::sync::Arc<DeskAuthority>,
     pub shortcuts: std::sync::Arc<ShortcutLibrary>,
     pub activity: std::sync::Arc<ActivityWire>,
+    pub agent_runs: Option<std::sync::Arc<tilo_agent_runs::AgentRuns>>,
 }
 
 /// Serve the session's published resources to the apps on `socket`: the
@@ -398,6 +401,7 @@ fn host_services(
         desk: _,
         shortcuts,
         activity,
+        agent_runs,
     } = hosted;
     let speakers: Option<std::sync::Arc<dyn SpeakerServices>> = fabric.map(|fabric| {
         std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
@@ -422,6 +426,9 @@ fn host_services(
         // The workspace's activity: what the Activity app shows, served by
         // the desk's own model.
         host_steps: vec![activity as std::sync::Arc<dyn HostStepServices>],
+        // What people ask this session's agents to do: a run is the broker's
+        // to deliver, and its reports come back to the run.
+        tracker_runs: agent_runs.map(|runs| runs as std::sync::Arc<dyn TrackerRuns>),
         ..HostServices::default()
     }
 }
@@ -622,6 +629,7 @@ mod tests {
             )),
             shortcuts: library(),
             activity: crate::activity_provider::wire(requests()),
+            agent_runs: None,
         }
     }
 

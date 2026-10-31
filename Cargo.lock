@@ -17477,6 +17477,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-agent-runs"
+version = "0.1.0"
+dependencies = [
+ "runtime-collab",
+ "serde",
+ "serde_json",
+ "tilo-action-broker",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-clock",
+ "tilo-lock",
+ "tilo-reference",
+ "tilo-resource",
+ "tilo-service",
+ "tracing",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-ai-bench"
 version = "0.1.0"
 dependencies = [
@@ -21475,6 +21495,7 @@ dependencies = [
  "tilo-action-broker",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-agent-runs",
  "tilo-app",
  "tilo-app-launch",
  "tilo-app-state",

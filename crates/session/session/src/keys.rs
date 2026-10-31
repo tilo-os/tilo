@@ -18,9 +18,13 @@ use tilo_actions::ActionAddress;
 use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
 use tilo_desktop::desk_widgets::DeskFold;
 use tilo_desktop::desktop_actions::CHROME_RESOURCE;
-use tilo_desktop::osd::OsdKind;
+use tilo_desktop::osd::{OSD_RESOURCE, Osd, OsdKind};
+use tilo_surface_host::DeskGesture;
 use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
 use xkeysym::key as keysyms;
+
+use crate::Shared;
+use crate::mount::services::answered;
 
 /// One published action to invoke, with its arguments.
 #[derive(Clone, Debug, PartialEq)]
@@ -552,6 +556,114 @@ impl SurfaceHost for SessionKeys {
         }
         if let Some((invocation, _)) = self.resolve(key, false, false) {
             self.invocations.borrow_mut().push(invocation);
+        }
+    }
+}
+
+impl Shared {
+    /// What the touchpad gestures the desktop took asked, as the chrome's
+    /// published actions.
+    pub(crate) fn follow_gestures(&self) {
+        let gestures = self.desktop.take_gestures();
+        let mut invocations = self.invocations.borrow_mut();
+        for gesture in gestures {
+            invocations.push(match gesture {
+                DeskGesture::StepWindow(steps) => Invocation::shortcut(if steps < 0 {
+                    ShortcutAction::FocusPreviousWindow
+                } else {
+                    ShortcutAction::FocusNextWindow
+                }),
+                DeskGesture::StepStrip(steps) => {
+                    Invocation::new(CHROME_RESOURCE, "step-strip").with("steps", steps)
+                }
+                DeskGesture::SwitchWorkspace(delta) => {
+                    Invocation::new(CHROME_RESOURCE, "switch-workspace").with("delta", delta)
+                }
+                DeskGesture::Overview(open) => Invocation::new(
+                    CHROME_RESOURCE,
+                    if open {
+                        "show-overview"
+                    } else {
+                        "hide-overview"
+                    },
+                ),
+            });
+        }
+    }
+
+    /// Run the published actions keys and gestures asked for, through the
+    /// door every caller uses.
+    ///
+    /// The lock screen withholds the hosted surfaces' actions while it is
+    /// up; the keys that work there are the device's own (a level, the
+    /// power key), and the services publishing those still run.
+    pub(crate) fn run_invocations(&self, locked: bool) -> bool {
+        let invocations = std::mem::take(&mut *self.invocations.borrow_mut());
+        let ran = !invocations.is_empty();
+        for invocation in invocations {
+            let outcome = self
+                .doors
+                .invoke(&invocation.address, &invocation.arguments)
+                .or_else(|error| {
+                    if !locked {
+                        return Err(error);
+                    }
+                    self.services
+                        .borrow_mut()
+                        .invoke(
+                            invocation.address.resource.as_str(),
+                            invocation.address.action.as_str(),
+                            &invocation.arguments,
+                        )
+                        .map(|result| result.map(answered))
+                        .unwrap_or(Err(error))
+                });
+            match outcome {
+                Ok(_) => {
+                    if let Some(kind) = invocation.readout {
+                        self.show_readout(self.reading(kind));
+                    }
+                }
+                Err(error) => tracing::debug!(
+                    ?error,
+                    address = %invocation.address.encode(),
+                    "nothing carried out a key's action"
+                ),
+            }
+        }
+        ran
+    }
+
+    /// The readout of `kind` as the device reads now.
+    pub(crate) fn reading(&self, kind: OsdKind) -> Osd {
+        let readings = self.readings.borrow();
+        let state = readings
+            .as_ref()
+            .map(tilo_quick_settings::host::Feed::current);
+        let (level, on) = match (kind, state) {
+            (OsdKind::Volume, Some(state)) => (state.volume_level(), !state.volume_muted()),
+            (OsdKind::Microphone, Some(state)) => (
+                0.0,
+                !state
+                    .microphone
+                    .as_ref()
+                    .is_some_and(|microphone| microphone.muted),
+            ),
+            (OsdKind::Brightness, Some(state)) => (state.brightness, true),
+            (OsdKind::AirplaneMode, Some(state)) => (0.0, state.radios.airplane_mode),
+            _ => (0.0, true),
+        };
+        Osd { kind, level, on }
+    }
+
+    /// Show `osd` through the readout's published action.
+    pub(crate) fn show_readout(&self, osd: Osd) {
+        let Ok(serde_json::Value::Object(arguments)) = serde_json::to_value(osd) else {
+            return;
+        };
+        let address = ActionAddress::new(OSD_RESOURCE, "show");
+        if let Err(error) = self.doors.invoke(&address, &arguments) {
+            tracing::debug!(?error, "no readout shown");
         }
     }
 }

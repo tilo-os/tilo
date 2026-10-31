@@ -407,6 +407,7 @@ members = [
     "crates/session/session",
     "crates/session/console-control",
     "crates/session/crash-records",
+    "crates/session/agent-runs",
     "crates/session/onboarding-walk",
     "crates/session/control-cli",
     "crates/session/desktop-model",

@@ -1,0 +1,37 @@
+[package]
+name = "tilo-agent-runs"
+description = "The session's runs of what people ask its agents to do: an ask queues a run, each run is published as its own resource to follow, and steering it, stopping it and what its agent reports land in that resource."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "tilo_agent_runs"
+
+[dependencies]
+# The run's vocabulary: what a follower reads, and the door its ask comes in on.
+tilo-actions = { path = "../../collab/actions" }
+# The runs published as resources, whose actions are the asks, the steering
+# and the stopping.
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-service = { path = "../service" }
+# The run channel: what the broker delivers a run on and hears back from it.
+tilo-action-broker = { path = "../../collab/tilo-action-broker" }
+# The room's grants decide a run's child actions.
+tilo-action-policy = { path = "../../collab/action-policy" }
+# What a run's agent reports of it, and the model turn it streams.
+runtime-collab = { path = "../../runtime/runtime-collab" }
+# The programs a run ran and the view it answered with, as records keep them.
+tilo-reference = { path = "../../collab/reference" }
+# The selection an ask is about, when it was asked about one.
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-lock = { path = "../../platform/tilo-lock" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true
