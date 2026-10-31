@@ -197,6 +197,15 @@ pub enum StoreEffect {
     /// Show trust and moderation.
     #[effect(kind = "read")]
     ShowTrust,
+    /// Open a web page.
+    ///
+    /// Shows an app's home page or source code in this device's browser;
+    /// nothing in the Store changes.
+    #[effect(idempotent)]
+    OpenLink {
+        #[param("Web address (http or https)")]
+        url: String,
+    },
     /// Open.
     ///
     /// A Tilo app is fetched when it is not on this device yet.

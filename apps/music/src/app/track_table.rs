@@ -387,7 +387,7 @@ fn build_table(shape: Shape, theme: &Theme, events: &Events) -> DataTable<TrackC
         .selectable(true)
         .host_scrolled()
         .with_row_height(shape.row_height)
-        .on_row_click(move |row, ctrl, shift| {
+        .on_row_click_view("music.tracks", move |row, ctrl, shift| {
             // A press plays the song; with Ctrl or Shift it selects instead,
             // for several songs to drag onto a playlist at once.
             play.borrow_mut().push(if ctrl || shift {

@@ -307,7 +307,7 @@ fn input(shared: &Shared, field: DraftField, value: &str) -> TextInput {
     };
     input
         .with_initial_value(value)
-        .on_change(move |value| core.borrow_mut().set_draft(field, value))
+        .on_change_view(move |value| core.borrow_mut().set_draft(field, value))
 }
 
 fn field_label(kind: SecretItemKind, field: DraftField) -> &'static str {
@@ -353,7 +353,7 @@ fn editor(core: &Core, shared: &Shared, requests: &Requests) -> Element {
             &ui::LocalState::new(selected.to_owned()),
         )
         .with_id("passwords.kind")
-        .on_change(move |label| {
+        .on_change_view(move |label| {
             if let Some((kind, _)) = KINDS.iter().find(|(_, candidate)| *candidate == label) {
                 requests.borrow_mut().push(Request::SetKind(*kind));
             }
@@ -748,7 +748,7 @@ fn secret_input(shared: &Shared, confirmation: bool, label: &str, error: Option<
         })
         .with_secret(true)
         .with_initial_value(&value)
-        .on_change(move |value| {
+        .on_change_view(move |value| {
             let mut core = core.borrow_mut();
             let before = core.backup_confirmation_problem();
             let slot = if confirmation {

@@ -641,16 +641,16 @@ fn track_control(
         .unwrap_or_else(|| panic!("track {id} shows its {name} control under the pointer"))
 }
 
-/// Press and release the left button on the row of track `id`.
+/// Press and release the left button on the row of track `id`, through the
+/// custody the live window gives the table: a row's press is the table's
+/// published view action.
 fn click_track(app: &mut Music, doc: &mut AutoCommit, id: &str) {
     let row = track_row(app, id);
-    send(
+    hosted_click(
         app,
-        &cursor_at(Point::new(row.x0 + row.width() * 0.3, row.center().y)),
         doc,
+        Point::new(row.x0 + row.width() * 0.3, row.center().y),
     );
-    send(app, &press(MouseButton::Left), doc);
-    send(app, &released(MouseButton::Left), doc);
 }
 
 fn cursor_at(p: Point) -> WindowEvent {

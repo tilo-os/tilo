@@ -1960,6 +1960,12 @@ impl StoreState {
                     Finish::ImportedPackage,
                 ));
             }
+            StoreEffect::OpenLink { url } => {
+                if !url.starts_with("https://") && !url.starts_with("http://") {
+                    return Err("only web addresses open in a browser".into());
+                }
+                ui::widget::open_external_url(&url);
+            }
             StoreEffect::OpenReference { path, contents } => {
                 if path.is_none() && contents.is_none() {
                     return Err("name a Flatpak reference to open".into());

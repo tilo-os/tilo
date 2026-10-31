@@ -39,7 +39,7 @@ pub enum Page {
 
 impl Page {
     /// The theme this page edits, if it edits one.
-    fn theme(&self) -> Option<&str> {
+    pub(crate) fn theme(&self) -> Option<&str> {
         match self {
             Self::Gallery => None,
             Self::Theme(id) | Self::Draft { id, .. } => Some(id),
@@ -57,6 +57,7 @@ struct Ui {
     /// The person's theme choice, followed: which preset is in use.
     appearance: LocalState<AppearanceChoice>,
     dispatcher: Dispatcher<Studio>,
+    actions: Actions<Studio>,
     live: Live<Studio>,
     /// The theme the editor shows, for the window bar's commands.
     shown: window_bar::Shown,
@@ -290,6 +291,7 @@ pub(crate) fn root(cx: &ViewCx<Studio>) -> Element {
         notice: LocalState::new(String::new()),
         appearance: cx.settings::<AppearanceChoice>().state(),
         dispatcher: cx.dispatcher(),
+        actions: cx.actions(),
         live: cx.live().clone(),
         shown: window_bar::Shown::default(),
         preview_view: LocalState::new(t("themes-preview-desktop")),
@@ -371,6 +373,8 @@ const THEME: &str = "theme:";
 /// The section of written themes, and its "New theme" action.
 const YOURS: &str = "yours";
 const NEW_THEME: &str = "new-theme";
+/// The preset "New theme" starts a draft from.
+const NEW_THEME_BASE: &str = "dark";
 
 fn t(key: &str) -> String {
     crate::locales::CATALOG.t(key)
@@ -424,34 +428,31 @@ fn sidebar(ui: &Ui) -> Element {
             }
         }
     };
-    let new_theme = {
-        let ui = ui.clone();
-        move |section: &str, action: &str| {
-            if section == YOURS && action == NEW_THEME {
-                ui.start_from("dark");
-            }
-        }
-    };
-    let delete = {
-        let ui = ui.clone();
-        move |id: String| {
-            let Some(theme) = id.strip_prefix(THEME) else {
-                return;
-            };
-            ui.dispatcher
-                .submit(Studio::DELETE.with(Id::from_raw(theme.to_owned())));
-            if ui.page.get().theme() == Some(theme) {
-                ui.open(Page::Gallery);
-            }
-        }
-    };
-    NavList::new(Vec::new())
+    let mut list = NavList::new(Vec::new())
         .with_accessible_name(crate::APP_TITLE)
         .follow(source)
-        .on_view(NAV_ID, select)
-        .on_section_action(new_theme)
-        .on_delete(delete)
-        .into_widget()
+        .on_view(NAV_ID, select);
+    // "New theme" opens a draft of a preset, and Delete removes the row's
+    // theme: both the studio's own effects, so the section header's button,
+    // the Delete key, the palette and an agent run the same two.
+    if let Some(new_theme) = ui
+        .actions
+        .effect_binding(crate::effects::ThemesEffect::DUPLICATE_THEME.map(|_: String| {
+            NEW_THEME_BASE.to_owned()
+        }))
+    {
+        list = list.section_action(NEW_THEME, new_theme);
+    }
+    // A row is a written theme, so deleting it always has something to delete.
+    if let Some(delete) =
+        ui.actions
+            .effect_binding(crate::effects::ThemesEffect::DELETE_THEME.try_map(
+                |id: String| Some((id.strip_prefix(THEME)?.to_owned(), true)),
+            ))
+    {
+        list = list.on_delete_action(delete);
+    }
+    list.into_widget()
 }
 
 fn gallery(ui: &Ui) -> Element {

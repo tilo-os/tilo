@@ -1,5 +1,5 @@
 use super::accessibility::review_action_target;
-use super::block_layout::{line_spacing as block_line_spacing, list_marker_x};
+use super::block_layout::{line_spacing as block_line_spacing, line_spacing_label, list_marker_x};
 use super::image_layout::{
     cropped_source as cropped_image_source, paint_transform as image_paint_transform,
 };
@@ -2151,7 +2151,8 @@ fn the_panel_applies_paragraph_alignment_and_spacing() {
             "single spacing by default"
         );
 
-        wp.line_spacing_pick.set(Some(1));
+        wp.line_spacing
+            .set_selected(line_spacing_label(block_layout::LINE_SPACINGS[1]));
         wp.drain_hosted_fields(&mut edits(&mut state.doc));
         assert!(
             (spacing(wp) - 1.15).abs() < 1e-9,
