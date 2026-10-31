@@ -16,7 +16,7 @@
 mod tests;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -186,6 +186,11 @@ pub struct Window {
     /// The room's record, while it is read off the frame and the window shows what the indexes
     /// hold ([`Self::opening`]).
     opening: Option<ui::record::RecordOpening>,
+    /// The history verbs the instance's views asked for, addressed at the record's resource
+    /// where the framework publishes them, waiting for the door.
+    history: VecDeque<ControlInvocation>,
+    /// What a control's Undo or Redo asked, as the window's Undo controls publish it, until the
+    /// next frame hands it to the same door as the views' history verbs.
     undo: ui::undo::UndoAccess,
     /// A later build this window took and has not drawn yet: its first frame says so.
     undrawn: Option<Undrawn>,
@@ -233,6 +238,7 @@ impl Window {
             room: None,
             record: None,
             opening: None,
+            history: VecDeque::new(),
             undo: ui::undo::UndoAccess::new(),
             undrawn: None,
         }
@@ -486,10 +492,19 @@ impl ui::widget::controls::ActionControls for Window {
         let taken: Option<(ControlInvocation, Option<InvocationId>)> =
             self.instance.take_invocation();
         self.show_sent();
-        match taken {
-            Some(taken) => Some(taken),
-            None => ui::widget::controls::take_attributed_control_invocation(&mut self.view),
+        if let Some(taken) = taken {
+            return Some(taken);
         }
+        // What the views' controls invoked themselves goes before the record's history: the
+        // history waits until the change asked for before it is committed, as in a room.
+        if let Some(asked) =
+            ui::widget::controls::take_attributed_control_invocation(&mut self.view)
+        {
+            return Some(asked);
+        }
+        // What a view asked of the record's history goes as any action the window runs does:
+        // through the door, which builds it from the published verb and applies it.
+        self.history.pop_front().map(|asked| (asked, None))
     }
 
     fn on_control_invocation_result(&mut self, address: &ActionAddress, result: &ControlResult) {
@@ -500,13 +515,45 @@ impl ui::widget::controls::ActionControls for Window {
     }
 }
 
+/// The invocation of the history verb `asked` runs, on the record's resource as this window
+/// publishes it: the same vocabulary (`collaboration::history_source::verbs`) the room path
+/// answers, so what it takes back is one implementation, whether the instance runs here or in a
+/// tilolang host. `None` for an address the platform refuses.
+fn history_invocation(app: &str, asked: &instance::HistoryAsk) -> Option<ControlInvocation> {
+    let (verb, arguments) = match asked {
+        instance::HistoryAsk::Undo => ("undo", serde_json::Map::new()),
+        instance::HistoryAsk::Redo => ("redo", serde_json::Map::new()),
+        instance::HistoryAsk::UndoStep(change) => (
+            "undo",
+            serde_json::Map::from_iter([("step".to_owned(), change.clone().into())]),
+        ),
+        instance::HistoryAsk::UndoRun(run) => (
+            "undo",
+            serde_json::Map::from_iter([("run".to_owned(), run.clone().into())]),
+        ),
+    };
+    ControlInvocation::from_parts(app, verb, arguments)
+}
+
+/// The in-process window's undo and redo are the record's history verbs, exactly as the room
+/// path runs them: what a view asks (`undo(v)`, `undo(run)`) and what the person's Undo asks are
+/// both applied to the record as a step of their own, through the one verb
+/// (`collaboration::history_source`) the platform publishes on the app's resource.
 impl ui::undo::UndoControl for Window {
     fn set_undo_status(&mut self, status: &mut dyn FnMut() -> ui::undo::UndoStatus) {
         self.undo.publish(&status());
     }
 
+    /// An Undo a control asked for goes to the record as the person's own step, on the record's
+    /// history verb; what it did comes back in the views.
     fn take_undo_request(&mut self) -> Option<ui::undo::UndoRequest> {
-        self.undo.take_request()
+        let request = self.undo.take_request()?;
+        let asked = match request {
+            ui::undo::UndoRequest::Undo => instance::HistoryAsk::Undo,
+            ui::undo::UndoRequest::Redo => instance::HistoryAsk::Redo,
+        };
+        self.history.extend(history_invocation(&self.app, &asked));
+        None
     }
 }
 
@@ -578,23 +625,14 @@ impl Widget for Window {
             self.instance.update()
         };
         let received = self.view.receive();
-        // The person's Undo on a notice is the framework's undo of the record, as Ctrl+Z is here.
+        // What a view asked of the record's history (`undo(v)`, `undo(run)`) and the person's
+        // Undo and Redo are the record's own history verbs, as the room path runs them: the
+        // door builds each from the published verb and applies it to the record.
         for asked in self.instance.take_history() {
-            match asked {
-                instance::HistoryAsk::Undo => {
-                    self.undo.request(ui::undo::UndoRequest::Undo);
-                }
-                instance::HistoryAsk::Redo => {
-                    self.undo.request(ui::undo::UndoRequest::Redo);
-                }
-                // The framework's undo here takes back the person's last step only; a step or
-                // a run named from a view is taken back where a tilolang host runs the
-                // instance, on the record's own history verb.
-                instance::HistoryAsk::UndoStep(_) | instance::HistoryAsk::UndoRun(_) => {
-                    tracing::warn!(?asked, "an undo named from a view needs the tilolang host");
-                    self.instance
-                        .history_refused(crate::i18n::t("tilolang-undo-unavailable"));
-                }
+            if let Some(invocation) = history_invocation(&self.app, &asked) {
+                self.history.push_back(invocation);
+            } else {
+                tracing::warn!(?asked, "a history verb the window cannot address");
             }
         }
         let child = self.view.update(state, path);
