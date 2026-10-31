@@ -129,22 +129,7 @@ pub(crate) fn mount_sheets(
         who,
         options,
     );
-    let add_app = mount_sheet(
-        compositor,
-        doors,
-        tilo_sheets::add_app::definition(),
-        AddSeat::default(),
-        who,
-        options,
-    );
-    let uninstall = mount_sheet(
-        compositor,
-        doors,
-        tilo_sheets::uninstall::definition(),
-        UninstallSeat::default(),
-        who,
-        options,
-    );
+    let (add_app, uninstall) = mount_app_questions(compositor, doors, who, options);
     // Last, so it covers every other sheet, the guide among them: the lock
     // screen shows no key of the desktop behind it.
     let lock = mount_lock_screen(compositor, doors, who, options);
@@ -161,6 +146,33 @@ pub(crate) fn mount_sheets(
         add_app,
         uninstall,
     }
+}
+
+/// The questions about the person's apps: adding one from an installer, and
+/// uninstalling one — each its own sheet over the desk.
+fn mount_app_questions(
+    compositor: &mut Compositor,
+    doors: &mut Doors,
+    who: (&str, &str),
+    options: &Options,
+) -> (Option<AddSeat>, Option<UninstallSeat>) {
+    let add_app = mount_sheet(
+        compositor,
+        doors,
+        tilo_sheets::add_app::definition(),
+        AddSeat::default(),
+        who,
+        options,
+    );
+    let uninstall = mount_sheet(
+        compositor,
+        doors,
+        tilo_sheets::uninstall::definition(),
+        UninstallSeat::default(),
+        who,
+        options,
+    );
+    (add_app, uninstall)
 }
 
 fn mount_sheet<S: tilo_sheets::Seat + 'static>(
