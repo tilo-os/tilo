@@ -691,6 +691,46 @@ pub struct DesktopChrome {
     /// Whether the chrome takes the keyboard, as of its last update or
     /// event.
     keyboard: Rc<Cell<bool>>,
+    /// Whether the reader's focus is on the chrome rather than on the desk's
+    /// windows, as the overlay that is up takes the keyboard.
+    focused: bool,
+}
+
+/// The overlays the chrome paints itself, as opposed to the retained widgets
+/// it hands to layout: what a screen reader only reaches if the chrome puts
+/// them in its own tree.
+#[derive(Clone, Copy)]
+enum PaintedOverlay {
+    /// The strip ribbon's labels, open for the keyboard or under the pointer.
+    StripLabels,
+    /// The Alt+Tab window switcher.
+    Windows,
+    /// The emoji card.
+    Emoji,
+}
+
+impl PaintedOverlay {
+    /// Every painted overlay, bottom to top.
+    const ALL: [Self; 3] = [Self::StripLabels, Self::Windows, Self::Emoji];
+
+    /// The key its node keeps in the chrome's tree, so the id survives the
+    /// other overlays opening and closing.
+    fn key(self) -> u64 {
+        ui::a11y::hash_key(&match self {
+            Self::StripLabels => "chrome-strip-labels",
+            Self::Windows => "chrome-window-switcher",
+            Self::Emoji => "chrome-emoji-card",
+        })
+    }
+
+    /// Whether `chrome` has it on screen.
+    fn is_open(self, chrome: &DesktopChrome) -> bool {
+        match self {
+            Self::StripLabels => chrome.navigator.is_open(),
+            Self::Windows => chrome.switcher.is_active(),
+            Self::Emoji => chrome.emoji.is_open(),
+        }
+    }
 }
 
 impl DesktopChrome {
@@ -736,6 +776,7 @@ impl DesktopChrome {
             asks: Rc::default(),
             intents: Rc::default(),
             keyboard: Rc::default(),
+            focused: false,
         }
     }
 
@@ -822,6 +863,47 @@ impl DesktopChrome {
             || self.switcher.is_active()
     }
 
+    /// The chrome's own accessibility node: the group over the desk that
+    /// carries what the chrome paints itself. The retained parts (the bars,
+    /// the overview, the menus) are children widgets, which the host's walk
+    /// exports on its own.
+    fn accessibility_group(&self) -> ui::a11y::AccessNode {
+        ui::a11y::AccessNode::new(ui::a11y::Role::Group).with_state(
+            ui::a11y::AccessState::new()
+                .focusable(self.is_focusable())
+                .focused(self.focused),
+        )
+    }
+
+    /// Take the keyboard while an overlay of the chrome's own is up, and hand
+    /// it back — the reader's focus with it — once none is. Reached from
+    /// everywhere the chrome's overlays open, close or take a key.
+    fn take_keyboard(&mut self) {
+        let wanted = self.wants_keyboard();
+        self.keyboard.set(wanted);
+        if !wanted {
+            self.focused = false;
+        }
+    }
+
+    /// The painted overlays on screen now, bottom to top — the order a
+    /// reader meets them in.
+    fn painted_overlays(&self) -> Vec<PaintedOverlay> {
+        PaintedOverlay::ALL
+            .into_iter()
+            .filter(|overlay| overlay.is_open(self))
+            .collect()
+    }
+
+    /// What one painted overlay says to assistive technology, while it is up.
+    fn overlay_accessibility(&self, overlay: PaintedOverlay) -> Option<ui::a11y::AccessNode> {
+        match overlay {
+            PaintedOverlay::StripLabels => self.navigator.accessibility(),
+            PaintedOverlay::Windows => self.switcher.accessibility(),
+            PaintedOverlay::Emoji => self.emoji.accessibility(),
+        }
+    }
+
     /// Open the emoji picker at the caret of the field the person types into,
     /// centred on the display they are working on when that field reported
     /// none. What is picked goes to the host, which writes it into that
@@ -837,7 +919,7 @@ impl DesktopChrome {
             place.caret,
             &ui::i18n::I18nManager::current_locale(),
         );
-        self.keyboard.set(self.wants_keyboard());
+        self.take_keyboard();
     }
 
     /// The display the person is working on, while the desk spans several:
@@ -862,7 +944,7 @@ impl DesktopChrome {
     /// Close the emoji picker without inserting anything.
     pub fn close_emoji(&mut self) {
         self.emoji.close();
-        self.keyboard.set(self.wants_keyboard());
+        self.take_keyboard();
     }
 
     /// Super+. opens the picker, and closes it again while it is up.
@@ -2169,7 +2251,7 @@ impl Widget for DesktopChrome {
         }
         changed |= self.emoji.needs_redraw();
         self.observe_navigation();
-        self.keyboard.set(self.wants_keyboard());
+        self.take_keyboard();
         if let Some(open) = &self.overview_open {
             open.set(self.overview.is_open());
         }
@@ -2337,7 +2419,7 @@ impl Widget for DesktopChrome {
             }
             self.note_emoji_picks();
             *ctx.handled = true;
-            self.keyboard.set(self.wants_keyboard());
+            self.take_keyboard();
             return;
         }
         // The menus take what they cover, the keyboard and the press that
@@ -2367,7 +2449,7 @@ impl Widget for DesktopChrome {
             );
             if self.take_switcher(outcome) {
                 *ctx.handled = true;
-                self.keyboard.set(self.wants_keyboard());
+                self.take_keyboard();
                 return;
             }
         }
@@ -2407,7 +2489,7 @@ impl Widget for DesktopChrome {
                 }
             }
         }
-        self.keyboard.set(self.wants_keyboard());
+        self.take_keyboard();
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -2419,6 +2501,82 @@ impl Widget for DesktopChrome {
         ];
         children.extend(self.compact.iter().map(|bar| bar as &dyn Widget));
         children
+    }
+
+    /// Focus reaches the chrome while an overlay of its own takes the
+    /// keyboard, so a reader standing in the emoji card stays there as the
+    /// chrome rebuilds under it rather than falling back to the window.
+    fn is_focusable(&self) -> bool {
+        self.wants_keyboard()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    /// The desk's overlays a screen reader can reach: the labels, the card
+    /// and the switcher the chrome paints, plus the children widgets the
+    /// walk adds below them.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let children = self
+            .painted_overlays()
+            .into_iter()
+            .filter_map(|overlay| {
+                self.overlay_accessibility(overlay)
+                    .map(|node| node.with_key(overlay.key()))
+            })
+            .collect();
+        Some(self.accessibility_group().with_children(children))
+    }
+
+    fn accessibility_root(&self) -> Option<ui::a11y::AccessNode> {
+        Some(self.accessibility_group())
+    }
+
+    /// Where the overlay element at `path` is drawn, so assistive
+    /// activation presses it where the person sees it.
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let (&overlay, rest) = path.split_first()?;
+        let overlay = *self.painted_overlays().get(overlay)?;
+        let mut node = self.overlay_accessibility(overlay)?;
+        for &step in rest {
+            node = node.children.into_iter().nth(step)?;
+        }
+        node.bounds
+            .map(ui::a11y::AccessBounds::to_rect)
+            .filter(|rect| rect.area() > 0.0)
+    }
+
+    /// A strip label's semantic target, pressed as a click on the label is.
+    /// The card and the switcher name no targets: their elements are not
+    /// carried out by a target but pressed where they are drawn, which the
+    /// host does through [`Widget::synthetic_accessibility_rect`].
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ModelPath,
+    ) -> bool {
+        if !target.starts_with(crate::strip_switcher::TARGET_PREFIX)
+            || !matches!(action, ui::a11y::Action::Activate)
+        {
+            return false;
+        }
+        let Some(answer) = self
+            .navigator
+            .activate_target(&self.navigator_frame, target)
+        else {
+            return false;
+        };
+        if let Some(navigation) = answer {
+            self.apply_navigation(navigation);
+        }
+        true
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
