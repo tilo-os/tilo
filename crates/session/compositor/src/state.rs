@@ -168,6 +168,8 @@ pub struct State {
     pub(crate) closing: Vec<Closing>,
     /// The frames the windows last drew, by id.
     pub(crate) snapshots: crate::snapshot::Snapshots,
+    /// The HDR planes of the windows that carry one, by id.
+    pub(crate) hdr: crate::hdr::HdrSurfaces,
     /// The streams sharing a window, by window id: each is told what the
     /// window's content is in, on the commit that changes it.
     pub(crate) share_streams: std::collections::HashMap<u64, Arc<dyn crate::ShareStream>>,
@@ -207,7 +209,19 @@ impl State {
     pub(crate) fn new(display: &DisplayHandle, policy: Box<dyn WindowPolicy>) -> Self {
         let compositor_state = CompositorState::new::<Self>(display);
         let xdg_shell_state = XdgShellState::new::<Self>(display);
-        let shm_state = ShmState::new::<Self>(display, Vec::new());
+        // Besides 8-bit RGB, the 10-bit and half-float buffers an HDR
+        // surface's signal is carried in.
+        let shm_state = ShmState::new::<Self>(
+            display,
+            vec![
+                smithay::reexports::wayland_server::protocol::wl_shm::Format::Xrgb2101010,
+                smithay::reexports::wayland_server::protocol::wl_shm::Format::Xbgr2101010,
+                smithay::reexports::wayland_server::protocol::wl_shm::Format::Argb2101010,
+                smithay::reexports::wayland_server::protocol::wl_shm::Format::Abgr2101010,
+                smithay::reexports::wayland_server::protocol::wl_shm::Format::Xrgb16161616f,
+                smithay::reexports::wayland_server::protocol::wl_shm::Format::Abgr16161616f,
+            ],
+        );
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(display);
         let data_device_state = DataDeviceState::new::<Self>(display);
         let mut seat_state = SeatState::new();
@@ -266,6 +280,7 @@ impl State {
             frame_images: crate::window_frame::FrameImages::default(),
             closing: Vec::new(),
             snapshots: crate::snapshot::Snapshots::default(),
+            hdr: crate::hdr::HdrSurfaces::default(),
             share_streams: std::collections::HashMap::new(),
             capture: crate::capture::Capture::new(display),
             remote_input: crate::remote_input::Firewall::default(),
@@ -513,7 +528,7 @@ impl State {
         R::TextureId: Clone + 'static,
     {
         if let Some(id) = describe(&self.display, &self.icons, window).map(|info| info.id) {
-            self.snapshots.record(id, renderer, window);
+            self.snapshots.record_shown(id, &self.hdr, renderer, window);
         }
     }
 
@@ -534,6 +549,7 @@ impl State {
                 .unwrap_or(self.frame),
             images: &self.frame_images,
             snapshots: &self.snapshots,
+            hdr: &self.hdr,
         }
     }
 
@@ -993,6 +1009,7 @@ impl State {
         // It came back before the desktop was done with its close.
         self.closing.retain(|closing| closing.info.id != info.id);
         self.snapshots.forget(info.id);
+        self.hdr.forget(info.id);
         let outputs = self.output_geometries();
         let size = window.geometry().size;
         let location = self.policy.place(&info, (size.w, size.h), &outputs);

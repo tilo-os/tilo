@@ -41,6 +41,9 @@ tilo-frame-metrics = { path = "../frame-metrics" }
 # between ports.
 settings-store = { path = "../../system/settings-store" }
 tilo-wayland-ext = { path = "../wayland-ext" }
+# A surface's HDR signal and the tone-mapped SDR rendition the scene draws:
+# the plane and the layer compositing it, shared with the colour passes.
+tilo-color-pipeline = { path = "../color-pipeline" }
 # What a window's content is in and what an output displays, in the
 # vocabulary a share stream and the colour pass speak.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
@@ -55,7 +58,7 @@ xcursor = "0.3"
 blake3.workspace = true
 # Reading a selection takes its pipe non-blocking, so an app that is slow to
 # answer holds up no frame.
-rustix = { workspace = true, features = ["fs"] }
+rustix = { workspace = true, features = ["fs", "mm"] }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

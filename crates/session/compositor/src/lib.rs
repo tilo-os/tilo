@@ -37,6 +37,7 @@ mod dnd;
 pub mod effects;
 pub mod gamma;
 pub mod gestures;
+mod hdr;
 pub mod host;
 pub mod idle;
 pub mod input;

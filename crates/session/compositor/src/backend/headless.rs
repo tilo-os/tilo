@@ -10,13 +10,19 @@ use std::collections::HashMap;
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::damage::OutputDamageTracker;
+use smithay::backend::renderer::element::Kind;
+use smithay::backend::renderer::element::memory::{
+    MemoryRenderBuffer, MemoryRenderBufferRenderElement,
+};
 use smithay::backend::renderer::pixman::PixmanRenderer;
 use smithay::backend::renderer::{Bind, ExportMem, ImportDma as _, Offscreen};
 use smithay::output::Output;
 use smithay::reexports::pixman::Image;
-use smithay::utils::{Buffer, Point, Rectangle, Size};
+use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Size, Transform};
+use tilo_color_pipeline::hdr_surface::{HdrLayer, HdrLayerRecording};
 
 use super::{Backend, BackendError, Screenshot, failed};
+use crate::capture::{CaptureError, render_to_memory};
 use crate::output::{OutputChange, OutputConfig, apply_placement};
 use crate::render::{BACKGROUND, output_elements};
 use crate::state::State;
@@ -102,6 +108,104 @@ impl HeadlessBackend {
         }
         state.rearrange();
     }
+}
+
+/// The composited frame of an output that shows HDR layers: the scene drawn
+/// twice with the layers replaced by black and by their channel colours, and
+/// the two composited at each layer's signal.
+fn composite_hdr(
+    renderer: &mut PixmanRenderer,
+    state: &State,
+    output: &Output,
+    (width, height): (usize, usize),
+    scale: f64,
+    layers: &[HdrLayer],
+) -> Result<Vec<u8>, BackendError> {
+    let size = Size::<i32, Physical>::from((
+        i32::try_from(width).map_err(|error| failed("width", error))?,
+        i32::try_from(height).map_err(|error| failed("height", error))?,
+    ));
+    let transform = output.current_transform();
+    let pass = |renderer: &mut PixmanRenderer, pixels: &mut Option<Vec<u8>>| {
+        let elements = output_elements(renderer, state, output);
+        *pixels = Some(render_to_memory::<
+            PixmanRenderer,
+            Image<'static, 'static>,
+            _,
+        >(
+            renderer, size, scale, transform, &elements, BACKGROUND
+        )?);
+        Ok::<(), CaptureError>(())
+    };
+    let mut first = None;
+    {
+        let _black = crate::hdr::black();
+        pass(renderer, &mut first).map_err(|error| failed("hdr pass", error))?;
+    }
+    let channels: Vec<(u64, u8)> = layers
+        .iter()
+        .map(|layer| (layer.plane.id(), layer.channel))
+        .collect();
+    let mut second = None;
+    {
+        let _lit = crate::hdr::lit(&channels);
+        pass(renderer, &mut second).map_err(|error| failed("hdr pass", error))?;
+    }
+    let (Some(first), Some(second)) = (first, second) else {
+        return Err(BackendError("an HDR pass drew nothing".into()));
+    };
+    let size = (
+        u32::try_from(width).map_err(|error| failed("width", error))?,
+        u32::try_from(height).map_err(|error| failed("height", error))?,
+    );
+    Ok(crate::hdr::composite(&first, &second, size, layers))
+}
+
+/// The composited frame as the one element the output draws: every pixel of
+/// it, in the output's physical size.
+fn frame_element(
+    renderer: &mut PixmanRenderer,
+    rgba: &[u8],
+    (width, height): (usize, usize),
+    scale: f64,
+) -> Result<MemoryRenderBufferRenderElement<PixmanRenderer>, BackendError> {
+    let width = i32::try_from(width).map_err(|error| failed("width", error))?;
+    let height = i32::try_from(height).map_err(|error| failed("height", error))?;
+    let buffer = MemoryRenderBuffer::from_slice(
+        rgba,
+        Fourcc::Abgr8888,
+        (width, height),
+        1,
+        Transform::Normal,
+        Some(vec![Rectangle::from_size(Size::from((width, height)))]),
+    );
+    let logical = Size::<i32, Logical>::from((
+        window_frame_pixels(f64::from(width) / scale),
+        window_frame_pixels(f64::from(height) / scale),
+    ));
+    MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        Point::<f64, Physical>::from((0.0, 0.0)),
+        &buffer,
+        None,
+        Some(Rectangle::from_size(Size::from((
+            f64::from(width),
+            f64::from(height),
+        )))),
+        Some(logical),
+        Kind::Unspecified,
+    )
+    .map_err(|error| failed("composited frame", error))
+}
+
+/// A logical length rounded to whole pixels.
+fn window_frame_pixels(value: f64) -> i32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "an output's logical extent: at most a few thousand pixels"
+    )]
+    let pixels = value.round() as i32;
+    pixels
 }
 
 impl Backend for HeadlessBackend {
@@ -212,7 +316,46 @@ impl Backend for HeadlessBackend {
             if !state.take_redraw(&output.output) {
                 continue;
             }
+            let width = output.target.width();
+            let height = output.target.height();
+            // What the scene draws while its HDR layers are recorded.
+            let recording = HdrLayerRecording::begin();
             let elements = output_elements(&mut self.renderer, state, &output.output);
+            let layers = recording.finish();
+            if !layers.is_empty() {
+                let scale = output.output.current_scale().fractional_scale();
+                let rgba = composite_hdr(
+                    &mut self.renderer,
+                    state,
+                    &output.output,
+                    (width, height),
+                    scale,
+                    &layers,
+                )?;
+                let elements = [frame_element(
+                    &mut self.renderer,
+                    &rgba,
+                    (width, height),
+                    scale,
+                )?];
+                let mut framebuffer = self
+                    .renderer
+                    .bind(&mut output.target)
+                    .map_err(|error| failed("bind output", error))?;
+                output
+                    .damage
+                    .render_output(
+                        &mut self.renderer,
+                        &mut framebuffer,
+                        0,
+                        &elements,
+                        BACKGROUND,
+                    )
+                    .map_err(|error| failed("render output", error))?;
+                output.drawn = true;
+                state.frame_shown(&output.output);
+                continue;
+            }
             let mut framebuffer = self
                 .renderer
                 .bind(&mut output.target)
