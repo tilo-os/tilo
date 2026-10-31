@@ -28,16 +28,16 @@ mod state;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;
 pub use state::{
-    DocumentRow, GovernedAccess, GovernedAgent, GovernedDelegateRow, GovernedMember,
-    HELD_FOR_SURFACE, InstalledApp, InstalledBot, LocalRecoveryReservation, MAX_HELD_BYTES,
-    MAX_HELD_INPUTS, MemberAuthority, NativePublicationCut, OpenedRecord, PeerDocumentCapture,
-    PeerDocumentReadError, PeerGovernance, PeerGovernanceMut, PeerMediaGovernance,
-    PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication, PeerPublicationMut,
-    PeerWorkspace, PeerWorkspaceMut, PlaintextChanges, ROOM_HOSTS_KEY, ReceiveOutcome,
-    RecordReaders, RequestedBot, Reseal, SealCheckpoint, SealDelta, SeedDocument, SeedState,
-    StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite, committed_document_revision,
-    decide_with_surfaces, default_surfaces, peer_handle, room_host_actor, room_hosts_of, seed_room,
-    workspace_seed,
+    DelegateInactive, DocumentRow, GovernedAccess, GovernedAgent, GovernedDelegateRow,
+    GovernedMember, HELD_FOR_SURFACE, InstalledApp, InstalledBot, LocalRecoveryReservation,
+    MAX_HELD_BYTES, MAX_HELD_INPUTS, MemberAuthority, MembershipError, NativePublicationCut,
+    OpenedRecord, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
+    PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication,
+    PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PlaintextChanges, ROOM_HOSTS_KEY,
+    ReceiveOutcome, RecordReaders, RequestedBot, Reseal, SealCheckpoint, SealDelta, SeedDocument,
+    SeedState, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
+    committed_document_revision, decide_with_surfaces, default_surfaces, peer_handle,
+    room_host_actor, room_hosts_of, seed_room, workspace_seed,
 };
 pub mod coverage;
 mod governed_routes;

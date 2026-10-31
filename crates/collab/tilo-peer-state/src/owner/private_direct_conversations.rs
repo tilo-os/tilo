@@ -239,14 +239,18 @@ fn caller<'a>(
         return Err("private conversations require trusted workspace host custody".into());
     }
     view.peer()
-        .permissions(view.device().device_public_key, now)?;
+        .permissions(view.device().device_public_key, now)
+        .map_err(|error| error.to_string())?;
     let CallerAuthority::Person { caller } = authority else {
         return Err("private conversations require authenticated person transport".into());
     };
     if !view.peer().certificates().iter().any(|cert| cert == caller) {
         return Err("private conversation caller certificate is not current".into());
     }
-    let member = view.peer().permissions(caller.device_public_key, now)?;
+    let member = view
+        .peer()
+        .permissions(caller.device_public_key, now)
+        .map_err(|error| error.to_string())?;
     if member.foreign {
         return Err("foreign devices cannot access person conversations".into());
     }
@@ -1088,7 +1092,8 @@ mod tests {
                 assert!(view.peer().certificates().contains(&foreign));
                 let member = view
                     .peer()
-                    .permissions(foreign.device_public_key, fixture.now)?;
+                    .permissions(foreign.device_public_key, fixture.now)
+                    .map_err(|error| error.to_string())?;
                 assert!(member.foreign);
                 assert!(member.delegate.is_none());
                 assert_eq!(member.role, collab_types::Role::Editor);

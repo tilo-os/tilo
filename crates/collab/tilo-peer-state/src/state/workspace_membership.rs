@@ -160,7 +160,7 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let member = self.permissions(caller.device_public_key, now)?;
+        let member = self.permissions(caller.device_public_key, now).map_err(|error| error.to_string())?;
         let bound = roles::foreign_device_bound();
         let authority = member.authority(&bound);
         let cx = tilo_action_policy::Context::at_time(now);
@@ -191,7 +191,7 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let member = self.permissions(caller.device_public_key, now)?;
+        let member = self.permissions(caller.device_public_key, now).map_err(|error| error.to_string())?;
         let bound = roles::foreign_device_bound();
         let authority = member.authority(&bound);
         let cx = tilo_action_policy::Context::at_time(now);
@@ -213,7 +213,7 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let member = self.permissions(caller.device_public_key, now)?;
+        let member = self.permissions(caller.device_public_key, now).map_err(|error| error.to_string())?;
         let bound = roles::foreign_device_bound();
         let authority = member.authority(&bound);
         let cx = tilo_action_policy::Context::at_time(now);
@@ -254,7 +254,7 @@ impl PeerWorkspace<'_> {
         device: [u8; 32],
         now: SystemTime,
     ) -> Result<(), String> {
-        let member = self.peer.permissions(device, now)?;
+        let member = self.peer.permissions(device, now).map_err(|error| error.to_string())?;
         if !member.allows(
             &roles::governance_action(&self.peer.core.room, roles::governance::GRANT),
             roles::GOVERNANCE_KIND,
@@ -290,7 +290,7 @@ impl PeerWorkspaceMut<'_> {
         {
             return Err("membership caller is not current admitted evidence".into());
         }
-        self.peer.certificate(&caller.device_public_key, now)?;
+        self.peer.certificate(&caller.device_public_key, now).map_err(|error| error.to_string())?;
         if let Some(outcome) = self.peer.apply_bot_command(caller, command, key, now) {
             return outcome;
         }
@@ -347,7 +347,7 @@ impl StatePeer {
     ) -> Result<bool, String> {
         self.workspace()
             .check_workspace_administration(caller.device_public_key, now)?;
-        let member = self.permissions(caller.device_public_key, now)?;
+        let member = self.permissions(caller.device_public_key, now).map_err(|error| error.to_string())?;
         if let WorkspaceMembershipCommand::GrantAppAuthorship { app } = command {
             let grant = roles::app_authorship(&self.core.room, app, Subject::Person(member.person));
             if self.require_governance_writer(key, now).is_ok() {

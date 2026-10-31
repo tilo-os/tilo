@@ -236,7 +236,8 @@ impl Joined {
             }
             let principal = view
                 .peer()
-                .permissions(cert.device_public_key, SystemTime::now())?
+                .permissions(cert.device_public_key, SystemTime::now())
+                .map_err(|error| error.to_string())?
                 .person;
             let document = view.peer().admitted_room().ok_or("no admitted room")?;
             let mut workspace =

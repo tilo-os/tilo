@@ -168,7 +168,8 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
                     .check_workspace_administration(fixture.certificate.device_public_key, now)?;
                 let member = view
                     .peer()
-                    .permissions(fixture.certificate.device_public_key, now)?;
+                    .permissions(fixture.certificate.device_public_key, now)
+                    .map_err(|error| error.to_string())?;
                 assert_eq!(
                     member
                         .policy
@@ -215,7 +216,8 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
             let now = std::time::SystemTime::now();
             let member = view
                 .peer()
-                .permissions(fixture.certificate.device_public_key, now)?;
+                .permissions(fixture.certificate.device_public_key, now)
+                .map_err(|error| error.to_string())?;
             assert!(
                 member
                     .policy
@@ -299,7 +301,8 @@ fn an_app_opened_before_its_room_is_projected_opens_once_the_membership_surface_
             let now = std::time::SystemTime::now();
             let member = view
                 .peer()
-                .permissions(certificate.device_public_key, now)?;
+                .permissions(certificate.device_public_key, now)
+                .map_err(|error| error.to_string())?;
             assert!(
                 member
                     .policy
@@ -1260,7 +1263,8 @@ fn native_files_home_consent_is_not_reconstructed_when_session_reopens() {
             let now = std::time::SystemTime::now();
             let member = view
                 .peer()
-                .permissions(fixture.certificate.device_public_key, now)?;
+                .permissions(fixture.certificate.device_public_key, now)
+                .map_err(|error| error.to_string())?;
             assert!(
                 member
                     .policy

@@ -24,6 +24,7 @@ tilo-automerge.workspace = true
 tilo-automerge-isolate.workspace = true
 serde.workspace = true
 serde_bytes.workspace = true
+thiserror.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["alloc", "use-std"] }
 uuid.workspace = true
@@ -48,7 +49,6 @@ registry-types = { path = "../../packaging/registry-types" }
 channel-crypto = { path = "../channel-crypto" }
 # The relay workspace of a room and the retained entry id of a frame.
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
-thiserror.workspace = true
 parking_lot.workspace = true
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 tokio = { workspace = true, features = ["sync", "time", "macros"] }

@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use tilo_action_policy::{
     ActionKind, Answer, Authority, Grant, GrantId, RoomPolicy, Subject, TreePath,
 };
+use tilo_lock::MutexRecover;
 use tilo_user_identity::{DeviceCert, RevocationList};
 pub use tilo_workspace_join::{DocumentRow, GovernedMember};
 use web_time::{Duration, SystemTime};
@@ -45,7 +46,7 @@ pub(crate) mod certificate_renewal;
 mod delegates;
 pub(crate) use bot_members::requests_in as bot_requests_in;
 pub use bot_members::{InstalledBot, RequestedBot};
-pub use delegates::{GovernedAgent, GovernedDelegateRow};
+pub use delegates::{DelegateInactive, GovernedAgent, GovernedDelegateRow};
 mod agent_runs;
 mod local_admission;
 mod local_outbox;
@@ -87,6 +88,58 @@ fn now_ns(now: SystemTime) -> u64 {
         .try_into()
         .unwrap_or(u64::MAX)
 }
+/// Why a device holds no current authority in the room.
+///
+/// Each kind is a different thing to do about it: a stranger's device is
+/// unknown ([`Self::UnknownDevice`]), a removed member's is known and
+/// admitted but no longer a member ([`Self::NoMembership`]), and a device the
+/// room revoked must stop, not retry ([`Self::Revoked`]).
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum MembershipError {
+    /// The room holds no certificate for the device.
+    #[error("certified identity missing")]
+    UnknownDevice,
+    /// The device's certificate does not verify, or has run out.
+    #[error(transparent)]
+    Certificate(tilo_user_identity::DeviceCertError),
+    /// The room's root has revoked the device.
+    #[error("device revoked by room")]
+    Revoked,
+    /// The room's governance is not here to decide against.
+    #[error("room governance missing")]
+    GovernanceMissing,
+    /// The governance document carries no row for the device.
+    #[error("device is absent from governed roster")]
+    Absent,
+    /// The row the room holds is another certificate than the device's.
+    #[error("governed certificate mismatch")]
+    CertificateMismatch,
+    /// The revocations in the governance document are not this room's root's.
+    #[error("revocation root mismatch")]
+    RevocationRoot,
+    /// A revocation entry does not verify.
+    #[error(transparent)]
+    Revocation(tilo_user_identity::RevocationError),
+    /// The device's delegation is withdrawn, expired or names another.
+    #[error(transparent)]
+    Delegate(delegates::DelegateInactive),
+    /// The device's person is a stranger here, or the room blocks them.
+    #[error("person has no room membership")]
+    NoMembership,
+    /// The governance document's row for the device does not decode.
+    #[error("the governed identity row does not decode")]
+    MalformedIdentity(#[source] std::sync::Arc<serde_json::Error>),
+}
+impl From<backend::CertificateLookupError> for MembershipError {
+    fn from(error: backend::CertificateLookupError) -> Self {
+        match error {
+            backend::CertificateLookupError::Missing => Self::UnknownDevice,
+            backend::CertificateLookupError::Validity(error) => Self::Certificate(error),
+            backend::CertificateLookupError::Revoked => Self::Revoked,
+        }
+    }
+}
+
 /// A current member's authority in the room: who they are, their role, the
 /// room's policy as admitted, and whether their device is held to the
 /// foreign-device bound.
@@ -393,10 +446,9 @@ fn defaults() -> &'static std::sync::Mutex<(collab_types::Surfaces, AppSurfaces)
 }
 
 fn process_default() -> (collab_types::Surfaces, AppSurfaces) {
-    defaults()
-        .lock()
-        .map(|defaults| defaults.clone())
-        .unwrap_or_default()
+    // A panic that killed a thread mid-update leaves the defaults as they
+    // were: they are whole values, set once and read whole.
+    defaults().lock_recover().clone()
 }
 
 /// Why a received change was neither admitted nor refused: the app surface
@@ -439,9 +491,7 @@ pub fn decide_with_surfaces(
     of: impl Fn(&str) -> Option<[u8; 32]> + Send + Sync + 'static,
 ) {
     collab_types::Surfaces::set_process(surfaces.clone());
-    if let Ok(mut defaults) = defaults().lock() {
-        *defaults = (surfaces, AppSurfaces(Some(std::sync::Arc::new(of))));
-    }
+    *defaults().lock_recover() = (surfaces, AppSurfaces(Some(std::sync::Arc::new(of))));
 }
 
 /// The surface hash of an app's package, by app id.
@@ -782,7 +832,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<(), String> {
         let device = key.verifying_key().to_bytes();
-        self.certificate(&device, now)?;
+        self.certificate(&device, now).map_err(|error| error.to_string())?;
         self.role(&device, now).map(drop)
     }
 
@@ -791,7 +841,7 @@ impl StatePeer {
     /// device their root certifies, so no one device of theirs is needed
     /// and a revoked one hands nothing over.
     fn owner_device(&self, device: &[u8; 32], now: SystemTime) -> Result<&DeviceCert, String> {
-        let cert = self.certificate(device, now)?;
+        let cert = self.certificate(device, now).map_err(|error| error.to_string())?;
         if cert.user_public_key != self.core.owner {
             return Err("governance writer is not the owner's device".into());
         }
@@ -930,18 +980,25 @@ impl StatePeer {
     }
     /// The current authority of the device `source`: its person, role, the
     /// room's policy and whether it is held to the foreign-device bound.
+    ///
+    /// # Errors
+    /// Returns [`MembershipError`] saying why the device holds no authority
+    /// here: an unknown, expired or revoked certificate, a device absent from
+    /// governance, or a person who is no longer a member.
     pub fn permissions(
         &self,
         source: [u8; 32],
         now: SystemTime,
-    ) -> Result<MemberAuthority, String> {
-        let (role, agent) = backend::member::legacy(&self.core, &source, now).map_err(err)?;
+    ) -> Result<MemberAuthority, MembershipError> {
+        let (role, agent) = backend::member::legacy(&self.core, &source, now)?;
         let cert = self.certificate(&source, now)?;
+        // `legacy` above already read the room document this policy is
+        // decided against, and the peer holds it for its whole life.
         let policy = self
             .core
             .room_doc
             .as_ref()
-            .ok_or("room missing")?
+            .ok_or(MembershipError::GovernanceMissing)?
             .policy()
             .room_policy(&self.core.room);
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
@@ -1018,7 +1075,7 @@ impl StatePeer {
         record: &str,
         now: SystemTime,
     ) -> Result<(), String> {
-        let member = self.permissions(device, now)?;
+        let member = self.permissions(device, now).map_err(|error| error.to_string())?;
         let bound = tilo_action_policy::roles::foreign_device_bound();
         if !backend::access::document_read(
             &member.authority(&bound),
@@ -1355,8 +1412,12 @@ impl StatePeer {
             })
             .map(|entry| entry.doc.saved())
     }
-    fn certificate(&self, source: &[u8; 32], now: SystemTime) -> Result<&DeviceCert, String> {
-        self.core.certificate_typed(source, now).map_err(err)
+    fn certificate(
+        &self,
+        source: &[u8; 32],
+        now: SystemTime,
+    ) -> Result<&DeviceCert, MembershipError> {
+        self.core.certificate_typed(source, now).map_err(Into::into)
     }
     fn role(&self, source: &[u8; 32], now: SystemTime) -> Result<Role, String> {
         backend::member::legacy(&self.core, source, now)
@@ -1394,7 +1455,7 @@ impl StatePeer {
         envelope: &SignedOp,
         authorization_time: SystemTime,
     ) -> Result<Option<MemberAuthority>, String> {
-        let member = self.permissions(*source, authorization_time)?;
+        let member = self.permissions(*source, authorization_time).map_err(|error| error.to_string())?;
         // A change made with another version of the app than the room runs
         // is held: its author's desktop switches to the room's version, and
         // the same changes then name that version's surface.
@@ -1790,7 +1851,9 @@ impl StatePeer {
         if received != self.core.room {
             return Err("room topic mismatch".into());
         }
-        let cert = self.certificate(&source, now)?;
+        let cert = self
+            .certificate(&source, now)
+            .map_err(|error| error.to_string())?;
         let person = cert.user_public_key;
         let foreign = backend::member::foreign(cert, &self.core.origin);
         // The owner's devices write governance on their certificate alone:
@@ -3554,7 +3617,9 @@ impl PeerPublicationMut<'_> {
             return Err("publication cannot replace the session namespace".into());
         }
         self.peer.require_governance_writer(key, now)?;
-        self.peer.permissions(key.verifying_key().to_bytes(), now)?;
+        self.peer
+            .permissions(key.verifying_key().to_bytes(), now)
+            .map_err(|error| error.to_string())?;
         if self.peer.incomplete_reason().is_some() {
             return Err("cannot publish incomplete encryption state".into());
         }

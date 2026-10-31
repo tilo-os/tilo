@@ -82,7 +82,7 @@ impl NativeEditor {
                 assert_eq!(view.room_host(), governor);
                 assert_eq!(
                     view.peer()
-                        .permissions(cert.device_public_key, SystemTime::now())?
+                        .permissions(cert.device_public_key, SystemTime::now()).map_err(|error| error.to_string())?
                         .role,
                     // An invitation cannot demote another device of the owner.
                     if cert.user_public_key == governor.user_public_key {

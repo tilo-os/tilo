@@ -469,9 +469,10 @@ async fn the_owners_native_device_holds_its_relay_governed_room() {
             Ok(view
                 .peer()
                 .permissions(laptop.device_public_key, SystemTime::now())
+                .ok()
                 .map(|member| member.role))
         })
         .unwrap();
-    assert_eq!(role, Ok(collab_types::Role::Owner));
+    assert_eq!(role, Some(collab_types::Role::Owner));
     relay.shutdown().await;
 }

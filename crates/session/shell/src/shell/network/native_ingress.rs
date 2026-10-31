@@ -21,7 +21,8 @@ impl ShellNetwork {
         self.check_native_custody(&owner, room)?;
         owner.with_current(room, |view| {
             view.peer()
-                .permissions(view.room_host().device_public_key, SystemTime::now())?;
+                .permissions(view.room_host().device_public_key, SystemTime::now())
+                .map_err(|error| error.to_string())?;
             Ok((view.device().clone(), view.room_host().clone()))
         })
     }
@@ -274,7 +275,9 @@ impl ShellNetwork {
                     .into_iter()
                     .find(|cert| cert.device_public_key == *device.as_bytes())
                     .ok_or("not a member device")?;
-                view.peer().permissions(cert.device_public_key, now)?;
+                view.peer()
+                    .permissions(cert.device_public_key, now)
+                    .map_err(|error| error.to_string())?;
                 Ok(crate::network::identity::PeerIdentity {
                     device_pubkey: cert.device_public_key,
                     user_pubkey: cert.user_public_key,

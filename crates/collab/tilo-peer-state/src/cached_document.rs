@@ -18,8 +18,10 @@ pub(crate) struct CachedDocument {
 }
 /// Each governed identity row decoded, keyed like
 /// [`PolicyData::identities`]; an undecodable row keeps its decode error.
-pub(crate) type IdentityViews =
-    std::collections::BTreeMap<String, Result<crate::state::GovernedIdentity, String>>;
+pub(crate) type IdentityViews = std::collections::BTreeMap<
+    String,
+    Result<crate::state::GovernedIdentity, std::sync::Arc<serde_json::Error>>,
+>;
 pub(crate) struct PolicyData {
     pub owner: Option<String>,
     pub members: std::collections::BTreeMap<String, tilo_action_policy::Role>,
@@ -95,7 +97,7 @@ impl CachedDocument {
                 .map(|(key, bytes)| {
                     #[cfg(test)]
                     IDENTITY_DECODES.with(|count| count.set(count.get().saturating_add(1)));
-                    let identity = serde_json::from_slice(bytes).map_err(|e| e.to_string());
+                    let identity = serde_json::from_slice(bytes).map_err(std::sync::Arc::new);
                     (key.clone(), identity)
                 })
                 .collect()

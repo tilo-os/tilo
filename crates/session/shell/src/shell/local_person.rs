@@ -50,7 +50,8 @@ impl LocalPersonServices for NativeLocalPerson {
             .ok_or("native caller owner unavailable")?;
         owner.with_current(room, |view| {
             view.peer()
-                .permissions(certificate.device_public_key, std::time::SystemTime::now())?;
+                .permissions(certificate.device_public_key, std::time::SystemTime::now())
+                .map_err(|error| error.to_string())?;
             Ok(certificate)
         })
     }

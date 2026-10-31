@@ -4728,7 +4728,7 @@ fn native_room_app_open_access(
     let member = view
         .peer()
         .permissions(certificate.device_public_key, now)
-        .map_err(AppOpenRefusal::DeviceRefused)?;
+        .map_err(|error| AppOpenRefusal::DeviceRefused(error.to_string()))?;
     let administrator = view
         .peer()
         .workspace()

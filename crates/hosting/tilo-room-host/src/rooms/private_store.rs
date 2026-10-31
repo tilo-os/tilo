@@ -263,7 +263,7 @@ impl GovernedRoom {
         if !self.peer.certificates().iter().any(|cert| cert == caller) {
             return Err("private conversation caller certificate is not current".into());
         }
-        let member = self.peer.permissions(caller.device_public_key, now)?;
+        let member = self.peer.permissions(caller.device_public_key, now).map_err(|error| error.to_string())?;
         let person = hex::encode(caller.user_public_key);
         if member.foreign {
             return Err("foreign devices cannot access person conversations".into());

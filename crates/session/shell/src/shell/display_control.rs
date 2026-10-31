@@ -38,7 +38,8 @@ fn authorize(
     }
     let member = view
         .peer()
-        .permissions(device, std::time::SystemTime::now())?;
+        .permissions(device, std::time::SystemTime::now())
+        .map_err(|error| error.to_string())?;
     if member.policy.room != room
         || !member.allows(
             &member.policy.node().app(settings_sections::APP_ID),
@@ -110,7 +111,8 @@ mod tests {
                 // certificate equality alone must never promote its accepted role.
                 let role = view
                     .peer()
-                    .permissions(device, std::time::SystemTime::now())?
+                    .permissions(device, std::time::SystemTime::now())
+                    .map_err(|error| error.to_string())?
                     .role;
                 assert_eq!(role, collab_types::Role::Editor);
                 assert!(

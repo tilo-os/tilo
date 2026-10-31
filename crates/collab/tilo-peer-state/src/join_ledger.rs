@@ -680,7 +680,7 @@ impl JoinLedger {
             if room.peer.certificate_expired(&device, system_time(now)) {
                 return Err(JoinError::refresh());
             }
-            return Err(error.into());
+            return Err(JoinError::new(error.to_string()));
         }
         prior.replay(room).map(Some)
     }

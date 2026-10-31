@@ -106,7 +106,8 @@ impl Participation {
         let (workspace, device, call) = owner.with_current(room, |view| {
             check(view)?;
             view.peer()
-                .permissions(view.device().device_public_key, SystemTime::now())?;
+                .permissions(view.device().device_public_key, SystemTime::now())
+                .map_err(|error| error.to_string())?;
             let binding = view.peer().media().resolve_media_binding(
                 &channel.app,
                 &channel.record,
@@ -173,7 +174,8 @@ impl Participation {
         let (workspace, device) = owner.with_current(room, |view| {
             check(view)?;
             view.peer()
-                .permissions(view.device().device_public_key, SystemTime::now())?;
+                .permissions(view.device().device_public_key, SystemTime::now())
+                .map_err(|error| error.to_string())?;
             Ok((view.workspace(), view.device().device_public_key))
         })?;
         if session.workspace_id() != workspace {
@@ -354,6 +356,7 @@ impl Participation {
             view.peer()
                 .permissions(self.device, SystemTime::now())
                 .map(|_| ())
+                .map_err(|error| error.to_string())
         }) {
             self.stop();
             return Err(error);
@@ -631,7 +634,9 @@ impl Participation {
             return Err("the participation lapsed".into());
         }
         self.owner.with_current(self.room, |view| {
-            view.peer().permissions(self.device, SystemTime::now())?;
+            view.peer()
+                .permissions(self.device, SystemTime::now())
+                .map_err(|error| error.to_string())?;
             let (revision, grant) = {
                 let state = self.state.lock();
                 (state.revision, state.grant.clone().ok_or("no grant")?)

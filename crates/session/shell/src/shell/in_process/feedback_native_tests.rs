@@ -47,7 +47,8 @@ fn answer(connection: &Connection) -> FeedbackAnswer {
                 .permissions(
                     connection.reporter.device_public_key,
                     std::time::SystemTime::now(),
-                )?
+                )
+                .map_err(|error| error.to_string())?
                 .standing();
             Ok((standing, view.peer().governance().governed_sandbox()?))
         })

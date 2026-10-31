@@ -388,7 +388,8 @@ fn require_history_read(
                 .check_document_read(certificate.device_public_key, package, "", now)?;
             let member = view
                 .peer()
-                .permissions(certificate.device_public_key, now)?;
+                .permissions(certificate.device_public_key, now)
+                .map_err(|error| error.to_string())?;
             let node = member.policy.node();
             let application = tilo_action_policy::Authority::person(
                 member
@@ -794,7 +795,8 @@ mod tests {
             .with_current(room, |view| {
                 let member = view
                     .peer()
-                    .permissions(view.device().device_public_key, SystemTime::now())?;
+                    .permissions(view.device().device_public_key, SystemTime::now())
+                    .map_err(|error| error.to_string())?;
                 Ok((view.device().clone(), member.person))
             })
             .unwrap();
@@ -882,7 +884,8 @@ mod tests {
             .with_current(room, |view| {
                 let member = view
                     .peer()
-                    .permissions(view.device().device_public_key, SystemTime::now())?;
+                    .permissions(view.device().device_public_key, SystemTime::now())
+                    .map_err(|error| error.to_string())?;
                 Ok((view.device().clone(), member.person))
             })
             .unwrap();

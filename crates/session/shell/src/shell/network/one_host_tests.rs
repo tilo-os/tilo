@@ -1386,7 +1386,8 @@ impl Device {
             .with_current(room, |view| {
                 Ok(view
                     .peer()
-                    .permissions(view.device().device_public_key, SystemTime::now())?
+                    .permissions(view.device().device_public_key, SystemTime::now())
+                    .map_err(|error| error.to_string())?
                     .policy)
             })
             .ok()

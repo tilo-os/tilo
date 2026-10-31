@@ -408,6 +408,7 @@ mod owner_commit_tests {
             self.0
                 .permissions(cert.device_public_key, SystemTime::now())
                 .map(|_| ())
+                .map_err(|error| error.to_string())
         }
     }
     fn owner_tree(owner: &crate::test_owner::SessionOwner) -> WorkspaceTreeHandle {
@@ -973,6 +974,7 @@ mod owner_commit_tests {
                 }
                 peer.permissions(cert.device_public_key, SystemTime::now())
                     .map(|_| ())
+                    .map_err(|error| error.to_string())
             }
         }
         impl crate::services::WorkspaceAuthority for CurrentOwner {

@@ -108,6 +108,7 @@ impl CertificateAuthority for Native {
             view.peer()
                 .permissions(cert.device_public_key, std::time::SystemTime::now())
                 .map(|_| ())
+                .map_err(|error| error.to_string())
         })
     }
     fn governs(&self, requested: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {

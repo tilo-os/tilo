@@ -346,7 +346,7 @@ impl Rooms {
             let policy = governed
                 .peer()
                 .permissions(self.inner.host.cert.device_public_key, SystemTime::now())
-                .map_err(CollaborationError::new)?
+                .map_err(|error| CollaborationError::new(error.to_string()))?
                 .policy;
             if policy.is_blocked(&hex::encode(user)) {
                 return Err(CollaborationError::new(

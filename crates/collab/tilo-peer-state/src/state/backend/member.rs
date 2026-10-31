@@ -1,39 +1,11 @@
 //! One current-member algorithm over actual admitted room data.
-use super::{CertificateLookupError, GovernedIdentity, PeerCore, Role, SystemTime};
+use super::{GovernedIdentity, PeerCore, Role, SystemTime};
 use crate::room::key_hex::KeyHex;
+use crate::state::MembershipError;
 use std::collections::BTreeMap;
 use tilo_action_policy::{Bound, Grant, Subject};
 use tilo_workspace_join::delegation::Delegate;
 
-#[derive(Debug)]
-pub(in crate::state) enum Error {
-    Certificate(CertificateLookupError),
-    GovernanceMissing,
-    Absent,
-    LegacyJson(String),
-    CertificateMismatch,
-    RevocationRoot,
-    Revocation(tilo_user_identity::RevocationError),
-    RoomRevoked,
-    DelegateInactive(crate::state::delegates::DelegateInactive),
-    NoMembership,
-}
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Certificate(e) => e.fmt(f),
-            Self::LegacyJson(e) => f.write_str(e),
-            Self::Revocation(e) => e.fmt(f),
-            Self::GovernanceMissing => f.write_str("room governance missing"),
-            Self::Absent => f.write_str("device is absent from governed roster"),
-            Self::CertificateMismatch => f.write_str("governed certificate mismatch"),
-            Self::RevocationRoot => f.write_str("revocation root mismatch"),
-            Self::RoomRevoked => f.write_str("device revoked by room"),
-            Self::DelegateInactive(reason) => reason.fmt(f),
-            Self::NoMembership => f.write_str("person has no room membership"),
-        }
-    }
-}
 trait Policy {
     fn owner(&self) -> Option<&str>;
     fn members(&self) -> &BTreeMap<String, Role>;
@@ -66,38 +38,40 @@ fn current<'peer, P: Policy>(
     peer: &'peer PeerCore,
     source: &[u8; 32],
     now: SystemTime,
-    collect: impl FnOnce(&'peer crate::cached_document::CachedDocument) -> Result<P, Error>,
-) -> Result<(Role, Option<Bound>), Error> {
+    collect: impl FnOnce(
+        &'peer crate::cached_document::CachedDocument,
+    ) -> Result<P, MembershipError>,
+) -> Result<(Role, Option<Bound>), MembershipError> {
     let cert = peer
         .certificate_typed(source, now)
-        .map_err(Error::Certificate)?;
-    let room = peer.room_doc.as_ref().ok_or(Error::GovernanceMissing)?;
+        .map_err(MembershipError::from)?;
+    let room = peer.room_doc.as_ref().ok_or(MembershipError::GovernanceMissing)?;
     let policy = collect(room)?;
     let identity = policy.identity();
     if identity.device_cert != *cert {
-        return Err(Error::CertificateMismatch);
+        return Err(MembershipError::CertificateMismatch);
     }
     let mut revoked = false;
     for entry in &identity.revocations {
         if entry.user_public_key != cert.user_public_key {
-            return Err(Error::RevocationRoot);
+            return Err(MembershipError::RevocationRoot);
         }
         // The historical temporary union only served is_revoked(source).
         // Verify EVERY row, in the same order, including duplicate targets and
         // rows after a matching target. No cloned revocation map is necessary.
-        tilo_user_identity::verify_revocation_entry(entry).map_err(Error::Revocation)?;
+        tilo_user_identity::verify_revocation_entry(entry).map_err(MembershipError::Revocation)?;
         revoked |= &entry.revoked_device_public_key == source;
     }
     if revoked {
-        return Err(Error::RoomRevoked);
+        return Err(MembershipError::Revoked);
     }
     identity
         .delegate_acting(&peer.room, crate::state::now_ns(now))
-        .map_err(Error::DelegateInactive)?;
+        .map_err(MembershipError::Delegate)?;
     let person = key_text(&cert.user_public_key);
     let role = policy
         .role(&peer.room, person.as_str())
-        .ok_or(Error::NoMembership)?;
+        .ok_or(MembershipError::NoMembership)?;
     // A delegate acts with its person's authority bounded by its own: an
     // agent by the agent preset, a bot by its derived grant in the room's
     // policy. Neither governs the room, and neither rises above an Editor.
@@ -145,7 +119,7 @@ pub(in crate::state) fn legacy(
     peer: &PeerCore,
     source: &[u8; 32],
     now: SystemTime,
-) -> Result<(Role, Option<Bound>), Error> {
+) -> Result<(Role, Option<Bound>), MembershipError> {
     current(peer, source, now, |room| {
         let data = room.policy();
         let key = key_text(source);
@@ -153,9 +127,9 @@ pub(in crate::state) fn legacy(
         let identity = room
             .identities()
             .get(key.as_str())
-            .ok_or(Error::Absent)?
+            .ok_or(MembershipError::Absent)?
             .as_ref()
-            .map_err(|error| Error::LegacyJson(error.clone()))?;
+            .map_err(|error| MembershipError::MalformedIdentity(error.clone()))?;
         Ok(LegacyPolicy { data, identity })
     })
 }

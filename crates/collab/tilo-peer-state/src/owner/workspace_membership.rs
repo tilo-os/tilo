@@ -160,7 +160,8 @@ mod tests {
                 |view| {
                     let authority = view
                         .peer()
-                        .permissions(fixture.certificate.device_public_key, fixture.now)?;
+                        .permissions(fixture.certificate.device_public_key, fixture.now)
+                        .map_err(|error| error.to_string())?;
                     Ok(authority
                         .policy
                         .grants

@@ -60,7 +60,9 @@ fn current_member_rechecks_removal() {
 }
 // Literal pre-extraction role body, with the historical projection oracle.
 fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result<Role, String> {
-    let cert = peer.certificate(source, now)?;
+    let cert = peer
+        .certificate(source, now)
+        .map_err(|error| error.to_string())?;
     let room = peer
         .core
         .room_doc
@@ -82,7 +84,9 @@ fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result
             .get(&hex::encode(source))
             .ok_or("device is absent from governed roster")?,
     )
-    .map_err(err)?;
+    .map_err(|error| {
+        crate::state::MembershipError::MalformedIdentity(std::sync::Arc::new(error)).to_string()
+    })?;
     if identity.device_cert != *cert {
         return Err("governed certificate mismatch".into());
     }

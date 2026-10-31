@@ -4,7 +4,8 @@ use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
     BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, GovernedMember, Grant,
     GrantId, NeighbourMsg, ROOT, ReadDoc, RecordReaders, RevocationList, Role, SigningKey, Subject,
-    SystemTime, Transactable, TransportOrigin, administrator_grant_id, err, governed_map,
+    MembershipError, SystemTime, Transactable, TransportOrigin, administrator_grant_id, err,
+    governed_map,
     member_role_from_role, now_ns, room,
 };
 
@@ -291,16 +292,19 @@ impl PeerGovernance<'_> {
         // membership is decided once the governor holds it
         // ([`PeerGovernanceMut::renew_member_certificate`]).
         if self.renewal_of(device_cert, now)?.is_none() {
-            self.peer.certificate(&device_cert.device_public_key, now)?;
+            self.peer
+                .certificate(&device_cert.device_public_key, now)
+                .map_err(|error| error.to_string())?;
+            // A device the room admitted and then removed is refused as
+            // removed, not as a stranger.
             match self.peer.permissions(device_cert.device_public_key, now) {
                 Ok(_) => {}
-                Err(error)
-                    if error.contains("no room membership")
-                        && self.peer.has_governed_admission(device_cert) =>
+                Err(MembershipError::NoMembership)
+                    if self.peer.has_governed_admission(device_cert) =>
                 {
                     return Err("member has been removed".into());
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.to_string()),
             }
         }
         crate::join::MembershipChallenge::new(
@@ -835,7 +839,7 @@ impl super::StatePeer {
     fn require_inviter(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
         let device = key.verifying_key().to_bytes();
         self.require_member_writer(key, now)?;
-        let member = self.permissions(device, now)?;
+        let member = self.permissions(device, now).map_err(|error| error.to_string())?;
         let bound = tilo_action_policy::roles::foreign_device_bound();
         member
             .policy

@@ -17,7 +17,7 @@ impl StatePeer {
         if self.core.documents.contains_key(route) || !empty_genesis(bytes) {
             return Err("only the owner's device may publish a retained checkpoint".into());
         }
-        let member = self.permissions(author, now)?;
+        let member = self.permissions(author, now).map_err(|error| error.to_string())?;
         if !self.may_create_record(&member, route, now) {
             return Err("the room does not let this member create the record".into());
         }

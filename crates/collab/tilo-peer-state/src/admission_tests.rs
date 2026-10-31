@@ -199,11 +199,10 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
         now,
     )
     .unwrap();
-    assert!(
-        peer.permissions(cert.device_public_key, now)
-            .unwrap_err()
-            .contains("membership")
-    );
+    assert!(matches!(
+        peer.permissions(cert.device_public_key, now),
+        Err(MembershipError::NoMembership)
+    ));
     assert_eq!(
         old.permissions(cert.device_public_key, now).unwrap().role,
         collab_types::Role::Editor
@@ -1684,10 +1683,10 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
         .unwrap();
     assert!(learned.metadata_changed);
     assert!(
-        receiver
-            .permissions(bc.device_public_key, now)
-            .unwrap_err()
-            .contains("revoked"),
+        matches!(
+            receiver.permissions(bc.device_public_key, now),
+            Err(MembershipError::Revoked)
+        ),
         "external revocation must take effect with a warm policy cache"
     );
     let mut restored = StatePeer::restore(
@@ -1699,12 +1698,10 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
         now,
     )
     .unwrap();
-    assert!(
-        restored
-            .permissions(b.verifying_key().to_bytes(), now)
-            .unwrap_err()
-            .contains("revoked")
-    );
+    assert!(matches!(
+        restored.permissions(b.verifying_key().to_bytes(), now),
+        Err(MembershipError::Revoked)
+    ));
     let mut doc = AutoCommit::load(&native.document("test.app", "tab:1").unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "new", "forbidden").unwrap();
@@ -2024,10 +2021,12 @@ fn expired_known_identity_does_not_block_governed_join() {
     assert!(existing.permissions(cert.device_public_key, now).is_ok());
     let later = now + Duration::from_secs(2);
     assert!(
-        existing
-            .permissions(cert.device_public_key, later)
-            .unwrap_err()
-            .contains("expired"),
+        matches!(
+            existing.permissions(cert.device_public_key, later),
+            Err(MembershipError::Certificate(
+                tilo_user_identity::DeviceCertError::Expired
+            ))
+        ),
         "a warm policy cache must not cache certificate validity"
     );
     let mut next = governor
@@ -2044,12 +2043,12 @@ fn expired_known_identity_does_not_block_governed_join() {
             .unwrap()
             .metadata_changed
     );
-    assert!(
-        existing
-            .permissions(cert.device_public_key, later)
-            .unwrap_err()
-            .contains("expired")
-    );
+    assert!(matches!(
+        existing.permissions(cert.device_public_key, later),
+        Err(MembershipError::Certificate(
+            tilo_user_identity::DeviceCertError::Expired
+        ))
+    ));
     assert!(existing.permissions(next.device_public_key, later).is_ok());
     let restored = StatePeer::restore(
         &existing.durable().unwrap(),
@@ -2061,10 +2060,12 @@ fn expired_known_identity_does_not_block_governed_join() {
     )
     .unwrap();
     assert!(
-        restored
-            .permissions(cert.device_public_key, later)
-            .unwrap_err()
-            .contains("expired"),
+        matches!(
+            restored.permissions(cert.device_public_key, later),
+            Err(MembershipError::Certificate(
+                tilo_user_identity::DeviceCertError::Expired
+            ))
+        ),
         "expired historical certificates restore but never regain current access"
     );
     let mut empty = StatePeer::new(
@@ -2195,12 +2196,12 @@ fn expired_pinned_authority_restores_as_history_but_cannot_authorize() {
     )
     .unwrap();
     assert!(restored.certificates().contains(&authority));
-    assert!(
-        restored
-            .permissions(authority.device_public_key, later)
-            .unwrap_err()
-            .contains("expired")
-    );
+    assert!(matches!(
+        restored.permissions(authority.device_public_key, later),
+        Err(MembershipError::Certificate(
+            tilo_user_identity::DeviceCertError::Expired
+        ))
+    ));
 }
 #[test]
 fn governed_import_is_atomic_even_for_direct_admission() {

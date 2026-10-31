@@ -33,10 +33,15 @@ impl PeerWorkspaceMut<'_> {
         if key.verifying_key().to_bytes() != caller.device_public_key {
             return Err("a shortcut change is signed by its caller's own device".into());
         }
-        if self.peer.certificate(&caller.device_public_key, now)? != caller {
+        if self
+            .peer
+            .certificate(&caller.device_public_key, now)
+            .map_err(|error| error.to_string())?
+            != caller
+        {
             return Err("shortcut caller is not exact current admitted evidence".into());
         }
-        let member = self.peer.permissions(caller.device_public_key, now)?;
+        let member = self.peer.permissions(caller.device_public_key, now).map_err(|error| error.to_string())?;
         if !member.allows(
             &tilo_action_policy::TreePath::room(&self.peer.core.room),
             tilo_action_policy::ActionKind::Undoable,

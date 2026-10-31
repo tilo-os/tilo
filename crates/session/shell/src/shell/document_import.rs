@@ -342,7 +342,8 @@ impl HostedRooms for NativeHostedRooms {
             .with_current(room, |view| {
                 let member = view
                     .peer()
-                    .permissions(view.device().device_public_key, SystemTime::now())?;
+                    .permissions(view.device().device_public_key, SystemTime::now())
+                    .map_err(|error| error.to_string())?;
                 if member.role != collab_types::Role::Owner {
                     return Ok(None);
                 }

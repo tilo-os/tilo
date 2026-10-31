@@ -57,7 +57,8 @@ impl Connect {
                 return Err("native relay custody differs from enrollment".into());
             }
             view.peer()
-                .permissions(cert.device_public_key, std::time::SystemTime::now())?;
+                .permissions(cert.device_public_key, std::time::SystemTime::now())
+                .map_err(|error| error.to_string())?;
             if !view.peer().certificates().contains(&cert) {
                 return Err("selected certificate differs from current admitted roster".into());
             }
@@ -285,7 +286,8 @@ impl Scope {
                 return Err("native refresh current owner changed".into());
             }
             view.peer()
-                .permissions(self.device.device_public_key, std::time::SystemTime::now())?;
+                .permissions(self.device.device_public_key, std::time::SystemTime::now())
+                .map_err(|error| error.to_string())?;
             let mut last = self
                 .refresh_sent
                 .lock()
@@ -414,7 +416,8 @@ impl Scope {
                     return Err("native publication custody changed".into());
                 }
                 view.peer()
-                    .permissions(selected.device_public_key, std::time::SystemTime::now())?;
+                    .permissions(selected.device_public_key, std::time::SystemTime::now())
+                    .map_err(|error| error.to_string())?;
                 let mut cursor = self
                     .cursor
                     .lock()
@@ -626,6 +629,7 @@ impl Input {
             view.peer()
                 .permissions(self.author, std::time::SystemTime::now())
                 .map(crate::MemberAuthority::standing)
+                .map_err(|error| error.to_string())
         })
     }
 }

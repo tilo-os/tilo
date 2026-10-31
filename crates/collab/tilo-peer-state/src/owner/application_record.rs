@@ -160,7 +160,10 @@ impl NativeWorkspaceOwner {
         {
             return Err("application creator lacks this device's own signing custody".into());
         }
-        let member = candidate.peer.permissions(creator.device_public_key, now)?;
+        let member = candidate
+            .peer
+            .permissions(creator.device_public_key, now)
+            .map_err(|error| error.to_string())?;
         if candidate.peer.document(&route.app, &route.record).is_some() {
             return Ok(false);
         }

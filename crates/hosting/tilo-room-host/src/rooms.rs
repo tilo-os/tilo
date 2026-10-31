@@ -87,6 +87,11 @@ use web_time::SystemTime;
 pub(crate) use actions::{GovernedPlane, HostRoomActions};
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{CollaborationError, GovernanceCompletion};
+
+/// A device's membership refusal, as the host reports it.
+pub(crate) fn member_refusal(error: tilo_peer_state::MembershipError) -> CollaborationError {
+    CollaborationError::new(error.to_string())
+}
 pub use pages::PreAdmitRequest;
 pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListed};
 
@@ -1451,7 +1456,7 @@ impl Rooms {
         let policy = governed
             .peer()
             .permissions(self.inner.host.cert.device_public_key, now)
-            .map_err(CollaborationError::new)?
+            .map_err(member_refusal)?
             .policy;
         let owner = self.inner.host.cert.user_public_key;
         let marks = governed
@@ -1502,7 +1507,7 @@ impl Rooms {
             .await
             .peer()
             .permissions(self.inner.host.cert.device_public_key, now)
-            .map_err(CollaborationError::new)?
+            .map_err(member_refusal)?
             .policy;
         let cx = tilo_action_policy::Context::at_time(now);
         Ok(policy
@@ -1795,7 +1800,10 @@ impl Rooms {
             return Ok(());
         }
         let now = SystemTime::now();
-        let member = room.peer().permissions(author, now)?;
+        let member = room
+            .peer()
+            .permissions(author, now)
+            .map_err(|error| error.to_string())?;
         let node = collab_types::validator::document_node(&member.policy.room, &app_id, &record_id);
         if !member.allows(&node, tilo_action_policy::ActionKind::Undoable, now) {
             return Err(format!(

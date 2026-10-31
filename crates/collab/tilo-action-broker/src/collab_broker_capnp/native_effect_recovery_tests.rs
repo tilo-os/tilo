@@ -56,6 +56,7 @@ impl crate::peer_actions::CertificateAuthority for NativeAuthority {
             view.peer()
                 .permissions(certificate.device_public_key, SystemTime::now())
                 .map(|_| ())
+                .map_err(|error| error.to_string())
         })
     }
 }

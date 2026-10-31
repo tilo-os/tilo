@@ -95,7 +95,8 @@ fn native_existing_writer_preserves_delegation_but_person_restriction_wins() {
         .with_current(room, |view| {
             let member = view
                 .peer()
-                .permissions(view.device().device_public_key, now)?;
+                .permissions(view.device().device_public_key, now)
+                .map_err(|error| error.to_string())?;
             Ok((view.device().clone(), member.person, member.policy.node()))
         })
         .unwrap();
@@ -232,7 +233,8 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
         .with_current(room, |view| {
             Ok(view
                 .peer()
-                .permissions(governor.device_public_key, now)?
+                .permissions(governor.device_public_key, now)
+                .map_err(|error| error.to_string())?
                 .policy
                 .grants)
         })
@@ -369,7 +371,8 @@ fn access_as(
         .with_current(room, |view| {
             let member = view
                 .peer()
-                .permissions(certificate.device_public_key, now)?;
+                .permissions(certificate.device_public_key, now)
+                .map_err(|error| error.to_string())?;
             Ok(member
                 .policy
                 .app_authors(app, &tilo_action_policy::Context::at_time(now)))
@@ -446,7 +449,8 @@ fn an_app_authorized_by_the_room_opens_like_the_one_already_here() {
         .with_current(room, |view| {
             let member = view
                 .peer()
-                .permissions(view.device().device_public_key, now)?;
+                .permissions(view.device().device_public_key, now)
+                .map_err(|error| error.to_string())?;
             Ok((view.device().clone(), member.person))
         })
         .unwrap();

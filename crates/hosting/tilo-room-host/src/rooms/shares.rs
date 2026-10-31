@@ -15,7 +15,7 @@ use tilo_peer_state::join_ledger::request_digest;
 use tilo_peer_state::room::share;
 use tilo_user_identity::DeviceCert;
 
-use super::{CollaborationError, Rooms, system_time};
+use super::{CollaborationError, Rooms, member_refusal, system_time};
 
 /// A request id of its own for each change: a share ended and made again
 /// is a new change, which a repeated id would answer as done.
@@ -53,7 +53,7 @@ impl Rooms {
         let member = governed
             .peer()
             .permissions(device.device_public_key, at)
-            .map_err(CollaborationError::new)?;
+            .map_err(member_refusal)?;
         let cx = Context::at_time(at);
         let bound = tilo_action_policy::roles::foreign_device_bound();
         let device_key = hex::encode(device.device_public_key);
@@ -109,7 +109,7 @@ impl Rooms {
         let member = governed
             .peer()
             .permissions(device.device_public_key, at)
-            .map_err(CollaborationError::new)?;
+            .map_err(member_refusal)?;
         let cx = Context::at_time(at);
         let bound = tilo_action_policy::roles::foreign_device_bound();
         let ids = share::ended_by(

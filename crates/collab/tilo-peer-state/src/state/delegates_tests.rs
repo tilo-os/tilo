@@ -10,6 +10,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use tilo_workspace_join::delegation::{DelegateScope, Delegation};
 use web_time::{Duration, SystemTime};
 
+use crate::state::{DelegateInactive, MembershipError};
 use crate::{StatePeer, TransportOrigin};
 
 const ROOT_SEED: [u8; 32] = [1; 32];
@@ -259,12 +260,10 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
 
     // Its delegation ends: no reader, no writer, still on the roster.
     let after = until + Duration::from_secs(1);
-    assert!(
-        member
-            .permissions(device, after)
-            .unwrap_err()
-            .contains("not current")
-    );
+    assert!(matches!(
+        member.permissions(device, after),
+        Err(MembershipError::Delegate(DelegateInactive::Delegation))
+    ));
     assert!(
         !member
             .governance()
@@ -370,12 +369,10 @@ fn a_withdrawn_agent_is_dead_at_once_and_never_readmitted() {
             .withdraw_agent(device, &authority, withdrawn)
             .unwrap()
     );
-    assert!(
-        governor
-            .permissions(device, withdrawn)
-            .unwrap_err()
-            .contains("withdrawn")
-    );
+    assert!(matches!(
+        governor.permissions(device, withdrawn),
+        Err(MembershipError::Delegate(DelegateInactive::Withdrawn))
+    ));
     assert!(
         !governor
             .governance()

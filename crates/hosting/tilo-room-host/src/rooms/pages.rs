@@ -28,7 +28,8 @@ use tilo_user_identity::DeviceCert;
 use super::authority::RoomOp;
 use super::{
     CancelInvitationRequest, CollaborationError, GovernedRoom, IssueInvitationRequest,
-    IssuedInvitation, RemoveMemberRequest, Rooms, SetMemberRoleRequest, system_time,
+    IssuedInvitation, RemoveMemberRequest, Rooms, SetMemberRoleRequest, member_refusal,
+    system_time,
 };
 use crate::host_authority::HostOperation;
 use tilo_lock::MutexRecover as _;
@@ -348,7 +349,7 @@ impl Rooms {
         let member = room
             .peer()
             .permissions(device.device_public_key, at)
-            .map_err(CollaborationError::new)?;
+            .map_err(member_refusal)?;
         if member.foreign
             || member.delegate.is_some()
             || member.person != hex::encode(device.user_public_key)
@@ -398,7 +399,7 @@ impl Rooms {
         let member = governed
             .peer()
             .permissions(device.device_public_key, now)
-            .map_err(CollaborationError::new)?;
+            .map_err(member_refusal)?;
         drop(governed);
         Ok(member.allows(&node, tilo_action_policy::ActionKind::Undoable, now))
     }
@@ -1089,7 +1090,7 @@ impl Rooms {
                 RoomOp::Govern(governance::INVITE),
                 now,
             )?;
-            room.peer().permissions(device, system_time(now))?;
+            room.peer().permissions(device, system_time(now)).map_err(|error| error.to_string())?;
             return Ok(());
         }
         let (device, proof_digest, redemption, name) = {

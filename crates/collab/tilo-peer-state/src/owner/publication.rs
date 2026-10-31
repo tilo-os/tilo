@@ -1072,7 +1072,8 @@ impl NativeWorkspaceOwner {
     ) -> Result<T, String> {
         self.with_current(room, |view| {
             view.peer
-                .permissions(view.device().device_public_key, now)?;
+                .permissions(view.device().device_public_key, now)
+                .map_err(|error| error.to_string())?;
             read(
                 view,
                 NativeOutgoing {
@@ -1117,7 +1118,8 @@ impl NativeWorkspaceOwner {
         }
         candidate
             .peer
-            .permissions(candidate.device().device_public_key, now)?;
+            .permissions(candidate.device().device_public_key, now)
+            .map_err(|error| error.to_string())?;
         let before = state(&candidate)?.revision;
         retire(&mut candidate)?;
         let originals = decode_entries(&state(&candidate)?.entries)?;
@@ -1181,7 +1183,8 @@ impl NativeWorkspaceOwner {
         }
         candidate
             .peer
-            .permissions(candidate.device().device_public_key, now)?;
+            .permissions(candidate.device().device_public_key, now)
+            .map_err(|error| error.to_string())?;
         let mut renewed = false;
         for entry in state(&candidate)?.entries.clone() {
             let original: NeighbourMsg =
@@ -1260,7 +1263,8 @@ impl NativeWorkspaceOwner {
         }
         candidate
             .peer
-            .permissions(candidate.device().device_public_key, now)?;
+            .permissions(candidate.device().device_public_key, now)
+            .map_err(|error| error.to_string())?;
         let due = candidate.peer.publication().sealed_records_to_compact();
         let mut compacted = 0usize;
         for (app, record) in &due {

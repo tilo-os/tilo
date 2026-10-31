@@ -45,7 +45,8 @@ fn app_authorship_is_governor_signed_durable_and_exact_retry_only() {
             let now = std::time::SystemTime::now();
             let policy = view
                 .peer()
-                .permissions(fixture.certificate.device_public_key, now)?
+                .permissions(fixture.certificate.device_public_key, now)
+                .map_err(|error| error.to_string())?
                 .policy;
             let cx = tilo_action_policy::Context::at_time(now);
             assert!(policy.app_authors("so.tilo.chat", &cx));
@@ -93,7 +94,8 @@ fn the_owners_own_grants_never_restrict_their_app_delegation() {
         .with_current(room, |view| {
             let before = view.peer().clone();
             let person = before
-                .permissions(fixture.certificate.device_public_key, fixture.now)?
+                .permissions(fixture.certificate.device_public_key, fixture.now)
+                .map_err(|error| error.to_string())?
                 .person;
             let mut candidate = before.clone();
             candidate.governance_mut().put_governed_grants(

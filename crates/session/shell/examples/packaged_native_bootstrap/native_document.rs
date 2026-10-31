@@ -192,7 +192,8 @@ fn check_agent_membership(
     let generation = owner.with_outgoing(room, now, |view, _| {
         let member = view
             .peer()
-            .permissions(view.device().device_public_key, now)?;
+            .permissions(view.device().device_public_key, now)
+            .map_err(|error| error.to_string())?;
         let seconds = now
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|_| "owner policy clock is unavailable")?
@@ -229,7 +230,8 @@ fn native_record_observation(
         )?;
         let member = view
             .peer()
-            .permissions(view.device().device_public_key, now)?;
+            .permissions(view.device().device_public_key, now)
+            .map_err(|error| error.to_string())?;
         let app_write_permitted = member
             .policy
             .app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now));
