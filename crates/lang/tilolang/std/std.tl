@@ -240,7 +240,11 @@ view page<R>(of: R, canvas: Bool = false, empty: Bool = false, header: View, con
 /// a divider where the day changes; the `row` then shows only what the item says. Each item's
 /// menu offers its actions, after whatever menu the `row` attaches (`ui.ContextMenu`), so every
 /// action stays reachable; the row's hover toolbar and swipe are its own.
-view transcript<R, T>(of: R, items: List<T>, composer: View, row: (T) -> View) {
+///
+/// `unread` names the first item the person has not seen (`first_unseen(of)`, or `.none`): the
+/// list draws the "New messages" divider over it, keeps the reader where they are as items
+/// arrive, and offers the way back to it, or to what is new, while they read history.
+view transcript<R, T>(of: R, items: List<T>, unread: Option<T> = .none, composer: View, row: (T) -> View) {
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         actions: {
             std.header(actions(of))
@@ -252,7 +256,7 @@ view transcript<R, T>(of: R, items: List<T>, composer: View, row: (T) -> View) {
                         composer
                     }
                 }
-                ui.VirtualList(transcript: true) {
+                ui.VirtualList(transcript: true, unread: unread) {
                     for m in items {
                         let made = created(m)
                         let offered = actions(m)

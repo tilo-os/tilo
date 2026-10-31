@@ -172,6 +172,17 @@ impl RichValue {
         String::new()
     }
 
+    /// Whether any run of it is a `mention` mark naming `person` (`tilo_reference::embed::MARK`):
+    /// what a mention count counts, read the way the system's mention notices read it.
+    #[must_use]
+    pub fn mentions(&self, person: &str) -> bool {
+        self.blocks.iter().any(|b| {
+            b.marks.iter().any(|m| {
+                m.name == MENTION && matches!(&m.value, MarkValue::Str(value) if value == person)
+            })
+        })
+    }
+
     /// Every reference it holds, in the order the text says them, each once.
     #[must_use]
     pub fn references(&self) -> Vec<Reference> {

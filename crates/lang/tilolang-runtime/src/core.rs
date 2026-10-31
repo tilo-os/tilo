@@ -299,19 +299,20 @@ impl Core {
             Abort, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, ArgAt, ChangeView,
             CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRemove, CollWhere,
             CollWhereWith, Dated, Delivery, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew,
-            EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, Filters, FloatToStr, IdentPart,
-            IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, Lenses, ListEnd,
-            ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH, ListPushI,
-            ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd,
-            MapSetRemove, Members, MetaOf, ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq,
-            PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Query, QueueBlock, RecNew,
-            RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF,
-            ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, RichEmpty, RichNew, RichPart,
-            RichTime, RunChanges, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers,
-            StateAt, StateGet, Steps, StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke,
-            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions,
-            UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI,
-            Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, WorkspaceMembers,
+            EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, Filters, FirstUnseen, FloatToStr,
+            IdentPart, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, Lenses,
+            ListEnd, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH,
+            ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd,
+            MapSetRemove, Members, Mentions, MetaOf, ModelCall, NoneV, Now, Outside, Phrase,
+            PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Query,
+            QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF,
+            ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, RichEmpty,
+            RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove, SomeF, SomeH, SomeI,
+            SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat, StrEq, StrLen,
+            StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
+            TupleSetI, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
+            UiPropH, UiPropI, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
+            WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -362,9 +363,8 @@ impl Core {
             | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet | ActThen | ActOpen
             | ActUndo | ChangeView | UiActions => self.ui_import(imp, a),
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions
-            | RunChanges | Unseen | Steps | VersionEnd | Phrase | Dated => {
-                self.platform_import(imp, a)
-            }
+            | RunChanges | Unseen | FirstUnseen | Mentions | Steps | VersionEnd | Phrase
+            | Dated => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }

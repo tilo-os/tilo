@@ -104,6 +104,7 @@ fn stepped(
             resource,
             change: hash.clone(),
             left: None,
+            placed: Vec::new(),
         })
         .collect()
 }

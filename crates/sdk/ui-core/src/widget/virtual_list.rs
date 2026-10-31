@@ -144,6 +144,12 @@ pub trait ListModel {
     fn label(&self, _index: usize) -> Option<String> {
         None
     }
+
+    /// The key of the row showing the resource `id`, when the model can say: a host that
+    /// renders rows as they show offers this ([`crate::component::RowSource`]).
+    fn key_presenting(&self, _id: &str) -> Option<Self::Key> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -486,6 +492,20 @@ pub struct VirtualList<M: ListModel> {
     placed: Option<Range<usize>>,
     /// The rows near the box at the last placement, placed as they leave.
     near_placed: Range<usize>,
+    /// The item of a transcript the reader has not seen
+    /// ([`crate::widget::conversation::Jump`]): a "New messages" divider stands over its row.
+    /// Kept by the item's id, not its row's key: a host renders rows as they show, so the key
+    /// is worked out when it is needed ([`Self::unread_from`]).
+    unread: Option<String>,
+    /// Where the pill over a transcript was pressed, and whether the pointer is on it.
+    jump_hovered: bool,
+    jump_pressed: bool,
+    /// The pill's height and widest width, from the last layout: a press and the pointer test
+    /// its rectangle without a theme.
+    pill_height: f64,
+    pill_width: f64,
+    /// How an item becomes the key of the row showing it, for a model that names none.
+    names_item: std::cell::RefCell<Option<Box<dyn Fn(&str) -> Option<M::Key>>>>,
 }
 
 impl<M: ListModel> VirtualList<M> {
@@ -595,6 +615,12 @@ impl<M: ListModel> VirtualList<M> {
             retry_asked: Rc::new(Cell::new(None)),
             placed: None,
             near_placed: 0..0,
+            unread: None,
+            jump_hovered: false,
+            jump_pressed: false,
+            pill_height: 0.0,
+            pill_width: 0.0,
+            names_item: std::cell::RefCell::new(None),
         };
         list.refresh_anchor();
         list
@@ -876,6 +902,147 @@ impl<M: ListModel> VirtualList<M> {
         self.at_end = true;
         self.keep_end();
         self
+    }
+
+    /// Where a transcript's first unread row is: the "New messages" divider stands over it, and
+    /// while it is out of view a pill at the foot offers to take the reader there
+    /// ([`crate::widget::conversation::Jump`]). `None` draws neither. A list that is not a
+    /// transcript does not mark one.
+    #[must_use]
+    pub fn unread_from(mut self, item: Option<String>) -> Self {
+        self.unread = item.filter(|_| self.follow_end);
+        self
+    }
+
+    /// The item the transcript's reader has not seen, as the list was told.
+    #[must_use]
+    pub fn unread_item(&self) -> Option<&str> {
+        self.unread.as_deref()
+    }
+
+    /// The row showing the item the reader has not seen, as the list holds its rows now: the
+    /// model's own answer, or, for a model of plain values (nothing a conversation holds), the
+    /// keys the host gave.
+    fn unread_row(&self) -> Option<M::Key> {
+        let item = self.unread.as_deref()?;
+        self.model
+            .key_presenting(item)
+            .or_else(|| self.names_item.borrow().as_ref().and_then(|f| f(item)))
+    }
+
+    /// How the list turns the item its reader has not seen into the key of its row, for a model
+    /// of plain values that names no resources: the host that renders rows knows them.
+    pub fn set_key_presenting(&mut self, f: impl Fn(&str) -> Option<M::Key> + 'static) {
+        *self.names_item.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Move the divider to the row `key`: the rows the old and the new one are on build again,
+    /// so each shows the divider over it (or not) at once, without the list's items changing.
+    pub fn set_unread(&mut self, item: Option<String>) {
+        let item = item.filter(|_| self.follow_end);
+        if self.unread == item {
+            return;
+        }
+        let before = self.unread_row();
+        self.unread = item;
+        let after = self.unread_row();
+        // Only the rows mounted now are built again; one the divider moves to is built with
+        // the divider when it scrolls in anyway.
+        for row in before.into_iter().chain(after) {
+            if self.mounted.iter().any(|mounted| mounted.key == row) {
+                self.invalidated.insert(row);
+            }
+        }
+        if !self.invalidated.is_empty() {
+            self.remount = true;
+            self.layout_dirty = true;
+        }
+    }
+
+    /// Which way back the pill offers, when it offers one: to the first unread row while it is
+    /// above the view, else to the newest row while the reader is away from its end. A
+    /// transcript with nothing unread offers only the way to what is now.
+    #[must_use]
+    fn jump(&self) -> Option<crate::widget::conversation::Jump> {
+        use crate::widget::conversation::Jump;
+        if !self.follow_end || self.model.is_empty() {
+            return None;
+        }
+        if let Some(key) = self.unread_row() {
+            let in_view = self.model.index_of(&key).is_some_and(|index| {
+                // Its row's foot is below the top of the view: the reader has it, or has read
+                // past it. `item_view_top` is where the row stands in the view already.
+                self.viewport
+                    .item_view_top(index)
+                    .is_some_and(|top| top + self.viewport.item_height(index).unwrap_or(0.0) > 1.0)
+            });
+            return (!in_view).then_some(Jump::Unread);
+        }
+        (!self.at_end).then_some(Jump::Present)
+    }
+
+    /// Take the reader to the first unread row, if there is one: it comes into view, and the
+    /// rows arriving after it no longer move the reader.
+    fn jump_to_unread(&mut self) {
+        let Some(key) = self.unread_row() else {
+            return;
+        };
+        self.at_end = false;
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        self.reveal(&key);
+        // The pill is a jump, not a scroll the hand made: the reader lands there now, and
+        // reads from it, rather than watching the rows glide for a while.
+        let landed = self
+            .scroll
+            .to
+            .take_over(crate::motion::frame_now())
+            .map_or_else(|| self.scroll_offset(), |to| to.y);
+        self.set_scroll_offset(landed);
+    }
+
+    /// Take the reader back to the newest row, following what arrives from then on.
+    fn jump_to_present(&mut self) {
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        self.at_end = true;
+        let _ = self.scroll.to.take_over(crate::motion::frame_now());
+        self.set_scroll_offset(self.viewport.max_offset());
+    }
+
+    /// Take the way back the pill offers.
+    fn follow_pill(&mut self) {
+        match self.jump() {
+            Some(crate::widget::conversation::Jump::Unread) => self.jump_to_unread(),
+            Some(crate::widget::conversation::Jump::Present) => self.jump_to_present(),
+            None => {}
+        }
+    }
+
+    /// The pill's rectangle in `area`, when it shows one: against the trailing edge of the
+    /// column the rows stand in, a gutter in and a control's height above the foot, as wide as
+    /// its word at the caption size.
+    fn pill_rect_for(&self, area: Rect) -> Option<(crate::widget::conversation::Jump, Rect)> {
+        let jump = self.jump()?;
+        let gutter = self.gutter.max(self.bleed);
+        let width = (area.width() * 0.5).min(self.pill_width);
+        let height = self.pill_height;
+        let rect = Rect::new(
+            (area.x1 - gutter - width).max(area.x0),
+            (area.y1 - gutter / 2.0 - height).max(area.y0),
+            (area.x1 - gutter).max(area.x0),
+            (area.y1 - gutter / 2.0).max(area.y0),
+        );
+        Some((jump, rect))
+    }
+
+    /// The pill's rectangle as the last layout placed it, for the pointer and a press.
+    fn pill_rect(&self) -> Option<Rect> {
+        self.pill_rect_for(self.rect).map(|(_, rect)| rect)
+    }
+
+    /// The pill as it draws: what it offers, where, and whether it is hovered.
+    fn jump_face(&self) -> Option<crate::widget::conversation::JumpFace> {
+        let (jump, rect) = self.pill_rect_for(self.rect)?;
+        Some(crate::widget::conversation::JumpFace::new(jump, rect).hovered(self.jump_hovered))
     }
 
     /// How far a list that follows its end stands its rows down while they are shorter than its
@@ -1887,6 +2054,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             RowStance::Column => crate::chrome::column_gutter(theme),
         };
         self.lift = crate::chrome::row_bleed(theme);
+        self.pill_height =
+            crate::widget::ButtonFace::height(crate::widget::ControlSize::Regular, theme);
+        self.pill_width = f64::from(
+            theme
+                .tokens
+                .typography
+                .size(crate::tokens::TextRole::Caption),
+        ) * 24.0
+            + f64::from(theme.tokens.spacing.s4) * 6.0;
         self.motion = theme.motion();
         if let Some(edges) = self.edges.as_mut() {
             edges.theme(theme);
@@ -2230,6 +2406,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             self.vbar
                 .draw(scene, transform, track, self.scroll_metrics(), theme, false);
         }
+        // The way back, over the foot of a transcript the reader has moved away from: to the
+        // first unread row, or to what is being said now.
+        if let Some(pill) = self.jump_face() {
+            pill.paint(&mut PaintCtx::new(scene, transform, text_renderer, theme));
+        }
     }
 
     #[allow(
@@ -2278,6 +2459,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = ctx.logical(position);
+                self.jump_hovered = self.pill_rect().is_some_and(|rect| rect.contains(point));
                 if self.reorder.is_tracking() {
                     self.scroll.momentum.stop();
                     self.update_reorder_pointer(point, crate::time::now());
@@ -2303,6 +2485,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 .is_some_and(|point| self.rect.contains(point)) =>
             {
                 let cursor = self.last_cursor.unwrap_or_default();
+                // A press on the pill over the foot is the pill's, not a drag of the rows.
+                if self.pill_rect().is_some_and(|rect| rect.contains(cursor)) {
+                    self.jump_pressed = true;
+                    *ctx.handled = true;
+                    return;
+                }
                 if self.reorder_validator.is_some()
                     && self.reorder_commit.is_some()
                     && let Some((_, key)) = self.row_at_cursor()
@@ -2322,6 +2510,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 button: MouseButton::Left,
                 ..
             } => {
+                if std::mem::take(&mut self.jump_pressed) {
+                    if self.last_cursor.is_some_and(|point| {
+                        self.pill_rect().is_some_and(|rect| rect.contains(point))
+                    }) {
+                        self.follow_pill();
+                    }
+                    *ctx.handled = true;
+                    return;
+                }
                 if self.reorder.is_tracking() {
                     let source = self.reorder.source().cloned();
                     let active = self.reorder.is_active();
