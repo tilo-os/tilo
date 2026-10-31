@@ -714,6 +714,12 @@ impl Client {
         self.enrolled.try_iter().collect()
     }
 
+    /// What this session says of itself here now.
+    #[must_use]
+    pub fn own(&self) -> OwnPresence {
+        self.own.borrow().clone()
+    }
+
     /// What this session says of itself: changed here, it is said again in
     /// the room in front. Whether it changed.
     pub fn set_own(&self, own: OwnPresence) -> bool {

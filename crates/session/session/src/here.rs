@@ -40,11 +40,7 @@ impl Shared {
                         ),
                         // Idle and away dim their face everywhere else; the
                         // launcher says it in words.
-                        away: person
-                            .availability
-                            .as_deref()
-                            .and_then(ui::Availability::from_id)
-                            .is_some_and(ui::Availability::dims),
+                        away: away(person),
                         tab: person.active_tab,
                     };
                     let mut people: Vec<PersonHere> = workspace
@@ -117,6 +113,16 @@ impl Shared {
             workspaces
         })
     }
+}
+
+/// Whether the desk's row for someone says they are away from their
+/// machine: what dims their face, and what the launcher says in words.
+fn away(person: &tilo_desktop_model::Collaborator) -> bool {
+    person
+        .availability
+        .as_deref()
+        .and_then(ui::Availability::from_id)
+        .is_some_and(ui::Availability::dims)
 }
 
 /// What window `tab` of `workspace` is called, when the workspace shows it.
