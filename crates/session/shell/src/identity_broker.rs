@@ -40,7 +40,7 @@ impl PersonRecordKinds for InstalledApps {
     }
 
     fn earlier_ids(&self, app_id: &str) -> Vec<String> {
-        crate::shell::launcher::installed_earlier_ids()
+        crate::shell::installed_registry::installed_earlier_ids()
             .of(app_id)
             .to_vec()
     }

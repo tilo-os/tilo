@@ -114,6 +114,7 @@ pub use tilo_onboarding_host::identity_provisioning;
 pub mod in_process;
 pub mod input_policy;
 pub(crate) mod input_sources;
+pub(crate) mod installed_registry;
 pub mod keyboard_shortcuts;
 pub mod launch_gate;
 pub(crate) mod launch_readiness;

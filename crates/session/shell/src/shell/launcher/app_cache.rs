@@ -8,6 +8,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::shell::installed_registry::{RegistryStamp, app_cache_roots, registry_stamps};
+
 use super::{InstalledApp, LaunchError, lock, read_installed_apps};
 
 /// Fallback only: the registry is watched with inotify, so a new install
@@ -29,33 +31,6 @@ pub(super) static APP_CACHE_WATCH: Mutex<
 > = Mutex::new(None);
 /// The registries the memoised snapshot was read from, as they were just before the read.
 pub(super) static APP_CACHE_STAMP: Mutex<Option<Vec<Option<RegistryStamp>>>> = Mutex::new(None);
-
-/// Which version of a registry file is on disk. An install replaces the registry by one
-/// rename, its commit point, so a completed install always shows as another file here.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub(super) struct RegistryStamp {
-    device: u64,
-    inode: u64,
-    modified: Option<std::time::SystemTime>,
-    len: u64,
-}
-
-pub(super) fn registry_stamps() -> Vec<Option<RegistryStamp>> {
-    use std::os::unix::fs::MetadataExt as _;
-    app_cache_roots()
-        .iter()
-        .map(|root| {
-            let metadata =
-                std::fs::metadata(root.join(package_store::layout::REGISTRY_FILE)).ok()?;
-            Some(RegistryStamp {
-                device: metadata.dev(),
-                inode: metadata.ino(),
-                modified: metadata.modified().ok(),
-                len: metadata.len(),
-            })
-        })
-        .collect()
-}
 
 /// Pair records with their cache revision while holding the cache lock.
 ///
@@ -235,16 +210,6 @@ pub(super) fn forget_app_cache() {
     *cache = None;
     drop(cache);
     *lock(&APP_CACHE_STAMP) = None;
-}
-
-pub(super) fn app_cache_roots() -> Vec<PathBuf> {
-    [
-        package_store::layout::default_user_root(),
-        package_store::layout::system_data_dir(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
 }
 
 /// Watch the registry roots, package folders included, once per set of roots. A change is
