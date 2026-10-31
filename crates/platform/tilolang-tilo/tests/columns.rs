@@ -2,6 +2,8 @@
 //! answered from runs of a column, in a collection and across the workspace, kept change by
 //! change as a build from the record keeps them, with facet counts read from the same columns.
 
+use std::rc::Rc;
+
 use automerge::AutoCommit;
 use tilolang_runtime::meta::FieldKind;
 use tilolang_runtime::query::{Clock, find, resolve, store_pred};
@@ -462,4 +464,277 @@ fn facet_counts_are_read_from_the_columns() {
         )
         .unwrap();
     assert_eq!(open, [("1".to_owned(), 3), ("0".to_owned(), 1)]);
+}
+
+/// A type whose inbox filter is one membership run and two other conjuncts, one of them the
+/// clock: a snooze that has ended, and a mute that holds.
+const SNOOZED: &str = r#"app so.tilo.inbox "Inbox"
+
+type Thread {
+    title: Text (title)
+    boxes: Set<Text>
+    snoozed_until: Time = Time("1970-01-01T00:00:00Z")
+    muted: Bool = false
+
+    search {
+        filter "Inbox" = boxes.contains("inbox") and snoozed_until <= now and not muted
+    }
+}
+
+type Mail {
+    threads: Collection<Thread>
+}
+
+root Mail
+
+default view main for Mail
+
+view main(m: Mail) {
+    page {
+        for t in m.threads {
+            text(t.title)
+        }
+    }
+}
+"#;
+const INBOX_APP: &str = "so.tilo.inbox";
+
+/// A room whose `threads` collection holds `n` conversations, every fifth snoozed far ahead:
+/// what the paging test reads.
+fn inbox_room(n: usize) -> (Replica, Meta, ResourceRef) {
+    inbox_room_of(SNOOZED, n, |i, item, meta| {
+        use serde_json::json;
+        use tilolang_tilo::record::DynValue;
+        if let Some(DynValue::Register(snoozed)) =
+            item.get_mut(&field_id(meta, "Thread", "snoozed_until"))
+            && i % 5 == 0
+        {
+            snoozed.clone_from(&json!("2030-01-01T00:00:00Z"));
+        }
+        if let Some(DynValue::Register(muted)) = item.get_mut(&field_id(meta, "Thread", "muted")) {
+            muted.clone_from(&json!(i % 3 == 0));
+        }
+    })
+}
+
+/// A room of `source`'s package whose `threads` collection holds `n` conversations, all in the
+/// inbox, each set up by `shape`. Made by one change that creates the root whole, as the bench
+/// seeds a room, so the size costs one write.
+fn inbox_room_of(
+    source: &str,
+    n: usize,
+    shape: impl Fn(usize, &mut tilolang_tilo::DynRecord, &Meta),
+) -> (Replica, Meta, ResourceRef) {
+    use serde_json::json;
+    use tilo_resource::{Collection, Id, Model as _};
+    use tilolang_tilo::action::{DynAction, DynEdit};
+    use tilolang_tilo::record::{DynRecord, DynValue};
+
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(source, "")]);
+    let meta = packages[0].meta.clone();
+    let mail = ada.host.root_of(INBOX_APP).unwrap();
+    ada.commit();
+    let mail_ty = meta.types.iter().find(|t| t.name == "Mail").unwrap();
+    let thread_ty = meta.types.iter().find(|t| t.name == "Thread").unwrap();
+    let schema = tilolang_tilo::schema::lookup(&thread_ty.id).unwrap();
+    let mut threads = Collection::default();
+    for i in 0..n {
+        let mut item = DynRecord::empty(schema).unwrap();
+        if let Some(DynValue::Text(title)) = item.get_mut(&field_id(&meta, "Thread", "title")) {
+            *title = format!("Thread {i:05}");
+        }
+        if let Some(DynValue::Set(boxes)) = item.get_mut(&field_id(&meta, "Thread", "boxes")) {
+            boxes.insert(json!("inbox"));
+        }
+        shape(i, &mut item, &meta);
+        threads.push(Id::from_raw(format!("thread-{i:05}")), item);
+    }
+    let mut root = DynRecord::empty(tilolang_tilo::schema::lookup(&mail_ty.id).unwrap()).unwrap();
+    if let Some(DynValue::Collection(slot)) = root.get_mut(&field_id(&meta, "Mail", "threads")) {
+        *slot = threads;
+    }
+    let create = DynAction {
+        app: INBOX_APP.to_owned(),
+        kind: "tl.so.tilo.inbox.seed".to_owned(),
+        action_id: "$create".to_owned(),
+        args: serde_json::Value::Null,
+        authorship: tilolang_tilo::Authorship::default(),
+        edits: vec![DynEdit::Create {
+            id: mail.id_string(),
+            record: root.to_json(),
+        }],
+    };
+    ada.apply(&create);
+    ada.commit();
+    (ada, meta, mail)
+}
+/// The listing of the inbox filter over `mail`.
+fn inbox_listing(
+    ada: &Replica,
+    meta: &Meta,
+    mail: &ResourceRef,
+) -> Rc<tilolang_runtime::store::Listing> {
+    let thread = meta.types.iter().find(|t| t.name == "Thread").unwrap();
+    let resolved = resolve(
+        &find("is:inbox").unwrap(),
+        thread,
+        &meta.enums,
+        &Clock::at(NOW).unwrap(),
+    )
+    .unwrap();
+    let pred = store_pred(&resolved.pred, thread, INBOX_APP).unwrap();
+    let spec = FieldSpec {
+        id: field_id(meta, "Mail", "threads"),
+        kind: FieldKind::Collection,
+    };
+    ada.host
+        .store()
+        .listing_query(
+            mail,
+            &spec,
+            &thread.id,
+            Some(&pred),
+            resolved.order.as_ref(),
+        )
+        .unwrap()
+}
+
+/// The inbox filter's first page of `room`, and how many conversations it checked one by one
+/// to fill it.
+fn inbox_page(ada: &Replica, meta: &Meta, mail: &ResourceRef) -> (Vec<String>, u64) {
+    let thread = meta.types.iter().find(|t| t.name == "Thread").unwrap();
+    let before = ada.host.store().read_stats().evaluated;
+    let listing = inbox_listing(ada, meta, mail);
+    // What the first page reads: the rows a window shows first.
+    let title = field_id(meta, "Thread", "title");
+    let items = (0..40)
+        .map_while(|index| listing.get(index))
+        .map(|id| {
+            let item = mail.item(&id, thread.id.clone());
+            match ada.host.runtime().read(&item, &title) {
+                Ok(Value::Text(t)) => t,
+                other => panic!("{other:?}"),
+            }
+        })
+        .collect();
+    let checked = ada.host.store().read_stats().evaluated - before;
+    (items, checked)
+}
+
+#[test]
+fn a_filter_of_a_run_and_a_clock_conjunct_pages_at_the_first_page_and_lists_what_holds() {
+    // The room of 10k conversations: the inbox run, and the two conjuncts checked as its
+    // pages fill, cost the page read, not the room.
+    let (ada, meta, mail) = inbox_room(10_000);
+    let (items, checked) = inbox_page(&ada, &meta, &mail);
+    assert_eq!(items.len(), 40, "a first page of the 10k");
+    assert!(
+        checked <= 60,
+        "filling the first page checked {checked} of 10,000"
+    );
+    // Every third conversation is muted (3,334) and every fifth snoozed (2,000), 667 of them
+    // both: 4,667 out of the inbox's 10,000, which leaves 5,333. The count the run's column
+    // keeps is the most it can hold; read to its end, the listing says it is exactly that.
+    let listing = inbox_listing(&ada, &meta, &mail);
+    assert_eq!(listing.len(), 10_000);
+    assert!(
+        !listing.len_is_exact(),
+        "the list says its length is up to that many"
+    );
+    let kept: Vec<String> = (0..listing.len())
+        .filter_map(|index| listing.get(index))
+        .map(|id| id.to_string())
+        .collect();
+    assert_eq!(kept.len(), 5_333);
+    assert!(listing.len_is_exact(), "every entry is checked now");
+}
+
+/// The view that lists the inbox the way the Mail window does: `threads.matching("is:inbox")`.
+const INBOX_VIEW: &str = r#"app so.tilo.inbox "Inbox"
+
+type Thread {
+    title: Text (title)
+    boxes: Set<Text>
+    snoozed_until: Time = Time("1970-01-01T00:00:00Z")
+    muted: Bool = false
+
+    search {
+        filter "Inbox" = boxes.contains("inbox") and snoozed_until <= now and not muted
+    }
+}
+
+type Mail {
+    threads: Collection<Thread>
+}
+
+root Mail
+
+default view main for Mail
+
+view main(m: Mail) {
+    page {
+        for t in m.threads.matching("is:inbox") {
+            text(t.title)
+        }
+    }
+}
+"#;
+
+/// The titles a view shows.
+fn texts(tree: &tilolang_runtime::UiNode) -> Vec<String> {
+    fn walk(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
+        if node.kind == "ui.Text"
+            && let Some(Value::Text(text)) = node.props.get("value")
+        {
+            out.push(text.clone());
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(tree, &mut out);
+    out
+}
+
+#[test]
+fn a_snooze_ending_moves_its_thread_into_the_inbox_without_reading_the_room_again() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    // A room of 1,000 conversations in the inbox, the first snoozed until 2027: the view
+    // starts with the other 999.
+    let clock = Rc::new(RefCell::new("2026-06-29T09:00:00Z".to_owned()));
+    let read = Rc::clone(&clock);
+    let (mut ada, _meta, _mail) = inbox_room_of(INBOX_VIEW, 1_000, |i, item, meta| {
+        use serde_json::json;
+        use tilolang_tilo::record::DynValue;
+        // The first conversation is snoozed until 2027, and comes back once it is there.
+        if i == 0
+            && let Some(DynValue::Register(snoozed)) =
+                item.get_mut(&field_id(meta, "Thread", "snoozed_until"))
+        {
+            snoozed.clone_from(&json!("2027-01-01T00:00:00Z"));
+        }
+    });
+    ada.host.runtime().set_clock(move || read.borrow().clone());
+    let mut view = ada.view(INBOX_APP);
+    assert_eq!(texts(view.tree()).len(), 999);
+    // A query reads the running clock to the minute: the view waits for the next one.
+    assert_eq!(
+        view.wakes_at(),
+        tilolang::calendar::instant("2026-06-29T09:01:00Z")
+    );
+
+    // The clock reaches the snooze's end: the view runs again, and the conversation moves in,
+    // its row built (one item read), not the room read again.
+    *clock.borrow_mut() = "2027-06-01T00:00:00Z".to_owned();
+    assert!(view.is_stale(), "the snooze's end opened the inbox");
+    let before = ada.host.store().read_stats().evaluated;
+    view.poll_patches().unwrap();
+    assert_eq!(texts(view.tree()).len(), 1_000);
+    // The listing's first page was filled again, and the item that came in checked: the
+    // entries read are the page's, not the room's.
+    let filled = ada.host.store().read_stats().evaluated - before;
+    assert!(filled <= 2, "the change checked {filled} items");
 }

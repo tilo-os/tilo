@@ -1092,3 +1092,52 @@ fn a_conversation_says_who_is_typing_from_presence() {
         .set_lenses(&channel, &[(ben, false, false)]);
     assert!(typing(&mut view).is_empty(), "he stopped");
 }
+
+/// With no channels yet, the workspace offers one way to make the first: the empty state's
+/// "New channel" button. The header drops its own primary button then, so the same action is
+/// not offered twice on one page; once a channel exists the empty state is gone and the
+/// header keeps the button.
+#[test]
+fn an_empty_workspace_offers_one_new_channel_button() {
+    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    ada.commit();
+
+    // A header's primary is a `ui.Button`; the empty state draws its one action itself, so a
+    // "New channel" button in the tree is the header's. No channels yet: the header's is
+    // gone, leaving the empty state's action the one place to make the first.
+    let header_button = |view: &ViewInstance| {
+        let mut buttons = Vec::new();
+        find_all(view.tree(), "ui.Button", &mut buttons);
+        buttons
+            .iter()
+            .any(|b| b.props.get("label") == Some(&Value::text("New channel")))
+    };
+    let sidebar = ada.view(APP);
+    assert!(
+        !header_button(&sidebar),
+        "the header drops its primary while the empty state offers it"
+    );
+    let empty = find(sidebar.tree(), "ui.EmptyState").expect("the empty state");
+    assert_eq!(
+        empty.props.get("action"),
+        Some(&Value::text("New channel")),
+        "the empty state is where the first channel is made"
+    );
+
+    // A channel made, the sidebar's "no channels" empty state goes and the header is the
+    // place to make another: its primary button stands again, so exactly one affordance
+    // exists at either time.
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    let _ = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let sidebar = ada.view(APP);
+    assert!(
+        find(sidebar.tree(), "ui.EmptyState")
+            .is_none_or(|state| state.props.get("action") != Some(&Value::text("New channel"))),
+        "no empty state offering New channel once a channel exists"
+    );
+    assert!(
+        header_button(&sidebar),
+        "the header offers New channel once a channel exists"
+    );
+}

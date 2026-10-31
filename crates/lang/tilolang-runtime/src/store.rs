@@ -543,10 +543,20 @@ pub struct Listing {
 /// Items a store reads as they are asked for: a listing as it was when handed out, which a
 /// later change does not alter.
 pub trait PagedItems: std::fmt::Debug {
+    /// How many items the listing has. A listing that keeps checking its items as it reads
+    /// them may know only that this is not the whole of it yet: a count taken before it read
+    /// the rest is the most it can have ([`Self::len_is_exact`]).
     fn len(&self) -> usize;
 
     fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Whether [`Self::len`] is the listing's length, not a count that may yet come down. A
+    /// listing that checks its items one by one as it reads does not know its length until it
+    /// has read them all: what shows its length before then says it is up to that many.
+    fn len_is_exact(&self) -> bool {
+        true
     }
 
     /// The item at `index`, `None` past the end.
@@ -594,6 +604,13 @@ impl Listing {
         self.paged
             .as_ref()
             .map_or(self.held.len(), |paged| paged.len())
+    }
+
+    /// Whether [`Self::len`] is the listing's length. A paged listing that checks its items as
+    /// it reads them knows only how many it can have at most until it has read them all:
+    /// showing that as the length says it is up to that many.
+    pub fn len_is_exact(&self) -> bool {
+        self.paged.as_ref().is_none_or(|paged| paged.len_is_exact())
     }
 
     pub fn is_empty(&self) -> bool {

@@ -246,7 +246,15 @@ view sidebar(all: Channels) {
             }
         }
         actions: {
-            std.header(actions(all))
+            // One primary affordance: with no channels the empty state below is where a new
+            // one is made, so the header leaves its primary button to it rather than showing
+            // the same button twice on one page. With channels there is no such empty state,
+            // so the header keeps it.
+            if all.is_empty() {
+                std.header(actions(all).filter(a -> not a.primary))
+            } else {
+                std.header(actions(all))
+            }
         }
         content: {
             if all.is_empty() {
