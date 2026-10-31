@@ -763,9 +763,13 @@ readers = [
 
 [[cargo]]
 package = "tilolang"
-# The multi-package tests resolve and compile the built-in packages.
-inputs = ["apps/tl/"]
-readers = ["crates/lang/tilolang/tests/it/multifile.rs"]
+# The multi-package tests resolve and compile the built-in packages, and the coverage check
+# reads the toolkit's sources for the components it describes.
+inputs = ["apps/tl/", "crates/sdk/ui-core/"]
+readers = [
+  "crates/lang/tilolang/tests/it/coverage.rs",
+  "crates/lang/tilolang/tests/it/multifile.rs",
+]
 
 [[cargo]]
 package = "tilolang-cli"
@@ -811,16 +815,17 @@ readers = [
   "crates/platform/tilolang-tilo/tests/history_views.rs",
   "crates/platform/tilolang-tilo/tests/legacy.rs",
   "crates/platform/tilolang-tilo/tests/legibility.rs",
+  "crates/platform/tilolang-tilo/tests/naming.rs",
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",
   "crates/platform/tilolang-tilo/tests/policy.rs",
   "crates/platform/tilolang-tilo/tests/rich_text.rs",
   "crates/platform/tilolang-tilo/tests/scenarios.rs",
+  "crates/platform/tilolang-tilo/tests/shell_record.rs",
   "crates/platform/tilolang-tilo/tests/task.rs",
   "crates/platform/tilolang-tilo/tests/tasks.rs",
   "crates/platform/tilolang-tilo/tests/undo_own.rs",
   "crates/platform/tilolang-tilo/tests/upgrade_fields.rs",
-  "crates/platform/tilolang-tilo/tests/upgrade_it.rs",
   "crates/platform/tilolang-tilo/tests/views_migration.rs",
 ]
 
@@ -835,17 +840,12 @@ readers = [
   "crates/platform/tilolang-host/tests/own_records.rs",
 ]
 
-[[cargo]]
-package = "tilo-session"
-# The desk's top bar and overlays compile the tilolang shell package from its
-# sources and ids lock, every file of it.
-inputs = ["apps/tl/shell/"]
-readers = ["crates/session/session/src/shell.rs"]
 
 [[cargo]]
 package = "tilo-surface-host"
-# The part's tests read the shell package's sources and ids lock they lay out.
-inputs = ["apps/tl/shell/"]
+# The part embeds and compiles the shell package's sources and ids lock, and the packages its
+# views reach (`notes`, `tasks`, `chat`), every file of each.
+inputs = ["apps/tl/"]
 readers = ["crates/session/surface-host/src/shell_part.rs"]
 
 [[cargo]]
