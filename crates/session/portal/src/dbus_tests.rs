@@ -44,6 +44,12 @@ struct Bed {
 }
 
 async fn bed() -> Bed {
+    bed_with(Arc::new(crate::NoCapture)).await
+}
+
+/// [`bed`], with `capture` standing in for the session's screenshots and
+/// picks.
+async fn bed_with(capture: Arc<dyn crate::Capture>) -> Bed {
     let bus = SessionBus::start();
     let backend = bus.connect().await;
     let questions = Questions::new();
@@ -65,6 +71,7 @@ async fn bed() -> Bed {
         authenticator,
         tilo_documents::Documents::new(),
     )
+    .with_capture(capture)
     .with_consents(crate::consent::Consents::new(questions.clone(), None))
     .with_permissions(store);
     portal.serve(&backend).await.expect("served");
@@ -188,6 +195,71 @@ async fn only_the_frontend_may_ask() {
         )
         .await;
     assert!(read.is_ok(), "the frontend reads them");
+}
+
+/// A session that picks the colour it was made with, taking no picture.
+struct Palette(f64, f64, f64);
+
+impl crate::Capture for Palette {
+    fn screenshot(
+        &self,
+        _target: crate::CaptureTarget,
+    ) -> crate::Pending<Result<std::path::PathBuf, crate::CaptureError>> {
+        Box::pin(async {
+            Err(crate::CaptureError::Failed(
+                "this session takes no picture".to_owned(),
+            ))
+        })
+    }
+
+    fn color_at_pointer(&self) -> crate::Pending<Result<(f64, f64, f64), crate::CaptureError>> {
+        let colour = (self.0, self.1, self.2);
+        Box::pin(async move { Ok(colour) })
+    }
+
+    fn targets(&self) -> u32 {
+        0
+    }
+}
+
+async fn pick_color(from: &zbus::Connection, request: &str) -> zbus::Result<Reply> {
+    from.call_method(
+        Some(BUS_NAME),
+        OBJECT_PATH,
+        Some("org.freedesktop.impl.portal.Screenshot"),
+        "PickColor",
+        &(
+            ObjectPath::try_from(request).expect("request path"),
+            "org.example.Colour",
+            "",
+            HashMap::<String, OwnedValue>::new(),
+        ),
+    )
+    .await?
+    .body()
+    .deserialize()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_colour_pick_is_answered_with_the_pixel_the_session_reads() {
+    let bed = bed_with(Arc::new(Palette(0.25, 0.5, 1.0))).await;
+    let (code, results) = pick_color(&bed.frontend, REQUEST).await.expect("replied");
+    assert_eq!(code, 0);
+    let (red, green, blue): (f64, f64, f64) = results["color"]
+        .try_clone()
+        .expect("clone")
+        .try_into()
+        .expect("three channels");
+    assert_eq!((red, green, blue), (0.25, 0.5, 1.0));
+    assert!(bed.questions.pending().is_empty(), "nobody was asked");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_frontend_may_pick_a_colour() {
+    let bed = bed_with(Arc::new(Palette(1.0, 1.0, 1.0))).await;
+    let (code, results) = pick_color(&bed.stranger, REQUEST).await.expect("replied");
+    assert_eq!(code, 2, "a stranger's request fails");
+    assert!(results.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]

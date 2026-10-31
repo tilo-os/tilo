@@ -203,7 +203,7 @@ impl CaptureTarget {
     }
 }
 
-/// Why a screenshot the session was asked for has no picture.
+/// Why what the session was asked for is not there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CaptureError {
     /// Nothing was taken: the person closed the selection, or nobody waits
@@ -213,6 +213,10 @@ pub enum CaptureError {
     Failed(String),
 }
 
+/// What a colour pick answers when there is no pointer over a display to
+/// take a colour from.
+pub const NO_COLOUR_UNDER_POINTER: &str = "move the pointer over the colour to pick it";
+
 /// What the session captures for the portal: the compositor's pictures of
 /// what the displays show, and what the person picks or draws in the
 /// studio's selector.
@@ -221,6 +225,10 @@ pub trait Capture: Send + Sync {
     /// path. The targets the person takes part in are answered once they
     /// chose, however long that takes.
     fn screenshot(&self, target: CaptureTarget) -> Pending<Result<PathBuf, CaptureError>>;
+
+    /// The colour under the pointer as red, green and blue, each from 0 to
+    /// 1: the pixel of what the displays show there when it is asked.
+    fn color_at_pointer(&self) -> Pending<Result<(f64, f64, f64), CaptureError>>;
 
     /// The targets this session can take, as the interface's
     /// `AvailableTargets` bits: it is asked nothing it cannot answer.
@@ -232,6 +240,14 @@ pub struct NoCapture;
 
 impl Capture for NoCapture {
     fn screenshot(&self, _target: CaptureTarget) -> Pending<Result<PathBuf, CaptureError>> {
+        Box::pin(async {
+            Err(CaptureError::Failed(
+                "this session captures nothing".to_owned(),
+            ))
+        })
+    }
+
+    fn color_at_pointer(&self) -> Pending<Result<(f64, f64, f64), CaptureError>> {
         Box::pin(async {
             Err(CaptureError::Failed(
                 "this session captures nothing".to_owned(),

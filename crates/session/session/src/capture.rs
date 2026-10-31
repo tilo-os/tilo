@@ -11,6 +11,9 @@
 //! comes a pass after they took it, however long that was. A request the
 //! app stops waiting for takes the selector down with it: the future it
 //! awaited says so as it drops.
+//!
+//! A colour pick is answered on that same pass, from the same picture: the
+//! pixel under the pointer where the screenshot of every display puts it.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,6 +34,8 @@ enum Asked {
         target: CaptureTarget,
         reply: Reply,
     },
+    /// The colour under the pointer, as red, green and blue from 0 to 1.
+    Color { reply: ColorReply },
     /// Nobody waits for request `id` any more: whatever is up for it comes
     /// down. An ask already answered is no longer up, so this changes
     /// nothing for it.
@@ -39,6 +44,9 @@ enum Asked {
 
 /// The answer: the file, or why there is none.
 type Reply = tokio::sync::oneshot::Sender<Result<PathBuf, CaptureError>>;
+
+/// The answer to a pick: the colour, or why there is none.
+type ColorReply = tokio::sync::oneshot::Sender<Result<(f64, f64, f64), CaptureError>>;
 
 /// The portal's side: asks the session for a screenshot.
 pub struct ScreenCapture {
@@ -134,6 +142,19 @@ impl Capture for ScreenCapture {
         })
     }
 
+    fn color_at_pointer(&self) -> Pending<Result<(f64, f64, f64), CaptureError>> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        if self.requests.send(Asked::Color { reply }).is_err() {
+            return Box::pin(async { Err(CaptureError::Failed("the session ended".to_owned())) });
+        }
+        (self.wake)();
+        Box::pin(async move {
+            answer
+                .await
+                .unwrap_or_else(|_| Err(CaptureError::Failed("the session ended".to_owned())))
+        })
+    }
+
     /// What this session takes: everything the displays show and the window
     /// with focus, and — while it serves the studio's selector — the window
     /// the person picks and the area they draw.
@@ -147,8 +168,8 @@ impl Capture for ScreenCapture {
 }
 
 impl Captures {
-    /// Answer every screenshot asked for since the last pass: what the
-    /// session captures itself, and what the person takes in `studio`'s
+    /// Answer every screenshot and pick asked for since the last pass: what
+    /// the session captures itself, and what the person takes in `studio`'s
     /// selector.
     pub(crate) fn serve(&self, compositor: &mut Compositor, studio: Option<&mut CaptureStudio>) {
         let mut studio = studio;
@@ -173,6 +194,9 @@ impl Captures {
                         selector.ask_selection(target, id, reply, self.directory.clone());
                     }
                 },
+                Asked::Color { reply } => {
+                    let _ = reply.send(colour(compositor));
+                }
                 Asked::Withdrawn { id } => {
                     if let Some(selector) = studio.as_mut() {
                         selector.withdraw(id);
@@ -235,9 +259,57 @@ pub(crate) fn unique(directory: &Path, kind: &str, extension: &str) -> PathBuf {
 
 /// Every display on, each at its place in the layout.
 pub(crate) fn picture(compositor: &mut Compositor) -> Result<image::RgbaImage, String> {
-    let mut placed = Vec::new();
+    Ok(desk(compositor)?.picture)
+}
+
+/// The colour under the pointer: the pixel under it where a screenshot of
+/// every display puts it, as red, green and blue from 0 to 1.
+fn colour(compositor: &mut Compositor) -> Result<(f64, f64, f64), CaptureError> {
+    let pointer = compositor.pointer_location();
+    let none = || CaptureError::Failed(tilo_portal::NO_COLOUR_UNDER_POINTER.to_owned());
+    // Nothing under the pointer is nothing to pick, whether no display is
+    // on or the pointer is over none of them.
+    if !compositor
+        .outputs()
+        .iter()
+        .filter_map(|output| output.rect)
+        .any(|rect| holds(rect, pointer))
+    {
+        return Err(none());
+    }
+    let desk = desk(compositor).map_err(CaptureError::Failed)?;
+    desk.colour_at(pointer).ok_or_else(none)
+}
+
+/// A picture of every display on, each at its place in the layout, and
+/// where each one landed in it.
+struct Desk {
+    picture: image::RgbaImage,
+    placed: Vec<Placed>,
+}
+
+/// Where one display landed in a [`Desk`].
+struct Placed {
+    /// The display's rectangle in the layout.
+    rect: (i32, i32, i32, i32),
+    /// Where the display's top-left pixel is in the picture.
+    at: (i64, i64),
+    /// How many picture pixels stand for one point of the layout.
+    scale: f64,
+}
+
+/// One display read back, before it is placed in a [`Desk`].
+struct Frame {
+    rect: (i32, i32, i32, i32),
+    at: (i64, i64),
+    scale: f64,
+    pixels: image::RgbaImage,
+}
+
+fn desk(compositor: &mut Compositor) -> Result<Desk, String> {
+    let mut frames = Vec::new();
     for output in compositor.outputs() {
-        let Some((x, y, width, _)) = output.rect else {
+        let Some(rect) = output.rect else {
             continue;
         };
         let shot = compositor
@@ -247,39 +319,96 @@ pub(crate) fn picture(compositor: &mut Compositor) -> Result<image::RgbaImage, S
             .map_err(|error| error.to_string())?;
         // The frame is in the output's pixels: its place in the layout
         // scales with it.
-        let scale = f64::from(shot.width) / f64::from(width.max(1));
-        let Some(frame) = image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba) else {
+        let scale = f64::from(shot.width) / f64::from(rect.2.max(1));
+        let Some(pixels) = image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba) else {
             return Err(format!("{}: a frame of the wrong size", output.name));
         };
-        placed.push((scaled(x, scale), scaled(y, scale), frame));
+        frames.push(Frame {
+            rect,
+            at: (scaled(rect.0, scale), scaled(rect.1, scale)),
+            scale,
+            pixels,
+        });
     }
-    let left = placed
+    let left = frames
         .iter()
-        .map(|(x, _, _)| *x)
+        .map(|frame| frame.at.0)
         .min()
         .ok_or("no display is on")?;
-    let top = placed.iter().map(|(_, y, _)| *y).min().unwrap_or(0);
-    let right = placed
+    let top = frames.iter().map(|frame| frame.at.1).min().unwrap_or(0);
+    let right = frames
         .iter()
-        .map(|(x, _, frame)| x.saturating_add(i64::from(frame.width())))
+        .map(|frame| frame.at.0.saturating_add(i64::from(frame.pixels.width())))
         .max()
         .unwrap_or(left);
-    let bottom = placed
+    let bottom = frames
         .iter()
-        .map(|(_, y, frame)| y.saturating_add(i64::from(frame.height())))
+        .map(|frame| frame.at.1.saturating_add(i64::from(frame.pixels.height())))
         .max()
         .unwrap_or(top);
     let size = |from: i64, to: i64| u32::try_from(to.saturating_sub(from)).unwrap_or(0);
-    let mut picture = image::RgbaImage::new(size(left, right), size(top, bottom));
-    for (x, y, frame) in placed {
-        image::imageops::replace(
-            &mut picture,
-            &frame,
-            x.saturating_sub(left),
-            y.saturating_sub(top),
+    let mut composed = image::RgbaImage::new(size(left, right), size(top, bottom));
+    let mut placed = Vec::new();
+    for frame in frames {
+        let at = (
+            frame.at.0.saturating_sub(left),
+            frame.at.1.saturating_sub(top),
         );
+        image::imageops::replace(&mut composed, &frame.pixels, at.0, at.1);
+        placed.push(Placed {
+            rect: frame.rect,
+            at,
+            scale: frame.scale,
+        });
     }
-    Ok(picture)
+    Ok(Desk {
+        picture: composed,
+        placed,
+    })
+}
+
+impl Desk {
+    /// The colour `pointer`, a point of the layout, is over: red, green and
+    /// blue from 0 to 1, as the picture shows them. `None` when the pointer
+    /// is over no display.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a pixel inside the picture is far from u32's limits"
+    )]
+    fn colour_at(&self, pointer: (f64, f64)) -> Option<(f64, f64, f64)> {
+        let placed = self
+            .placed
+            .iter()
+            .find(|placed| holds(placed.rect, pointer))?;
+        let pixel = |at: i64, from: i32, to: f64, edge: u32| {
+            let offset = ((to - f64::from(from)) * placed.scale).floor() as i64;
+            let x = at
+                .saturating_add(offset)
+                .clamp(0, i64::from(edge.saturating_sub(1)));
+            u32::try_from(x).ok()
+        };
+        let x = pixel(placed.at.0, placed.rect.0, pointer.0, self.picture.width())?;
+        let y = pixel(placed.at.1, placed.rect.1, pointer.1, self.picture.height())?;
+        // The picture's alpha says nothing about the colour: a window that
+        // draws nothing shows the desk through, as it does on the display.
+        let [red, green, blue, _] = self.picture.get_pixel(x, y).0;
+        Some((
+            f64::from(red) / 255.0,
+            f64::from(green) / 255.0,
+            f64::from(blue) / 255.0,
+        ))
+    }
+}
+
+/// Whether `point`, a point of the layout, is on the display with
+/// rectangle `rect`.
+fn holds(rect: (i32, i32, i32, i32), point: (f64, f64)) -> bool {
+    let (x, y, width, height) = rect;
+    point.0 >= f64::from(x)
+        && point.0 < f64::from(x.saturating_add(width))
+        && point.1 >= f64::from(y)
+        && point.1 < f64::from(y.saturating_add(height))
 }
 
 #[allow(
