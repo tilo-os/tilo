@@ -565,6 +565,38 @@ impl Checker<'_> {
         }
     }
 
+    /// Whether a field of type `ty` holds a resource: any resource (`host.Resource`), one
+    /// resource type, or any of a union's.
+    fn is_any_resource_field(ty: &Ty) -> bool {
+        matches!(ty, Ty::Record(_) | Ty::Union(_))
+    }
+
+    /// Whether `e` writes a record out here (`Note(title: ...)`) rather than naming one the
+    /// store holds (an action's result, a root, a reference).
+    fn constructs(&self, e: &ast::Expr) -> bool {
+        match &e.kind {
+            ast::ExprKind::Call { callee, .. } => {
+                let ExprKind::Ident(name) = &callee.kind else {
+                    return false;
+                };
+                !self.in_std() && self.env.own_type(name).is_some_and(|t| !t.holder)
+            }
+            ast::ExprKind::If { then, els, .. } => {
+                let last = then.stmts.last();
+                let Some(ast::Stmt {
+                    kind: ast::StmtKind::Expr(t),
+                    ..
+                }) = last
+                else {
+                    return false;
+                };
+                els.as_ref()
+                    .is_some_and(|els| self.constructs(t) && self.constructs(els))
+            }
+            _ => false,
+        }
+    }
+
     /// `Todo(title: "x")`: a record value, not yet a resource.
     fn construct(&mut self, key: &TypeKey, args: &[ast::Arg]) -> Ex {
         let env = self.env;
@@ -648,6 +680,21 @@ impl Checker<'_> {
                     ),
                 );
                 continue;
+            }
+            // A field holding a resource takes one the store has: an action's result, a root,
+            // a reference (`@app.Type:id`). A record written out here is not one: it has no id
+            // until the store makes it, so nothing can hold it, and the change would be rolled
+            // back when it runs. Make it first (`let n = notes.new_note(...)`) and give that.
+            if Self::is_any_resource_field(&f.ty) && self.constructs(&a.value) {
+                self.err(
+                    "E020",
+                    a.value.span,
+                    format!(
+                        "`{}` holds a resource, and a `{}` written out here is not one yet: it has no id until it is made. Make it first and give what the store made (an action's result, a root, or `@app.Type:id`)",
+                        f.name,
+                        self.show(&f.ty)
+                    ),
+                );
             }
             let v = self.expr_as(&a.value, &f.ty);
             let (imp, c) = store_op(&f.ty, Imp::RecSetI, Imp::RecSetF, Imp::RecSetH);
