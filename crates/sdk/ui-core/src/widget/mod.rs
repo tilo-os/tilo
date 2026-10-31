@@ -3280,6 +3280,10 @@ pub mod top_edge_reveal;
 pub use top_edge_reveal::{EdgeGeometry, TopEdgeReveal};
 pub mod tabs;
 pub use tabs::{SharedBy, SharedWith, TabBar, TabDescriptor, TabHolder, TabMark, draw_app_mark};
+mod tab_strip_component;
+pub use tab_strip_component::{
+    PresenceFaceProps, TabItemProps, TabStrip, TabStripProps, pack_point, unpack_point,
+};
 pub mod scrollbar;
 pub use scrollbar::{
     PressOutcome, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollMetrics,
