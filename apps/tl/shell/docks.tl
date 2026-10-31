@@ -20,34 +20,33 @@ view dock(s: Shell, d: Desk) {
 
 /// The dock's items in a run the person rearranges by dragging one onto another place.
 /// Letting go runs `place_item`, the one action the gesture commits; a press on an item opens
-/// what it stands for. A dock standing up a leading or trailing edge runs top to bottom.
+/// what it stands for. A floating dock is one compact group centred on its edge; a dock that
+/// rides the whole edge is the taskbar: the dock's items leading, then the time and the
+/// device's status trailing, in the one bar. A dock standing up a leading or trailing edge
+/// runs top to bottom.
 view dock_run(s: Shell, d: Desk) {
     let standing = s.dock_edge == .left or s.dock_edge == .right
     let across = s.dock_fit == .full
-    if standing and across {
-        stack(gap: .related, align: .center, fill) {
-            dock_items(s, d, vertical: true)
-        }
-    } else if standing {
-        stack(gap: .related, align: .center) {
-            dock_items(s, d, vertical: true)
+    if standing {
+        ui.DragRun(axis: .vertical, distribute: .center) {
+            on drop(moved: DockItem, at: Int): place_item(s, moved, at)
+            for item in s.dock_items {
+                if item.pinned or s.dock_running {
+                    ui.DragItem(item, title: item.title) {
+                        on activate: dock_open(s, item)
+                        dock_tile(s, d, item)
+                    }
+                }
+            }
         }
     } else if across {
-        row(gap: .related, align: .center, fill) {
-            dock_items(s, d, vertical: false)
-        }
-    } else {
-        row(gap: .related, align: .center) {
-            dock_items(s, d, vertical: false)
-        }
-    }
-}
-
-/// The items themselves: the launcher, what the person pinned, then the apps running that
-/// nobody pinned (when the record says the dock shows them).
-view dock_items(s: Shell, d: Desk, vertical: Bool) {
-    if vertical {
-        ui.DragRun(axis: .vertical) {
+        // The taskbar: the dock's items leading, the time and the device's status trailing,
+        // in the one bar.
+        ui.DragRun(axis: .horizontal) {
+            trailing: {
+                clock(d)
+                bell(d)
+            }
             on drop(moved: DockItem, at: Int): place_item(s, moved, at)
             for item in s.dock_items {
                 if item.pinned or s.dock_running {
@@ -59,7 +58,7 @@ view dock_items(s: Shell, d: Desk, vertical: Bool) {
             }
         }
     } else {
-        ui.DragRun(axis: .horizontal) {
+        ui.DragRun(axis: .horizontal, distribute: .center) {
             on drop(moved: DockItem, at: Int): place_item(s, moved, at)
             for item in s.dock_items {
                 if item.pinned or s.dock_running {

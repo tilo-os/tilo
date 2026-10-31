@@ -603,6 +603,63 @@
       }
     },
     {
+      "name": "Chrome",
+      "doc": "A bar or a dock's body: the theme's bar finish behind what the body holds.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the body is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "shape",
+          "doc": "How the body sits in its edge: edge to edge and square (the default), or an inset, rounded body.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "ChromeShape",
+                "cases": [
+                  "square",
+                  "rounded"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "edge",
+          "doc": "The screen edge the body stands on, where a square body draws its rule.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "ChromeEdge",
+                "cases": [
+                  "top",
+                  "bottom",
+                  "leading",
+                  "trailing"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "body",
+          "doc": "What the body holds.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
       "name": "MenuButton",
       "doc": "A button that opens a menu of commands under it: a header's More button, a sort menu.",
       "props": [
@@ -729,6 +786,40 @@
               }
             }
           }
+        },
+        {
+          "name": "distribute",
+          "doc": "Where the run's packed items sit along it: its leading edge (the default), its centre, its trailing edge, or spread between its ends. A run whose items fall in groups packs each group at its own edge; this places a run of one group, such as a dock.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Distribute",
+                "cases": [
+                  "start",
+                  "center",
+                  "end",
+                  "between"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "align",
+          "doc": "Where the items pack across the run: centred (the default).",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Align",
+                "cases": [
+                  "start",
+                  "center",
+                  "end",
+                  "stretch"
+                ]
+              }
+            }
+          }
         }
       ],
       "slots": [
@@ -740,6 +831,12 @@
           },
           "many": true,
           "default": true
+        },
+        {
+          "name": "trailing",
+          "doc": "What stands beside the items at the run's trailing end and is never moved: a taskbar's time and device status.",
+          "accepts": "view",
+          "many": true
         }
       ],
       "events": [
@@ -2596,6 +2693,23 @@
           "doc": "What the item is called, for its ghost and for assistive technology.",
           "type": "text",
           "required": true
+        },
+        {
+          "name": "group",
+          "doc": "The part of the run it belongs to: a bar's leading group, its centre, its trailing group, or the room between two groups.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "RunGroup",
+                "cases": [
+                  "leading",
+                  "center",
+                  "trailing",
+                  "space"
+                ]
+              }
+            }
+          }
         }
       ],
       "slots": [

@@ -515,6 +515,31 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         dirty
     }
 
+    /// An arrangement paints nothing of its own: it is dirty when a child is. An empty one
+    /// (a group with nothing in it, a view that showed nothing) is never dirty — the default
+    /// says a widget with no children always needs a redraw, which pinned an empty view's
+    /// window to a frame every turn.
+    fn needs_redraw(&self) -> bool {
+        self.slots
+            .iter()
+            .any(|slot| slot.element.needs_redraw())
+    }
+
+    /// Laid out once, an arrangement lays out again only for what a child reports.
+    fn is_layout_dirty(&self) -> bool {
+        self.node.is_none()
+            || self
+                .slots
+                .iter()
+                .any(|slot| slot.element.is_layout_dirty())
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.slots
+            .iter()
+            .any(|slot| slot.element.needs_animation_frame())
+    }
+
     /// What the slot operations did, joined with what the children report.
     fn take_structure_change(&mut self) -> StructureChange {
         let mut change = std::mem::take(&mut self.structure);

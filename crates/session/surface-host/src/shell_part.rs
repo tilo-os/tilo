@@ -82,6 +82,10 @@ pub struct PersonReading {
 
 /// The reading of [`DESK_RESOURCE`]: the fields of the `session.desk` kind
 /// (`tilolang::origin::KINDS`), as JSON on the door.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the desk's reading is its fields, each read as the shell needs it"
+)]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeskReading {
     pub person: String,
@@ -166,6 +170,10 @@ impl WindowRect {
 
 /// What the screen says of the edges a bar or dock that shows only sometimes rides: whether
 /// the pointer is at each edge, and whether a window stands where a bar or dock there would.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each edge's own facts, read one at a time"
+)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ScreenEdges {
     pub bar_reached: bool,
@@ -177,6 +185,10 @@ pub struct ScreenEdges {
 /// Which edges the shell's chrome stands on: what the part covers of the outputs. The session
 /// reads it from the shell's record — a bar on the top or bottom, a dock on the bottom or the
 /// top — and the part covers each band it names.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each edge's own facts, read one at a time"
+)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HostEdges {
     /// The bar rides an edge (whether it shows now or not): the part covers its band.
@@ -658,7 +670,13 @@ impl Origin for SessionOrigin {
         // (the bar alone, as it first shipped) writes the desk only.
         let shell_name = cx.host.find_in_packages(|package| {
             (package.meta.app == cx.app)
-                .then(|| package.meta.named_roots.first().map(|root| root.name.clone()))
+                .then(|| {
+                    package
+                        .meta
+                        .named_roots
+                        .first()
+                        .map(|root| root.name.clone())
+                })
                 .flatten()
         });
         let shell_ty = shell_name.as_ref().and_then(|name| {
@@ -687,7 +705,13 @@ impl Origin for SessionOrigin {
                 return polled;
             }
         };
-        let writes = match self.writes(&reading, &root, &types, shell_root.as_ref(), shell_ty.as_ref()) {
+        let writes = match self.writes(
+            &reading,
+            &root,
+            &types,
+            shell_root.as_ref(),
+            shell_ty.as_ref(),
+        ) {
             Ok(writes) => writes,
             Err(why) => {
                 tracing::error!(why, "the session's desk does not fit the shell");
@@ -959,7 +983,7 @@ impl ShellPart {
         };
         let roots = host
             .package(self.instance.app())
-            .map(|package| package.meta.named_roots.clone())
+            .map(|package| package.meta.named_roots)
             .unwrap_or_default();
         for root in &roots {
             if let Err(error) = host.root_record(self.instance.app(), &root.ty) {
@@ -1368,9 +1392,18 @@ mod tests {
     /// part of its one module.
     const FILES: [(&str, &str); 5] = [
         ("app.tl", include_str!("../../../../apps/tl/shell/app.tl")),
-        ("chrome.tl", include_str!("../../../../apps/tl/shell/chrome.tl")),
-        ("docks.tl", include_str!("../../../../apps/tl/shell/docks.tl")),
-        ("layout.tl", include_str!("../../../../apps/tl/shell/layout.tl")),
+        (
+            "chrome.tl",
+            include_str!("../../../../apps/tl/shell/chrome.tl"),
+        ),
+        (
+            "docks.tl",
+            include_str!("../../../../apps/tl/shell/docks.tl"),
+        ),
+        (
+            "layout.tl",
+            include_str!("../../../../apps/tl/shell/layout.tl"),
+        ),
         (
             "system.tl",
             include_str!("../../../../apps/tl/shell/system.tl"),
@@ -1623,7 +1656,10 @@ mod tests {
         // The write is a change of the record, as the session's origin's write is: the part
         // commits it and runs its views again.
         part.instance.commit_planned();
-        assert!(part.commit(), "the screen's fact is committed to the record");
+        assert!(
+            part.commit(),
+            "the screen's fact is committed to the record"
+        );
         part.instance.moved();
         part.turn();
     }
@@ -1747,7 +1783,6 @@ mod tests {
         assert!(part.commit(), "the setting is committed to the record");
         part.instance.moved();
         part.turn();
-
     }
 
     #[test]
@@ -1794,7 +1829,10 @@ mod tests {
             "the bar hides while a window covers it"
         );
         screen(&mut part, "bar_covered", false);
-        assert!(says(&mut part, "Notifications"), "and shows once it is clear");
+        assert!(
+            says(&mut part, "Notifications"),
+            "and shows once it is clear"
+        );
     }
 
     #[test]

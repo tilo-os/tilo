@@ -19,9 +19,19 @@ pub struct DragRunProps {
     pub name: Option<String>,
     /// Whether the items lead to trailing (the default) or run top to bottom.
     pub axis: Option<RunAxis>,
+    /// Where the run's packed items sit along it: its leading edge (the default), its centre,
+    /// its trailing edge, or spread between its ends. A run whose items fall in groups packs
+    /// each group at its own edge; this places a run of one group, such as a dock.
+    pub distribute: Option<crate::widget::arrange::Distribute>,
+    /// Where the items pack across the run: centred (the default).
+    pub align: Option<crate::widget::arrange::Align>,
     /// The items, in order.
     #[component(slot(default))]
     pub items: DragItems,
+    /// What stands beside the items at the run's trailing end and is never moved: a taskbar's
+    /// time and device status.
+    #[component(slot)]
+    pub trailing: Vec<crate::widget::Element>,
     /// An item was let go in a new place: carries the resource it stands for and its place
     /// among the run's other items, from 0 — what `items.move(item, to: at)` takes.
     #[component(event(value = ResourceId, at = i64))]
@@ -42,6 +52,9 @@ pub struct DragItemProps {
     /// What the item is called, for its ghost and for assistive technology.
     #[component(required)]
     pub title: String,
+    /// The part of the run it belongs to: a bar's leading group, its centre, its trailing
+    /// group, or the room between two groups.
+    pub group: Option<super::drag_run::RunGroup>,
     /// What it shows.
     #[component(slot(default))]
     pub body: Vec<crate::widget::Element>,
@@ -79,7 +92,10 @@ impl Described for DragRun {
         let DragRunProps {
             name,
             axis,
+            distribute,
+            align,
             items,
+            trailing,
             drop,
         } = props;
         let mut run = Self::new(key.to_owned());
@@ -89,11 +105,21 @@ impl Described for DragRun {
         if let Some(axis) = axis {
             run = run.axis(axis);
         }
+        if let Some(distribute) = distribute {
+            run = run.distribute(distribute);
+        }
+        if let Some(align) = align {
+            run = run.align(align);
+        }
+        if !trailing.is_empty() {
+            run = run.trailing(trailing);
+        }
         let mut activates = Vec::with_capacity(items.0.len());
         for DragItemProps {
             key,
             title,
             item,
+            group,
             body,
             activate,
         } in items.0
@@ -107,6 +133,7 @@ impl Described for DragRun {
                 key,
                 item,
                 label: title,
+                group: group.unwrap_or_default(),
                 view,
             });
         }

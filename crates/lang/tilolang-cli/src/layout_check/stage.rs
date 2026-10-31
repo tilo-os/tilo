@@ -95,6 +95,7 @@ impl Staged {
             Box::new(app_end),
         );
         let mut record = ui::automerge::AutoCommit::new();
+
         instance.sync(Some(&record));
         // The package's own root resources — a person's record kept beside its main root
         // (`root shell: Shell`) — are made and its migrations run, as the live session does
@@ -112,7 +113,7 @@ impl Staged {
             }
         }
         instance.set_origin(true);
-        let mut settle = |instance: &mut Instance, record: &mut ui::automerge::AutoCommit| {
+        let settle = |instance: &mut Instance, record: &mut ui::automerge::AutoCommit| {
             instance.sync(Some(record));
             instance.commit_planned();
             if let Some(host) = instance.host() {
@@ -130,14 +131,6 @@ impl Staged {
         settle(&mut instance, &mut record)?;
         instance.stage(Some(scenario));
         settle(&mut instance, &mut record)?;
-        if std::env::var_os("TL_STAGE_DEBUG").is_some() {
-            if let Some(host) = instance.host() {
-                eprintln!("STAGE roots {:?}", host.package(app).map(|p| p.meta.named_roots.clone()));
-                for r in host.package(app).map(|p| p.meta.named_roots).unwrap_or_default() {
-                    eprintln!("STAGE record {:?} {:?}", r.name, host.store().record(&format!("root-{}", r.ty)).map(|rec| format!("{:?}", rec.get(&rec.schema().fields[0].id))));
-                }
-            }
-        }
         instance.update();
         let mut window = AppWindow::new(Box::new(window_end), Vec::new());
         window.receive();

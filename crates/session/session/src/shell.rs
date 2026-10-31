@@ -136,8 +136,8 @@ impl Shell {
     /// Tell the shell what the screen says of its edges: the pointer at the top or bottom edge,
     /// and a window standing where a bar or a dock there rides. What a bar or dock that shows
     /// only sometimes follows; a screen that says the same as before publishes nothing.
-    pub(crate) fn publish_edges(&mut self, compositor: &Compositor) {
-        let Some(outputs) = self.outputs(compositor) else {
+    pub(crate) fn publish_edges(&self, compositor: &Compositor) {
+        let Some(outputs) = Self::outputs(compositor) else {
             return;
         };
         #[allow(
@@ -166,7 +166,7 @@ impl Shell {
 
     /// The outputs' bounding box `(x, y, w, h)`, as the part spans them: every output that is
     /// on.
-    fn outputs(&self, compositor: &Compositor) -> Option<(i32, i32, u32, u32)> {
+    fn outputs(compositor: &Compositor) -> Option<(i32, i32, u32, u32)> {
         let (x0, y0, x1, y1) = compositor
             .outputs()
             .iter()
@@ -257,12 +257,6 @@ impl Shell {
             dock_shown: flag("dock_shown"),
             dock_edge: case("dock_edge", "Edge"),
         })
-    }
-
-    /// The band the chrome leaves the bar, logical pixels: what a window must reach into to
-    /// cover it.
-    pub(crate) const fn band(&self) -> u32 {
-        self.band
     }
 
     /// Move the part to the bands the shell's chrome stands in: a bar at the top or bottom, a

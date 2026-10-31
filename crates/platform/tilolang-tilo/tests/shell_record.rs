@@ -152,7 +152,10 @@ fn is(r: &Replica, name: &str, ty: &str, variant: &str) -> bool {
 fn flag(r: &Replica, name: &str) -> bool {
     let meta = r.host.package(APP).unwrap().meta;
     let id = crate::fixtures::field_id(&meta, "Shell", name);
-    matches!(shell(r).get(&id), Some(DynValue::Register(serde_json::Value::Bool(true))))
+    matches!(
+        shell(r).get(&id),
+        Some(DynValue::Register(serde_json::Value::Bool(true)))
+    )
 }
 
 #[test]
@@ -167,10 +170,7 @@ fn a_settings_action_changes_the_record_and_undo_restores_it() {
     choose(
         &r,
         "set_bar_finish",
-        vec![
-            shell_ref(&r),
-            pick(&r, "Finish", "translucent"),
-        ],
+        vec![shell_ref(&r), pick(&r, "Finish", "translucent")],
     );
     r.commit();
     assert!(is(&r, "bar_finish", "Finish", "translucent"));
@@ -201,7 +201,6 @@ fn applying_a_preset_changes_every_setting_it_names_and_undo_restores_them_all()
     assert!(is(&r, "dock_showing", "Showing", "always"));
     assert!(!flag(&r, "dock_zoom"));
 }
-
 
 // ----- What a person sees: the presets, and when the chrome shows ---------------------------
 
@@ -251,11 +250,7 @@ fn says(view: &tilolang_runtime::ViewInstance, words: &str) -> bool {
 
 /// Ada picks the preset `preset`, as pressing its card in the settings does.
 fn use_preset(r: &mut Replica, preset: &str) {
-    choose(
-        r,
-        "apply",
-        vec![shell_ref(r), pick(r, "Preset", preset)],
-    );
+    choose(r, "apply", vec![shell_ref(r), pick(r, "Preset", preset)]);
     r.commit();
 }
 
@@ -280,6 +275,10 @@ fn choosing_a_preset_changes_the_layout_the_person_sees() {
     assert!(
         windows.contains("Launcher"),
         "the dock's items show on the desk: {windows}"
+    );
+    assert!(
+        windows.contains("4:28 PM") && windows.contains("Notifications"),
+        "the taskbar carries the time and the device's status beside its items: {windows}"
     );
 
     // The macOS-like one: a bar with the app's menus and a dock, both translucent.
@@ -351,7 +350,10 @@ fn a_bar_that_hides_when_a_window_overlaps_it_hides_only_while_one_does() {
     );
     // The window goes: the dock comes back.
     set_screen(&mut r, "dock_covered", false);
-    assert!(says(&desk_view(&r), "Launcher"), "and shows once it is clear");
+    assert!(
+        says(&desk_view(&r), "Launcher"),
+        "and shows once it is clear"
+    );
 }
 
 /// The session writes what the screen says of its edges, as it does every turn: one fact on

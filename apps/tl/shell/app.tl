@@ -98,20 +98,28 @@ view chrome(d: Desk) {
         }
         if dock_shows(s) {
             if s.dock_edge == .bottom {
-                row(at: .bottom, fill, align: .center, padding: .related) {
-                    dock(s, d)
+                row(at: .bottom, fill, align: .center, distribute: .center) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .bottom, fill: if s.dock_fit == .full { 1 } else { 0 }) {
+                        dock(s, d)
+                    }
                 }
             } else if s.dock_edge == .top {
-                row(at: .top, fill, align: .center, padding: .related) {
-                    dock(s, d)
+                row(at: .top, fill, align: .center, distribute: .center) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .top, fill: if s.dock_fit == .full { 1 } else { 0 }) {
+                        dock(s, d)
+                    }
                 }
             } else if s.dock_edge == .left {
-                row(at: .leading, align: .center, padding: .related) {
-                    dock(s, d)
+                stack(at: .leading, align: .center) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .leading) {
+                        dock(s, d)
+                    }
                 }
             } else {
-                row(at: .trailing, align: .center, padding: .related) {
-                    dock(s, d)
+                stack(at: .trailing, align: .center) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .trailing) {
+                        dock(s, d)
+                    }
                 }
             }
         }
@@ -141,23 +149,33 @@ view desktop(d: Desk) {
 /// it spans is what its fit says.
 view bar_on_edge(s: Shell, d: Desk) {
     let on_top = s.bar_edge == .top
-    if s.bar_fit == .full {
-        if on_top {
-            row(at: .top, fill, align: .center, padding: .tight) {
-                top_bar(d)
+    if s.bar_fit == .full and on_top {
+        row(at: .top, fill, align: .center) {
+            ui.Chrome(name: "Top bar", shape: .square, edge: .top, fill) {
+                row(fill, align: .center) {
+                    top_bar(d)
+                }
             }
-        } else {
-            row(at: .bottom, fill, align: .center, padding: .tight) {
-                top_bar(d)
+        }
+    } else if s.bar_fit == .full {
+        row(at: .bottom, fill, align: .center) {
+            ui.Chrome(name: "Top bar", shape: .square, edge: .bottom, fill) {
+                row(fill, align: .center) {
+                    top_bar(d)
+                }
             }
         }
     } else if on_top {
         row(at: .top, align: .center, padding: .related) {
-            top_bar(d)
+            ui.Chrome(name: "Top bar", shape: .rounded, edge: .top) {
+                top_bar(d)
+            }
         }
     } else {
         row(at: .bottom, align: .center, padding: .related) {
-            top_bar(d)
+            ui.Chrome(name: "Top bar", shape: .rounded, edge: .bottom) {
+                top_bar(d)
+            }
         }
     }
 }
@@ -172,7 +190,7 @@ view top_bar(d: Desk) {
         on drop(moved: BarPart, at: Int): place_part(s, moved, at)
         for part in s.bar_parts {
             if part.shown {
-                ui.DragItem(part, title: part.title) {
+                ui.DragItem(part, title: part.title, group: if part.slot == .clock { .center } else if part.slot == .people or part.slot == .status or part.slot == .power { .trailing } else if part.slot == .space { .space } else { .leading }) {
                     bar_part(d, part)
                 }
             }
@@ -213,10 +231,12 @@ view bar_part(d: Desk, part: BarPart) {
         }
     } else if part.slot == .people {
         if not space.compact {
-            for p in d.people {
-                ui.Avatar(name: .some(p.name))
+            row(gap: .tight, align: .center) {
+                for p in d.people {
+                    ui.Avatar(name: .some(p.name))
+                }
+                ui.Avatar(name: .some(d.person))
             }
-            ui.Avatar(name: .some(d.person))
         }
     } else if part.slot == .power {
         ui.Button("Power", icon: .battery, icon_only: true, role: .bar)
@@ -333,7 +353,7 @@ view presence(d: Desk) {
 view bell(d: Desk) {
     let name = if d.quiet { "Notifications silenced" } else { "Notifications" }
     let label = if d.unread == 0 { name } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }
-    stack(gap: .tight, align: .center) {
+    row(gap: .tight, align: .center) {
         ui.Button(label, icon: if d.quiet { .bell_off } else { .bell }, icon_only: true, role: .bar) {
             on press: status(d)
         }
