@@ -72,6 +72,9 @@ struct Notes {
     names_parents: Arc<Mutex<bool>>,
     /// A second, newer Notes instance that runs but has published nothing yet.
     unpublished: bool,
+    /// Whether a second note carries the same action the first does: the
+    /// app alone then names neither of them, and says so.
+    archive_twice: Arc<Mutex<bool>>,
 }
 
 /// What a workspace answers about its installed apps.
@@ -112,6 +115,7 @@ impl Notes {
             live: false,
             names_parents: Arc::new(Mutex::new(true)),
             unpublished: false,
+            archive_twice: Arc::default(),
         }
     }
 
@@ -199,7 +203,33 @@ impl Notes {
                 false,
             ));
         }
+        // An action the notebook's root does not offer, published on one
+        // note of it: `notes#archive` names it, the way the live Settings
+        // publishes `add-email-account` on the root resource it lists.
+        let archived = if *self.archive_twice.lock().unwrap() {
+            vec![TODO, SHOP]
+        } else {
+            vec![TODO]
+        };
+        for page in archived {
+            let key = Self::live_key(page);
+            rows.push(self.row(
+                NOTEBOOK,
+                &key,
+                "notes.notebook.pages",
+                "Notes",
+                Some(("archive", "Archive note", Vec::new(), Effect)),
+                false,
+            ));
+        }
         rows
+    }
+
+    /// The same live Notes, with the action `archive` on both its notes:
+    /// a path naming the app alone is then two actions, not one.
+    fn archiving_both_notes(self) -> Self {
+        *self.archive_twice.lock().unwrap() = true;
+        self
     }
 
     /// The same Notes with `count` more notes in its notebook.
@@ -1466,6 +1496,47 @@ fn a_refused_action_says_why_and_what_it_takes() {
         );
         let (text, failed) = tool(&agent(&host), "tilo_do", json!({"path": "notes/Todo"})).await;
         assert!(failed && text.contains("name the action"), "{text}");
+    });
+}
+
+/// The live Settings publishes `add-email-account` on the root resource it
+/// lists, not on the app's own root: `settings#add-email-account` names it
+/// as surely as `settings/settings.root#add-email-account` does.
+#[test]
+fn the_app_alone_names_an_action_it_publishes_on_a_resource_it_lists() {
+    let host = Notes::new(true).live();
+    run(async {
+        let (text, failed) = tool(&agent(&host), "tilo_do", json!({"path": "notes#archive"})).await;
+        assert!(!failed, "{text}");
+        assert_eq!(text, "ok", "{text}");
+        let (resource, action, _) = host.invoked().last().cloned().unwrap();
+        assert_eq!(resource, host.id(&Notes::live_key(TODO)), "{resource}");
+        assert_eq!(action, "archive");
+        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "notes#archive"})).await;
+        assert!(!failed, "{text}");
+        assert!(
+            text.starts_with("notes/Notebook/Todo#archive  Archive note"),
+            "{text}"
+        );
+    });
+}
+
+/// Two resources carrying the same action is not one action: the app alone
+/// names neither, and says which it would have to be told.
+#[test]
+fn an_app_action_on_two_resources_is_refused_naming_both() {
+    let host = Notes::new(true).live().archiving_both_notes();
+    run(async {
+        let (text, failed) = tool(&agent(&host), "tilo_do", json!({"path": "notes#archive"})).await;
+        assert!(failed, "{text}");
+        assert!(
+            text.contains("names 2 actions")
+                && text.contains("notes/Notebook/Todo#archive")
+                && text.contains("notes/Notebook/Groceries#archive"),
+            "{text}"
+        );
+        assert!(text.contains("#archive"), "{text}");
+        assert!(host.invoked().is_empty(), "nothing ran: {text}");
     });
 }
 

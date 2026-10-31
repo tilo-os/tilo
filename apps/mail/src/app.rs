@@ -226,12 +226,6 @@ impl AccountsPersist {
         }
     }
 
-    /// The accounts stored there; none when nothing is.
-    fn load(&self) -> AccountStore {
-        self.root()
-            .map_or_else(AccountStore::new, |root| AccountStore::load_in(&root))
-    }
-
     /// Persist `accounts` to the target this variant names.
     fn persist(&self, accounts: &AccountStore) -> std::io::Result<()> {
         match self.root() {
@@ -329,8 +323,8 @@ pub struct MailApp {
     /// pointer, focus, keyboard and accessibility contract.
     first_run: EmptyState,
     first_run_node: Option<NodeId>,
-    /// Boxed: the composer's inputs and editor are most of this window's size,
-    /// and the window is built and moved as a value.
+    /// Boxed: the composer's editors and fields are most of the app's size,
+    /// and an inline one puts that on every frame the app is built in.
     compose: Box<ComposeWindow>,
     /// A modal, read-only key map. It is local presentation state; every
     /// shortcut it documents still routes to the normal visible/canonical path.
@@ -382,6 +376,10 @@ pub struct MailApp {
     /// The person's accounts, which Settings keeps and every device of theirs
     /// shares, followed in a live window; and the revision last shown.
     person_accounts: Option<(PersonRecord<PersonAccounts>, Option<u64>)>,
+    /// The session's account custody, which releases this window the
+    /// secret of each email account it shows; `None` outside a session,
+    /// where the profile's own vault holds them.
+    custody: Option<crate::custody::SecretRelease>,
     /// The contact directory revision and own addresses the sender pictures
     /// were last taken from.
     sender_pictures_seen: Option<(u64, Vec<String>)>,
@@ -655,7 +653,15 @@ impl MailApp {
         let persist = storage
             .config_root()
             .map_or(AccountsPersist::Disabled, AccountsPersist::Profile);
-        let accounts = persist.load();
+        // In a session the accounts' secrets are the session's to release;
+        // this sandbox holds no vault of the person's to open. A profile of
+        // its own (a test, `--data-dir`) has one, and opens it.
+        let custody = crate::custody::SecretRelease::capture();
+        let accounts = match (&custody, persist.root()) {
+            (_, None) => AccountStore::new(),
+            (Some(_), Some(root)) => AccountStore::load_without_secrets_in(&root),
+            (None, Some(root)) => AccountStore::load_in(&root),
+        };
         let shared = MailState::shared(MailState::new_live(
             accounts,
             crate::avatars::Avatars::new(),
@@ -665,6 +671,7 @@ impl MailApp {
         let (tx, rx) = crate::engine::spawn(content.clone(), wake_through(&waker));
         let mut app = Self::assemble(shared, content, Some(EngineHandle { tx, rx }), persist);
         app.waker = waker;
+        app.custody = custody;
         // Fetched mail is kept in the app's cache area; a host without one
         // fetches every time.
         let store = storage.files().paths().cache().native_path().map_or_else(
@@ -804,6 +811,7 @@ impl MailApp {
             unsend: false,
             persisted_active_account: None,
             person_accounts: None,
+            custody: None,
             sender_pictures_seen: None,
             preferences: None,
             followed_preferences: crate::resource::MailPreferences::default(),
@@ -3272,9 +3280,6 @@ impl MailApp {
         Ok(())
     }
 
-    /// Show the person's accounts when their record moved: each account's
-    /// settings from the record, its password from this device's vault. A
-    /// newly shown active account is connected.
     /// Take the sender pictures from Contacts' directory and the person's
     /// own identity when either changed. A live window only: a capture or a
     /// test shows initials.
@@ -3305,85 +3310,6 @@ impl MailApp {
         );
         drop(st);
         self.sender_pictures_seen = Some((revision, own));
-    }
-
-    fn adopt_person_accounts(&mut self) {
-        let root = self.state().accounts_persist.root();
-        let Some((record, seen)) = &mut self.person_accounts else {
-            return;
-        };
-        let revision = record.revision();
-        if *seen == Some(revision) {
-            return;
-        }
-        *seen = Some(revision);
-        let person = record.get();
-        let vault = root.map_or_else(accounts::AccountCredentials::open, |root| {
-            accounts::AccountCredentials::open_in(&root)
-        });
-        let Ok(vault) = vault else {
-            tracing::error!("mail account credentials could not be opened");
-            *seen = None;
-            return;
-        };
-        let mut adopted = AccountStore::from_store(&person.store(), &vault);
-        let active_changed = {
-            let mut st = self.shared.borrow_mut();
-            let previous = st.accounts.active_account().cloned();
-            if let Some(shown) = st
-                .accounts
-                .active_account()
-                .map(|account| account.id.clone())
-                && let Some(index) = adopted.accounts.iter().position(|a| a.id == shown)
-            {
-                adopted.active = index;
-            }
-            for account in &mut adopted.accounts {
-                if let Some(previous) = st.accounts.accounts.iter().find(|a| a.id == account.id) {
-                    account.collapsed = previous.collapsed;
-                }
-            }
-            let active_changed = previous.as_ref().map(|a| (&a.id, &a.config))
-                != adopted.active_account().map(|a| (&a.id, &a.config));
-            // An account removed in Settings takes its mail with it, here
-            // and from what this device keeps.
-            let removed: Vec<String> = st
-                .accounts
-                .accounts
-                .iter()
-                .filter(|old| !adopted.accounts.iter().any(|new| new.id == old.id))
-                .map(|old| old.id.clone())
-                .collect();
-            for id in &removed {
-                let gone: Vec<MessageId> = st.mailbox.of_account(id).map(|m| m.id).collect();
-                for message in gone {
-                    st.mailbox.purge(message);
-                }
-                self.state().store.forget(id);
-                self.kept_loaded.remove(id);
-            }
-            if !removed.is_empty() {
-                st.selected = None;
-            }
-            st.accounts = adopted;
-            active_changed
-        };
-        // An empty window has already completed its first sync. Its first
-        // Settings-created account must connect here, not wait for the
-        // one-time startup path to run again. Inactive additions need no fetch.
-        if self.shared.borrow().accounts.is_empty() {
-            self.connect_requested = false;
-        } else if self.state().engine.is_some() && (active_changed || !self.connect_requested) {
-            let (cfg, folder) = {
-                let st = self.shared.borrow();
-                (st.accounts.active_config(), st.folder)
-            };
-            self.state()
-                .post_engine(EngineRequest::connect(cfg.clone()));
-            self.state().post_engine(EngineRequest::fetch(cfg, folder));
-            self.connect_requested = true;
-        }
-        self.dirty = true;
     }
 
     /// Follow the person's Mail preferences in this window.
@@ -4180,6 +4106,7 @@ impl Widget for MailApp {
         self.process_intents();
         self.background_poll_deadline.set(None);
         self.adopt_person_accounts();
+        self.take_released_secrets();
         self.tell_compose_the_accounts();
         self.adopt_sender_pictures();
         self.open_kept_mail();
@@ -4226,7 +4153,11 @@ impl Widget for MailApp {
         if !mem_seeded {
             // Live: kick off a connect + inbox fetch for the active account.
             let has_accounts = !self.shared.borrow().accounts.is_empty();
-            if self.state().engine.is_some() && has_accounts && !self.connect_requested {
+            if self.state().engine.is_some()
+                && has_accounts
+                && !self.connect_requested
+                && !self.awaits_active_secret()
+            {
                 let cfg = self.shared.borrow().accounts.active_config();
                 {
                     // Nothing kept for the account: its rows are on the way.
@@ -5977,6 +5908,7 @@ impl MailApp {
 /// What the server's answer for `folder` of `account_id` changes in what
 /// `mailbox` holds: the messages it no longer has, and those another client
 /// read or starred, as reported.
+mod person_accounts;
 #[path = "server_deltas.rs"]
 mod server_deltas;
 use server_deltas::{first_fetch, server_changes, take_found};
