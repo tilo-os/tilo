@@ -498,21 +498,16 @@ impl Shared {
                 DesktopAsk::Intent(ChromeIntent::HideClock) => self.clock.hide(),
                 DesktopAsk::Launchpad(action) => self.launchpad(action),
                 DesktopAsk::Shortcut(action) => self.shortcut(action),
-                DesktopAsk::HostAction(action) if action == NEW_WORKSPACE => {
-                    self.new_workspace();
-                }
-                DesktopAsk::HostAction(action) if action == WORKSPACE_SETTINGS => {
-                    self.open_workspace_settings();
-                }
-                DesktopAsk::HostAction(action) if action == JOIN_WORKSPACE => {
-                    workspaces::open_directory(self.directory.as_ref(), &self.handle);
-                }
-                DesktopAsk::HostAction(action) if action == LEAVE_WORKSPACE => {
-                    self.leave_workspace();
-                }
+                DesktopAsk::HostAction(action) => self.host_action(&action),
                 DesktopAsk::LeftWorkspace(name) => workspaces::left_workspace(&self.notices, &name),
                 other => tracing::debug!(?other, "desktop ask the session has no part in yet"),
             }
+        }
+        // What the person chose where only a host performs it: search and a
+        // banner hand their host action back here, as the ask on the
+        // person's own avatar does.
+        for choice in self.handle.take_host_choices() {
+            self.host_action(&choice);
         }
         self.follow_device();
         self.follow_sheets();
@@ -532,6 +527,20 @@ impl Shared {
         }
         // What the session's own actions asked of it.
         self.follow_asks();
+    }
+
+    /// Carry out the host action `id` the person chose: what only the
+    /// session can do about workspaces, and, for the offers that are not
+    /// about workspaces, what answering a question about the person
+    /// themselves does ([`identity::answered`]).
+    fn host_action(&self, id: &str) {
+        match id {
+            NEW_WORKSPACE => self.new_workspace(),
+            WORKSPACE_SETTINGS => self.open_workspace_settings(),
+            JOIN_WORKSPACE => workspaces::open_directory(self.directory.as_ref(), &self.handle),
+            LEAVE_WORKSPACE => self.leave_workspace(),
+            choice => identity::answered(choice),
+        }
     }
 
     /// Host the desktop's search, with its kept history and what the

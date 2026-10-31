@@ -13,10 +13,15 @@
 //!   which every publish and frame asks which identity a room presents. A
 //!   reconcile lists and parses every identity record, so it runs on the
 //!   worker and the loop is handed the registry it produced.
+//!
+//! An offer about the person themselves is put to them here
+//! ([`offer`]): asked from their own avatar, and performed when they answer
+//! ([`answered`]).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tilo_desktop_surface::{DesktopHandle, DesktopNotifications, HostAction};
 use tilo_files::native::Watched;
 use ui::local_identity::{LocalIdentity, LocalIdentitySource, RuntimeIdentity};
 
@@ -82,4 +87,46 @@ pub fn install() {
         }
         Err(error) => tracing::warn!(%error, "cannot watch the person's identity"),
     }
+}
+
+/// Put a host offer to the person: one about who they are
+/// ([`HostAction::is_personal`], their name and key here or another of
+/// their devices) is asked from their own avatar in the top bar, where it
+/// waits until they answer it or put it off; every other offer is a banner
+/// over the windows.
+///
+/// This is the session's one door for such an offer, as a page's is
+/// `desktop_offer_host_action` in a browser. The session has no question of
+/// its own about the person to ask through it yet: what it knows of them is
+/// settled by setup before the desk opens ([`crate::setup`]), so an ask
+/// about them arrives from what the session hosts rather than from the
+/// session itself.
+pub fn offer(
+    handle: &DesktopHandle,
+    notices: &DesktopNotifications,
+    action: HostAction,
+    title: impl Into<String>,
+    body: impl Into<String>,
+) {
+    if action.is_personal() {
+        handle.ask_personally(action, title.into(), body.into());
+    } else {
+        notices.post(action.notice(title, body));
+    }
+}
+
+/// The person answered an ask about themselves (the host action they chose,
+/// such as keeping their name and key on this device or linking another of
+/// their devices): their identity work for it.
+///
+/// Changing the person's identity record is setup's ([`crate::setup`]),
+/// which asks its own questions before the desk opens; so there is no work
+/// behind an answer here yet, and the ask has already left their avatar.
+/// The choice is named rather than dropped, so what the person answered is
+/// never lost without trace.
+pub(crate) fn answered(choice: &str) {
+    tracing::info!(
+        %choice,
+        "an ask about the person was answered: their identity is kept by setup"
+    );
 }

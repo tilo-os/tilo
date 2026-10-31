@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tilo_action_policy::Role;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
-    ActiveMediaUse, ChromeIntent, ChromeOverlays, ClockActivity, ClockSnapshot,
+    ActiveMediaUse, AvatarAsk, ChromeIntent, ChromeOverlays, ClockActivity, ClockSnapshot,
     DesktopChromeSnapshot, DesktopChromeSource, LinkKind, LinkStatus, MediaKind, OwnChip,
     SystemStatus, VolumeState,
 };
@@ -192,9 +192,9 @@ pub(crate) struct SessionChrome {
     pub(crate) notices: DesktopNotifications,
     /// The due timer announced last, so an unchanged one is announced once.
     notified: RefCell<Option<String>>,
-    /// `(tree revision, minute, the last wave heard)` the snapshot revision
-    /// was last bumped for.
-    seen: Cell<(u64, i64, Option<String>)>,
+    /// `(tree revision, minute, the last wave heard, the ask on the
+    /// person's avatar)` the snapshot revision was last bumped for.
+    seen: Cell<(u64, i64, Option<String>, u64)>,
     revision: Cell<u64>,
 }
 
@@ -224,7 +224,7 @@ impl SessionChrome {
             clock,
             notices,
             notified: RefCell::new(None),
-            seen: Cell::new((u64::MAX, 0, None)),
+            seen: Cell::new((u64::MAX, 0, None, u64::MAX)),
             revision: Cell::new(0),
         }
     }
@@ -284,10 +284,14 @@ impl DesktopChromeSource for SessionChrome {
         let waved = self.sync.as_ref().and_then(|sync| sync.wave_notice());
         let (clock_activity, clock_overlay) =
             clock_reading(&self.clock, &self.notified, &self.notices);
+        // The bar's pixels for an ask that comes, opens, folds, is answered
+        // or is put off change with it, so the revision moves for those as
+        // it does for the tree.
         let seen = (
             self.handle.revision(),
             clock.unix_seconds.div_euclid(60),
             waved.as_ref().map(|notice| notice.from.clone()),
+            self.handle.personal_ask_revision(),
         );
         if self.seen.replace(seen.clone()) != seen {
             self.revision.set(self.revision.get().wrapping_add(1));
@@ -326,6 +330,18 @@ impl DesktopChromeSource for SessionChrome {
 
     fn app_notification_badge(&self, app_id: &str) -> u32 {
         self.signals.badge(app_id)
+    }
+
+    /// The ask waiting on the person's own avatar: what the session put to
+    /// them there (see [`crate::identity::offer`]), open beside their face
+    /// until they answer it or put it off.
+    fn avatar_ask(&self) -> Option<AvatarAsk> {
+        self.handle.personal_ask().map(|ask| AvatarAsk {
+            question: ask.title,
+            detail: ask.body,
+            answer: ask.action.title,
+            open: ask.open,
+        })
     }
 
     fn intent(&self, intent: ChromeIntent) -> bool {
