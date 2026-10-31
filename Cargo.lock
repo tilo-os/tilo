@@ -13019,6 +13019,7 @@ dependencies = [
  "serde_json",
  "taffy",
  "tilo-app",
+ "tilo-lock",
  "workspace-hack",
  "zeroize",
 ]

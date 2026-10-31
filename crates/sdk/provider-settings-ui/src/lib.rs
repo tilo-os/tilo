@@ -1578,9 +1578,7 @@ pub struct LimitFieldBuffers {
 }
 
 fn limit_input(buffer: &Arc<Mutex<String>>) -> Option<u32> {
-    let text = buffer
-        .lock()
-        .map_or_else(|_| "0".into(), |value| value.trim().to_owned());
+    let text = buffer.lock_recover().trim().to_owned();
     if text.is_empty() {
         None
     } else {
@@ -1590,12 +1588,11 @@ fn limit_input(buffer: &Arc<Mutex<String>>) -> Option<u32> {
 
 impl<H: PanelBindings> Drop for ProviderPanel<H> {
     fn drop(&mut self) {
-        if let Ok(buffers) = self.provider_key_buffers.lock() {
-            for buffer in buffers.values() {
-                if let Ok(mut key) = buffer.lock() {
-                    key.zeroize();
-                }
-            }
+        // A key typed but never sent is wiped with the panel, poisoned
+        // locks included: the buffer is a whole `String`, so nothing a
+        // panic left can stop it being zeroed.
+        for buffer in self.provider_key_buffers.lock_recover().values() {
+            buffer.lock_recover().zeroize();
         }
     }
 }
