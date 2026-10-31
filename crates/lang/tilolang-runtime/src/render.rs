@@ -408,7 +408,22 @@ impl Core {
         } else if n.kind == EMBED {
             self.resolve_embed(cx, &mut node, acc);
         } else {
-            self.mark_unseen(&mut node, cx.offer.viewer, cx.offer.window, acc)?;
+            // The collection a loop of the node lists, whose removed items it may stand in for.
+            let listed = n.children.iter().find_map(|c| {
+                let child = cx.nodes.get(*c)?;
+                match child.props.get(ITEMS) {
+                    Some(Value::Coll(coll)) if child.kind.starts_with(FOR_EACH) => {
+                        Some(Rc::clone(coll))
+                    }
+                    _ => None,
+                }
+            });
+            self.mark_unseen(
+                &mut node,
+                (cx.offer.viewer, cx.offer.window),
+                listed.as_deref(),
+                acc,
+            )?;
         }
         Ok(node)
     }

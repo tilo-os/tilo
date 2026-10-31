@@ -9,7 +9,8 @@ use vello::kurbo::{Point, Rect};
 
 use super::ShellOverlayHost;
 use crate::shell::agent_quick_composer::{AgentQuickComposerOrigin, ComposerOwner};
-use crate::shell::certified_action_session::ActionSessionSource;
+use crate::shell::certified_action_session::{ActionSessionSource, IdentityGate};
+use crate::shell::chrome_state::AgentAsk;
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::selection_agent::{ChordRoute, SelectionSeed};
 
@@ -50,6 +51,18 @@ impl ShellOverlayHost {
     /// app let its moment pass, the composer opens with what the desktop
     /// knows itself.
     pub(crate) fn route_ask_agent_chord(&mut self, now: Instant) -> Vec<u64> {
+        // Work held for a room's identity to settle (the chrome's asks, an
+        // agent door's run) is handed over by the next pump once that moment
+        // came.
+        let due = self
+            .held_agent_asks
+            .due()
+            .into_iter()
+            .chain(self.door_runs_unsettled.iter().map(|(at, _)| *at))
+            .min();
+        if due.is_some_and(|at| at <= now) {
+            self.bump_chrome();
+        }
         let focused = self.focused_app_id();
         match self.selection_requests.route(focused.as_deref(), now) {
             Some(ChordRoute::Ask(connections)) => connections,
@@ -70,9 +83,10 @@ impl ShellOverlayHost {
     /// identity in the active room has just changed and is not settled yet
     /// (the composer's session is bound to a settled one), at the moment it
     /// settles: the press and what the palette asked wait for it rather
-    /// than being dropped.
+    /// than being dropped. The same gate holds the work the chrome hands
+    /// over ([`Self::pump_agent_asks`]).
     fn open_ask_agent_once_settled(&mut self, now: Instant) {
-        if let Some(at) = self.identity_settles_at(now) {
+        if let Some(IdentityGate::SettlesAt(at)) = self.active_identity_gate(now) {
             tracing::debug!(
                 wait = ?at.saturating_duration_since(now),
                 "the composer opens once this device's identity in the room settles"
@@ -83,9 +97,8 @@ impl ShellOverlayHost {
         self.open_ask_agent_on_primary();
     }
 
-    /// When this device's identity in the active workspace's room settles,
-    /// while it is not settled yet.
-    fn identity_settles_at(&self, now: Instant) -> Option<Instant> {
+    /// The identity gate of the active workspace's room.
+    fn active_identity_gate(&self, now: Instant) -> Option<IdentityGate> {
         let room = self
             .chrome
             .as_ref()?
@@ -95,16 +108,18 @@ impl ShellOverlayHost {
             .active_workspace()?
             .room()
             .to_string();
-        room_identity_settles_at(&room, now)
+        let broker = self.shortcut_triggers.broker()?;
+        Some(ActionSessionSource::new(broker).identity_gate(&room, now))
     }
 
-    /// When the ask-agent chord, or an agent door connection's run waiting
-    /// for this device's identity to settle, next needs a tick.
+    /// When the ask-agent chord, work held for a room's identity to settle,
+    /// or an agent door connection's run waiting for it next needs a tick.
     pub(crate) fn ask_agent_deadline(&self, now: Instant) -> Option<Instant> {
         self.door_runs_unsettled
             .iter()
             .map(|(at, _)| *at)
             .chain(self.selection_requests.deadline(now))
+            .chain(self.held_agent_asks.due())
             .min()
     }
 
@@ -427,18 +442,23 @@ impl ShellOverlayHost {
             self.bump_chrome();
         }
         let asks = chrome.borrow_mut().take_agent_asks();
+        // Without a broker nothing can be asked yet: the asks wait for it
+        // with the ones held, and go with the next pump that has one.
+        let Some(broker) = self.shortcut_triggers.broker() else {
+            self.held_agent_asks.hold_all(asks);
+            return false;
+        };
+        let gate_source = ActionSessionSource::new(broker.clone());
+        let now = Instant::now();
+        let ready = self
+            .held_agent_asks
+            .admit(asks, now, |room| gate_source.identity_gate(room, now));
         let mut asked = false;
         let mut starts = Vec::new();
-        for ask in asks {
-            let Some(broker) = self.shortcut_triggers.broker() else {
-                break;
-            };
+        for (ask, identity_revision) in ready {
             let room = ask.room.to_string();
             let live = askable(&broker, &room, &ask.agent);
-            let source = ActionSessionSource::new(broker);
-            let Some(identity_revision) = source.identity_revision(&room) else {
-                continue;
-            };
+            let source = ActionSessionSource::new(broker.clone());
             let person = chrome.borrow().local_user_for_room(&ask.room);
             let owner = ComposerOwner {
                 person,
@@ -499,20 +519,21 @@ impl ShellOverlayHost {
                 continue;
             };
             let room = ask.room.to_string();
-            let Some(identity_revision) =
-                ActionSessionSource::new(broker.clone()).identity_revision(&room)
-            else {
-                // Just changed, as at a session's start: asked once it settles,
-                // as the composer opens then.
-                match room_identity_settles_at(&room, now) {
-                    Some(at) => self.door_runs_unsettled.push((at, ask)),
-                    None => {
-                        let _ = ask.reply.send(Err(crate::shell::i18n::t(
-                            "agent-door-identity-unavailable",
-                        )));
-                    }
+            // The same gate as the chord's and the chrome's asks: just changed,
+            // as at a session's start, it is asked once it settles.
+            let gate = ActionSessionSource::new(broker.clone()).identity_gate(&room, now);
+            let identity_revision = match gate {
+                IdentityGate::Settled(revision) => revision,
+                IdentityGate::SettlesAt(at) => {
+                    self.door_runs_unsettled.push((at, ask));
+                    continue;
                 }
-                continue;
+                IdentityGate::Unknown => {
+                    let _ = ask.reply.send(Err(crate::shell::i18n::t(
+                        "agent-door-identity-unavailable",
+                    )));
+                    continue;
+                }
             };
             let owner = ComposerOwner {
                 person: ask.person,
@@ -614,18 +635,64 @@ impl ShellOverlayHost {
     }
 }
 
-/// When this device's identity in `room` settles, while it has just changed
-/// and is not settled yet; `None` once settled or with none.
-fn room_identity_settles_at(room: &str, now: Instant) -> Option<Instant> {
-    let stamp = tilo_identity_host::join_proof::current_device_stamp(room)?;
-    if stamp.settled() {
-        return None;
+/// Work the chrome handed to agents that cannot be asked yet: its room's
+/// identity on this device has just changed and is not settled, or no
+/// broker is reached yet. It is asked as soon as it can be, never dropped.
+#[derive(Debug, Default)]
+pub(crate) struct HeldAgentAsks {
+    held: Vec<AgentAsk>,
+    /// When the earliest held room's identity settles.
+    until: Option<Instant>,
+}
+
+impl HeldAgentAsks {
+    /// When held work can next be asked; `None` when none waits on a
+    /// moment (none is held, or it waits for the broker).
+    pub(crate) fn due(&self) -> Option<Instant> {
+        self.until
     }
-    let wait = stamp
-        .settles_at()?
-        .duration_since(std::time::SystemTime::now())
-        .unwrap_or_default();
-    Some(now.checked_add(wait).unwrap_or(now))
+
+    /// Hold `asks` as they are, behind the ones already held.
+    pub(crate) fn hold_all(&mut self, asks: Vec<AgentAsk>) {
+        self.held.extend(asks);
+    }
+
+    /// The held asks and `incoming`, in the order they were handed over,
+    /// that can be asked at `now`, each with the identity revision of its
+    /// room (`gate`); the rest are held until their room settles. Work
+    /// whose room's identity cannot be known is said and let go: nothing
+    /// would ever settle it.
+    pub(crate) fn admit(
+        &mut self,
+        incoming: Vec<AgentAsk>,
+        now: Instant,
+        mut gate: impl FnMut(&str) -> IdentityGate,
+    ) -> Vec<(AgentAsk, u64)> {
+        let mut asks = std::mem::take(&mut self.held);
+        asks.extend(incoming);
+        self.until = None;
+        let mut ready = Vec::new();
+        for ask in asks {
+            match gate(&ask.room.to_string()) {
+                IdentityGate::Settled(revision) => ready.push((ask, revision)),
+                IdentityGate::SettlesAt(at) => {
+                    tracing::debug!(
+                        agent = %ask.agent,
+                        wait = ?at.saturating_duration_since(now),
+                        "the work is asked once this device's identity in the room settles"
+                    );
+                    self.until = Some(self.until.map_or(at, |until| until.min(at)));
+                    self.held.push(ask);
+                }
+                IdentityGate::Unknown => tracing::warn!(
+                    agent = %ask.agent,
+                    room = %ask.room,
+                    "the work could not be handed to the agent: this device's identity in the room cannot be read"
+                ),
+            }
+        }
+        ready
+    }
 }
 
 /// Whether the collaborator `agent` takes asks in `room` now: admitted
@@ -685,6 +752,71 @@ fn active_room_agents(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ask(title: &str) -> AgentAsk {
+        AgentAsk {
+            room: crate::shell::state::RoomId::parse("566e67f1-95b8-482b-badb-14a937a220ef")
+                .expect("a room id"),
+            agent: crate::shell::task_agents::NEW_TASK_AGENT.to_owned(),
+            title: title.to_owned(),
+            body: String::new(),
+            show: false,
+            quick: true,
+        }
+    }
+
+    /// Work the chrome hands over while this device's identity in the room
+    /// settles is asked once it settled, in order, not dropped; and the
+    /// overlay is woken at that moment.
+    #[test]
+    fn work_handed_over_while_the_identity_settles_is_asked_once_it_settled() {
+        let t0 = Instant::now();
+        let settles = t0 + std::time::Duration::from_millis(1_500);
+        let gate = |now: Instant| {
+            move |_: &str| {
+                if now < settles {
+                    IdentityGate::SettlesAt(settles)
+                } else {
+                    IdentityGate::Settled(7)
+                }
+            }
+        };
+        let mut held = HeldAgentAsks::default();
+        let ready = held.admit(vec![ask("What is on today?")], t0, gate(t0));
+        assert!(ready.is_empty(), "nothing is asked before it settles");
+        assert_eq!(held.due(), Some(settles), "woken when it settles");
+        let later = t0 + std::time::Duration::from_millis(200);
+        let ready = held.admit(vec![ask("And tomorrow?")], later, gate(later));
+        assert!(ready.is_empty());
+        assert_eq!(held.due(), Some(settles));
+        let ready = held.admit(Vec::new(), settles, gate(settles));
+        let titles: Vec<_> = ready
+            .iter()
+            .map(|(ask, revision)| (ask.title.as_str(), *revision))
+            .collect();
+        assert_eq!(
+            titles,
+            [("What is on today?", 7), ("And tomorrow?", 7)],
+            "both are asked, in the order they were handed over"
+        );
+        assert_eq!(held.due(), None, "nothing waits any more");
+    }
+
+    #[test]
+    fn work_waits_for_the_broker_and_unreadable_identities_are_let_go() {
+        let mut held = HeldAgentAsks::default();
+        held.hold_all(vec![ask("Before the broker")]);
+        assert_eq!(held.due(), None, "it waits for the broker, not a moment");
+        let ready = held.admit(vec![ask("Unreadable")], Instant::now(), |_| {
+            IdentityGate::Unknown
+        });
+        assert!(ready.is_empty());
+        let ready = held.admit(Vec::new(), Instant::now(), |_| IdentityGate::Settled(1));
+        assert!(
+            ready.is_empty(),
+            "work whose identity cannot be read is let go"
+        );
+    }
 
     #[test]
     fn the_composer_keeps_clear_of_the_line_with_the_caret() {

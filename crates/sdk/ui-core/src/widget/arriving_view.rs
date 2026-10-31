@@ -542,6 +542,7 @@ impl<T, E: std::fmt::Display> ArrivalRead for Arriving<T, E> {
 }
 
 /// A read's view. See the module docs; build one with [`Arriving::view`].
+#[crate::component::not_a_component(framework, "how a window's content arrives")]
 pub struct ArrivingView {
     arriving: Rc<dyn ArrivalRead>,
     shape: Rc<Cell<SkeletonShape>>,

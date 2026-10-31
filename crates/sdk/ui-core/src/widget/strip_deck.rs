@@ -129,6 +129,7 @@ impl Slide {
     }
 }
 
+#[crate::component::not_a_component(shell, "the deck of strips")]
 pub struct StripDeck {
     rows: Vec<Box<GroupRow>>,
     nodes: Vec<NodeId>,

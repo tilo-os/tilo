@@ -60,14 +60,19 @@ pub enum Mode {
     Capture,
 }
 
-/// What the person asked of their history at the window: the record's undo or redo, as the one
-/// who runs the instance carries it out on the record (`ToApp::Undo`, `ToApp::Redo`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What the person asked of their history at the window: the record's undo or redo
+/// (`ToApp::Undo`, `ToApp::Redo`), or an undo a view applied (`undo(v)`, `undo(run)`), as the
+/// one who runs the instance carries it out on the record through its history verb `undo`.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HistoryAsk {
     /// Take back their last step.
     Undo,
     /// Bring back what their last undo took back.
     Redo,
+    /// Take back the step the change (a change id of the record) is part of.
+    UndoStep(String),
+    /// Take back every step of the task run (its group).
+    UndoRun(String),
 }
 
 /// A later build of the package, in a development session.
@@ -1044,18 +1049,32 @@ impl Instance {
             if sorted.content {
                 // A list inside the content may have rows the view has not rendered yet.
                 show_content_rows(&mut view.view.borrow_mut());
-                let tree = {
-                    let instance = view.view.borrow();
-                    convert_with(&host, &*names, &instance, |convert| {
-                        convert.node(instance.tree())
-                    })
+                // Only what changed is converted, where it can be: a clock's minute converts
+                // the clock's text, not the window.
+                let in_place = match (&mut view.sent, &sorted.changed) {
+                    (Some(sent), Some(changed)) => {
+                        let instance = view.view.borrow();
+                        convert_with(&host, &*names, &instance, |convert| {
+                            patch_in_place(sent, instance.tree(), changed, convert)
+                        })
+                    }
+                    _ => None,
                 };
-                let mut patches = Vec::new();
-                match &view.sent {
-                    Some(sent) => wire::diff(sent, &tree, &mut patches),
-                    None => patches.push(ui::Patch::SetRoot(tree.clone())),
-                }
-                view.sent = Some(tree);
+                let patches = in_place.unwrap_or_else(|| {
+                    let tree = {
+                        let instance = view.view.borrow();
+                        convert_with(&host, &*names, &instance, |convert| {
+                            convert.node(instance.tree())
+                        })
+                    };
+                    let mut patches = Vec::new();
+                    match &view.sent {
+                        Some(sent) => wire::diff(sent, &tree, &mut patches),
+                        None => patches.push(ui::Patch::SetRoot(tree.clone())),
+                    }
+                    view.sent = Some(tree);
+                    patches
+                });
                 if !patches.is_empty() {
                     self.out.push(ToUi::Patch { lane, patches });
                 }
@@ -1095,6 +1114,13 @@ impl Instance {
                 }
                 // The run's log is the system's: the window's host shows it.
                 ViewEvent::Review { run, .. } => self.out.push(ToUi::ShowRun { run }),
+                // An undo a view applied is the record's, carried out as the window's undo is.
+                ViewEvent::Undo(tilolang_runtime::UndoAsk::Step { change, .. }) => {
+                    self.history.push(HistoryAsk::UndoStep(change));
+                }
+                ViewEvent::Undo(tilolang_runtime::UndoAsk::Run { run }) => {
+                    self.history.push(HistoryAsk::UndoRun(run));
+                }
             }
         }
     }
@@ -1259,9 +1285,10 @@ impl Instance {
         self.flush();
     }
 
-    /// The undo or redo the person asked for was refused, for `why` (somebody else changed what
-    /// it would take back since): the window says so.
-    pub fn history_refused(&mut self, why: String) {
+    /// The undo or redo the person asked for failed, for `why` (an inverse could not be applied,
+    /// or the room refused the change for good): the window says so. Somebody else having changed
+    /// the record since is never a failure: undo leaves their newer value and takes back the rest.
+    pub fn history_failed(&mut self, why: String) {
         self.notice(Words::Plain(why), ui::NoticeKind::Error);
         self.flush();
     }
@@ -1284,7 +1311,7 @@ impl Instance {
         let action = self
             .host()
             .and_then(|host| {
-                host.packages().iter().find_map(|package| {
+                host.find_in_packages(|package| {
                     package
                         .meta
                         .actions
@@ -1977,7 +2004,7 @@ impl Instance {
         let Some(host) = self.host() else {
             return;
         };
-        let Some(action) = host.packages().into_iter().find_map(|package| {
+        let Some(action) = host.find_in_packages(|package| {
             package
                 .meta
                 .actions
@@ -2373,15 +2400,14 @@ fn toggles(
     event: &str,
 ) -> Option<(ResourceRef, String)> {
     let aref = view.event_action(key, event)?;
-    let action = host.packages().into_iter().find_map(|package| {
+    let field = host.find_in_packages(|package| {
         package
             .meta
             .actions
             .iter()
             .find(|action| action.id == aref.action)
-            .cloned()
-    })?;
-    let field = action.toggles?;
+            .map(|action| action.toggles.clone())
+    })??;
     match aref.args.first() {
         Some(Value::Ref(subject)) => Some((ResourceRef::clone(&subject.target), field)),
         _ => None,
@@ -2488,6 +2514,50 @@ struct ListChanges {
     reread: bool,
 }
 
+/// The patches that bring `sent`, the tree the window holds, to the view's `tree` where the
+/// view's patches changed it (`changed`, paths of keys from the root), with `sent` brought there
+/// too: each changed node converted alone, not the whole tree. `None`, and `sent` untouched,
+/// when that cannot be done (a node not found, keys not unique): the tree is converted whole.
+fn patch_in_place(
+    sent: &mut ui::Node,
+    tree: &UiNode,
+    changed: &[Vec<String>],
+    convert: &Convert<'_>,
+) -> Option<Vec<ui::Patch>> {
+    let mut paths: Vec<&[String]> = changed.iter().map(Vec::as_slice).collect();
+    paths.sort_unstable();
+    paths.dedup();
+    // A change below one already converted is in it.
+    let mut tops: Vec<&[String]> = Vec::with_capacity(paths.len());
+    for path in paths {
+        if !tops.iter().any(|top| path.starts_with(top)) {
+            tops.push(path);
+        }
+    }
+    let mut out = Vec::new();
+    let mut fresh = Vec::with_capacity(tops.len());
+    for path in tops {
+        let (root, below) = path.split_first()?;
+        if *root != tree.key || sent.key != tree.key {
+            return None;
+        }
+        let node = below.iter().try_fold(tree, |node, key| {
+            let mut named = node.children.iter().filter(|child| child.key == *key);
+            let child = named.next()?;
+            named.next().is_none().then_some(child)
+        })?;
+        let new = convert.node(node);
+        if !wire::diff_at(wire::at(sent, below)?, &new, below, &mut out) {
+            return None;
+        }
+        fresh.push((below, new));
+    }
+    for (below, new) in fresh {
+        *wire::at_mut(sent, below)? = new;
+    }
+    Some(out)
+}
+
 /// What a view's patches changed, by where it shows.
 #[derive(Default)]
 struct Sorted {
@@ -2495,6 +2565,9 @@ struct Sorted {
     lists: BTreeMap<String, ListChanges>,
     /// Something besides those rows changed.
     content: bool,
+    /// Where it changed, each a path of keys from the root; `None` when the root itself was
+    /// replaced.
+    changed: Option<Vec<Vec<String>>>,
 }
 
 impl Sorted {
@@ -2506,11 +2579,15 @@ impl Sorted {
 /// Sort a view's `patches` against its virtual lists `lists` (each with its keys from the root):
 /// rows inserted, removed or moved, and rows changed, are their lists'; the rest is content.
 fn sort(patches: Vec<Patch>, lists: &[(String, Vec<String>)]) -> Sorted {
-    let mut sorted = Sorted::default();
+    let mut sorted = Sorted {
+        changed: Some(Vec::new()),
+        ..Sorted::default()
+    };
     for patch in patches {
         let (path, structural) = match &patch {
             Patch::SetRoot(_) => {
                 sorted.content = true;
+                sorted.changed = None;
                 for (list, _) in lists {
                     sorted.list(list).reread = true;
                 }
@@ -2548,6 +2625,9 @@ fn sort(patches: Vec<Patch>, lists: &[(String, Vec<String>)]) -> Sorted {
         }
         if !taken {
             sorted.content = true;
+            if let Some(changed) = &mut sorted.changed {
+                changed.push(path.to_vec());
+            }
         }
     }
     sorted
@@ -2578,14 +2658,14 @@ fn used_packages(host: &Host, app: &str) -> Vec<Package> {
 /// The package that declares the type `ty` (an id), with the type.
 #[must_use]
 pub fn type_of(host: &Host, ty: &str) -> Option<(Meta, TypeMeta)> {
-    host.packages().into_iter().find_map(|package| {
+    host.find_in_packages(|package| {
         let declared = package
             .meta
             .types
             .iter()
             .find(|declared| declared.id == ty)?
             .clone();
-        Some((package.meta, declared))
+        Some((package.meta.clone(), declared))
     })
 }
 
@@ -2652,34 +2732,32 @@ pub fn title_of(host: &Host, resource: &ResourceRef) -> String {
 /// name.
 #[must_use]
 pub fn cases(host: &Host, id: &str) -> Vec<wire::Case> {
-    host.packages()
-        .into_iter()
-        .find_map(|package| {
-            package
-                .meta
-                .enums
-                .iter()
-                .find(|declared| declared.id == id || declared.name == id)
-                .map(|declared| {
-                    declared
-                        .variants
-                        .iter()
-                        .map(|variant| {
-                            let label = if variant.label.is_empty() {
-                                sentence(&variant.name)
-                            } else {
-                                variant.label.clone()
-                            };
-                            wire::Case {
-                                name: variant.name.clone(),
-                                label,
-                                icon: variant.icon.as_ref().map(|icon| icon.replace('_', "-")),
-                            }
-                        })
-                        .collect()
-                })
-        })
-        .unwrap_or_default()
+    host.find_in_packages(|package| {
+        package
+            .meta
+            .enums
+            .iter()
+            .find(|declared| declared.id == id || declared.name == id)
+            .map(|declared| {
+                declared
+                    .variants
+                    .iter()
+                    .map(|variant| {
+                        let label = if variant.label.is_empty() {
+                            sentence(&variant.name)
+                        } else {
+                            variant.label.clone()
+                        };
+                        wire::Case {
+                            name: variant.name.clone(),
+                            label,
+                            icon: variant.icon.as_ref().map(|icon| icon.replace('_', "-")),
+                        }
+                    })
+                    .collect()
+            })
+    })
+    .unwrap_or_default()
 }
 
 #[cfg(test)]

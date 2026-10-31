@@ -22,6 +22,7 @@ enum Extent {
     Token(SpacingStep),
 }
 
+#[crate::component::not_a_component(layout, "the language's `spacer`")]
 pub struct Spacer {
     rect: Rect,
     /// Set by the first `apply_layout`. A separate flag rather than a

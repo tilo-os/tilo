@@ -238,6 +238,7 @@ pub mod offscreen;
 pub mod overlay;
 pub mod paint;
 pub mod paragraph;
+pub mod part_paint;
 pub mod passcode_keyboard;
 pub mod pen;
 pub mod people_photos;

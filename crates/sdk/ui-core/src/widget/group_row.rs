@@ -215,6 +215,7 @@ pub use tilo_desktop_model::GroupShape as GroupTopology;
               combinatorial config API — folding them into an enum or bitflags would not make \
               any call site clearer"
 )]
+#[crate::component::not_a_component(shell, "the strip of window groups")]
 pub struct GroupRow {
     external_navigation: bool,
     close_reports: Vec<crate::application::ComponentCloseReport>,

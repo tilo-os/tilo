@@ -44,6 +44,10 @@ impl AppSurface for Region {
 use crate::widget::SETTLE_FRAMES;
 
 /// An app a host shows in a region of its own scene.
+#[crate::component::not_a_component(
+    framework,
+    "an app shown in a region of its host; the language embeds with `embed`"
+)]
 pub struct EmbeddedApp {
     app: Box<App>,
     /// Its actions are offered to this device's automation only.

@@ -268,7 +268,7 @@ impl Core {
                 self.note_state_read(key, generation, &value)?;
                 self.ret_h(value)
             }
-            Imp::Versions | Imp::VersionEnd | Imp::RunChanges | Imp::Unseen => {
+            Imp::Versions | Imp::VersionEnd | Imp::RunChanges | Imp::Unseen | Imp::Steps => {
                 let value = self.versions_import(imp, a)?;
                 self.ret_h(value)
             }
@@ -315,30 +315,47 @@ impl Core {
     }
 
     /// A version of `of` as a `host.Version`: who, when, what, the task run, its kind, the
-    /// fields it changed by name, and the resource; then the id of the action that made it,
-    /// which `v.is(edit)` compares (`tilolang::host::action_id_at`).
-    fn version_value(&self, v: crate::store::Version, of: &ResourceRef) -> Value {
-        let task = v.task.map(|run| {
-            let task = run.task().to_owned();
+    /// fields it changed by name, the resource, what its action says it does and its icon, and
+    /// each field it changed with what it held before and after; then the id of the action that
+    /// made it, which `v.is(edit)` compares (`tilolang::host::action_id_at`).
+    fn version_value(&self, v: crate::store::Version, of: &ResourceRef) -> HResult<Value> {
+        let task = v.task.as_ref().map(|run| {
             Box::new(Value::Tuple(vec![
-                Value::Text(run.id),
-                Value::Text(task),
-                Value::Text(run.title),
+                Value::Text(run.id.clone()),
+                Value::Text(run.task().to_owned()),
+                Value::Text(run.title.clone()),
             ]))
         });
-        let names = self.type_of_ref(&of.ty).ok().map(|(_, info)| info);
+        let info = self.type_of_ref(&of.ty).ok().map(|(_, info)| info);
         let fields = v
             .fields
             .iter()
             .map(|id| {
-                let name = names
+                let name = info
                     .as_ref()
-                    .and_then(|info| info.fields.iter().find(|f| f.id == *id))
+                    .and_then(|info| info.field(id))
                     .map_or_else(|| id.clone(), |f| f.name.clone());
                 Value::Text(name)
             })
             .collect();
-        Value::Tuple(vec![
+        let declared = self
+            .registry
+            .borrow()
+            .action_package(&v.action)
+            .and_then(|pkg| pkg.action(&v.action).cloned());
+        let description = declared
+            .as_ref()
+            .map_or_else(String::new, |a| a.doc.clone());
+        let icon = declared
+            .as_ref()
+            .and_then(|a| a.icon.clone())
+            .map(|icon| Box::new(Value::Text(icon)));
+        let mine = v.task.is_none() && self.looking_now().as_deref() == Some(v.who.as_str());
+        let changes = match &info {
+            Some(info) => self.changes_value(&v, of, info)?,
+            None => Vec::new(),
+        };
+        Ok(Value::Tuple(vec![
             Value::Principal(Principal(v.who)),
             Value::Text(v.at),
             Value::Text(self.action_label(&v.action)),
@@ -346,8 +363,146 @@ impl Core {
             Value::Text(v.kind.word().to_owned()),
             Value::List(fields),
             Value::resource(of),
+            Value::Bool(mine),
+            Value::Text(description),
+            Value::Opt(icon),
+            Value::List(changes),
             Value::Text(v.action),
-        ])
+            Value::Text(v.change),
+        ]))
+    }
+
+    /// Each field the version `v` of `of` changed, as a `host.Change`: its name, its name in
+    /// words, and what it held before and after as its type shows it, read from the change
+    /// itself. None for a version that made or removed the resource, or one not committed yet.
+    fn changes_value(
+        &self,
+        v: &crate::store::Version,
+        of: &ResourceRef,
+        info: &crate::registry::TypeInfo,
+    ) -> HResult<Vec<Value>> {
+        if v.fields.is_empty() || v.change.is_empty() {
+            return Ok(Vec::new());
+        }
+        let specs: Vec<crate::store::FieldSpec> = v
+            .fields
+            .iter()
+            .filter_map(|id| info.field(id))
+            .filter(|f| f.kind != crate::meta::FieldKind::Collection)
+            .map(|f| crate::store::FieldSpec {
+                id: f.id.clone(),
+                kind: f.kind,
+            })
+            .collect();
+        if specs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let written = self
+            .store
+            .borrow()
+            .written(of, &specs, &v.change)
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        let mut out = Vec::with_capacity(written.len());
+        for (id, before, after) in written {
+            let Some(field) = info.field(&id) else {
+                continue;
+            };
+            let side = |held| -> HResult<Value> {
+                let value = self
+                    .field_value(of, field, held, None)
+                    .map_err(crate::engine::HostFail::Trap)?;
+                self.change_shown(&field.ty, &value)
+            };
+            out.push(Value::Tuple(vec![
+                Value::Text(field.name.clone()),
+                Value::Text(sentence(&field.name)),
+                side(before)?,
+                side(after)?,
+            ]));
+        }
+        Ok(out)
+    }
+
+    /// `value`, of the type `ty`, as `c.before` and `c.after` show it ([`Self::change_view`]):
+    /// the kind of thing it is, what stands for it, and what goes with it (a case's icon, a
+    /// person's name). A list of these for a set or a list.
+    fn change_shown(&self, ty: &tilolang::types::Ty, value: &Value) -> HResult<Value> {
+        use tilolang::types::Ty;
+        let one = |kind: &str, value: Value, icon: Option<String>| {
+            Value::Tuple(vec![
+                Value::Text(kind.to_owned()),
+                value,
+                Value::Opt(icon.map(|icon| Box::new(Value::Text(icon)))),
+            ])
+        };
+        Ok(match (ty, value) {
+            (Ty::Option(_), Value::Opt(None)) => one("none", Value::Unit, None),
+            (Ty::Option(inner), Value::Opt(Some(held))) => return self.change_shown(inner, held),
+            (Ty::Date, Value::Text(day)) => one("date", Value::Text(day.clone()), None),
+            (Ty::Time, Value::Text(at)) => one("time", Value::Text(at.clone()), None),
+            (Ty::Principal, Value::Principal(who)) => {
+                let name = self
+                    .names
+                    .borrow()
+                    .as_ref()
+                    .map_or_else(|| who.0.clone(), |host| host.name(who));
+                one("principal", Value::Principal(who.clone()), Some(name))
+            }
+            (_, Value::Bool(flag)) => one("bool", Value::Bool(*flag), None),
+            (_, Value::Int(_) | Value::Float(_)) => one("number", value.clone(), None),
+            (_, Value::Enum(e)) => {
+                let case = self.registry.borrow().enum_meta(&e.ty).and_then(|meta| {
+                    meta.variants
+                        .into_iter()
+                        .find(|c| c.id == e.variant || c.name == e.variant)
+                });
+                match case {
+                    Some(case) => one("case", Value::Text(case.label), case.icon),
+                    None => one("case", Value::Text(sentence(&e.variant)), None),
+                }
+            }
+            (_, Value::Ref(r)) => {
+                let title = match self.type_meta(&r.target.ty, Some(r))? {
+                    Value::Tuple(fields) => fields.into_iter().next(),
+                    _ => None,
+                };
+                one(
+                    "resource",
+                    title.unwrap_or_else(|| Value::Text(String::new())),
+                    None,
+                )
+            }
+            (Ty::Set(inner) | Ty::List(inner), Value::List(items)) => Value::List(
+                items
+                    .iter()
+                    .map(|item| self.change_shown(inner, item))
+                    .collect::<HResult<_>>()?,
+            ),
+            // A map: each entry as its key and what it holds, as people read it ("👍 Ada, Bo").
+            (Ty::Map(inner), Value::List(entries)) => Value::List(
+                entries
+                    .iter()
+                    .map(|entry| match entry {
+                        Value::Tuple(pair) => match pair.as_slice() {
+                            [Value::Text(key), held] => {
+                                let shown = said(&self.change_shown(inner, held)?);
+                                Ok(one("text", Value::Text(format!("{key} {shown}")), None))
+                            }
+                            _ => trap("a map entry is a key and its value"),
+                        },
+                        other => trap(format!("a map entry holds {}", other.kind_name())),
+                    })
+                    .collect::<HResult<_>>()?,
+            ),
+            (_, Value::Rich(rich)) => one("text", Value::Text(rich.written_text()), None),
+            (_, Value::Text(text)) => one("text", Value::Text(text.clone()), None),
+            (_, other) => {
+                return trap(format!(
+                    "a change of a field of type {ty:?} holds {}",
+                    other.kind_name()
+                ));
+            }
+        })
     }
 
     /// Reflection on versions: `history(r)`, `created(r)` and `updated(r)`, `changes(of:)` and
@@ -365,7 +520,10 @@ impl Core {
                 let last = a.h(1)? != 0;
                 let end = self.store.borrow().version_end(at, last).map_err(trapped)?;
                 self.read_versions_of(at)?;
-                end.map_or_else(Value::none, |v| Value::some(self.version_value(v, at)))
+                match end {
+                    Some(v) => Value::some(self.version_value(v, at)?),
+                    None => Value::none(),
+                }
             }
             Imp::Unseen => {
                 let person = self.looking()?;
@@ -374,8 +532,50 @@ impl Core {
                     unseen
                         .into_iter()
                         .map(|v| self.version_value(v, at))
-                        .collect(),
+                        .collect::<HResult<_>>()?,
                 )
+            }
+            Imp::Steps => {
+                let versions = self.store.borrow().versions(at).map_err(trapped)?;
+                self.read_versions_of(at)?;
+                let mut steps: Vec<Vec<crate::store::Version>> = Vec::new();
+                for v in versions {
+                    match steps.last_mut() {
+                        Some(step) if step.last().is_some_and(|last| same_step(last, &v)) => {
+                            step.push(v);
+                        }
+                        _ => steps.push(vec![v]),
+                    }
+                }
+                let mut out = Vec::with_capacity(steps.len());
+                for step in steps.into_iter().rev() {
+                    let Some(last) = step.last() else {
+                        continue;
+                    };
+                    let who = Value::Principal(Principal(last.who.clone()));
+                    let at_time = Value::Text(last.at.clone());
+                    let task = Value::Opt(last.task.as_ref().map(|run| {
+                        Box::new(Value::Tuple(vec![
+                            Value::Text(run.id.clone()),
+                            Value::Text(run.task().to_owned()),
+                            Value::Text(run.title.clone()),
+                        ]))
+                    }));
+                    let mine = last.task.is_none()
+                        && self.looking_now().as_deref() == Some(last.who.as_str());
+                    let versions = step
+                        .into_iter()
+                        .map(|v| self.version_value(v, at))
+                        .collect::<HResult<_>>()?;
+                    out.push(Value::Tuple(vec![
+                        who,
+                        at_time,
+                        task,
+                        Value::List(versions),
+                        Value::Bool(mine),
+                    ]));
+                }
+                Value::List(out)
             }
             _ => {
                 let versions = self.store.borrow().versions(at).map_err(trapped)?;
@@ -384,7 +584,7 @@ impl Core {
                     versions
                         .into_iter()
                         .map(|v| self.version_value(v, at))
-                        .collect(),
+                        .collect::<HResult<_>>()?,
                 )
             }
         })
@@ -423,9 +623,23 @@ impl Core {
             };
             let at = ResourceRef { ty, ..at };
             self.read_versions_of(&at)?;
-            list.push(self.version_value(v, &at));
+            list.push(self.version_value(v, &at)?);
         }
         Ok(Value::List(list))
+    }
+
+    /// Who is looking, when someone is: [`Self::looking`] in a view or an action, `None` in
+    /// code no one is looking through (a function an agent's query runs).
+    pub(crate) fn looking_now(&self) -> Option<String> {
+        let frames = self.frames.borrow();
+        let top = frames.top().ok()?;
+        match &top.kind {
+            FrameKind::View(_) | FrameKind::Action(_) => {
+                drop(frames);
+                self.looking().ok()
+            }
+            _ => None,
+        }
     }
 
     /// Who is looking: the person a view shows to, or the invoker of the action running.
@@ -865,5 +1079,41 @@ impl Core {
             }
         }
         Ok(Some(rendered.root))
+    }
+}
+
+/// Whether `next`, the version after `last`, folds into the same step of history: both made in
+/// the same task run, or both by the same person outside any run.
+fn same_step(last: &crate::store::Version, next: &crate::store::Version) -> bool {
+    match (&last.task, &next.task) {
+        (Some(a), Some(b)) => a.id == b.id,
+        (None, None) => last.who == next.who,
+        _ => false,
+    }
+}
+
+/// What a value as `c.before` and `c.after` show it says as text, where it is part of a phrase
+/// (an entry of a map): a person by name, a case by its label, a list one item after another.
+fn said(shown: &Value) -> String {
+    match shown {
+        Value::List(items) => items.iter().map(said).collect::<Vec<_>>().join(", "),
+        Value::Tuple(parts) => match parts.as_slice() {
+            [Value::Text(kind), _, Value::Opt(Some(name))] if kind == "principal" => {
+                said_value(name)
+            }
+            [_, held, _] => said_value(held),
+            _ => String::new(),
+        },
+        other => said_value(other),
+    }
+}
+
+fn said_value(value: &Value) -> String {
+    match value {
+        Value::Text(text) => text.clone(),
+        Value::Int(n) => n.to_string(),
+        Value::Float(x) => x.to_string(),
+        Value::Principal(who) => who.0.clone(),
+        _ => String::new(),
     }
 }

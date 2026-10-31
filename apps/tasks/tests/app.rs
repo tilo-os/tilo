@@ -399,6 +399,19 @@ fn an_issues_assignee_is_picked_among_the_rooms_people_and_agents() {
     assert_eq!(assignee(&app).as_deref(), Some("person:bob"));
     pick(&mut app, "Scribe");
     assert_eq!(assignee(&app).as_deref(), Some("agent:scribe"));
+    // Given to an agent, its run started at once; it is stopped before the
+    // issue goes to anyone else.
+    assert!(
+        app.state()
+            .issues
+            .get(&issue)
+            .and_then(|issue| issue.active_run())
+            .is_some(),
+        "picking the agent started its run"
+    );
+    app.call("stop-run", json!({ "issue": issue.as_str() }))
+        .expect("stop the run");
+    app.settle();
     pick(&mut app, "Nobody");
     assert_eq!(assignee(&app), None);
 }
@@ -421,8 +434,6 @@ fn a_runs_question_is_answered_through_the_host() {
     )
     .expect("create");
     let issue = only(&app);
-    app.call("approve-run", json!({ "issue": issue.as_str() }))
-        .expect("start the run");
     let agent = ActionInvoker::actor("agent:scribe")
         .with_kind(ActorKind::Agent)
         .acting_for("ada");
@@ -620,11 +631,17 @@ fn the_sidebar_narrows_the_list_and_the_board_to_a_filter() {
     assert_eq!(shown.len(), 1, "one issue is unassigned: {shown:?}");
     assert!(shown[0].contains("Record the demo"), "{shown:?}");
 
-    // Todos: the tasks nobody has started. All three are as they were
-    // made, so all three are todos, an agent's included until its run
-    // takes the task up.
+    // Todos: the tasks nobody has started. The two people's are as they
+    // were made; the agent's run started as it was given the task.
     choose(&mut app, "Todos");
-    assert_eq!(rows(&mut app).len(), 3, "nothing has been started");
+    let shown = rows(&mut app);
+    assert_eq!(shown.len(), 2, "the agent's task is under way: {shown:?}");
+    assert!(
+        !shown
+            .iter()
+            .any(|row| row.contains("Tidy the onboarding docs")),
+        "{shown:?}"
+    );
 
     // An agent's: the one handed to the room's agent.
     choose(&mut app, "An agent's");
@@ -963,11 +980,8 @@ fn a_project_is_made_listed_and_opened_by_its_address() {
 #[test]
 fn a_running_task_reads_the_same_in_the_list_and_on_its_issue() {
     let mut app = open();
-    app.call(
-        "create",
-        json!({ "title": "Send the notes", "assignee": "agent:scribe" }),
-    )
-    .expect("create");
+    app.call("create", json!({ "title": "Send the notes" }))
+        .expect("create");
     let issue = only(&app);
     let follow = |app: &TestApp<App>| {
         app.state()
@@ -981,8 +995,12 @@ fn a_running_task_reads_the_same_in_the_list_and_on_its_issue() {
     // A task no run has taken up is not one the list follows.
     assert!(follow(&app).is_none(), "no run was started yet");
 
-    app.call("approve-run", json!({ "issue": issue.as_str() }))
-        .expect("start the run");
+    // A person giving it to an agent starts its run at once.
+    app.call(
+        "assign",
+        json!({ "issue": issue.as_str(), "assignee": "agent:scribe" }),
+    )
+    .expect("assign");
     assert!(follow(&app).is_some(), "the run is on the issue");
 
     // The list is reached through the filter the sidebar publishes.
