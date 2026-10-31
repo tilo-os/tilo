@@ -8,7 +8,10 @@
 use std::sync::{Arc, Mutex};
 
 use settings_store::notification_policy::AppNotificationRule;
+use settings_store::system_sounds::{SystemSoundEvent, SystemSoundPrefs, should_play};
 use tilo_notifications_service::{Caller, ImageData, Occurrence, Taken};
+use tilo_power_mgmt::inhibit::INHIBIT_IDLE;
+use tilo_session_power::PowerLink;
 
 use super::*;
 
@@ -55,6 +58,7 @@ struct Rig {
     bridge: SessionNotifications,
     policy: Arc<Mutex<NotificationPolicy>>,
     signals: Rc<NoticeSignals>,
+    power: PowerLink,
     heard: Arc<Heard>,
 }
 
@@ -85,12 +89,14 @@ fn rig() -> Rig {
     desktop.show_banners_elsewhere();
     let policy = Arc::new(Mutex::new(NotificationPolicy::default()));
     let signals = Rc::new(NoticeSignals::default());
+    let power = PowerLink::default();
     let bridge = SessionNotifications::new(
         Some(daemon.clone()),
         desktop.clone(),
         Link::new(),
         Arc::clone(&policy),
         Rc::clone(&signals),
+        Some(power.clone()),
     );
     Rig {
         daemon,
@@ -98,6 +104,7 @@ fn rig() -> Rig {
         bridge,
         policy,
         signals,
+        power,
         heard,
     }
 }
@@ -424,6 +431,65 @@ fn do_not_disturb_holds_the_banner_and_the_bar_says_why() {
     rig.step();
     assert_eq!(rig.feed().banners.len(), 1, "and shows it again after");
     assert!(!rig.signals.quiet());
+}
+
+/// While an app presents it holds the machine from going idle, which is how
+/// the desk knows the screen is being watched by others: a notification
+/// arriving then makes no sound, its banner is held, and the bar and the
+/// centre say why without the person's own Do Not Disturb switch moving.
+#[test]
+fn presenting_holds_the_banner_and_silences_it_without_touching_do_not_disturb() {
+    let mut rig = rig();
+    let presenting = rig.power.registry().acquire_for("Presenting", INHIBIT_IDLE);
+    assert!(rig.power.idle_held());
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(sent(id));
+    rig.step();
+    assert!(rig.feed().banners.is_empty(), "quiet holds the banner");
+    assert_eq!(rig.history(), ["New mail"], "it goes to the centre");
+    assert!(rig.signals.quiet(), "the bar shows a silenced bell");
+    assert_eq!(rig.signals.unread(), 1, "and counts it unread");
+    assert!(
+        !rig.policy.lock().unwrap().do_not_disturb,
+        "presenting never rewrites the person's switch"
+    );
+    let label = notifications::quiet_label(&QuietReason::Presenting);
+    assert_eq!(
+        rig.bridge.view().quiet.as_deref(),
+        Some(label.as_str()),
+        "the bar and the centre say the person is presenting"
+    );
+    assert!(
+        !should_play(
+            SystemSoundEvent::Notification,
+            &SystemSoundPrefs::default(),
+            rig.bridge.quiet_state(),
+            true,
+        ),
+        "an arrival while presenting makes no sound"
+    );
+
+    drop(presenting);
+    assert!(!rig.power.idle_held());
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(sent(id));
+    rig.step();
+    assert_eq!(
+        rig.feed().banners.len(),
+        1,
+        "it shows again once the hold is gone"
+    );
+    assert!(!rig.signals.quiet());
+    assert_eq!(rig.bridge.view().quiet, None);
+    assert!(
+        should_play(
+            SystemSoundEvent::Notification,
+            &SystemSoundPrefs::default(),
+            rig.bridge.quiet_state(),
+            true,
+        ),
+        "and sounds again"
+    );
 }
 
 /// An app the person silenced on screen still tells them what arrived: the

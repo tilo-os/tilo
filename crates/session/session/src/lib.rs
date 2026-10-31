@@ -1604,6 +1604,7 @@ impl Session {
                 banners.clone(),
                 notification_policy,
                 notice_signals,
+                options.power.clone(),
             )),
             asker,
             notice_view: RefCell::new(None),
