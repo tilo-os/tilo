@@ -48,7 +48,7 @@ use crate::overview_panel::{OverviewPanel, OverviewPick};
 use crate::shortcuts::{page_chord, page_shortcut_action};
 use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
 use crate::strip_switcher::Command as StripCommand;
-use crate::topbar::{Placement, TOPBAR_HEIGHT_PX, TopBarChrome};
+use crate::topbar::{BarSpace, Placement, TOPBAR_HEIGHT_PX, TopBarChrome};
 use crate::window_flight::WindowFlight;
 use crate::window_switcher::{
     NoThumbnails, SwitcherOutcome, SwitcherScope, WindowSource, WindowSwitcher,
@@ -258,10 +258,13 @@ fn grow(taffy: &mut TaffyTree<()>, node: NodeId) {
     let _ = taffy.set_style(node, style);
 }
 
-/// What lies under the windows: the backdrop, and below the bar's band the
+/// What lies under the windows: the backdrop, and below the bar's room the
 /// strips of the desktop surface over the empty desk's launchpad.
 pub struct DeskLayer {
     backdrop: crate::backdrop::DesktopBackdrop,
+    /// The room the bar takes above the strips: none under a fullscreen
+    /// window, else the bar's height.
+    band: BarSpace,
     area: Stack,
     handle: DesktopHandle,
     empty: Rc<Cell<bool>>,
@@ -292,6 +295,17 @@ impl DeskLayer {
     ) -> Self {
         let empty = Rc::new(Cell::new(handle.read(desk_is_empty)));
         let workspace = handle.read(|tree| tree.active_workspace().map(|workspace| workspace.id.0));
+        // The room the bar takes above the strips, at the same height it
+        // takes itself. The bar docks in this desktop's column, so its room
+        // is there until a window covers its display and the bar steps
+        // aside.
+        let desk = handle.clone();
+        let band = BarSpace::new(Rc::new(move || {
+            (
+                desk.read(|tree| tree.fullscreen_group().is_some()),
+                crate::chrome::TopBarPresence::Docked,
+            )
+        }));
         let mut area = Stack::new();
         for layer in beneath {
             area = area.push(layer);
@@ -305,6 +319,7 @@ impl DeskLayer {
             .push(surface);
         Self {
             backdrop: crate::backdrop::DesktopBackdrop::new(),
+            band,
             area,
             handle,
             empty,
@@ -476,19 +491,9 @@ impl Widget for DeskLayer {
         theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        use taffy::{Dimension, Size};
         let backdrop = self.backdrop.build_layout(taffy, theme, map);
         fill(taffy, backdrop);
-        let band = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(TOPBAR_HEIGHT_PX),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap_or(backdrop);
+        let band = self.band.build_layout(taffy, theme, map);
         let area = self.area.build_layout(taffy, theme, map);
         grow(taffy, area);
         let node = taffy.widget_node(column(), &[backdrop, band, area], map, self);
@@ -499,8 +504,9 @@ impl Widget for DeskLayer {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
-        if let [backdrop, _, area] = taffy.children(node).unwrap_or_default()[..] {
+        if let [backdrop, band, area] = taffy.children(node).unwrap_or_default()[..] {
             self.backdrop.apply_layout(taffy, backdrop, inner);
+            self.band.apply_layout(taffy, band, inner);
             self.area.apply_layout(taffy, area, inner);
         }
     }
@@ -537,11 +543,11 @@ impl Widget for DeskLayer {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.backdrop, &self.area]
+        vec![&self.backdrop, &self.band, &self.area]
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.backdrop, &mut self.area]
+        vec![&mut self.backdrop, &mut self.band, &mut self.area]
     }
 
     fn visit_retained_components(
@@ -1584,6 +1590,24 @@ impl DesktopChrome {
         });
     }
 
+    /// Cover the display with the focused window, or give it back.
+    fn toggle_fullscreen(&self) {
+        let covering = self.handle.read(|tree| {
+            let focused = tree
+                .active_strip_id()
+                .and_then(|strip| tree.active_group_for(strip));
+            focused.is_some() && focused == tree.fullscreen_group()
+        });
+        let Some(route) = self.handle.snapshot(&self.generation, Vec::new()).active else {
+            return;
+        };
+        self.dispatch(&Command::Fullscreen {
+            generation: self.generation.clone(),
+            route,
+            fullscreen: !covering,
+        });
+    }
+
     /// A desktop chord, applied; false when `event` is not one. The chord
     /// is looked up in the desktop's one shortcut table, with a host's
     /// stand-in for Super counting as Super ([`page_shortcut_action`]).
@@ -1841,11 +1865,11 @@ impl DesktopChrome {
                     generation: self.generation.clone(),
                 });
             }
-            // A tab covers the display by filling the strip it is laid out
-            // in, so the fullscreen chord fills the strip and gives it back.
-            ShortcutAction::ToggleMaximize | ShortcutAction::ToggleFullscreen => {
-                self.maximize_focused(None);
-            }
+            // A window covers the display it stands on by covering the whole
+            // strip, bar's room included: the chord and the window menu's
+            // row are the same request.
+            ShortcutAction::ToggleMaximize => self.maximize_focused(None),
+            ShortcutAction::ToggleFullscreen => self.toggle_fullscreen(),
             ShortcutAction::ReportProblem => self.asks.borrow_mut().push(DesktopAsk::ReportProblem),
             other => {
                 if let Some(index) = other.focus_strip_index() {

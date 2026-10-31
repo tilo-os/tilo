@@ -1377,6 +1377,8 @@ desktop-action-param-display-steps = How many displays on, back when negative
 desktop-display-name = Display { $number }
 # What a person can do to one window, from its own menu.
 window-menu-rename = Name this window…
+window-menu-full-screen = Full screen
+window-menu-exit-full-screen = Exit full screen
 window-menu-maximize = Fill the strip
 window-menu-restore = Give the strip back
 window-menu-wider = Wider

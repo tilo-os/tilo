@@ -29,7 +29,10 @@ fn a_windows_menu_offers_what_the_desktop_can_do_to_it() {
     let (route, tree) = first_route(&handle);
     let rows = super::rows(&tree, &route, None);
     let ids: Vec<&str> = rows.iter().map(|row| row.id).collect();
-    assert_eq!(ids, vec![RENAME, MAXIMIZE, WIDER, NARROWER, CLOSE]);
+    assert_eq!(
+        ids,
+        vec![RENAME, FULLSCREEN, MAXIMIZE, WIDER, NARROWER, CLOSE]
+    );
     assert!(rows.iter().all(|row| row.enabled), "{rows:?}");
     assert_eq!(row(&rows, RENAME).unwrap().label, "Name this window…");
     assert_eq!(row(&rows, CLOSE).unwrap().label, "Close");
@@ -166,6 +169,63 @@ fn choosing_a_row_names_and_closes_the_window_it_is_for() {
             .choose_window_menu(route.tab, CLOSE, None, "g")
             .is_err(),
         "a closed window offers nothing"
+    );
+}
+
+/// The full screen row covers the display with the window and gives it
+/// back, and the tree keeps which window covers it.
+#[test]
+fn the_full_screen_row_covers_the_display_and_gives_it_back() {
+    let (surface, handle) = desk(2);
+    let mut frame =
+        ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    frame.relayout();
+    let (route, _tree) = first_route(&handle);
+    let covering =
+        |handle: &DesktopHandle| handle.read(tilo_desktop_model::DesktopTree::fullscreen_group);
+    assert_eq!(covering(&handle), None);
+    assert!(row(&handle.window_menu(route.tab), FULLSCREEN).is_some());
+
+    handle
+        .choose_window_menu(route.tab, FULLSCREEN, None, "g")
+        .unwrap();
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    assert_eq!(covering(&handle), Some(route.group), "the tree holds it");
+    let rect = handle
+        .shown_tabs()
+        .into_iter()
+        .find(|(tab, _)| *tab == route.tab)
+        .expect("the window is drawn")
+        .1;
+    assert!(
+        rect.x0.abs() < 0.5
+            && rect.y0.abs() < 0.5
+            && (rect.width() - 1280.0).abs() < 0.5
+            && (rect.height() - 800.0).abs() < 0.5,
+        "the whole display, gutters and all: {rect:?}"
+    );
+    let rows = handle.window_menu(route.tab);
+    assert!(row(&rows, FULLSCREEN).is_none(), "it reads as its exit");
+    assert!(row(&rows, EXIT_FULLSCREEN).is_some());
+
+    handle
+        .choose_window_menu(route.tab, EXIT_FULLSCREEN, None, "g")
+        .unwrap();
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    assert_eq!(covering(&handle), None, "the display is given back");
+    let back = handle
+        .shown_tabs()
+        .into_iter()
+        .find(|(tab, _)| *tab == route.tab)
+        .expect("the window is still drawn")
+        .1;
+    assert!(
+        back.width() < 1280.0 - 0.5,
+        "it takes its place on the strip again: {back:?}"
     );
 }
 

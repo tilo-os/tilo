@@ -321,6 +321,9 @@ impl DesktopChromeSource for SessionChrome {
         }
         DesktopChromeSnapshot {
             revision: self.revision.get(),
+            // The bar steps aside for the window covering its display, which
+            // only this device's desk knows: the state, never a chord.
+            fullscreen: self.handle.read(|tree| tree.fullscreen_group().is_some()),
             status: self.status(),
             clock,
             overlays: ChromeOverlays {

@@ -627,19 +627,20 @@ impl WindowPolicy for StripPolicy {
     }
 
     /// A window's own asking. A tab has no free geometry: the strip lays it
-    /// out, so a move or a resize asks for nothing, and covering the strip
-    /// is what the window gets instead of a floating window manager's cover
-    /// of the display (maximize, and fullscreen asked of the strip as the
-    /// one window filling it).
+    /// out, so a move or a resize asks for nothing. Covering the display is
+    /// the desktop's either way, the strip filling or the whole display, and
+    /// the compositor is told the desktop took it rather than covering the
+    /// window itself.
     fn request(&mut self, window: &WindowInfo, request: &WindowRequest) -> bool {
-        let covering = match request {
-            WindowRequest::Maximize(on) | WindowRequest::Fullscreen { on, .. } => *on,
+        let mut desk = self.desk.borrow_mut();
+        let answered = match request {
+            WindowRequest::Maximize(on) => desk.policy.set_maximized(window.id, *on),
+            WindowRequest::Fullscreen { on, .. } => desk.policy.set_fullscreen(window.id, *on),
             WindowRequest::Move | WindowRequest::Resize(_) | WindowRequest::Minimize => {
                 return false;
             }
         };
-        let mut desk = self.desk.borrow_mut();
-        if desk.policy.set_maximized(window.id, covering) {
+        if answered {
             desk.host.relayout();
         }
         false

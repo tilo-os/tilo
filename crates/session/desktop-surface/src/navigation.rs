@@ -163,6 +163,12 @@ pub enum Command {
         route: Route,
         maximized: bool,
     },
+    /// Cover the display with the window at `route`, or give it back.
+    Fullscreen {
+        generation: String,
+        route: Route,
+        fullscreen: bool,
+    },
     /// Name the window at `route`; a blank name gives it its window's title
     /// back.
     Rename {
@@ -221,6 +227,7 @@ impl Command {
             | Self::Strip { generation, .. }
             | Self::Width { generation, .. }
             | Self::Maximize { generation, .. }
+            | Self::Fullscreen { generation, .. }
             | Self::Rename { generation, .. }
             | Self::Scroll { generation, .. }
             | Self::GlobalSearch { generation }
@@ -268,6 +275,8 @@ pub enum Admitted {
     Reopen(WorkspaceId),
     Width(RouteIds, u32),
     Maximize(RouteIds, bool),
+    /// Cover the display with the window, or give it back.
+    Fullscreen(RouteIds, bool),
     /// A person's name for the window; empty clears it.
     Rename(RouteIds, String),
     Strip(WorkspaceId, StripId),
@@ -396,6 +405,10 @@ fn admit_reopen(tree: &DesktopTree) -> Result<Admitted, String> {
 ///
 /// # Errors
 /// As [`admit`].
+#[expect(
+    clippy::too_many_lines,
+    reason = "one command, one arm: every navigation command is admitted here"
+)]
 pub fn admit_with(
     command: &Command,
     generation: &str,
@@ -438,6 +451,11 @@ pub fn admit_with(
             maximized,
             ..
         } => route(r).map(|ids| Admitted::Maximize(ids, *maximized)),
+        Command::Fullscreen {
+            route: r,
+            fullscreen,
+            ..
+        } => route(r).map(|ids| Admitted::Fullscreen(ids, *fullscreen)),
         Command::Rename { route: r, name, .. } => named(r, name, tree),
         Command::Workspace { workspace: w, .. } => workspace(w).map(Admitted::Workspace),
         Command::Strip {

@@ -467,6 +467,11 @@ impl DesktopTree {
         if group_removed {
             strip.window_groups.remove(group_idx);
             self.hand_focus_to_neighbour(strip_id, group_id, group_idx, leaving == Leaving::Closed);
+            // A window gone takes its place on the display with it; the
+            // desktop shows its strip again.
+            if self.fullscreen == Some(group_id) {
+                self.fullscreen = None;
+            }
         }
         Some(RemovedTab {
             strip: strip_id,

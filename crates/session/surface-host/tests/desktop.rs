@@ -165,9 +165,10 @@ fn a_window_refused_the_keyboard_waits_on_its_tab_until_the_person_looks() {
     assert!(!asks(2));
 }
 
-/// A window's own asking to cover the screen is answered by its strip: the
-/// tab fills the strip and gives it back, and the compositor is told the
-/// desktop took it rather than covering the window on the display itself.
+/// A window's own asking to cover the screen is answered by the desktop: the
+/// tab fills its strip or covers its display and gives it back, and the
+/// compositor is told the desktop took it rather than covering the window on
+/// the display itself.
 #[test]
 fn a_window_that_asks_to_cover_the_screen_fills_its_strip_and_gives_it_back() {
     use tilo_compositor::{ResizeEdges, WindowRequest};
@@ -194,6 +195,7 @@ fn a_window_that_asks_to_cover_the_screen_fills_its_strip_and_gives_it_back() {
             })
         })
     };
+    let covering = || host.with_policy(|policy| policy.layout().fullscreen);
     assert!(!maximized(), "a window opens at its width");
     assert!(
         !policy.request(&first, &WindowRequest::Maximize(true)),
@@ -208,12 +210,23 @@ fn a_window_that_asks_to_cover_the_screen_fills_its_strip_and_gives_it_back() {
                 output: None
             }
         ),
-        "a fullscreen asking is the same cover"
+        "the whole display is the desktop's to give too"
     );
-    assert!(maximized());
+    assert_eq!(covering(), Some(1), "the window covers its display");
+    assert!(
+        !policy.request(
+            &first,
+            &WindowRequest::Fullscreen {
+                on: false,
+                output: None
+            }
+        ),
+        "and giving it back is answered here too"
+    );
+    assert_eq!(covering(), None, "the display is the desktop's again");
     assert!(
         !policy.request(&first, &WindowRequest::Maximize(false)),
-        "and giving it back is answered here too"
+        "as is the strip"
     );
     assert!(!maximized(), "the window is its own width again");
     // A tab has no free geometry: a move or a resize asks for nothing.

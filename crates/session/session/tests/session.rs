@@ -405,6 +405,31 @@ fn centre(session: &mut Session, rect: (i32, i32, i32, i32)) -> [u8; 4] {
     shot.pixel(x, y).unwrap()
 }
 
+/// The colours across the bar's band on the display.
+fn band(session: &mut Session) -> std::collections::BTreeSet<[u8; 4]> {
+    let frame = session.compositor().screenshot("HEADLESS-1").unwrap();
+    (0..frame.width)
+        .step_by(4)
+        .filter_map(|x| frame.pixel(x, 12))
+        .collect()
+}
+
+/// The colour the display shows most across the bar's band.
+fn band_colour(session: &mut Session) -> [u8; 4] {
+    let frame = session.compositor().screenshot("HEADLESS-1").unwrap();
+    let mut counts = std::collections::BTreeMap::new();
+    for x in (0..frame.width).step_by(4) {
+        if let Some(pixel) = frame.pixel(x, 12) {
+            *counts.entry(pixel).or_insert(0_usize) += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(colour, _)| colour)
+        .unwrap()
+}
+
 /// Step the session until `done` holds, for up to three seconds of its
 /// clock.
 #[track_caller]
@@ -422,6 +447,88 @@ fn within(
         }
     }
     panic!("condition not reached in time");
+}
+
+/// Wait for the size the desktop configures the window to, draw it at that
+/// size as its client does, and wait until the compositor shows it there.
+fn take_size(session: &mut Session, client: &mut TestClient, app: &str, size: (i32, i32)) {
+    let until = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < until && client.seen.size != Some(size) {
+        client.exchange();
+        session.step(Duration::from_millis(4)).expect("step");
+    }
+    assert_eq!(
+        client.seen.size,
+        Some(size),
+        "the desktop asks the window for its new size"
+    );
+    client.show(size.0, size.1, [200, 40, 40, 255]);
+    let app = app.to_owned();
+    within(session, client, move |session| {
+        window(session.compositor(), &app)
+            .is_some_and(|(_, rect)| (rect.2, rect.3) == (size.0, size.1))
+    });
+}
+
+/// A window taken across the display covers it, the bar's room included,
+/// and the bar draws again once the window gives the display back.
+#[test]
+fn a_full_screen_window_covers_the_display_and_the_bar_comes_back() {
+    const APP: &str = "org.example.Cinema";
+    const RED: [u8; 4] = [200, 40, 40, 255];
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let mut client = mapped(&mut session, APP);
+    let (id, rect) = window(session.compositor(), APP).unwrap();
+    assert!(
+        f64::from(rect.1) >= f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX).floor(),
+        "the window stands under the bar: {rect:?}"
+    );
+    assert!(
+        band(&mut session).len() > 2,
+        "and the bar draws in its band"
+    );
+    assert_ne!(
+        band_colour(&mut session),
+        RED,
+        "the bar's band is not the window"
+    );
+
+    assert!(
+        session
+            .desktop()
+            .with_policy(|policy| policy.set_fullscreen(id, true)),
+        "the desk holds the window"
+    );
+    take_size(&mut session, &mut client, APP, (WIDTH, HEIGHT));
+    assert_eq!(
+        window(session.compositor(), APP),
+        Some((id, (0, 0, WIDTH, HEIGHT))),
+        "the display from its top edge to its bottom"
+    );
+    assert_eq!(
+        band_colour(&mut session),
+        RED,
+        "the bar stepped aside: its band is the window"
+    );
+
+    assert!(
+        session
+            .desktop()
+            .with_policy(|policy| policy.set_fullscreen(id, false))
+    );
+    take_size(&mut session, &mut client, APP, (rect.2, rect.3));
+    assert_eq!(
+        window(session.compositor(), APP),
+        Some((id, rect)),
+        "the window stands where it stood"
+    );
+    assert!(band(&mut session).len() > 2, "the bar is back in its band");
+    assert_ne!(
+        band_colour(&mut session),
+        RED,
+        "and the band is not the window again"
+    );
 }
 
 #[test]

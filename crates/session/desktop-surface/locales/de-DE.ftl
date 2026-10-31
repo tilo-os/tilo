@@ -1392,6 +1392,8 @@ desktop-action-param-display-steps = Wie viele Bildschirme weiter, negativ zurü
 desktop-display-name = Bildschirm { $number }
 # What a person can do to one window, from its own menu.
 window-menu-rename = Dieses Fenster benennen…
+window-menu-full-screen = Vollbild
+window-menu-exit-full-screen = Vollbild beenden
 window-menu-maximize = Den Streifen füllen
 window-menu-restore = Den Streifen zurückgeben
 window-menu-wider = Breiter

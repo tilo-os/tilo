@@ -1,16 +1,17 @@
 //! What the person can do to one window, as the desktop offers it.
 //!
-//! The rows are the desktop's own and no app's: naming a window, filling
-//! the strip with it and giving the strip back, widening or narrowing it,
-//! and closing it. Every row is a navigation command the desktop already
-//! answers, so a menu — the overflow menu in the window's own bar, or one a
-//! sheet mounts beside it — offers exactly what the desktop can do, and
-//! choosing a row sends the same command a chord or a control sends.
+//! The rows are the desktop's own and no app's: naming a window, covering
+//! the display with it, filling the strip with it and giving the strip back,
+//! widening or narrowing it, and closing it. Every row is a navigation
+//! command the desktop already answers, so a menu — the overflow menu in the
+//! window's own bar, or one a sheet mounts beside it — offers exactly what
+//! the desktop can do, and choosing a row sends the same command a chord or
+//! a control sends.
 //!
-//! Which rows apply follows the window: a window filling the strip offers
-//! the strip back instead of filling it, the widest window cannot be
-//! widened, and a window someone else holds can be neither named nor
-//! closed.
+//! Which rows apply follows the window: a window covering its display offers
+//! it back, a window filling the strip offers the strip back instead of
+//! filling it, the widest window cannot be widened, and a window someone
+//! else holds can be neither named nor closed.
 
 use tilo_desktop_model::width::{
     WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,
@@ -21,6 +22,8 @@ use crate::i18n::{t, t_args};
 use crate::navigation::{Command, Route, RouteIds};
 
 pub const RENAME: &str = "window-rename";
+pub const FULLSCREEN: &str = "window-fullscreen";
+pub const EXIT_FULLSCREEN: &str = "window-exit-fullscreen";
 pub const MAXIMIZE: &str = "window-maximize";
 pub const RESTORE: &str = "window-restore";
 pub const WIDER: &str = "window-wider";
@@ -59,12 +62,27 @@ pub fn rows(tree: &DesktopTree, route: &RouteIds, held: Option<&str>) -> Vec<Row
     let permille = group.width.permille();
     let wider = WIDTHS.iter().copied().find(|width| *width > permille);
     let narrower = WIDTHS.iter().rev().copied().find(|width| *width < permille);
+    let fullscreen = tree.fullscreen_group() == Some(group.id);
     vec![
         Row {
             id: RENAME,
             label: t("window-menu-rename"),
             enabled: mine,
             reason: why(),
+        },
+        Row {
+            id: if fullscreen {
+                EXIT_FULLSCREEN
+            } else {
+                FULLSCREEN
+            },
+            label: t(if fullscreen {
+                "window-menu-exit-full-screen"
+            } else {
+                "window-menu-full-screen"
+            }),
+            enabled: true,
+            reason: None,
         },
         Row {
             id: if group.maximized { RESTORE } else { MAXIMIZE },
@@ -122,6 +140,11 @@ pub fn command(
                 name: name.to_owned(),
             }
         }
+        FULLSCREEN | EXIT_FULLSCREEN => Command::Fullscreen {
+            generation: generation.to_owned(),
+            route,
+            fullscreen: id == FULLSCREEN,
+        },
         MAXIMIZE | RESTORE => Command::Maximize {
             generation: generation.to_owned(),
             route,
@@ -199,6 +222,19 @@ impl crate::surface::DesktopHandle {
         shared
             .queue
             .push(crate::navigation::Admitted::Maximize(ids, maximized));
+        true
+    }
+
+    /// Cover the display with the window showing `tab`, or give it back, on
+    /// the next update pass. False when no window shows it.
+    pub fn fullscreen_tab(&self, tab: TabId, fullscreen: bool) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let Some(ids) = crate::surface::route_of(&shared.tree, tab) else {
+            return false;
+        };
+        shared
+            .queue
+            .push(crate::navigation::Admitted::Fullscreen(ids, fullscreen));
         true
     }
 

@@ -183,6 +183,8 @@ pub struct DesktopChromeSnapshot {
     pub status: SystemStatus,
     pub clock: ClockSnapshot,
     pub overlays: ChromeOverlays,
+    /// A window on this device covers its display: the bar and its room
+    /// step aside until it gives the display back.
     pub fullscreen: bool,
     pub notification_badge: u32,
     /// Fresh banners are being held (Do Not Disturb, presenting, a focus
