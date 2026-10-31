@@ -18,7 +18,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use tilo_quick_settings::device::testing::{Kept, Machine};
 use tilo_quick_settings::device::{Device, DeviceHost, PlayerLink, SessionRequest};
 use tilo_quick_settings::host::{FixtureHost, Lent};
-use tilo_quick_settings::hosted::{PersonalDevice, device_rows};
+use tilo_quick_settings::hosted::{
+    PersonalDevice, SendableSound, SoundAsk, SoundRoute, device_rows, remote_audio_rows,
+};
 use tilo_quick_settings::{
     MediaOffer, PowerProfile, QsEffect, QsSection, QuickSettings, QuickSettingsApp,
     QuickSettingsState, RowPart,
@@ -785,6 +787,7 @@ fn a_device_row_press_asks_the_session_for_that_row_and_part() {
                 local: true,
                 display: true,
                 wakeable: false,
+                audio_output: true,
             },
             PersonalDevice {
                 id: "laptop".into(),
@@ -793,9 +796,11 @@ fn a_device_row_press_asks_the_session_for_that_row_and_part() {
                 local: false,
                 display: true,
                 wakeable: false,
+                audio_output: true,
             },
         ],
         Some("Clair de lune"),
+        false,
     );
     let host = Rc::new(FixtureHost::new(state));
     let lent: Rc<dyn tilo_quick_settings::host::PanelHost> = host.clone();
@@ -832,6 +837,115 @@ fn a_device_row_press_asks_the_session_for_that_row_and_part() {
             QsEffect::PressDevice {
                 row: "laptop".into(),
                 part: RowPart::Row,
+            },
+        ]
+    );
+}
+
+/// The Devices section lists the sounds this device can send, the routes of
+/// the sounds that travel, and the devices asking for this one's sound above
+/// the person's devices: a sound is picked by pressing its row, a route is
+/// stopped, and an ask is answered with its two buttons.
+#[test]
+fn the_devices_section_lists_the_sounds_that_travel_and_what_asks_for_one() {
+    let _settled = ui::motion::testing::settled();
+    let mut state = tilo_quick_settings::scenarios::readings(Some("devices"));
+    state.personal_devices = Some(2);
+    let mut rows = remote_audio_rows(
+        &[
+            SendableSound {
+                token: 7,
+                label: "All system audio".into(),
+                application: false,
+            },
+            SendableSound {
+                token: 8,
+                label: "Music".into(),
+                application: true,
+            },
+        ],
+        &[SoundRoute {
+            id: "aa".repeat(16),
+            label: "All system audio".into(),
+            detail: "Waiting for Laptop to allow it".into(),
+            stopped: false,
+        }],
+        &[SoundAsk {
+            id: "bb".repeat(16),
+            media: "All system audio".into(),
+            source: "Laptop".into(),
+        }],
+        Some(8),
+    );
+    rows.extend(device_rows(
+        &[PersonalDevice {
+            id: "laptop".into(),
+            label: "Laptop".into(),
+            online: true,
+            local: false,
+            display: false,
+            wakeable: false,
+            audio_output: true,
+        }],
+        None,
+        true,
+    ));
+    state.device_rows = rows;
+    let host = Rc::new(FixtureHost::new(state));
+    let lent: Rc<dyn tilo_quick_settings::host::PanelHost> = host.clone();
+    let mut app =
+        HeadlessApp::<QuickSettingsApp>::for_person_with_lent("person", Lent(lent)).unwrap();
+    for invoke in tilo_quick_settings::scenarios::actions(Some("devices")) {
+        app.invoke(invoke).unwrap();
+    }
+    app.harness().resize((360, 900)).unwrap();
+    app.settle();
+    let sound = format!("qs-device-{}7", tilo_quick_settings::hosted::SOUND_KEY);
+    let route = format!(
+        "qs-device-{}{}",
+        tilo_quick_settings::hosted::ROUTE_KEY,
+        "a".repeat(32)
+    );
+    let ask = format!(
+        "qs-device-{}{}",
+        tilo_quick_settings::hosted::ASK_KEY,
+        "b".repeat(32)
+    );
+    let targets = app.harness().targets();
+    assert!(
+        targets.contains_key(&sound),
+        "a sound is a row: {targets:?}"
+    );
+    assert!(targets.contains_key(&route), "a route is a row");
+    assert!(
+        targets.contains_key(&format!("{ask}-allow")),
+        "an ask offers its allowance"
+    );
+    assert!(
+        targets.contains_key(&format!("{ask}-decline")),
+        "an ask offers its refusal"
+    );
+    assert!(
+        targets.contains_key("qs-device-laptop-action"),
+        "the device row offers the send"
+    );
+
+    app.harness().click_named(&sound).unwrap();
+    app.settle();
+    app.harness()
+        .click_named(&format!("{ask}-decline"))
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        host.ran(),
+        [
+            QsEffect::PressDevice {
+                row: format!("{}7", tilo_quick_settings::hosted::SOUND_KEY),
+                part: RowPart::Row,
+            },
+            QsEffect::PressDevice {
+                row: format!("{}{}", tilo_quick_settings::hosted::ASK_KEY, "b".repeat(32)),
+                part: RowPart::Decline,
             },
         ]
     );

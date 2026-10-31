@@ -1071,6 +1071,40 @@ fn route_views(state: &RemoteAudioState, include_interrupted: bool) -> Vec<Remot
     routes
 }
 
+/// What a route is doing, in words that name the device at its other end.
+#[must_use]
+pub fn phase_line(route: &RemoteAudioRouteView, peer: &str) -> String {
+    use crate::i18n::t_args;
+    let peer = peer.to_owned();
+    let key = match (route.phase, route.inbound) {
+        (RemoteAudioPhase::AwaitingConsent, _) => "remote-audio-awaiting",
+        (RemoteAudioPhase::SyncingClock, _) => "remote-audio-syncing",
+        (RemoteAudioPhase::ClockFailed(reason), _) => {
+            return t_args(
+                "remote-audio-clock-failed",
+                &[
+                    ("peer", peer.into()),
+                    ("reason", clock_reason(reason).into()),
+                ],
+            );
+        }
+        (RemoteAudioPhase::Streaming, false) => "remote-audio-streaming",
+        (RemoteAudioPhase::Streaming, true) => "remote-audio-streaming-from",
+        (RemoteAudioPhase::Interrupted, false) => "remote-audio-interrupted",
+        (RemoteAudioPhase::Interrupted, true) => "remote-audio-interrupted-from",
+    };
+    t_args(key, &[("peer", peer.into())])
+}
+
+/// Why a route could not learn the clock of the device at its other end.
+#[must_use]
+pub fn clock_reason(reason: ClockSyncFailure) -> String {
+    crate::i18n::t(match reason {
+        ClockSyncFailure::MediaDisabled => "clock-sync-failure-media-disabled",
+        ClockSyncFailure::NoReply => "clock-sync-failure-no-reply",
+    })
+}
+
 /// Active routes only, without touching the source picker.
 pub fn active_routes() -> Vec<RemoteAudioRouteView> {
     state()

@@ -37,12 +37,14 @@ use tilo_device_fabric::wake::{self, MagicPackets};
 use tilo_device_fabric::{
     DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
     FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, Ipv4Subnet, MediaSourceLocator,
-    OwnerSession, PersonalFabricAction, WakeInterfaceKind, WakeRoute,
+    OwnerSession, PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
+    REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
+    WakeInterfaceKind, WakeRoute,
 };
 use tilo_quick_settings::device::Device;
 use tilo_quick_settings::device::PlayerLink;
 use tilo_quick_settings::device::testing::{Kept, Machine};
-use tilo_quick_settings::hosted::HostedActions;
+use tilo_quick_settings::hosted::{ASK_KEY, HostedActions, ROUTE_KEY, SOUND_KEY};
 use tilo_quick_settings::{QsEffect, RowPart};
 use tilo_session::{
     AppActions, AppLists, DeviceHost, Lists, Options, QuickSettings, Session, WakeInterfaces,
@@ -545,13 +547,21 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
         state
             .device_rows
             .iter()
+            .skip(1)
             .map(|row| (row.key.as_str(), row.title.as_str(), row.detail.as_str()))
             .collect::<Vec<_>>(),
         [("laptop", "Laptop", "Online")],
-        "one row per device other than this one"
+        "one row per device other than this one, under the sound it can take"
+    );
+    assert!(
+        state.device_rows[0]
+            .key
+            .starts_with(tilo_quick_settings::hosted::SOUND_KEY),
+        "the sound this device can send comes first: {:?}",
+        state.device_rows[0]
     );
     assert_eq!(
-        state.device_rows[0].actions,
+        state.device_rows[1].actions,
         HostedActions::Select("Play Clair de lune here".into()),
         "the row says what pressing it does"
     );
@@ -937,6 +947,214 @@ fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
     assert!(
         !host.invoked.borrow().is_empty(),
         "its settings open instead"
+    );
+}
+
+/// Open quick settings and step until the Devices section has its rows.
+fn open_devices(harness: &mut Harness) {
+    harness
+        .session
+        .invoke(CHROME_RESOURCE, "toggle-quick-settings", &Arguments::new())
+        .expect("open quick settings");
+    for _ in 0..40 {
+        harness.step();
+        if harness.device().state().device_rows.len() > 1 {
+            return;
+        }
+    }
+    panic!("the Devices section has its rows");
+}
+
+/// The row `key` names, as the panel was fed it.
+fn row(harness: &Harness, key: &str) -> tilo_quick_settings::hosted::HostedRow {
+    harness
+        .device()
+        .state()
+        .device_rows
+        .iter()
+        .find(|row| row.key == key)
+        .cloned()
+        .unwrap_or_else(|| panic!("the row {key} is in the section"))
+}
+
+/// The one row whose key starts with `prefix`.
+fn the_row(harness: &Harness, prefix: &str) -> tilo_quick_settings::hosted::HostedRow {
+    let rows = harness.device().state().device_rows;
+    let found = rows
+        .iter()
+        .filter(|row| row.key.starts_with(prefix))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(found.len(), 1, "one row for {prefix}: {rows:?}");
+    found.into_iter().next().expect("the row")
+}
+
+/// Pick the sound this device plays and send it to the laptop, answering the
+/// offers the route and the ask need. Returns the route's session.
+fn sent_our_sound(harness: &mut Harness, link: &FakeLink) -> String {
+    harness.playing();
+    open_devices(harness);
+    let sound = the_row(harness, SOUND_KEY);
+    assert_eq!(sound.title, "All system audio");
+    assert_eq!(sound.detail, "Choose a device below");
+    assert!(!sound.selected, "nothing is picked to begin with");
+    harness.press(&sound.key, RowPart::Row);
+    assert!(the_row(harness, SOUND_KEY).selected, "the press picks it");
+    assert!(link.sent().is_empty(), "picking a sound sends nothing");
+    assert_eq!(
+        row(harness, "laptop").actions,
+        HostedActions::Select("Send".into()),
+        "the device row says what a press does now"
+    );
+    harness.press("laptop", RowPart::Action);
+    the_row(harness, ROUTE_KEY).key
+}
+
+#[test]
+fn the_sound_of_this_device_travels_to_another_and_its_route_is_listed() {
+    let _settled = ui::motion::testing::settled();
+    let link = FakeLink::joined(true);
+    let mut harness = session(&link, Rc::new(Host::default()));
+    let route = sent_our_sound(&mut harness, &link);
+
+    let sent = link.sent();
+    assert_eq!(sent.len(), 1, "one offer, not two: {sent:?}");
+    let (target, action) = sent.first().expect("the offer");
+    assert_eq!(target, &laptop(), "the device pressed");
+    let PersonalFabricAction::RemoteAudioOffer {
+        session_id,
+        label,
+        sample_rate_hz,
+        channels,
+        frame_samples,
+        ..
+    } = action
+    else {
+        panic!("not an offer of sound: {action:?}");
+    };
+    assert_eq!(label, "All system audio");
+    assert!(*sample_rate_hz > 0 && *channels > 0 && *frame_samples > 0);
+    assert_eq!(
+        route,
+        format!("{ROUTE_KEY}{}", hex::encode(session_id)),
+        "the route's row is the session the service made"
+    );
+    let waiting = row(&harness, &route);
+    assert_eq!(waiting.title, "All system audio");
+    assert_eq!(waiting.detail, "Waiting for Laptop to allow it");
+    assert_eq!(waiting.actions, HostedActions::Select("Stop".into()));
+
+    // The picker's entry was spent on the offer: the sound the person can
+    // send again is a fresh one, and none is picked.
+    assert!(
+        !harness
+            .device()
+            .state()
+            .device_rows
+            .iter()
+            .any(|row| row.key.starts_with(SOUND_KEY) && row.selected),
+        "no sound is picked after sending one"
+    );
+    assert_eq!(
+        row(&harness, "laptop").actions,
+        HostedActions::Select("Play Clair de lune here".into()),
+        "with no sound picked, a press plays what plays here again"
+    );
+}
+
+#[test]
+fn a_route_is_stopped_from_its_row() {
+    let _settled = ui::motion::testing::settled();
+    let link = FakeLink::joined(true);
+    let mut harness = session(&link, Rc::new(Host::default()));
+    let route = sent_our_sound(&mut harness, &link);
+    harness.press(&route, RowPart::Action);
+
+    let sent = link.sent();
+    assert_eq!(sent.len(), 2, "the offer and its cancellation: {sent:?}");
+    let (target, action) = sent.last().expect("the cancellation");
+    assert_eq!(target, &laptop());
+    assert!(
+        matches!(action, PersonalFabricAction::RemoteAudioCancel { .. }),
+        "a route nobody answered is called off: {action:?}"
+    );
+    assert!(
+        !harness
+            .device()
+            .state()
+            .device_rows
+            .iter()
+            .any(|row| row.key == route),
+        "the stopped route is no longer listed"
+    );
+}
+
+#[test]
+fn a_device_asking_for_this_sound_is_declined_from_its_row() {
+    let _settled = ui::motion::testing::settled();
+    let link = FakeLink::joined(true);
+    let mut harness = session(&link, Rc::new(Host::default()));
+    open_devices(&mut harness);
+
+    // The laptop asks to play what plays here.
+    let session_id = [0x2a; 16];
+    let offer = PersonalFabricActionEnvelope {
+        request_id: [0x11; 16],
+        source: laptop(),
+        target: this_device(),
+        issued_unix_ms: ui::time::unix_now_ms(),
+        action: PersonalFabricAction::RemoteAudioOffer {
+            session_id,
+            protocol_version: REMOTE_AUDIO_PROTOCOL_VERSION,
+            label: "All system audio".into(),
+            sample_rate_hz: REMOTE_AUDIO_SAMPLE_RATE_HZ,
+            channels: REMOTE_AUDIO_CHANNELS,
+            frame_samples: REMOTE_AUDIO_FRAME_SAMPLES,
+        },
+    };
+    let as_link: &dyn FabricLink = &link;
+    assert!(tilo_speaker_service::remote_audio::handle_action(
+        as_link, &offer
+    ));
+    for _ in 0..4 {
+        harness.step();
+    }
+
+    let ask = the_row(&harness, ASK_KEY);
+    assert_eq!(ask.title, "Play All system audio here");
+    assert_eq!(ask.detail, "Laptop asked for this");
+    assert_eq!(
+        ask.actions,
+        HostedActions::Pair {
+            first: (
+                ui::icons::Icon::Check,
+                "Allow this remote audio once".into()
+            ),
+            second: (ui::icons::Icon::X, "Decline this remote audio".into()),
+        },
+        "the person allows it once or declines it"
+    );
+    harness.press(&ask.key, RowPart::Decline);
+    let sent = link.sent();
+    assert_eq!(sent.len(), 1, "one answer: {sent:?}");
+    let (target, action) = sent.first().expect("the answer");
+    assert_eq!(target, &laptop());
+    assert_eq!(
+        action,
+        &PersonalFabricAction::RemoteAudioDecision {
+            session_id,
+            accepted: false,
+            authorization: None,
+        }
+    );
+    assert!(
+        !harness
+            .device()
+            .state()
+            .device_rows
+            .iter()
+            .any(|row| row.key.starts_with(ASK_KEY)),
+        "an answered ask is gone"
     );
 }
 
