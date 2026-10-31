@@ -227,7 +227,10 @@ pub trait SurfaceHost {
 
     /// Other clients' windows this surface pictures (thumbnails, cards),
     /// bottom first: the compositor draws their live buffers there, in
-    /// front of this surface's layers.
+    /// front of this surface's layers. A window the session keeps private
+    /// ([`crate::capture::protect`]) is drawn as the placeholder a capture
+    /// of it shows instead, since the desk a picture stands on is what a
+    /// screenshot, a recording and a share show.
     fn window_pictures(&self) -> Vec<crate::WindowPicture> {
         Vec::new()
     }

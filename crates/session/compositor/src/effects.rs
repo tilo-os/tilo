@@ -10,8 +10,11 @@
 //! thumbnails, a switcher card) names them and the rects they rest at
 //! ([`WindowPicture`], from [`crate::SurfaceHost::window_pictures`]); the
 //! compositor draws each window's live buffer there, scaled to fit, in
-//! front of that surface's layers. Neither changes where input lands: a
-//! window takes the pointer where it stands.
+//! front of that surface's layers — and a window a capture may not show
+//! ([`crate::capture::protect`]) as the same placeholder a capture draws of
+//! it, since a picture stands on the desk every capture and share sees too.
+//! Neither changes where input lands: a window takes the pointer where it
+//! stands.
 //!
 //! Every window is also framed ([`crate::WindowFrame`]): its corners are
 //! cut to the desktop's rounding, and the shadow and hairline that lift it
@@ -438,12 +441,14 @@ pub(crate) fn fit(
 }
 
 /// `window` pictured as `picture` says, on an output whose top left in the
-/// logical layout is `output_origin`.
+/// logical layout is `output_origin`; a `withheld` window as the placeholder
+/// a capture of it shows, carrying nothing of it.
 pub(crate) fn pictured<R>(
     renderer: &mut R,
     framing: Framing<'_>,
     window: &Window,
     picture: &WindowPicture,
+    withheld: bool,
     output_origin: Point<f64, Logical>,
     output: (Rectangle<i32, Physical>, f64),
 ) -> Vec<OutputRenderElement<R>>
@@ -473,6 +478,23 @@ where
     let Some(clip) = clip else {
         return Vec::new();
     };
+    if withheld {
+        // What the window holds is not shown here either: the picture is
+        // the placeholder its captures are, in the rect it fits.
+        let rect = Rectangle::<f64, Logical>::new(at, (size.w * scale, size.h * scale).into())
+            .to_physical(output_scale)
+            .to_i32_round();
+        return rect
+            .intersection(clip)
+            .map(|rect| {
+                vec![crate::capture::placeholder(
+                    rect.loc,
+                    rect.size,
+                    picture.opacity.min(1.0),
+                )]
+            })
+            .unwrap_or_default();
+    }
     // Drawn at its own size with its top left on the picture's, then
     // scaled about that corner. The shadow is scaled with it, so a
     // thumbnail carries the window's own lift.

@@ -451,6 +451,7 @@ where
                         state.framing(window),
                         window,
                         picture,
+                        crate::capture::protected(state, window),
                         geometry.loc.to_f64(),
                         (bounds, output_scale),
                     ));
