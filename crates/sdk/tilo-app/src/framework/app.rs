@@ -804,7 +804,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     } else {
         runs_invoked_effects.then(|| Effects::invoked(dispatch.clone(), live.clone()))
     };
-    let awaiting = run.room.clone();
+    let awaiting = run.workspace.clone();
     let mut cx = ViewCx::root(live, &alive, dispatch, published, run, storage);
     if let Some(effects) = effects {
         cx.env.effects = effects;

@@ -4063,8 +4063,8 @@ impl ControlState for FrameBuilderControlState<'_> {
         let (status_sharing, own_status, following) = self.fb.host().presence_snapshot();
         let workspace_sync = workspace_sync_json(&chrome.tree());
         let mut dump = serde_json::json!({
-            // Where each workspace's room stands with its host, what its
-            // apps are told (`ui::workspace_sync`), and which apps it lets write.
+            // Where each workspace stands with its host, what its apps are
+            // told (`ui::workspace_sync`), and which apps it lets write.
             "workspace_sync": workspace_sync,
             "seat_focus": self.seat.map(State::seat_focus_json),
             "native_window_provenance": self.seat.map(|seat| seat.native_window_provenance_with_broker(native_broker.as_ref())),
@@ -4315,10 +4315,10 @@ impl ControlState for FrameBuilderControlState<'_> {
     }
 }
 
-/// Each workspace's room for `state_dump`: where it stands with its host
-/// ([`tilo_network_actor::workspace_sync`], `null` for a room with no host), the apps
-/// its grants make authors, and how many grants it holds, as this device
-/// last received them.
+/// Each workspace for `state_dump`: where it stands with its host
+/// ([`tilo_network_actor::workspace_sync`], `null` for one with no host),
+/// the apps its grants make authors, and how many grants it holds, as this
+/// device last received them.
 fn workspace_sync_json(tree: &crate::shell::state::WorkspaceTree) -> serde_json::Value {
     let now = tilo_clock::unix_now();
     tree.desktop

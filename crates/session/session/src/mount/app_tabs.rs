@@ -320,7 +320,7 @@ impl AppTabs {
                 window,
                 theme: theme.document.clone(),
                 network,
-                room,
+                sync,
             });
         }
     }

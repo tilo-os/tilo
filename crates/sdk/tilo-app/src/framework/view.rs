@@ -44,7 +44,7 @@ fn arrived_part(build: Box<ScopedPart>) -> Element {
     )
 }
 
-/// The window's view once the room's holdings arrived, the page they
+/// The window's view once the workspace's holdings arrived, the page they
 /// reserve until then.
 fn workspace_arrival(
     holdings: &Arriving<(), WorkspaceUnreachable>,
@@ -293,8 +293,8 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.govern_state()
     }
 
-    /// Whether what the room holds has arrived, as state that follows the
-    /// room's sync: until it does, a record this window joined may still be
+    /// Whether what the workspace holds has arrived, as state that follows
+    /// its sync: until it does, a record this window joined may still be
     /// missing the content its creator wrote. Enable a choice made from that
     /// content (a free seat, the next number) with it, so nobody acts on a
     /// copy that is about to change under them. A view never writes on open
@@ -671,9 +671,10 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         })
     }
 
-    /// [`Self::arriving`] for the window's room: its whole view, a page,
-    /// once the room's holdings arrived. Only `part`'s scope depends on the
-    /// app; the arrival around it is built once, in the runtime.
+    /// [`Self::arriving`] for the window's workspace: its whole view, a
+    /// page, once the workspace's holdings arrived. Only `part`'s scope
+    /// depends on the app; the arrival around it is built once, in the
+    /// runtime.
     pub(crate) fn arriving_workspace(
         &self,
         holdings: &Arriving<(), WorkspaceUnreachable>,

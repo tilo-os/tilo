@@ -470,9 +470,9 @@ fn paint_empty_state(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return None;
     }
-    // A room that has not synced with its host is not empty: whatever the
-    // app would say about nothing being here, say what is going on instead
-    // (`crate::workspace_sync`).
+    // A workspace that has not synced with its host is not empty: whatever
+    // the app would say about nothing being here, say what is going on
+    // instead (`crate::workspace_sync`).
     let waiting = crate::workspace_sync::waiting();
     let mut waiting_spinner = None;
     let mut waiting_step = None;
@@ -1355,7 +1355,7 @@ impl EmptyState {
     }
 
     /// Whether the action is the first of the accessibility node's children:
-    /// it is, unless a room that has not synced says so in its place.
+    /// it is, unless a workspace that has not synced says so in its place.
     fn lists_action(&self) -> bool {
         self.resolved.2.is_some()
             && crate::workspace_sync::waiting().is_none_or(|waiting| waiting.keeps_action())
@@ -1681,8 +1681,8 @@ impl Widget for EmptyState {
         // The empty state is a labelled group; the title is its accessible
         // name and the message its description so a screen reader announces
         // both without the caller wiring anything.
-        // A room that has not synced says what the screen says in its place,
-        // without the app's action (`crate::workspace_sync`).
+        // A workspace that has not synced says what the screen says in its
+        // place, without the app's action (`crate::workspace_sync`).
         let waiting = crate::workspace_sync::waiting();
         let (title, message, busy) = waiting.as_ref().map_or(
             (
@@ -2809,7 +2809,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_state_in_a_room_that_never_synced_says_so_and_offers_nothing_of_the_apps() {
+    fn an_empty_state_in_a_workspace_that_never_synced_says_so_and_offers_nothing_of_the_apps() {
         use crate::workspace_sync::{WorkspaceSync, WorkspaceSyncState};
         let theme = crate::theme::Theme::dark();
         let mut text = crate::text_render::TextRenderer::new();
