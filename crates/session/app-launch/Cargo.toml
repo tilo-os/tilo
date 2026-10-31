@@ -24,6 +24,12 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# The window door an app's later windows are asked for on, and the release a
+# launch takes it with.
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
+launcher = { path = "../../packaging/launcher" }
+# The window request the door carries, as the app reads it.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]

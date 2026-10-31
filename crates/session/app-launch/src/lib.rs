@@ -26,6 +26,7 @@
 //! process appearing. [`spawner`] is the part that does start something, and
 //! reports how it ended so a crash can be told from a normal exit.
 
+pub mod doors;
 pub mod env;
 pub mod instance;
 pub mod launch;
@@ -34,6 +35,7 @@ pub mod room;
 pub mod routing;
 pub mod spawner;
 
+pub use doors::{Connects, Doors, HeldDoor, Routed, WindowConnections};
 pub use env::SessionEnvironment;
 pub use instance::{Answer, Instance, Shown, Windows};
 pub use launch::{Launch, Open};

@@ -12,10 +12,12 @@
 //! its windows behind, and the person is offered the app again rather than
 //! the desktop going down with it.
 
+use std::os::fd::AsFd as _;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 
+use crate::doors::HeldDoor;
 use crate::plan::Planned;
 
 /// What wakes the session's loop when an app ends.
@@ -108,6 +110,30 @@ impl Spawner {
     /// # Errors
     /// The program could not be started.
     pub fn start(&mut self, planned: &Planned) -> Result<Started, SpawnError> {
+        self.start_with(planned, None, &|_| {})
+            .map(|(started, _)| started)
+    }
+
+    /// [`Self::start`] with the window door `door` of the app's room, which
+    /// the app is handed with its release so it opens the app's later
+    /// windows itself.
+    ///
+    /// The launcher waits at a registration gate until `record` has written
+    /// the launch down: an app that connected before its launch was known
+    /// would be refused by the session's services. A launch without a door
+    /// gets no gate, and its command line is its stdin.
+    ///
+    /// The door comes back held for as long as the app runs, so the caller
+    /// keeps it until the app ends.
+    ///
+    /// # Errors
+    /// The program could not be started.
+    pub fn start_with(
+        &mut self,
+        planned: &Planned,
+        mut door: Option<HeldDoor>,
+        record: &dyn Fn(u32),
+    ) -> Result<(Started, Option<HeldDoor>), SpawnError> {
         let mut command = Command::new(&planned.program);
         command
             .args(&planned.args)
@@ -116,16 +142,43 @@ impl Spawner {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        let gate = match door {
+            Some(_) => match launcher::registration_gate::install(&mut command) {
+                Ok(gate) => Some(gate),
+                // Without its gate the launch would run unreleased: it starts
+                // nothing, as an app that cannot start does.
+                Err(error) => {
+                    return Err(SpawnError {
+                        app: planned.app.clone(),
+                        reason: format!("no launch gate: {error}"),
+                    });
+                }
+            },
+            None => None,
+        };
         let child = command.spawn().map_err(|error| SpawnError {
             app: planned.app.clone(),
             reason: error.to_string(),
         })?;
+        drop(command);
         let id = self.next;
         self.next = self.next.wrapping_add(1);
         let started = Started {
             id,
             pid: child.id(),
         };
+        record(started.pid);
+        if let Some(gate) = gate {
+            // The launch is written down: the app may connect.
+            let served = door.as_mut().and_then(|door| door.serve(started.pid));
+            let released = match &served {
+                Some(theirs) => gate.release_with_window_door(theirs.as_fd()),
+                None => gate.release(),
+            };
+            if let Err(error) = released {
+                tracing::warn!(app = %planned.app, %error, "the launch was not released");
+            }
+        }
         let app = planned.app.clone();
         let title = planned.title.clone();
         let events = self.events.0.clone();
@@ -150,7 +203,7 @@ impl Spawner {
                 app: planned.app.clone(),
                 reason: format!("no thread to watch it: {error}"),
             })?;
-        Ok(started)
+        Ok((started, door))
     }
 
     /// The apps that ended since the last call, oldest first.

@@ -17589,7 +17589,9 @@ name = "tilo-app-launch"
 version = "0.1.0"
 dependencies = [
  "collab-types",
+ "launcher",
  "libc",
+ "runtime-portal",
  "serde",
  "serde_json",
  "tempfile",
@@ -17599,6 +17601,7 @@ dependencies = [
  "tilo-mime",
  "tilo-paths",
  "tilo-test-env",
+ "tilo-ui",
  "tracing",
  "workspace-hack",
 ]
