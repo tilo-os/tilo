@@ -1,3 +1,7 @@
+#![expect(
+    clippy::significant_drop_tightening,
+    reason = "the host a test binds has to outlive every step it drives, and its shutdown takes it by value, so there is nothing left to drop early"
+)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
