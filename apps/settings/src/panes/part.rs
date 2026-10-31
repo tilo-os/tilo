@@ -222,6 +222,7 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_row!("a11y.on_screen_keyboard", crate::accessibility_settings::AccessibilitySettings => accessibility::on_screen_keyboard),
     crate::setting::setting_row!("a11y.large_cursor", crate::accessibility_settings::AccessibilitySettings => accessibility::large_cursor),
     crate::setting::setting_row!("a11y.cursor_size", crate::accessibility_settings::AccessibilitySettings => accessibility::cursor_size),
+    crate::setting::setting_row!("a11y.cursor_theme", crate::accessibility_settings::AccessibilitySettings => accessibility::cursor_theme),
     crate::setting::setting_row!("a11y.magnifier", crate::accessibility_settings::AccessibilitySettings => accessibility::magnifier_zoom),
     crate::setting::setting_row!("a11y.colour_filter", crate::accessibility_settings::AccessibilitySettings => accessibility::colour_filter),
     crate::setting::setting_row!("a11y.sticky_keys", crate::accessibility_settings::AccessibilitySettings => accessibility::sticky_keys),

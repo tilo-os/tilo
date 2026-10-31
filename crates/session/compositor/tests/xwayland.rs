@@ -516,6 +516,34 @@ fn x_clients_hear_how_dense_the_display_is() {
 }
 
 #[test]
+fn x_clients_draw_the_pointer_theme_the_person_chose() {
+    let mut session = Session::start(1.0);
+    session.pump(|session| session.resources().contains("Xcursor.theme:"));
+    // X clients draw their own pointers from the theme they are told.
+    let mut a11y = session.compositor.a11y().clone();
+    a11y.cursor.theme = "Bibata-Modern-Ice".to_owned();
+    session
+        .compositor
+        .set_a11y(a11y)
+        .expect("the theme applies");
+    session.pump(|session| {
+        session
+            .resources()
+            .contains("Xcursor.theme:\tBibata-Modern-Ice")
+    });
+    let resources = session.resources();
+    assert!(
+        resources.contains("Xcursor.theme:\tBibata-Modern-Ice"),
+        "{resources}"
+    );
+    assert_eq!(
+        resources.matches("Xcursor.theme:").count(),
+        1,
+        "one theme line, not two: {resources}"
+    );
+}
+
+#[test]
 fn a_denser_output_tells_x_clients_a_new_scale() {
     let mut session = Session::start(1.0);
     session.pump(|session| session.setting("Xft/DPI") == Some(96 * 1024));

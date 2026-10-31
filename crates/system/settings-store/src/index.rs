@@ -610,6 +610,7 @@ pub const SETTINGS: &[Setting] = &[
     s("a11y.large_cursor", "accessibility", "a11y.large_cursor")
         .switch("settings.accessibility", "large_cursor"),
     s("a11y.cursor_size", "accessibility", "a11y.cursor_size"),
+    s("a11y.cursor_theme", "accessibility", "a11y.cursor_theme"),
     s("a11y.magnifier", "accessibility", "a11y.magnifier"),
     s("a11y.colour_filter", "accessibility", "a11y.color_filter"),
     s("a11y.sticky_keys", "accessibility", "a11y.sticky_keys")
