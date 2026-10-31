@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use tilo_actions::{DoorError, ResourceSpec};
+use tilo_files::native::Watched;
 use tilo_lock::MutexRecover as _;
 use tilo_messaging::SendError;
 use tilo_network_actor::private_messages;
@@ -30,10 +31,6 @@ use tilo_service::{LoopWake, Service, Started, Wake, decode, offer, reading};
 pub const MESSAGES: &str = "messages";
 /// Its kind.
 pub const MESSAGES_KIND: &str = "so.tilo.messages.private";
-
-/// How often the person's certificate is read again while the loop turns: a
-/// device revoked or relinked since the session started stops receiving.
-const MATERIAL_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Longest private text this device sends, as the wire bounds it.
 const MAX_TEXT: usize = 16 * 1024;
@@ -100,14 +97,15 @@ struct Shared {
     /// the registry holds it weakly, so it lives here.
     account: Option<Arc<dyn private_messages::Account>>,
     /// This device's certificate and the revocations it knows: what a peer is
-    /// answered with, and what a peer's certificate is checked against.
-    material: Option<private_messages::Material>,
+    /// answered with, and what a peer's certificate is checked against. A
+    /// worker reads them again whenever a file they live in changes, so a
+    /// reissued certificate or a revocation announced since the session
+    /// started is taken as it lands ([`Messages::act_as`]).
+    material: Option<Watched<Option<private_messages::Material>>>,
+    /// The person the reading a person sees last showed.
+    shown: String,
     address: String,
     conversations: BTreeMap<String, Vec<Line>>,
-    /// The person's custody this device writes as, read again while the loop
-    /// turns so a relinked or revoked device stops writing as the old one.
-    identity: Option<tilo_identity_host::custody::HostIdentity>,
-    refreshed: Option<std::time::Instant>,
     at: serde_json::Value,
     /// Moves whenever the reading a person sees changed.
     version: u64,
@@ -116,14 +114,23 @@ struct Shared {
 }
 
 impl Shared {
+    /// The person this device writes as, by their root public key: what its
+    /// last certificate says of them.
+    fn person(&self) -> String {
+        let Some(material) = &self.material else {
+            return String::new();
+        };
+        let material = material.get();
+        match &*material {
+            Some(material) => hex::encode(material.cert.user_public_key),
+            None => String::new(),
+        }
+    }
+
     fn reading(&self) -> Reading {
         Reading {
             address: self.address.clone(),
-            person: self
-                .material
-                .as_ref()
-                .map(|material| hex::encode(material.cert.user_public_key))
-                .unwrap_or_default(),
+            person: self.person(),
             at: self.at.clone(),
             conversations: self
                 .conversations
@@ -183,11 +190,14 @@ impl Private {
 
 impl private_messages::Account for Private {
     fn certificate(&self) -> Result<private_messages::Material, SendError> {
-        self.shared
-            .lock_recover()
+        let shared = self.shared.lock_recover();
+        let material = shared
             .material
-            .clone()
-            .ok_or(SendError::Unavailable)
+            .as_ref()
+            .ok_or(SendError::Unavailable)?
+            .get();
+        drop(shared);
+        (*material).clone().ok_or(SendError::Unavailable)
     }
 
     fn check_peer(&self, certificate: &private_messages::Material) -> Result<(), SendError> {
@@ -243,27 +253,57 @@ impl Messages {
         (self.wake)();
     }
 
-    /// This device's certificate as `material`, kept current by the loop
-    /// ([`Self::see`]).
-    pub fn see(&self, material: private_messages::Material, address: String) {
-        let mut shared = self.shared.lock_recover();
-        shared.material = Some(material);
-        shared.address = address;
-        shared.version = shared.version.wrapping_add(1);
-    }
-
     /// Publish where this device is reached, as a contact dials it.
     pub fn reached_at(&self, at: serde_json::Value) {
         self.shared.lock_recover().at = at;
     }
 
     /// Write as `identity` from now on, with `address` naming this device's
-    /// endpoint.
+    /// endpoint: this device's certificate and the revocations it knows are
+    /// read from the person's custody now, and again by a worker whenever a
+    /// file they live in changes, so a device revoked or relinked since the
+    /// session started stops writing as itself as it happens.
     pub fn act_as(&self, identity: tilo_identity_host::custody::HostIdentity, address: String) {
-        if let Ok(material) = Self::read_material(&identity) {
-            self.see(material, address);
+        let material = Self::follow_material(identity, &self.wake);
+        let mut shared = self.shared.lock_recover();
+        shared.material = material;
+        shared.address = address;
+        shared.version = shared.version.wrapping_add(1);
+    }
+
+    /// This device's certificate and the person's revocations, read from
+    /// `identity` now and again whenever a file they are read from changes
+    /// ([`Watched`]): a reissued certificate and a revocation that reached
+    /// this device are taken as they land, not on a clock. The loop is woken
+    /// after each read, so what a person sees follows it.
+    fn follow_material(
+        identity: tilo_identity_host::custody::HostIdentity,
+        wake: &Wake,
+    ) -> Option<Watched<Option<private_messages::Material>>> {
+        match Watched::start(
+            "tilo-messages-material",
+            identity.material_directories(),
+            move || match Self::read_material(&identity) {
+                Ok(material) => Some(material),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "the person's certificate for private texts is not read"
+                    );
+                    None
+                }
+            },
+        ) {
+            Ok(watched) => {
+                let wake = Arc::clone(wake);
+                watched.on_change(move || (wake)());
+                Some(watched)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "cannot watch the person's certificate for private texts");
+                None
+            }
         }
-        self.shared.lock_recover().identity = Some(identity);
     }
 
     /// Read this device's certificate from `identity`, as the person it
@@ -398,44 +438,89 @@ impl Service for Messages {
     }
 
     fn poll(&mut self) -> bool {
-        let (mut changed, identity) = {
-            let mut shared = self.shared.lock_recover();
-            let changed = shared.version != shared.polled;
-            shared.polled = shared.version;
-            // The certificate a peer is answered with is read again now and
-            // then: a device the person revoked since the session started stops
-            // writing as itself, and a relinked one starts.
-            let due = shared
-                .refreshed
-                .is_none_or(|at| at.elapsed() >= MATERIAL_EVERY);
-            let identity = if due {
-                shared.refreshed = Some(std::time::Instant::now());
-                shared.identity.clone()
-            } else {
-                None
-            };
-            (changed, identity)
-        };
-        if let Some(identity) = identity {
-            match Self::read_material(&identity) {
-                Ok(material) => {
-                    let mut shared = self.shared.lock_recover();
-                    let relinked = shared.material.as_ref().is_some_and(|kept| {
-                        kept.cert.device_public_key != material.cert.device_public_key
-                    });
-                    let first = shared.material.is_none();
-                    shared.material = Some(material);
-                    if relinked || first {
-                        shared.version = shared.version.wrapping_add(1);
-                        changed = true;
-                    }
-                    drop(shared);
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "the person's certificate for private texts is not read");
-                }
+        let mut shared = self.shared.lock_recover();
+        let mut changed = shared.version != shared.polled;
+        // The certificate a peer is answered with and the revocations its
+        // certificate is checked against are read by a worker whenever a file
+        // they live in changes: a device the person revoked since the session
+        // started stops writing as itself as it happens, and a relinked one
+        // starts.
+        if shared.material.is_some() {
+            // What the reading shows of the custody is the person this device
+            // writes as: it moves when the person the certificate names does.
+            let person = shared.person();
+            if person != shared.shown {
+                shared.shown = person;
+                shared.version = shared.version.wrapping_add(1);
+                changed = true;
             }
         }
+        shared.polled = shared.version;
         changed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_user_identity::{
+        DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
+    };
+
+    /// A device certifying that it writes as a person of its own.
+    fn certified() -> DeviceCert {
+        let person = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: person.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "their laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &person).expect("the person signs their own device");
+        cert
+    }
+
+    /// What this device answers peers with, before it is bound to an endpoint.
+    fn account() -> Private {
+        Private {
+            shared: Arc::new(Mutex::new(Shared::default())),
+            wake: LoopWake::default().handle(),
+        }
+    }
+
+    /// A text from a device its person revoked is refused: the certificate the
+    /// peer sends names a device in the revocations it carries.
+    #[test]
+    fn a_text_from_a_device_its_person_revoked_is_refused() {
+        let cert = certified();
+        let account = account();
+        let kept = private_messages::Material {
+            cert: cert.clone(),
+            revocations: Vec::new(),
+        };
+        assert_eq!(
+            private_messages::Account::check_peer(&account, &kept),
+            Ok(()),
+            "a device its person still lets write is answered"
+        );
+        let revoked = private_messages::Material {
+            cert: cert.clone(),
+            revocations: vec![RevocationEntry {
+                user_public_key: cert.user_public_key,
+                revoked_device_public_key: cert.device_public_key,
+                revoked_at_ns: 2,
+                reason: RevocationReason::Lost,
+                signature: [0; 64],
+            }],
+        };
+        assert_eq!(
+            private_messages::Account::check_peer(&account, &revoked),
+            Err(SendError::Revoked),
+            "a device its person revoked is refused"
+        );
     }
 }
