@@ -70,6 +70,12 @@ pub enum MailEffect {
     /// Choose a recipient and sending account from shared Contacts.
     #[effect(view)]
     ContactRecipients,
+    /// Account in Settings
+    ///
+    /// Opens this device's Settings on External Accounts, where an account is
+    /// added, changed or removed. The mailbox itself changes not at all.
+    #[effect(view, idempotent)]
+    AccountSettings,
     /// Prepare a draft from this exact address-book recipient and sender.
     ///
     /// Requires review; creates no identity link and sends nothing.

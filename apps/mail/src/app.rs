@@ -1268,12 +1268,16 @@ impl MailApp {
 
     /// The window shell: the sidebar of accounts and folders, the message
     /// list and the open message. Its toolbar is the window bar's slots
-    /// ([`crate::window_bar`]).
+    /// ([`crate::window_bar`]). The section headers' settings button is the
+    /// mailbox's published action.
     fn build_shell(shared: &Shared) -> NavShell {
         NavShell::new()
             .content_kind(ui::widget::ContentKind::Reading)
             .with_id("mail-shell")
-            .sidebar(Box::new(sidebar::sidebar(shared)))
+            .sidebar(Box::new(sidebar::sidebar(
+                shared,
+                crate::bindings::account_settings(),
+            )))
             .overview(Box::new(MessageList::new(shared.clone())))
             .content(Box::new(MessageReader::new(shared.clone())))
             .with_window_toolbar()
@@ -4832,6 +4836,10 @@ impl Mailroom {
             }
             MailEffect::Compose => {
                 self.shared.borrow_mut().push_intent(Intent::Compose);
+                Ok(done)
+            }
+            MailEffect::AccountSettings => {
+                self.shared.borrow_mut().push_command(Command::AccountSettings);
                 Ok(done)
             }
             MailEffect::PrepareContactDraft {

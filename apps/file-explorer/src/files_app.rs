@@ -2412,6 +2412,26 @@ impl FilesState {
                 }
                 Some(self.folder_answer())
             }
+            FilesEffect::RemoveFavorite { path } => {
+                self.apply_command(FileCommand::RemoveFavorite(path.into()));
+                None
+            }
+            FilesEffect::MoveFavorite {
+                source,
+                target,
+                before,
+            } => {
+                let moved = crate::favorites::move_for(
+                    &self.favs.borrow().favorites,
+                    source.as_path(),
+                    target.as_path(),
+                    before,
+                );
+                if let Some((from, to)) = moved {
+                    self.apply_command(FileCommand::ReorderFavorite { from, to });
+                }
+                None
+            }
             FilesEffect::Up => {
                 self.go_up();
                 None

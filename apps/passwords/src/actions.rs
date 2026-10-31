@@ -58,9 +58,37 @@ pub enum PasswordsEffect {
         #[param("Opaque id of the vault item")]
         item: String,
     },
+    /// Copy username.
+    ///
+    /// Copies what identifies the person to the account — a login's username,
+    /// an API key's account, a Wi-Fi network's name — to the clipboard, which
+    /// clears after 30 seconds.
+    #[effect(attended, kind = "read")]
+    CopyIdentity {
+        #[param("Opaque id of the vault item")]
+        item: String,
+    },
+    /// Copy addresses.
+    ///
+    /// Copies the addresses the item signs in to, one per line, to the
+    /// clipboard, which clears after 30 seconds.
+    #[effect(attended, kind = "read")]
+    CopyOrigins {
+        #[param("Opaque id of the vault item")]
+        item: String,
+    },
     /// Reveal secret for 10 seconds.
     #[effect(attended, privileged, kind = "read")]
     Reveal {
+        #[param("Opaque id of the vault item")]
+        item: String,
+    },
+    /// Hide secret.
+    ///
+    /// Hides a revealed secret again before its ten seconds run out. The item
+    /// stays open and nothing else changes.
+    #[effect(view, kind = "read", idempotent)]
+    Hide {
         #[param("Opaque id of the vault item")]
         item: String,
     },
