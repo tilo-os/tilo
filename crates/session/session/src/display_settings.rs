@@ -47,6 +47,8 @@ pub(crate) struct Displays {
     /// The staged change last seen, to act on a change of its own rather
     /// than on every look.
     staged: Option<DisplayTransaction>,
+    /// The trusted display tools the compositor was last given.
+    trusted: Option<Vec<PathBuf>>,
 }
 
 impl Displays {
@@ -73,6 +75,13 @@ impl Displays {
         self.seen = true;
         self.stamp = stamp;
         self.generation = Some(generation);
+        // The tools whose risky changes apply without asking: a trust given
+        // or revoked in Settings reaches the compositor on this pass.
+        let trusted = trusted_tools();
+        if self.trusted.as_ref() != Some(&trusted) {
+            compositor.set_trusted_display_tools(trusted.clone());
+            self.trusted = Some(trusted);
+        }
         if monitors_changed {
             let Some(snapshot) = compositor.display_snapshot().cloned() else {
                 return Ok(());
@@ -109,6 +118,50 @@ impl Displays {
         self.applied = Some(config);
         Ok(())
     }
+
+    /// The change waiting for the person's answer now: its id, and when the
+    /// previous arrangement comes back without one.
+    pub(crate) fn awaiting_confirmation(&self) -> Option<(u64, Option<u64>)> {
+        match &self.staged {
+            Some(transaction)
+                if transaction.state == DisplayTransactionState::AwaitingConfirmation =>
+            {
+                Some((transaction.id, transaction.deadline_unix_ms))
+            }
+            _ => None,
+        }
+    }
+
+    /// Record the person's answer to the change waiting now: keeping it
+    /// commits it as the layout for these displays, reverting puts the
+    /// previous one back. False when change `id` no longer waits, having
+    /// been answered elsewhere or restored by its deadline.
+    ///
+    /// # Errors
+    /// The answered transaction could not be written.
+    pub(crate) fn answer(&self, id: u64, keep: bool) -> std::io::Result<bool> {
+        let Some(mut transaction) = self.staged.clone().filter(|transaction| {
+            transaction.id == id
+                && transaction.state == DisplayTransactionState::AwaitingConfirmation
+        }) else {
+            return Ok(false);
+        };
+        if keep {
+            transaction.request_confirmation()?;
+        } else {
+            transaction.request_revert()?;
+        }
+        Ok(true)
+    }
+}
+
+/// The executables of the display tools the person trusts.
+pub(crate) fn trusted_tools() -> Vec<PathBuf> {
+    settings_store::display_tools::TrustedDisplayTools::load()
+        .tools
+        .into_iter()
+        .map(|tool| PathBuf::from(tool.executable))
+        .collect()
 }
 
 /// Advance `transaction` as far as the attached monitors and the person's
@@ -313,7 +366,7 @@ fn transform(transform: OutputTransform) -> Transform {
 
 /// Milliseconds since the Unix epoch: the clock staged changes count down
 /// on.
-fn unix_now_ms() -> u64 {
+pub(crate) fn unix_now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| {

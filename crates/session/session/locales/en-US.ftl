@@ -33,6 +33,10 @@ system-update-restart-title = Restart to finish updating
 system-update-restart-body = Your windows come back after the restart.
 power-restart = Restart
 
+## A display tool tried to put back a layout the person had just reverted.
+display-tool-reapply-refused = { $tool } tried to reapply a display layout you reverted
+display-tool-reapply-refused-unknown = A display tool tried to reapply a display layout you reverted
+
 ## The session's own resources: the input devices, the screen, the night light,
 ## the magnifier, the displays and the clipboard.
 session-input = Input devices

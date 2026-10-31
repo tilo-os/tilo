@@ -36,6 +36,7 @@ mod desk_layout;
 pub mod desktop_services;
 mod dictation;
 mod directory;
+mod display_confirm;
 mod display_settings;
 pub mod displays;
 mod env;
@@ -118,6 +119,7 @@ use tilo_app_launch::Doors as WindowDoors;
 use tilo_desktop_search::providers::places::Place;
 use tilo_sheets::Seat as _;
 use tilo_sheets::directory::DirectorySeat;
+use tilo_sheets::display_confirm::ConfirmSeat;
 use tilo_sheets::file_picker::FilePickerSeat;
 use tilo_sheets::lock::LockSeat;
 use tilo_sheets::portal::PortalSeat;
@@ -408,6 +410,9 @@ struct Shared {
     workspace_settings: Option<WorkspaceSettingsSeat>,
     portal: Option<PortalSeat>,
     file_picker: Option<FilePickerSeat>,
+    /// The question about a display change, which stands on every display
+    /// at once so it is seen even when the change blanked one of them.
+    display_confirm: Option<ConfirmSeat>,
     /// The workspaces this computer may join or open.
     directory: Option<DirectorySeat>,
     /// What the sites this computer knows list as public workspaces, read
@@ -1345,6 +1350,8 @@ pub struct Session {
     /// The displays as the person arranged them, kept in step with the ones
     /// attached.
     displays: display_settings::Displays,
+    /// The question about a display change, and the answers it takes.
+    confirmation: display_confirm::Confirmation,
     /// The keyboard input sources, and the one that types.
     sources: config::Sources,
     /// The machine's power: the idle policy, the service over logind and
@@ -1564,6 +1571,7 @@ impl Session {
             file_picker,
             directory,
             lock,
+            display_confirm,
             shortcut_guide: guide_seat,
         } = mount_sheets(&mut compositor, &mut doors, &options);
 
@@ -1664,6 +1672,7 @@ impl Session {
             portal,
             file_picker,
             lock,
+            display_confirm,
             notices: notices.clone(),
             clock,
             tray,
@@ -1739,6 +1748,7 @@ impl Session {
             surfaces: surfaces::Surfaces::default(),
             surface_apps,
             displays: display_settings::Displays::default(),
+            confirmation: display_confirm::Confirmation::default(),
             sources,
             ended: false,
             magnifier: (
@@ -2034,6 +2044,13 @@ impl Session {
         self.shared.shortcut_guide.seat()
     }
 
+    /// The seat of the question about a display change: what it asks now,
+    /// and where it stands.
+    #[must_use]
+    pub fn display_confirm(&self) -> Option<&ConfirmSeat> {
+        self.shared.display_confirm.as_ref()
+    }
+
     /// Whether setup is up: it withholds the desktop until it is done.
     #[must_use]
     pub fn setup_up(&self) -> bool {
@@ -2085,6 +2102,16 @@ impl Session {
         // What the apps copied since the last pass joins the history; a copy
         // chosen in it is pasted once the panel let the keyboard go.
         self.shared.clipboard.follow(&mut self.compositor);
+        // The question about a display change, before the sheets are placed:
+        // one that just opened stands on this pass's displays.
+        if let Some(confirm) = self.shared.display_confirm.as_ref() {
+            self.confirmation.follow(
+                &mut self.compositor,
+                confirm,
+                &self.displays,
+                &self.shared.notices,
+            );
+        }
         let place = self.sheet_place();
         self.place_sheets(place);
         // Each round can ask for another (a key's shortcut the chrome
@@ -2200,6 +2227,10 @@ impl Session {
                 .as_ref()
                 .map(tilo_sheets::Seat::presentation),
             shared.shortcut_guide.presentation(),
+            shared
+                .display_confirm
+                .as_ref()
+                .map(tilo_sheets::Seat::presentation),
             shared.lock.as_ref().map(tilo_sheets::Seat::presentation),
             self.capture_studio
                 .as_ref()
@@ -2891,6 +2922,7 @@ struct Sheets {
     portal: Option<PortalSeat>,
     file_picker: Option<FilePickerSeat>,
     lock: Option<LockSeat>,
+    display_confirm: Option<ConfirmSeat>,
     shortcut_guide: Option<GuideSeat>,
 }
 
@@ -2955,6 +2987,19 @@ fn mount_sheets(compositor: &mut Compositor, doors: &mut Doors, options: &Option
         who,
         options,
     );
+    // The question about a display change stands on every display: it may
+    // be about the display it would otherwise be put on.
+    let display_confirm = mount_sheet(
+        compositor,
+        doors,
+        tilo_sheets::display_confirm::definition(),
+        ConfirmSeat::default(),
+        who,
+        options,
+    );
+    if let Some(confirm) = &display_confirm {
+        confirm.presentation().cover_every_display();
+    }
     // Last, so it covers every other sheet, the guide among them: the lock
     // screen shows no key of the desktop behind it.
     let lock = mount_lock_screen(compositor, doors, who, options);
@@ -2965,6 +3010,7 @@ fn mount_sheets(compositor: &mut Compositor, doors: &mut Doors, options: &Option
         portal,
         file_picker,
         lock,
+        display_confirm,
         shortcut_guide,
     }
 }

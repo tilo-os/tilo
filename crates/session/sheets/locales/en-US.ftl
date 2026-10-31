@@ -23,6 +23,9 @@ power-not-offered-power = This window cannot change the computer's power
 
 display-confirm-keep = Keep
 display-confirm-revert = Revert
+display-confirm-countdown = Reverting in { $seconds } s
+display-confirm-applying = Applying…
+display-confirm-answer-pending = Saving the display answer…
 display-confirm-tool-title = Keep the display change from { $tool }?
 display-confirm-tool-unknown-title = Keep this display change?
 display-confirm-always = Keep, and don't ask again for { $tool }

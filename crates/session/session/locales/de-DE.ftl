@@ -34,6 +34,11 @@ system-update-restart-title = Neu starten, um die Updates abzuschließen
 system-update-restart-body = Deine Fenster sind nach dem Neustart wieder da.
 power-restart = Neu starten
 
+## Ein Anzeigewerkzeug wollte eine Anzeigeanordnung erneut anwenden, die die
+## Person gerade zurückgesetzt hatte.
+display-tool-reapply-refused = { $tool } wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
+display-tool-reapply-refused-unknown = Ein Anzeigewerkzeug wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
+
 ## Die eigenen Ressourcen der Sitzung: die Eingabegeräte, der Bildschirm, das
 ## Nachtlicht, die Lupe, die Bildschirme und die Zwischenablage.
 session-input = Eingabegeräte

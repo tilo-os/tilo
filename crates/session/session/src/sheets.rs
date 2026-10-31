@@ -13,6 +13,7 @@ use tilo_surface_host::Published;
 use tilo_surface_host::{AppHost, Placement};
 use ui::application::{ApplicationDefinition, ComponentRunnerInputs, prepare_private_surface};
 use ui::host_operation::ResourceOperationStart;
+use ui::vello::kurbo::Rect;
 
 /// A display's rectangle, in logical pixels: the display a sheet covers.
 pub(crate) type Place = (i32, i32, u32, u32);
@@ -100,9 +101,13 @@ impl<S: Seat> Sheet<S> {
     }
 
     /// The sheet covers the display the session placed it on, or the first
-    /// one while it named none.
+    /// one while it named none; a sheet that stands on every display at
+    /// once covers all of them and is told where each one is.
     fn follow_place(&mut self) {
-        let Some((x, y, w, h)) = covering(self.seat.presentation().place(), &self.outputs) else {
+        let presentation = self.seat.presentation();
+        let every = presentation.covers_every_display();
+        let named = presentation.place();
+        let Some((x, y, w, h)) = covering(named, &self.outputs, every) else {
             return;
         };
         let scale = self.host.placement().scale;
@@ -114,6 +119,25 @@ impl<S: Seat> Sheet<S> {
             ),
             scale,
         });
+        if every {
+            // Its own top-left is the corner of the rectangle all of them
+            // make: a card is drawn by the app on each display there.
+            let displays = self
+                .outputs
+                .iter()
+                .filter(|(_, _, w, h)| *w > 0 && *h > 0)
+                .map(|(dx, dy, dw, dh)| {
+                    let (dx, dy) = (dx.saturating_sub(x), dy.saturating_sub(y));
+                    Rect::new(
+                        f64::from(dx),
+                        f64::from(dy),
+                        f64::from(dx.saturating_add(*dw)),
+                        f64::from(dy.saturating_add(*dh)),
+                    )
+                })
+                .collect();
+            self.seat.covers(displays);
+        }
     }
 
     /// Where a point on any display is on the lock screen, in the app's own
@@ -139,18 +163,43 @@ impl<S: Seat> Sheet<S> {
 /// compositor reports it: the one the session `named` while it is still
 /// there, else the first in reading order, left to right and top to bottom:
 /// a display unplugged from under a sheet takes it to the one the person's
-/// eye starts at rather than leaving it on nothing.
+/// eye starts at rather than leaving it on nothing. A sheet that stands on
+/// `every` display at once covers the rectangle all of them make.
 fn covering(
     named: Option<Place>,
     outputs: &[(i32, i32, i32, i32)],
+    every: bool,
 ) -> Option<(i32, i32, i32, i32)> {
+    let shown = || {
+        outputs
+            .iter()
+            .copied()
+            .filter(|(_, _, w, h)| *w > 0 && *h > 0)
+    };
+    if every {
+        let mut corners =
+            shown().map(|(x, y, w, h)| (x, y, x.saturating_add(w), y.saturating_add(h)));
+        let (mut left, mut top, mut right, mut bottom) = corners.next()?;
+        for (x, y, x1, y1) in corners {
+            left = left.min(x);
+            top = top.min(y);
+            right = right.max(x1);
+            bottom = bottom.max(y1);
+        }
+        return Some((
+            left,
+            top,
+            right.saturating_sub(left),
+            bottom.saturating_sub(top),
+        ));
+    }
     let named = named.and_then(|(x, y, w, h)| {
         let (w, h) = (i32::try_from(w).ok()?, i32::try_from(h).ok()?);
         Some((x, y, w, h))
     });
     named
         .filter(|place| outputs.contains(place))
-        .or_else(|| outputs.iter().copied().min_by_key(|(x, y, _, _)| (*x, *y)))
+        .or_else(|| shown().min_by_key(|(x, y, _, _)| (*x, *y)))
 }
 
 impl<S: Seat> Published for Sheet<S> {
@@ -310,7 +359,7 @@ mod tests {
     #[test]
     fn a_sheet_covers_the_display_it_was_given() {
         assert_eq!(
-            covering(Some(RIGHT), &[LEFT_SHOWN, RIGHT_SHOWN]),
+            covering(Some(RIGHT), &[LEFT_SHOWN, RIGHT_SHOWN], false),
             Some(RIGHT_SHOWN)
         );
     }
@@ -322,14 +371,32 @@ mod tests {
         // where the person's eye starts, not to whichever came first.
         let unplugged: Place = (2000, 0, 1000, 700);
         assert_eq!(
-            covering(Some(unplugged), &[RIGHT_SHOWN, LEFT_SHOWN]),
+            covering(Some(unplugged), &[RIGHT_SHOWN, LEFT_SHOWN], false),
             Some(LEFT_SHOWN)
         );
     }
 
     #[test]
     fn a_sheet_covers_the_first_display_in_reading_order_when_none_was_given() {
-        assert_eq!(covering(None, &[RIGHT_SHOWN, LEFT_SHOWN]), Some(LEFT_SHOWN));
-        assert_eq!(covering(None, &[]), None);
+        assert_eq!(
+            covering(None, &[RIGHT_SHOWN, LEFT_SHOWN], false),
+            Some(LEFT_SHOWN)
+        );
+        assert_eq!(covering(None, &[], false), None);
+    }
+
+    #[test]
+    fn a_sheet_standing_on_every_display_covers_all_of_them() {
+        assert_eq!(
+            covering(None, &[RIGHT_SHOWN, LEFT_SHOWN], true),
+            Some((0, 0, 2000, 700))
+        );
+        // One display above the other, and one that shows nothing at all.
+        let above = (0, -800, 1000, 800);
+        assert_eq!(
+            covering(None, &[LEFT_SHOWN, above, (0, 0, 0, 0)], true),
+            Some((0, -800, 1000, 1500))
+        );
+        assert_eq!(covering(None, &[], true), None);
     }
 }

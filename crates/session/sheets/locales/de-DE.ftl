@@ -23,6 +23,9 @@ power-not-offered-power = Dieses Fenster kann die Energieverwaltung des Rechners
 
 display-confirm-keep = Behalten
 display-confirm-revert = Zurücksetzen
+display-confirm-countdown = Wird in { $seconds } s zurückgesetzt
+display-confirm-applying = Wird angewendet …
+display-confirm-answer-pending = Die Antwort zur Anzeige wird gespeichert…
 display-confirm-tool-title = Die Anzeigeänderung von { $tool } behalten?
 display-confirm-tool-unknown-title = Diese Anzeigeänderung behalten?
 display-confirm-always = Behalten und bei { $tool } nicht mehr fragen
