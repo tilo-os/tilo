@@ -197,13 +197,32 @@ fn theme_pair(name: &str) -> Result<[(&'static str, ui::Theme); 2], String> {
     }
     if ui::Theme::named(name).is_none() && Path::new(name).is_dir() {
         // A theme bundle: one document, shot as both.
-        let theme = ui::theme_bundle::load_dir(Path::new(name))
-            .map_err(|e| format!("--theme {name}: {e}"))?;
+        let dir = Path::new(name);
+        let theme = load_theme_bundle(dir).map_err(|e| format!("--theme {name}: {e}"))?;
         return Ok([("light", theme.clone()), ("dark", theme)]);
     }
     let dark = ui::Theme::named(name).ok_or_else(|| format!("--theme {name}: no such theme"))?;
     let light = ui::Theme::named(&format!("{name} light")).unwrap_or_else(|| dark.clone());
     Ok([("light", light), ("dark", dark)])
+}
+
+/// The theme of the bundle directory `dir`: its [`ui::theme_bundle::DOCUMENT`] and a
+/// `<set>.wasm` beside it for each set the document names. The toolkit reads no directory itself;
+/// this is the dev tool's read of one.
+fn load_theme_bundle(dir: &Path) -> Result<ui::Theme, ui::theme_bundle::BundleError> {
+    let document = std::fs::read_to_string(dir.join(ui::theme_bundle::DOCUMENT))
+        .map_err(|e| ui::theme_bundle::BundleError::Read(format!("{}: {e}", dir.display())))?;
+    ui::theme_bundle::load(&document, |set| {
+        let path = dir.join(format!("{set}.wasm"));
+        match std::fs::read(&path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(ui::theme_bundle::BundleError::Read(format!(
+                "{}: {e}",
+                path.display()
+            ))),
+        }
+    })
 }
 
 /// The part of a shot's file name that says which theme family it is in:
