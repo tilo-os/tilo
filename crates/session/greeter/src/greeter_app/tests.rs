@@ -37,7 +37,10 @@ fn diagnostic_session_environment_forwards_only_explicit_fixed_booleans() {
 
 use super::*;
 use automerge::{AutoCommit, ReadDoc};
+use greetd_ipc::codec::SyncCodec as _;
+use greetd_ipc::{AuthMessageType, ErrorType, Request, Response};
 use std::collections::HashMap;
+use std::os::unix::net::UnixListener;
 use taffy::AvailableSpace;
 use ui::a11y::Politeness;
 use ui::widget::find_test_id;
@@ -1303,6 +1306,233 @@ fn in_flight_feedback_is_said_once_with_appropriate_urgency() {
         assert!(app.phase.is_busy(), "inputs stay inert while handing over");
         assert_eq!(app.status_text(), "Starting your session…");
     }
+}
+
+/// A fake greetd on `listener`: it takes the passcode the form held without
+/// asking anyone, asks for a second factor, and refuses the attempt once
+/// `stale_attempted` says an answer for the prompt that is already gone has
+/// been submitted — so what it reads at each step is decided here, not by
+/// timing.
+fn second_factor_conversation(
+    listener: UnixListener,
+    stale_attempted: std::sync::mpsc::Receiver<()>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let (mut server, _) = listener.accept().expect("the greeter connects");
+        assert!(
+            matches!(
+                Request::read_from(&mut server).unwrap(),
+                Request::CreateSession { username } if username == "tester"
+            ),
+            "the known account signs in"
+        );
+        Response::AuthMessage {
+            auth_message_type: AuthMessageType::Secret,
+            auth_message: "Password: ".to_owned(),
+        }
+        .write_to(&mut server)
+        .unwrap();
+        assert!(matches!(
+            Request::read_from(&mut server).unwrap(),
+            Request::PostAuthMessageResponse { response }
+                if response.as_deref() == Some("first-password")
+        ));
+        // PAM asks for a second factor.
+        Response::AuthMessage {
+            auth_message_type: AuthMessageType::Secret,
+            auth_message: "One-time code".to_owned(),
+        }
+        .write_to(&mut server)
+        .unwrap();
+        assert!(
+            matches!(
+                Request::read_from(&mut server).unwrap(),
+                Request::PostAuthMessageResponse { response }
+                    if response.as_deref() == Some("765432")
+            ),
+            "the answer typed for this challenge is the one it gets"
+        );
+        stale_attempted.recv().unwrap();
+        Response::Error {
+            error_type: ErrorType::AuthError,
+            description: "pam_authenticate: AUTH_ERR".to_owned(),
+        }
+        .write_to(&mut server)
+        .unwrap();
+        assert!(
+            matches!(
+                Request::read_from(&mut server).unwrap(),
+                Request::CancelSession
+            ),
+            "the refused attempt is cancelled, and no answer to a gone prompt was sent"
+        );
+        Response::Success.write_to(&mut server).unwrap();
+    })
+}
+
+/// PAM asking for a second factor: what the challenge is asked with, what
+/// the person types into the form, and that the answer goes to the challenge
+/// it was asked for — once.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one conversation read from its prompt through its refusal"
+)]
+fn a_second_factor_is_asked_and_answered_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("greetd.sock");
+    let listener = UnixListener::bind(&sock).unwrap();
+    let (updates, reported) = std::sync::mpsc::channel::<AuthUpdate>();
+    let (stale_submitted, stale_attempted) = std::sync::mpsc::channel::<()>();
+
+    // The worker `attempt_login` starts, with its updates read here instead
+    // of at a winit event loop's proxy.
+    let session = crate::auth::spawn_auth_updates(
+        sock.to_string_lossy().into_owned(),
+        "tester".to_owned(),
+        Zeroizing::new("first-password".to_owned()),
+        vec!["fixed-session".to_owned()],
+        Vec::new(),
+        Arc::new(AtomicU64::new(1)),
+        move |update| {
+            let _ = updates.send(update);
+        },
+    );
+    let greetd = second_factor_conversation(listener, stale_attempted);
+
+    let mut app = GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
+    let mut doc = AutoCommit::new();
+    let root = automerge::ROOT;
+    app.begin_authenticating();
+    app.auth_session = Some(session.clone());
+    app.sync(&doc, &root);
+
+    // What the PAM conversation asks reaches the form as the greeter's own
+    // update, carrying the identity of the challenge it waits on.
+    let challenge = loop {
+        let update = reported
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the conversation asks for a second factor");
+        app.on_external_event(
+            &update.encode(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+        );
+        if let AuthUpdate::Challenge(challenge) = update {
+            break challenge;
+        }
+    };
+    assert!(challenge.secret, "a second factor is not echoed");
+
+    // The form asks for it: the prompt, the field and the action say so.
+    assert_eq!(app.phase, AuthPhase::Authenticating);
+    assert_eq!(app.status_text(), "One-time code");
+    let card = card_of(&app);
+    assert_eq!(
+        accessible_name_for(card.as_ref(), "greeter.password").as_deref(),
+        Some("Authentication response")
+    );
+    assert_eq!(
+        accessible_name_for(card.as_ref(), "greeter.login").as_deref(),
+        Some("Respond to authentication challenge")
+    );
+    assert!(
+        spoken(card.as_ref())
+            .iter()
+            .any(|said| said == "One-time code"),
+        "the question itself is read"
+    );
+    assert_eq!(
+        focusables(&app).first().map(String::as_str),
+        Some("greeter.password"),
+        "the field is ready for the answer"
+    );
+    assert!(Widget::take_focus_reset(&mut app));
+
+    // Type the code and send it as this challenge's answer.
+    for c in "765432".chars() {
+        dispatch(
+            &mut app,
+            &mut doc,
+            "greeter.password",
+            &char_event(&c.to_string()),
+        );
+    }
+    assert_eq!(&*app.password_buffer.lock_recover(), "765432");
+    assert!(dispatch_enter(&mut app, &mut doc, "greeter.password"));
+    app.sync(&doc, &root);
+    assert!(
+        app.password_buffer.lock_recover().is_empty(),
+        "the answer is handed over, not left in the form"
+    );
+
+    // The challenge is answered and gone: its identity answers nothing more,
+    // and the form asks for no factor.
+    assert_eq!(
+        session.respond(challenge.id, Zeroizing::new("765432".to_owned())),
+        Err("This authentication challenge is no longer waiting for a response")
+    );
+    assert!(
+        app.auth_session
+            .as_ref()
+            .and_then(AuthSession::challenge)
+            .is_none()
+    );
+    let card = card_of(&app);
+    assert_eq!(
+        accessible_name_for(card.as_ref(), "greeter.password").as_deref(),
+        Some("Password"),
+        "no prompt for another factor is drawn"
+    );
+    assert_eq!(
+        accessible_name_for(card.as_ref(), "greeter.login").as_deref(),
+        Some("Sign in")
+    );
+
+    // A second answer typed now has nothing to answer: the field is closed
+    // while the conversation says nothing, so it takes no input, and pressing
+    // the action again sends no response and draws no second prompt.
+    assert!(
+        passcode_node(card.as_ref()).state.busy,
+        "the answered prompt waits for the conversation to say more"
+    );
+    for c in "111111".chars() {
+        dispatch(
+            &mut app,
+            &mut doc,
+            "greeter.password",
+            &char_event(&c.to_string()),
+        );
+    }
+    assert!(
+        app.password_buffer.lock_recover().is_empty(),
+        "the closed field holds no second answer"
+    );
+    assert!(dispatch_enter(&mut app, &mut doc, "greeter.password"));
+    app.sync(&doc, &root);
+    assert_eq!(
+        accessible_name_for(card_of(&app).as_ref(), "greeter.login").as_deref(),
+        Some("Sign in"),
+        "the form asks for no factor"
+    );
+    stale_submitted.send(()).unwrap();
+
+    // greetd's refusal returns the person to the form, signed in nowhere.
+    let update = reported
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the refused attempt is reported");
+    assert_eq!(update, AuthUpdate::Failed(Failure::Credentials));
+    app.on_external_event(
+        &update.encode(),
+        &mut ui::widget::Edits::lend(&mut doc),
+        &root,
+    );
+    assert_eq!(app.phase, AuthPhase::Idle);
+    assert!(app.auth_session.is_none());
+    assert_eq!(app.failures, 1, "the attempt was refused once");
+    assert_eq!(app.notice, Notice::Error("greeter-error-passcode"));
+    assert!(app.password_buffer.lock_recover().is_empty());
+    greetd.join().unwrap();
 }
 
 #[test]

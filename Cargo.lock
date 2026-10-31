@@ -6124,6 +6124,7 @@ dependencies = [
  "chrono",
  "console-control",
  "greetd-client",
+ "greetd_ipc",
  "rustix 1.1.4",
  "serde_json",
  "settings-store",
