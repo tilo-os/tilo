@@ -411,6 +411,9 @@ struct Shared {
     /// The desktop's own notices: what the session tells the person, such as
     /// leaving a workspace.
     notices: tilo_desktop_surface::DesktopNotifications,
+    /// The apps' live activities on the bar, which the clock shows and the
+    /// controls pressed on it go back to the app through.
+    clock: Rc<chrome::Clock>,
     /// The desk as this device last wrote it, and when, so a desk that keeps
     /// changing (a drag, a rename) is written once in a while rather than
     /// every frame.
@@ -484,6 +487,13 @@ impl Shared {
                     }
                 }
                 DesktopAsk::Intent(ChromeIntent::ShowQuickSettings) => self.show_quick_settings(),
+                // The floating clock: what the person pressed there is
+                // Clocks' own to carry out, or the bar's to put away.
+                DesktopAsk::Intent(ChromeIntent::ClockCommand {
+                    command,
+                    activity_id,
+                }) => self.clock.press(&command, activity_id.as_deref()),
+                DesktopAsk::Intent(ChromeIntent::HideClock) => self.clock.hide(),
                 DesktopAsk::Launchpad(action) => self.launchpad(action),
                 DesktopAsk::Shortcut(action) => self.shortcut(action),
                 DesktopAsk::HostAction(action) if action == NEW_WORKSPACE => {
@@ -1386,14 +1396,26 @@ impl Session {
         // battery, network and volume glyphs; the quick settings panel fills
         // them once it is mounted.
         let readings = Rc::new(RefCell::new(None));
+        // Every app shows its live activity on this one board, which the
+        // bar's clock reads and the controls pressed on the clock go back
+        // through.
+        let live_activities = std::sync::Arc::new(runtime_collab::LiveActivities::default());
+        // A timer starting in the background must reach the bar's clock on
+        // the next frame, not the next minute.
+        live_activities.set_host_wake(options.wake.handle());
+        let clock = Rc::new(chrome::Clock::new(std::sync::Arc::clone(&live_activities)));
         let chrome = Rc::new(RefCell::new(chrome::host(
             &handle,
             &options,
             Rc::clone(&intents),
             Rc::clone(&asks),
-            Rc::clone(&notice_signals),
+            chrome::BarFeeds {
+                signals: Rc::clone(&notice_signals),
+                readings: Rc::clone(&readings),
+                clock: Rc::clone(&clock),
+                notices: notices.clone(),
+            },
             sync.clone(),
-            &readings,
             &overview,
         )));
         compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
@@ -1454,7 +1476,7 @@ impl Session {
         if let Some(apps) = &options.launch {
             apps.lend_launches(std::sync::Arc::clone(&options.launches));
         }
-        let action_plane = start_action_plane(&options)?;
+        let action_plane = start_action_plane(&options, &live_activities)?;
         let services = mount_services(&mut doors, std::mem::take(&mut options.services));
         // Dictation joins the services: its recognizer, microphone and
         // consent are only the session's, and the sheet asks about them.
@@ -1495,6 +1517,7 @@ impl Session {
             file_picker,
             lock,
             notices: notices.clone(),
+            clock,
             kept: RefCell::new(None),
             state: options.state.clone(),
             wallpapers,
@@ -1708,6 +1731,13 @@ impl Session {
     #[must_use]
     pub fn notifications(&self) -> tilo_desktop_surface::DesktopNotifications {
         self.shared.notifications.borrow().desktop()
+    }
+
+    /// The board the apps show their live activities on, which the bar reads
+    /// as its clock.
+    #[must_use]
+    pub fn live_activities(&self) -> &std::sync::Arc<runtime_collab::LiveActivities> {
+        self.shared.clock.board()
     }
 
     /// Reach `surface` (a service the session runs in its process) through
@@ -2598,7 +2628,10 @@ fn mount_controls(
 /// The plane the apps read and invoke this session's services on, when it
 /// serves one: the socket the launcher hands its apps, and the link the loop
 /// answers their calls through.
-fn start_action_plane(options: &Options) -> Result<Option<Plane>, Error> {
+fn start_action_plane(
+    options: &Options,
+    live_activities: &std::sync::Arc<runtime_collab::LiveActivities>,
+) -> Result<Option<Plane>, Error> {
     let path = match &options.action_plane {
         ActionPlane::Off => return Ok(None),
         ActionPlane::Launcher => {
@@ -2615,6 +2648,7 @@ fn start_action_plane(options: &Options) -> Result<Option<Plane>, Error> {
         std::sync::Arc::clone(&link),
         std::sync::Arc::clone(&options.launches),
         options.fabric.clone(),
+        std::sync::Arc::clone(live_activities),
     )?;
     Ok(Some(Plane {
         link,

@@ -52,3 +52,7 @@ session-param-displays-mode = Wie die Bildschirme zusammen genutzt werden: erwei
 session-clipboard = Zwischenablage
 session-clipboard-paste-files = Dateien hier einfügen
 session-param-paste-destination = Der Ordner, in den die kopierten Dateien eingefügt werden
+
+## A timer Clocks ran in the background has come due.
+clock-due-title = Uhren
+clock-due-body = Die Zeit ist abgelaufen

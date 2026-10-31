@@ -93,6 +93,10 @@ pub struct LiveActivities {
     apps: Mutex<BTreeMap<String, App>>,
     changed: tokio::sync::Notify,
     revision: std::sync::atomic::AtomicU64,
+    /// What wakes the host presenting the board when an activity moves: it
+    /// draws on its own frames, so a timer starting in the background must
+    /// reach the screen without waiting for the next one.
+    host: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 #[derive(Default)]
@@ -116,6 +120,23 @@ impl LiveActivities {
         self.revision.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// Wake `wake` whenever an activity or a pressed control moves the
+    /// board, so the host presenting it can draw again.
+    pub fn set_host_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        *self.lock_host() = Some(wake);
+    }
+
+    fn lock_host(&self) -> std::sync::MutexGuard<'_, Option<Arc<dyn Fn() + Send + Sync>>> {
+        self.host.lock_recover()
+    }
+
+    fn wake_host(&self) {
+        let wake = self.lock_host().clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
+
     pub fn show(&self, app_id: &str, activity: Option<Value>) {
         let mut apps = self.lock();
         let app = apps.entry(app_id.to_owned()).or_default();
@@ -126,6 +147,7 @@ impl LiveActivities {
         drop(apps);
         self.revision
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.wake_host();
     }
 
     /// Hand `control` to app `app_id`, pressed on its activity.
@@ -139,6 +161,7 @@ impl LiveActivities {
         app.controls.drain(..excess);
         drop(apps);
         self.changed.notify_waiters();
+        self.wake_host();
     }
 
     /// The controls app `app_id` has not taken after `after`, and the
@@ -273,5 +296,27 @@ mod tests {
 
         board.show("so.tilo.clocks", None);
         assert_eq!(board.activity("so.tilo.clocks"), None);
+    }
+
+    /// The host presenting the board is woken by an activity moving and by
+    /// a pressed control, so a timer starting in the background is drawn
+    /// without waiting for the next frame the host would have run.
+    #[test]
+    fn the_board_wakes_the_host_presenting_it() {
+        let board = LiveActivities::default();
+        let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&woken);
+        board.set_host_wake(Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }));
+        board.show("so.tilo.clocks", Some(serde_json::json!({"label": "Tea"})));
+        assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 1);
+        // The same activity again moves nothing and wakes no one.
+        board.show("so.tilo.clocks", Some(serde_json::json!({"label": "Tea"})));
+        assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 1);
+        board.press("so.tilo.clocks", serde_json::json!({"command": "toggle"}));
+        assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 2);
+        board.show("so.tilo.clocks", None);
+        assert_eq!(woken.load(std::sync::atomic::Ordering::Relaxed), 3);
     }
 }

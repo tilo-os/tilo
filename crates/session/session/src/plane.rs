@@ -229,8 +229,9 @@ pub fn serve(
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
     fabric: Option<tilo_device_fabric::link::SharedLink>,
+    live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
 ) -> std::io::Result<BrokerHandle> {
-    let services = host_services(link, launches, fabric);
+    let services = host_services(link, launches, fabric, live_activities);
     tilo_action_broker::collab_broker::spawn_with_services(
         socket,
         None,
@@ -249,6 +250,7 @@ fn host_services(
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
     fabric: Option<tilo_device_fabric::link::SharedLink>,
+    live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
 ) -> HostServices {
     let speakers: Option<std::sync::Arc<dyn SpeakerServices>> = fabric.map(|fabric| {
         std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
@@ -257,6 +259,9 @@ fn host_services(
         published: Some(link),
         launcher: Some(launches),
         speakers,
+        // Every app shows its live activity (a running timer, a stopwatch)
+        // outside its windows on this one board.
+        live_activities: Some(live_activities),
         ..HostServices::default()
     }
 }
@@ -399,7 +404,12 @@ mod tests {
     fn services(fabric: Option<tilo_device_fabric::link::SharedLink>) -> HostServices {
         let wake: Wake = std::sync::Arc::new(|| ());
         let link = Link::new(wake);
-        host_services(link, std::sync::Arc::new(Launches::default()), fabric)
+        host_services(
+            link,
+            std::sync::Arc::new(Launches::default()),
+            fabric,
+            std::sync::Arc::new(runtime_collab::LiveActivities::default()),
+        )
     }
 
     /// Settings reaches the speaker groups of the fabric this session runs

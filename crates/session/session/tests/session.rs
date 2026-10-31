@@ -1776,9 +1776,10 @@ fn pixel_at(picture: &image::RgbaImage, x: i32, y: i32) -> [u8; 4] {
         .0
 }
 
+#[path = "session/chrome.rs"]
+mod chrome;
 #[path = "session/lock.rs"]
 mod lock;
-
 mod questions;
 
 #[path = "session/capture_studio.rs"]
@@ -2723,145 +2724,6 @@ fn a_copy_is_listed_pinned_across_a_restart_and_pasted_into_the_app_in_front() {
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut reader, &mut bytes).expect("read the copy");
     assert_eq!(bytes, text);
-}
-
-// =====================================================================
-// Notifications from an app
-// =====================================================================
-
-/// Send one notification over the freedesktop interface on `address`, as an
-/// app of the session would, and name the id the daemon gave it. The
-/// connection is the app's: it stays open until the caller drops it.
-async fn notify(address: &str, summary: &str, body: &str, timeout: i32) -> (zbus::Connection, u32) {
-    let app = zbus::connection::Builder::address(address)
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-    let proxy = zbus::Proxy::new(
-        &app,
-        "org.freedesktop.Notifications",
-        "/org/freedesktop/Notifications",
-        "org.freedesktop.Notifications",
-    )
-    .await
-    .unwrap();
-    let reply = proxy
-        .call_method(
-            "Notify",
-            &(
-                "Mail",
-                0_u32,
-                "",
-                summary,
-                body,
-                Vec::<&str>::new(),
-                std::collections::HashMap::<String, zbus::zvariant::OwnedValue>::new(),
-                timeout,
-            ),
-        )
-        .await
-        .unwrap();
-    (app, reply.body().deserialize().unwrap())
-}
-
-/// An app's notification over the freedesktop interface, from the process
-/// whose window the session shows: a banner and a centre entry named after
-/// that app, and the bar's bell counting it.
-#[test]
-fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
-    let _settled = ui::motion::testing::settled();
-    let bus = PrivateBus::start();
-    let wake = tilo_service::LoopWake::default();
-    let (side, link) = tilo_session::portal_link::channel(wake.handle());
-    let desktop = Rc::new(
-        DesktopServices::start(
-            &Buses {
-                session: Bus::Address(bus.address().to_owned()),
-                system: Bus::None,
-            },
-            &wake.handle(),
-            std::sync::Arc::new(tilo_portal::NoCapture),
-            &side,
-            None,
-        )
-        .expect("desktop services"),
-    );
-    let portal = desktop
-        .portal()
-        .map(|serving| link.with_captures(serving.input_captures().clone()));
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            services: desktop.services(),
-            wake,
-            desktop: Some(Rc::clone(&desktop)),
-            portal,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-
-    // The app the session knows by its window; the sender's process is the
-    // one that window's client runs in.
-    let mut client = mapped(&mut session, "so.tilo.mail");
-
-    let runtime = desktop.runtime();
-    // It waits for the person: nothing here measures the banner running out.
-    let (app, id) = runtime.block_on(notify(bus.address(), "New mail", "From Ada", 0));
-
-    pump(&mut session, &mut [&mut client], |session, _| {
-        session.notifications().unread() == 1
-    });
-    let centre = session.notifications();
-    let banners = centre.log();
-    assert_eq!(banners.active().len(), 1, "the notification is a banner");
-    let banner = banners.active()[0].clone();
-    drop(banners);
-    assert_eq!(banner.title, "New mail");
-    assert_eq!(
-        banner.app_id.as_deref(),
-        Some("so.tilo.mail"),
-        "named after the app whose window sent it"
-    );
-    assert_eq!(banner.sender_id, Some(id));
-
-    // The bar's bell counts what is unread.
-    let bell = session.accessible_labels();
-    assert!(
-        bell.iter().any(|label| label == "Notifications, 1 unread"),
-        "the bell says what is unread: {bell:?}"
-    );
-
-    // The person closes the banner on its own control: it is kept in the
-    // centre, named after the same app.
-    let dismiss = until(&mut session, &mut client, |session| {
-        session
-            .banners()
-            .shown()
-            .accessibility
-            .as_ref()
-            .and_then(|node| control(node, "Dismiss"))
-    })
-    .expect("the banner offers a way out");
-    session
-        .banners()
-        .command(tilo_notification_banners::Command::Activate(dismiss));
-    pump(&mut session, &mut [&mut client], |session, _| {
-        session.notifications().log().active().is_empty()
-    });
-    let centre = session.notifications();
-    let history = centre.log();
-    let kept = history
-        .history()
-        .iter()
-        .find(|shown| shown.title == "New mail")
-        .expect("the centre keeps it");
-    assert_eq!(kept.app_id.as_deref(), Some("so.tilo.mail"));
-    assert_eq!(centre.unread(), 1, "and it stays unread until read");
-    drop(app);
 }
 
 #[test]

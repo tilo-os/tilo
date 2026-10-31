@@ -4,12 +4,14 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use tilo_action_policy::Role;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
-    ActiveMediaUse, ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource,
-    LinkKind, LinkStatus, MediaKind, OwnChip, SystemStatus, VolumeState,
+    ActiveMediaUse, ChromeIntent, ChromeOverlays, ClockActivity, ClockSnapshot,
+    DesktopChromeSnapshot, DesktopChromeSource, LinkKind, LinkStatus, MediaKind, OwnChip,
+    SystemStatus, VolumeState,
 };
 use tilo_desktop::desktop_host::DesktopRules;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome};
@@ -17,10 +19,152 @@ use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_model::commands::{DesktopCommand, Standing, may_command, may_create_workspace};
 use tilo_desktop_model::ownership::Authors;
-use tilo_desktop_surface::DesktopHandle;
+use tilo_desktop_surface::notifications::Notification;
+use tilo_desktop_surface::{DesktopHandle, DesktopNotifications};
 use tilo_surface_host::{Placement, WidgetHost};
 
 use crate::notifications::NoticeSignals;
+
+/// The app whose live activity the bar shows as its clock.
+pub(crate) const CLOCKS_APP: &str = "so.tilo.clocks";
+
+/// The clock's live activity: the board every app shows its activity on,
+/// and the moment the person hid the floating timer from the bar.
+pub(crate) struct Clock {
+    board: Arc<runtime_collab::LiveActivities>,
+    /// The board revision the person hid the overlay at; a change of the
+    /// activity is the app's answer and shows it again.
+    hidden_at: Cell<Option<u64>>,
+}
+
+impl Clock {
+    pub(crate) fn new(board: Arc<runtime_collab::LiveActivities>) -> Self {
+        Self {
+            board,
+            hidden_at: Cell::new(None),
+        }
+    }
+
+    /// The board the apps show their live activities on.
+    pub(crate) fn board(&self) -> &Arc<runtime_collab::LiveActivities> {
+        &self.board
+    }
+
+    /// Hand a control pressed on the floating clock back to Clocks.
+    pub(crate) fn press(&self, command: &str, activity_id: Option<&str>) {
+        self.board.press(
+            CLOCKS_APP,
+            serde_json::json!({ "command": command, "activity_id": activity_id }),
+        );
+    }
+
+    /// The person closed the overlay: it stays away until Clocks shows
+    /// something new.
+    pub(crate) fn hide(&self) {
+        self.hidden_at.set(Some(self.board.revision()));
+    }
+
+    /// What the clocks app shows now.
+    fn activity(&self) -> Option<ClocksActivity> {
+        self.board
+            .activity(CLOCKS_APP)
+            .and_then(|activity| serde_json::from_value(activity).ok())
+    }
+
+    /// Whether the activity floats over the windows for the person to see.
+    fn overlay(&self, activity: &ClocksActivity) -> bool {
+        activity.overlay && self.hidden_at.get() != Some(self.board.revision())
+    }
+}
+
+/// What the clocks app puts on its live activity, as the bar reads it: the
+/// timer or stopwatch running, and the due timer it wants announced.
+#[derive(serde::Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "active, stopwatch, paused and overlay are independent fields of the activity Clocks shows"
+)]
+struct ClocksActivity {
+    #[serde(default = "active_unless_told")]
+    active: bool,
+    #[serde(default)]
+    activity_id: Option<String>,
+    label: String,
+    remaining_secs: u64,
+    #[serde(default)]
+    stopwatch: bool,
+    #[serde(default)]
+    paused: bool,
+    #[serde(default)]
+    overlay: bool,
+    #[serde(default)]
+    notification_id: Option<String>,
+    #[serde(default)]
+    notification_title: String,
+    #[serde(default)]
+    notification_body: String,
+}
+
+/// An app that names no `active` shows its activity.
+fn active_unless_told() -> bool {
+    true
+}
+
+/// The clock reading the bar shows, and whether it floats: Clocks'
+/// activity as it stands, with a newly due timer announced once.
+fn clock_reading(
+    clock: &Clock,
+    notified: &RefCell<Option<String>>,
+    notices: &DesktopNotifications,
+) -> (Option<ClockActivity>, bool) {
+    let Some(activity) = clock.activity() else {
+        return (None, false);
+    };
+    // A due timer the person has not been told about yet.
+    let due = activity
+        .notification_id
+        .clone()
+        .filter(|id| notified.borrow().as_deref() != Some(id.as_str()));
+    if let Some(id) = due {
+        let title = if activity.notification_title.is_empty() {
+            crate::i18n::t("clock-due-title")
+        } else {
+            activity.notification_title.clone()
+        };
+        let body = if activity.notification_body.is_empty() {
+            crate::i18n::t("clock-due-body")
+        } else {
+            activity.notification_body.clone()
+        };
+        notices.post(Notification::new(title, body));
+        notified.replace(Some(id));
+    }
+    if !activity.active {
+        return (None, false);
+    }
+    let overlay = clock.overlay(&activity);
+    (
+        Some(ClockActivity {
+            activity_id: activity.activity_id,
+            label: activity.label,
+            remaining_secs: activity.remaining_secs,
+            stopwatch: activity.stopwatch,
+            paused: activity.paused,
+            overlay: activity.overlay,
+        }),
+        overlay,
+    )
+}
+
+/// What the bar reads of the session besides the desk's tree: the
+/// notifications' state, the device's readings, the apps' live activities,
+/// and where the session's own notices go.
+pub(crate) struct BarFeeds {
+    pub(crate) signals: Rc<NoticeSignals>,
+    pub(crate) readings: crate::panels::Readings,
+    pub(crate) clock: Rc<Clock>,
+    pub(crate) notices: DesktopNotifications,
+}
 
 /// The bar's view of the session: the desktop's tree, the wall clock, and
 /// the person at this device.
@@ -42,6 +186,12 @@ pub(crate) struct SessionChrome {
     /// The device as the quick settings panel reads it: the status cluster's
     /// battery, network and volume glyphs, and the streams being captured.
     pub(crate) readings: crate::panels::Readings,
+    /// The clocks app's live activity, which the bar shows as its clock.
+    pub(crate) clock: Rc<Clock>,
+    /// The desk's notifications, where a due timer is announced.
+    pub(crate) notices: DesktopNotifications,
+    /// The due timer announced last, so an unchanged one is announced once.
+    notified: RefCell<Option<String>>,
     /// `(tree revision, minute, the last wave heard)` the snapshot revision
     /// was last bumped for.
     seen: Cell<(u64, i64, Option<String>)>,
@@ -53,11 +203,16 @@ impl SessionChrome {
         handle: DesktopHandle,
         intents: Rc<RefCell<Vec<ChromeIntent>>>,
         person: String,
-        signals: Rc<NoticeSignals>,
+        feeds: BarFeeds,
         notifications_only: bool,
         sync: Option<Rc<crate::sync::Client>>,
-        readings: crate::panels::Readings,
     ) -> Self {
+        let BarFeeds {
+            signals,
+            readings,
+            clock,
+            notices,
+        } = feeds;
         Self {
             handle,
             intents,
@@ -66,6 +221,9 @@ impl SessionChrome {
             notifications_only,
             sync,
             readings,
+            clock,
+            notices,
+            notified: RefCell::new(None),
             seen: Cell::new((u64::MAX, 0, None)),
             revision: Cell::new(0),
         }
@@ -124,6 +282,8 @@ impl DesktopChromeSource for SessionChrome {
     fn snapshot(&self) -> DesktopChromeSnapshot {
         let clock = ClockSnapshot::now();
         let waved = self.sync.as_ref().and_then(|sync| sync.wave_notice());
+        let (clock_activity, clock_overlay) =
+            clock_reading(&self.clock, &self.notified, &self.notices);
         let seen = (
             self.handle.revision(),
             clock.unix_seconds.div_euclid(60),
@@ -136,6 +296,11 @@ impl DesktopChromeSource for SessionChrome {
             revision: self.revision.get(),
             status: self.status(),
             clock,
+            overlays: ChromeOverlays {
+                clock: clock_overlay,
+                ..ChromeOverlays::default()
+            },
+            clock_activity,
             waved,
             own: Some(OwnChip {
                 name: self.person.clone(),
@@ -227,9 +392,8 @@ pub(crate) fn host(
     options: &crate::Options,
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
-    signals: Rc<NoticeSignals>,
+    feeds: BarFeeds,
     sync: Option<Rc<crate::sync::Client>>,
-    readings: &crate::panels::Readings,
     overview: &crate::mount::overview::Overview,
 ) -> WidgetHost {
     let rules = Rc::new(SessionRules {
@@ -243,10 +407,9 @@ pub(crate) fn host(
         handle.clone(),
         Rc::clone(&intents),
         options.person.clone(),
-        signals,
+        feeds,
         options.quick_settings.is_none(),
         sync,
-        Rc::clone(readings),
     ));
     let bar = TopBarChrome::from_tree(&tree)
         .with_chrome(source)
@@ -345,5 +508,155 @@ mod tests {
         assert!(status.link.is_none());
         assert!(status.volume.is_none());
         assert!(status.media.is_empty());
+    }
+
+    /// Clocks' live activity in the shape its app publishes it: the label
+    /// and remaining time every activity carries, and what `extra` adds.
+    fn timer(extra: &serde_json::Value) -> serde_json::Value {
+        let mut activity = serde_json::json!({ "label": "Tea", "remaining_secs": 90 });
+        if let (Some(activity), Some(extra)) = (activity.as_object_mut(), extra.as_object()) {
+            for (key, value) in extra {
+                activity.insert(key.clone(), value.clone());
+            }
+        }
+        activity
+    }
+
+    /// A running timer is the bar's clock and floats over the windows; the
+    /// person closing the overlay keeps it away until Clocks shows something
+    /// new, and a timer that ended leaves neither.
+    #[test]
+    fn a_running_timer_shows_on_the_bar_and_floats_until_the_person_puts_it_away() {
+        let board = std::sync::Arc::new(runtime_collab::LiveActivities::default());
+        let clock = Clock::new(std::sync::Arc::clone(&board));
+        let notices = DesktopNotifications::default();
+        let notified = RefCell::new(None);
+        board.show(
+            CLOCKS_APP,
+            Some(timer(&serde_json::json!({
+                "active": true,
+                "activity_id": "timer-1",
+                "stopwatch": false,
+                "overlay": true,
+            }))),
+        );
+        let (activity, overlay) = clock_reading(&clock, &notified, &notices);
+        let activity = activity.expect("the timer is the bar's clock");
+        assert_eq!(activity.label, "Tea");
+        assert_eq!(activity.remaining_secs, 90);
+        assert_eq!(activity.activity_id.as_deref(), Some("timer-1"));
+        assert!(overlay, "it floats over the windows");
+
+        clock.hide();
+        let (activity, overlay) = clock_reading(&clock, &notified, &notices);
+        assert!(activity.is_some(), "the bar still reads the time");
+        assert!(!overlay, "but nothing floats");
+
+        // Clocks shows the same timer paused, a change: it is back.
+        board.show(
+            CLOCKS_APP,
+            Some(timer(&serde_json::json!({
+                "active": true,
+                "activity_id": "timer-1",
+                "paused": true,
+                "overlay": true,
+            }))),
+        );
+        assert!(clock_reading(&clock, &notified, &notices).1, "shown again");
+
+        board.show(CLOCKS_APP, None);
+        let (activity, overlay) = clock_reading(&clock, &notified, &notices);
+        assert!(activity.is_none(), "the timer ended");
+        assert!(!overlay);
+    }
+
+    /// An activity the app marked inactive is not the bar's clock.
+    #[test]
+    fn an_inactive_activity_leaves_the_clock_bare() {
+        let board = std::sync::Arc::new(runtime_collab::LiveActivities::default());
+        let clock = Clock::new(std::sync::Arc::clone(&board));
+        let notices = DesktopNotifications::default();
+        board.show(
+            CLOCKS_APP,
+            Some(timer(
+                &serde_json::json!({ "active": false, "overlay": true }),
+            )),
+        );
+        let (activity, overlay) = clock_reading(&clock, &RefCell::new(None), &notices);
+        assert!(activity.is_none());
+        assert!(!overlay);
+    }
+
+    /// A due timer is announced once, in the app's own words when it has
+    /// them and in the desktop's otherwise.
+    #[test]
+    fn a_due_timer_is_announced_once() {
+        let board = std::sync::Arc::new(runtime_collab::LiveActivities::default());
+        let clock = Clock::new(std::sync::Arc::clone(&board));
+        let notices = DesktopNotifications::default();
+        let notified = RefCell::new(None);
+        // What the banners show now, by title and body.
+        let announced = || {
+            notices
+                .log()
+                .active()
+                .iter()
+                .map(|notification| (notification.title.clone(), notification.body.clone()))
+                .collect::<Vec<_>>()
+        };
+        let due = |activity: &serde_json::Value| {
+            board.show(CLOCKS_APP, Some(timer(activity)));
+        };
+        due(&serde_json::json!({
+            "active": true,
+            "overlay": true,
+            "notification_id": "due-1",
+            "notification_title": "Bread",
+            "notification_body": "Out of the oven",
+        }));
+        clock_reading(&clock, &notified, &notices);
+        let live = announced();
+        assert_eq!(live.len(), 1, "one announcement");
+        assert_eq!(live[0].0, "Bread");
+        assert_eq!(live[0].1, "Out of the oven");
+        assert_eq!(notified.borrow().as_deref(), Some("due-1"));
+
+        // The same due timer, read again, is not announced again.
+        clock_reading(&clock, &notified, &notices);
+        assert_eq!(announced().len(), 1, "still one");
+
+        // A timer that names its own due time in no words gets the
+        // desktop's.
+        board.show(CLOCKS_APP, None);
+        due(&serde_json::json!({
+            "active": true,
+            "overlay": true,
+            "notification_id": "due-2",
+        }));
+        clock_reading(&clock, &notified, &notices);
+        let live = announced();
+        assert_eq!(live.len(), 2, "the next timer is its own announcement");
+        assert_eq!(live[1].0, crate::i18n::t("clock-due-title"));
+        assert_eq!(live[1].1, crate::i18n::t("clock-due-body"));
+    }
+
+    /// A control pressed on the floating clock reaches Clocks with the timer
+    /// it belongs to.
+    #[tokio::test]
+    async fn a_pressed_control_reaches_clocks() {
+        let board = std::sync::Arc::new(runtime_collab::LiveActivities::default());
+        let clock = Clock::new(std::sync::Arc::clone(&board));
+        let clocks = runtime_collab::live_activity::LiveActivityServer::new(
+            CLOCKS_APP,
+            std::sync::Arc::clone(&board),
+            std::sync::Arc::new(|| Ok(())),
+        );
+        clock.press("add-minute", Some("timer-1"));
+        let (_, controls) = clocks.controls(0).await.expect("Clocks takes the control");
+        let controls: serde_json::Value = serde_json::from_slice(&controls).expect("JSON");
+        assert_eq!(
+            controls,
+            serde_json::json!([{ "command": "add-minute", "activity_id": "timer-1" }])
+        );
     }
 }

@@ -52,3 +52,7 @@ session-param-displays-mode = How the displays are used together: extend, mirror
 session-clipboard = Clipboard
 session-clipboard-paste-files = Paste files here
 session-param-paste-destination = The folder the copied files are pasted into
+
+## A timer Clocks ran in the background has come due.
+clock-due-title = Clocks
+clock-due-body = Time is up

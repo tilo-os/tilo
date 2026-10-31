@@ -156,6 +156,54 @@ fn floating_clock() -> TopBarChrome {
     bar
 }
 
+/// The floating timer's controls are Clocks' own: each press carries the
+/// command and the timer it belongs to, and the close button also puts the
+/// overlay away.
+#[test]
+fn the_floating_timers_controls_hand_the_timer_back_to_clocks() {
+    let mut tree = DesktopTree {
+        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
+        active: WorkspaceId::from(0),
+        ..Default::default()
+    };
+    tree.active = tree.workspaces[0].id;
+    let chrome = super::fixture::FixtureChrome::new(tree.clone());
+    {
+        let mut state = chrome.borrow_mut();
+        state.overlays.clock = true;
+        state.clock_activity = Some(ClockActivity {
+            activity_id: Some("timer-1".into()),
+            label: "Tea".into(),
+            remaining_secs: 125,
+            overlay: true,
+            ..Default::default()
+        });
+    }
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+    bar.activate_clock_control(0);
+    bar.activate_clock_control(1);
+    bar.activate_clock_control(2);
+    assert_eq!(
+        chrome.borrow().intents.as_slice(),
+        [
+            ChromeIntent::ClockCommand {
+                command: "toggle".into(),
+                activity_id: Some("timer-1".into()),
+            },
+            ChromeIntent::ClockCommand {
+                command: "add-minute".into(),
+                activity_id: Some("timer-1".into()),
+            },
+            ChromeIntent::HideClock,
+            ChromeIntent::ClockCommand {
+                command: "close".into(),
+                activity_id: Some("timer-1".into()),
+            },
+        ]
+    );
+    assert!(!chrome.borrow().overlays.clock, "the overlay is away");
+}
+
 #[test]
 fn floating_clock_cursor_exposes_buttons_and_drag_state() {
     let mut bar = floating_clock();
