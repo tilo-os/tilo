@@ -21,6 +21,7 @@ class FilesWorkspaceTest(unittest.TestCase):
             binaries.mkdir()
             for name in [
                 "shell",
+                "tilo",
                 "tilo-launcher",
                 "tilo-unlock-helper",
                 "tilo-flight-recorder",
