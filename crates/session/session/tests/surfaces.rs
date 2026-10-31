@@ -1,10 +1,11 @@
-//! What a panel, running as its own process, tells assistive technology.
+//! What a panel, running as its own process, tells assistive technology, and
+//! what it says back to it.
 //!
 //! A panel the session starts is an ordinary app: ui-core's native runner
 //! gives it a window, and its AccessKit tree goes out over AT-SPI2 like any
-//! app's. This starts Quick Settings through the session's surface
-//! machinery, joins it to a private accessibility bus, and walks what an
-//! external reader sees.
+//! app's. These start Quick Settings through the session's surface machinery,
+//! join it to a private accessibility bus, and walk what an external reader
+//! sees — then let the panel's own reader speak the control it focused.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -18,8 +19,9 @@
 )]
 
 use std::collections::HashSet;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use atspi_proxies::accessible::AccessibleProxy;
@@ -74,26 +76,7 @@ fn a_panel_publishes_its_accessibility_tree() {
     let assistive = Assistive::start();
     let mut session = session_with(&[panel()]);
     shown(&mut session);
-
-    // An AccessKit provider joins the accessibility bus only once assistive
-    // technology says it is on, and it wakes on that change rather than on
-    // the value it finds. Say it until the provider hears it: it may still
-    // be connecting the first time.
-    let deadline = Instant::now() + OPENING;
-    let names = loop {
-        assistive.say_assistive_technology(true);
-        pump(&mut session);
-        let names = assistive.reader_sees();
-        if names.iter().any(|name| name == "Brightness") {
-            break names;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the panel published no accessibility tree: {names:?}"
-        );
-        assistive.say_assistive_technology(false);
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let names = assistive.until_it_sees(&mut session, "Brightness");
 
     // The controls a person reaches with a screen reader are there, by the
     // names they hear, and they can be pressed through AT-SPI.
@@ -108,6 +91,39 @@ fn a_panel_publishes_its_accessibility_tree() {
         "the night light tile takes a press over AT-SPI"
     );
 
+    session.stop_surface("quick-settings");
+}
+
+#[test]
+fn the_reader_speaks_the_focused_panel_control() {
+    let spoken = Spoken::start();
+    let assistive = Assistive::start();
+    let mut session = session_with(&[panel()]);
+    shown(&mut session);
+    assistive.until_it_sees(&mut session, "Volume");
+    assert!(
+        !spoken.said().contains("Volume"),
+        "the panel speaks what it is focused on, and it starts out focused on nothing: {:?}",
+        spoken.said()
+    );
+
+    // Assistive technology focuses the volume control the way it acts on
+    // any app: the control the reader reached takes the keyboard.
+    assert!(
+        assistive.focus("Volume"),
+        "the panel's volume control takes focus over AT-SPI"
+    );
+
+    let deadline = Instant::now() + OPENING;
+    while !spoken.said().contains("Volume") {
+        assert!(
+            Instant::now() < deadline,
+            "the panel's reader said nothing about the control it focused: {:?}",
+            spoken.said()
+        );
+        pump(&mut session);
+        std::thread::sleep(Duration::from_millis(50));
+    }
     session.stop_surface("quick-settings");
 }
 
@@ -155,9 +171,17 @@ struct Assistive {
     /// its root object on.
     providers: Arc<Mutex<Vec<String>>>,
     /// The services serving those buses, stopped with the buses.
+    #[expect(
+        dead_code,
+        reason = "held for its Drop: the services stop when the test ends"
+    )]
     services: Vec<Served>,
     /// Names both buses for every process this test starts, until the test
     /// ends.
+    #[expect(
+        dead_code,
+        reason = "held for its Drop: the environment is put back when the test ends"
+    )]
     environment: ScopedEnv,
 }
 
@@ -200,28 +224,49 @@ impl Assistive {
     /// Every name an external reader reaches from the newest provider's
     /// root.
     fn reader_sees(&self) -> Vec<String> {
-        let provider = self
-            .providers
-            .lock()
-            .expect("the providers")
-            .last()
-            .cloned();
-        provider.map_or_else(Vec::new, |provider| {
+        self.newest().map_or_else(Vec::new, |provider| {
             walk(self.a11y_bus.address(), &provider)
         })
     }
 
-    /// Whether a control named `name` can be pressed over AT-SPI.
-    fn pressable(&self, name: &str) -> bool {
-        let Some(provider) = self
-            .providers
+    /// The bus name of the provider that embedded last: the panel this test
+    /// started.
+    fn newest(&self) -> Option<String> {
+        self.providers
             .lock()
             .expect("the providers")
             .last()
             .cloned()
-        else {
-            return false;
-        };
+    }
+
+    /// Say assistive technology is on until the newest provider's tree
+    /// names `control`, which proves the panel is up and reachable.
+    ///
+    /// An AccessKit provider joins the accessibility bus only once assistive
+    /// technology says it is on, and it wakes on that change rather than on
+    /// the value it finds. Say it until the provider hears it: it may still
+    /// be connecting the first time.
+    fn until_it_sees(&self, session: &mut Session, control: &str) -> Vec<String> {
+        let deadline = Instant::now() + OPENING;
+        loop {
+            self.say_assistive_technology(true);
+            pump(session);
+            let names = self.reader_sees();
+            if names.iter().any(|name| name == control) {
+                return names;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the panel published no accessibility tree: {names:?}"
+            );
+            self.say_assistive_technology(false);
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// The provider and object path of the control named `name`.
+    fn node(&self, name: &str) -> Option<(String, String)> {
+        let provider = self.newest()?;
         block_on(async {
             let connection = connected(self.a11y_bus.address()).await;
             let mut queue = vec![ROOT.to_owned()];
@@ -234,25 +279,140 @@ impl Assistive {
                     continue;
                 };
                 if node.name().await.is_ok_and(|named| named == name) {
-                    let action = atspi_proxies::action::ActionProxy::builder(&connection)
-                        .destination(provider.clone())
-                        .expect("a bus name")
-                        .path(path.clone())
-                        .expect("an object path")
-                        .build()
-                        .await;
-                    if let Ok(action) = action
-                        && let Ok(actions) = action.get_actions().await
-                    {
-                        return actions.iter().any(|action| action.name == "click");
-                    }
+                    return Some((provider.clone(), path));
                 }
                 if let Ok(children) = node.get_children().await {
                     queue.extend(children.iter().map(|child| child.path_as_str().to_owned()));
                 }
             }
-            false
+            None
         })
+    }
+
+    /// The verbs a control named `name` offers over AT-SPI.
+    fn verbs(&self, name: &str) -> Vec<String> {
+        let Some((provider, path)) = self.node(name) else {
+            return Vec::new();
+        };
+        block_on(verbs(self.a11y_bus.address(), &provider, &path))
+    }
+
+    /// Whether a control named `name` can be pressed over AT-SPI.
+    fn pressable(&self, name: &str) -> bool {
+        self.verbs(name).iter().any(|verb| verb == "click")
+    }
+
+    /// Move the keyboard to the control named `name`, the way an external
+    /// reader does when it reaches a control and acts on it. Whether the
+    /// panel took it.
+    fn focus(&self, name: &str) -> bool {
+        let Some((provider, path)) = self.node(name) else {
+            return false;
+        };
+        block_on(async {
+            let connection = connected(self.a11y_bus.address()).await;
+            let Ok(component) = atspi_proxies::component::ComponentProxy::builder(&connection)
+                .destination(provider)
+                .expect("a bus name")
+                .path(path)
+                .expect("an object path")
+                .build()
+                .await
+            else {
+                return false;
+            };
+            component.grab_focus().await.unwrap_or(false)
+        })
+    }
+}
+
+/// The verbs the node at `path` offers, by the names a reader sees.
+async fn verbs(address: &str, provider: &str, path: &str) -> Vec<String> {
+    let connection = connected(address).await;
+    verbs_over(&connection, provider, path)
+        .await
+        .unwrap_or_default()
+}
+
+/// The verbs the node at `path` offers, over a connection already open.
+async fn verbs_over(
+    connection: &zbus::Connection,
+    provider: &str,
+    path: &str,
+) -> Result<Vec<String>, zbus::Error> {
+    let actions = atspi_proxies::action::ActionProxy::builder(connection)
+        .destination(provider.to_owned())?
+        .path(path.to_owned())?
+        .build()
+        .await?
+        .get_actions()
+        .await?;
+    Ok(actions.into_iter().map(|action| action.name).collect())
+}
+
+/// Where a panel's reader speaks: a stand-in `espeak-ng` on the processes'
+/// `PATH` that keeps what it is asked to say.
+///
+/// The reader reaches for a speech stack outside its process, speech-dispatcher
+/// first and `espeak-ng` after it. An empty runtime directory leaves no
+/// speech-dispatcher socket to find, so the panel falls through to the
+/// `espeak-ng` this test writes, and the words it is handed here are what the
+/// panel said.
+struct Spoken {
+    /// The stand-in and the file it appends to.
+    #[expect(
+        dead_code,
+        reason = "held for its Drop: the stand-in is removed when the test ends"
+    )]
+    directory: tempfile::TempDir,
+    /// Everything said, one utterance a line.
+    words: PathBuf,
+    /// The `PATH` and runtime directory every process this test starts reads
+    /// until the test ends, and the reader turned on for the panel.
+    #[expect(
+        dead_code,
+        reason = "held for its Drop: the environment is put back when the test ends"
+    )]
+    environment: ScopedEnv,
+}
+
+impl Spoken {
+    fn start() -> Self {
+        let directory = tempfile::tempdir().expect("a directory for the stand-in");
+        let words = directory.path().join("said");
+        let espeak = directory.path().join("espeak-ng");
+        std::fs::write(
+            &espeak,
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = --version ]; then exit 0; fi\n\
+                 cat >> {0}\n\
+                 printf '\\n' >> {0}\n",
+                words.display()
+            ),
+        )
+        .expect("the stand-in's script");
+        std::fs::set_permissions(&espeak, std::fs::Permissions::from_mode(0o755))
+            .expect("the stand-in is runnable");
+        let mut environment = ScopedEnv::new();
+        let path = std::env::var("PATH").unwrap_or_default();
+        environment.set("PATH", format!("{}:{path}", directory.path().display()));
+        // Where speech-dispatcher's socket would be looked for: nowhere, so
+        // the reader speaks through `espeak-ng`.
+        environment.set("XDG_RUNTIME_DIR", directory.path().display().to_string());
+        // A panel reads this at startup, the way a login screen reads the
+        // device's sign-in comforts.
+        environment.set("TILO_SCREEN_READER", "1");
+        Self {
+            directory,
+            words,
+            environment,
+        }
+    }
+
+    /// Everything the reader has spoken so far.
+    fn said(&self) -> String {
+        std::fs::read_to_string(&self.words).unwrap_or_default()
     }
 }
 
@@ -417,7 +577,13 @@ impl Status {
         self.enabled = enabled;
     }
 
+    /// A reader is told whether a screen reader is on; this test only
+    /// drives the one flag a provider wakes on.
     #[zbus(property, name = "ScreenReaderEnabled")]
+    #[allow(
+        clippy::unused_self,
+        reason = "the interface asks a property for the object it is on"
+    )]
     fn screen_reader_enabled(&self) -> bool {
         false
     }
@@ -436,8 +602,14 @@ struct Registry {
 
 #[zbus::interface(name = "org.a11y.atspi.Socket")]
 impl Registry {
+    /// `Embed(s o)` hands the plug's bus name and root object over as the
+    /// interface's signature says; it is not ours to take by reference.
     #[zbus(name = "Embed")]
-    fn embed(&mut self, plug: (&str, ObjectPath<'_>)) -> (String, OwnedObjectPath) {
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the interface's own signature takes the plug by value"
+    )]
+    fn embed(&self, plug: (&str, ObjectPath<'_>)) -> (String, OwnedObjectPath) {
         self.providers
             .lock()
             .expect("the providers")
