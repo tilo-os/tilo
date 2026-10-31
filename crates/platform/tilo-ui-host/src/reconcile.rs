@@ -907,10 +907,12 @@ impl Reconciler {
         for slot in self.slots(node) {
             inner = inner.push_slot(slot);
         }
-        let scroll = if token(node, "axis") == Some("horizontal") {
-            Scrollable::new_horizontal()
-        } else {
-            Scrollable::new_vertical().fit_content_height()
+        let scroll = match token(node, "axis") {
+            Some("horizontal") => Scrollable::new_horizontal(),
+            // A two-way surface fills its column and scrolls what it cannot show, rather than
+            // growing past it: the desk a person pans, not a page that runs on.
+            Some("both") => Scrollable::new(ui::widget::ScrollAxis::Both).fill_parent_height(),
+            _ => Scrollable::new_vertical().fit_content_height(),
         };
         Box::new(scroll.with_child(Box::new(inner)))
     }

@@ -1,4 +1,8 @@
-app so.tilo.shell "Shell" (icon: .monitor, category: .system)
+app so.tilo.shell "Shell" (icon: .monitor, category: .system, records: .own)
+
+use so.tilo.lang.chat as chat
+use so.tilo.lang.notes as notes
+use so.tilo.lang.tasks as tasks
 
 /// This device's desk as the session holds it: the time in the person's style, who they are,
 /// their notifications, the workspaces on this device and the tasks running for them. The
@@ -39,7 +43,11 @@ type Person (origin: session.person) {
     name: Text merge register (title)
 }
 
+root arrangement: Arrangement
+
 root Desk
+
+default view desk_view for arrangement
 
 default view bar for Desk
 
@@ -82,6 +90,29 @@ action workspace_settings(d: Desk) (icon: .settings, label: "Workspace settings"
 /// Shows every workspace's strips and windows at once.
 action overview(d: Desk) (icon: .layout_grid, label: "Overview") {
     outside("session.act", "toggle-overview")
+}
+
+/// The person's desk as a window shows it: the top bar over the preset they picked, and the
+/// preset switch beside the bar's actions. The bar reads `desk`, this package's other root, as
+/// any view reads a root of the package it uses. A change of the arrangement runs the preset
+/// body; a change of the desk reading runs the bar.
+view desk_view(a: Arrangement) {
+    let v = viewing
+    ui.NavShell(content_kind: .page) {
+        actions: {
+            bar(root Desk)
+            preset_switch(v)
+        }
+        content: {
+            if v.showing == .frames {
+                framed_canvas(a)
+            } else if v.showing == .spaces {
+                spaces_canvas(a)
+            } else {
+                strips_view(a, v)
+            }
+        }
+    }
 }
 
 /// The top bar: the system's menu and the workspace in front, which opens the workspaces to
