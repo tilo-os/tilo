@@ -438,6 +438,23 @@ fn card(shown: &Shown, seat: Option<&DictationSeat>) -> Element {
     let Some(words) = words(shown) else {
         return Box::new(Column::new());
     };
+    let footer = answers(prompt, seat);
+    let mut body = Column::new()
+        .with_rhythm(ui::tokens::Rhythm::Tight)
+        .push(Box::new(Text::new(&words.body)));
+    if let Some(caption) = &words.caption {
+        body = body.push(Box::new(Text::new(caption).with_role(TextRole::Caption)));
+    }
+    let panel = FloatingPanel::new(Box::new(body))
+        .header(Box::new(
+            Text::new(&words.title).with_role(TextRole::Subheading),
+        ))
+        .footer(footer);
+    centred(Box::new(panel))
+}
+
+/// The answers the stage allows, the one the keyboard starts on first.
+fn answers(prompt: &Prompt, seat: Option<&DictationSeat>) -> Element {
     let id = prompt.id;
     // These buttons answer the seat with a plain local handler
     // (`Button::on_click`), never through `cx.effects(..)` or `cx.actions()`,
@@ -456,7 +473,7 @@ fn card(shown: &Shown, seat: Option<&DictationSeat>) -> Element {
     let primary = |id: &str, label: &str| Button::new(id, label).role(ButtonRole::Primary);
     // The primary answer comes first in every stage: it is what the keyboard
     // starts on, so Enter gives it.
-    let footer: Element = match prompt.stage {
+    match prompt.stage {
         Stage::Asking => {
             let allow = answering(
                 Answer::Allow(id),
@@ -538,19 +555,7 @@ fn card(shown: &Shown, seat: Option<&DictationSeat>) -> Element {
                 ))
             }
         }
-    };
-    let mut body = Column::new()
-        .with_rhythm(ui::tokens::Rhythm::Tight)
-        .push(Box::new(Text::new(&words.body)));
-    if let Some(caption) = &words.caption {
-        body = body.push(Box::new(Text::new(caption).with_role(TextRole::Caption)));
     }
-    let panel = FloatingPanel::new(Box::new(body))
-        .header(Box::new(
-            Text::new(&words.title).with_role(TextRole::Subheading),
-        ))
-        .footer(footer);
-    centred(Box::new(panel))
 }
 
 /// The card in the middle of the sheet's surface, no wider than one sheet.
