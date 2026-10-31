@@ -8861,15 +8861,17 @@ fn delegate_browser_service_session_command(
     bytes: &[u8],
 ) -> Result<zeroize::Zeroizing<Vec<u8>>, BrokerError> {
     let refused = || BrokerError::failed("private service-session request refused".into());
-    if context.app_id() != "so.tilo.browser"
-        || context.workspace_id().is_empty()
-        || context.person().is_empty()
-    {
+    if context.workspace_id().is_empty() || context.person().is_empty() {
         return Err(refused());
     }
     context.revalidate().map_err(|_| refused())?;
     let command =
         runtime_collab::BrowserServiceSessionCommand::decode(bytes).map_err(|_| refused())?;
+    // Website sessions are Browser's alone; an account secret is authorized
+    // by the custodian for the app asking.
+    if command.browser_only() && context.app_id() != "so.tilo.browser" {
+        return Err(refused());
+    }
     let service = services
         .browser_service_sessions
         .as_ref()

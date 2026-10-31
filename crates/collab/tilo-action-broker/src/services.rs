@@ -1530,6 +1530,11 @@ pub trait BrowserServiceSessionServices: Send + Sync {
         ) {
             return Err("Website session Admin authorization unavailable".into());
         }
+        // An account secret needs the custodian's own decision for the app
+        // asking; a host that makes none releases and seals nothing.
+        if !command.browser_only() {
+            return Err("Account custody unavailable".into());
+        }
         self.authorize(context)
     }
     /// Execute an authorized website session command.

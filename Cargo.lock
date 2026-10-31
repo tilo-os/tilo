@@ -9582,6 +9582,7 @@ dependencies = [
  "tracing",
  "uuid",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]

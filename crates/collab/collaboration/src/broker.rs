@@ -42,6 +42,8 @@ mod refused_answer;
 #[path = "task_agent_route.rs"]
 mod task_agent_route;
 use bytes::{command_bytes, event_diagnostics, fit_catalogue, remote_action_round_trip};
+#[path = "broker_fixtures.rs"]
+mod fixtures;
 #[path = "broker_published.rs"]
 mod published;
 pub use published::SessionResource;
@@ -1035,6 +1037,11 @@ impl BarrierReplies {
 }
 
 enum SdkCommand {
+    /// One private service request to the session on `route`, the app's own
+    /// route. A window asks as soon as it is built, which the live launch
+    /// does while the route is still joining: the `Hello` naming the route
+    /// was queued before it, so the loop has joined it by the time it
+    /// serves the request.
     BrowserServiceSession {
         route: RouteSpec,
         command: runtime_collab::BrowserServiceSessionCommand,
@@ -2869,219 +2876,6 @@ impl CollaborationManager {
         Ok(self)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_history_invocation_fixture_for_test(
-        history: Vec<u8>,
-    ) -> NativeHistoryInvocationFixture {
-        tests::native_history_invocation_fixture(history)
-    }
-
-    /// Wire/SDK ordering fixture only; not a native authority proof.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_initial_fixture_for_test(
-        app: &str,
-        room: Uuid,
-        history: Vec<u8>,
-    ) -> (Self, Box<dyn Fn() -> usize>) {
-        tests::native_initial_fixture(app, room, history)
-    }
-
-    /// Socket-backed ordering fixture on an actual acknowledged named route.
-    /// This fixture does not establish native caller authority.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_initial_named_fixture_for_test(route: RouteSpec, history: Vec<u8>) -> Self {
-        let (mut manager, _) =
-            tests::native_initial_fixture(&route.app_id, route.cluster_id, history);
-        assert!(manager.send(CollabRequest::Hello {
-            app_id: route.app_id,
-            cluster_id: route.cluster_id,
-            record: route.record,
-            record_kind: None,
-            handle: None,
-        }));
-        manager
-            .await_primary_route()
-            .expect("actual named route acknowledgement");
-        manager
-    }
-
-    /// [`Self::native_initial_named_fixture_for_test`] whose broker admits
-    /// the connection's own invocations against the surface it published;
-    /// the probe lists each invocation as it arrived and whether it was
-    /// offered then. It refuses every committed read of the `refused`
-    /// routes, so they never open.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_initial_named_invocation_fixture_for_test(
-        route: RouteSpec,
-        history: Vec<u8>,
-        refused: &[RouteSpec],
-    ) -> (
-        Self,
-        Box<dyn Fn() -> Vec<(tilo_actions::ActionAddress, bool)>>,
-    ) {
-        let (mut manager, invocations) = tests::native_initial_invocation_fixture(
-            &route.app_id,
-            route.cluster_id,
-            history,
-            refused.iter().map(RouteSpec::channel_id).collect(),
-        );
-        assert!(manager.send(CollabRequest::Hello {
-            app_id: route.app_id,
-            cluster_id: route.cluster_id,
-            record: route.record,
-            record_kind: None,
-            handle: None,
-        }));
-        manager
-            .await_primary_route()
-            .expect("actual named route acknowledgement");
-        (manager, invocations)
-    }
-
-    /// A connected route whose document reads are not Required, as a
-    /// standalone runtime admits it.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn connected_fixture_for_test(app: &str, room: Uuid) -> Self {
-        tests::connected_manager_for(app, room)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_initial_fixture_gated_for_test(
-        app: &str,
-        room: Uuid,
-        history: Vec<u8>,
-        gate: tokio::sync::oneshot::Receiver<()>,
-    ) -> (Self, Box<dyn Fn() -> usize>) {
-        tests::native_initial_fixture_gated(app, room, history, Some(gate))
-    }
-
-    /// Socket-backed committed-read fixture; the probe observes real recheck requests.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_initial_parked_fixture_for_test(
-        app: &str,
-        room: Uuid,
-        history: Vec<u8>,
-        gate: tokio::sync::oneshot::Receiver<()>,
-    ) -> (Self, Box<dyn Fn() -> usize>) {
-        tests::native_initial_parked_fixture(app, room, history, gate)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_refresh_fixture_for_test(
-        app: &str,
-        room: Uuid,
-        history: Vec<u8>,
-    ) -> (Self, NativeRefreshProbe) {
-        tests::native_refresh_fixture(app, room, history)
-    }
-
-    /// A native app's manager joining `route` in the background as
-    /// [`Self::join_native`] does, over a fake broker that holds the join
-    /// until the probe answers or refuses it, as a loaded broker does. The
-    /// route's committed history is `history`, of the record kind `kind`;
-    /// the room stands as `room` until the probe says otherwise. Make it in
-    /// the app's wake scope, as a launch does.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_joining_fixture_for_test(
-        route: RouteSpec,
-        kind: &str,
-        history: Vec<u8>,
-        room: runtime_collab::RoomStatus,
-    ) -> (Self, JoiningProbe) {
-        let (answer, gate) = tokio::sync::oneshot::channel();
-        let (room_status, status) = tokio::sync::watch::channel(Ok(room));
-        let broker = tests::FakeBroker {
-            captures: Arc::new(std::sync::Mutex::new(tests::Captures {
-                committed_history_fixture: Some(history),
-                join_gates: std::collections::VecDeque::from([gate]),
-                room_status: Some(status),
-                ..tests::Captures::default()
-            })),
-            ..tests::FakeBroker::default()
-        };
-        let (fd, captures, _thread) = tests::stand_up_fake_broker(broker);
-        let manager = Self::connect_in_background(
-            SdkConnectSource::Fd(fd),
-            SdkIdentitySource::Ready(Some(SdkJoinIdentity {
-                presentation: harness_presentation(),
-                participant_kind: "person",
-                signer: harness_document_signer(),
-            })),
-            route,
-            Some(kind.to_owned()),
-            None,
-        );
-        let probe = JoiningProbe {
-            answer: std::sync::Mutex::new(Some(answer)),
-            room: room_status,
-            sent: Box::new(move || captures.lock().unwrap().signed_ops.len()),
-        };
-        (manager, probe)
-    }
-
     fn for_route_from(
         source: SdkConnectSource,
         app_id: String,
@@ -4301,10 +4095,27 @@ async fn drive_shovel(
                 wake,
                 reply,
             } => {
-                let result = if let Some(route) = routes
-                    .get_mut(&spec.channel_id())
-                    .filter(|route| route.spec == spec)
-                {
+                // The app announced its route in a `Hello` queued before it
+                // asked, so the loop has joined it by now however long the
+                // join took. The route the connection serves is the app's
+                // current primary route (its record's), which a bound
+                // component may have moved since the request was made. A
+                // route that did not join answers as unavailable rather than
+                // leaving the window's receipt open.
+                let fallback = primary
+                    .as_ref()
+                    .and_then(|key| routes.get(key))
+                    .filter(|route| {
+                        route.spec.app_id == spec.app_id && route.spec.cluster_id == spec.cluster_id
+                    })
+                    .map(|route| route.spec.channel_id());
+                let key = fallback.unwrap_or_else(|| spec.channel_id());
+                let joined = routes.get_mut(&key).filter(|route| {
+                    route.spec == spec
+                        || (route.spec.app_id == spec.app_id
+                            && route.spec.cluster_id == spec.cluster_id)
+                });
+                let result = if let Some(route) = joined {
                     tokio::time::timeout(
                         Duration::from_secs(10),
                         route.channel.browser_service_session_command(&command),
@@ -7361,6 +7172,20 @@ mod tests {
         /// The channel service whose changes `Changed { ChannelKeys }`
         /// follows; without one the host refuses the wait.
         pub key_changes: Option<Arc<tokio::sync::watch::Sender<u64>>>,
+        /// Answers this channel's private service requests, as the session
+        /// does on an app's route; without one the call is unimplemented,
+        /// as on a broker with no custodian behind it.
+        #[allow(clippy::type_complexity, reason = "one fixture hook")]
+        pub service_sessions: Option<
+            Arc<
+                dyn Fn(
+                        &runtime_collab::BrowserServiceSessionCommand,
+                    )
+                        -> Result<runtime_collab::BrowserServiceSessionReply, String>
+                    + Send
+                    + Sync,
+            >,
+        >,
     }
 
     pub struct DocumentSendGate {
@@ -7770,6 +7595,9 @@ mod tests {
                         Service::CommittedDocument => self.committed_document(&channel, &body),
                         Service::NativeMedia => self.native_media(&body),
                         Service::RemoteAction => answered(self.remote_action(&body)),
+                        Service::BrowserServiceSession => {
+                            answered(self.browser_service_session(&body))
+                        }
                         other => answered(Err(format!("the fixture serves no {other:?}"))),
                     },
                     Err(error) => answered(Err(error)),
@@ -8119,6 +7947,21 @@ mod tests {
         /// the surface it published offers it, as the session action host
         /// does: anything else is refused as unknown. Admitted ones are
         /// accepted and never run.
+        /// A private service request, answered as the session's custodian
+        /// would through `service_sessions`; refused without one.
+        fn browser_service_session(&self, body: &[u8]) -> Result<Reply, String> {
+            let Some(serve) = self.captures().service_sessions.clone() else {
+                return Err("fixture has no custodian".into());
+            };
+            let command = runtime_collab::BrowserServiceSessionCommand::decode(body)
+                .map_err(str::to_owned)?;
+            let reply = serve(&command)?;
+            reply
+                .encode()
+                .map(|bytes| Reply::Answer(bytes.to_vec()))
+                .map_err(str::to_owned)
+        }
+
         fn remote_action(&self, frame: &[u8]) -> Result<Reply, String> {
             use tilo_actions::remote::{
                 ActionHostError, InvocationReceipt, ReceiptStatus, RemoteActionFrame,
@@ -9841,6 +9684,9 @@ mod tests {
             Ok([9; 64])
         }
     }
+
+    #[cfg(unix)]
+    include!("held_outbound_tests.rs");
 
     /// An endpoint on a pushing broker whose identity service answers its
     /// one route with `access` (or refuses, `None`): asked again on the
