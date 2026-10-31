@@ -192,8 +192,8 @@ deny = [
     ], reason = "old RustCrypto generation" },
     { crate = "rand_chacha:<0.10", wrappers = ["lipsum", "openmls_rust_crypto", "proptest", "rand"], reason = "old RustCrypto generation" },
     { crate = "sha2:<0.11", wrappers = [
-        "davey", "ed25519-dalek", "frost-ed25519", "mysql_common", "oauth2", "p256", "p384",
-        "rig-core", "scrypt", "smithay", "snow", "tilo-crypto",
+        "cranelift-codegen", "davey", "ed25519-dalek", "frost-ed25519", "mysql_common", "oauth2",
+        "p256", "p384", "rig-core", "scrypt", "smithay", "snow", "tilo-crypto",
     ], reason = "old RustCrypto generation" },
     { crate = "hmac:<0.13", wrappers = ["davey", "hkdf", "librespot-core", "librespot-discovery", "pbkdf2", "rfc6979"], reason = "old RustCrypto generation" },
     { crate = "chacha20poly1305:<0.11", wrappers = ["hpke-rs-rust-crypto", "openmls_rust_crypto", "snow"], reason = "old RustCrypto generation" },
