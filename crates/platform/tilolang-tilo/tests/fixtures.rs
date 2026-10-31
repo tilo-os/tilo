@@ -139,14 +139,20 @@ impl Replica {
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }
-        let envelope = tilo_actions::apply_local_with_context(
-            &mut self.doc,
-            action,
-            action.encode().unwrap(),
-            Some(self.name.as_bytes()),
-            context,
-        )
-        .unwrap();
+        // Applied as the host does: a record's type id resolves by the package versions the
+        // host loaded (`Host::with_schemas`).
+        let envelope = self
+            .host
+            .with_schemas(|| {
+                tilo_actions::apply_local_with_context(
+                    &mut self.doc,
+                    action,
+                    action.encode().unwrap(),
+                    Some(self.name.as_bytes()),
+                    context,
+                )
+            })
+            .unwrap();
         self.log.push(envelope);
         self.doc.commit();
         self.host.sync_from(&self.doc);

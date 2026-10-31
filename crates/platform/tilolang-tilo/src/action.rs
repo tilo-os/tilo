@@ -261,6 +261,14 @@ fn ensure_map(
 }
 
 impl DynAction {
+    /// The schemas of the package version that wrote this action, installed while it applies:
+    /// its types resolve by that version. `None` for an action with no module recorded (a
+    /// record's creation, an action a test built): it resolves through whatever table the
+    /// caller installed — the store's, which holds its own package versions.
+    fn package_schemas(&self) -> Option<crate::schema::Current> {
+        crate::schema::for_module(&self.app, &self.authorship.module).map(|package| package.enter())
+    }
+
     /// What this action is, by what it writes: one that queues an outside effect reaches outside
     /// the record, as the package action that planned it is declared to; every other one is an
     /// undoable change of the record. What a room's grants must allow to commit it.
@@ -1062,10 +1070,15 @@ impl Action for DynAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let payload =
             serde_json::to_vec(self).map_err(|error| ActionError::Refused(error.to_string()))?;
+        // The package that wrote this action, installed: its record's type resolves by that
+        // package version, whatever other version of the app the thread loaded last (a receiver
+        // replaying a peer's action, two versions in one process).
+        let _package = self.package_schemas();
         apply_edits(doc, &self.app, &self.edits, &payload)
     }
 
     fn describe(&self, doc: &Doc) -> Option<Described> {
+        let _package = self.package_schemas();
         let args = self
             .args
             .as_object()
