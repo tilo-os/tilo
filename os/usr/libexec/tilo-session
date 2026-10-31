@@ -54,11 +54,14 @@ if [[ $(uname -m) == aarch64 ]]; then
   done
 fi
 
-compositor_bin=$SHELL_BIN
-if [ "${1:-}" = --native ]; then
-  compositor_bin=$NATIVE_SESSION_BIN
-  shift
-fi
+# A login runs the native session. `--shell` runs the old shell compositor
+# instead while it is still shipped; `--native` still names the default, so an
+# entry or a script written before the flip keeps starting the native session.
+compositor_bin=$NATIVE_SESSION_BIN
+case "${1:-}" in
+  --native) shift ;;
+  --shell) compositor_bin=$SHELL_BIN; shift ;;
+esac
 if [ ! -x "$compositor_bin" ]; then
   echo "tilo-session: $compositor_bin is missing or not executable" >&2
   exit 1

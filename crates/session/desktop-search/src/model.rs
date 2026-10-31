@@ -42,6 +42,9 @@ pub enum Target {
         room: String,
         invocation: String,
     },
+    /// Search `source` from now on, or stop: the person's own choice, kept
+    /// with their settings by the host ([`crate::preferences`]).
+    Prefer { source: String, enabled: bool },
 }
 
 /// The provider name of what the desktop itself publishes (its chrome's and
@@ -183,6 +186,12 @@ pub struct Hit {
 /// A source of hits for one domain (applications, windows, actions, …).
 pub trait Source {
     fn id(&self) -> &str;
+    /// What people call it, for the row that switches it off and on again
+    /// ([`crate::providers::Switches`]). A source that does not say is
+    /// listed by its id.
+    fn name(&self) -> String {
+        self.id().to_owned()
+    }
     /// Top of this source's score scale; see [`system::merged_strength`].
     fn max_score(&self) -> i32 {
         system::MAX_PROVIDER_SCORE
@@ -203,6 +212,9 @@ pub trait Source {
 impl<S: Source + ?Sized> Source for std::rc::Rc<S> {
     fn id(&self) -> &str {
         (**self).id()
+    }
+    fn name(&self) -> String {
+        (**self).name()
     }
     fn max_score(&self) -> i32 {
         (**self).max_score()

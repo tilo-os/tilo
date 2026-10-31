@@ -52,6 +52,16 @@ pub const CHROME_RESOURCE: &str = "desktop:chrome";
 const CAP_SWITCH: &str = "session.switch_workspace";
 /// The capability that runs one of the desktop's own argument-less actions, by id.
 const CAP_ACT: &str = "session.act";
+/// The capability that opens a running application's tray item, by its key: the desk's own
+/// `open_tray_item` action answers it.
+const CAP_TRAY: &str = "session.tray";
+
+/// The bar's own `session.act` ids that are the desk's resource's, not the chrome's: the
+/// question on the person's avatar is answered and put off where the desk reads it.
+const DESK_ACTIONS: &[(&str, &str)] = &[
+    ("answer_ask", DESK_RESOURCE),
+    ("put_off_ask", DESK_RESOURCE),
+];
 
 /// How often the instance and its window may answer each other in one frame before the frame
 /// is drawn as it is: a press, the action it ran, the change it committed, the effect settled.
@@ -80,12 +90,36 @@ pub struct PersonReading {
     pub name: String,
 }
 
+/// A timer or stopwatch running in Clocks, as the bar's clock reads it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimerReading {
+    /// The activity's id, which a press on the clock's controls names.
+    #[serde(default)]
+    pub activity_id: Option<String>,
+    /// Its label, such as `Tea`.
+    pub label: String,
+    /// What the timer has left, or the stopwatch has run, in seconds.
+    pub remaining_secs: u64,
+    #[serde(default)]
+    pub stopwatch: bool,
+    #[serde(default)]
+    pub paused: bool,
+}
+
 /// The reading of [`DESK_RESOURCE`]: the fields of the `session.desk` kind
 /// (`tilolang::origin::KINDS`), as JSON on the door.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeskReading {
     pub person: String,
     pub clock: String,
+    /// The timer or stopwatch Clocks shows, when one runs: what the bar's clock reads beside
+    /// the time, and the controls pressed on it name.
+    #[serde(default)]
+    pub timer: Option<TimerReading>,
+    /// The question the session puts to the person about themselves, waiting on their own
+    /// avatar until they answer it or put it off.
+    #[serde(default)]
+    pub ask: Option<AskReading>,
     pub weekday: String,
     pub date: String,
     pub unread: u32,
@@ -102,6 +136,61 @@ pub struct DeskReading {
     /// The others here in the workspace in front: its collaborators.
     #[serde(default)]
     pub people: Vec<PersonReading>,
+    /// The running applications' tray items, in the order they registered.
+    #[serde(default)]
+    pub tray: Vec<TrayReading>,
+}
+
+/// A running application's tray item, as the bar shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrayReading {
+    /// The item's key, which a press on it names.
+    pub key: String,
+    /// The app's own words for it.
+    pub title: String,
+    /// Whether choosing it opens its menu rather than its window.
+    #[serde(default)]
+    pub menu: bool,
+}
+
+/// A question the session puts to the person about themselves, waiting on their own avatar.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskReading {
+    /// The question ("Keep your name and work?").
+    pub question: String,
+    /// What answering brings.
+    pub detail: String,
+    /// The answer's label ("Keep with passkey").
+    pub answer: String,
+    /// Shown as the popover; `false` while it waits as the avatar's dot.
+    pub open: bool,
+}
+
+impl DeskReading {
+    /// The timer Clocks runs, by its name: its label (`Tea`), or what it is when the app
+    /// named none (`Timer`, `Stopwatch`). Empty when no timer floats.
+    #[must_use]
+    pub fn timer_name(&self) -> String {
+        let Some(timer) = &self.timer else {
+            return String::new();
+        };
+        if !timer.label.is_empty() {
+            return timer.label.clone();
+        }
+        if timer.stopwatch {
+            "Stopwatch".to_owned()
+        } else {
+            "Timer".to_owned()
+        }
+    }
+
+    /// What the timer reads: what it has left, or what the stopwatch has run.
+    #[must_use]
+    pub fn timer_left(&self) -> String {
+        self.timer.as_ref().map_or_else(String::new, |timer| {
+            ui::format::timecode(timer.remaining_secs)
+        })
+    }
 }
 
 /// What a shell asked of the session: an invocation on the door.
@@ -173,11 +262,24 @@ fn ask_of(capability: &str, payload: &Json) -> Result<Ask, String> {
             action: SWITCH_WORKSPACE.to_owned(),
             arguments: BTreeMap::from([(WORKSPACE_ARG.to_owned(), word.clone())]),
         }),
-        CAP_ACT => Ok(Ask {
-            resource: CHROME_RESOURCE.to_owned(),
+        CAP_TRAY => Ok(Ask {
+            resource: DESK_RESOURCE.to_owned(),
             action: word.clone(),
             arguments: BTreeMap::new(),
         }),
+        CAP_ACT => {
+            // The desktop's own argument-less actions are the chrome's; the desk's few (the
+            // question on the person's avatar) are the resource the bar reads it from.
+            let resource = DESK_ACTIONS
+                .iter()
+                .find(|(id, _)| id == word)
+                .map_or(CHROME_RESOURCE, |(_, resource)| resource);
+            Ok(Ask {
+                resource: (*resource).to_owned(),
+                action: word.clone(),
+                arguments: BTreeMap::new(),
+            })
+        }
         other => Err(format!("the session takes no outside effect `{other}`")),
     }
 }
@@ -195,6 +297,7 @@ pub struct SessionOrigin {
     workspaces: BTreeMap<String, Kept<WorkspaceReading>>,
     tasks: BTreeMap<String, Kept<TaskReading>>,
     people: BTreeMap<String, Kept<PersonReading>>,
+    tray: BTreeMap<String, Kept<TrayReading>>,
     /// Effects handed to the session and not answered yet.
     in_flight: BTreeSet<Ask>,
 }
@@ -208,6 +311,7 @@ impl SessionOrigin {
             workspaces: BTreeMap::new(),
             tasks: BTreeMap::new(),
             people: BTreeMap::new(),
+            tray: BTreeMap::new(),
             in_flight: BTreeSet::new(),
         }
     }
@@ -279,12 +383,60 @@ impl SessionOrigin {
             reading.workspace != was.workspace,
         );
         set("strip", text(&reading.strip), reading.strip != was.strip);
+        // The timer Clocks runs: its name and what it reads. Empty names mean no timer, so
+        // the clock shows the time alone; paused and stopwatch say how to read it.
+        let timer = reading.timer.clone().unwrap_or_default();
+        set(
+            "timer",
+            text(&reading.timer_name()),
+            reading.timer != was.timer,
+        );
+        set(
+            "timer_left",
+            text(&reading.timer_left()),
+            reading.timer != was.timer,
+        );
+        set(
+            "timer_paused",
+            Value::Bool(timer.paused),
+            reading.timer != was.timer,
+        );
+        set(
+            "timer_stopwatch",
+            Value::Bool(timer.stopwatch),
+            reading.timer != was.timer,
+        );
+        // The ask on the person's avatar: its words, and whether it stands open.
+        let ask = reading.ask.clone().unwrap_or_default();
+        set("ask", text(&ask.question), reading.ask != was.ask);
+        set("ask_detail", text(&ask.detail), reading.ask != was.ask);
+        set("ask_answer", text(&ask.answer), reading.ask != was.ask);
+        set("ask_open", Value::Bool(ask.open), reading.ask != was.ask);
         let mut writes = Vec::new();
         if !fields.is_empty() {
             writes.push(OriginWrite::Set {
                 target: root.clone(),
                 fields,
             });
+        }
+        // The running applications' tray items: each's key and the app's own words for it.
+        let tray = reading.tray.clone();
+        if let (Ok(ty), Some(collection)) = (kind("tray_item"), field(desk, "tray")) {
+            writes.extend(sync_items(
+                &mut self.tray,
+                &tray,
+                root,
+                &collection,
+                ty,
+                |item| item.key.clone(),
+                |item| {
+                    vec![
+                        ("key", text(&item.key)),
+                        ("title", text(&item.title)),
+                        ("menu", Value::Bool(item.menu)),
+                    ]
+                },
+            ));
         }
         if let (Ok(ty), Some(collection)) = (kind("workspace"), field(desk, "workspaces")) {
             writes.extend(sync_items(

@@ -1890,6 +1890,95 @@ mod tests {
         })
     }
 
+    /// The service as the session runs it: its snapshot holds the sets it
+    /// saved, so what the page shows after saving is what it reads back.
+    struct StatefulService {
+        snapshot: Mutex<SpeakerSnapshot>,
+    }
+
+    impl SpeakerService for StatefulService {
+        fn call(&self, command: SpeakerCommand) -> Result<SpeakerReply, String> {
+            let mut snapshot = self.snapshot.lock().unwrap();
+            let reply = match command {
+                SpeakerCommand::Snapshot => SpeakerReply::Snapshot {
+                    snapshot: snapshot.clone(),
+                },
+                SpeakerCommand::Create { name, members } => {
+                    let id = "ef".repeat(16);
+                    snapshot.groups.push(SpeakerGroupInfo {
+                        id: id.clone(),
+                        name,
+                        leader_label: "desk".into(),
+                        led_here: true,
+                        members: members
+                            .into_iter()
+                            .map(|member| SpeakerMemberInfo {
+                                device_label: member.device.clone(),
+                                device: member.device,
+                                output: member.output,
+                                output_label: None,
+                                role: member.role,
+                                status: SpeakerMemberStatus::AwaitingConsent,
+                                trim: SpeakerTrimInfo::default(),
+                            })
+                            .collect(),
+                        playback: None,
+                        microphones: Vec::new(),
+                        output_here: false,
+                    });
+                    SpeakerReply::Done { group: Some(id) }
+                }
+                _ => SpeakerReply::Done { group: None },
+            };
+            drop(snapshot);
+            Ok(reply)
+        }
+    }
+
+    /// Saving a set is read back from the service: the set the session now
+    /// carries is what the page lists, not one it kept of its own.
+    #[test]
+    fn a_saved_set_is_read_back_from_the_service() {
+        let stateful = Arc::new(StatefulService {
+            snapshot: Mutex::new(SpeakerSnapshot {
+                media_enabled: true,
+                devices: vec![device("desk"), device("shelf")],
+                groups: Vec::new(),
+                calibrations: Vec::new(),
+            }),
+        });
+        let service: Arc<dyn SpeakerService> = Arc::clone(&stateful) as Arc<dyn SpeakerService>;
+        let mut pane = SpeakersModel::new(service, false, None);
+        settle(&mut pane);
+        assert!(pane.setup().groups().is_empty());
+
+        pane.start(
+            SpeakerEffect::CreateSpeakerSet {
+                name: "Living room".into(),
+                members: vec![SpeakerMemberSpec {
+                    device: "desk".into(),
+                    output: "0a".repeat(16),
+                    role: SpeakerRoleSpec::Room {
+                        x_mm: 0,
+                        y_mm: 600,
+                        z_mm: 1100,
+                    },
+                }],
+            },
+            None,
+        );
+        settle(&mut pane);
+
+        let names = pane
+            .setup()
+            .groups()
+            .iter()
+            .map(|group| group.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Living room"]);
+        assert!(stateful.snapshot.lock().unwrap().groups[0].led_here);
+    }
+
     fn model(service: Arc<FakeService>) -> SpeakersModel {
         SpeakersModel::new(service, false, None)
     }

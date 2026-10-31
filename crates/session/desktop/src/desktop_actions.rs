@@ -37,8 +37,15 @@ pub enum DesktopAction {
     SwitchWorkspace { delta: i64 },
     /// Go `steps` strips on in the active workspace.
     StepStrip { steps: i64 },
-    /// Add an empty workspace and go there.
-    NewWorkspace,
+    /// Add an empty workspace and go there; with `room`, a workspace whose
+    /// shared room is `room` (joining it when this computer has none), named
+    /// `name` when given.
+    NewWorkspace {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        room: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
     /// Move the tab `tab` to the workspace `to` (its id or its name).
     MoveTab { tab: u64, to: String },
     /// Move the tab `tab` onto the strip `strip` (its id or its name) of
@@ -208,12 +215,7 @@ pub fn chrome_resource() -> ResourceSpec {
                 steps: count(args, "steps"),
             },
         ))
-        .with_action(action(
-            "new-workspace",
-            t("desktop-action-new-workspace"),
-            Vec::new(),
-            |_| DesktopAction::NewWorkspace,
-        ))
+        .with_action(new_workspace())
         .with_action(action(
             "shortcut",
             t("desktop-action-shortcut"),
@@ -239,6 +241,27 @@ pub fn chrome_resource() -> ResourceSpec {
             },
         ));
     with_workspace_actions(with_strip_actions(resource))
+}
+
+/// Making a workspace: an empty one, or the one sharing the room a join was
+/// granted, named as its directory lists it.
+fn new_workspace() -> ActionSpec {
+    action(
+        "new-workspace",
+        t("desktop-action-new-workspace"),
+        vec![
+            ActionParam::optional_owned("room", ParamType::Text, t("desktop-action-param-room")),
+            ActionParam::optional_owned(
+                "name",
+                ParamType::Text,
+                t("desktop-action-param-workspace-name"),
+            ),
+        ],
+        |args| DesktopAction::NewWorkspace {
+            room: args.text("room").map(str::to_owned),
+            name: args.text("name").map(str::to_owned),
+        },
+    )
 }
 
 /// A window sent elsewhere, or a strip renamed or moved: what the overview

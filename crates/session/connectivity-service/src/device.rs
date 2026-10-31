@@ -33,6 +33,12 @@ pub enum Change {
     Leave {
         network: String,
     },
+    /// Join an enterprise (802.1X) network with its identity and the
+    /// organization's certificates, and connect.
+    Enterprise {
+        config: os_actions::EnterpriseWifiConfiguration,
+        password: Option<String>,
+    },
     /// Forget a saved network.
     Forget {
         profile: String,
@@ -286,6 +292,9 @@ impl Device for OsDevice {
                 }
             }
             Change::Leave { network } => os_actions::disconnect_wifi(network),
+            Change::Enterprise { config, password } => {
+                os_actions::connect_enterprise_wifi(config, password.as_deref().unwrap_or_default())
+            }
             Change::Forget { profile } => os_actions::forget_network_profile(profile),
             Change::Autoconnect { profile, on } => {
                 os_actions::set_network_autoconnect(profile, *on)

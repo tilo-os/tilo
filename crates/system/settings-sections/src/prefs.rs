@@ -1405,7 +1405,7 @@ tilo_resource::json_model!(CustomTheme);
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[model(
     check = AppearancePrefs::valid,
-    check_reads = "sunrise sunset ui_face translucency",
+    check_reads = "sunrise sunset ui_face accent translucency",
     defaults
 )]
 pub struct AppearancePrefs {
@@ -1506,6 +1506,11 @@ pub struct AppearancePrefs {
     /// chosen before.
     #[serde(default)]
     pub ui_face: Option<String>,
+    /// The accent, by a name the presence palette gives a hue (`violet`,
+    /// `teal`); `None` follows the theme's own. Written even when `None` (as
+    /// `null`), like `ui_face`.
+    #[serde(default)]
+    pub accent: Option<String>,
     /// How much of the theme's translucency to keep: `1` as the theme sets
     /// it, `0` floating chrome opaque; `None` follows the theme. The
     /// accessibility option that makes panels opaque still wins. Written
@@ -1590,6 +1595,7 @@ impl Default for AppearancePrefs {
             distinct_letters: None,
             language: None,
             ui_face: None,
+            accent: None,
             translucency: None,
         }
     }
@@ -1646,7 +1652,7 @@ impl AppearancePrefs {
         }
     }
 
-    /// The person's own face and share of the theme's translucency.
+    /// The person's own face, accent and share of the theme's translucency.
     fn finish(&self) -> ui::theme::FinishLayer {
         #[allow(
             clippy::cast_possible_truncation,
@@ -1655,6 +1661,10 @@ impl AppearancePrefs {
         let translucency = self.translucency.map(|value| value as f32);
         ui::theme::FinishLayer {
             ui_face: self.ui_face.clone(),
+            accent: self
+                .accent
+                .as_deref()
+                .and_then(ui::tokens::PresenceHue::from_id),
             translucency,
         }
     }
@@ -2030,10 +2040,18 @@ impl AppearancePrefs {
         time_of_day(&self.sunset, "the start of night")?;
         ui::theme::FinishLayer {
             ui_face: self.ui_face.clone(),
+            accent: None,
             translucency: None,
         }
         .validate()
         .map_err(|error| ui::tilo_resource::Refusal::new(format!("the interface face: {error}")))?;
+        if let Some(accent) = &self.accent
+            && ui::tokens::PresenceHue::from_id(accent).is_none()
+        {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{accent}` is not an accent colour"
+            )));
+        }
         if let Some(translucency) = self.translucency {
             let band = f64::from(settings_store::appearance::TRANSLUCENCY_MIN)
                 ..=f64::from(settings_store::appearance::TRANSLUCENCY_MAX);

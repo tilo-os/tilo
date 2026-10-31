@@ -8,7 +8,7 @@ use serde_json::Value;
 use tilo_power_mgmt::{PowerAction, PowerCommand, PowerPolicy, PowerSignal};
 use tilo_service::{Service as _, Started};
 
-use crate::{BATTERY, PowerLink, SLEEP, SessionPower};
+use crate::{BATTERY, ChargeCapCapability, ChargePack, PowerLink, SLEEP, SessionPower};
 
 fn quiet() -> PowerPolicy {
     PowerPolicy {
@@ -208,4 +208,132 @@ fn the_power_key_and_the_lid_are_actions_too() {
         panic!("resolves at once")
     };
     assert_eq!(none.value, None, "an ignored lid does nothing");
+}
+
+/// A pack in memory: the limit its driver would offer, and the writes it
+/// took.
+#[derive(Debug, Default)]
+struct Pack {
+    limit: std::sync::Mutex<Option<ChargeCapCapability>>,
+    writes: std::sync::Mutex<Vec<u32>>,
+}
+
+impl Pack {
+    fn offering(current: u32) -> Self {
+        Self {
+            limit: std::sync::Mutex::new(Some(ChargeCapCapability {
+                backend: tilo_power_mgmt::sysfs::ChargeCapBackend::PowerSupply,
+                current,
+                choices: vec![60, 70, 80, 90, 100],
+                supports_start_threshold: false,
+            })),
+            writes: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl ChargePack for Pack {
+    fn limit(&self) -> Option<ChargeCapCapability> {
+        self.limit.lock().unwrap().clone()
+    }
+
+    fn set_limit(&self, percent: u32) -> Result<ChargeCapCapability, String> {
+        let mut limit = self.limit.lock().unwrap();
+        let Some(limit) = limit.as_mut() else {
+            return Err("this machine's pack has no charge limit".into());
+        };
+        if !limit.choices.contains(&percent) {
+            return Err(format!("the pack offers no {percent}% limit"));
+        }
+        self.writes.lock().unwrap().push(percent);
+        limit.current = percent;
+        Ok(limit.clone())
+    }
+}
+
+#[test]
+fn the_charge_limit_is_read_and_set_where_the_pack_offers_it() {
+    use tilo_power_mgmt::sysfs::ChargeCapBackend;
+
+    let link = PowerLink::over(quiet(), std::sync::Arc::new(Pack::offering(80)));
+    let mut service = SessionPower::without_daemons(link.clone()).expect("service");
+    let battery = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == BATTERY)
+        .expect("the battery resource");
+    assert!(
+        battery
+            .actions
+            .iter()
+            .any(|spec| spec.id == "set-charge-limit"),
+        "the cap is an action of the battery: {:?}",
+        battery
+            .actions
+            .iter()
+            .map(|spec| spec.id.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    let reading = service.read(BATTERY).expect("a reading");
+    assert_eq!(reading["charge_limit"]["current"], 80, "{reading}");
+    assert_eq!(
+        reading["charge_limit"]["backend"], "PowerSupply",
+        "{reading}"
+    );
+    assert_eq!(
+        link.battery().charge_limit,
+        Some(ChargeCapCapability {
+            backend: ChargeCapBackend::PowerSupply,
+            current: 80,
+            choices: vec![60, 70, 80, 90, 100],
+            supports_start_threshold: false,
+        })
+    );
+
+    let Value::Object(arguments) = serde_json::json!({ "percent": 60 }) else {
+        panic!("arguments are an object")
+    };
+    let Started::Done(output) = service
+        .invoke(BATTERY, "set-charge-limit", &arguments)
+        .expect("the cap is set")
+    else {
+        panic!("a cap answers at once")
+    };
+    assert_eq!(
+        output.value.as_ref().and_then(|value| value.get("current")),
+        Some(&Value::from(60))
+    );
+    assert_eq!(
+        service.read(BATTERY).expect("a reading")["charge_limit"]["current"],
+        60,
+        "the reading is what the pack now holds"
+    );
+    let Value::Object(odd) = serde_json::json!({ "percent": 55 }) else {
+        panic!("arguments are an object")
+    };
+    assert!(
+        service.invoke(BATTERY, "set-charge-limit", &odd).is_err(),
+        "a value the driver does not offer is refused with why"
+    );
+}
+
+#[test]
+fn a_machine_whose_pack_offers_no_limit_says_so() {
+    let link = PowerLink::over(quiet(), std::sync::Arc::new(Pack::default()));
+    let mut service = SessionPower::without_daemons(link).expect("service");
+    assert_eq!(
+        service.read(BATTERY).expect("a reading")["charge_limit"],
+        Value::Null
+    );
+    let Value::Object(arguments) = serde_json::json!({ "percent": 80 }) else {
+        panic!("arguments are an object")
+    };
+    let refused = service
+        .invoke(BATTERY, "set-charge-limit", &arguments)
+        .expect_err("no pack, no limit");
+    assert!(
+        format!("{refused:?}").contains("no charge limit"),
+        "{refused:?}"
+    );
 }

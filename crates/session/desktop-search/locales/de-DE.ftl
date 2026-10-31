@@ -1,5 +1,6 @@
 # What desktop search says of the answers it works out and the web searches
 # it offers.
+search-placeholder = Apps, Fenster, Dokumente und Aktionen durchsuchen…
 search-kind-answers = Antworten
 search-kind-web = Web
 search-kind-websites = Websites
@@ -16,6 +17,9 @@ search-kind-people = Personen
 search-kind-jobs = Läuft
 search-kind-continue = Weitermachen
 search-kind-waiting = Wartet auf dich
+search-record-in-this-workspace = in diesem Arbeitsbereich
+search-record-in-workspace = in { $workspace }
+search-record-in-another-workspace = in einem anderen Arbeitsbereich
 search-continue-on-device = Auf { $device }
 search-catalogue-from = Aus { $registry } holen
 search-catalogue-flathub = Flathub, im Store ansehen
@@ -32,3 +36,34 @@ search-job-reported-completed = { $phase } ({ $completed } fertig)
 search-job-reported-total = { $phase } (von { $total })
 search-job-cancel = { $name } abbrechen
 search-job-cancel-detail = Bittet die App, aufzuhören
+search-scope-workspace = Arbeitsbereich
+search-launcher-widen = In allen Arbeitsbereichen suchen
+search-source-switches = Suchquellen
+search-source-keywords = suche quelle quellen deaktivieren aktivieren
+search-source-enable = { $source } in der Suche aktivieren
+search-source-enable-detail = Ergebnisse von { $source } in der Suche zeigen
+search-source-disable = { $source } in der Suche deaktivieren
+search-source-disable-detail = Ergebnisse von { $source } aus der Suche ausblenden
+search-source-badge-on = AN
+search-source-badge-off = AUS
+search-source-apps = Apps
+search-source-windows = Fenster
+search-source-commands = Desktop-Befehle
+search-source-app-actions = Aktionen in offenen Apps
+search-source-published-actions = Von Apps veröffentlichte Aktionen
+search-source-app-content = Was Apps enthalten
+search-source-recent = Zuletzt
+search-source-store = Store
+search-source-host-apps = Apps auf diesem Gerät
+search-source-files = Dateien
+search-source-records = Datensätze
+search-source-jobs = Laufende Aufgaben
+search-continue-in-workspace = in { $workspace }
+search-continue-in-another-workspace = in einem anderen Arbeitsbereich
+# What the person downloaded: the programs in their apps and the ones running
+# now that no app directory lists yet.
+search-downloaded-appimage = AppImage
+search-downloaded-program = Programm
+search-downloaded-missing = Diese App ist nicht auffindbar
+search-downloaded-locate = { $name } suchen
+search-downloaded-add = { $name } zu den Apps hinzufügen

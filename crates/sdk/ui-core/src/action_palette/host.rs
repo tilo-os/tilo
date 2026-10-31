@@ -641,12 +641,14 @@ impl ActionPalette {
     }
 
     /// What the empty list says: searching, nothing yet, or no match for the
-    /// query with what to try instead.
+    /// query with what to try instead. What to try instead belongs to a query
+    /// that matched nothing: a card with nothing typed yet says what it holds
+    /// instead, never how to spell.
     fn sync_empty_state(&mut self) {
         self.results.set_empty_text(self.empty_results_title());
-        self.results.set_empty_hint(
-            (!self.is_searching()).then(|| crate::i18n!("palette-no-results-hint")),
-        );
+        let nothing_matched = !self.is_searching() && !self.query().trim().is_empty();
+        self.results
+            .set_empty_hint(nothing_matched.then(|| crate::i18n!("palette-no-results-hint")));
     }
 
     fn is_searching(&self) -> bool {

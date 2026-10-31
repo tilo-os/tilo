@@ -25,7 +25,14 @@
 //! ([`env`]) — is passed in as data, so a plan is assertable without a
 //! process appearing. [`spawner`] is the part that does start something, and
 //! reports how it ended so a crash can be told from a normal exit.
+//!
+//! [`downloaded`] is the other side of the same coin: a program the person
+//! downloaded has no entry until they add one, so the registry follows its
+//! windows, offers it, and keeps the entry Tilo writes for it — one session
+//! resource the search and the app sheets read.
 
+pub mod doors;
+pub mod downloaded;
 pub mod env;
 pub mod instance;
 pub mod launch;
@@ -34,9 +41,10 @@ pub mod room;
 pub mod routing;
 pub mod spawner;
 
+pub use doors::{Connects, Doors, HeldDoor, Routed, StartAlone, WindowConnections};
 pub use env::SessionEnvironment;
 pub use instance::{Answer, Instance, Shown, Windows};
 pub use launch::{Launch, Open};
 pub use plan::{Kind, PlanContext, PlanError, Planned};
 pub use room::Room;
-pub use spawner::{End, Event, Spawner, Started};
+pub use spawner::{Cause, End, Event, Spawner, Started};

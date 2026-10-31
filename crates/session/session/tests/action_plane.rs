@@ -1,6 +1,7 @@
 //! An app process reads, watches and invokes what the session's services
 //! publish, over the one wire it already speaks to the session: the socket
-//! the launcher names the app on, for the sound service's `sound` resource.
+//! the launcher names the app on, for the sound service's `sound` resource
+//! and the crash records Settings lists.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -19,8 +20,10 @@ use media::audio::{AudioDevice, AudioGraph, GraphControl};
 use runtime_collab::CollabClient;
 use runtime_collab::wire::Receipt;
 use serde_json::{Map, Value, json};
+use tilo_actions::remote::crash_records::{self as wire, CrashKind, CrashRecord, CrashRecordText};
 use tilo_audio_service::sound::{Graph, SoundService};
 use tilo_compositor::OutputConfig;
+use tilo_crash_records::CrashRecords;
 use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Options, Service, Session};
 
@@ -77,28 +80,14 @@ impl GraphControl for Card {
     }
 }
 
-/// The session the app talks to: headless, with the sound service hosting a
-/// card in memory, and the plane on a socket of its own.
-fn session(socket: &std::path::Path) -> Session {
+/// The session the app talks to: headless, hosting the services `services`
+/// makes for its loop, and the plane on a socket of its own.
+fn session_hosting(
+    socket: &std::path::Path,
+    services: impl FnOnce(&LoopWake) -> Vec<Box<dyn Service>>,
+) -> Session {
     let wake = LoopWake::default();
-    let card: Arc<dyn Graph> = Arc::new(Card {
-        graph: Mutex::new(AudioGraph {
-            sinks: vec![AudioDevice {
-                id: 40,
-                serial: 40,
-                name: "node-40".into(),
-                description: "Speakers".into(),
-                is_default: true,
-                volume: Some(0.4),
-                muted: Some(false),
-                channels: 2,
-                codec: None,
-            }],
-            ..AudioGraph::default()
-        }),
-    });
-    let sound = SoundService::new(card, Some(wake.handle())).expect("a sound service");
-    let services: Vec<Box<dyn Service>> = vec![Box::new(sound)];
+    let services = services(&wake);
     // The app speaks from this test's own process, so the launch the session
     // would have recorded for it names that process: what the broker admits
     // the connection by.
@@ -117,6 +106,31 @@ fn session(socket: &std::path::Path) -> Session {
         &[OutputConfig::new("HEADLESS-1", 1280, 720)],
     )
     .expect("session")
+}
+
+/// The session the app talks to: hosting the sound service, over a card in
+/// memory.
+fn session(socket: &std::path::Path) -> Session {
+    session_hosting(socket, |wake| {
+        let card: Arc<dyn Graph> = Arc::new(Card {
+            graph: Mutex::new(AudioGraph {
+                sinks: vec![AudioDevice {
+                    id: 40,
+                    serial: 40,
+                    name: "node-40".into(),
+                    description: "Speakers".into(),
+                    is_default: true,
+                    volume: Some(0.4),
+                    muted: Some(false),
+                    channels: 2,
+                    codec: None,
+                }],
+                ..AudioGraph::default()
+            }),
+        });
+        let sound = SoundService::new(card, Some(wake.handle())).expect("a sound service");
+        vec![Box::new(sound)]
+    })
 }
 
 /// What the app saw, in the order it saw it.
@@ -195,7 +209,7 @@ fn app(socket: &std::path::Path, seen: &std::sync::mpsc::Sender<Seen>) {
 }
 
 /// The session's pass until the app is done, as the session runs its loop.
-fn until_the_app_is_done(session: &mut Session, seen: &std::sync::mpsc::Receiver<Seen>) -> Seen {
+fn until_the_app_is_done<T>(session: &mut Session, seen: &std::sync::mpsc::Receiver<T>) -> T {
     for _ in 0..4000 {
         session.settle_services();
         session.step(std::time::Duration::from_millis(1)).unwrap();
@@ -362,4 +376,103 @@ fn an_app_that_invokes_what_the_session_cannot_do_is_told_why() {
         }
         other => panic!("a volume of \"loud\" is refused: {other:?}"),
     }
+}
+
+/// The record of a desktop that stopped responding, as the crash log
+/// writes it.
+const FREEZE: &str = "2026-10-24-225201-412-freeze.log";
+const FREEZE_STACK: &str = "Mutex::lock_contended";
+const FREEZE_RECORD: &str = "tilo session freeze\n===================\n\
+    version:   0.1.0\nbuild-id:  9f2c41d07be3a65e\nthread:    412\n\n\
+    thread 415 stack marker: Mutex::lock_contended\n";
+
+/// A private crash directory holding one record.
+fn crash_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("a directory to keep the records in");
+    tilo_files::native::private::directory(dir.path()).expect("a private crash directory");
+    tilo_crash_records::write_record(dir.path(), FREEZE, FREEZE_RECORD)
+        .expect("the record is written");
+    dir
+}
+
+/// Settings lists the records the session publishes and reads one, over the
+/// session's own broker: what each is without its stack, and the stack of
+/// the record it names.
+#[test]
+fn the_settings_app_lists_and_reads_a_crash_record_the_session_publishes() {
+    let root = private_home();
+    let socket = root.path().join("collab.sock");
+    let records = crash_dir();
+    let dir = records.path().to_path_buf();
+    let mut session = session_hosting(&socket, move |_| vec![Box::new(CrashRecords::in_dir(&dir))]);
+
+    let (seen, received) = std::sync::mpsc::channel();
+    let app = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime for the app");
+        let (listed, read) = runtime.block_on(async {
+            let mut stream =
+                std::os::unix::net::UnixStream::connect(&socket).expect("the plane's socket");
+            launcher::services::write_collab_handoff(
+                &mut stream,
+                "so.tilo.settings",
+                "the-workspace",
+            )
+            .expect("the launcher names the app on the connection");
+            stream
+                .set_nonblocking(true)
+                .expect("the connection is ready for the runtime");
+            let stream = tokio::net::UnixStream::from_std(stream).expect("a runtime stream");
+            let (reader, writer) = stream.into_split();
+            let (client, carrying) = CollabClient::over(reader, writer);
+            tokio::spawn(carrying);
+            let services = client.services();
+            let listed = services
+                .snapshot(wire::RESOURCE)
+                .await
+                .expect("the session answers a read of the records")
+                .reading
+                .expect("the session publishes the records");
+            let record: Vec<CrashRecord> =
+                serde_json::from_str(&listed).expect("the list is records");
+            let read = services
+                .snapshot(&wire::record(&record[0].id))
+                .await
+                .expect("the session answers a read of one record")
+                .reading
+                .expect("the session publishes each record");
+            (listed, read)
+        });
+        let _ = seen.send((listed, read));
+    });
+    let (listed, read) = until_the_app_is_done(&mut session, &received);
+    app.join().expect("the app's thread");
+
+    let listed: Vec<CrashRecord> = serde_json::from_str(&listed).expect("the list is records");
+    assert_eq!(listed.len(), 1, "{listed:#?}");
+    assert_eq!(listed[0].id, FREEZE);
+    assert_eq!(listed[0].kind, CrashKind::Froze);
+    assert_eq!(
+        listed[0].build.as_deref(),
+        Some("9f2c41d07be3a65e"),
+        "the list names the build that wrote the record"
+    );
+
+    let text: CrashRecordText = serde_json::from_str(&read).expect("a record reads as its text");
+    assert_eq!(text.record, listed[0]);
+    assert!(
+        text.text.contains(FREEZE_STACK),
+        "every thread's stack, on the read of the record it names: {}",
+        text.text
+    );
+    let published = session
+        .read(wire::RESOURCE)
+        .expect("the session publishes the records");
+    assert_eq!(
+        serde_json::from_value::<Vec<CrashRecord>>(published).expect("the list is records"),
+        listed,
+        "and the app read what the session's service publishes"
+    );
 }

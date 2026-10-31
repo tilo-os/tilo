@@ -71,7 +71,10 @@ pub(crate) struct KeepClear {
     pub window: Option<Rect>,
 }
 
-/// Where a card of `size` sits on `output`: `inset` in from one of its corners,
+/// The widest a card's name runs before it is elided.
+const NAME_MAX_WIDTH: f32 = ui::tokens::Layout::BASE.identify_name_width;
+
+/// Where a card of `size` sits on `output`: inset from one of its corners,
 /// the corner whose card `avoid` (the focused window) covers least, the
 /// bottom-left first among equals. Top corners sit below the `top_band`
 /// the top bar takes, so a card never covers it.
@@ -314,13 +317,9 @@ impl DisplayIdentify {
         for label in labels {
             let number = label.number.to_string();
             let (nw, nh) = text_renderer.measure_style(&number, None, &number_style);
-            // A name runs no wider than the narrowest panel before it is
-            // elided.
-            let name = text_renderer.elide_to_width_style(
-                &label.name,
-                theme.tokens.metrics.panel_min_width,
-                &name_style,
-            );
+            // A name runs no wider than the layout's identify width before
+            // it is elided.
+            let name = text_renderer.elide_to_width_style(&label.name, NAME_MAX_WIDTH, &name_style);
             let (lw, lh) = text_renderer.measure_style(&name, None, &name_style);
             let size = (
                 pad_x + f64::from(nw) + gap + f64::from(lw) + pad_x,

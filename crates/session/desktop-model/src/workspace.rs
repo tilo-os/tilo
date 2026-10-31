@@ -106,6 +106,12 @@ pub struct Workspace {
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
     #[serde(default)]
     pub shared_surfaces: SharedSurfaces,
+    /// The windows closed here and not reopened, newest last
+    /// ([`crate::closed_tabs`]). This device's own history, so it is written
+    /// to no document and projected into no room: a close is undone where
+    /// the person closed it, with the app this device opens.
+    #[serde(skip)]
+    pub(crate) closed_tabs: crate::closed_tabs::ClosedTabs,
     /// The fields a stored workspace holds that this one does not read (the
     /// shell engine's tasks among them), kept exactly as they were: saving
     /// the workspace again leaves them in place, and nothing is migrated.
@@ -185,6 +191,7 @@ impl From<StoredWorkspace> for Workspace {
             schedule_claims: stored.schedule_claims,
             bots: Vec::new(),
             shared_surfaces: stored.shared_surfaces,
+            closed_tabs: crate::closed_tabs::ClosedTabs::default(),
             retired_fields,
         }
     }
@@ -1103,6 +1110,7 @@ impl Workspace {
             schedule_claims: Vec::new(),
             bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
+            closed_tabs: crate::closed_tabs::ClosedTabs::default(),
             retired_fields: serde_json::Map::new(),
         }
     }
@@ -1135,6 +1143,7 @@ impl Workspace {
             schedule_claims: _,
             bots,
             shared_surfaces,
+            closed_tabs: _,
             retired_fields: _,
         } = self;
         Self {
@@ -1156,6 +1165,7 @@ impl Workspace {
             schedule_claims: Vec::new(),
             bots: bots.clone(),
             shared_surfaces: shared_surfaces.clone(),
+            closed_tabs: crate::closed_tabs::ClosedTabs::default(),
             retired_fields: serde_json::Map::new(),
         }
     }
@@ -1219,6 +1229,7 @@ impl Default for Workspace {
             schedule_claims: Vec::new(),
             bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
+            closed_tabs: crate::closed_tabs::ClosedTabs::default(),
             retired_fields: serde_json::Map::new(),
         }
     }

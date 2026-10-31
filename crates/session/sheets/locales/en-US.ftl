@@ -23,6 +23,9 @@ power-not-offered-power = This window cannot change the computer's power
 
 display-confirm-keep = Keep
 display-confirm-revert = Revert
+display-confirm-countdown = Reverting in { $seconds } s
+display-confirm-applying = Applying…
+display-confirm-answer-pending = Saving the display answer…
 display-confirm-tool-title = Keep the display change from { $tool }?
 display-confirm-tool-unknown-title = Keep this display change?
 display-confirm-always = Keep, and don't ask again for { $tool }
@@ -75,6 +78,17 @@ guide-reopen-hint = Select a navigation shortcut to change it
 guide-done = Done
 guide-press-new-shortcut = Press a new shortcut for “{ $action }”
 guide-listening-cancel = Cancel
+guide-message-esc-cancels = { $message }; Esc cancels
+guide-rebind-needs-modifier = Add Super, Ctrl, Alt or Shift to printable keys.
+guide-rebind-in-use = Already used for “{ $action }”. Press another shortcut.
+guide-rebind-reserved = F1 and Print Screen are reserved by the desktop.
+guide-rebind-unsupported = That shortcut is not supported. Press another shortcut.
+guide-rebind-taken-by-action = Already used to run an action. Press another shortcut.
+guide-rebind-save-failed = Could not save that shortcut. Press another shortcut.
+guide-reset-in-use = A default is already used for “{ $action }”. Change that shortcut first.
+guide-reset-taken-by-action = A default now runs an action. Change that shortcut first.
+guide-reset-invalid = Could not restore the default shortcuts.
+guide-reset-save-failed = Could not restore the defaults.
 guide-navigation-heading = Edit navigation shortcuts
 guide-essentials-heading = Desktop essentials
 guide-group-windows = Windows and workspaces
@@ -106,6 +120,56 @@ guide-touch-open-overview = Open overview
 guide-touch-close-overview = Close overview
 guide-reset = Reset to default
 
+## What the keyboard's navigation rows move, and what else to know: windows,
+## tabs, strips and workspaces read as the controller rows above name them
+guide-row-move-tab = Move tab
+guide-row-maximize = Maximize or restore
+guide-row-move-group = Move group
+guide-row-resize = Resize
+guide-row-move-group-strip = Move group to strip
+guide-unassigned = Unassigned
+guide-unassigned-inline = unassigned
+guide-strip-jump = Go straight to a strip with { $first } … { $last }; strip 1 is the top one
+guide-app-tab-chords = { $next }, { $previous } and { $reopen } go to the app first; the desktop’s tab shortcuts here always work
+guide-your-shortcuts = Your shortcuts: { $shortcuts }
+
+## The catalogue's shortcut names, which the guide lists
+shortcut-name-focus-previous-window = Focus previous window
+shortcut-name-focus-next-window = Focus next window
+shortcut-name-previous-tab = Previous tab
+shortcut-name-next-tab = Next tab
+shortcut-name-attach-tab-left = Move tab into group on left
+shortcut-name-attach-tab-right = Move tab into group on right
+shortcut-name-maximize-window = Maximize window
+shortcut-name-restore-window = Restore window
+shortcut-name-previous-strip = Strip above
+shortcut-name-next-strip = Strip below
+shortcut-name-previous-workspace = Previous workspace
+shortcut-name-next-workspace = Next workspace
+shortcut-name-move-group-left = Move group left
+shortcut-name-move-group-right = Move group right
+shortcut-name-resize-narrower = Make window narrower
+shortcut-name-resize-wider = Make window wider
+shortcut-name-move-group-to-previous-strip = Move group to strip above
+shortcut-name-move-group-to-next-strip = Move group to strip below
+shortcut-name-reopen-closed-tab = Reopen closed tab
+shortcut-name-search = Search everywhere
+shortcut-name-emoji-picker = Emoji
+shortcut-name-workspace-overview = Overview
+shortcut-name-quick-settings = Quick Settings
+shortcut-name-lock = Lock screen
+shortcut-switch-windows = Switch windows
+shortcut-close-tab = Close tab
+shortcut-new-window = New window
+shortcut-duplicate-tab = New tab of this app
+shortcut-strip-switcher = Strip switcher
+shortcut-screenshot = Screenshot
+shortcut-display-layout = Display layout
+shortcut-capture-screenshot = Capture screenshot
+shortcut-open-terminal = Open terminal
+shortcut-picture-in-picture = Picture in picture
+shortcut-save-recent-replay = Save recent replay
+
 ## Public workspaces
 
 directory-title = Join a workspace
@@ -121,6 +185,23 @@ directory-joining = Joining…
 directory-join-named = Join { $name }
 directory-open-named = Open { $name }
 directory-try-again = Try again
+directory-community-tag = { $host }'s own
+directory-already-joining = You're already joining { $name }. It opens as soon as it's ready.
+directory-join-failed = Couldn't join { $name }: { $error }
+directory-join-failed-line = Didn't join: { $error }
+directory-here-now = { $count } here now
+directory-active-today = Active today
+directory-active-week = Active this week
+directory-quiet = Quiet lately
+directory-members = { $count ->
+    [one] 1 member
+   *[other] { $count } members
+}
+directory-joins-as = You join as { $role }
+directory-role-viewer = a viewer
+directory-role-commenter = a commenter
+directory-role-editor = an editor
+directory-role-moderator = a moderator
 
 ## Display sheet
 display-sheet-title = Display

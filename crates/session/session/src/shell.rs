@@ -47,6 +47,8 @@ fn band() -> u32 {
 /// The shell's bar on the session, and what feeds it.
 pub(crate) struct Shell {
     desk: Desk,
+    /// The due timer ids announced already, so an unchanged one is announced once.
+    announced: std::cell::RefCell<std::collections::BTreeSet<String>>,
     link: Rc<SessionLink>,
     /// What the desk's reading was last made from.
     seen: Option<crate::desk::DeskKey>,
@@ -80,12 +82,21 @@ impl Shell {
         doors.add(Rc::clone(&part) as tilo_surface_host::Shared);
         let mut shell = Self {
             desk,
+            announced: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             link,
             seen: None,
             part,
         };
         shell.publish();
         Ok(shell)
+    }
+
+    /// A timer Clocks says came due that the bar has not announced: its id, and what to say
+    /// in the app's own words. Each id is announced once.
+    pub(crate) fn new_due_timer(&self) -> Option<(String, String, String)> {
+        let (id, title, body) = self.desk.due_timer()?;
+        let mut announced = self.announced.borrow_mut();
+        announced.insert(id.clone()).then_some((id, title, body))
     }
 
     /// Hand the shell the desk when what it is made from changed. Whether it did.

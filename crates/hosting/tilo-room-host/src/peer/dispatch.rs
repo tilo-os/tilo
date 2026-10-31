@@ -4,11 +4,12 @@
 
 use super::{
     Arc, AuthenticatedPeer, Envelope, EnvelopeV2, PeerError, RemoteActionRoute, ReplayCatchup,
-    ReplayHandle, ReplayTicket, SessionCtx, Subscription, enable_actions, enable_broker_client,
-    handle_commit, handle_compaction, handle_delta, handle_host_action, handle_host_hello,
-    handle_live, handle_live_join, handle_live_leave, handle_open_record, handle_presence,
-    handle_remote_action, handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice,
-    register_broker, route_private, route_record_content, route_signed_directed,
+    ReplayHandle, ReplayTicket, SessionCtx, Subscription, UNSIGNED_DELIVERY_REFUSAL,
+    enable_actions, enable_broker_client, handle_commit, handle_compaction, handle_delta,
+    handle_host_action, handle_host_hello, handle_live, handle_live_join, handle_live_leave,
+    handle_open_record, handle_presence, handle_remote_action, handle_subscribe,
+    handle_sync_request, handle_unsubscribe, handle_voice, register_broker, route_record_content,
+    route_signed_directed,
 };
 #[cfg(test)]
 use super::{ReplayWrite, finish_replay_write, mpsc};
@@ -184,13 +185,15 @@ pub(super) async fn handle_private(
         EnvelopeV2::RegisterBroker { room, host } => {
             register_broker(room, host, peer, session).await
         }
-        EnvelopeV2::Directed(action) => {
-            let reason = route_private(&action, peer, session).await?;
-            Ok(reason.map(|reason| EnvelopeV2::unavailable(&action, reason)))
-        }
         EnvelopeV2::SignedDirected(signed) => route_signed_directed(&signed, peer, session).await,
-        // Peers may send private results only inside a source-bound Directed
-        // frame. Relay control responses can never be forged by a peer.
+        // An unsigned delivery, in its retired shape or any other, is
+        // refused rather than routed: the host has no device signature to
+        // attribute the action to.
+        frame if frame.retired_unsigned_action().is_some() => {
+            Err(PeerError::Protocol(UNSIGNED_DELIVERY_REFUSAL.into()))
+        }
+        // Peers may send private results only inside an action their device
+        // signed. Relay control responses can never be forged by a peer.
         _ => Err(PeerError::Protocol(
             "unexpected private control frame".into(),
         )),

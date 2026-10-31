@@ -33,6 +33,9 @@ pub enum ActionSignatureError {
     /// The issue time is outside [`ACTION_SIGNATURE_TOLERANCE_NS`] of now.
     #[error("the signed action is outside its freshness window")]
     Stale,
+    /// The source device's signer failed, or returned no valid signature.
+    #[error("the source device's signer failed")]
+    Signer,
     /// The same signed action was already admitted within its window.
     #[error("the signed action was already admitted")]
     Replayed,
@@ -46,6 +49,7 @@ impl ActionSignatureError {
     pub const fn code(self) -> &'static str {
         match self {
             Self::Encoding | Self::Signature | Self::Source => "action_signature_invalid",
+            Self::Signer => "action_signer_failed",
             Self::Stale => "action_stale",
             Self::Replayed => "action_replayed",
             Self::ReplayCapacity => "action_replay_capacity",
@@ -124,22 +128,46 @@ impl SignedDirectedAction {
         issued_at_ns: u64,
         device: &ed25519_dalek::SigningKey,
     ) -> Result<Self, ActionSignatureError> {
-        if action.source != device.verifying_key().to_bytes() {
-            return Err(ActionSignatureError::Source);
-        }
-        let encoded = postcard::to_allocvec(action).map_err(|_| ActionSignatureError::Encoding)?;
-        if encoded.len() > MAX_PRIVATE_BYTES {
-            return Err(ActionSignatureError::Encoding);
-        }
-        let signature =
-            ed25519_dalek::Signer::sign(device, &signing_message(issued_at_ns, &encoded))
-                .to_bytes();
+        let (encoded, message) =
+            statement(action, issued_at_ns, &device.verifying_key().to_bytes())?;
+        let signature = ed25519_dalek::Signer::sign(device, &message).to_bytes();
         Ok(Self {
             action: action.clone(),
             encoded,
             issued_at_ns,
             signature,
         })
+    }
+
+    /// [`Self::sign`] with a device key held by `signer`, for a device that
+    /// cannot hand over the key bytes (a browser's non-extractable key).
+    /// The signed bytes are the same.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::sign`], and [`ActionSignatureError::Signer`] when the
+    /// signer fails or its signature does not verify.
+    pub async fn sign_with(
+        action: &DirectedAction,
+        issued_at_ns: u64,
+        signer: &dyn tilo_relay_client::DeviceSigner,
+    ) -> Result<Self, ActionSignatureError> {
+        let device = signer.device_public_key();
+        let (encoded, message) = statement(action, issued_at_ns, &device)?;
+        let signature = signer
+            .sign(message)
+            .await
+            .map_err(|_| ActionSignatureError::Signer)?;
+        let produced = Self {
+            action: action.clone(),
+            encoded,
+            issued_at_ns,
+            signature,
+        };
+        produced
+            .verify(&device)
+            .map_err(|_| ActionSignatureError::Signer)?;
+        Ok(produced)
     }
 
     /// The action as claimed. Trust it only after [`Self::verify`].
@@ -188,6 +216,23 @@ impl SignedDirectedAction {
     fn replay_key(&self) -> [u8; 32] {
         *blake3::hash(&signing_message(self.issued_at_ns, &self.encoded)).as_bytes()
     }
+}
+
+/// The encoded action and the message its source device signs over it.
+fn statement(
+    action: &DirectedAction,
+    issued_at_ns: u64,
+    device_public_key: &[u8; 32],
+) -> Result<(Vec<u8>, Vec<u8>), ActionSignatureError> {
+    if action.source != *device_public_key {
+        return Err(ActionSignatureError::Source);
+    }
+    let encoded = postcard::to_allocvec(action).map_err(|_| ActionSignatureError::Encoding)?;
+    if encoded.len() > MAX_PRIVATE_BYTES {
+        return Err(ActionSignatureError::Encoding);
+    }
+    let message = signing_message(issued_at_ns, &encoded);
+    Ok((encoded, message))
 }
 
 fn signing_message(issued_at_ns: u64, encoded: &[u8]) -> Vec<u8> {

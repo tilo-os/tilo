@@ -88,10 +88,10 @@ fn start_wm(
     }
     // The session's own connection to the X server: it reads what a window
     // says about its program, gives X input focus and tells X clients how
-    // dense the display is.
+    // dense the display is and which pointer to draw.
     match crate::x11_windows::X11Windows::connect(display, client) {
         Ok(mut x11) => {
-            x11.publish_scale(&mut data.state);
+            x11.publish_x_hints(&mut data.state);
             data.x11_windows = Some(x11);
         }
         Err(error) => tracing::warn!(%error, "X11 windows have no identity"),

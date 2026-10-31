@@ -330,6 +330,16 @@ impl SearchResultsView {
         self.empty_text = text.into();
     }
 
+    /// The line shown while there are no results.
+    pub(crate) fn empty_text(&self) -> &str {
+        &self.empty_text
+    }
+
+    /// What to try instead, under that line.
+    pub(crate) fn empty_hint(&self) -> Option<&str> {
+        self.empty_hint.as_deref()
+    }
+
     /// Give the overlay a stable test id so scenarios can resolve it.
     #[must_use]
     pub fn with_test_id(mut self, id: impl Into<String>) -> Self {

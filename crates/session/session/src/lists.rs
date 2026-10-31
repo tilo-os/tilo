@@ -56,10 +56,14 @@ impl AppLists {
         // first read starts: what later asks for an entry's icon or name on
         // the loop (`crate::app_icons::entry_icon`) finds it read already.
         let scan = desktop_entry::cache::cached_scan();
+        // The entries Tilo keeps for the person's downloaded programs are
+        // search's own source (`providers::downloaded`): it lists them with
+        // what the registry knows of them (their kind, and a file that went
+        // away), which a host app row says nothing of.
         let host_apps = scan
             .entries
             .iter()
-            .filter(|entry| !entry.no_display && !entry.hidden)
+            .filter(|entry| !entry.no_display && !entry.hidden && entry.downloaded.is_none())
             .map(|entry| HostAppEntry {
                 desktop_id: entry.id.clone(),
                 name: entry.name.clone(),

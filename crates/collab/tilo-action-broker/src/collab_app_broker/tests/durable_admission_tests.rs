@@ -75,8 +75,7 @@ fn durable_fixture(
             SigningKey::from_bytes(&[53; 32]).verifying_key().to_bytes(),
         ])),
     );
-    let mut action =
-        published_directory_action(&fixture.directory_state.borrow().row()).unwrap();
+    let mut action = published_directory_action(&fixture.directory_state.borrow().row()).unwrap();
     action.operation_kind = tilo_actions::OperationKind::Effect;
     action.contract = tilo_actions::ActionContract {
         execution: tilo_actions::ExecutionMode::Background { cancellable: true },
@@ -223,10 +222,9 @@ async fn a_delegated_callers_continuation_passes_reverification_and_others_do_no
             );
             // A retry under another agent's admission is a different
             // invocation: it never joins this one's record or delivery.
-            let retried =
-                fixture
-                    .state
-                    .start_verified_invocation(&other_agent, &request, None);
+            let retried = fixture
+                .state
+                .start_verified_invocation(&other_agent, &request, None);
             if let Ok(retried) = &retried {
                 assert_ne!(retried.key, started.key);
             }
@@ -369,8 +367,7 @@ async fn invocation_journal_uuid_collisions_never_reach_application_stream() {
                     )
                     .unwrap();
                 if scenario == "caller-before-legacy" {
-                    request.invocation =
-                        tilo_actions::InvocationId(uuid::Uuid::from_u128(2));
+                    request.invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(2));
                 }
                 let wire_id = if scenario == "legacy-before-caller" {
                     let job = fixture
@@ -383,9 +380,8 @@ async fn invocation_journal_uuid_collisions_never_reach_application_stream() {
                             &caller.admitted.principal_id,
                         )
                         .unwrap();
-                    request.invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(
-                        u128::from(job.id),
-                    ));
+                    request.invocation =
+                        tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(job.id)));
                     job.id
                 } else {
                     fixture
@@ -469,8 +465,7 @@ async fn invocation_journal_uuid_collisions_never_reach_application_stream() {
                 let gone = Arc::downgrade(&fixture.state);
                 drop(fixture);
                 broker_gone(gone).await;
-                let (mut reopened, _, mut again) =
-                    durable_fixture(root.path(), Some(membership));
+                let (mut reopened, _, mut again) = durable_fixture(root.path(), Some(membership));
                 again.invocation = request.invocation;
                 assert!(
                     reopened
@@ -491,7 +486,7 @@ async fn invocation_journal_uuid_collisions_never_reach_application_stream() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn invocation_journal_real_effect_once_across_concurrent_duplicate_response_loss_and_restart()
- {
+{
     tokio::task::LocalSet::new()
         .run_until(async {
             let root = tempfile::tempdir().unwrap();
@@ -555,9 +550,7 @@ async fn invocation_journal_real_effect_once_across_concurrent_duplicate_respons
             let terminal = tilo_actions::InvocationUpdate::Succeeded {
                 invocation: request.invocation,
                 output: tilo_actions::ActionOutput {
-                    value: Some(
-                        serde_json::json!({"counter":1,"private":"private-result-token"}),
-                    ),
+                    value: Some(serde_json::json!({"counter":1,"private":"private-result-token"})),
                     resources: vec![],
                 },
             };
@@ -660,8 +653,7 @@ async fn invocation_journal_crash_boundaries_never_repeat_real_effect() {
 }
 
 #[test]
-fn invocation_journal_owner_is_device_scoped_and_live_authority_precedes_duplicate_disclosure()
- {
+fn invocation_journal_owner_is_device_scoped_and_live_authority_precedes_duplicate_disclosure() {
     let root = tempfile::tempdir().unwrap();
     let (mut fixture, caller, request) = durable_fixture(root.path(), None);
     fixture
@@ -805,13 +797,14 @@ fn invocation_journal_old_apps_wrong_rooms_and_silence_fail_safely() {
         // does not assert that the running external effect stopped.
         use tilo_delivery_protocol::{
             peer_actions::{ActionMessage, DirectedAction},
-            transport_v2::{self, EnvelopeV2},
+            transport_v2,
         };
+        let host = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
         let cancel = DirectedAction {
             room: uuid::Uuid::parse_str(&caller.room).unwrap(),
             request_id: uuid::Uuid::new_v4(),
             source: [52; 32],
-            target: [51; 32],
+            target: host.verifying_key().to_bytes(),
             message: ActionMessage::Cancel {
                 invocation: request.invocation,
             },
@@ -836,9 +829,16 @@ fn invocation_journal_old_apps_wrong_rooms_and_silence_fail_safely() {
                 },
             }
         );
-        // And it survives the private lane the relay carries.
+        // And it survives the private lane the relay carries, signed.
         assert!(cancel.validate() && acknowledgement.validate());
-        let reply = EnvelopeV2::Directed(acknowledgement);
+        let reply = transport_v2::EnvelopeV2::SignedDirected(
+            tilo_delivery_protocol::peer_actions::SignedDirectedAction::sign(
+                &acknowledgement,
+                tilo_clock::unix_now_ns(),
+                &host,
+            )
+            .unwrap(),
+        );
         let encoded = transport_v2::encode(&reply).unwrap();
         assert_eq!(transport_v2::decode(&encoded[4..]).unwrap(), reply);
         if disconnected {
@@ -932,12 +932,8 @@ async fn the_host_learns_each_invocation_an_app_is_handed() {
                 vec![("so.tilo.notes".to_owned(), "room-7".to_owned())]
             );
             assert!(
-                invocation_delivery_notice(
-                    &HostServices::default(),
-                    "a".into(),
-                    "r".into()
-                )
-                .is_none(),
+                invocation_delivery_notice(&HostServices::default(), "a".into(), "r".into())
+                    .is_none(),
                 "a host without a launcher has no one to tell"
             );
         })
@@ -951,24 +947,21 @@ async fn invocation_journal_native_stream_negotiates_uuid_capability_explicitly(
             let root = tempfile::tempdir().unwrap();
             let (fixture, caller, request) = durable_fixture(root.path(), None);
             let (connection, outgoing) = wire::WireConnection::new(None);
-            let handle =
-                connection.open(wire::ChannelSession::new(Rc::new(JoinedChannel {
-                    as_app: None,
-                    person_chat_views: RefCell::default(),
-                    committed_read: Rc::new(RefCell::new(
-                        committed_document::Slot::default(),
-                    )),
-                    state: fixture.state.clone(),
-                    directories: fixture.directories.clone(),
-                    channel_id: fixture.route.channel_key(),
-                    peer_id: fixture.peer_id,
-                    connection_id: fixture.peer_id,
-                    verified_identity: caller.admitted.clone(),
-                    record_kind: None,
-                    route_access: RouteAccess::Own,
-                    lease: None,
-                    _hold: None,
-                })));
+            let handle = connection.open(wire::ChannelSession::new(Rc::new(JoinedChannel {
+                as_app: None,
+                person_chat_views: RefCell::default(),
+                committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
+                state: fixture.state.clone(),
+                directories: fixture.directories.clone(),
+                channel_id: fixture.route.channel_key(),
+                peer_id: fixture.peer_id,
+                connection_id: fixture.peer_id,
+                verified_identity: caller.admitted.clone(),
+                record_kind: None,
+                route_access: RouteAccess::Own,
+                lease: None,
+                _hold: None,
+            })));
             let app = wire_client(connection, outgoing);
             let _legacy = app
                 .wire()
@@ -1001,8 +994,7 @@ async fn invocation_journal_native_stream_negotiates_uuid_capability_explicitly(
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn invocation_journal_invalid_updates_never_persist_and_legacy_completion_still_works()
- {
+async fn invocation_journal_invalid_updates_never_persist_and_legacy_completion_still_works() {
     tokio::task::LocalSet::new().run_until(async {
         let root = tempfile::tempdir().unwrap();
         let (mut fixture, caller, request) = durable_fixture(root.path(), None);
@@ -1118,13 +1110,10 @@ async fn a_completion_waiting_for_a_slow_disk_leaves_the_broker_loop_answering()
                 "nobody hears of the outcome before it is durable"
             );
             release.send(()).unwrap();
-            tilo_test_env::within(
-                "the completion to finish once its write goes",
-                completing,
-            )
-            .await
-            .unwrap()
-            .unwrap();
+            tilo_test_env::within("the completion to finish once its write goes", completing)
+                .await
+                .unwrap()
+                .unwrap();
             assert!(matches!(
                 fixture
                     .state
@@ -1312,9 +1301,9 @@ async fn invocation_journal_confirmation_uuid_and_lifecycle_remain_authoritative
                     &channel,
                     delivered.id,
                     &tilo_actions::InvocationUpdate::Succeeded {
-                        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(
-                            u128::from(delivered.id)
-                        )),
+                        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(
+                            delivered.id
+                        ))),
                         output: tilo_actions::ActionOutput::default()
                     }
                 )

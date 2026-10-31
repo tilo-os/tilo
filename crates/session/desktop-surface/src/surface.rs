@@ -56,6 +56,9 @@ mod personal_ask;
 mod search;
 mod seed;
 mod splice;
+mod tab_beside;
+#[cfg(test)]
+mod tab_beside_tests;
 mod tile_content;
 mod window_bars;
 pub mod window_menu;
@@ -618,6 +621,16 @@ enum RowOp {
         group: GroupId,
         index: usize,
         tab: Tab,
+    },
+    /// A tab opened into a group that is already there, at `index` of its
+    /// tabs, with the tab that ends up in front.
+    TabInGroup {
+        strip: StripId,
+        group: GroupId,
+        index: usize,
+        tab: Tab,
+        front: TabId,
+        background: bool,
     },
     Close {
         strip: StripId,
@@ -1557,6 +1570,16 @@ impl DesktopSurface {
                             });
                         }
                     }
+                    // The window comes back where it was, its app launched
+                    // again if that is what it takes: the row takes it in as
+                    // it takes a window a peer added, and the strip comes to
+                    // it as it does to a launched one.
+                    Admitted::Reopen(workspace) => {
+                        if let Some(reopened) = shared.tree.reopen_closed(workspace) {
+                            self.reveal = Some((reopened.strip, reopened.group));
+                            shared.replaced = true;
+                        }
+                    }
                     Admitted::Strip(workspace, strip) => {
                         shared.tree.active = workspace;
                         shared.tree.active_strip.insert(workspace, strip);
@@ -1566,6 +1589,20 @@ impl DesktopSurface {
                         Some(op) => ops.push(op),
                         None => continue,
                     },
+                    // The tab lands right after the one it was asked to open
+                    // beside, inside its window group.
+                    Admitted::TabOpenBeside(ids, app, background) if live(&shared.tree, ids) => {
+                        match tab_beside::open_tab_beside(
+                            self.tiles.as_mut(),
+                            &mut shared,
+                            ids,
+                            &app,
+                            background,
+                        ) {
+                            Some(op) => ops.push(op),
+                            None => continue,
+                        }
+                    }
                     // Opening search changes no model state.
                     Admitted::Search(query) => {
                         shared.search_request = Some(search::SearchRequest::Open(query));
@@ -1632,6 +1669,14 @@ impl DesktopSurface {
                     index,
                     tab,
                 } => self.open_group(strip, group, index, &tab),
+                RowOp::TabInGroup {
+                    strip,
+                    group,
+                    index,
+                    tab,
+                    front,
+                    background,
+                } => self.insert_tab(strip, group, index, &tab, front, background),
                 RowOp::ToggleMaximized(strip, group_id) => {
                     let restored = self.group_widget(strip, group_id).is_some_and(|group| {
                         group.toggle_maximized();
@@ -2128,7 +2173,7 @@ fn launch(tiles: &mut dyn TileSource, shared: &mut Shared, app: &str) -> Option<
 }
 
 impl DesktopSurface {
-    /// Open `app` as a new tab of window `group` in strip `strip`, focused.
+    /// Open `app` as a tab of window `group` in strip `strip`, focused.
     /// Returns whether it opened.
     fn open_tab_in_group(&mut self, strip: StripId, group: GroupId, app: &str) -> bool {
         let mut shared = self.shared.borrow_mut();

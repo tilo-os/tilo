@@ -6,6 +6,21 @@ app so.tilo.shell "Shell" (icon: .monitor, category: .system)
 type Desk (origin: session.desk) {
     person: Text (title)
     clock: Text
+    /// The timer or stopwatch Clocks runs, by its name: its label, or `Timer` or `Stopwatch`
+    /// when the app named none; empty when none floats.
+    timer: Text
+    /// What the timer reads: what it has left, or what the stopwatch has run.
+    timer_left: Text
+    timer_paused: Bool
+    timer_stopwatch: Bool
+    /// The question the session puts to the person about themselves; empty when none waits.
+    ask: Text
+    /// What answering the question brings.
+    ask_detail: Text
+    /// The question's answer, as its button says it.
+    ask_answer: Text
+    /// Whether the question stands open on the person's avatar.
+    ask_open: Bool
     weekday: Text
     date: Text
     unread: Int
@@ -16,6 +31,8 @@ type Desk (origin: session.desk) {
     workspaces: Collection<Workspace>
     tasks: Collection<Task>
     people: Collection<Person>
+    /// The running applications' tray items, in the order they registered.
+    tray: Collection<TrayItem>
 }
 
 /// A workspace on this device.
@@ -23,6 +40,13 @@ type Workspace (origin: session.workspace) {
     key: Text merge register
     name: Text (title)
     current: Bool
+}
+
+/// A running application's tray item: what the bar shows, and what a press on it reaches.
+type TrayItem (origin: session.tray_item) {
+    key: Text merge register
+    title: Text merge register (title)
+    menu: Bool
 }
 
 /// A task running for the person: an agent's or a script's.
@@ -58,6 +82,14 @@ action strips(d: Desk) (icon: .chevron_right, label: "Strips") {
     outside("session.act", "show-strips")
 }
 
+/// Opens or closes a running application's tray item: its window, or its menu.
+///
+/// The item's key names it; the session reads the same tray, so the action takes the key and
+/// the bar's item is the one it means. Each item's action is its own, so a press names which.
+action open_tray_item(d: Desk, item: TrayItem) (icon: .app_window, label: "Open") {
+    outside("session.tray", item.key)
+}
+
 /// Opens or closes the device's status: quick settings, or the notifications.
 action status(d: Desk) (icon: .bell, label: "Notifications") {
     outside("session.act", "toggle-quick-settings")
@@ -81,6 +113,16 @@ action workspace_settings(d: Desk) (icon: .settings, label: "Workspace settings"
 /// Shows every workspace's strips and windows at once.
 action overview(d: Desk) (icon: .layout_grid, label: "Overview") {
     outside("session.act", "toggle-overview")
+}
+
+/// Answers the question waiting on the person's avatar.
+action answer_ask(d: Desk) (icon: .check, label: "Answer") {
+    outside("session.act", "answer_ask")
+}
+
+/// Puts the question on the person's avatar off for now.
+action put_off_ask(d: Desk) (icon: .x, label: "Ask me later") {
+    outside("session.act", "put_off_ask")
 }
 
 /// The top bar: the system's menu and the workspace in front, which opens the workspaces to
@@ -138,9 +180,18 @@ view places(d: Desk) {
     }
 }
 
-/// The time, to the minute.
+/// The time, to the minute, and the timer Clocks runs beside it: its label and what it has
+/// left (a stopwatch: what it has run), paused when the person paused it.
 view clock(d: Desk) {
-    ui.Text(d.clock, role: .subheading, numeric: true)
+    row(gap: .tight, align: .center) {
+        ui.Text(d.clock, role: .subheading, numeric: true)
+        if d.timer != "" {
+            // The name is a text of its own, so a reader hears it; the reading is the number
+            // beside it, and a paused timer says so.
+            ui.Text(d.timer, role: .caption)
+            ui.Text(if d.timer_paused { "Paused · {d.timer_left}" } else { d.timer_left }, role: .caption, numeric: true)
+        }
+    }
 }
 
 /// Who is here, the person, and the device's status. A narrow output keeps the status; who is
@@ -151,7 +202,29 @@ view presence(d: Desk) {
             for p in d.people {
                 ui.Avatar(name: .some(p.name))
             }
-            ui.Avatar(name: .some(d.person))
+            // The person's own avatar carries the question put to them: their answer or their
+            // putting it off, never a banner over their windows.
+            if d.ask != "" {
+                ui.Button(d.ask, role: .bar) {
+                    on press: answer_ask(d)
+                }
+                if d.ask_answer != "" {
+                    ui.Button(d.ask_answer, role: .bar) {
+                        on press: answer_ask(d)
+                    }
+                }
+                ui.Button("Ask me later", role: .bar) {
+                    on press: put_off_ask(d)
+                }
+            } else {
+                ui.Avatar(name: .some(d.person))
+            }
+        }
+        // The running applications' tray items, each under the app's own words for it.
+        for item in d.tray {
+            ui.Button(item.title, role: .bar) {
+                on press: open_tray_item(d, item)
+            }
         }
         // The bell is named with what it shows; the count beside it is for the eye.
         let bell = if d.quiet { "Notifications silenced" } else { "Notifications" }

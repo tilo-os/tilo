@@ -227,6 +227,32 @@ fn translucency_choices() -> Vec<(String, String)> {
     choices
 }
 
+/// The accent chooser's choices as `(stored value, label)`: following the
+/// theme first, then the hues the presence palette names, as the colour the
+/// person wears offers them.
+fn accent_choices() -> Vec<(String, String)> {
+    let mut choices = vec![(
+        THEME_CHOICE.to_owned(),
+        t("settings-appearance-accent-theme"),
+    )];
+    choices.extend(
+        ui::tokens::PresenceHue::ALL
+            .iter()
+            .map(|hue| (hue.id().to_owned(), hue.label().to_owned())),
+    );
+    choices
+}
+
+/// The accent the chooser persists for `key`.
+fn accent_of(key: &str) -> Result<Option<String>, String> {
+    if key == THEME_CHOICE {
+        return Ok(None);
+    }
+    ui::tokens::PresenceHue::from_id(key)
+        .map(|hue| Some(hue.id().to_owned()))
+        .ok_or_else(|| format!("`{key}` is not an accent colour"))
+}
+
 /// The face name the chooser persists for `choice`.
 fn ui_face_of(choice: String) -> Result<Option<String>, String> {
     if choice == THEME_CHOICE {
@@ -537,6 +563,20 @@ fn theme_card(cx: &ViewCx<AppearancePrefs>, actions: &Actions<Settings>) -> Elem
                             .unwrap_or_else(|| THEME_CHOICE.to_owned())
                     },
                     ui_face_of,
+                ),
+            cx.setting(t("settings-appearance-accent"))
+                .described(t("settings-appearance-accent-desc"))
+                .id("appearance.accent")
+                .keyed(
+                    paths.accent,
+                    accent_choices(),
+                    |prefs| {
+                        prefs
+                            .accent
+                            .clone()
+                            .unwrap_or_else(|| THEME_CHOICE.to_owned())
+                    },
+                    |key: String| accent_of(&key),
                 ),
             cx.setting(t("settings-appearance-translucency"))
                 .described(t("settings-appearance-translucency-desc"))
@@ -890,6 +930,81 @@ mod tests {
         assert!(edit_field(&mut app, APPEARANCE, "ui_face", "   ").is_err());
         assert!(edit_field(&mut app, APPEARANCE, "translucency", 2.0).is_err());
         assert_eq!(app.settings::<AppearancePrefs>().get(), following);
+    }
+
+    /// The accent is the person's over the theme too: a choice made in the
+    /// page recolours the theme every app resolves, is written to the
+    /// appearance section, and is there again when the document is read from
+    /// scratch.
+    #[test]
+    fn an_accent_colour_recolours_the_theme_and_survives_a_restart() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let device = crate::prefs::AppearanceDevicePrefs::default();
+        let stock = app
+            .settings::<AppearancePrefs>()
+            .get()
+            .resolve_theme(&device);
+
+        edit_field(&mut app, APPEARANCE, "accent", "violet").unwrap();
+
+        let prefs = app.settings::<AppearancePrefs>().get();
+        assert_eq!(prefs.accent.as_deref(), Some("violet"));
+        let chosen = prefs.resolve_theme(&device);
+        assert_eq!(
+            chosen.document.emphasis,
+            ui::tokens::Emphasis::Tinted {
+                hue: ui::tokens::PresenceHue::Violet.degrees()
+            }
+        );
+        let accent = chosen.tokens.colors.intent.accent;
+        assert_ne!(accent, stock.tokens.colors.intent.accent);
+        let hue = ui::color::Oklch::from_color(accent).h;
+        let wanted = ui::tokens::PresenceHue::Violet.degrees();
+        let off = (hue - wanted).rem_euclid(360.0);
+        assert!(off.min(360.0 - off) <= 12.0, "the accent is violet: {hue}°");
+        assert_eq!(chosen.border_focus, chosen.tokens.colors.intent.accent_ink);
+        assert!(
+            ui::tokens::contrast::audit(&chosen.tokens.colors).is_empty(),
+            "the accent keeps every contrast floor"
+        );
+
+        // Read back from scratch: the leaf the chrome reads out of the
+        // document, and the theme a fresh process resolves from it alone.
+        let document = app.settings::<AppearancePrefs>().document().load();
+        assert_eq!(
+            settings_store::appearance::ACCENT
+                .from_document(&document)
+                .as_deref(),
+            Some("violet")
+        );
+        let text = serde_json::to_string(&document).unwrap();
+        let restarted = Theme::resolved_from_settings(&text);
+        assert_eq!(restarted.tokens.colors.intent.accent, accent);
+        // The live desktop reads it through the path the shell applies on
+        // every settings change, not only when opening the document anew.
+        assert_eq!(
+            Theme::configured_from(&document)
+                .tokens
+                .colors
+                .intent
+                .accent,
+            accent
+        );
+
+        // A name the presence palette does not have is refused and changes
+        // nothing; following the theme again gives the theme's accent back.
+        assert!(edit_field(&mut app, APPEARANCE, "accent", "chartreuse").is_err());
+        assert_eq!(
+            app.settings::<AppearancePrefs>().get().accent.as_deref(),
+            Some("violet")
+        );
+        edit_field(&mut app, APPEARANCE, "accent", serde_json::Value::Null).unwrap();
+        let following = app.settings::<AppearancePrefs>().get();
+        assert_eq!(following.accent, None);
+        assert_eq!(
+            following.resolve_theme(&device).tokens.colors.intent.accent,
+            stock.tokens.colors.intent.accent
+        );
     }
 
     /// The colour the person wears is a setting of theirs: choosing one

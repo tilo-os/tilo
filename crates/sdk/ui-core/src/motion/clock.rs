@@ -210,6 +210,7 @@ fn wish(key: Option<u64>, caller: &'static Location<'static>, until: Instant) {
 /// motions make while it runs and the frames it draws are its own, and only
 /// a frame of its own meets them. What the thread does outside such a scope
 /// asks for every surface, as before surfaces shared a thread.
+#[cfg(feature = "native")]
 pub(crate) fn own<T>(owner: usize, f: impl FnOnce() -> T) -> T {
     let previous = OWNER.with(|cell| cell.replace(Some(owner)));
     let done = f();

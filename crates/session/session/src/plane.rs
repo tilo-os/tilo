@@ -23,8 +23,10 @@ use serde_json::Map;
 use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
 use tilo_action_broker::collab_outbound::PeerPublisher;
 use tilo_action_broker::services::{
-    Caller, HostServices, PublishedResources, Reading, ResourceWatch,
+    Caller, HostServices, PublishedResources, Reading, ResourceWatch, SearchIndexServices,
+    SpeakerChange, SpeakerServices,
 };
+use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Services, Started, Wake};
 use tokio::sync::{mpsc, oneshot};
@@ -196,9 +198,47 @@ impl PublishedResources for Link {
     }
 }
 
+/// The speaker groups this session's fabric carries, as the broker's
+/// Settings route commands them: Settings asks for a snapshot, creates,
+/// edits and calibrates a group, and follows their changes, and the speaker
+/// service answers from the fabric the loop pumps.
+struct FabricSpeakers(tilo_device_fabric::link::SharedLink);
+
+impl SpeakerServices for FabricSpeakers {
+    fn command(&self, command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply {
+        tilo_speaker_service::settings::handle(&self.0, command)
+    }
+
+    fn changed(&self, after: u64) -> Option<SpeakerChange> {
+        Some(Box::pin(tilo_speaker_service::settings::changed(
+            &self.0, after,
+        )))
+    }
+}
+
+/// The host service the broker hands apps' search publications to: the
+/// session's index of what apps hold, which the desktop's search reads and
+/// which keeps what was published after the app closes and the session
+/// restarts.
+struct ContentIndex(std::sync::Arc<AppContentIndex>);
+
+impl SearchIndexServices for ContentIndex {
+    fn publish(
+        &self,
+        room: tilo_desktop_model::RoomId,
+        app: &str,
+        record: &str,
+        delta: &[u8],
+    ) -> Result<(), String> {
+        self.0.publish(&room.to_string(), app, record, delta)
+    }
+}
+
 /// Serve the session's published resources to the apps on `socket`: the
-/// broker admits each connection by the launch `launches` recorded, and asks
-/// `link` for what the services publish.
+/// broker admits each connection by the launch `launches` recorded, asks
+/// `link` for what the services publish, and hands Settings the speaker
+/// groups of `fabric` when this session runs on one. What apps publish of
+/// their own content lands in `content`, the index search reads.
 ///
 /// # Errors
 ///
@@ -208,12 +248,11 @@ pub fn serve(
     socket: PathBuf,
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
+    fabric: Option<tilo_device_fabric::link::SharedLink>,
+    live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
+    content: Option<std::sync::Arc<AppContentIndex>>,
 ) -> std::io::Result<BrokerHandle> {
-    let services = HostServices {
-        published: Some(link),
-        launcher: Some(launches),
-        ..HostServices::default()
-    };
+    let services = host_services(link, launches, fabric, live_activities, content);
     tilo_action_broker::collab_broker::spawn_with_services(
         socket,
         None,
@@ -223,6 +262,36 @@ pub fn serve(
         std::sync::Arc::new(Mutex::new(BrokerChannels::default())),
         std::sync::Arc::new(FanoutState::new()),
     )
+}
+
+/// What the apps this session runs reach of it: the resources its services
+/// publish, the launcher that started them, and — when this session runs on a
+/// device fabric — the speaker groups Settings asks that fabric for.
+fn host_services(
+    link: std::sync::Arc<Link>,
+    launches: std::sync::Arc<Launches>,
+    fabric: Option<tilo_device_fabric::link::SharedLink>,
+    live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
+    content: Option<std::sync::Arc<AppContentIndex>>,
+) -> HostServices {
+    let speakers: Option<std::sync::Arc<dyn SpeakerServices>> = fabric.map(|fabric| {
+        std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
+    });
+    let search_index: Option<std::sync::Arc<dyn SearchIndexServices>> = content.map(|content| {
+        std::sync::Arc::new(ContentIndex(content)) as std::sync::Arc<dyn SearchIndexServices>
+    });
+    HostServices {
+        published: Some(link),
+        launcher: Some(launches),
+        speakers,
+        // Every app shows its live activity (a running timer, a stopwatch)
+        // outside its windows on this one board.
+        live_activities: Some(live_activities),
+        // What an app publishes of its own content is found whether or not
+        // it runs, once it is closed and after a restart.
+        search_index,
+        ..HostServices::default()
+    }
 }
 
 /// A value as the wire carries it: its JSON.
@@ -258,5 +327,202 @@ fn receipt(services: &mut Services, resource: &str, action: &str, arguments: &[u
             code: "unknown_action".into(),
             message: format!("this session publishes no `{resource}` resource"),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError};
+    use tilo_device_fabric::speaker_group::{
+        AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState,
+    };
+    use tilo_device_fabric::{
+        DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
+        FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
+    };
+
+    /// This laptop's device fabric, with the one output it publishes.
+    struct Fabric {
+        local: DeviceId,
+        converged: DeviceFabric,
+    }
+
+    impl Fabric {
+        fn laptop() -> Self {
+            let local = DeviceId::new("this-laptop").expect("a device id");
+            let mut converged = DeviceFabric::default();
+            converged
+                .upsert(DeviceFabricSnapshot {
+                    schema_version: FABRIC_SCHEMA_VERSION,
+                    owner: local.clone(),
+                    presence: DevicePresence {
+                        device: local.clone(),
+                        label: "This laptop".into(),
+                        kind: DeviceKind::Laptop,
+                        capabilities: FabricCapabilities {
+                            audio_output: true,
+                            audio_group: true,
+                            ..FabricCapabilities::default()
+                        },
+                        online: true,
+                        last_seen_unix_ms: 1,
+                        wake_routes: Vec::new(),
+                        session: OwnerSession::default(),
+                        stamp: FabricStamp {
+                            counter: 1,
+                            device: local.clone(),
+                        },
+                    },
+                    media: Vec::new(),
+                    clipboard: Vec::new(),
+                    settings: Vec::new(),
+                    wifi: Vec::new(),
+                    display: None,
+                    speakers: SpeakerFabricState {
+                        endpoints: vec![AudioEndpoint {
+                            selector: EndpointSelector::mint(&local, "alsa_output.analog-stereo"),
+                            kind: AudioEndpointKind::Output,
+                            label: "Speakers".into(),
+                            is_default: true,
+                        }],
+                        ..SpeakerFabricState::default()
+                    },
+                    unlock: tilo_device_fabric::unlock::UnlockFabricState::default(),
+                })
+                .expect("the snapshot is valid");
+            Self { local, converged }
+        }
+    }
+
+    impl FabricLink for Fabric {
+        fn device_fabric(&self) -> DeviceFabric {
+            self.converged.clone()
+        }
+
+        fn online_device_ids(&self) -> std::collections::BTreeSet<DeviceId> {
+            std::collections::BTreeSet::from([self.local.clone()])
+        }
+
+        fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
+            Some((self.local.clone(), "This laptop".into()))
+        }
+
+        fn send_personal_fabric_action(
+            &self,
+            _: &DeviceId,
+            _: PersonalFabricAction,
+        ) -> Result<[u8; 16], String> {
+            Err("no transport in a test".into())
+        }
+
+        fn try_send_personal_fabric_action(
+            &self,
+            _: &DeviceId,
+            _: PersonalFabricAction,
+        ) -> Result<[u8; 16], PersonalFabricSendError> {
+            Err(PersonalFabricSendError::Rejected("no transport".into()))
+        }
+
+        fn require_media(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn services(fabric: Option<tilo_device_fabric::link::SharedLink>) -> HostServices {
+        let wake: Wake = std::sync::Arc::new(|| ());
+        let link = Link::new(wake);
+        host_services(
+            link,
+            std::sync::Arc::new(Launches::default()),
+            fabric,
+            std::sync::Arc::new(runtime_collab::LiveActivities::default()),
+            None,
+        )
+    }
+
+    /// An app publishes what it holds through the broker, and the index the
+    /// session handed it keeps it: it is the same index search reads.
+    #[test]
+    fn an_apps_search_publication_lands_in_the_index_search_reads() {
+        use ui::search::index_publication::{IndexDelta, IndexEntry};
+
+        let content = std::sync::Arc::new(AppContentIndex::in_memory());
+        let services = host_services(
+            Link::new(std::sync::Arc::new(|| ())),
+            std::sync::Arc::new(Launches::default()),
+            None,
+            std::sync::Arc::new(runtime_collab::LiveActivities::default()),
+            Some(std::sync::Arc::clone(&content)),
+        );
+        let search_index = services
+            .search_index
+            .expect("a session with an index offers apps its search index");
+        let room = tilo_desktop_model::RoomId::new();
+        let delta = IndexDelta {
+            reset: true,
+            upsert: vec![IndexEntry {
+                key: "n1".into(),
+                resource: "n1".into(),
+                action: None,
+                title: "Groceries".into(),
+                subtitle: None,
+                group: None,
+                icon: None,
+                boost: 0,
+                fields: Vec::new(),
+                secret: false,
+                references: Vec::new(),
+            }],
+            ..IndexDelta::default()
+        };
+        search_index
+            .publish(
+                room,
+                "so.tilo.notes",
+                "tab:0001",
+                &delta.encode().expect("a delta"),
+            )
+            .expect("the index takes the publication");
+        assert_eq!(
+            content.title(&room.to_string(), "n1").as_deref(),
+            Some("Groceries"),
+            "what the app published is in the index search reads"
+        );
+    }
+
+    /// Settings reaches the speaker groups of the fabric this session runs
+    /// on, and of nothing else: a session without one has no speaker route.
+    #[test]
+    fn the_session_answers_settings_speaker_route_from_its_fabric() {
+        assert!(
+            services(None).speakers.is_none(),
+            "a session on no fabric carries no speaker groups"
+        );
+
+        let speakers = services(Some(std::sync::Arc::new(Fabric::laptop())))
+            .speakers
+            .expect("the speaker route is registered");
+        let runtime_collab::SpeakerReply::Snapshot { snapshot } =
+            speakers.command(runtime_collab::SpeakerCommand::Snapshot)
+        else {
+            panic!("Settings asks for a snapshot");
+        };
+        assert!(snapshot.media_enabled);
+        let labels = snapshot
+            .devices
+            .iter()
+            .map(|device| device.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, ["This laptop"]);
+        assert_eq!(
+            snapshot.devices[0].outputs.len(),
+            1,
+            "the output this laptop publishes is what Settings can put in a set"
+        );
+        assert!(
+            speakers.changed(0).is_some(),
+            "and it tells Settings when that changes"
+        );
     }
 }

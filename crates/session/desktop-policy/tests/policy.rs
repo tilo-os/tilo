@@ -11,6 +11,7 @@ use std::cell::Cell;
 use std::time::Duration;
 
 use tilo_desktop_model::commands::DesktopCommand;
+use tilo_desktop_model::{GroupId, TileContent};
 use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::{DesktopPolicy, Layout, Window};
 use tilo_desktop_surface::navigation::Command;
@@ -198,6 +199,148 @@ fn the_desk_names_the_windows_in_front_with_their_apps() {
         policy.windows_in_front(),
         [(5, "org.gnome.Terminal".to_owned())],
         "a window gone is not one a launch could raise"
+    );
+}
+
+/// The desk's window groups in order: each with its id, its tabs and the tab
+/// in front.
+fn groups(policy: &DesktopPolicy) -> Vec<(GroupId, Vec<u64>, u64)> {
+    policy.handle().read(|tree| {
+        let strip = tree
+            .workspaces
+            .first()
+            .and_then(|workspace| workspace.strips.first());
+        strip
+            .map(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .map(|group| {
+                        (
+                            group.id,
+                            group.tabs.iter().map(|tab| tab.id).collect(),
+                            group.active_tab,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// The tab the window `window` of the desk sits in.
+fn window_tab(policy: &DesktopPolicy, window: u64) -> u64 {
+    policy.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|tab| {
+                matches!(tab.tile, TileContent::Foreign { surface_id, .. } if surface_id == window)
+            })
+            .unwrap()
+            .id
+    })
+}
+
+#[test]
+fn an_apps_next_window_lands_right_after_its_own() {
+    let (mut driver, mut policy) = mount();
+    map(&mut driver, &mut policy, 10, "so.tilo.notes");
+    let (anchor, group, index) = policy.anchor_for("so.tilo.notes").unwrap();
+    assert_eq!(anchor, window_tab(&policy, 10));
+    assert_eq!(index, 0);
+    assert!(policy.place_next_beside("so.tilo.notes", Some(anchor), false));
+
+    // The window announces the short name its package id ends with.
+    map(&mut driver, &mut policy, 11, "notes");
+
+    let (first, second) = (window_tab(&policy, 10), window_tab(&policy, 11));
+    assert_eq!(
+        groups(&policy),
+        [(group, vec![first, second], second)],
+        "the second window is the app's next tab, in front"
+    );
+    assert_eq!(policy.focused(), Some(11));
+    let layout = policy.layout();
+    assert_eq!(shown(&layout), [11], "the window in front is drawn");
+    assert_eq!(layout.hidden, [10], "the tab behind it is not");
+}
+
+#[test]
+fn a_window_placed_behind_takes_no_focus() {
+    let (mut driver, mut policy) = mount();
+    map(&mut driver, &mut policy, 10, "so.tilo.notes");
+    map(&mut driver, &mut policy, 12, "org.gnome.Terminal");
+    let anchor = policy.anchor_for("so.tilo.notes").unwrap();
+    assert!(policy.place_next_beside("so.tilo.notes", Some(anchor.0), true));
+    map(&mut driver, &mut policy, 11, "notes");
+
+    let (first, second) = (window_tab(&policy, 10), window_tab(&policy, 11));
+    let notes = groups(&policy)
+        .into_iter()
+        .find(|(_, tabs, _)| tabs.contains(&second))
+        .unwrap();
+    assert_eq!(notes.1, [first, second]);
+    assert_eq!(notes.2, first, "the tab in front stays in front");
+    assert_eq!(
+        policy.focused(),
+        Some(12),
+        "the window the person worked in keeps the keyboard"
+    );
+    assert!(
+        policy.layout().hidden.contains(&11),
+        "a tab opened behind is not drawn"
+    );
+}
+
+#[test]
+fn a_placed_window_is_the_one_that_takes_the_place() {
+    let (mut driver, mut policy) = mount();
+    map(&mut driver, &mut policy, 10, "so.tilo.notes");
+    assert!(policy.place_next_beside("so.tilo.notes", None, false));
+    map(&mut driver, &mut policy, 11, "notes");
+    map(&mut driver, &mut policy, 12, "notes");
+    assert_eq!(
+        groups(&policy).len(),
+        2,
+        "a place is taken by one window; the next lands as a launch does"
+    );
+}
+
+#[test]
+fn an_app_never_opens_beside_another_apps_tab() {
+    let (mut driver, mut policy) = mount();
+    map(&mut driver, &mut policy, 10, "so.tilo.notes");
+    assert_eq!(
+        policy.anchor_for("so.tilo.chat"),
+        None,
+        "no tab of the asking app to anchor on"
+    );
+    assert!(
+        !policy.place_next_beside("so.tilo.chat", None, false),
+        "no tab of its own to open beside"
+    );
+    map(&mut driver, &mut policy, 11, "so.tilo.chat");
+    assert_eq!(groups(&policy).len(), 2, "it opens a window of its own");
+}
+
+#[test]
+fn the_app_tab_in_front_answers_a_request_from_that_app() {
+    let (mut driver, mut policy) = mount();
+    map(&mut driver, &mut policy, 10, "so.tilo.notes");
+    map(&mut driver, &mut policy, 11, "org.gnome.Terminal");
+    assert_eq!(
+        policy.anchor_for("so.tilo.notes").map(|(tab, ..)| tab),
+        Some(window_tab(&policy, 10)),
+        "another app's window in front: the app's own first tab answers"
+    );
+    assert!(policy.focus(10));
+    settle(&mut driver);
+    assert_eq!(
+        policy.anchor_for("so.tilo.notes").map(|(tab, ..)| tab),
+        Some(window_tab(&policy, 10))
     );
 }
 

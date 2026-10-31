@@ -43,6 +43,21 @@ pub(crate) fn land(shared: &Shared) -> bool {
     }
 }
 
+/// Land a session another of the person's devices hands this one, so the
+/// now-playing card offers to continue it here; `None` clears it. Logs and
+/// does nothing when this session has no device to show it on.
+#[expect(
+    dead_code,
+    reason = "no device fabric link hands this session the person's other devices' sessions"
+)]
+pub(crate) fn handoff(shared: &Shared, offer: Option<tilo_quick_settings::MediaOffer>) {
+    let Some(device) = &shared.device else {
+        tracing::debug!("a handoff arrived for a session that shows no device");
+        return;
+    };
+    device.handoff(offer);
+}
+
 /// Carry out a sound effect quick settings asked of the desktop through the
 /// audio service. Returns whether this was one; `false` leaves it to the
 /// other things the session follows.
@@ -93,6 +108,31 @@ fn sound_action(effect: &QsEffect) -> Option<(&'static str, Map<String, Value>)>
             arguments.insert("node".into(), Value::from(node));
             "route-output"
         }
+        QsEffect::SetInputVolume { level } => {
+            arguments.insert("level".into(), Value::from(*level));
+            "set-input-volume"
+        }
+        QsEffect::SetInputMuted { muted } => {
+            arguments.insert("muted".into(), Value::from(*muted));
+            "set-input-muted"
+        }
+        QsEffect::ToggleInputMuted => "toggle-input-muted",
+        QsEffect::RouteStream { stream, device } => {
+            arguments.insert("stream".into(), Value::from(*stream));
+            // No device is the stream following the default.
+            arguments.insert("device".into(), Value::from(*device));
+            "route-stream"
+        }
+        QsEffect::SetStreamVolume { stream, level } => {
+            arguments.insert("stream".into(), Value::from(*stream));
+            arguments.insert("level".into(), Value::from(*level));
+            "set-stream-volume"
+        }
+        QsEffect::SetStreamMuted { stream, muted } => {
+            arguments.insert("stream".into(), Value::from(*stream));
+            arguments.insert("muted".into(), Value::from(*muted));
+            "set-stream-muted"
+        }
         _ => return None,
     };
     Some((action, arguments))
@@ -116,6 +156,30 @@ mod tests {
                     output: "sound-output:41".into(),
                 },
                 "route-output",
+            ),
+            (QsEffect::SetInputVolume { level: 0.6 }, "set-input-volume"),
+            (QsEffect::SetInputMuted { muted: true }, "set-input-muted"),
+            (QsEffect::ToggleInputMuted, "toggle-input-muted"),
+            (
+                QsEffect::RouteStream {
+                    stream: 70,
+                    device: Some(41),
+                },
+                "route-stream",
+            ),
+            (
+                QsEffect::SetStreamVolume {
+                    stream: 70,
+                    level: 0.4,
+                },
+                "set-stream-volume",
+            ),
+            (
+                QsEffect::SetStreamMuted {
+                    stream: 70,
+                    muted: true,
+                },
+                "set-stream-muted",
             ),
         ];
         for (effect, expected) in cases {
@@ -152,5 +216,43 @@ mod tests {
         );
         let (_, arguments) = sound_action(&QsEffect::VolumeUp).unwrap();
         assert!(arguments.is_empty(), "a step takes nothing");
+
+        // The microphone's and one application's controls reach the service
+        // as the arguments its actions declare.
+        let (_, arguments) = sound_action(&QsEffect::SetInputVolume { level: 0.6 }).unwrap();
+        assert_eq!(arguments.get("level"), Some(&Value::from(0.6)));
+        let (_, arguments) = sound_action(&QsEffect::SetInputMuted { muted: true }).unwrap();
+        assert_eq!(arguments.get("muted"), Some(&Value::from(true)));
+        let (_, arguments) = sound_action(&QsEffect::RouteStream {
+            stream: 70,
+            device: Some(41),
+        })
+        .unwrap();
+        assert_eq!(arguments.get("stream"), Some(&Value::from(70)));
+        assert_eq!(arguments.get("device"), Some(&Value::from(41)));
+        let (_, arguments) = sound_action(&QsEffect::RouteStream {
+            stream: 70,
+            device: None,
+        })
+        .unwrap();
+        assert_eq!(
+            arguments.get("device"),
+            Some(&Value::Null),
+            "none follows the default"
+        );
+        let (_, arguments) = sound_action(&QsEffect::SetStreamVolume {
+            stream: 70,
+            level: 0.4,
+        })
+        .unwrap();
+        assert_eq!(arguments.get("stream"), Some(&Value::from(70)));
+        assert_eq!(arguments.get("level"), Some(&Value::from(0.4)));
+        let (_, arguments) = sound_action(&QsEffect::SetStreamMuted {
+            stream: 70,
+            muted: true,
+        })
+        .unwrap();
+        assert_eq!(arguments.get("stream"), Some(&Value::from(70)));
+        assert_eq!(arguments.get("muted"), Some(&Value::from(true)));
     }
 }

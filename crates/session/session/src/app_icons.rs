@@ -1,4 +1,5 @@
-//! Artwork for the applications notifications come from.
+//! Artwork for the applications notifications come from, and for the icons
+//! their tray items name.
 //!
 //! A notification names its app three ways — the id the session attributed
 //! it to, the desktop entry its sender hinted, and an icon name the sender
@@ -15,11 +16,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use desktop_entry::icon_theme::{self, IconFormat};
+use desktop_entry::icon_theme::{self, IconFormat, IconLookup, IconSearchPath};
 use tilo_lock::MutexRecover as _;
 use ui::icons::{AppImage, AppImageSource};
 
@@ -235,6 +236,36 @@ impl Registry {
     }
 }
 
+/// The pixels of an icon an application names for its tray item, looked up
+/// in the person's themes — under the item's own `theme_path` first, so an
+/// application that ships its theme is drawn from it — and rasterised
+/// `device_px` square: `(width, height, straight-alpha RGBA)`, or `None`
+/// when no theme has it or it cannot be decoded.
+///
+/// This reads the disk, so the tray host calls it while reading an item on
+/// its own runtime, never from the session's loop.
+pub(crate) fn tray_raster(
+    name: &str,
+    theme_path: Option<&str>,
+    device_px: u32,
+) -> Option<(u32, u32, Arc<Vec<u8>>)> {
+    let device_px = device_px.clamp(1, ui::icons::MAX_DEVICE_PX);
+    let file = match theme_path.map(str::trim).filter(|path| !path.is_empty()) {
+        Some(path) => IconLookup::new(
+            IconSearchPath::system().with_first_base(PathBuf::from(path)),
+            icon_theme::DEFAULT_THEME,
+        )
+        .find(name, device_px, 1)?,
+        None => icon_theme::lookup(name, device_px, 1)?,
+    };
+    let bytes = read_bounded(&file.path)?;
+    let pixels = match file.format {
+        IconFormat::Png => rasterize_png(&bytes, device_px)?,
+        IconFormat::Svg => rasterize_svg(&bytes, device_px)?,
+    };
+    Some((pixels.width, pixels.height, Arc::new(pixels.rgba)))
+}
+
 /// The pixels of icon `name` at `px` square, or `None` when no theme has
 /// it or it cannot be decoded.
 fn resolve(name: &str, px: u32) -> Option<ui::peniko::ImageData> {
@@ -404,5 +435,27 @@ mod tests {
     #[test]
     fn nothing_that_names_artwork_is_no_artwork() {
         assert!(notification("notification:2:0".to_owned(), None, None, None, None).is_none());
+    }
+
+    /// An icon an application names for its tray item is read the way a
+    /// notification's is: straight-alpha RGBA at the size asked for, and
+    /// nothing at all for one that cannot be decoded.
+    #[test]
+    fn a_named_tray_icon_comes_back_as_rgba_pixels() {
+        let dir = tempfile::tempdir().expect("a theme");
+        let icon = dir.path().join("tray-icon.png");
+        std::fs::write(&icon, png()).expect("the icon");
+        let name = icon.to_str().expect("a path");
+        let (width, height, rgba) = tray_raster(name, None, 16).expect("the icon's pixels");
+        assert_eq!((width, height), (2, 1));
+        assert_eq!(rgba.get(..4), Some([255, 0, 0, 255].as_slice()));
+
+        let broken = dir.path().join("broken.png");
+        std::fs::write(&broken, b"not a png").expect("the file");
+        assert_eq!(
+            tray_raster(broken.to_str().expect("a path"), None, 16),
+            None
+        );
+        assert_eq!(tray_raster("no-such-icon-anywhere", None, 16), None);
     }
 }

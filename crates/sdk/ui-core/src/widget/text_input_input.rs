@@ -1,6 +1,10 @@
 //! A text field's input: pointer, keyboard, IME and clipboard, and the
 //! field chrome its pointer state draws.
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "the field's input reads the field module's own types and its chrome"
+)]
 use super::*;
 
 impl TextInput {

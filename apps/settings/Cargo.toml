@@ -74,6 +74,9 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # `shell` and the Settings app drive the same hardware bindings without
 # this app depending on the compositor crate.
 os-actions = { path = "../../crates/system/os-actions" }
+# The session's `power:battery` resource: the pack's charge limit is read and
+# set through the service that owns it, not by the app itself.
+tilo-session-power = { path = "../../crates/session/power-service", default-features = false }
 # Remembered NTFS drives: the mount service's protocol (panes::drives).
 tilo-ntfs-mount = { path = "../../crates/system/ntfs-mount", default-features = false }
 # Public identity summaries, as the host's identity actions answer them. The

@@ -70,6 +70,7 @@ const SCOPE_PREFIX: &str = "\u{1}scope\u{1f}";
 const SCOPES_KIND: &str = "Search in";
 
 mod api;
+mod empty_state;
 mod history;
 mod host;
 mod rows;
@@ -1479,11 +1480,8 @@ impl ActionPalette {
         self.refresh_progressive_results();
         let pending =
             !self.validation_queue.is_empty() || self.provider_complete.iter().any(|done| !*done);
-        self.results.set_empty_text(if pending {
-            "Searching…"
-        } else {
-            "No matches"
-        });
+        let searched = self.search_query.clone();
+        self.sync_plain_empty_state(&searched, pending);
         self.results
             .set_loading(self.provider_pending.iter().any(Option::is_some));
         let count = self.results.len();
@@ -1648,11 +1646,8 @@ impl ActionPalette {
         self.refresh_progressive_results();
         let pending =
             !self.validation_queue.is_empty() || self.provider_complete.iter().any(|done| !*done);
-        self.results.set_empty_text(if pending {
-            "Searching…"
-        } else {
-            "No matches"
-        });
+        let searched = self.search_query.clone();
+        self.sync_plain_empty_state(&searched, pending);
         self.search_announcement = Some(format!(
             "{} results{}",
             self.results.len(),
@@ -2473,14 +2468,14 @@ impl ActionPalette {
         if !query.trim().is_empty() && !crate::search::engine_ready() {
             // The rows are ranked by the index, whose code is still loading.
             self.search_announcement = Some(String::from("Searching"));
-            self.results.set_empty_text("Searching…");
+            self.sync_plain_empty_state(query, true);
             let _ = self.advance_search_page();
         } else if self.providers.is_empty() {
-            self.results.set_empty_text("No matches");
+            self.sync_plain_empty_state(query, false);
             self.search_announcement = Some(format!("{} results", self.results.len()));
         } else {
             self.search_announcement = Some(String::from("Searching"));
-            self.results.set_empty_text("Searching…");
+            self.sync_plain_empty_state(query, true);
             let _ = self.advance_search_page();
         }
     }

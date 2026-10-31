@@ -40,7 +40,7 @@ pub use doc_writer::{
     DEFAULT_DEBOUNCE, DecodedBytes, DocOwner, DocWriter, DurabilitySnapshot, StoredBytes,
     StoredLoad,
 };
-pub use fs_store::{FsStore, INSTANCE_VIEWS_DIR};
+pub use fs_store::{FsStore, INSTANCE_VIEWS_DIR, room_index_directory};
 
 pub const DOCUMENT_FILE: &str = "state.automerge";
 pub const ACTOR_FILE: &str = "actor";

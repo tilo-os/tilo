@@ -15,6 +15,7 @@ serde_json.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 tilo-lock = { path = "../../platform/tilo-lock" }
 tilo-power-mgmt = { path = "../../system/power" }
+os-actions = { path = "../../system/os-actions" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-service = { path = "../service" }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }

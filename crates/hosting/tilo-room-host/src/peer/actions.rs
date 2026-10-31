@@ -329,6 +329,96 @@ fn serve_locally(
     Ok(None)
 }
 
+/// Answer a remote action addressed to this relay through its app-serving
+/// plane, with the caller the connection authenticated. The answer goes back
+/// on the asker's private lane whenever the plane has it, so a request that
+/// needs an application's help never stalls this peer's other traffic.
+/// `Some` reason when the action cannot be served here. The caller was
+/// already admitted for the room by [`route_private_signed`], agent
+/// delegation included.
+fn serve_private_locally(
+    action: &DirectedAction,
+    workspace_id: u64,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Option<UnavailableReason> {
+    use UnavailableReason as U;
+    let ActionMessage::Remote { message } = &action.message else {
+        return Some(U::UnsupportedPeer);
+    };
+    let Some(plane) = session.app_serving else {
+        return Some(U::UnsupportedPeer);
+    };
+    // An answer is this device's own, signed: a host that cannot sign one
+    // could only ask the asker to trust the relay's word, which it never does.
+    let Some(key) = session.own_device_signing_key else {
+        return Some(U::UnsupportedPeer);
+    };
+    let caller = match session_caller(peer, session) {
+        Ok(caller) => caller,
+        Err((reason, _)) => return Some(reason),
+    };
+    if !plane.answers(&caller, message) {
+        return Some(U::UnsupportedPeer);
+    }
+    // An action the host runs for a member (a comment, linking their own
+    // account) changes a record as theirs: it spends their change budget,
+    // as a change they send does.
+    if matches!(
+        **message,
+        tilo_actions::remote::RemoteActionMessage::Invoke(_)
+    ) && super::over_change_limit(peer, session).is_some()
+    {
+        return Some(U::Backpressure);
+    }
+    let reply = plane.serve_certified(workspace_id, &caller, &peer.cert, (**message).clone())?;
+    let replies = session.private_tx.clone();
+    let (room, request_id) = (action.room, action.request_id);
+    let (target, source) = (peer.device_public_key, *session.own_device_public_key);
+    let source_certificate = serde_json::to_vec(session.own_device_cert).ok()?;
+    let key = key.clone();
+    // The answer is all the asker waits for: it waits for room in the
+    // lane's queue rather than being dropped. It ends with the connection.
+    let runtime = tokio::runtime::Handle::current();
+    reply.then(move |reply| {
+        let Some(message) = reply else {
+            return;
+        };
+        // This device answers as itself: its own signature travels with the
+        // answer, so the asker verifies a caller and not a relay's word.
+        let answer = DirectedAction {
+            room,
+            request_id,
+            source,
+            target,
+            message: ActionMessage::Remote {
+                message: Box::new(message),
+            },
+        };
+        let Ok(signed) = SignedDirectedAction::sign(&answer, unix_now_ns(), &key) else {
+            tracing::error!(
+                workspace_id,
+                "a host answer does not encode; the asker is not answered"
+            );
+            return;
+        };
+        let answer = PrivateOutbound::Reply(EnvelopeV2::CertifiedSignedDelivered {
+            action: signed,
+            source_certificate,
+        });
+        if let Err(mpsc::error::TrySendError::Full(answer)) = replies.try_send(answer) {
+            tracing::info!(
+                workspace_id,
+                "an answer to a member waits for room in its private queue"
+            );
+            runtime.spawn(async move {
+                let _ = replies.send(answer).await;
+            });
+        }
+    });
+    None
+}
+
 /// Who `peer` acts as: the person on their own device, or the agent or bot
 /// whose live delegation that device carries.
 fn session_caller(
@@ -375,11 +465,10 @@ pub(crate) enum PrivateOutbound {
 
 #[derive(Clone)]
 pub(crate) struct PrivateDelivery {
-    pub(super) certified: bool,
     pub(super) action: DirectedAction,
     /// The source device's signature over `action`, forwarded unchanged.
     /// Boxed so a queued reply is not as large as a signed delivery.
-    pub(super) signed: Option<Box<SignedDirectedAction>>,
+    pub(super) signed: Box<SignedDirectedAction>,
     pub(super) source: AuthenticatedPeer,
     pub(super) source_tx: mpsc::Sender<Envelope>,
     pub(super) reply: mpsc::Sender<PrivateOutbound>,
@@ -537,7 +626,7 @@ pub(super) async fn route_signed_directed(
             UnavailableReason::NotAuthorised,
         )));
     }
-    let reason = route_private_signed(action, Some(signed), peer, session).await?;
+    let reason = route_private_signed(action, signed, peer, session).await?;
     Ok(reason.map(|reason| EnvelopeV2::unavailable(action, reason)))
 }
 
@@ -607,19 +696,10 @@ impl Drop for DeliveryAuthorizationTrace<'_> {
     }
 }
 
-pub(super) async fn route_private(
+/// Route `action`, carrying the source's verified signature over it.
+pub(super) async fn route_private_signed(
     action: &DirectedAction,
-    peer: &AuthenticatedPeer,
-    session: &SessionCtx<'_>,
-) -> Result<Option<UnavailableReason>, PeerError> {
-    route_private_signed(action, None, peer, session).await
-}
-
-/// Route `action`, carrying the source's verified signature over it when
-/// there is one so a target that negotiated signed actions receives it.
-async fn route_private_signed(
-    action: &DirectedAction,
-    signed: Option<&SignedDirectedAction>,
+    signed: &SignedDirectedAction,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
 ) -> Result<Option<UnavailableReason>, PeerError> {
@@ -633,12 +713,12 @@ async fn route_private_signed(
         private_phase(action, "route_rejected_message");
         return Ok(Some(U::InvalidRequest));
     }
-    if tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::Directed(action.clone())).is_err()
-    {
+    if !action.wire_fits() {
         private_phase(action, "route_rejected_encoding");
         return Ok(Some(U::InvalidRequest));
     }
-    let Some((_, ws)) = private_workspace_binding(action.room, peer, session).await? else {
+    let Some((workspace_id, ws)) = private_workspace_binding(action.room, peer, session).await?
+    else {
         return Ok(Some(U::NotAuthorised));
     };
     test_point!(pause(room ws, "private-authorization"));
@@ -654,6 +734,11 @@ async fn route_private_signed(
             })
     {
         return Ok(Some(U::NotAuthorised));
+    }
+    if action.target == *session.own_device_public_key {
+        // Never hold the room across the plane: it may take its time.
+        drop(wr);
+        return Ok(serve_private_locally(action, workspace_id, peer, session));
     }
     let Some(sub) = wr.subscribers.get(&action.target) else {
         return Ok(Some(unavailable_target(&wr, &action.target)));
@@ -684,8 +769,10 @@ async fn route_private_signed(
             | ActionMessage::Observation { .. }
             | ActionMessage::Rejected { .. }
     );
-    if (target.broker_host.is_some() && !source_extended)
-        || (extension && (!source_extended || !target.broker_protocol))
+    let remote = matches!(action.message, ActionMessage::Remote { .. });
+    if !remote
+        && ((target.broker_host.is_some() && !source_extended)
+            || (extension && (!source_extended || !target.broker_protocol)))
     {
         return Ok(Some(U::UnsupportedPeer));
     }
@@ -696,12 +783,11 @@ async fn route_private_signed(
     private_phase(action, "route_authorized");
     let delivery = PrivateDelivery {
         action: action.clone(),
-        signed: signed.cloned().map(Box::new),
+        signed: Box::new(signed.clone()),
         source: peer.clone(),
         source_tx: session.outbound.clone(),
         reply: session.private_tx.clone(),
         source_disconnect: session.disconnect.clone(),
-        certified: target.broker_host.is_some(),
     };
     let result = target
         .tx
@@ -727,24 +813,11 @@ pub(super) async fn write_private_delivery<W: tokio::io::AsyncWrite + Unpin>(
     private_phase(&delivery.action, "delivery_authorization_enter");
     match authorize_delivery(delivery, recipient, session).await {
         Ok(()) => {
-            let frame = if delivery.certified {
-                let source_certificate = serde_json::to_vec(&delivery.source.cert)
-                    .map_err(|_| PeerError::Protocol("certificate encoding failed".into()))?;
-                match &delivery.signed {
-                    Some(signed) => EnvelopeV2::CertifiedSignedDelivered {
-                        action: SignedDirectedAction::clone(signed),
-                        source_certificate,
-                    },
-                    None => EnvelopeV2::CertifiedDelivered {
-                        action: delivery.action.clone(),
-                        source_certificate,
-                    },
-                }
-            } else {
-                EnvelopeV2::Delivered {
-                    action: delivery.action.clone(),
-                    source_user: delivery.source.user_public_key,
-                }
+            let source_certificate = serde_json::to_vec(&delivery.source.cert)
+                .map_err(|_| PeerError::Protocol("certificate encoding failed".into()))?;
+            let frame = EnvelopeV2::CertifiedSignedDelivered {
+                action: SignedDirectedAction::clone(&delivery.signed),
+                source_certificate,
             };
             let Ok(bytes) = tilo_delivery_protocol::transport_v2::encode(&frame) else {
                 private_phase(&delivery.action, "delivery_encoding_rejected");

@@ -321,6 +321,19 @@ pub trait ActionDoor {
     /// What the desktop publishes now: its resources, each with its actions.
     fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec>;
 
+    /// The reading of `resource` now, as its state's JSON; `None` when
+    /// nothing publishes it.
+    fn read(&mut self, _resource: &str) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Where what the desktop publishes stands: equal revisions publish the
+    /// same readings and actions, so a surface watching a reading is only
+    /// read again once it moved. `None` when it cannot tell.
+    fn revision(&mut self) -> Option<u64> {
+        None
+    }
+
     /// Run the published action `address` with `arguments`.
     ///
     /// # Errors
@@ -435,6 +448,14 @@ struct Connection {
     /// How the last invocations its app run ended, newest last, so one the
     /// session answered as accepted can be asked after.
     answered: VecDeque<(InvocationId, InvocationUpdate)>,
+    /// The resources the surface follows, by name: it is sent each reading
+    /// that moves.
+    watched: Vec<String>,
+    /// The reading each watched resource was last sent, so one that did not
+    /// change is not sent again.
+    readings: HashMap<String, Option<String>>,
+    /// The door's revision the readings above were read at.
+    read_at: Option<u64>,
 }
 
 impl Connection {
@@ -463,6 +484,9 @@ impl Connection {
             listed_at: None,
             published: Vec::new(),
             answered: VecDeque::new(),
+            watched: Vec::new(),
+            readings: HashMap::new(),
+            read_at: None,
         }
     }
 
@@ -679,15 +703,25 @@ impl Surfaces {
         exited
     }
 
-    /// Answer what the surface apps asked since the last turn, and take in
-    /// how the invocations they were asked to run stand.
+    /// Answer what the surface apps asked since the last turn, take in how
+    /// the invocations they were asked to run stand, and send each reading a
+    /// surface follows that moved.
     pub fn serve(&mut self, door: &mut dyn ActionDoor) {
+        let revision = door.revision();
         for app in &mut self.running {
             // A surface publishes its actions once it has mounted: until it
             // has listed them, the session asks again.
             app.actions.list_if_silent();
             while let Ok(message) = app.actions.incoming.try_recv() {
                 match message {
+                    // A resource the surface shows: it is sent the reading
+                    // now, and each later one that moves.
+                    RemoteActionMessage::ResourceWatch { resource } => {
+                        if !app.actions.watched.contains(&resource) {
+                            app.actions.watched.push(resource);
+                            app.actions.read_at = None;
+                        }
+                    }
                     // What the surface offers: the session asked for it, and
                     // asks again whenever it changed.
                     RemoteActionMessage::CatalogueResponse { result, .. } => {
@@ -722,6 +756,7 @@ impl Surfaces {
                     }
                 }
             }
+            publish_readings(&mut app.actions, door, revision);
         }
     }
 
@@ -808,6 +843,37 @@ impl Surfaces {
 impl Drop for Surfaces {
     fn drop(&mut self) {
         self.stop_all();
+    }
+}
+
+/// Send `connection`'s surface each reading of what it follows that moved:
+/// its first reading once, and later ones as the desktop's revision moves
+/// and the reading with it.
+fn publish_readings(connection: &mut Connection, door: &mut dyn ActionDoor, revision: Option<u64>) {
+    if connection.watched.is_empty() {
+        return;
+    }
+    let read_at = std::mem::replace(&mut connection.read_at, revision);
+    // A door that cannot tell where it stands is read every pass; one that
+    // can is read only once it moved.
+    let moved = revision.is_none() || read_at != revision;
+    for resource in connection.watched.clone() {
+        if !moved && connection.readings.contains_key(&resource) {
+            continue;
+        }
+        let reading = door.read(&resource).map(|value| {
+            serde_json::to_string(&value).unwrap_or_else(|error| {
+                tracing::warn!(%resource, %error, "a reading did not encode");
+                String::from("null")
+            })
+        });
+        if connection.readings.get(&resource) == Some(&reading) {
+            continue;
+        }
+        connection
+            .readings
+            .insert(resource.clone(), reading.clone());
+        connection.send(RemoteActionMessage::ResourceReading { resource, reading });
     }
 }
 
@@ -1004,5 +1070,109 @@ mod tests {
         assert_eq!(Anchor::default().names(), "none");
         assert!(Anchor::default().is_empty());
         assert!(!(Anchor::TOP | Anchor::BOTTOM).is_empty());
+    }
+    /// A door that serves one reading, and how often it was asked for it.
+    struct Stand {
+        revision: u64,
+        reading: serde_json::Value,
+        reads: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl ActionDoor for Stand {
+        fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
+            Vec::new()
+        }
+
+        fn read(&mut self, resource: &str) -> Option<serde_json::Value> {
+            self.reads.set(self.reads.get().saturating_add(1));
+            (resource == "sound").then(|| self.reading.clone())
+        }
+
+        fn revision(&mut self) -> Option<u64> {
+            Some(self.revision)
+        }
+
+        fn invoke(
+            &mut self,
+            address: &tilo_actions::ActionAddress,
+            _arguments: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<ResourceOperationStart, tilo_actions::DoorError> {
+            Err(tilo_actions::DoorError::Unknown(address.clone()))
+        }
+    }
+
+    fn following(resource: &str) -> Connection {
+        let (ours, _theirs) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
+        let mut connection = Connection::of(ours);
+        connection.watched.push(resource.to_owned());
+        connection
+    }
+
+    #[test]
+    fn a_reading_is_sent_when_it_moves_and_not_before() {
+        let reads = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let mut door = Stand {
+            revision: 1,
+            reading: serde_json::json!({ "volume": 0.5 }),
+            reads: std::rc::Rc::clone(&reads),
+        };
+        let mut connection = following("sound");
+
+        // The first turn sends the reading it stands at.
+        publish_readings(&mut connection, &mut door, Some(1));
+        assert_eq!(
+            connection.readings.get("sound"),
+            Some(&Some(String::from(r#"{"volume":0.5}"#))),
+            "the reading is sent as the state's JSON"
+        );
+        assert_eq!(
+            door.revision, 1,
+            "the door's revision is left as the session read it"
+        );
+
+        // A door that did not move is not read again, so a still desktop
+        // costs nothing per frame.
+        publish_readings(&mut connection, &mut door, Some(1));
+        assert_eq!(reads.get(), 1, "an unmoved door is read once");
+
+        // One that moved is read, and the reading that changed is sent.
+        door.reading = serde_json::json!({ "volume": 0.25 });
+        publish_readings(&mut connection, &mut door, Some(2));
+        assert_eq!(reads.get(), 2, "a moved door is read again");
+        assert_eq!(
+            connection.readings.get("sound"),
+            Some(&Some(String::from(r#"{"volume":0.25}"#)))
+        );
+    }
+
+    #[test]
+    fn a_resource_nothing_publishes_is_sent_as_no_reading() {
+        let reads = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let mut door = Stand {
+            revision: 7,
+            reading: serde_json::Value::Null,
+            reads: std::rc::Rc::clone(&reads),
+        };
+        let mut connection = following("nothing");
+        publish_readings(&mut connection, &mut door, Some(7));
+        assert_eq!(
+            connection.readings.get("nothing"),
+            Some(&None),
+            "a surface is told the resource is not served rather than left waiting"
+        );
+    }
+
+    #[test]
+    fn a_surface_that_follows_nothing_is_never_read_for() {
+        let reads = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let mut door = Stand {
+            revision: 1,
+            reading: serde_json::Value::Null,
+            reads: std::rc::Rc::clone(&reads),
+        };
+        let mut connection = following("sound");
+        connection.watched.clear();
+        publish_readings(&mut connection, &mut door, Some(1));
+        assert_eq!(reads.get(), 0);
     }
 }

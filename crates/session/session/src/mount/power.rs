@@ -99,6 +99,14 @@ pub(crate) fn install(compositor: &mut Compositor, options: &Options) -> PowerRu
         let waker = compositor.waker();
         move || waker.wake_by_ref()
     }));
+    // A hold appearing or lapsing is not a signal the service sends: it
+    // changes what the loop applies to the compositor and what the bar
+    // says, so the loop wakes to read it rather than waiting for the next
+    // frame something else causes.
+    link.registry().on_change({
+        let waker = compositor.waker();
+        move || waker.wake_by_ref()
+    });
     apply(compositor, &link);
     run.link = Some(link);
     run

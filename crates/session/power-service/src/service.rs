@@ -8,7 +8,7 @@ use tilo_resource::Effect as _;
 use tilo_service::{Service, Started, decode, offer, reading};
 
 use crate::PowerLink;
-use crate::effects::SleepAction;
+use crate::effects::{BatteryAction, SleepAction};
 
 /// The resource holding the policy in force and what keeps the machine
 /// awake.
@@ -130,10 +130,11 @@ pub fn sleep_resource() -> ResourceSpec {
     offer::<SleepAction>(ResourceSpec::new(SLEEP, SLEEP_KIND, "Power and sleep"))
 }
 
-/// The `power:battery` resource (a reading only).
+/// The `power:battery` resource: the pack as it reads, and the charge limit
+/// where its driver offers one.
 #[must_use]
 pub fn battery_resource() -> ResourceSpec {
-    ResourceSpec::new(BATTERY, BATTERY_KIND, "Battery")
+    offer::<BatteryAction>(ResourceSpec::new(BATTERY, BATTERY_KIND, "Battery"))
 }
 
 impl Service for SessionPower {
@@ -155,6 +156,31 @@ impl Service for SessionPower {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, DoorError> {
+        if resource == BATTERY {
+            let published = self.resources();
+            let action = decode::<BatteryAction>(&published, resource, action, arguments)?;
+            match action {
+                BatteryAction::SetChargeLimit { percent } => {
+                    if self.link.battery().charge_limit.is_none() {
+                        return Err(DoorError::Unavailable {
+                            code: "no-charge-limit".into(),
+                            reason: "this battery's driver offers no charge limit".into(),
+                        });
+                    }
+                    let limit = self
+                        .link
+                        .set_charge_limit(percent)
+                        .map_err(DoorError::InvalidArguments)?;
+                    return Ok(Started::Done(ActionOutput {
+                        value: Some(
+                            serde_json::to_value(&limit)
+                                .map_err(|error| DoorError::InvalidArguments(error.to_string()))?,
+                        ),
+                        resources: Vec::new(),
+                    }));
+                }
+            }
+        }
         if resource != SLEEP {
             return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
         }

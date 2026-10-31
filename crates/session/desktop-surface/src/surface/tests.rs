@@ -20,13 +20,9 @@ pub(super) fn desktop(windows: usize) -> (DesktopSurface, DesktopHandle) {
     desk_with(windows, Box::new(Notices))
 }
 
-/// The same desk, with a source of its own for the windows' content.
-pub(super) fn desk_with(
-    windows: usize,
-    tiles: Box<dyn TileSource>,
-) -> (DesktopSurface, DesktopHandle) {
-    let mut minter = IdMinter::new(7);
-    let tabs = (0..windows)
+/// `windows` windows, each running an app of its own.
+fn windows_tabs(minter: &mut IdMinter, windows: usize) -> Vec<Tab> {
+    (0..windows)
         .map(|i| Tab {
             id: minter.mint(),
             title: format!("App{i}"),
@@ -37,9 +33,43 @@ pub(super) fn desk_with(
             },
             app_title: None,
         })
-        .collect();
+        .collect()
+}
+
+/// The same desk, with a source of its own for the windows' content.
+pub(super) fn desk_with(
+    windows: usize,
+    tiles: Box<dyn TileSource>,
+) -> (DesktopSurface, DesktopHandle) {
+    let mut minter = IdMinter::new(7);
+    let tabs = windows_tabs(&mut minter, windows);
     let tree = seed_tree(&mut minter, "Desk", tabs);
     DesktopSurface::new(tree, 7, tiles)
+}
+
+/// A desk whose one window holds `windows` windows' tabs on its bar, as a
+/// strip does once the windows have been gathered into one.
+fn one_window_desk(windows: usize) -> (DesktopSurface, DesktopHandle) {
+    let mut minter = IdMinter::new(7);
+    let tabs = windows_tabs(&mut minter, windows);
+    let mut tree = seed_tree(&mut minter, "Desk", tabs);
+    let strip = &mut tree.workspaces[0].strips[0];
+    let id = strip.window_groups[0].id;
+    let tabs: Vec<Tab> = strip
+        .window_groups
+        .drain(..)
+        .flat_map(|group| group.tabs)
+        .collect();
+    let active_tab = tabs[0].id;
+    strip.window_groups = vec![tilo_desktop_model::WindowGroup {
+        id,
+        tabs,
+        active_tab,
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    }];
+    DesktopSurface::new(tree, 7, Box::new(Notices))
 }
 
 fn held_by(name: &str) -> ui::widget::TabHolder {
@@ -299,6 +329,116 @@ fn a_windows_search_stands_over_that_window() {
         "the palette {palette:?} stands over the window {window:?}"
     );
     assert!(palette.y0 > window.y0, "below the window's top");
+}
+
+/// A host whose search has a place of its own in every workspace: one in
+/// the workspace in front, and one another workspace names.
+#[derive(Default)]
+struct Everywhere {
+    /// The scope search asked it to cover, in order.
+    scopes: std::cell::RefCell<Vec<ui::search::system::SearchScope>>,
+}
+
+/// The place another workspace names, offered only when search covers every
+/// workspace, and saying which one it is in.
+struct Elsewhere {
+    every_workspace: bool,
+}
+
+impl tilo_desktop_search::Source for Elsewhere {
+    fn id(&self) -> &'static str {
+        "continue"
+    }
+
+    fn name(&self) -> String {
+        "Continue".into()
+    }
+
+    fn query(&self, _: &str) -> Vec<tilo_desktop_search::Hit> {
+        if !self.every_workspace {
+            return Vec::new();
+        }
+        vec![tilo_desktop_search::Hit {
+            kind: tilo_desktop_search::ResourceKind::Note,
+            provider: self.id().into(),
+            id: "quarterly-plan".into(),
+            title: "Quarterly plan".into(),
+            subtitle: Some("in Planning".into()),
+            facts: Vec::new(),
+            score: ui::search::system::MAX_PROVIDER_SCORE,
+            icon: None,
+            target: tilo_desktop_search::Target::Window { tab: 0, app: None },
+        }]
+    }
+}
+
+impl SearchHost for Everywhere {
+    fn feed(&self, _: &str, scope: ui::search::system::SearchScope) -> SearchHostFeed {
+        self.scopes.borrow_mut().push(scope);
+        SearchHostFeed {
+            sources: vec![Box::new(Elsewhere {
+                every_workspace: scope == ui::search::system::SearchScope::All,
+            })],
+            ..SearchHostFeed::default()
+        }
+    }
+
+    fn performs(&self, _: &tilo_desktop_search::Target) -> bool {
+        false
+    }
+}
+
+/// What a person searches is the workspace in front; the field says so and
+/// takes it away from the start of the line, and the search then offers what
+/// every workspace holds, saying which workspace a row is in.
+#[test]
+fn a_search_of_the_workspace_in_front_widens_to_every_workspace() {
+    let (surface, handle) = desktop(1);
+    let host = std::rc::Rc::new(Everywhere::default());
+    handle.set_search_host(host.clone());
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1280, 800),
+        Theme::dark(),
+    );
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    handle.open_search(None);
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    assert_eq!(
+        *host.scopes.borrow(),
+        [ui::search::system::SearchScope::Workspace],
+        "the search opens over the workspace in front"
+    );
+    let (_, rows) = handle.search_rows();
+    assert!(
+        rows.iter().all(|row| row.title != "Quarterly plan"),
+        "another workspace's rows wait: {rows:?}"
+    );
+
+    frame.key("Backspace");
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    assert_eq!(
+        *host.scopes.borrow(),
+        [
+            ui::search::system::SearchScope::Workspace,
+            ui::search::system::SearchScope::All
+        ],
+        "the same search, over every workspace"
+    );
+    let (_, rows) = handle.search_rows();
+    assert!(
+        rows.iter()
+            .any(|row| row.title == "Quarterly plan"
+                && row.subtitle.as_deref() == Some("in Planning")),
+        "the row says which workspace it is in: {rows:?}"
+    );
 }
 
 /// An acknowledgement is said politely over the desktop, wakes the host
@@ -1707,4 +1847,113 @@ fn a_window_dragged_off_the_only_strip_stays_where_it_was() {
         "the window is back in its own window"
     );
     assert_eq!(after.active_strip, before.active_strip);
+}
+
+/// Drag `tab` sideways along its own bar and let go over the gap before
+/// the tab at `at` (the end of the bar when `at` is the tab count): the
+/// pointer presses the pill, moves past it and releases, as a hand does.
+fn drag_along_bar(
+    frame: &mut ui::headless::FrameHarness,
+    group: GroupId,
+    tab: TabId,
+    at: usize,
+) -> bool {
+    let points = frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .and_then(|row| {
+            let group = row.groups.iter().find(|shown| shown.id == group)?;
+            let rects = group.tab_rects();
+            let from = group.tabs().iter().position(|t| t.id == tab)?;
+            let pill = rects.get(from)?;
+            let y = pill.center().y;
+            // Let go between the midpoints of the pills either side of the
+            // gap, which is the gap the bar resolves and the drop line shows.
+            let x = rects.get(at).map_or(rects.last()?.x1, |next| next.x0);
+            Some((Point::new(pill.center().x, y), Point::new(x, y)))
+        });
+    let Some((start, end)) = points else {
+        return false;
+    };
+    frame.send(&ui::synthetic_input::cursor_moved(start.x, start.y));
+    frame.send(&ui::synthetic_input::mouse_press());
+    frame.send(&ui::synthetic_input::cursor_moved(end.x, end.y));
+    frame.send(&ui::synthetic_input::mouse_release());
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    true
+}
+
+/// The order a window shows its tabs in, as the bar itself has them.
+fn bar_order(frame: &ui::headless::FrameHarness, group: GroupId) -> Vec<TabId> {
+    frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .and_then(|row| row.groups.iter().find(|g| g.id == group))
+        .map(|group| group.tabs().iter().map(|tab| tab.id).collect())
+        .unwrap_or_default()
+}
+
+/// A tab dragged along its own bar stays where it was let go: the desk's
+/// tree holds that order, not the one it had before the drag, and the
+/// window the person pressed is still the one they are on.
+#[test]
+fn a_tab_dragged_along_its_bar_keeps_the_order_it_lands_in() {
+    let (surface, handle) = one_window_desk(3);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1280, 800),
+        Theme::dark(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let (group, tabs, shown) = handle.read(|tree| {
+        let group = tree.workspaces[0].strips[0].window_groups[0].clone();
+        (
+            group.id,
+            group.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            group.active_tab,
+        )
+    });
+    assert_eq!(shown, tabs[0], "the desk starts on the first window");
+    assert_eq!(bar_order(&frame, group), tabs);
+
+    // Right along the bar: the first window is let go past the last one.
+    assert!(
+        drag_along_bar(&mut frame, group, tabs[0], tabs.len()),
+        "the bar is on screen"
+    );
+    let (landed, on) = handle.read(|tree| {
+        let group = &tree.workspaces[0].strips[0].window_groups[0];
+        (
+            group.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            group.active_tab,
+        )
+    });
+    assert_eq!(
+        landed,
+        vec![tabs[1], tabs[2], tabs[0]],
+        "the tree keeps the order the tab landed in"
+    );
+    assert_eq!(bar_order(&frame, group), landed, "the bar shows that order");
+    assert_eq!(on, tabs[0], "the person stays on the window they pressed");
+
+    // And back: the same window is dragged to the front again.
+    assert!(
+        drag_along_bar(&mut frame, group, tabs[0], 0),
+        "the bar is still on screen"
+    );
+    let (landed, on) = handle.read(|tree| {
+        let group = &tree.workspaces[0].strips[0].window_groups[0];
+        (
+            group.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            group.active_tab,
+        )
+    });
+    assert_eq!(landed, tabs, "dragged left, the window is back in front");
+    assert_eq!(bar_order(&frame, group), landed, "the bar shows that order");
+    assert_eq!(on, tabs[0], "and the person is still on that window");
 }

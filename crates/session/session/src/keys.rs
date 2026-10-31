@@ -5,12 +5,12 @@
 //! window or panel gets it ([`SurfaceHost::claim_key`]). A press that is a
 //! chord of the desktop's one shortcut table ([`tilo_desktop::shortcuts`])
 //! or a hardware key (volume, brightness, airplane mode, the touchpad,
-//! playback, Print) is taken, and becomes an invocation of a published
+//! playback, Print, F1) is taken, and becomes an invocation of a published
 //! action: the chord's `desktop:chrome/shortcut`, quick settings' `volume-up`, the
 //! media service's `play-pause`. The session runs those through the same
 //! door every other caller uses; nothing here performs anything itself.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -18,7 +18,7 @@ use tilo_actions::ActionAddress;
 use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
 use tilo_desktop::desktop_actions::CHROME_RESOURCE;
 use tilo_desktop::osd::OsdKind;
-use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
+use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
 use xkeysym::key as keysyms;
 
 /// One published action to invoke, with its arguments.
@@ -95,12 +95,23 @@ const KEY_XF86_RFKILL: u32 = 0x1008_ffb5;
 /// whether it works on the lock screen (it changes a level and reveals
 /// nothing behind the lock).
 struct Hardware {
-    resource: &'static str,
-    action: &'static str,
+    action: HardwareAction,
     repeats: bool,
     while_locked: bool,
     /// The readout that answers it on screen.
     readout: Option<OsdKind>,
+}
+
+/// What a hardware key runs: an action of the session's resources, or one of
+/// the desktop's own shortcuts, which the chrome carries out as its chord
+/// would.
+#[derive(Clone, Copy)]
+enum HardwareAction {
+    Resource {
+        resource: &'static str,
+        action: &'static str,
+    },
+    Shortcut(ShortcutAction),
 }
 
 const fn hardware(
@@ -110,8 +121,18 @@ const fn hardware(
     while_locked: bool,
 ) -> Hardware {
     Hardware {
-        resource,
-        action,
+        action: HardwareAction::Resource { resource, action },
+        repeats,
+        while_locked,
+        readout: None,
+    }
+}
+
+/// A key that asks for `action` of the desktop's shortcut table, as the
+/// chord bound to it does.
+const fn desktop(action: ShortcutAction, repeats: bool, while_locked: bool) -> Hardware {
+    Hardware {
+        action: HardwareAction::Shortcut(action),
         repeats,
         while_locked,
         readout: None,
@@ -175,30 +196,114 @@ fn classify(keysym: u32) -> Option<Hardware> {
         // The Print key takes the whole screen, as the studio's own bar
         // does; the lock screen shows no desktop to take.
         keysyms::Print => hardware(CAPTURE_STUDIO, "screenshot", false, false),
+        // F1 names every key the desktop answers. It is the desktop's own
+        // key, which nothing may be bound to, so the guide opens whatever
+        // modifiers are held with it.
+        keysyms::F1 => desktop(ShortcutAction::ShortcutHelp, false, false),
         _ => return None,
     })
 }
 
+/// What the shortcut guide took from the person since it last looked.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Caught {
+    /// Escape: the guide waits for no chord any more, and what the last
+    /// press was refused for is no longer the person's concern.
+    Cancelled,
+    /// The chord the person pressed for the shortcut that waited for one.
+    Chord(KeyChord),
+}
+
+/// What the shortcut guide and the session's keys share while the guide is
+/// up: that it is, which shortcut waits for a new chord, and the chords
+/// pressed for it since the guide last looked.
+///
+/// It is the key surface's answer to the guide being modal: the surface
+/// sees every press before it acts anywhere, so it is the one place that
+/// can hold one back and hand it to the guide instead.
+#[derive(Clone, Default)]
+pub(crate) struct GuideKeys {
+    inner: Rc<GuideKeysInner>,
+}
+
+#[derive(Default)]
+struct GuideKeysInner {
+    up: Cell<bool>,
+    listening: RefCell<Option<String>>,
+    caught: RefCell<Vec<Caught>>,
+}
+
+impl GuideKeys {
+    /// The guide is up, or has gone: a guide that is gone waits for no
+    /// chord and has nothing left to answer.
+    pub(crate) fn set_up(&self, up: bool) {
+        self.inner.up.set(up);
+        if !up {
+            self.inner.listening.replace(None);
+            self.inner.caught.borrow_mut().clear();
+        }
+    }
+
+    /// Whether the guide is up.
+    pub(crate) fn up(&self) -> bool {
+        self.inner.up.get()
+    }
+
+    /// The shortcut whose new chord the next press is, while the guide waits
+    /// for one.
+    pub(crate) fn listening(&self) -> Option<String> {
+        self.inner.listening.borrow().clone()
+    }
+
+    /// Wait for a new chord for `action`.
+    pub(crate) fn listen_for(&self, action: &str) {
+        self.inner.listening.replace(Some(action.to_owned()));
+    }
+
+    /// Stop waiting for a chord: the guide stays up and takes its keys for
+    /// nothing but itself.
+    pub(crate) fn stop_listening(&self) {
+        self.inner.listening.replace(None);
+    }
+
+    /// Keep `caught` for the guide.
+    pub(crate) fn catch(&self, caught: Caught) {
+        self.inner.caught.borrow_mut().push(caught);
+    }
+
+    /// What was caught since the guide last looked, oldest first.
+    pub(crate) fn take_caught(&self) -> Vec<Caught> {
+        std::mem::take(&mut *self.inner.caught.borrow_mut())
+    }
+}
+
 /// The surface that takes the session's keys; it shows nothing.
 pub(crate) struct SessionKeys {
-    shortcuts: ShortcutConfig,
+    /// The desktop's shortcut table, shared with the shortcut guide so the
+    /// guide explains the chords the keys resolve against.
+    shortcuts: Rc<RefCell<ShortcutConfig>>,
     invocations: Invocations,
     /// The apps' shortcuts, which work wherever the keyboard is.
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
+    /// The shortcut guide's keys while it is up: what it holds back from
+    /// the desktop behind it, and the chord it waits for.
+    guide: GuideKeys,
     /// The shortcut resources whose chords are held down, by key.
     held: RefCell<BTreeMap<u32, String>>,
 }
 
 impl SessionKeys {
     pub(crate) fn new(
-        shortcuts: ShortcutConfig,
+        shortcuts: Rc<RefCell<ShortcutConfig>>,
         invocations: Invocations,
         portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
+        guide: GuideKeys,
     ) -> Self {
         Self {
             shortcuts,
             invocations,
             portal,
+            guide,
             held: RefCell::new(BTreeMap::new()),
         }
     }
@@ -228,7 +333,10 @@ impl SessionKeys {
             } else {
                 KeyClaim::Take
             };
-            let mut invocation = Invocation::new(hardware.resource, hardware.action);
+            let mut invocation = match hardware.action {
+                HardwareAction::Resource { resource, action } => Invocation::new(resource, action),
+                HardwareAction::Shortcut(action) => Invocation::shortcut(action),
+            };
             invocation.readout = hardware.readout;
             return Some((invocation, claim));
         }
@@ -241,12 +349,54 @@ impl SessionKeys {
             return Some((Invocation::new(&resource, "activate"), KeyClaim::Take));
         }
         let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
-        let action = tilo_desktop::shortcuts::configured_shortcut_action(
-            &self.shortcuts,
-            &logical,
-            modifiers,
-        )?;
+        let shortcuts = self.shortcuts.borrow();
+        let action =
+            tilo_desktop::shortcuts::configured_shortcut_action(&shortcuts, &logical, modifiers)?;
         Some((Invocation::shortcut(action), KeyClaim::Take))
+    }
+
+    /// Whether `invocation` is the desktop's way to the shortcut guide, which
+    /// stays its own key while the guide is up.
+    fn shows_the_guide(invocation: &Invocation) -> bool {
+        *invocation == Invocation::shortcut(ShortcutAction::ShortcutHelp)
+    }
+
+    /// A press the guide is up over: it answers only what is its own, and
+    /// while it waits for a new chord, that press is the chord.
+    fn guide_key(&self, key: &HostKey) {
+        let resolved = self.resolve(key, false);
+        // F1 and the desktop's help chord stay the guide's own way out,
+        // waiting for a chord or not.
+        if let Some((invocation, _)) = &resolved
+            && Self::shows_the_guide(invocation)
+        {
+            self.invocations.borrow_mut().push(invocation.clone());
+            return;
+        }
+        // A hardware key changes a level or takes the screen: it is no chord
+        // of the desktop's table, so it answers as it does without the guide.
+        if classify(key.keysym).is_some() {
+            if let Some((invocation, _)) = resolved {
+                self.invocations.borrow_mut().push(invocation);
+            }
+            return;
+        }
+        if self.guide.listening().is_none() || key.repeat {
+            // The guide is modal for everything else: a chord acts once it
+            // is gone.
+            return;
+        }
+        if key.unmodified_keysym == keysyms::Escape {
+            self.guide.stop_listening();
+            self.guide.catch(Caught::Cancelled);
+            return;
+        }
+        let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
+        // A modifier held on its own is no chord, and no modifier is either.
+        if let Some(chord) = tilo_desktop::shortcuts::shortcut_chord_from_event(&logical, modifiers)
+        {
+            self.guide.catch(Caught::Chord(chord));
+        }
     }
 }
 
@@ -264,6 +414,22 @@ impl SurfaceHost for SessionKeys {
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 
     fn claim_key(&mut self, key: &HostKey, locked: bool) -> KeyClaim {
+        if self.guide.up() {
+            if self.guide.listening().is_some() {
+                // The guide waits for a shortcut's new keys: every press is
+                // that chord, and none of them reaches what is behind it.
+                return KeyClaim::Take;
+            }
+            // The guide is modal: a chord of the desktop's table or an app's
+            // shortcut must not act on what it hides. A hardware key (the
+            // volume keys, F1) is no chord and answers as it does without
+            // the guide.
+            if classify(key.keysym).is_none() {
+                return self
+                    .resolve(key, locked)
+                    .map_or(KeyClaim::Pass, |(_, claim)| claim);
+            }
+        }
         self.resolve(key, locked)
             .map_or(KeyClaim::Pass, |(_, claim)| claim)
     }
@@ -277,6 +443,10 @@ impl SurfaceHost for SessionKeys {
                     .borrow_mut()
                     .push(Invocation::new(&resource, "deactivate"));
             }
+            return;
+        }
+        if self.guide.up() {
+            self.guide_key(key);
             return;
         }
         // A repeat of a key taken once is not run again (only a level key
@@ -312,7 +482,26 @@ mod tests {
     }
 
     fn keys() -> SessionKeys {
-        SessionKeys::new(ShortcutConfig::default(), Invocations::default(), None)
+        SessionKeys::new(
+            Rc::new(RefCell::new(ShortcutConfig::default())),
+            Invocations::default(),
+            None,
+            GuideKeys::default(),
+        )
+    }
+
+    /// The key surface with the shortcut guide up, and the guide's shared
+    /// keys.
+    fn with_guide() -> (SessionKeys, GuideKeys) {
+        let guide = GuideKeys::default();
+        guide.set_up(true);
+        let keys = SessionKeys::new(
+            Rc::new(RefCell::new(ShortcutConfig::default())),
+            Invocations::default(),
+            None,
+            guide.clone(),
+        );
+        (keys, guide)
     }
 
     #[test]
@@ -384,5 +573,106 @@ mod tests {
         assert_eq!(keys.resolve(&tab, true), None);
         let a = key(keysyms::a, Some('a'), KeyModifiers::default());
         assert_eq!(keys.resolve(&a, false), None);
+    }
+
+    #[test]
+    fn the_first_function_key_shows_the_shortcut_guide() {
+        let keys = keys();
+        let f1 = key(keysyms::F1, None, KeyModifiers::default());
+        assert_eq!(
+            keys.resolve(&f1, false),
+            Some((
+                Invocation::shortcut(ShortcutAction::ShortcutHelp),
+                KeyClaim::Take
+            ))
+        );
+        assert_eq!(
+            Invocation::shortcut(ShortcutAction::ShortcutHelp).arguments["action"],
+            "shortcut_help"
+        );
+        // The lock screen shows no desktop, and no guide to its keys.
+        assert_eq!(keys.resolve(&f1, true), None);
+    }
+
+    #[test]
+    fn the_shortcut_guide_holds_back_the_desktops_chords_while_it_is_up() {
+        let (mut keys, guide) = with_guide();
+        let logo = KeyModifiers {
+            logo: true,
+            ..KeyModifiers::default()
+        };
+        let space = key(keysyms::space, Some(' '), logo);
+        assert_eq!(keys.claim_key(&space, false), KeyClaim::Take);
+        keys.key(&space);
+        assert!(
+            keys.invocations.borrow().is_empty(),
+            "search must not open on the guide: {:?}",
+            keys.invocations.borrow()
+        );
+        // The guide's own key still reaches the desktop, which closes it.
+        let f1 = key(keysyms::F1, None, KeyModifiers::default());
+        assert_eq!(keys.claim_key(&f1, false), KeyClaim::Take);
+        keys.key(&f1);
+        assert_eq!(
+            keys.invocations.borrow().as_slice(),
+            [Invocation::shortcut(ShortcutAction::ShortcutHelp)]
+        );
+        // A key that answers nothing at all is not the guide's to take: the
+        // sheet behind it moves its focus with Tab.
+        let tab = key(keysyms::Tab, None, KeyModifiers::default());
+        assert_eq!(keys.claim_key(&tab, false), KeyClaim::Pass);
+        // A hardware key changes a level whatever is on screen.
+        let volume = key(
+            keysyms::XF86_AudioRaiseVolume,
+            None,
+            KeyModifiers::default(),
+        );
+        assert_eq!(keys.claim_key(&volume, false), KeyClaim::TakeRepeating);
+        keys.invocations.borrow_mut().clear();
+        keys.key(&volume);
+        assert_eq!(
+            keys.invocations.borrow().as_slice(),
+            [Invocation::new(QUICK_SETTINGS, "volume-up").showing(OsdKind::Volume)]
+        );
+        assert_eq!(guide.take_caught(), []);
+    }
+
+    #[test]
+    fn the_shortcut_guide_takes_the_next_chord_while_it_waits() {
+        let (mut keys, guide) = with_guide();
+        guide.listen_for("search");
+        let control = KeyModifiers {
+            ctrl: true,
+            ..KeyModifiers::default()
+        };
+        let j = key(keysyms::j, Some('j'), control);
+        assert_eq!(keys.claim_key(&j, false), KeyClaim::Take);
+        keys.key(&j);
+        assert_eq!(
+            guide.take_caught(),
+            [Caught::Chord(KeyChord::parse("Ctrl+J").expect("a chord"))]
+        );
+        assert!(
+            keys.invocations.borrow().is_empty(),
+            "the chord is the guide's, not the desktop's"
+        );
+        // A modifier on its own is no chord.
+        let shift = key(
+            keysyms::Shift_L,
+            None,
+            KeyModifiers {
+                shift: true,
+                ..KeyModifiers::default()
+            },
+        );
+        keys.key(&shift);
+        assert_eq!(guide.take_caught(), []);
+        // Escape leaves the waiting to the guide, which stays up.
+        let escape = key(keysyms::Escape, None, KeyModifiers::default());
+        assert_eq!(keys.claim_key(&escape, false), KeyClaim::Take);
+        keys.key(&escape);
+        assert_eq!(guide.take_caught(), [Caught::Cancelled]);
+        assert_eq!(guide.listening(), None);
+        assert!(guide.up(), "the guide itself stays up");
     }
 }

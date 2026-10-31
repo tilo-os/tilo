@@ -712,14 +712,19 @@ impl AppBrokerState {
             | RemoteActionMessage::FeedbackRequest { .. }
             // Questions travel between a person's own devices; an
             // application neither asks nor answers them.
-            | RemoteActionMessage::ConfirmationRequest { .. } => None,
+            | RemoteActionMessage::ConfirmationRequest { .. }
+            // Readings are served to the surfaces a session places, over the
+            // connection it hands them; an app follows a resource by
+            // watching it.
+            | RemoteActionMessage::ResourceWatch { .. } => None,
             RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
             | RemoteActionMessage::RecordResponse { .. }
             | RemoteActionMessage::FeedbackResponse { .. }
-            | RemoteActionMessage::ConfirmationResponse { .. } => Some(person.clone()),
+            | RemoteActionMessage::ConfirmationResponse { .. }
+            | RemoteActionMessage::ResourceReading { .. } => Some(person.clone()),
         };
         permitted.ok_or_else(|| {
             Box::new(refuse(message, ActionHostError::NotPermitted).unwrap_or(

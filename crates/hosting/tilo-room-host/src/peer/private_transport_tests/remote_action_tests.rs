@@ -57,6 +57,7 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         own_user_public_key: &user.public_key,
         own_device_cert: &host.cert,
         own_device_public_key: &host.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: Some(&plane),
         metrics: &metrics,
         trust_policy: &trust,
@@ -187,6 +188,7 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
         own_user_public_key: &user.public_key,
         own_device_cert: &host.cert,
         own_device_public_key: &host.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: Some(&plane),
         metrics: &metrics,
         trust_policy: &trust,
@@ -264,7 +266,7 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
 #[tokio::test]
 async fn route_private_refuses_an_agent_whose_delegation_expired() {
     let (root, user) = UserIdentity::generate("alice", 1);
-    let (a, _) = certified_device(&root, user.public_key, "a");
+    let (a, a_key) = certified_device(&root, user.public_key, "a");
     let (b, _) = certified_device(&root, user.public_key, "b");
     let room = uuid::Uuid::from_u128(7);
     let id = crate::room_workspace_id(&room.to_string()).unwrap();
@@ -324,6 +326,7 @@ async fn route_private_refuses_an_agent_whose_delegation_expired() {
         own_user_public_key: &user.public_key,
         own_device_cert: &a.cert,
         own_device_public_key: &a.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: None,
         metrics: &metrics,
         trust_policy: &trust,
@@ -367,14 +370,17 @@ async fn route_private_refuses_an_agent_whose_delegation_expired() {
         .unwrap()
     };
 
-    assert_eq!(route_private(&action, &a, &session).await.unwrap(), None);
+    assert_eq!(
+        route_signed(&a_key, &action, &a, &session).await.unwrap(),
+        None
+    );
     assert!(matches!(bpr.try_recv(), Ok(PrivateOutbound::Delivery(_))));
 
     for agent in [a.device_public_key, b.device_public_key] {
         agents.write().unwrap().clear();
         agents.write().unwrap().insert(agent, Some(expired(agent)));
         assert_eq!(
-            route_private(&action, &a, &session).await.unwrap(),
+            route_signed(&a_key, &action, &a, &session).await.unwrap(),
             Some(UnavailableReason::NotAuthorised),
             "an expired agent at either end is refused per frame"
         );
@@ -482,6 +488,7 @@ async fn requests_the_plane_does_not_answer_are_refused() {
         own_user_public_key: &user.public_key,
         own_device_cert: &host.cert,
         own_device_public_key: &host.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: Some(&silent),
         metrics: &metrics,
         trust_policy: &trust,

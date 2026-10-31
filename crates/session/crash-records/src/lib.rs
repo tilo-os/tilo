@@ -37,7 +37,7 @@ use std::time::Duration;
 
 pub use news::{Ended, NOTICED, News, take_news};
 pub use records::{STOPPED_SUFFIX, list, read, summarize};
-pub use service::{CRASH_RECORD_KIND, CRASH_RECORDS_KIND, CRASH_RECORDS_RESOURCE, CrashRecords};
+pub use service::{CRASH_RECORD_KIND, CRASH_RECORDS_KIND, CrashRecords};
 
 /// The heading of a record of a session that panicked.
 pub const PANIC_TITLE: &str = "tilo session panic";

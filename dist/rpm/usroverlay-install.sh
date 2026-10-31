@@ -23,12 +23,14 @@ rpm_arch=$(rpm --eval '%{_arch}')
 rpms_dir=$repo_root/dist/rpm/build/RPMS/$rpm_arch
 
 runtime_files=(
+    /usr/bin/tilo-session
     /usr/bin/tilo-shell
     /usr/libexec/tilo/tilo-launcher
     /usr/libexec/tilo-session
     /usr/libexec/tilo-unlock-helper
     /usr/lib/systemd/user/tilo-graphical-session.target
     /usr/share/wayland-sessions/tilo.desktop
+    /usr/share/wayland-sessions/tilo-shell.desktop
     /usr/share/xdg-desktop-portal/tilo-portals.conf
     /usr/share/xdg-desktop-portal/portals/tilo.portal
     /etc/pam.d/tilo-unlock

@@ -7,9 +7,25 @@
 
 use std::sync::{Arc, Mutex};
 
+use settings_store::notification_policy::AppNotificationRule;
+use settings_store::system_sounds::{SystemSoundEvent, SystemSoundPrefs, should_play};
 use tilo_notifications_service::{Caller, ImageData, Occurrence, Taken};
+use tilo_power_mgmt::inhibit::INHIBIT_IDLE;
+use tilo_session_power::PowerLink;
 
 use super::*;
+
+/// What an app with a launcher-verified identity sent.
+fn from_app(
+    mut notification: tilo_notifications_service::Notification,
+    app_id: &str,
+) -> tilo_notifications_service::Notification {
+    notification.caller = Some(Caller {
+        app_id: app_id.into(),
+        workspace: None,
+    });
+    notification
+}
 
 fn sent(id: u32) -> tilo_notifications_service::Notification {
     let mut notification = tilo_notifications_service::Notification::new(id);
@@ -42,6 +58,7 @@ struct Rig {
     bridge: SessionNotifications,
     policy: Arc<Mutex<NotificationPolicy>>,
     signals: Rc<NoticeSignals>,
+    power: PowerLink,
     heard: Arc<Heard>,
 }
 
@@ -72,12 +89,14 @@ fn rig() -> Rig {
     desktop.show_banners_elsewhere();
     let policy = Arc::new(Mutex::new(NotificationPolicy::default()));
     let signals = Rc::new(NoticeSignals::default());
+    let power = PowerLink::default();
     let bridge = SessionNotifications::new(
         Some(daemon.clone()),
         desktop.clone(),
         Link::new(),
         Arc::clone(&policy),
         Rc::clone(&signals),
+        Some(power.clone()),
     );
     Rig {
         daemon,
@@ -85,6 +104,7 @@ fn rig() -> Rig {
         bridge,
         policy,
         signals,
+        power,
         heard,
     }
 }
@@ -413,6 +433,159 @@ fn do_not_disturb_holds_the_banner_and_the_bar_says_why() {
     assert!(!rig.signals.quiet());
 }
 
+/// While an app presents it holds the machine from going idle, which is how
+/// the desk knows the screen is being watched by others: a notification
+/// arriving then makes no sound, its banner is held, and the bar and the
+/// centre say why without the person's own Do Not Disturb switch moving.
+#[test]
+fn presenting_holds_the_banner_and_silences_it_without_touching_do_not_disturb() {
+    let mut rig = rig();
+    let presenting = rig.power.registry().acquire_for("Presenting", INHIBIT_IDLE);
+    assert!(rig.power.idle_held());
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(sent(id));
+    rig.step();
+    assert!(rig.feed().banners.is_empty(), "quiet holds the banner");
+    assert_eq!(rig.history(), ["New mail"], "it goes to the centre");
+    assert!(rig.signals.quiet(), "the bar shows a silenced bell");
+    assert_eq!(rig.signals.unread(), 1, "and counts it unread");
+    assert!(
+        !rig.policy.lock().unwrap().do_not_disturb,
+        "presenting never rewrites the person's switch"
+    );
+    let label = notifications::quiet_label(&QuietReason::Presenting);
+    assert_eq!(
+        rig.bridge.view().quiet.as_deref(),
+        Some(label.as_str()),
+        "the bar and the centre say the person is presenting"
+    );
+    assert!(
+        !should_play(
+            SystemSoundEvent::Notification,
+            &SystemSoundPrefs::default(),
+            rig.bridge.quiet_state(),
+            true,
+        ),
+        "an arrival while presenting makes no sound"
+    );
+
+    drop(presenting);
+    assert!(!rig.power.idle_held());
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(sent(id));
+    rig.step();
+    assert_eq!(
+        rig.feed().banners.len(),
+        1,
+        "it shows again once the hold is gone"
+    );
+    assert!(!rig.signals.quiet());
+    assert_eq!(rig.bridge.view().quiet, None);
+    assert!(
+        should_play(
+            SystemSoundEvent::Notification,
+            &SystemSoundPrefs::default(),
+            rig.bridge.quiet_state(),
+            true,
+        ),
+        "and sounds again"
+    );
+}
+
+/// An app the person silenced on screen still tells them what arrived: the
+/// banner is held, the centre keeps it and the bar counts it unread.
+#[test]
+fn an_app_with_its_banners_off_still_reaches_the_centre() {
+    let mut rig = rig();
+    rig.policy.lock().unwrap().per_app.insert(
+        "so.tilo.mail".into(),
+        AppNotificationRule {
+            banners: Some(false),
+            ..AppNotificationRule::default()
+        },
+    );
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
+    rig.step();
+    assert!(rig.feed().banners.is_empty(), "nothing is put on screen");
+    assert_eq!(rig.history(), ["New mail"], "the centre keeps it");
+    assert_eq!(rig.signals.unread(), 1, "the bar counts it unread");
+
+    // An app with no rule of its own keeps its banners.
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(from_app(sent(id), "so.tilo.chat"));
+    rig.step();
+    assert_eq!(
+        rig.feed().banners.len(),
+        1,
+        "only the silenced app is quiet"
+    );
+    assert_eq!(rig.signals.unread(), 2);
+}
+
+/// An app whose previews are off shows its banner without the body, and
+/// the centre still has what was said.
+#[test]
+fn an_app_with_previews_off_shows_no_body_on_its_banner() {
+    let mut rig = rig();
+    rig.policy.lock().unwrap().per_app.insert(
+        "so.tilo.mail".into(),
+        AppNotificationRule {
+            previews: Some(false),
+            ..AppNotificationRule::default()
+        },
+    );
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
+    rig.step();
+    let banner = rig.banner();
+    assert!(!banner.show_preview, "the body stays hidden");
+    assert_eq!(banner.body, "From Ada", "but it is not lost");
+    assert_eq!(banner.title, "New mail", "the title still says it arrived");
+
+    rig.ask(Ask::Read(banner.id));
+    rig.step();
+    assert_eq!(
+        rig.desktop.log().history()[0].body,
+        "From Ada",
+        "the centre lists it in full"
+    );
+}
+
+/// An app the person keeps off the lock screen is marked so, while an app
+/// following the global preference is shown there.
+#[test]
+fn an_app_kept_off_the_lock_screen_says_so_on_its_notification() {
+    let mut rig = rig();
+    rig.policy.lock().unwrap().show_on_lock_screen = true;
+    rig.policy.lock().unwrap().per_app.insert(
+        "so.tilo.mail".into(),
+        AppNotificationRule {
+            lock_screen: Some(false),
+            ..AppNotificationRule::default()
+        },
+    );
+    for app_id in ["so.tilo.mail", "so.tilo.chat"] {
+        let id = rig.daemon.alloc_id();
+        rig.daemon.push(from_app(sent(id), app_id));
+    }
+    rig.step();
+    let feed = rig.feed();
+    assert_eq!(feed.banners.len(), 2);
+    let allowed = |app_id: &str| {
+        feed.banners
+            .iter()
+            .find(|banner| banner.notification.app_id.as_deref() == Some(app_id))
+            .map(|banner| banner.notification.show_on_lock_screen)
+            .expect("its banner")
+    };
+    assert!(!allowed("so.tilo.mail"), "kept off the lock screen");
+    assert!(
+        allowed("so.tilo.chat"),
+        "shown there as the global rule says"
+    );
+}
+
 #[test]
 fn an_apps_badge_follows_its_count_until_this_person_hides_it() {
     let mut rig = rig();
@@ -528,4 +701,28 @@ fn a_chosen_banner_hands_its_app_a_token_to_raise_its_window() {
     assert_eq!(rig.heard(), [(id, "action default".into())]);
     assert_eq!(rig.tokens(), [Some("token-1".into())]);
     assert!(!rig.live(id), "and the banner closes behind it");
+}
+
+#[test]
+fn a_critical_arrival_gets_the_error_sound_and_a_silenced_one_none() {
+    let mut critical = sent(1);
+    critical.urgency = 2;
+    assert_eq!(
+        sound_event(&critical),
+        Some(SystemSoundEvent::Error),
+        "a failed job gets the error voice, which plays through quiet modes"
+    );
+
+    let mut device = sent(2);
+    device.category = Some("device.added".into());
+    assert_eq!(
+        sound_event(&device),
+        Some(SystemSoundEvent::DeviceConnected),
+        "an ordinary arrival keeps its category's sound"
+    );
+
+    let mut silenced = sent(3);
+    silenced.urgency = 2;
+    silenced.suppress_sound = true;
+    assert_eq!(sound_event(&silenced), None, "a sender may ask for none");
 }

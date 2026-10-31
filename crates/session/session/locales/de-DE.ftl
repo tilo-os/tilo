@@ -1,6 +1,7 @@
 # Hinweise, die die Sitzung der Person zeigt: knapper Speicher, ankommende
-# Medien-Codecs, eine beendete Sitzung oder ein angehaltener Computer und ein
-# Update, das auf einen Neustart wartet.
+# Medien-Codecs, eine beendete Sitzung oder ein angehaltener Computer, ein
+# Update, das auf einen Neustart wartet, und eine Grafik, die nicht mehr
+# reagiert.
 storage-app-name = Speicher
 storage-volume-home = deine Dateien
 storage-volume-system = das System
@@ -8,6 +9,10 @@ storage-low-title = Der Speicher ist fast voll
 storage-low-body = Noch { $free } frei für { $volume }. Lösche große Downloads oder öffne Einstellungen, Speicher, um Platz zu schaffen.
 storage-full-title = Der Speicher ist voll
 storage-full-body = Nur noch { $free } frei für { $volume }. Neue Dateien und Änderungen werden eventuell erst gespeichert, wenn wieder Platz ist. Alles andere funktioniert weiter.
+
+graphics-app-name = Grafik
+graphics-stopped-title = Grafik reagiert nicht mehr
+graphics-stopped-body = Alles funktioniert weiter, ist aber möglicherweise langsamer, bis du den Computer neu startest.
 
 codec-app-name = Video- und Audioformate
 codec-hardware-ready = Hardware-H.264/HEVC ist bereit
@@ -28,6 +33,11 @@ system-update-app-name = Updates
 system-update-restart-title = Neu starten, um die Updates abzuschließen
 system-update-restart-body = Deine Fenster sind nach dem Neustart wieder da.
 power-restart = Neu starten
+
+## Ein Anzeigewerkzeug wollte eine Anzeigeanordnung erneut anwenden, die die
+## Person gerade zurückgesetzt hatte.
+display-tool-reapply-refused = { $tool } wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
+display-tool-reapply-refused-unknown = Ein Anzeigewerkzeug wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
 
 ## Die eigenen Ressourcen der Sitzung: die Eingabegeräte, der Bildschirm, das
 ## Nachtlicht, die Lupe, die Bildschirme und die Zwischenablage.
@@ -52,3 +62,15 @@ session-param-displays-mode = Wie die Bildschirme zusammen genutzt werden: erwei
 session-clipboard = Zwischenablage
 session-clipboard-paste-files = Dateien hier einfügen
 session-param-paste-destination = Der Ordner, in den die kopierten Dateien eingefügt werden
+
+## A timer Clocks ran in the background has come due.
+clock-due-title = Uhren
+clock-due-body = Die Zeit ist abgelaufen
+
+## Ein Laufwerk wurde eingesteckt und lässt sich öffnen oder auswerfen.
+drives-app-name = Laufwerke
+drives-medium-title = { $name } ({ $size })
+drives-unnamed = Wechseldatenträger
+drives-body = Eingesteckt. Öffne es, um zu sehen, was darauf ist, oder wirf es aus, bevor du es abziehst.
+drives-open = Öffnen
+drives-eject = Auswerfen

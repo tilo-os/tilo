@@ -3,6 +3,8 @@
 
 use serde::Serialize;
 
+pub use tilo_power_mgmt::sysfs::ChargeCapCapability;
+
 /// A low or critical battery notice, in the words a banner shows.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Notice {
@@ -28,6 +30,10 @@ pub struct Battery {
     /// while the rate is not known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub minutes_left: Option<u32>,
+    /// The charge limit the pack's driver offers, its current setting and
+    /// the values it takes; absent where the hardware offers none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub charge_limit: Option<ChargeCapCapability>,
     /// The notice no surface has shown yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notice: Option<Notice>,

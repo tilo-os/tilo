@@ -1,5 +1,5 @@
-//! What a window shows in place of an app that crashed: what happened, in
-//! plain words, and a button that opens the app in it again.
+//! What a window shows in place of an app that is not running any more: what
+//! happened, in plain words, and a button that opens the app in it again.
 //!
 //! A browser page cannot survive a panic, so the page starts over and the
 //! window whose app crashed comes back showing this instead of running the
@@ -13,17 +13,43 @@ use ui::widget::{
 /// The Reopen button's id, for tests and assistive technology.
 pub const REOPEN_ID: &str = "crashed-app-reopen";
 
-/// A window whose app crashed an earlier load of the page.
+/// Why the app the window shows is not running any more.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Closed {
+    /// It stopped working.
+    #[default]
+    Crashed,
+    /// The session closed it to free the memory it held.
+    Memory,
+    /// It kept taking more memory, so the session closed it to keep the rest
+    /// of the desktop running.
+    Runaway,
+}
+
+impl Closed {
+    /// The words that say why the app is not here, naming it.
+    #[must_use]
+    pub fn detail(self, app: &str) -> String {
+        let key = match self {
+            Self::Crashed => "browser-app-crashed",
+            Self::Memory => "browser-app-closed-for-memory",
+            Self::Runaway => "browser-app-closed-for-runaway",
+        };
+        crate::i18n::t_args(key, &[("app", app.into())])
+    }
+}
+
+/// A window whose app is not running any more.
 pub struct CrashedApp {
     title: String,
     inner: Element,
 }
 
 impl CrashedApp {
-    /// The notice for the app `title`; `reopen` runs when the person asks
-    /// for the app again.
-    pub fn new(title: &str, reopen: impl FnMut() + 'static) -> Self {
-        let detail = crate::i18n::t_args("browser-app-crashed", &[("app", title.into())]);
+    /// The notice for the app `title`, closed for `closed`; `reopen` runs
+    /// when the person asks for the app again.
+    pub fn new(title: &str, closed: Closed, reopen: impl FnMut() + 'static) -> Self {
+        let detail = closed.detail(title);
         let body = Column::new()
             .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Related)
@@ -79,7 +105,9 @@ mod tests {
     fn reopen_asks_for_the_app_again() {
         let asked = Rc::new(Cell::new(0));
         let counted = Rc::clone(&asked);
-        let notice = CrashedApp::new("Canvas", move || counted.set(counted.get() + 1));
+        let notice = CrashedApp::new("Canvas", Closed::Crashed, move || {
+            counted.set(counted.get() + 1);
+        });
         let mut frame =
             ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(notice), (640, 420));
         frame.relayout();
@@ -95,5 +123,33 @@ mod tests {
             .perform_named(REOPEN_ID, &ui::a11y::Action::Activate)
             .unwrap();
         assert_eq!(asked.get(), 1, "Reopen asked for the app once");
+    }
+
+    /// An app the session closed to free memory says that, not that it
+    /// stopped working, and still offers to open it again.
+    #[test]
+    fn an_app_closed_for_memory_says_why() {
+        for (closed, said) in [
+            (Closed::Memory, "closed to free memory"),
+            (Closed::Runaway, "was using too much memory"),
+        ] {
+            let notice = CrashedApp::new("Canvas", closed, || {});
+            let mut frame = ui::headless::FrameHarness::new(
+                ui::state::State::new(),
+                Box::new(notice),
+                (640, 420),
+            );
+            frame.relayout();
+            let texts = ui::a11y::texts(frame.root_widget());
+            assert!(
+                texts.iter().any(|text| text.contains(said)),
+                "{closed:?}: {texts:?}"
+            );
+            assert!(
+                !texts.iter().any(|text| text.contains("stopped working")),
+                "the session did not crash it: {texts:?}"
+            );
+            assert!(texts.iter().any(|text| text == "Reopen"), "{texts:?}");
+        }
     }
 }

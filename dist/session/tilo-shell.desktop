@@ -1,0 +1,16 @@
+[Desktop Entry]
+# The compositor Tilo's native session replaces, offered beside it on a host
+# while the shell is still shipped; it goes away with the shell crate.
+#
+# `Exec` runs the same package-owned wrapper as tilo.desktop with `--shell`,
+# which starts /usr/bin/tilo-shell instead of /usr/bin/tilo-session, with the
+# same graphical targets, activation environment and flight record. Its name
+# sorts after "Tilo" and it does not declare itself the default, so it is the
+# second entry a picker offers.
+Name=Tilo (old shell)
+GenericName=Collaborative spatial desktop
+Comment=Tilo's previous compositor as a session on this machine
+Exec=/usr/libexec/tilo-session --shell
+TryExec=/usr/bin/tilo-shell
+Type=Application
+DesktopNames=tilo

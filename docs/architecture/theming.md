@@ -240,7 +240,7 @@ The theme a person sees is resolved from layers, lowest to highest:
 |---|---|---|---|
 | 1 | Built-in defaults | the toolkit, in code | `Preset::Dark` |
 | 2 | **Distribution defaults** (`appearance_device.distribution_defaults` / `appearance_device.distribution`) | whoever ships the OS image | a preset id or a whole document, and pins |
-| 3 | User theme | the person, through Settings and Theme Studio, or an agent through the same actions | the theme for the current mode, the person's density, and their finish over it (`FinishLayer`: the interface face and how much of the theme's translucency they keep) |
+| 3 | User theme | the person, through Settings and Theme Studio, or an agent through the same actions | the theme for the current mode, the person's density, and their finish over it (`FinishLayer`: the interface face, the accent and how much of the theme's translucency they keep) |
 | 4 | Window | the shell, per window | the neutral hue of the workspace the window is in, and the person's colour (`WindowAppearance`) |
 | 5 | Accessibility | the person or assistive policy | high contrast / forced colours, text scale, UI scale, reduce motion, reduce transparency, thick caret, the Hyperlegible face |
 
@@ -266,14 +266,16 @@ section (`theme_layers::user_document`):
 | `custom_themes` | the documents a `custom:<id>` names (Theme Studio writes them when it applies one) |
 | `density` | the person's spacing over whichever theme is shown (Compact 0.85, Regular 1, Roomy 1.2) |
 | `ui_face` | the face the person reads best, over the theme's (`Default`, `Hyperlegible`, any family name); absent or `null` follows the theme |
+| `accent` | the accent they chose, by a name the presence palette gives a hue (`violet`, `teal`); absent or `null` follows the theme's emphasis |
 | `translucency` | how much of the theme's translucency they keep: 1 as the theme sets it, 0 opaque floating chrome; absent or `null` follows the theme |
 
-Neither `ui_face` nor `translucency` is a new role: both name a role the
-theme already has (`type`, `material`), so a person who cannot read the
-theme's face or wants menus opaque need not write a theme of their own.
-A distribution that pins `type` or `material` keeps its choice, and the
-accessibility layer is applied after both (high contrast and "make panels
-opaque" still win).
+None of `ui_face`, `accent` or `translucency` is a new role: each names a
+role the theme already has (`type`, `emphasis`, `material`), so a person who
+cannot read the theme's face, wants their own accent colour or wants menus
+opaque need not write a theme of their own. A distribution that pins `type`,
+`emphasis` or `material` keeps its choice, a high-contrast palette has no
+accent to give, and the accessibility layer is applied after all three (high
+contrast and "make panels opaque" still win).
 
 A section with none of `mode`, `dark_theme`, `light_theme` is no user
 theme, so distribution defaults still show.
@@ -442,7 +444,7 @@ Verified against the code at the time of writing:
   make the tab strip solid and drop the rim.
 - **Theme Studio** (`apps/themes`) edits the document role by role with
   live findings and applies or exports only legible themes. Settings'
-  Appearance page offers the theme, density, interface size, face,
+  Appearance page offers the theme, density, interface size, face, accent,
   translucency and colour; none of them needs a theme of one's own.
 - **Hard-coded colours in apps.** The HIG §9.13 `theme` and `app-paint`
   ratchets count literal colours, `Color::WHITE`/`BLACK`, ramp slots and

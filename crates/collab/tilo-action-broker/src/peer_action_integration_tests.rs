@@ -113,8 +113,10 @@ async fn reply(client: &RelayClient, id: Uuid) -> ActionMessage {
     tilo_test_env::within("the reply to this request", async {
         loop {
             match client.recv_action().await.unwrap() {
-                EnvelopeV2::Delivered { action, .. } if action.request_id == id => {
-                    return action.message;
+                EnvelopeV2::CertifiedSignedDelivered { action, .. }
+                    if action.action().request_id == id =>
+                {
+                    return action.action().message.clone();
                 }
                 EnvelopeV2::Unavailable {
                     request_id, reason, ..
@@ -128,13 +130,13 @@ async fn reply(client: &RelayClient, id: Uuid) -> ActionMessage {
 fn send(client: &RelayClient, room: Uuid, seed: u8, message: ActionMessage) -> Uuid {
     let request_id = Uuid::new_v4();
     client
-        .send_action(EnvelopeV2::Directed(DirectedAction {
+        .send_directed(&DirectedAction {
             room,
             request_id,
             source: device(seed, false).1.device_public_key,
             target: device(54, false).1.device_public_key,
             message,
-        }))
+        })
         .unwrap();
     request_id
 }
@@ -289,7 +291,8 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         // host sent so far, is the first thing it hears.
         let sentinel = send(&other, room, 53, ActionMessage::CatalogueRefresh { scope: None });
         match tilo_test_env::within("the other owner's own read", other.recv_action()).await.unwrap() {
-            EnvelopeV2::Delivered { action, .. } if action.request_id == sentinel => {}
+            EnvelopeV2::CertifiedSignedDelivered { action, .. }
+                if action.action().request_id == sentinel => {}
             EnvelopeV2::Unavailable { request_id, .. } if request_id == sentinel => {}
             frame => panic!("other certified owner never receives private notifications: {frame:?}"),
         }
@@ -385,10 +388,14 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let mut blocked = request.clone(); blocked.invocation = tilo_actions::InvocationId::new();
         let refused = send(&caller, room, 52, invoke(&blocked));
         tilo_test_env::within("the refused request to be rejected", async { loop {
-            if let Some(EnvelopeV2::Delivered { action, .. }) = caller.recv_action().await
-                && action.request_id == refused
+            if let Some(EnvelopeV2::CertifiedSignedDelivered { action, .. }) =
+                caller.recv_action().await
+                && action.action().request_id == refused
             {
-                assert!(matches!(action.message, ActionMessage::Rejected { .. }));
+                assert!(matches!(
+                    action.action().message,
+                    ActionMessage::Rejected { .. }
+                ));
                 break;
             }
         }}).await;
@@ -403,7 +410,14 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let unavailable = send(&caller, room, 52, ActionMessage::Status { invocation: unconfirmed.invocation });
         tilo_test_env::within("the refused request to become unavailable", async { loop {
             match caller.recv_action().await {
-                Some(EnvelopeV2::Delivered { action, .. }) if action.request_id == withdrawn => assert!(matches!(action.message, ActionMessage::Rejected { .. })),
+                Some(EnvelopeV2::CertifiedSignedDelivered { action, .. })
+                    if action.action().request_id == withdrawn =>
+                {
+                    assert!(matches!(
+                        action.action().message,
+                        ActionMessage::Rejected { .. }
+                    ));
+                }
                 Some(EnvelopeV2::Unavailable { request_id, .. }) if request_id == unavailable => break,
                 None => break,
                 _ => {},
@@ -659,9 +673,9 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
     relay.shutdown().await;
 }
 
-/// A device session spoken frame by frame, so a test sends exactly what an
-/// older build or a misbehaving device would: an unsigned action on
-/// `tilo-relay/3`, or a chosen signed frame, stale or repeated, on `tilo-relay/4`.
+/// A device session spoken frame by frame, so a test sends exactly what a
+/// misbehaving device would: a chosen signed frame, stale or repeated, on
+/// `tilo-relay/4`.
 struct RawSession {
     _endpoint: iroh::Endpoint,
     _connection: iroh::endpoint::Connection,
@@ -734,8 +748,10 @@ impl RawSession {
     /// The broker's answer to `id`, or the host's refusal to route it.
     async fn answer(&mut self, id: Uuid) -> Answer {
         self.until("the answer to this request", |frame| match frame {
-            EnvelopeV2::Delivered { action, .. } if action.request_id == id => {
-                Some(Ok(action.message))
+            EnvelopeV2::CertifiedSignedDelivered { action, .. }
+                if action.action().request_id == id =>
+            {
+                Some(Ok(action.action().message.clone()))
             }
             EnvelopeV2::Unavailable {
                 request_id, reason, ..
@@ -798,29 +814,14 @@ async fn native_peer_facade_admits_effects_only_on_their_source_device_signature
         let server_session = session.clone();
         let server = tokio::spawn(async move { queue.serve(server_session, room, host).await });
         let mut current = RawSession::open(&relay, 52, room, tilo_relay::ALPN).await;
-        let mut older = RawSession::open(&relay, 53, room, tilo_relay::ALPN).await;
         tilo_test_env::within("the attached broker to serve reads", async { let mut patience = ASK_AGAIN; loop {
             let read = directed(room, 52, ActionMessage::CatalogueRefresh { scope: None });
             current.write(EnvelopeV2::SignedDirected(signed_by(&read, 52, now_ns()))).await;
             if matches!(tokio::time::timeout(patience, current.answer(read.request_id)).await, Ok(Ok(ActionMessage::BrokerCatalogue { .. }))) { break; }
             patience = patience.saturating_mul(2);
         }}).await;
-
-        // A device that does not sign, or a host vouching for a device it
-        // never heard from: the broker sees an unsigned delivery under a valid member
-        // certificate. Reads are still served; effects are refused before any
-        // admission, with a code that says why.
-        let read = directed(room, 53, ActionMessage::CatalogueRefresh { scope: None });
-        older.write(EnvelopeV2::Directed(read.clone())).await;
-        assert!(matches!(older.answer(read.request_id).await, Ok(ActionMessage::BrokerCatalogue { .. })));
         let mut unsigned = request.clone();
         unsigned.invocation = tilo_actions::InvocationId::new();
-        for message in [invoke(&unsigned), ActionMessage::Cancel { invocation: unsigned.invocation }] {
-            let effect = directed(room, 53, message);
-            older.write(EnvelopeV2::Directed(effect.clone())).await;
-            assert_eq!(older.answer(effect.request_id).await, Ok(rejected("action_signature_required")));
-        }
-        assert!(fixture.invocation_rx.try_recv().is_err(), "an unsigned effect never dispatches");
 
         // A signature by another device never leaves the host: device 53
         // signed it, and device 52's session claims it as its own.

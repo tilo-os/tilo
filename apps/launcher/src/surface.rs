@@ -35,8 +35,7 @@ use crate::source::{
 };
 
 /// The card's width on its own: the desktop's search card at its widest.
-// ratchet-allow(pixel_const): the search card's own width, scaled with the text, not spacing
-const CARD_WIDTH: f64 = 640.0; // allow-breakpoint: a size, not a layout decision
+const CARD_WIDTH: f64 = ui::tokens::Layout::BASE.search_card_width as f64;
 
 /// The launcher on screen.
 #[allow(

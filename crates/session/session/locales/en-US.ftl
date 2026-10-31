@@ -1,6 +1,6 @@
 # Notices the session shows the person: storage running out, the media codecs
-# arriving, the session or the computer having stopped, and an update waiting
-# for a restart.
+# arriving, the session or the computer having stopped, an update waiting for a
+# restart, and the machine's graphics having stopped.
 storage-app-name = Storage
 storage-volume-home = your files
 storage-volume-system = the system
@@ -8,6 +8,10 @@ storage-low-title = Storage is almost full
 storage-low-body = { $free } left for { $volume }. Delete large downloads or open Settings, Storage to free space.
 storage-full-title = Storage is full
 storage-full-body = Only { $free } left for { $volume }. New files and changes may not be saved until you free space. Everything else keeps working.
+
+graphics-app-name = Graphics
+graphics-stopped-title = Graphics stopped responding
+graphics-stopped-body = Everything keeps working, but may be slower until you restart the computer.
 
 codec-app-name = Video and audio formats
 codec-hardware-ready = Hardware H.264/HEVC is ready
@@ -28,6 +32,10 @@ system-update-app-name = Updates
 system-update-restart-title = Restart to finish updating
 system-update-restart-body = Your windows come back after the restart.
 power-restart = Restart
+
+## A display tool tried to put back a layout the person had just reverted.
+display-tool-reapply-refused = { $tool } tried to reapply a display layout you reverted
+display-tool-reapply-refused-unknown = A display tool tried to reapply a display layout you reverted
 
 ## The session's own resources: the input devices, the screen, the night light,
 ## the magnifier, the displays and the clipboard.
@@ -52,3 +60,15 @@ session-param-displays-mode = How the displays are used together: extend, mirror
 session-clipboard = Clipboard
 session-clipboard-paste-files = Paste files here
 session-param-paste-destination = The folder the copied files are pasted into
+
+## A timer Clocks ran in the background has come due.
+clock-due-title = Clocks
+clock-due-body = Time is up
+
+## A drive was plugged in and is ready to open or eject.
+drives-app-name = Drives
+drives-medium-title = { $name } ({ $size })
+drives-unnamed = Removable drive
+drives-body = Plugged in. Open it to see what is on it, or eject it before you pull it out.
+drives-open = Open
+drives-eject = Eject

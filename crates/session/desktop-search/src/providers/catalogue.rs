@@ -199,6 +199,10 @@ impl Source for StoreCatalogue {
         "store-catalogue"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-store")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         if needle.trim().is_empty() {
             return Vec::new();

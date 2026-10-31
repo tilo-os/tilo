@@ -15,6 +15,7 @@ pub mod apps;
 pub mod arrangement;
 pub mod bots;
 pub mod capability;
+pub mod closed_tabs;
 pub mod collaborator;
 pub mod commands;
 pub mod desktop_doc;
@@ -42,6 +43,7 @@ pub use app::{APP_ID_PREFIX, AppId, AppKind};
 pub use arrangement::{Arrangement, ArrangementKind, CANVAS_GAP, CanvasPlace};
 pub use bots::RoomBot;
 pub use capability::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope};
+pub use closed_tabs::{CLOSED_TABS_PER_WORKSPACE, ClosedTab, ClosedTabs, Leaving, Reopened};
 pub use collaborator::Collaborator;
 pub use ids::{
     FileId, GroupId, IdMinter, MintIds, PEER_ID_COUNTER_MASK, PEER_ID_SALT_SHIFT, RoomId, StripId,

@@ -111,7 +111,10 @@ pub struct Listing {
 }
 
 impl Listing {
-    fn matches(&self, query: &str) -> bool {
+    /// Whether the search `query` names this listing: its name, what it is,
+    /// or the host listing it.
+    #[must_use]
+    pub fn matches(&self, query: &str) -> bool {
         let query = query.trim().to_lowercase();
         query.is_empty()
             || [&self.name, &self.about, &self.host]

@@ -2,6 +2,10 @@
 //! a stable id resolves even when the open-resource tree carries only a
 //! prefix of the folder.
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "the rows are the mailroom's own, reading the mailroom module's types"
+)]
 use super::*;
 
 impl Mailroom {

@@ -1970,7 +1970,7 @@ pub use local_action_host::{CertifiedActionLifecycle, CertifiedPersonContext};
 
 pub use launchable::launchable_provider;
 #[path = "peer_action_broker.rs"]
-mod peer_action_broker;
+pub(crate) mod peer_action_broker;
 #[path = "policy_context.rs"]
 mod policy_context;
 #[path = "room_service.rs"]
@@ -15061,7 +15061,7 @@ pub mod tests {
                     actions: vec![action(
                         format!("document:{index}"),
                         "edit",
-                        Some("x".repeat(16 * 1024)),
+                        Some("x".repeat(64 * 1024)),
                     )],
                     live: true,
                 },

@@ -173,6 +173,9 @@ pub struct SearchField {
     reserve_count: bool,
     /// A scope token drawn before the text ("Only Inbox"), removable.
     scope_token: Option<String>,
+    /// The glyph the token starts with: what it narrowed into, never a
+    /// character baked into its text.
+    scope_token_icon: Icon,
     scope_token_rect: Rect,
     scope_cleared: bool,
     size: ControlSize,
@@ -229,6 +232,7 @@ impl SearchField {
             count: None,
             reserve_count: false,
             scope_token: None,
+            scope_token_icon: Icon::ChevronLeft,
             scope_token_rect: Rect::ZERO,
             scope_cleared: false,
             size: ControlSize::Regular,
@@ -276,6 +280,13 @@ impl SearchField {
     pub fn set_scope_token(&mut self, token: Option<String>) {
         self.scope_token = token;
         self.scope_token_rect = Rect::ZERO;
+    }
+
+    /// The glyph the scope token starts with: a chevron by default, since
+    /// the token names the scope the query was narrowed into. It is drawn by
+    /// the chip, so it is never a character in the token's text.
+    pub fn set_scope_token_icon(&mut self, icon: Icon) {
+        self.scope_token_icon = icon;
     }
 
     #[must_use]
@@ -619,9 +630,9 @@ impl SearchField {
             return 0.0;
         };
         let height = ControlSize::Small.height(theme) - 6.0;
-        let lead = crate::widget::ChipLead::Glyph(Icon::X);
+        let lead = crate::widget::ChipLead::Glyph(self.scope_token_icon);
         let natural =
-            crate::widget::ChipFace::intrinsic_width(&token, lead, false, text_renderer, theme);
+            crate::widget::ChipFace::intrinsic_width(&token, lead, true, text_renderer, theme);
         let max = (self.rect.width() * 0.5).max(height);
         let width = natural.min(max);
         let cy = self.rect.center().y;
@@ -631,12 +642,11 @@ impl SearchField {
             self.rect.x0 + ICON_GUTTER - 4.0 + width,
             cy + height / 2.0,
         );
-        crate::widget::ChipFace::new(chip, &token).lead(lead).paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-        );
+        let hovered = chip.contains(self.last_cursor);
+        crate::widget::ChipFace::new(chip, &token)
+            .lead(lead)
+            .removable(hovered)
+            .paint(scene, transform, text_renderer, theme);
         self.scope_token_rect = chip;
         width + 4.0
     }

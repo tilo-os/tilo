@@ -402,7 +402,7 @@ fn an_apps_notification_is_counted_on_the_bar() {
             .unwrap();
     });
     until(&mut session, |session| {
-        desk(session).unread == 1 && says(session, "1")
+        desk(session).unread == 1 && says(session, "Notifications, 1 unread")
     });
     keep(&mut session, "shell-bar-notification");
 }

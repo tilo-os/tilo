@@ -58,10 +58,8 @@ impl CertifiedAction {
     }
     /// The source device's signature over exactly [`Self::action`], already
     /// verified against [`Self::certificate`]'s device key on receipt. `None`
-    /// for an unsigned delivery, which a broker may serve only for an
-    /// effect-free read ([`ActionMessage::requires_signature`]).
-    ///
-    /// [`ActionMessage::requires_signature`]: tilo_delivery_protocol::peer_actions::ActionMessage::requires_signature
+    /// never reaches a target: no frame carries an unsigned action, and a
+    /// broker refuses a delivery without one.
     pub fn signed(&self) -> Option<&SignedDirectedAction> {
         self.signed.as_deref()
     }
@@ -184,13 +182,15 @@ fn action_in_scope(scope: &InteractiveWorkspaceScope, envelope: &EnvelopeV2) -> 
         | EnvelopeV2::Unavailable { room, .. }
         | EnvelopeV2::EnableBrokerClient { room }
         | EnvelopeV2::RegisterBroker { room, .. } => *room == scope.room,
-        EnvelopeV2::Directed(action)
-        | EnvelopeV2::Delivered { action, .. }
-        | EnvelopeV2::CertifiedDelivered { action, .. } => action.room == scope.room,
         EnvelopeV2::SignedDirected(signed)
         | EnvelopeV2::CertifiedSignedDelivered { action: signed, .. } => {
             signed.action().room == scope.room
         }
+        // Nothing sends a retired unsigned delivery; naming its room keeps
+        // the check total without treating one as deliverable.
+        EnvelopeV2::RetiredDirected(action)
+        | EnvelopeV2::RetiredDelivered { action, .. }
+        | EnvelopeV2::RetiredCertifiedDelivered { action, .. } => action.room == scope.room,
         // The session reader rebuilds a coded delta into `State`; one that
         // reached this check whole names no scope.
         EnvelopeV2::CodedDelta { .. } => false,
@@ -1154,42 +1154,36 @@ impl RelayClient {
                 "interactive owner trust does not cover this action room".into(),
             ));
         }
-        let frame = self.sign_own_action(frame)?;
         tilo_delivery_protocol::transport_v2::encode(&frame)
             .map_err(|e| ClientError::Codec(e.to_string()))?;
         tx.try_send(frame)
             .map_err(|error| private_send_error(&error))
     }
 
-    /// Sign a private action this device sends as its own source, when the
-    /// relay negotiated signed actions. An action naming another source stays
-    /// unsigned: the relay refuses it as it always has.
-    fn sign_own_action(&self, frame: EnvelopeV2) -> Result<EnvelopeV2, ClientError> {
-        match (frame, &self.action_key) {
-            (EnvelopeV2::Directed(action), Some(key))
-                if action.source == key.verifying_key().to_bytes() =>
-            {
-                SignedDirectedAction::sign(&action, tilo_clock::unix_now_ns(), key)
-                    .map(EnvelopeV2::SignedDirected)
-                    .map_err(|error| ClientError::Codec(error.to_string()))
-            }
-            (frame, _) => Ok(frame),
-        }
+    /// Sign `action` as this session's own device and queue it on the private
+    /// lane. A session without a device key sends no action at all: nothing
+    /// forwards an action no device signed.
+    pub fn send_directed(
+        &self,
+        action: &tilo_delivery_protocol::peer_actions::DirectedAction,
+    ) -> Result<(), ClientError> {
+        let key = self.action_key.as_ref().ok_or_else(|| {
+            ClientError::Codec("this session has no device key to sign an action with".into())
+        })?;
+        let signed = SignedDirectedAction::sign(action, tilo_clock::unix_now_ns(), key)
+            .map_err(|error| ClientError::Codec(error.to_string()))?;
+        self.send_action(EnvelopeV2::SignedDirected(signed))
     }
 
     /// Receive authenticated source evidence from this exact relay session.
     /// Only this method can construct the evidence; peer control frames cannot.
     ///
     /// A signed delivery is accepted only if the attached certificate's device
-    /// signed exactly this action; the relay cannot author or alter one. An
-    /// unsigned delivery is evidence of the relay's word alone, and is marked
-    /// so ([`CertifiedAction::signed`] is `None`).
+    /// signed exactly this action; the relay cannot author or alter one. No
+    /// other frame carries an action, so the relay's word is never evidence;
+    /// a delivery in one of the retired unsigned shapes is refused outright.
     pub async fn recv_certified_action(&self) -> Option<CertifiedActionEvent> {
         let (action, source_certificate, signed) = match self.recv_action().await? {
-            EnvelopeV2::CertifiedDelivered {
-                action,
-                source_certificate,
-            } => (action, source_certificate, None),
             EnvelopeV2::CertifiedSignedDelivered {
                 action,
                 source_certificate,
@@ -1198,13 +1192,22 @@ impl RelayClient {
                 source_certificate,
                 Some(Box::new(action)),
             ),
+            // A retired unsigned delivery is refused as if it had arrived
+            // with no signature at all: nothing here can attribute it.
+            frame if frame.retired_unsigned_action().is_some() => return None,
             other => return Some(CertifiedActionEvent::Control(other)),
         };
         let cert: DeviceCert = serde_json::from_slice(&source_certificate).ok()?;
         if action.target != self.own_device
             || action.source != cert.device_public_key
             || !action.validate()
-            || cert.capabilities.can_act_as_host
+            // A host may ask a device's action host (a placement, a
+            // governance answer) but never stands in for a broker's caller.
+            || (cert.capabilities.can_act_as_host
+                && !matches!(
+                    action.message,
+                    tilo_delivery_protocol::peer_actions::ActionMessage::Remote { .. }
+                ))
             || tilo_user_identity::verify_device_cert_at(&cert, tilo_clock::unix_now_ns()).is_err()
             || signed
                 .as_ref()
@@ -1984,13 +1987,22 @@ mod scheduling_tests {
     use uuid::Uuid;
 
     fn action() -> EnvelopeV2 {
-        EnvelopeV2::Directed(DirectedAction {
-            room: Uuid::from_u128(1),
-            request_id: Uuid::from_u128(2),
-            source: [1; 32],
-            target: [2; 32],
-            message: ActionMessage::CatalogueRefresh { scope: None },
-        })
+        EnvelopeV2::SignedDirected(
+            tilo_delivery_protocol::peer_actions::SignedDirectedAction::sign(
+                &DirectedAction {
+                    room: Uuid::from_u128(1),
+                    request_id: Uuid::from_u128(2),
+                    source: ed25519_dalek::SigningKey::from_bytes(&[1; 32])
+                        .verifying_key()
+                        .to_bytes(),
+                    target: [2; 32],
+                    message: ActionMessage::CatalogueRefresh { scope: None },
+                },
+                1,
+                &ed25519_dalek::SigningKey::from_bytes(&[1; 32]),
+            )
+            .unwrap(),
+        )
     }
 
     #[test]
@@ -2700,6 +2712,29 @@ mod session_carrier_tests {
     }
 
     #[tokio::test]
+    async fn a_retired_unsigned_delivery_is_refused() {
+        let fixture = fixture(true);
+        let action = signed_request(30, [30; 32]).action().clone();
+        for frame in [
+            EnvelopeV2::RetiredDirected(action.clone()),
+            EnvelopeV2::RetiredDelivered {
+                action: action.clone(),
+                source_user: [31; 32],
+            },
+            EnvelopeV2::RetiredCertifiedDelivered {
+                action,
+                source_certificate: Vec::new(),
+            },
+        ] {
+            fixture.incoming.send(frame).await.unwrap();
+            assert!(
+                fixture.client.recv_certified_action().await.is_none(),
+                "a retired unsigned delivery yields no evidence"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn private_evidence_still_binds_source_certificate_and_recipient() {
         let fixture = fixture(true);
         let cert = certificate(40, DeviceCapabilities::primary());
@@ -2712,11 +2747,15 @@ mod session_carrier_tests {
                 scope: None,
             },
         };
-        let frame = |action| EnvelopeV2::CertifiedDelivered {
+        let frame = |action| EnvelopeV2::CertifiedSignedDelivered {
             action,
             source_certificate: serde_json::to_vec(&cert).unwrap(),
         };
-        fixture.incoming.send(frame(action.clone())).await.unwrap();
+        fixture
+            .incoming
+            .send(frame(signed_request(40, cert.device_public_key)))
+            .await
+            .unwrap();
         let Some(CertifiedActionEvent::Delivered(evidence)) =
             fixture.client.recv_certified_action().await
         else {
@@ -2727,13 +2766,28 @@ mod session_carrier_tests {
             evidence.certificate().device_public_key,
             cert.device_public_key
         );
+        // The certificate names the source; a signature under it for any
+        // other claimed source is refused.
+        let stranger = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
         let mut wrong_source = action.clone();
-        wrong_source.source = [41; 32];
-        fixture.incoming.send(frame(wrong_source)).await.unwrap();
+        wrong_source.source = stranger.verifying_key().to_bytes();
+        let signed = tilo_delivery_protocol::peer_actions::SignedDirectedAction::sign(
+            &wrong_source,
+            tilo_clock::unix_now_ns(),
+            &stranger,
+        )
+        .unwrap();
+        fixture.incoming.send(frame(signed)).await.unwrap();
         assert!(fixture.client.recv_certified_action().await.is_none());
         let mut wrong_target = action;
         wrong_target.target = [31; 32];
-        fixture.incoming.send(frame(wrong_target)).await.unwrap();
+        let signed = tilo_delivery_protocol::peer_actions::SignedDirectedAction::sign(
+            &wrong_target,
+            tilo_clock::unix_now_ns(),
+            &ed25519_dalek::SigningKey::from_bytes(&[40; 32]),
+        )
+        .unwrap();
+        fixture.incoming.send(frame(signed)).await.unwrap();
         assert!(fixture.client.recv_certified_action().await.is_none());
     }
 
@@ -2797,50 +2851,55 @@ mod session_carrier_tests {
             .await
             .unwrap();
         assert!(fixture.client.recv_certified_action().await.is_none());
-        // An unsigned delivery is the relay's word alone, and says so.
+        // A frame that carries an action without a signature is no delivery
+        // at all: the relay cannot vouch for a caller.
         fixture
             .incoming
-            .send(EnvelopeV2::CertifiedDelivered {
-                action: signed.action().clone(),
-                source_certificate: serde_json::to_vec(&cert).unwrap(),
+            .send(EnvelopeV2::Unavailable {
+                room: uuid::Uuid::from_u128(1),
+                request_id: uuid::Uuid::from_u128(2),
+                target: [30; 32],
+                invocation: None,
+                reason: tilo_delivery_protocol::peer_actions::UnavailableReason::NotAuthorised,
             })
             .await
             .unwrap();
-        let Some(CertifiedActionEvent::Delivered(unsigned)) =
-            fixture.client.recv_certified_action().await
-        else {
-            panic!("unsigned delivery missing");
-        };
-        assert!(unsigned.signed().is_none());
+        assert!(matches!(
+            fixture.client.recv_certified_action().await,
+            Some(CertifiedActionEvent::Control(
+                EnvelopeV2::Unavailable { .. }
+            ))
+        ));
     }
 
     #[tokio::test]
-    async fn negotiated_session_signs_only_its_own_actions() {
+    async fn a_session_sends_actions_only_signed_with_its_own_device_key() {
         let mut fixture = fixture(true);
         let key = ed25519_dalek::SigningKey::from_bytes(&[30; 32]);
         let own = signed_request(30, key.verifying_key().to_bytes())
             .action()
             .clone();
         fixture.client.action_key = Some(key.clone());
-        fixture
-            .client
-            .send_action(EnvelopeV2::Directed(own.clone()))
-            .unwrap();
+        fixture.client.send_directed(&own).unwrap();
         let Some(EnvelopeV2::SignedDirected(signed)) = fixture.actions.recv().await else {
-            panic!("own action left unsigned");
+            panic!("an action never leaves unsigned");
         };
         assert_eq!(signed.action(), &own);
         signed.verify(&own.source).unwrap();
+        // An action naming another source is not this device's to sign.
         let mut foreign = own;
         foreign.source = [41; 32];
-        fixture
-            .client
-            .send_action(EnvelopeV2::Directed(foreign.clone()))
-            .unwrap();
-        assert_eq!(
-            fixture.actions.recv().await,
-            Some(EnvelopeV2::Directed(foreign))
-        );
+        assert!(matches!(
+            fixture.client.send_directed(&foreign),
+            Err(ClientError::Codec(_))
+        ));
+        assert!(fixture.actions.try_recv().is_err());
+        // Nor does a session without a device key send one at all.
+        fixture.client.action_key = None;
+        assert!(matches!(
+            fixture.client.send_directed(signed.action()),
+            Err(ClientError::Codec(message)) if message.contains("no device key")
+        ));
     }
 
     #[test]

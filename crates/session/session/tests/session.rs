@@ -22,6 +22,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
+use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::clipboard_history::{Copy, TEXT_MIME};
 use tilo_compositor::{Compositor, GestureEvent, InputEvent, KeyRepeat, OutputConfig, Selection};
 use tilo_desktop::desktop_actions::{CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND};
@@ -39,7 +40,7 @@ use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileReque
 use tilo_sheets::lock::LockEffect;
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
-use tilo_sheets::workspace_settings::WorkspaceSettingsEffect;
+use tilo_sheets::workspace_settings::{WorkspaceSettingsApp, WorkspaceSettingsEffect};
 use tilo_surface_host::Published;
 use tilo_test_env::PrivateBus;
 use wayland_client::protocol::{
@@ -803,84 +804,6 @@ fn the_touchpad_key_and_the_sessions_own_action_switch_the_touchpad() {
         session.input_config().touchpad_enabled,
         "the action turned it on"
     );
-}
-
-#[test]
-fn the_lock_action_locks_the_session_behind_the_lock_screen_which_a_password_unlocks() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            user: "ada".to_owned(),
-            verifier: std::sync::Arc::new(Sesame),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-    let _client = mapped(&mut session, "org.example.Terminal");
-    let unlocked = session.compositor().screenshot("HEADLESS-1").unwrap();
-    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
-    session.step(Duration::from_millis(1)).unwrap();
-    assert!(session.compositor().locked());
-    let unlock = tilo_sheets::lock::LockEffect::UNLOCK.id;
-    assert!(
-        publisher(&session, "toggle-overview").is_none(),
-        "the locked session withholds the desktop's actions"
-    );
-    let screen = publisher(&session, unlock).expect("the lock screen publishes unlocking");
-    let locked = session.compositor().screenshot("HEADLESS-1").unwrap();
-    assert_ne!(
-        locked.rgba, unlocked.rgba,
-        "the lock screen hides the desktop"
-    );
-    let colours: std::collections::BTreeSet<&[u8]> = locked.rgba.chunks(4).collect();
-    assert!(
-        colours.len() > 2,
-        "the lock screen draws its clock and prompt, not only the dim"
-    );
-
-    let type_password = tilo_sheets::lock::LockEffect::TYPE_PASSWORD.id;
-    session
-        .invoke(
-            &screen,
-            type_password,
-            &arguments(serde_json::json!({ "password": "wrong" })),
-        )
-        .expect("type");
-    session
-        .invoke(&screen, unlock, &serde_json::Map::new())
-        .expect("unlock");
-    pump(&mut session, &mut [], |session, _| {
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| label.contains("did not unlock"))
-    });
-    assert!(
-        session.compositor().locked(),
-        "a wrong password keeps it locked"
-    );
-
-    session
-        .invoke(
-            &screen,
-            type_password,
-            &arguments(serde_json::json!({ "password": "sesame" })),
-        )
-        .expect("type");
-    session
-        .invoke(&screen, unlock, &serde_json::Map::new())
-        .expect("unlock");
-    pump(&mut session, &mut [], |session, _| {
-        !session.compositor().locked()
-    });
-    assert!(
-        publisher(&session, unlock).is_none(),
-        "the lock screen is gone"
-    );
-    assert!(publisher(&session, "toggle-overview").is_some());
 }
 
 /// Unlocks with "sesame" only.
@@ -1746,6 +1669,186 @@ fn workspace_settings_shows_a_tab_and_moves_the_workspace() {
     );
 }
 
+/// Who sits here, as the session acts for them.
+const PERSON: &str = "person";
+
+/// The workspace in front belongs to the person who sits here, as it does
+/// once the room's custody has taken it, with `members` already in it.
+fn own_workspace(session: &Session, members: &[&str]) {
+    let mut tree = session.handle().read(Clone::clone);
+    let workspace = tree.active_workspace_mut().expect("a workspace in front");
+    workspace.set_owner(PERSON.to_owned());
+    for member in members {
+        tilo_desktop::workspace_settings::set_member_role(
+            workspace,
+            &PERSON.to_owned(),
+            &(*member).to_owned(),
+            tilo_action_policy::Role::Viewer,
+        );
+    }
+    session.handle().replace_tree(tree);
+}
+
+/// The sheet as a person presses it: the app the session hosts, lent the
+/// seat the session lends its own, so a press arrives as the person's own.
+fn sheet(session: &Session) -> HeadlessApp<WorkspaceSettingsApp> {
+    let seat = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .clone();
+    let mut app =
+        HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent(PERSON, seat).expect("the sheet");
+    app.harness().resize((1280, 900)).expect("a screen");
+    app.settle();
+    app
+}
+
+/// Press the control `id` of `app`, as a person's own gesture.
+fn press(app: &mut HeadlessApp<WorkspaceSettingsApp>, id: &str) {
+    app.harness()
+        .perform_named(id, &ui::a11y::Action::Activate)
+        .unwrap_or_else(|error| panic!("press {id}: {error}"));
+    app.settle();
+}
+
+/// Activate the element `name` says, as a screen reader does: the menu items
+/// a control opens have no id of their own, only what they say.
+fn activate(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) {
+    let node = app
+        .harness()
+        .a11y_node_named(name)
+        .unwrap_or_else(|| panic!("no element says {name:?}"));
+    app.harness()
+        .perform_a11y_action(node, &ui::a11y::Action::Activate)
+        .unwrap_or_else(|error| panic!("activate {name}: {error}"));
+    app.settle();
+}
+
+/// Show `tab` in the sheet, as pressing its tab does, and let the session
+/// answer with the tab it shows.
+fn show_tab(
+    session: &mut Session,
+    app: &mut HeadlessApp<WorkspaceSettingsApp>,
+    tab: &WorkspaceSettingsEffect,
+) {
+    app.effect(tab).expect("show the tab");
+    session.step(Duration::from_millis(1)).unwrap();
+    app.settle();
+}
+
+/// The People tab gives a member another role, and the workspace holds it
+/// afterwards, with the sheet's row saying so.
+#[test]
+fn workspace_settings_sets_a_members_role() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    own_workspace(&session, &["ada"]);
+    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
+    session.step(Duration::from_millis(1)).unwrap();
+    let mut app = sheet(&session);
+    show_tab(
+        &mut session,
+        &mut app,
+        &WorkspaceSettingsEffect::ShowTab {
+            tab: "people".to_owned(),
+        },
+    );
+    press(&mut app, "ws-people-role-ada");
+    activate(&mut app, "Editor");
+    session.step(Duration::from_millis(1)).unwrap();
+    app.settle();
+    let role = session.handle().read(|tree| {
+        tree.active_workspace()
+            .and_then(|workspace| workspace.role_of("ada"))
+    });
+    assert_eq!(
+        role,
+        Some(tilo_action_policy::Role::Editor),
+        "ada is an editor of the workspace"
+    );
+    let row = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .settings()
+        .people
+        .people
+        .into_iter()
+        .find(|person| person.key == "ada")
+        .expect("the sheet lists ada");
+    assert_eq!(
+        row.role_key.as_deref(),
+        Some("editor"),
+        "the sheet's row says which role she has"
+    );
+}
+
+/// The Permissions tab gives ada a permission beyond her role, and takes it
+/// back: the workspace holds it in between, and the sheet lists it.
+#[test]
+fn workspace_settings_gives_and_revokes_a_permission() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    own_workspace(&session, &["ada"]);
+    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
+    session.step(Duration::from_millis(1)).unwrap();
+    let mut app = sheet(&session);
+    show_tab(
+        &mut session,
+        &mut app,
+        &WorkspaceSettingsEffect::ShowTab {
+            tab: "permissions".to_owned(),
+        },
+    );
+    press(&mut app, "ws-grant-who");
+    activate(&mut app, "ada");
+    press(&mut app, "ws-grant");
+    session.step(Duration::from_millis(1)).unwrap();
+    app.settle();
+    let given = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .settings()
+        .permissions
+        .sections
+        .into_iter()
+        .flat_map(|section| section.permissions)
+        .find(|permission| permission.holder == "ada")
+        .expect("the sheet lists ada's permission");
+    let camera = tilo_desktop_surface::i18n::t("workspace-settings-scope-camera");
+    assert!(
+        given.detail.contains(&camera),
+        "the row says what the permission allows: {}",
+        given.detail
+    );
+    let held = session
+        .handle()
+        .read(|tree| tree.active_workspace().expect("a workspace").sandbox.len());
+    assert_eq!(held, 1, "the workspace gives ada the camera");
+
+    press(&mut app, &format!("ws-permission-revoke-{}", given.key));
+    press(&mut app, "ws-settings-decision.primary");
+    session.step(Duration::from_millis(1)).unwrap();
+    app.settle();
+    let left = session
+        .handle()
+        .read(|tree| tree.active_workspace().expect("a workspace").sandbox.len());
+    assert_eq!(left, 0, "the workspace gives the camera to no one again");
+    assert!(
+        session
+            .workspace_settings()
+            .expect("workspace settings")
+            .settings()
+            .permissions
+            .sections
+            .into_iter()
+            .flat_map(|section| section.permissions)
+            .all(|permission| permission.holder != "ada"),
+        "the sheet lists no permission of ada's"
+    );
+}
+
 #[test]
 fn a_portal_question_is_answered_through_the_sheets_actions() {
     use tilo_sheets::Seat as _;
@@ -1854,6 +1957,10 @@ fn pixel_at(picture: &image::RgbaImage, x: i32, y: i32) -> [u8; 4] {
         .0
 }
 
+#[path = "session/chrome.rs"]
+mod chrome;
+#[path = "session/lock.rs"]
+mod lock;
 mod questions;
 
 #[path = "session/capture_studio.rs"]
@@ -2798,145 +2905,6 @@ fn a_copy_is_listed_pinned_across_a_restart_and_pasted_into_the_app_in_front() {
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut reader, &mut bytes).expect("read the copy");
     assert_eq!(bytes, text);
-}
-
-// =====================================================================
-// Notifications from an app
-// =====================================================================
-
-/// Send one notification over the freedesktop interface on `address`, as an
-/// app of the session would, and name the id the daemon gave it. The
-/// connection is the app's: it stays open until the caller drops it.
-async fn notify(address: &str, summary: &str, body: &str, timeout: i32) -> (zbus::Connection, u32) {
-    let app = zbus::connection::Builder::address(address)
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-    let proxy = zbus::Proxy::new(
-        &app,
-        "org.freedesktop.Notifications",
-        "/org/freedesktop/Notifications",
-        "org.freedesktop.Notifications",
-    )
-    .await
-    .unwrap();
-    let reply = proxy
-        .call_method(
-            "Notify",
-            &(
-                "Mail",
-                0_u32,
-                "",
-                summary,
-                body,
-                Vec::<&str>::new(),
-                std::collections::HashMap::<String, zbus::zvariant::OwnedValue>::new(),
-                timeout,
-            ),
-        )
-        .await
-        .unwrap();
-    (app, reply.body().deserialize().unwrap())
-}
-
-/// An app's notification over the freedesktop interface, from the process
-/// whose window the session shows: a banner and a centre entry named after
-/// that app, and the bar's bell counting it.
-#[test]
-fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
-    let _settled = ui::motion::testing::settled();
-    let bus = PrivateBus::start();
-    let wake = tilo_service::LoopWake::default();
-    let (side, link) = tilo_session::portal_link::channel(wake.handle());
-    let desktop = Rc::new(
-        DesktopServices::start(
-            &Buses {
-                session: Bus::Address(bus.address().to_owned()),
-                system: Bus::None,
-            },
-            &wake.handle(),
-            std::sync::Arc::new(tilo_portal::NoCapture),
-            &side,
-            None,
-        )
-        .expect("desktop services"),
-    );
-    let portal = desktop
-        .portal()
-        .map(|serving| link.with_captures(serving.input_captures().clone()));
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            services: desktop.services(),
-            wake,
-            desktop: Some(Rc::clone(&desktop)),
-            portal,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-
-    // The app the session knows by its window; the sender's process is the
-    // one that window's client runs in.
-    let mut client = mapped(&mut session, "so.tilo.mail");
-
-    let runtime = desktop.runtime();
-    // It waits for the person: nothing here measures the banner running out.
-    let (app, id) = runtime.block_on(notify(bus.address(), "New mail", "From Ada", 0));
-
-    pump(&mut session, &mut [&mut client], |session, _| {
-        session.notifications().unread() == 1
-    });
-    let centre = session.notifications();
-    let banners = centre.log();
-    assert_eq!(banners.active().len(), 1, "the notification is a banner");
-    let banner = banners.active()[0].clone();
-    drop(banners);
-    assert_eq!(banner.title, "New mail");
-    assert_eq!(
-        banner.app_id.as_deref(),
-        Some("so.tilo.mail"),
-        "named after the app whose window sent it"
-    );
-    assert_eq!(banner.sender_id, Some(id));
-
-    // The bar's bell counts what is unread.
-    let bell = session.accessible_labels();
-    assert!(
-        bell.iter().any(|label| label == "Notifications, 1 unread"),
-        "the bell says what is unread: {bell:?}"
-    );
-
-    // The person closes the banner on its own control: it is kept in the
-    // centre, named after the same app.
-    let dismiss = until(&mut session, &mut client, |session| {
-        session
-            .banners()
-            .shown()
-            .accessibility
-            .as_ref()
-            .and_then(|node| control(node, "Dismiss"))
-    })
-    .expect("the banner offers a way out");
-    session
-        .banners()
-        .command(tilo_notification_banners::Command::Activate(dismiss));
-    pump(&mut session, &mut [&mut client], |session, _| {
-        session.notifications().log().active().is_empty()
-    });
-    let centre = session.notifications();
-    let history = centre.log();
-    let kept = history
-        .history()
-        .iter()
-        .find(|shown| shown.title == "New mail")
-        .expect("the centre keeps it");
-    assert_eq!(kept.app_id.as_deref(), Some("so.tilo.mail"));
-    assert_eq!(centre.unread(), 1, "and it stays unread until read");
-    drop(app);
 }
 
 #[test]

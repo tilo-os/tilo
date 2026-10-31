@@ -5,6 +5,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use ui::vello::kurbo::Rect;
+
 /// Where a sheet is in its life.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
@@ -21,6 +23,11 @@ pub enum Phase {
 /// that sheet takes from the shell and gives back.
 pub trait Seat: Clone + Default + 'static {
     fn presentation(&self) -> &Presentation;
+
+    /// Where the displays are that the sheet stands on, in the sheet's own
+    /// coordinates: told to a sheet that covers every display at once, so it
+    /// can draw something on each of them.
+    fn covers(&self, _displays: Vec<Rect>) {}
 }
 
 /// One sheet's presentation, shared by the shell and the sheet's app.
@@ -39,6 +46,9 @@ struct Inner {
     /// The rectangle the shell wants the sheet on, when it named one: the
     /// output the person is working on, say.
     place: Cell<Option<(i32, i32, u32, u32)>>,
+    /// The sheet stands on every display at once rather than on one: what
+    /// it draws has to reach each of them.
+    every_display: Cell<bool>,
     /// Wakes the sheet's app when the shell changes the phase.
     wake: RefCell<Option<ui::WakeHandle>>,
 }
@@ -105,6 +115,19 @@ impl Presentation {
     /// `None` for the sheet's own place.
     pub fn place(&self) -> Option<(i32, i32, u32, u32)> {
         self.0.place.get()
+    }
+
+    /// The sheet stands on every display at once: the shell spans it over
+    /// all of them and says where each one is ([`Seat::covers`]). A
+    /// question that has to be seen may be about the display it would
+    /// otherwise be put on.
+    pub fn cover_every_display(&self) {
+        self.0.every_display.set(true);
+    }
+
+    /// Whether the sheet stands on every display at once.
+    pub fn covers_every_display(&self) -> bool {
+        self.0.every_display.get()
     }
 
     /// The sheet dismissed itself (Escape, a press outside it, a choice).

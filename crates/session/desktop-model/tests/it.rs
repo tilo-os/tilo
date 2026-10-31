@@ -11,6 +11,8 @@ pub mod agent_membership;
 pub mod apps;
 #[path = "capability.rs"]
 pub mod capability;
+#[path = "closed_tabs.rs"]
+pub mod closed_tabs;
 #[path = "collaborator.rs"]
 pub mod collaborator;
 #[path = "commands.rs"]

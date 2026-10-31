@@ -23,6 +23,9 @@ power-not-offered-power = Dieses Fenster kann die Energieverwaltung des Rechners
 
 display-confirm-keep = Behalten
 display-confirm-revert = Zurücksetzen
+display-confirm-countdown = Wird in { $seconds } s zurückgesetzt
+display-confirm-applying = Wird angewendet …
+display-confirm-answer-pending = Die Antwort zur Anzeige wird gespeichert…
 display-confirm-tool-title = Die Anzeigeänderung von { $tool } behalten?
 display-confirm-tool-unknown-title = Diese Anzeigeänderung behalten?
 display-confirm-always = Behalten und bei { $tool } nicht mehr fragen
@@ -75,6 +78,17 @@ guide-reopen-hint = Wähle ein Navigationskürzel, um es zu ändern
 guide-done = Fertig
 guide-press-new-shortcut = Neues Tastenkürzel für „{ $action }“ drücken
 guide-listening-cancel = Abbrechen
+guide-message-esc-cancels = { $message }; Esc bricht ab
+guide-rebind-needs-modifier = Füge druckbaren Tasten Super, Strg, Alt oder Umschalt hinzu.
+guide-rebind-in-use = Wird bereits für „{ $action }“ verwendet. Drücke ein anderes Tastenkürzel.
+guide-rebind-reserved = F1 und Drucken sind vom Desktop reserviert.
+guide-rebind-unsupported = Dieses Tastenkürzel wird nicht unterstützt. Drücke ein anderes.
+guide-rebind-taken-by-action = Wird bereits zum Ausführen einer Aktion verwendet. Drücke ein anderes Tastenkürzel.
+guide-rebind-save-failed = Das Tastenkürzel konnte nicht gespeichert werden. Drücke ein anderes.
+guide-reset-in-use = Ein Standardwert wird bereits für „{ $action }“ verwendet. Ändere zuerst dieses Tastenkürzel.
+guide-reset-taken-by-action = Ein Standardwert führt jetzt eine Aktion aus. Ändere zuerst dieses Tastenkürzel.
+guide-reset-invalid = Die Standard-Tastenkürzel konnten nicht wiederhergestellt werden.
+guide-reset-save-failed = Die Standardwerte konnten nicht wiederhergestellt werden.
 guide-navigation-heading = Navigationskürzel bearbeiten
 guide-essentials-heading = Desktop-Grundlagen
 guide-group-windows = Fenster und Arbeitsbereiche
@@ -106,6 +120,55 @@ guide-touch-open-overview = Übersicht öffnen
 guide-touch-close-overview = Übersicht schließen
 guide-reset = Auf Standard zurücksetzen
 
+## Was die Navigationszeilen der Tastatur bewegen, und was sonst zu den Tasten zu wissen ist: Fenster, Tabs, Leisten und Arbeitsbereiche heißen wie in den Controller-Zeilen oben
+guide-row-move-tab = Tab verschieben
+guide-row-maximize = Maximieren oder wiederherstellen
+guide-row-move-group = Gruppe verschieben
+guide-row-resize = Größe ändern
+guide-row-move-group-strip = Gruppe in Leiste verschieben
+guide-unassigned = Nicht belegt
+guide-unassigned-inline = nicht belegt
+guide-strip-jump = Direkt zu einer Leiste mit { $first } … { $last }; Leiste 1 ist die oberste
+guide-app-tab-chords = { $next }, { $previous } und { $reopen } gehen zuerst an die App; die Tab-Kürzel des Desktops hier wirken immer
+guide-your-shortcuts = Deine Tastenkürzel: { $shortcuts }
+
+## Die Kürzelnamen des Katalogs, die der Leitfaden auflistet
+shortcut-name-focus-previous-window = Vorheriges Fenster fokussieren
+shortcut-name-focus-next-window = Nächstes Fenster fokussieren
+shortcut-name-previous-tab = Vorheriger Tab
+shortcut-name-next-tab = Nächster Tab
+shortcut-name-attach-tab-left = Tab in die Gruppe links verschieben
+shortcut-name-attach-tab-right = Tab in die Gruppe rechts verschieben
+shortcut-name-maximize-window = Fenster maximieren
+shortcut-name-restore-window = Fenster wiederherstellen
+shortcut-name-previous-strip = Leiste darüber
+shortcut-name-next-strip = Leiste darunter
+shortcut-name-previous-workspace = Vorheriger Arbeitsbereich
+shortcut-name-next-workspace = Nächster Arbeitsbereich
+shortcut-name-move-group-left = Gruppe nach links verschieben
+shortcut-name-move-group-right = Gruppe nach rechts verschieben
+shortcut-name-resize-narrower = Fenster schmaler machen
+shortcut-name-resize-wider = Fenster breiter machen
+shortcut-name-move-group-to-previous-strip = Gruppe in die Leiste darüber verschieben
+shortcut-name-move-group-to-next-strip = Gruppe in die Leiste darunter verschieben
+shortcut-name-reopen-closed-tab = Geschlossenen Tab wieder öffnen
+shortcut-name-search = Überall suchen
+shortcut-name-emoji-picker = Emoji
+shortcut-name-workspace-overview = Übersicht
+shortcut-name-quick-settings = Schnelleinstellungen
+shortcut-name-lock = Bildschirm sperren
+shortcut-switch-windows = Fenster wechseln
+shortcut-close-tab = Tab schließen
+shortcut-new-window = Neues Fenster
+shortcut-duplicate-tab = Neuer Tab dieser App
+shortcut-strip-switcher = Leistenwechsler
+shortcut-screenshot = Bildschirmfoto
+shortcut-display-layout = Anzeigeanordnung
+shortcut-capture-screenshot = Bildschirmfoto aufnehmen
+shortcut-open-terminal = Terminal öffnen
+shortcut-picture-in-picture = Bild im Bild
+shortcut-save-recent-replay = Letzte Aufnahme speichern
+
 ## Public workspaces
 
 directory-title = Einem Arbeitsbereich beitreten
@@ -121,6 +184,23 @@ directory-joining = Wird beigetreten…
 directory-join-named = { $name } beitreten
 directory-open-named = { $name } öffnen
 directory-try-again = Erneut versuchen
+directory-community-tag = von { $host }
+directory-already-joining = Du trittst { $name } bereits bei. Es öffnet sich, sobald es bereit ist.
+directory-join-failed = { $name } konnte nicht beigetreten werden: { $error }
+directory-join-failed-line = Nicht beigetreten: { $error }
+directory-here-now = { $count } gerade hier
+directory-active-today = Heute aktiv
+directory-active-week = Diese Woche aktiv
+directory-quiet = Zuletzt ruhig
+directory-members = { $count ->
+    [one] 1 Mitglied
+   *[other] { $count } Mitglieder
+}
+directory-joins-as = Du trittst als { $role } bei
+directory-role-viewer = Betrachter
+directory-role-commenter = Kommentierende
+directory-role-editor = Bearbeitende
+directory-role-moderator = Moderierende
 
 ## Display sheet
 display-sheet-title = Anzeige

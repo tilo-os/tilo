@@ -78,6 +78,12 @@ impl Dictation {
         self.model_setup.replace(false)
     }
 
+    /// The card's presentation: where it sits; `None` when the sheet did
+    /// not mount.
+    pub(crate) fn presentation(&self) -> Option<&tilo_sheets::Presentation> {
+        self.seat.as_ref().map(tilo_sheets::Seat::presentation)
+    }
+
     /// A key the person pressed asked for dictation.
     pub(crate) fn shortcut(&self, action: ShortcutAction) {
         let request = match action {

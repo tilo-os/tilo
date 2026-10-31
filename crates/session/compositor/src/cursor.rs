@@ -3,9 +3,11 @@
 //!
 //! Backends that own the screen draw it in front of everything else (the
 //! DRM backend's `DrmCompositor` puts it on the cursor plane where there is
-//! one). Named shapes come from the cursor theme `XCURSOR_THEME` names
-//! (`default` otherwise) at `XCURSOR_SIZE` (24) times the output's scale;
-//! without a theme a plain arrow is drawn.
+//! one). Named shapes come from the cursor theme the person chose
+//! ([`CursorA11y::theme`](crate::CursorA11y::theme)), or, until they choose
+//! one, the theme `XCURSOR_THEME` names (`default` otherwise), at
+//! `XCURSOR_SIZE` (24) times the output's scale; without a theme a plain
+//! arrow is drawn.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -34,6 +36,10 @@ use crate::state::State;
 /// The cursor size, in logical pixels, when `XCURSOR_SIZE` does not say.
 const DEFAULT_SIZE: u32 = 24;
 
+/// The cursor theme drawn when neither the person nor `XCURSOR_THEME` names
+/// one.
+const DEFAULT_THEME: &str = "default";
+
 /// One image of a named shape at one size.
 #[derive(Clone)]
 struct Image {
@@ -44,28 +50,55 @@ struct Image {
     hotspot: Point<i32, Physical>,
 }
 
-/// What the pointer shows and the theme images loaded so far.
+/// What the pointer shows, the theme it is drawn from and the theme images
+/// loaded so far.
 pub(crate) struct Cursor {
     pub(crate) status: CursorImageStatus,
     theme: xcursor::CursorTheme,
+    /// The name `theme` was loaded by, which Xwayland's clients are told.
+    theme_name: String,
+    /// The theme the person chose; empty leaves the environment's in force.
+    chosen_theme: String,
     size: u32,
     images: RefCell<HashMap<(CursorIcon, u32), Image>>,
 }
 
 impl Cursor {
     pub(crate) fn new() -> Self {
-        let theme = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".into());
         let size = std::env::var("XCURSOR_SIZE")
             .ok()
             .and_then(|size| size.parse().ok())
             .filter(|size| *size > 0)
             .unwrap_or(DEFAULT_SIZE);
+        let theme_name = theme_in_force("");
         Self {
             status: CursorImageStatus::default_named(),
-            theme: xcursor::CursorTheme::load(&theme),
+            theme: xcursor::CursorTheme::load(&theme_name),
+            theme_name,
+            chosen_theme: String::new(),
             size,
             images: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Draw the pointer from the theme `theme` names, loading it now when it
+    /// is not the theme in use; an empty `theme` leaves the environment's
+    /// (`XCURSOR_THEME`, else `default`) in force.
+    pub(crate) fn set_theme(&mut self, theme: &str) {
+        if theme == self.chosen_theme {
+            return;
+        }
+        theme.clone_into(&mut self.chosen_theme);
+        self.theme_name = theme_in_force(theme);
+        self.theme = xcursor::CursorTheme::load(&self.theme_name);
+        // Images are cached per theme as much as per size: the old ones only
+        // take room.
+        self.images.borrow_mut().clear();
+    }
+
+    /// The name of the theme the pointer is drawn from.
+    pub(crate) fn theme_name(&self) -> &str {
+        &self.theme_name
     }
 
     /// Show the pointer at `size` logical pixels, inside what a person can
@@ -89,6 +122,16 @@ impl Cursor {
             .or_insert_with(|| themed(theme, icon, pixels).unwrap_or_else(|| arrow(pixels)))
             .clone()
     }
+}
+
+/// The theme directory to load for the person's `chosen` theme: that one
+/// once they chose it, else the environment's (`XCURSOR_THEME`), else the
+/// plain `default` theme.
+fn theme_in_force(chosen: &str) -> String {
+    if !chosen.is_empty() {
+        return chosen.to_owned();
+    }
+    std::env::var("XCURSOR_THEME").unwrap_or_else(|_| DEFAULT_THEME.to_owned())
 }
 
 /// `icon` from the theme, under its name or an older alias, at the size
@@ -311,6 +354,24 @@ mod tests {
         assert_eq!(cursor_pixels(24, 2.0), 48);
         assert_eq!(cursor_pixels(24, f64::NAN), 24);
         assert_eq!(cursor_pixels(24, 0.0), 24);
+    }
+
+    /// The person's theme is the one the pointer is drawn from, and the one
+    /// Xwayland's clients are told; until they choose one, the environment's
+    /// is (`default` when it names none). Neither has to be installed here:
+    /// a theme the machine lacks draws the plain arrow.
+    #[test]
+    fn the_pointer_draws_the_theme_the_person_chose() {
+        let mut cursor = Cursor::new();
+        let environment = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".to_owned());
+        assert_eq!(cursor.theme_name(), environment);
+        cursor.set_theme("Bibata-Modern-Ice");
+        assert_eq!(cursor.theme_name(), "Bibata-Modern-Ice");
+        cursor.set_theme("Adwaita");
+        assert_eq!(cursor.theme_name(), "Adwaita");
+        // A theme the person drew back to the environment's.
+        cursor.set_theme("");
+        assert_eq!(cursor.theme_name(), environment);
     }
 
     #[test]

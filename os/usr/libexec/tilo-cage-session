@@ -95,7 +95,7 @@ if [[ ! -x $text_greeter ]] || ! { : <"$tty" >"$tty"; } 2>/dev/null; then
 fi
 # The session the graphical greeter offers, in the environment it starts it
 # with (GreeterApp::session_env): the text greeter passes none of its own.
-session_entry="${TILO_SESSION_ENTRY:-/usr/share/wayland-sessions/shell.desktop}"
+session_entry="${TILO_SESSION_ENTRY:-/usr/share/wayland-sessions/tilo-session.desktop}"
 session_exec="$(sed -n 's/^Exec=//p' "$session_entry" 2>/dev/null | head -n 1 || true)"
 session="env XDG_SESSION_TYPE=wayland XDG_SESSION_DESKTOP=tilo XDG_CURRENT_DESKTOP=tilo ${session_exec:-/usr/libexec/tilo-session --backend drm}"
 exec <"$tty" >"$tty" 2>&1

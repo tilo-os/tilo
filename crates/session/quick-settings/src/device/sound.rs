@@ -12,10 +12,12 @@
 
 use audio::sound::Sound;
 
-use crate::{MediaOutput, QuickSettingsState, SoundOutput};
+use crate::i18n::t;
+use crate::{MediaOutput, QuickSettingsState, SoundInput, SoundOutput, SoundStream};
 
 /// Land `sound` in the panel's readings: how loud the sound is, whether it
-/// is muted, which outputs there are and which one plays.
+/// is muted, which outputs there are and which one plays, the microphone
+/// that records, and every application's stream.
 pub(crate) fn land(qs: &mut QuickSettingsState, sound: &Sound) {
     qs.volume_available = sound.output.is_some();
     qs.status.volume = sound
@@ -33,7 +35,32 @@ pub(crate) fn land(qs: &mut QuickSettingsState, sound: &Sound) {
             current: device.chosen,
         })
         .collect();
-    qs.microphone_muted = sound.input_muted;
+    qs.microphone = sound.input.map(|node| SoundInput {
+        node,
+        // The microphone the service reads, as it names it; a device it
+        // names nothing is still the microphone.
+        name: sound
+            .inputs
+            .iter()
+            .find(|device| device.node == node)
+            .map(|device| device.label.clone())
+            .filter(|label| !label.is_empty())
+            .unwrap_or_else(|| t("qs-microphone")),
+        level: sound.input_volume.unwrap_or(0.0),
+        muted: sound.input_muted,
+    });
+    qs.sound_streams = sound
+        .streams
+        .iter()
+        .map(|stream| SoundStream {
+            node: stream.node,
+            label: stream.label(),
+            playback: stream.playback,
+            target: stream.target,
+            level: stream.volume.unwrap_or(0.0),
+            muted: stream.muted,
+        })
+        .collect();
 }
 
 /// Where what plays can go: this machine's outputs, each named by the audio
@@ -96,7 +123,15 @@ mod tests {
                 channels: 1,
                 codec: None,
             }],
-            streams: Vec::new(),
+            streams: vec![audio::sound::Stream {
+                node: 60,
+                app: "Music".into(),
+                media: Some("Clair de lune".into()),
+                playback: true,
+                target: Some(41),
+                volume: Some(0.3),
+                muted: false,
+            }],
             hardware: Vec::new(),
             pending: Vec::new(),
             problem: None,
@@ -126,8 +161,32 @@ mod tests {
             ]
         );
         assert!(
-            qs.microphone_muted,
+            qs.microphone
+                .as_ref()
+                .is_some_and(|microphone| microphone.muted),
             "the microphone's state answers its key on screen"
+        );
+        assert_eq!(
+            qs.microphone,
+            Some(SoundInput {
+                node: 50,
+                name: "Microphone".into(),
+                level: 0.5,
+                muted: true,
+            }),
+            "the microphone the service records from, with its level"
+        );
+        assert_eq!(
+            qs.sound_streams,
+            [SoundStream {
+                node: 60,
+                label: "Music — Clair de lune".into(),
+                playback: true,
+                target: Some(41),
+                level: 0.3,
+                muted: false,
+            }],
+            "the application's stream, named as the service names it"
         );
     }
 
@@ -138,5 +197,19 @@ mod tests {
         assert!(!qs.volume_available);
         assert_eq!(qs.status.volume, None);
         assert!(qs.sound_outputs.is_empty());
+        assert_eq!(qs.microphone, None, "nothing records");
+        assert!(qs.sound_streams.is_empty(), "nothing plays");
+    }
+
+    #[test]
+    fn a_microphone_the_service_names_nothing_is_still_the_microphone() {
+        let mut reading = sound();
+        reading.inputs.clear();
+        let mut qs = QuickSettingsState::unread();
+        land(&mut qs, &reading);
+        assert_eq!(
+            qs.microphone.map(|microphone| microphone.name),
+            Some("Microphone".into())
+        );
     }
 }

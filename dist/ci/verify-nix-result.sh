@@ -7,12 +7,13 @@ result=$(realpath "$1")
 arch=$2
 case "$arch" in amd64|arm64) ;; *) exit 2 ;; esac
 
-for file in bin/tilo-shell bin/tilo bin/tilo-launcher bin/tilo-import-folders libexec/tilo-unlock-helper \
+for file in bin/tilo-session bin/tilo-shell bin/tilo bin/tilo-launcher bin/tilo-import-folders libexec/tilo-unlock-helper \
             libexec/tilo-session libexec/tilo-session-runner \
             libexec/tilo-flight-recorder libexec/tilo-session-report; do
     [[ -x $result/$file ]] || { echo "missing executable: $file" >&2; exit 1; }
 done
 for file in share/applications/tilo-import-folders.desktop etc/pam.d/tilo-unlock share/wayland-sessions/tilo.desktop \
+            share/wayland-sessions/tilo-shell.desktop \
             share/xdg-desktop-portal/portals/tilo.portal \
             share/xdg-desktop-portal/tilo-portals.conf \
             share/pipewire/tilo-echo-cancel.conf \
@@ -22,22 +23,30 @@ for file in share/applications/tilo-import-folders.desktop etc/pam.d/tilo-unlock
 done
 
 entry=$result/share/wayland-sessions/tilo.desktop
+old_shell_entry=$result/share/wayland-sessions/tilo-shell.desktop
 portal=$result/share/xdg-desktop-portal/portals/tilo.portal
 wrapper=$result/libexec/tilo-session
 runner=$result/libexec/tilo-session-runner
 grep -Fqx "Exec=$result/libexec/tilo-session" "$entry"
-grep -Fqx "TryExec=$result/bin/tilo-shell" "$entry"
+grep -Fqx "TryExec=$result/bin/tilo-session" "$entry"
 grep -q '^DesktopNames=tilo$' "$entry"
+# The old shell is still a session one can pick until it is deleted.
+grep -Fqx "Exec=$result/libexec/tilo-session --shell" "$old_shell_entry"
+grep -Fqx "TryExec=$result/bin/tilo-shell" "$old_shell_entry"
+grep -q '^DesktopNames=tilo$' "$old_shell_entry"
 grep -q '^UseIn=tilo$' "$portal"
 grep -q '^default=tilo$' "$result/share/xdg-desktop-portal/tilo-portals.conf"
 grep -q 'libpipewire-module-echo-cancel' "$result/share/pipewire/tilo-echo-cancel.conf"
+grep -Fqx "TILO_SESSION=$result/bin/tilo-session" "$wrapper"
 grep -Fqx "TILO_SHELL=$result/bin/tilo-shell" "$wrapper"
 grep -Fqx "SESSION_RUNNER=$result/libexec/tilo-session-runner" "$wrapper"
+grep -Fqx 'exec "$SESSION_RUNNER" "$session_bin" "$session_mode" --firstboot --backend drm "$@"' \
+    "$wrapper"
 grep -Eq '^SYSTEMD_CAT=/nix/store/.+/bin/systemd-cat$' "$runner"
 grep -Eq '^DBUS_UPDATE=/nix/store/.+/bin/dbus-update-activation-environment$' "$runner"
 grep -Fqx "FLIGHT_RECORDER=$result/libexec/tilo-flight-recorder" "$runner"
 grep -Fq -- '--identifier=tilo-session --level-prefix=false' "$runner"
-grep -q -- '--firstboot' "$runner"
+grep -Fqx '"$COMPOSITOR" "$@" >"$flight_pipe" 2>&1 &' "$runner"
 grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' \
     "$result/share/systemd/user/tilo-graphical-session.target"
 
@@ -51,7 +60,7 @@ fi
 grep -Fxq "Exec=$result/bin/tilo-import-folders --import-folders" "$result/share/applications/tilo-import-folders.desktop"
 grep -Fxq "TryExec=$result/bin/tilo-import-folders" "$result/share/applications/tilo-import-folders.desktop"
 "$result/bin/tilo-import-folders" --tilo-package-smoke
-for installed in bin/tilo-shell bin/tilo-launcher bin/tilo-import-folders libexec/tilo-unlock-helper; do
+for installed in bin/tilo-session bin/tilo-shell bin/tilo-launcher bin/tilo-import-folders libexec/tilo-unlock-helper; do
     directory=$(dirname "$installed")
     basename=$(basename "$installed")
     elf=$result/$installed

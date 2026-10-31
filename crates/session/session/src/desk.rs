@@ -19,7 +19,7 @@ use tilo_surface_host::{DeskReading, shell_part};
 use crate::notifications::NoticeSignals;
 
 /// What the desk's reading is made from ([`Desk::key`]).
-pub(crate) type DeskKey = (u64, i64, u32, bool, u64);
+pub(crate) type DeskKey = (u64, i64, u32, bool, u64, u64, u64, u64);
 
 /// The kind of the desk's resource: the origin kind a shell's type holds.
 pub(crate) const DESK_KIND: &str = "session.desk";
@@ -33,6 +33,16 @@ pub(crate) enum DeskEffect {
         #[param("The workspace, by its key")]
         workspace: String,
     },
+    /// Answer the question waiting on the person's avatar
+    #[effect(row, label = "Answer")]
+    AnswerAsk,
+    /// Put the question waiting on the person's avatar off for now
+    #[effect(row, label = "Ask me later")]
+    PutOffAsk,
+    /// Open or close the running application's tray item `key`: its window, or its menu when
+    /// the item is one
+    #[effect(row, label = "Open")]
+    OpenTrayItem { key: String },
 }
 
 /// The desk as the session reads it. See the module docs.
@@ -40,10 +50,16 @@ pub(crate) struct Desk {
     pub(crate) handle: DesktopHandle,
     pub(crate) person: String,
     pub(crate) signals: Rc<NoticeSignals>,
+    /// The apps' live activities: Clocks' timer is the bar's clock beside the time, and the
+    /// person putting the floating one away hides it until Clocks shows something new.
+    pub(crate) clock: Rc<crate::chrome::Clock>,
     /// Whether the device has quick settings; without, its status is its notifications.
     pub(crate) status_panel: bool,
     /// Who is here, when this session takes part in the collaboration plane.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
+    /// The running applications' tray items, when their watcher serves: the bar shows them,
+    /// and the person's clicks go back through it.
+    pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
 }
 
 impl Desk {
@@ -58,9 +74,67 @@ impl Desk {
             self.sync
                 .as_ref()
                 .map_or(0, |sync| sync.here().borrow().revision()),
+            self.clock.board().revision(),
+            self.handle.personal_ask_revision(),
+            self.tray.as_ref().map_or(0, |tray| tray.revision()),
         )
     }
 
+    /// The timer or stopwatch Clocks runs, as the bar's clock reads it: what Clocks puts on
+    /// its live activity, and nothing when it shows none or marks it inactive.
+    fn timer(&self) -> Option<shell_part::TimerReading> {
+        let activity = self.clock.board().activity(crate::chrome::CLOCKS_APP)?;
+        let activity: ClocksActivity = serde_json::from_value(activity).ok()?;
+        (activity.active && self.clock.floating(activity.overlay)).then_some(
+            shell_part::TimerReading {
+                activity_id: activity.activity_id,
+                label: activity.label,
+                remaining_secs: activity.remaining_secs,
+                stopwatch: activity.stopwatch,
+                paused: activity.paused,
+            },
+        )
+    }
+
+    /// The due timer Clocks wants announced, by its id and in the app's own words when it has
+    /// them (the desktop's otherwise): what the bar announces once.
+    pub(crate) fn due_timer(&self) -> Option<(String, String, String)> {
+        let activity = self.clock.board().activity(crate::chrome::CLOCKS_APP)?;
+        let activity: ClocksActivity = serde_json::from_value(activity).ok()?;
+        let id = activity.notification_id?;
+        let title = if activity.notification_title.is_empty() {
+            crate::i18n::t("clock-due-title")
+        } else {
+            activity.notification_title
+        };
+        let body = if activity.notification_body.is_empty() {
+            crate::i18n::t("clock-due-body")
+        } else {
+            activity.notification_body
+        };
+        Some((id, title, body))
+    }
+
+    /// The running applications' tray items, in the order they registered: each's key, the
+    /// app's own words for it, and whether choosing it opens a menu rather than its window.
+    fn tray_items(&self) -> Vec<shell_part::TrayReading> {
+        self.tray.as_ref().map_or_else(Vec::new, |tray| {
+            tray.snapshot()
+                .into_iter()
+                .map(|item| shell_part::TrayReading {
+                    key: item.key,
+                    title: if item.title.trim().is_empty() {
+                        item.id
+                    } else {
+                        item.title
+                    },
+                    menu: item.item_is_menu,
+                })
+                .collect()
+        })
+    }
+
+    /// The desk now.
     /// The desk now.
     pub(crate) fn reading(&self) -> DeskReading {
         let now = ui::clock::local_now();
@@ -97,13 +171,63 @@ impl Desk {
                     current: workspace.id == tree.active,
                 })
                 .collect(),
+            timer: self.timer(),
+            ask: self
+                .handle
+                .personal_ask()
+                .map(|ask| shell_part::AskReading {
+                    question: ask.title,
+                    detail: ask.body,
+                    answer: ask.action.title,
+                    open: ask.open,
+                }),
             // The native session runs no agent tasks of its own yet: none is published until a
             // task host reports to it.
             tasks: Vec::new(),
             badges: self.signals.badges(),
             people,
+            tray: self.tray_items(),
         })
     }
+}
+
+/// What the clocks app puts on its live activity, as the bar reads it: the timer or stopwatch
+/// running.
+#[derive(serde::Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "active, stopwatch, paused and overlay are independent fields of the activity Clocks shows"
+)]
+struct ClocksActivity {
+    #[serde(default = "active_unless_told")]
+    active: bool,
+    #[serde(default)]
+    activity_id: Option<String>,
+    /// Its label, such as `Tea`; absent from an activity that is not a timer.
+    #[serde(default)]
+    label: String,
+    /// What the timer has left, or the stopwatch has run, in seconds.
+    #[serde(default)]
+    remaining_secs: u64,
+    #[serde(default)]
+    stopwatch: bool,
+    #[serde(default)]
+    paused: bool,
+    /// An overlay the person may have put away.
+    #[serde(default)]
+    overlay: bool,
+    /// The due timer Clocks wants announced, by id, and in its own words when it has them.
+    #[serde(default)]
+    notification_id: Option<String>,
+    #[serde(default)]
+    notification_title: String,
+    #[serde(default)]
+    notification_body: String,
+}
+
+/// An app that names no `active` shows its activity.
+fn active_unless_told() -> bool {
+    true
 }
 
 /// The name of the strip in front in the workspace in front, when it has one: what the bar
@@ -142,8 +266,48 @@ impl Service for Desk {
         if resource != DESK_RESOURCE {
             return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
         }
-        let DeskEffect::SwitchWorkspace { workspace } =
-            decode(&self.resources(), resource, action, arguments)?;
+        let effect = decode(&self.resources(), resource, action, arguments)?;
+        match effect {
+            DeskEffect::AnswerAsk => {
+                self.handle.answer_personal_ask();
+                Ok(Started::Done(tilo_actions::ActionOutput::default()))
+            }
+            DeskEffect::PutOffAsk => {
+                self.handle.put_off_personal_ask();
+                Ok(Started::Done(tilo_actions::ActionOutput::default()))
+            }
+            DeskEffect::SwitchWorkspace { workspace } => self.switch_workspace(&workspace),
+            DeskEffect::OpenTrayItem { key } => self.open_tray_item(&key),
+        }
+    }
+}
+
+impl Desk {
+    /// Open or close the running application's tray item `key`, as a press on its icon does:
+    /// its window, or its menu when the item is one.
+    fn open_tray_item(&self, key: &str) -> Result<Started, DoorError> {
+        let Some(tray) = &self.tray else {
+            return Err(DoorError::Failed(
+                "no tray is served: the press reaches no application".to_owned(),
+            ));
+        };
+        let Some(item) = tray.snapshot().into_iter().find(|item| item.key == key) else {
+            return Err(DoorError::InvalidArguments(format!(
+                "there is no tray item {key}"
+            )));
+        };
+        let request = if item.item_is_menu {
+            tilo_tray_host::TrayRequest::ContextMenu { x: 0, y: 0 }
+        } else {
+            tilo_tray_host::TrayRequest::Activate { x: 0, y: 0 }
+        };
+        tray.request_or_else(key, request, |_| {})
+            .map_err(DoorError::Failed)?;
+        Ok(Started::Done(tilo_actions::ActionOutput::default()))
+    }
+
+    /// Bring the workspace `workspace` of this device to the front.
+    fn switch_workspace(&self, workspace: &str) -> Result<Started, DoorError> {
         let known = self.handle.read(|tree| {
             tree.workspaces
                 .iter()
@@ -158,7 +322,7 @@ impl Service for Desk {
             .dispatch(
                 &Command::Workspace {
                     generation: crate::GENERATION.into(),
-                    workspace,
+                    workspace: workspace.to_owned(),
                 },
                 crate::GENERATION,
             )

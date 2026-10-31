@@ -270,23 +270,22 @@ impl RelayCoeditSession {
         )
     }
 
-    /// Send privately through the co-edit session's existing demultiplexer.
+    /// Sign `action` as this device and send it through the co-edit session's
+    /// existing demultiplexer.
     ///
     /// # Errors
-    /// Returns an error for a different room, v1, or a full/disconnected queue.
+    /// Returns an error for a different room, a session without a device key,
+    /// or a full/disconnected queue.
     pub fn send_action(
         &self,
-        action: tilo_delivery_protocol::peer_actions::DirectedAction,
+        action: &tilo_delivery_protocol::peer_actions::DirectedAction,
     ) -> Result<(), crate::client::ClientError> {
         if !crate::room_workspace_id_matches(&action.room.to_string(), self.workspace_id) {
             return Err(crate::client::ClientError::Codec(
                 "action room differs from co-edit room".into(),
             ));
         }
-        self.client
-            .send_action(tilo_delivery_protocol::transport_v2::EnvelopeV2::Directed(
-                action,
-            ))
+        self.client.send_directed(action)
     }
 
     /// Receive only private events; this never consumes shared co-edit state.

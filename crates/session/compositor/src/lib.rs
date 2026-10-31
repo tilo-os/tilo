@@ -428,9 +428,9 @@ impl Compositor {
         self.data.state.refresh();
         if let Some(x11) = self.data.x11_windows.as_mut() {
             // The X server's own focus follows the session's, and X clients
-            // hear how dense the display is.
+            // hear how dense the display is and which pointer to draw.
             x11.follow_keyboard(&self.data.state);
-            x11.publish_scale(&mut self.data.state);
+            x11.publish_x_hints(&mut self.data.state);
         }
         self.configure_from_clients();
         if let Some(undo) = self.data.state.display_changes.due(Instant::now()) {
@@ -440,6 +440,7 @@ impl Compositor {
         self.sync_power();
         self.publish_displays();
         self.display.flush_clients()?;
+        self.data.state.lift_lock_of_departed_client();
         Ok(())
     }
 
@@ -467,8 +468,8 @@ impl Compositor {
     }
 
     /// Apply the person's accessibility settings: typing and pointing
-    /// assists, the pointer's size and crosshair, the colour filter, the
-    /// magnifier and visual alerts. Everything applies live, and to
+    /// assists, the pointer's theme, size and crosshair, the colour filter,
+    /// the magnifier and visual alerts. Everything applies live, and to
     /// outputs and devices that appear later.
     pub fn set_a11y(&mut self, a11y: A11y) -> Result<(), Error> {
         let now = Instant::now();
@@ -476,12 +477,17 @@ impl Compositor {
         let LoopData { state, backend, .. } = &mut self.data;
         backend.set_assists(state, &a11y.assists);
         state.zoom = a11y.magnifier.factor();
+        state.cursor.set_theme(&a11y.cursor.theme);
         state.cursor.set_size(a11y.cursor.size);
         for event in released {
             state.handle_input(event);
         }
         self.a11y = a11y;
         self.seed_visuals();
+        if let Some(x11) = self.data.x11_windows.as_mut() {
+            // X clients draw their own pointers: they hear the theme at once.
+            x11.publish_x_hints(&mut self.data.state);
+        }
         self.data.state.mark_redraw_all();
         self.display.flush_clients()?;
         Ok(())

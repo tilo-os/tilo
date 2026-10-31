@@ -2,6 +2,33 @@ use super::*;
 
 /// Remote actions: who may still act, and what acting costs.
 mod remote_action_tests;
+
+/// The frame `device` sends for `action`: signed, as every action travels.
+fn signed_frame(device: &ed25519_dalek::SigningKey, action: &DirectedAction) -> Vec<u8> {
+    let signed = SignedDirectedAction::sign(action, unix_now_ns(), device).unwrap();
+    tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::SignedDirected(signed)).unwrap()
+}
+
+/// The action a signed delivery carries.
+fn delivered(frame: Option<EnvelopeV2>) -> DirectedAction {
+    match frame {
+        Some(EnvelopeV2::CertifiedSignedDelivered { action, .. }) => {
+            SignedDirectedAction::action(&action).clone()
+        }
+        other => panic!("a delivery is signed by its source, got {other:?}"),
+    }
+}
+
+/// Route `action` as the wire does: signed by the device it claims to be.
+async fn route_signed(
+    device: &ed25519_dalek::SigningKey,
+    action: &DirectedAction,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<Option<UnavailableReason>, PeerError> {
+    let signed = SignedDirectedAction::sign(action, unix_now_ns(), device).unwrap();
+    route_private_signed(action, &signed, peer, session).await
+}
 use tilo_relay_shell::ShellAuthority as _;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity, sign_device_cert,
@@ -430,7 +457,7 @@ async fn paused_state_persistence_releases_routing_lock() {
 async fn pipelined_private_requests_backpressure_instead_of_disconnecting() {
     const REQUESTS: usize = PEER_OUTBOUND_CAPACITY * 4;
     let (root, user) = UserIdentity::generate("alice", 1);
-    let (a, _) = certified_device(&root, user.public_key, "a");
+    let (a, a_key) = certified_device(&root, user.public_key, "a");
     let room = uuid::Uuid::from_u128(7);
     let id = crate::room_workspace_id(&room.to_string()).unwrap();
     let tmp = tempfile::tempdir().unwrap();
@@ -456,6 +483,7 @@ async fn pipelined_private_requests_backpressure_instead_of_disconnecting() {
         own_user_public_key: user.public_key,
         own_device_cert: a.cert.clone(),
         own_device_public_key: a.cert.device_public_key,
+        own_device_signing_key: a_key.clone(),
         app_serving: None,
         metrics: Arc::new(crate::metrics::Metrics::default()),
         live_bridge: None,
@@ -533,7 +561,7 @@ async fn an_idle_writer_writes_the_refusal_and_closes_as_the_session_ends() {
 /// hold, then end the session from the peer's side.
 async fn refusal_queued_as_the_session_ends(held: usize) {
     let (root, user) = UserIdentity::generate("alice", 1);
-    let (a, _) = certified_device(&root, user.public_key, "a");
+    let (a, a_key) = certified_device(&root, user.public_key, "a");
     let room = uuid::Uuid::from_u128(7);
     let id = crate::room_workspace_id(&room.to_string()).unwrap();
     let tmp = tempfile::tempdir().unwrap();
@@ -557,6 +585,7 @@ async fn refusal_queued_as_the_session_ends(held: usize) {
         own_user_public_key: user.public_key,
         own_device_cert: a.cert.clone(),
         own_device_public_key: a.cert.device_public_key,
+        own_device_signing_key: a_key.clone(),
         app_serving: None,
         metrics: Arc::new(crate::metrics::Metrics::default()),
         live_bridge: None,
@@ -675,8 +704,10 @@ async fn paused_state_private_roundtrip(
     plain_lag: Option<LagBoundary>,
 ) {
     let (root, user) = UserIdentity::generate("alice", 1);
-    let (a, _) = certified_device(&root, user.public_key, "a");
-    let (b, _) = certified_device(&root, user.public_key, "b");
+    let (a, a_key) = certified_device(&root, user.public_key, "a");
+    let (b, b_key) = certified_device(&root, user.public_key, "b");
+    // The relay's own device is neither of the peers it carries frames for.
+    let (own, own_key) = certified_device(&root, user.public_key, "relay");
     let room = uuid::Uuid::from_u128(7);
     let id = crate::room_workspace_id(&room.to_string()).unwrap();
     let tmp = tempfile::tempdir().unwrap();
@@ -687,7 +718,11 @@ async fn paused_state_private_roundtrip(
         crate::workspace::Membership::default(),
     )
     .unwrap();
-    for device in [a.device_public_key, b.device_public_key, [99; 32]] {
+    for device in [
+        a.device_public_key,
+        b.device_public_key,
+        own.device_public_key,
+    ] {
         runtime.admit_device(device).unwrap();
     }
     let store = runtime.store.clone();
@@ -708,8 +743,9 @@ async fn paused_state_private_roundtrip(
             revocations: revocations.clone(),
             trust_policy: trust.clone(),
             own_user_public_key: user.public_key,
-            own_device_cert: a.cert.clone(),
-            own_device_public_key: a.cert.device_public_key,
+            own_device_cert: own.cert.clone(),
+            own_device_public_key: own.cert.device_public_key,
+            own_device_signing_key: own_key.clone(),
             app_serving: None,
             metrics: Arc::new(crate::metrics::Metrics::default()),
             live_bridge: None,
@@ -1059,12 +1095,7 @@ async fn paused_state_private_roundtrip(
         // has entered before releasing the read: no timing-based race.
         let (private_release, private_reached) =
             crate::store::test_barrier::install(store.root(), "private-authorization");
-        aw.write_all(
-            &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::Directed(request.clone()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+        aw.write_all(&signed_frame(&a_key, &request)).await.unwrap();
         // Both waits are events, not wall-clock budgets: a private handler
         // that cannot enter lookahead, or a state future that stops being
         // polled, hangs here and nextest's slow-timeout reports it.
@@ -1082,8 +1113,8 @@ async fn paused_state_private_roundtrip(
                     assert!(!state_seen);
                     state_seen = true;
                 }
-                Some(EnvelopeV2::Delivered { action, .. }) => {
-                    assert_eq!(action, request);
+                Some(delivery @ EnvelopeV2::CertifiedSignedDelivered { .. }) => {
+                    assert_eq!(delivered(Some(delivery)), request);
                     assert!(!private_seen);
                     private_seen = true;
                 }
@@ -1102,9 +1133,7 @@ async fn paused_state_private_roundtrip(
         if check_lock {
             drop(workspace.lock().await);
         }
-        let encoded_request =
-            tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::Directed(request.clone()))
-                .unwrap();
+        let encoded_request = signed_frame(&a_key, &request);
         if check_lock {
             aw.write_all(&encoded_request).await.unwrap();
         } else {
@@ -1117,37 +1146,28 @@ async fn paused_state_private_roundtrip(
                 target: a.device_public_key,
                 ..request.clone()
             };
-            bw.write_all(
-                &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::Directed(probe.clone()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-            let Some(EnvelopeV2::Delivered { action, .. }) = ar.read_next().await.unwrap() else {
-                panic!("expected private frame during partial inbound header")
-            };
-            assert_eq!(action, probe);
+            bw.write_all(&signed_frame(&b_key, &probe)).await.unwrap();
+            let received = delivered(ar.read_next().await.unwrap());
+            assert_eq!(
+                received, probe,
+                "private frame during partial inbound header"
+            );
             aw.write_all(&encoded_request[2..]).await.unwrap();
         }
-        let Some(EnvelopeV2::Delivered { action, .. }) = br.read_next().await.unwrap() else {
-            panic!("expected private request before any uncommitted state")
-        };
-        assert_eq!(action, request);
+        assert_eq!(
+            delivered(br.read_next().await.unwrap()),
+            request,
+            "private request before any uncommitted state"
+        );
         let response = DirectedAction {
             source: b.device_public_key,
             target: a.device_public_key,
             ..request.clone()
         };
-        bw.write_all(
-            &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::Directed(response.clone()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-        let Some(EnvelopeV2::Delivered { action, .. }) = ar.read_next().await.unwrap() else {
-            panic!("expected private response")
-        };
-        assert_eq!(action, response);
+        bw.write_all(&signed_frame(&b_key, &response))
+            .await
+            .unwrap();
+        assert_eq!(delivered(ar.read_next().await.unwrap()), response);
     })
     .await;
     // Always release the real blocking disk operation before asserting RED.
@@ -1191,8 +1211,10 @@ async fn heartbeat_is_answered_ahead_of_queued_capability_control() {
 
 async fn capability_control_lookahead(reply_wait: bool, control: u8) {
     let (root, user) = UserIdentity::generate("owner", 1);
-    let (a, _) = certified_device(&root, user.public_key, "a");
-    let (b, _) = certified_device(&root, user.public_key, "b");
+    let (a, a_key) = certified_device(&root, user.public_key, "a");
+    let (b, b_key) = certified_device(&root, user.public_key, "b");
+    // The relay's own device is neither of the peers it carries frames for.
+    let (own, own_key) = certified_device(&root, user.public_key, "relay");
     let rooms = [
         uuid::Uuid::from_u128(71),
         uuid::Uuid::from_u128(72),
@@ -1209,8 +1231,12 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
             crate::workspace::Membership::default(),
         )
         .unwrap();
-        for peer in [&a, &b] {
-            runtime.admit_device(peer.device_public_key).unwrap();
+        for device in [
+            a.device_public_key,
+            b.device_public_key,
+            own.device_public_key,
+        ] {
+            runtime.admit_device(device).unwrap();
         }
         map.insert(id, Arc::new(AsyncMutex::new(runtime)));
     }
@@ -1237,8 +1263,9 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
                 revocations: revocations.clone(),
                 trust_policy: trust.clone(),
                 own_user_public_key: user.public_key,
-                own_device_cert: a.cert.clone(),
-                own_device_public_key: a.cert.device_public_key,
+                own_device_cert: own.cert.clone(),
+                own_device_public_key: own.cert.device_public_key,
+                own_device_signing_key: own_key.clone(),
                 app_serving: None,
                 metrics: Arc::new(crate::metrics::Metrics::default()),
                 live_bridge: None,
@@ -1341,33 +1368,30 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
             .await
             .unwrap();
         }
-        for frame in [
-            EnvelopeV2::State(Envelope::Ping),
-            EnvelopeV2::Directed(request.clone()),
-        ] {
-            aw.write_all(&tilo_delivery_protocol::transport_v2::encode(&frame).unwrap())
-                .await
-                .unwrap();
-        }
-        let Some(EnvelopeV2::Delivered { action, .. }) =
-            tilo_test_env::within("the unrelated-room private request", br.read_next())
-                .await
-                .unwrap()
-        else {
-            panic!("unrelated private request stalled during state admission")
-        };
-        assert_eq!(action, request);
+        aw.write_all(
+            &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::State(Envelope::Ping))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        aw.write_all(&signed_frame(&a_key, &request)).await.unwrap();
+        assert_eq!(
+            delivered(
+                tilo_test_env::within("the unrelated-room private request", br.read_next())
+                    .await
+                    .unwrap()
+            ),
+            request,
+            "unrelated private request stalled during state admission"
+        );
         let response = DirectedAction {
             source: b.device_public_key,
             target: a.device_public_key,
             ..request
         };
-        bw.write_all(
-            &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::Directed(response.clone()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+        bw.write_all(&signed_frame(&b_key, &response))
+            .await
+            .unwrap();
         // The heartbeat is answered at once, ahead of the held state
         // admission and of any capability control queued behind it; a real
         // later private response proves the reader and writer stay live.
@@ -1406,7 +1430,7 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
             "a live transport withheld its heartbeat behind a held state admission or control"
         );
         assert!(
-            matches!(later, Some(EnvelopeV2::Delivered { action, .. }) if action == response),
+            matches!(later, Some(EnvelopeV2::CertifiedSignedDelivered { action, .. }) if action.action() == &response),
             "heartbeat progress lost the authorized private response"
         );
         if gated {
@@ -1483,14 +1507,11 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
         request_id: uuid::Uuid::from_u128(76),
         ..dependent.clone()
     };
-    for frame in [
-        capability,
-        EnvelopeV2::Directed(dependent.clone()),
-        EnvelopeV2::Directed(unrelated.clone()),
-    ] {
-        aw.write_all(&tilo_delivery_protocol::transport_v2::encode(&frame).unwrap())
-            .await
-            .unwrap();
+    aw.write_all(&tilo_delivery_protocol::transport_v2::encode(&capability).unwrap())
+        .await
+        .unwrap();
+    for action in [&dependent, &unrelated] {
+        aw.write_all(&signed_frame(&a_key, action)).await.unwrap();
     }
     let progress = tokio::time::timeout(tilo_test_env::hang_bound(), br.read_next()).await;
     // Receiving this later unrelated frame proves the reader classified the
@@ -1503,26 +1524,22 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
         .await
         .unwrap();
     assert!(
-        matches!(progress, Ok(Ok(Some(EnvelopeV2::Delivered { action, .. }))) if action == unrelated),
+        matches!(&progress, Ok(Ok(Some(EnvelopeV2::CertifiedSignedDelivered { action, .. }))) if action.action() == &unrelated),
         "unrelated-room private traffic stalled"
     );
     assert!(
         premature.is_err(),
         "dependent private frame overtook capability {control} (reply wait={reply_wait}): {premature:?}"
     );
-    let delivered = tilo_test_env::within("the next frame from br", br.read_next())
-        .await
-        .unwrap()
-        .unwrap();
-    if control > 0 {
-        assert!(matches!(&delivered, EnvelopeV2::CertifiedDelivered { .. }));
-    }
-    match delivered {
-        EnvelopeV2::Delivered { action, .. } | EnvelopeV2::CertifiedDelivered { action, .. } => {
-            assert_eq!(action, dependent);
-        }
-        other => panic!("dependent request did not observe capability transition: {other:?}"),
-    }
+    assert_eq!(
+        delivered(
+            tilo_test_env::within("the next frame from br", br.read_next())
+                .await
+                .unwrap()
+        ),
+        dependent,
+        "dependent request did not observe capability transition"
+    );
     for task in tasks {
         task.abort();
     }
@@ -1626,6 +1643,7 @@ async fn retained_replay_failure_and_duplicate_retirement_are_recoverable() {
         own_user_public_key: &user.public_key,
         own_device_cert: &peer.cert,
         own_device_public_key: &peer.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: None,
         metrics: &metrics,
         trust_policy: &trust,
@@ -1790,7 +1808,7 @@ async fn retained_replay_failure_and_duplicate_retirement_are_recoverable() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session() {
     let (root, user) = UserIdentity::generate("alice", 1);
-    let (a, _a_key) = certified_device(&root, user.public_key, "a");
+    let (a, a_key) = certified_device(&root, user.public_key, "a");
     let (b, _) = certified_device(&root, user.public_key, "b");
     let room = uuid::Uuid::from_u128(7);
     let id = crate::room_workspace_id(&room.to_string()).unwrap();
@@ -1847,6 +1865,7 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
         own_user_public_key: &user.public_key,
         own_device_cert: &a.cert,
         own_device_public_key: &a.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: None,
         metrics: &metrics,
         trust_policy: &trust,
@@ -1901,7 +1920,7 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
             unlocked
         })
     });
-    let result = route_private(&action, &a, &session).await.unwrap();
+    let result = route_signed(&a_key, &action, &a, &session).await.unwrap();
     assert!(
         observer.join().unwrap(),
         "fresh membership read held routing lock"
@@ -1914,7 +1933,7 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn authorization_rechecks_certificates_after_blocking_membership_read() {
     let (root, user) = UserIdentity::generate("alice", 1);
-    let (a, _a_key) = certified_device(&root, user.public_key, "a");
+    let (a, a_key) = certified_device(&root, user.public_key, "a");
     let (b, _) = certified_device(&root, user.public_key, "b");
     let room = uuid::Uuid::from_u128(7);
     let id = crate::room_workspace_id(&room.to_string()).unwrap();
@@ -1971,6 +1990,7 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
         own_user_public_key: &user.public_key,
         own_device_cert: &a.cert,
         own_device_public_key: &a.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: None,
         metrics: &metrics,
         trust_policy: &trust,
@@ -2000,7 +2020,10 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
         message: ActionMessage::CatalogueRefresh { scope: None },
     };
 
-    assert_eq!(route_private(&action, &a, &session).await.unwrap(), None);
+    assert_eq!(
+        route_signed(&a_key, &action, &a, &session).await.unwrap(),
+        None
+    );
     let PrivateOutbound::Delivery(delivery) = bpr.recv().await.unwrap() else {
         panic!("delivery");
     };
@@ -2028,7 +2051,7 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
         });
         let denied = match operation {
             0 => {
-                route_private(&action, &a, &session).await.unwrap()
+                route_signed(&a_key, &action, &a, &session).await.unwrap()
                     == Some(UnavailableReason::NotAuthorised)
             }
             1 => {
@@ -2086,7 +2109,7 @@ impl crate::app_serving::AppServingPlane for CountingPlane {
 #[tokio::test]
 async fn replacement_action_capability_requires_enable_then_durable_registration() {
     let (root, user) = UserIdentity::generate("alice", 1);
-    let (source, _) = certified_device(&root, user.public_key, "source");
+    let (source, source_key) = certified_device(&root, user.public_key, "source");
     let (broker, _) = certified_device(&root, user.public_key, "broker");
     let room = uuid::Uuid::from_u128(7);
     let host = uuid::Uuid::from_u128(99);
@@ -2134,6 +2157,7 @@ async fn replacement_action_capability_requires_enable_then_durable_registration
         own_user_public_key: &user.public_key,
         own_device_cert: &source.cert,
         own_device_public_key: &source.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: None,
         metrics: &metrics,
         trust_policy: &trust,
@@ -2199,7 +2223,7 @@ async fn replacement_action_capability_requires_enable_then_durable_registration
         },
     };
     assert_eq!(
-        route_private(&action, &source, &source_session)
+        route_signed(&source_key, &action, &source, &source_session)
             .await
             .unwrap(),
         Some(UnavailableReason::UnsupportedPeer)
@@ -2220,7 +2244,7 @@ async fn replacement_action_capability_requires_enable_then_durable_registration
         })
     );
     assert_eq!(
-        route_private(&action, &source, &source_session)
+        route_signed(&source_key, &action, &source, &source_session)
             .await
             .unwrap(),
         Some(UnavailableReason::AdmissionUnavailable)
@@ -2241,7 +2265,7 @@ async fn replacement_action_capability_requires_enable_then_durable_registration
         })
     );
     assert_eq!(
-        route_private(&action, &source, &source_session)
+        route_signed(&source_key, &action, &source, &source_session)
             .await
             .unwrap(),
         None
@@ -2271,7 +2295,7 @@ async fn replacement_action_capability_requires_enable_then_durable_registration
     );
     drop(current);
     assert_eq!(
-        route_private(&action, &source, &source_session)
+        route_signed(&source_key, &action, &source, &source_session)
             .await
             .unwrap(),
         None
@@ -2346,6 +2370,7 @@ async fn bounded_private_queue_for_room_namespace() {
         own_user_public_key: &user.public_key,
         own_device_cert: &a.cert,
         own_device_public_key: &a.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: None,
         metrics: &metrics,
         trust_policy: &trust,
@@ -2374,9 +2399,10 @@ async fn bounded_private_queue_for_room_namespace() {
         target: b.device_public_key,
         message: ActionMessage::CatalogueRefresh { scope: None },
     };
+    let signed = SignedDirectedAction::sign(&action, unix_now_ns(), &a_key).unwrap();
     assert!(
         !private_may_overtake(
-            &EnvelopeV2::Directed(action.clone()),
+            &EnvelopeV2::SignedDirected(signed),
             Some(id),
             std::iter::empty(),
         ),
@@ -2391,7 +2417,7 @@ async fn bounded_private_queue_for_room_namespace() {
         .unwrap()
         .broker_host = Some(uuid::Uuid::from_u128(99));
     assert_eq!(
-        route_private(&action, &a, &session).await.unwrap(),
+        route_signed(&a_key, &action, &a, &session).await.unwrap(),
         Some(UnavailableReason::UnsupportedPeer)
     );
     assert!(bpr.try_recv().is_err());
@@ -2408,9 +2434,12 @@ async fn bounded_private_queue_for_room_namespace() {
         tx: btx.clone(),
         disconnect: recipient_disconnect.clone(),
     });
-    assert_eq!(route_private(&action, &a, &session).await.unwrap(), None);
     assert_eq!(
-        route_private(&action, &a, &session).await.unwrap(),
+        route_signed(&a_key, &action, &a, &session).await.unwrap(),
+        None
+    );
+    assert_eq!(
+        route_signed(&a_key, &action, &a, &session).await.unwrap(),
         Some(UnavailableReason::Backpressure)
     );
     let PrivateOutbound::Delivery(delivery) = bpr.recv().await.unwrap() else {
@@ -2424,7 +2453,7 @@ async fn bounded_private_queue_for_room_namespace() {
         .save_membership(&[b.device_public_key])
         .unwrap();
     assert_eq!(
-        route_private(&action, &a, &session).await.unwrap(),
+        route_signed(&a_key, &action, &a, &session).await.unwrap(),
         Some(UnavailableReason::NotAuthorised)
     );
     let mut sender_removed_wire = Vec::new();
@@ -2527,7 +2556,7 @@ async fn bounded_private_queue_for_room_namespace() {
         .unwrap()
         .room = uuid::Uuid::from_u128(9);
     assert_eq!(
-        route_private(&action, &a, &session).await.unwrap(),
+        route_signed(&a_key, &action, &a, &session).await.unwrap(),
         Some(UnavailableReason::NotAuthorised)
     );
     wr.lock()
@@ -2684,6 +2713,7 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
         own_user_public_key: &user.public_key,
         own_device_cert: &browser.cert,
         own_device_public_key: &browser.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: None,
         metrics: &metrics,
         trust_policy: &trust,
@@ -2768,7 +2798,7 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
 #[tokio::test]
 async fn heartbeat_is_answered_while_the_writer_waits_on_the_room() {
     let (root, user) = UserIdentity::generate("owner", 1);
-    let (b, _) = certified_device(&root, user.public_key, "b");
+    let (b, b_key) = certified_device(&root, user.public_key, "b");
     let room = uuid::Uuid::from_u128(91);
     let id = crate::room_workspace_id(&room.to_string()).unwrap();
     let tmp = tempfile::tempdir().unwrap();
@@ -2798,6 +2828,7 @@ async fn heartbeat_is_answered_while_the_writer_waits_on_the_room() {
             own_user_public_key: user.public_key,
             own_device_cert: b.cert.clone(),
             own_device_public_key: b.cert.device_public_key,
+            own_device_signing_key: b_key.clone(),
             app_serving: None,
             metrics: Arc::new(crate::metrics::Metrics::default()),
             live_bridge: None,
@@ -2857,4 +2888,79 @@ async fn heartbeat_is_answered_while_the_writer_waits_on_the_room() {
     drop(held);
     session.abort();
     let _ = session.await;
+}
+
+/// A delivery from a build that still sent actions unsigned is refused in
+/// every shape it had, before anything reads it as an action.
+#[tokio::test]
+async fn retired_unsigned_deliveries_are_refused() {
+    let (root, user) = UserIdentity::generate("unsigned sender", 1);
+    let (source, _) = certified_device(&root, user.public_key, "source");
+    let (outbound, _outbound_rx) = mpsc::channel(2);
+    let (private_tx, mut private_rx) = mpsc::channel(2);
+    let (disconnect, _disconnect_rx) = mpsc::channel(1);
+    let registry = Arc::new(AsyncMutex::new(HashMap::new()));
+    let trust = Arc::new(std::sync::RwLock::new(
+        crate::policy::TrustPolicy::AllowMatchingUser,
+    ));
+    let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
+    let metrics = Arc::new(crate::metrics::Metrics::default());
+    let session = SessionCtx {
+        workspaces: &registry,
+        autobind: None,
+        outbound: &outbound,
+        state_outbound: None,
+        connection_live: None,
+        own_user_public_key: &user.public_key,
+        own_device_cert: &source.cert,
+        own_device_public_key: &source.device_public_key,
+        own_device_signing_key: None,
+        app_serving: None,
+        metrics: &metrics,
+        trust_policy: &trust,
+        disconnect: &disconnect,
+        presence: None,
+        private_tx: &private_tx,
+        revocations: &revocations,
+        live_bridge: None,
+        agents: Box::leak(Box::default()),
+        positions: None,
+        compactor: None,
+        member_limits: None,
+        resumes: Box::leak(Box::default()),
+        lag: Box::leak(Box::default()),
+    };
+    let action = DirectedAction {
+        room: uuid::Uuid::from_u128(5),
+        request_id: uuid::Uuid::from_u128(6),
+        source: source.device_public_key,
+        target: [9; 32],
+        message: ActionMessage::CatalogueRefresh { scope: None },
+    };
+    for frame in [
+        EnvelopeV2::RetiredDirected(action.clone()),
+        EnvelopeV2::RetiredDelivered {
+            action: action.clone(),
+            source_user: user.public_key,
+        },
+        EnvelopeV2::RetiredCertifiedDelivered {
+            action,
+            source_certificate: serde_json::to_vec(&source.cert).unwrap(),
+        },
+    ] {
+        let refused = handle_private(frame, &source, &session).await;
+        assert!(
+            matches!(
+                &refused,
+                Err(PeerError::Protocol(reason))
+                    if reason.as_str()
+                        == tilo_delivery_protocol::transport_v2::UNSIGNED_DELIVERY_REFUSAL
+            ),
+            "a retired unsigned delivery is refused, got {refused:?}"
+        );
+    }
+    assert!(
+        private_rx.try_recv().is_err(),
+        "a refused delivery replies nothing and reaches no peer"
+    );
 }

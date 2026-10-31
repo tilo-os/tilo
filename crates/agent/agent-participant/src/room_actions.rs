@@ -513,7 +513,9 @@ impl RoomActions {
             | RemoteActionMessage::RecordRequest { .. }
             | RemoteActionMessage::RecordResponse { .. }
             | RemoteActionMessage::ConfirmationRequest { .. }
-            | RemoteActionMessage::ConfirmationResponse { .. } => return None,
+            | RemoteActionMessage::ConfirmationResponse { .. }
+            | RemoteActionMessage::ResourceWatch { .. }
+            | RemoteActionMessage::ResourceReading { .. } => return None,
         })
     }
 
@@ -604,7 +606,9 @@ impl HostActions {
             | RemoteActionMessage::RecordRequest { .. }
             | RemoteActionMessage::RecordResponse { .. }
             | RemoteActionMessage::ConfirmationRequest { .. }
-            | RemoteActionMessage::ConfirmationResponse { .. } => return None,
+            | RemoteActionMessage::ConfirmationResponse { .. }
+            | RemoteActionMessage::ResourceWatch { .. }
+            | RemoteActionMessage::ResourceReading { .. } => return None,
         };
         if supervisor {
             tilo_actions::remote::serve(&self.supervisor, caller, message)

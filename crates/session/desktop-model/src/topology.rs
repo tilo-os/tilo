@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::closed_tabs::Leaving;
 use crate::ids::{GroupId, MintIds, StripId, TabId};
 use crate::layout::{Tab, WindowGroup};
 use crate::tree::DesktopTree;
@@ -403,7 +404,7 @@ impl DesktopTree {
     /// the last one) takes over. `None`, with nothing changed, when no group
     /// holds the tab.
     pub fn remove_tab(&mut self, tab_id: TabId) -> Option<RemovedTab> {
-        self.remove_tab_choosing(tab_id, false)
+        self.remove_tab_choosing(tab_id, Leaving::Moved)
     }
 
     /// [`Self::remove_tab`] for a tab whose window went away (closed or
@@ -415,11 +416,14 @@ impl DesktopTree {
     /// shows, so the strip pans at most by the closed window's width and
     /// never jumps elsewhere. Restructuring that removes and re-adds tabs
     /// keeps using [`Self::remove_tab`].
+    ///
+    /// A close is remembered as it happens, so it can be reopened
+    /// ([`Self::reopen_closed`]); a structural removal is not.
     pub fn close_tab(&mut self, tab_id: TabId) -> Option<RemovedTab> {
-        self.remove_tab_choosing(tab_id, true)
+        self.remove_tab_choosing(tab_id, Leaving::Closed)
     }
 
-    fn remove_tab_choosing(&mut self, tab_id: TabId, back_to_previous: bool) -> Option<RemovedTab> {
+    fn remove_tab_choosing(&mut self, tab_id: TabId, leaving: Leaving) -> Option<RemovedTab> {
         let (ws_idx, strip_idx, group_idx, tab_idx) =
             self.workspaces.iter().enumerate().find_map(|(wi, ws)| {
                 ws.strips.iter().enumerate().find_map(|(si, strip)| {
@@ -436,6 +440,11 @@ impl DesktopTree {
                         })
                 })
             })?;
+        if leaving == Leaving::Closed
+            && let Some(workspace) = self.workspaces.get_mut(ws_idx)
+        {
+            workspace.note_close(strip_idx, group_idx, tab_idx);
+        }
         let strip = self.workspaces.get_mut(ws_idx)?.strips.get_mut(strip_idx)?;
         let strip_id = strip.id;
         let group = strip.window_groups.get_mut(group_idx)?;
@@ -443,7 +452,7 @@ impl DesktopTree {
         let tab = group.tabs.remove(tab_idx);
         group.focus_history.retain(|candidate| *candidate != tab_id);
         if group.active_tab == tab_id {
-            let came_from = back_to_previous
+            let came_from = (leaving == Leaving::Closed)
                 .then(|| group.previously_active(tab_id))
                 .flatten();
             group.active_tab = came_from.unwrap_or_else(|| {
@@ -457,7 +466,7 @@ impl DesktopTree {
         let group_removed = group.tabs.is_empty();
         if group_removed {
             strip.window_groups.remove(group_idx);
-            self.hand_focus_to_neighbour(strip_id, group_id, group_idx, back_to_previous);
+            self.hand_focus_to_neighbour(strip_id, group_id, group_idx, leaving == Leaving::Closed);
         }
         Some(RemovedTab {
             strip: strip_id,

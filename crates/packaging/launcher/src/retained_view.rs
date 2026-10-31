@@ -660,10 +660,15 @@ impl RootRole {
         Ok(())
     }
 }
+/// Whether an entry on the way to a retained executable is protected: root's
+/// own, and not writable by group or other.
+const fn protected_owner(uid: u32, mode: u32) -> bool {
+    uid == 0 && mode & 0o022 == 0
+}
 fn protected_program(path: &str) -> io::Result<File> {
     for ancestor in Path::new(path).ancestors().skip(1) {
         let metadata = std::fs::symlink_metadata(ancestor)?;
-        if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        if !metadata.is_dir() || !protected_owner(metadata.uid(), metadata.mode()) {
             return Err(refused("retained executable ancestry is not protected"));
         }
     }
@@ -673,8 +678,7 @@ fn protected_program(path: &str) -> io::Result<File> {
         .open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file()
-        || metadata.uid() != 0
-        || metadata.mode() & 0o022 != 0
+        || !protected_owner(metadata.uid(), metadata.mode())
         || metadata.mode() & 0o111 == 0
         || metadata.len() == 0
     {
@@ -696,7 +700,7 @@ fn check_executing_image(peer: &ExecutingPeer, expected: &File) -> io::Result<()
 fn protected_helper() -> io::Result<File> {
     for path in ["/", "/usr", "/usr/libexec"] {
         let metadata = std::fs::symlink_metadata(path)?;
-        if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        if !metadata.is_dir() || !protected_owner(metadata.uid(), metadata.mode()) {
             return Err(refused("retained helper ancestry is not protected"));
         }
     }
@@ -706,8 +710,7 @@ fn protected_helper() -> io::Result<File> {
         .open(HELPER_PATH)?;
     let metadata = helper.metadata()?;
     if !metadata.is_file()
-        || metadata.uid() != 0
-        || metadata.mode() & 0o022 != 0
+        || !protected_owner(metadata.uid(), metadata.mode())
         || metadata.mode() & 0o111 == 0
         || metadata.len() == 0
     {
@@ -1771,9 +1774,29 @@ mod tests {
     }
 
     #[test]
-    fn actual_authenticated_task_cannot_claim_another_protected_executable() {
+    fn only_an_executable_root_owns_and_no_one_else_may_write_is_protected() {
+        assert!(protected_owner(0, 0o755));
+        assert!(protected_owner(0, 0o555));
+        assert!(!protected_owner(0, 0o775), "group-writable");
+        assert!(!protected_owner(0, 0o757), "other-writable");
+        assert!(!protected_owner(1, 0o755), "an account that is not root");
+    }
+
+    #[test]
+    fn actual_authenticated_task_cannot_claim_an_executable_it_is_not_running() {
+        // Identity decides, not the claimed path's protection: the image this
+        // task actually runs is the only one it may claim, so any other file
+        // is refused. (The protection rule itself has its own test above.)
         let peer = actual_current_peer();
-        let expected = protected_program("/usr/bin/true").unwrap();
+        let claimed = tilo_test_env::runtime_tempdir().unwrap();
+        let path = claimed.path().join("claimed");
+        std::fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(
+            &path,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+        )
+        .unwrap();
+        let expected = File::open(&path).unwrap();
         let error = check_executing_image(&peer, &expected).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert!(peer.current(), "refusal must not signal an unadmitted task");

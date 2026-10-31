@@ -157,6 +157,15 @@ pub struct DesktopHost {
     desk: Rc<RefCell<Desk>>,
 }
 
+/// Told about the windows a program opens and closes, by the policy: what
+/// finds the program behind a window that named itself.
+pub trait WindowObserver: Send + Sync {
+    /// `window` named itself and is about to map.
+    fn opened(&self, window: &WindowInfo);
+    /// The window `id` is gone.
+    fn closed(&self, id: u64);
+}
+
 /// The window policy answered by the desktop's strips.
 pub struct StripPolicy {
     desk: Rc<RefCell<Desk>>,
@@ -171,6 +180,13 @@ pub struct StripPolicy {
     /// Those of them that have not shown a buffer yet: they wait in their
     /// place, which the compositor does not list among its windows.
     pending: Vec<u64>,
+    /// Told the process of each window the compositor maps, the moment the
+    /// desktop gives it a place.
+    map_observer: Option<Rc<dyn Fn(u32)>>,
+    /// Who follows the windows, when the session has someone that does.
+    observer: Option<std::sync::Arc<dyn WindowObserver>>,
+    /// The windows it was told about, so none is told of twice.
+    announced: std::collections::HashSet<u64>,
 }
 
 /// A desktop of one workspace with one empty strip (`salt` seeds its ids),
@@ -214,6 +230,9 @@ pub fn desktop_with(
             tracker: GestureTracker::default(),
             travel: 0.0,
             pending: Vec::new(),
+            map_observer: None,
+            observer: None,
+            announced: std::collections::HashSet::new(),
         },
     )
 }
@@ -327,28 +346,67 @@ impl SurfaceHost for DesktopHost {
 }
 
 impl StripPolicy {
+    /// Tell `observer` the process of each window the compositor maps, as the
+    /// desktop gives it a place: the app's door opens to it from then on.
+    pub fn set_window_mapped(&mut self, observer: Rc<dyn Fn(u32)>) {
+        self.map_observer = Some(observer);
+    }
+
+    /// Follow the windows the compositor opens and closes with `observer`:
+    /// how a session learns which programs the person runs.
+    pub fn observe_windows(&mut self, observer: std::sync::Arc<dyn WindowObserver>) {
+        self.observer = Some(observer);
+    }
+
+    /// Tell the observer about `window`, once.
+    fn announce(&mut self, window: &WindowInfo) {
+        let Some(observer) = self.observer.clone() else {
+            return;
+        };
+        if !self.announced.insert(window.id) {
+            return;
+        }
+        observer.opened(window);
+    }
+
+    /// Tell the observer that `id` is gone, once.
+    fn forgot(&mut self, id: u64) {
+        if !self.announced.remove(&id) {
+            return;
+        }
+        if let Some(observer) = &self.observer {
+            observer.closed(id);
+        }
+    }
+
     /// Give `window` its tab, once, and lay the desktop out so its place
     /// is known.
     fn map(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) {
-        let mut desk = self.desk.borrow_mut();
-        desk.cover(outputs);
-        if self.mapped.contains(&window.id) {
-            return;
+        {
+            let mut desk = self.desk.borrow_mut();
+            desk.cover(outputs);
+            if self.mapped.contains(&window.id) {
+                return;
+            }
+            let mapped = desk.policy.map(Window {
+                id: window.id,
+                app_id: window.app_id.clone(),
+                title: window.title.clone(),
+                parent: window.parent,
+                min_size: window.min_size,
+                max_size: window.max_size,
+            });
+            if let Err(error) = mapped {
+                tracing::warn!(%error, window = window.id, "the desktop has no strip to open a window in");
+                return;
+            }
+            self.mapped.push(window.id);
+            desk.host.relayout();
         }
-        let mapped = desk.policy.map(Window {
-            id: window.id,
-            app_id: window.app_id.clone(),
-            title: window.title.clone(),
-            parent: window.parent,
-            min_size: window.min_size,
-            max_size: window.max_size,
-        });
-        if let Err(error) = mapped {
-            tracing::warn!(%error, window = window.id, "the desktop has no strip to open a window in");
-            return;
+        if let (Some(observer), Some(pid)) = (self.map_observer.as_ref(), window.pid) {
+            observer(pid);
         }
-        self.mapped.push(window.id);
-        desk.host.relayout();
+        self.announce(window);
     }
 }
 
@@ -439,6 +497,9 @@ impl WindowPolicy for StripPolicy {
             }
         }
         self.mapped.retain(|id| !gone.contains(id));
+        for id in &gone {
+            self.forgot(*id);
+        }
         for (window, _) in windows {
             self.map(window, outputs);
         }
@@ -470,6 +531,7 @@ impl WindowPolicy for StripPolicy {
     fn withdrawn(&mut self, window: &WindowInfo) {
         self.pending.retain(|id| *id != window.id);
         self.mapped.retain(|id| *id != window.id);
+        self.forgot(window.id);
         let mut desk = self.desk.borrow_mut();
         desk.policy.unmap(window.id);
         desk.host.relayout();
@@ -581,5 +643,50 @@ impl WindowPolicy for StripPolicy {
             desk.host.relayout();
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The display the test places windows on.
+    fn output() -> LayoutRect {
+        LayoutRect::new(LayoutPoint::from((0, 0)), (1280, 800).into())
+    }
+
+    /// A window of `app` made by the process `pid`.
+    fn window(id: u64, app: &str, pid: Option<u32>) -> WindowInfo {
+        WindowInfo {
+            id,
+            app_id: Some(app.to_owned()),
+            pid,
+            ..WindowInfo::default()
+        }
+    }
+
+    /// The policy is told the process of each window the compositor maps, as
+    /// the desktop gives it a place, so the app behind it opens its later
+    /// windows there. A window without a process, or one already placed, has
+    /// nothing to tell.
+    #[test]
+    fn a_mapped_window_tells_the_policy_its_process() {
+        let (_desk, mut policy) = desktop(1, 1.0);
+        let told = Rc::new(RefCell::new(Vec::new()));
+        let heard = Rc::clone(&told);
+        policy.set_window_mapped(Rc::new(move |pid| heard.borrow_mut().push(pid)));
+
+        policy.map(&window(1, "so.tilo.notes", Some(4242)), &[output()]);
+        assert_eq!(*told.borrow(), vec![4242], "the mapped window's process");
+
+        policy.map(&window(1, "so.tilo.notes", Some(4242)), &[output()]);
+        assert_eq!(*told.borrow(), vec![4242], "a window is placed once");
+
+        policy.map(&window(2, "so.tilo.notes", None), &[output()]);
+        assert_eq!(
+            *told.borrow(),
+            vec![4242],
+            "a window without a process has none to tell"
+        );
     }
 }

@@ -27,6 +27,7 @@ use tilo_desktop_surface::{DesktopNotifications, NotificationOutcome};
 use tilo_lock::MutexRecover as _;
 use tilo_notification_banners::{Ask, Link};
 use tilo_notifications_service::{Arrival, Caller, Callers, CloseReason, Notifications, Sender};
+use tilo_session_power::PowerLink;
 
 use crate::app_icons;
 use crate::portal_link::PortalSide;
@@ -34,6 +35,21 @@ use crate::system_sounds::SystemSounds;
 
 /// The most unread notifications one app's icon counts to.
 const MAX_BADGE: u32 = 9_999;
+
+/// The event sound an arrival asks for: a `suppress-sound` sender asks for
+/// none, a critical one gets the machine's error voice — something failed,
+/// and that sound plays through quiet modes — and anything else gets its
+/// category's.
+fn sound_event(sent: &tilo_notifications_service::Notification) -> Option<SystemSoundEvent> {
+    if sent.suppress_sound {
+        return None;
+    }
+    Some(if sent.urgency == 2 {
+        SystemSoundEvent::Error
+    } else {
+        SystemSoundEvent::for_notification_category(sent.category.as_deref())
+    })
+}
 
 /// The desktop's notification for what an app sent the daemon. Critical
 /// urgency stays until the person acts, as the specification asks;
@@ -235,6 +251,10 @@ pub(crate) struct SessionNotifications {
     daemon: Option<Notifications>,
     desktop: DesktopNotifications,
     banners: Link,
+    /// The machine's power, when this session owns it: what holds it from
+    /// going idle is how a presentation, a video or a call tells the desk
+    /// the screen is being watched by others.
+    power: Option<PowerLink>,
     /// The person's notification policy, kept current by the session's
     /// settings watch: what each arrival is judged by.
     policy: Arc<Mutex<NotificationPolicy>>,
@@ -272,6 +292,7 @@ impl SessionNotifications {
         banners: Link,
         policy: Arc<Mutex<NotificationPolicy>>,
         signals: Rc<NoticeSignals>,
+        power: Option<PowerLink>,
     ) -> Self {
         let opened: Opened = Rc::default();
         let choosing = Rc::clone(&opened);
@@ -306,6 +327,7 @@ impl SessionNotifications {
             daemon,
             desktop,
             banners,
+            power,
             policy,
             sounds: SystemSounds::new(),
             badges: BTreeMap::new(),
@@ -337,17 +359,23 @@ impl SessionNotifications {
         )
     }
 
+    /// Whether the person is presenting right now: an app holding the
+    /// machine from going idle says someone is watching the screen without
+    /// touching anything, which is a slideshow, a video or a call.
+    fn presenting(&self) -> bool {
+        self.power.as_ref().is_some_and(PowerLink::idle_held)
+    }
+
     /// How the person's calm settings stand at the local time now, as the
     /// event sounds read them.
     fn quiet_state(&self) -> QuietState {
+        let presenting = self.presenting();
         let (_, minute, weekday) = local_now();
         let policy = self.policy.lock_recover();
         QuietState {
             do_not_disturb: policy.do_not_disturb,
             focus: policy.focus.active_at(minute, weekday),
-            // Nothing tells the session a presentation is on yet, so the
-            // automatic hold while presenting is never on.
-            presenting: false,
+            presenting,
         }
     }
 
@@ -360,7 +388,12 @@ impl SessionNotifications {
         if policy.do_not_disturb {
             return Some(notifications::quiet_label(&QuietReason::DoNotDisturb));
         }
-        policy.focus.active_until(minute, weekday).map(|end| {
+        let focus = policy.focus.active_until(minute, weekday);
+        drop(policy);
+        if self.presenting() {
+            return Some(notifications::quiet_label(&QuietReason::Presenting));
+        }
+        focus.map(|end| {
             notifications::quiet_label(&QuietReason::FocusUntil(ui::clock::hour_minute(
                 (end / 60).into(),
                 (end % 60).into(),
@@ -477,6 +510,9 @@ impl SessionNotifications {
         // header, before they are published.
         self.desktop.set_quiet(self.quiet_status());
         if let Some(daemon) = self.daemon.clone() {
+            // The machine's graphics stopped for good: the person is told
+            // once, in the pass the renderers' record first says so.
+            crate::notices::tell_graphics_fallback(&daemon);
             for arrival in daemon.drain() {
                 self.arrive(arrival);
             }
@@ -501,10 +537,7 @@ impl SessionNotifications {
                 let transient = sent.transient;
                 let app_id = sent.caller.as_ref().map(|caller| caller.app_id.clone());
                 let badge_count = sent.badge_count;
-                // What event sound it asks for, if any: a `suppress-sound`
-                // sender asks for none.
-                let sound = (!sent.suppress_sound)
-                    .then(|| SystemSoundEvent::for_notification_category(sent.category.as_deref()));
+                let sound = sound_event(&sent);
                 let effective = self.effective(app_id.as_deref(), sent.priority_contact);
                 // A notification under a shown one's id replaces it.
                 if let Some(old) = self.by_sender.remove(&sender) {
@@ -516,8 +549,9 @@ impl SessionNotifications {
                 notification.show_preview = effective.previews;
                 notification.show_on_lock_screen = effective.lock_screen;
                 // Held banners go straight to the centre, unread: quiet
-                // asks for calm, not to be kept uninformed.
-                let id = if effective.banners {
+                // asks for calm, not to be kept uninformed. Presenting is
+                // held whatever the sender's own rule says.
+                let id = if effective.banners && !self.presenting() {
                     self.desktop.post(notification)
                 } else {
                     self.desktop.post_quiet(notification)

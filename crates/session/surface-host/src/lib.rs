@@ -15,7 +15,7 @@ mod frames;
 pub mod shell_part;
 mod widget;
 
-pub use desktop::{DeskGesture, DesktopHost, StripPolicy, desktop, desktop_with};
+pub use desktop::{DeskGesture, DesktopHost, StripPolicy, WindowObserver, desktop, desktop_with};
 pub use door::{Doors, Published, Shared, through_door};
 pub use shell_part::{DeskReading, SessionLink, ShellPart, ShellWork};
 pub use widget::WidgetHost;

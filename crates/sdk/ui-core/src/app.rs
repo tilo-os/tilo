@@ -232,7 +232,9 @@ use crate::presence::{PresenceCtx, PresenceKey};
 use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::time::{Duration, Instant};
+#[cfg(any(feature = "native", test))]
+use crate::time::Duration;
+use crate::time::Instant;
 use crate::widget::Widget;
 use taffy::{NodeId, TaffyTree};
 #[cfg(feature = "native")]
