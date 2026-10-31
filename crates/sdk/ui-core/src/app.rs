@@ -2312,6 +2312,23 @@ impl App {
         self.rebuild_structure_placing_focus();
     }
 
+    /// The name the control at `node` answers to in this tree, when it still
+    /// holds one: what tells a rebuilt modal that the same answer is still
+    /// where the person left it.
+    fn answer_name(&self, node: NodeId) -> Option<String> {
+        let mut name = None;
+        // SAFETY: the caller owns this tree; nothing borrows the widget.
+        let _ = unsafe {
+            crate::bound_dispatch::inspect_bound_node(
+                &self.bindings,
+                &self.layout.node_map,
+                node,
+                |widget| name = widget.test_id().map(str::to_owned),
+            )
+        };
+        name
+    }
+
     /// [`Self::rebuild_structure`]: whether a control asked for the keyboard in the tree it
     /// built ([`Widget::take_focus_request`]) and has it. That request is where the keyboard
     /// goes, over where it was before the rebuild: a caller restoring the focus it captured
@@ -2358,6 +2375,28 @@ impl App {
             (None, None, false)
         };
 
+        // A modal holds the keyboard where the person put it: what it shows
+        // changing under their hands, a countdown or a line of status, is not
+        // them leaving their place. Its answer is remembered by what it is
+        // and, failing that, by where in the answers it stood: a control that
+        // was told it lost focus while the tree was replaced still stands in
+        // the same place after it is built again.
+        let trapped_focus = self
+            .accessibility
+            .focus_trap_active
+            .then(|| {
+                let at = self
+                    .focused_node
+                    .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
+                // Read from the live tree, never through the layout maps: a
+                // rebuild can follow widgets replaced since they were made.
+                let identity = crate::widget::layout::CompositionFocus::capture_live(
+                    self.root_widget.as_ref(),
+                );
+                let named = self.focused_node.and_then(|id| self.answer_name(id));
+                (at, identity, named)
+            })
+            .filter(|(at, identity, named)| at.is_some() || identity.is_some() || named.is_some());
         // NodeId values can be reused by the new tree. Clear the old handle
         // without dispatching through its potentially invalid pointer, so a
         // replacement control at the same id still receives set_focus(true).
@@ -2386,6 +2425,32 @@ impl App {
         self.update_focusable_order();
         #[cfg(test)]
         drop(probe);
+        if let Some((at, identity, named)) = trapped_focus
+            && self.accessibility.focus_trap_active
+        {
+            // The same answer holds the keyboard after the rebuild. When the
+            // tree no longer reports that answer, only a control that still
+            // answers to the same name at the same place may take the
+            // keyboard: a rebuilt modal can show different answers, and the
+            // person's place there is the first one, as it already was by the
+            // focus order above.
+            // SAFETY: the build above made this exact tree, exclusively owned.
+            let restored = identity.and_then(|focus| unsafe {
+                focus.restore(
+                    &self.layout.node_map,
+                    &self.bindings,
+                    Some(&self.focusable_order),
+                )
+            });
+            let kept = restored.or_else(|| {
+                let at = at?;
+                let node = *self.focusable_order.get(at)?;
+                (self.answer_name(node) == named).then_some(node)
+            });
+            if let Some(node) = kept {
+                self.set_focused_node(Some(node));
+            }
+        }
 
         // A focus trap already placed focus inside its subtree in
         // `update_focusable_order`; don't let it escape the modal.
