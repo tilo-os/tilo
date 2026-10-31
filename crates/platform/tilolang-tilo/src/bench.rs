@@ -236,7 +236,7 @@ pub fn compile(dir: &Path) -> Result<Vec<Compiled>, String> {
 }
 
 /// What a package's root holds that the scenarios fill and edit.
-struct Shape {
+pub(crate) struct Shape {
     app: String,
     root_ty: String,
     /// The root's collection, seeded with the items.
@@ -249,10 +249,15 @@ struct Shape {
     links: Vec<(Option<String>, Shape)>,
 }
 
-/// A collection of a root and its items.
-struct List {
+/// A collection and its items, and the one item standing between the root and it: a mail
+/// account holding the conversations, whose own collection is what people use and what grows.
+pub(crate) struct List {
     field: String,
     item_ty: String,
+    /// The chain of items the collection is inside, from the root down: each is the field of
+    /// the record above that holds it and that record's type. Empty when the root holds the
+    /// collection itself.
+    holders: Vec<Holder>,
     /// The item's text fields, the first being its title.
     texts: Vec<String>,
     /// The item's flags (its Bool fields): every third item has them set, so a filter on one
@@ -269,8 +274,17 @@ struct List {
 /// How many places a sidebar of places holds (see [`List::places`]).
 const PLACES: usize = 20;
 
+/// A record the list's collection is inside, from the root down: the field of the record above
+/// that holds it, and its type's text fields, which the seed fills. The last holder holds the
+/// list's collection, in [`List::field`].
+struct Holder {
+    field: String,
+    ty: String,
+    texts: Vec<String>,
+}
+
 /// The collection an item holds.
-struct Nested {
+pub(crate) struct Nested {
     field: String,
     item_ty: String,
 }
@@ -323,6 +337,14 @@ fn shape_of(meta: &Meta, others: &[&Meta]) -> Result<Shape, String> {
             list.places = several && chosen.is_some();
             Some(list)
         });
+    // A root whose collection holds a few records of its own kind (the workspace's mail
+    // accounts, which open in no window) has what people read one level down: the collection
+    // inside them, whose items open in a window of their own (a conversation).
+    let list = match list {
+        Some(list) if meta.default_view(&list.item_ty).is_some() => Some(list),
+        Some(list) => inside(meta, &list).or(Some(list)),
+        None => None,
+    };
     let counter = schema
         .fields
         .iter()
@@ -394,13 +416,13 @@ fn item_types(
 /// The root's collection `field` as a list of items of `item_ty`, when the items have text to
 /// fill.
 fn list_of(field: &str, item_ty: String) -> Option<List> {
+    list_in(field, item_ty, Vec::new())
+}
+
+/// The collection `field` as a list of items of `item_ty`, inside the records `holders`.
+fn list_in(field: &str, item_ty: String, holders: Vec<Holder>) -> Option<List> {
     let schema = lookup(&item_ty)?;
-    let texts = schema
-        .fields
-        .iter()
-        .filter(|f| f.kind == MergeKind::Text)
-        .map(|f| f.id.clone())
-        .collect::<Vec<_>>();
+    let texts = texts_of(schema);
     let flags = schema
         .fields
         .iter()
@@ -420,6 +442,7 @@ fn list_of(field: &str, item_ty: String) -> Option<List> {
     (!texts.is_empty()).then(|| List {
         field: field.to_owned(),
         item_ty,
+        holders,
         texts,
         flags,
         nested,
@@ -427,39 +450,199 @@ fn list_of(field: &str, item_ty: String) -> Option<List> {
     })
 }
 
+/// The text fields of a record type, in the schema's order.
+fn texts_of(schema: &crate::schema::TypeSchema) -> Vec<String> {
+    schema
+        .fields
+        .iter()
+        .filter(|f| f.kind == MergeKind::Text)
+        .map(|f| f.id.clone())
+        .collect()
+}
+
+/// Give every register of `record`'s type that holds no value and has no default one a value
+/// of its type: a time, a date, an identifier. A view that reads it then reads a value, as it
+/// does in a room the app filled.
+pub(crate) fn fill_registers(record: &mut DynRecord, registers: &[(String, String)]) {
+    for (field, ty) in registers {
+        let Some(DynValue::Register(slot)) = record.get_mut(field) else {
+            continue;
+        };
+        if !slot.is_null() {
+            continue;
+        }
+        *slot = match ty.as_str() {
+            "Time" => json!(BENCH_TIME),
+            "Date" => json!("2026-06-29"),
+            "Identifier" => json!("mailto:bench@example.org"),
+            "Int" => json!(0),
+            "Float" => json!(0.0),
+            "Bool" => json!(false),
+            "Text" => json!("bench"),
+            _ => continue,
+        };
+    }
+}
+
+/// The registers of the type `ty` that hold no value until one is written, with the type each
+/// holds: a `Time`, a `Date`, an identifier.
+pub(crate) fn register_fields(meta: &Meta, ty: &str) -> Vec<(String, String)> {
+    let Some(declared) = crate::meta::MetaExt::type_named(meta, ty) else {
+        return Vec::new();
+    };
+    declared
+        .fields
+        .iter()
+        .filter(|f| f.merge == tilolang::types::MergeKind::Register && f.default.is_none())
+        .map(|f| (f.id.clone(), f.ty.trim().to_owned()))
+        .collect()
+}
+
+/// The collection inside the root's collection `outer` that people use: one of the root's
+/// records (the workspace's mail accounts) holds conversations, which open in a window of
+/// their own and hold messages. `None` when one of them does not.
+fn inside(meta: &Meta, outer: &List) -> Option<List> {
+    let holder_schema = lookup(&outer.item_ty)?;
+    for field in &holder_schema.fields {
+        if field.kind != MergeKind::Collection {
+            continue;
+        }
+        let item_ty = field.record.clone()?;
+        if meta.default_view(&item_ty).is_none() {
+            continue;
+        }
+        return list_in(
+            &field.id,
+            item_ty,
+            vec![Holder {
+                field: outer.field.clone(),
+                ty: outer.item_ty.clone(),
+                texts: texts_of(holder_schema),
+            }],
+        );
+    }
+    None
+}
+
 /// The id the seeded item number `i` has.
 fn item_id(i: usize) -> String {
     format!("seed-{i:06}")
 }
 
+/// The root's collection, seeded with `n` items of [`List`], inside its holders.
+///
+/// A list inside holders is filled from the bottom up: the holders hold one record each (the
+/// workspace's mail accounts; a workspace has a few), and what grows is the collection in it.
+fn seeded_collection(list: &List, n: usize, meta: &Meta) -> Result<Collection<DynRecord>, String> {
+    let n = if list.places { n.min(PLACES) } else { n };
+    let item_schema = lookup(&list.item_ty).ok_or("unregistered item type")?;
+    let registers = register_fields(meta, &list.item_ty);
+    let mut items = Collection::default();
+    for i in 0..n {
+        let mut item = DynRecord::empty(item_schema).map_err(|e| e.to_string())?;
+        for (k, field) in list.texts.iter().enumerate() {
+            if let Some(DynValue::Text(text)) = item.get_mut(field) {
+                *text = if k == 0 {
+                    format!("Item {i}")
+                } else {
+                    format!("Text of item {i}")
+                };
+            }
+        }
+        for field in &list.flags {
+            if let Some(DynValue::Register(flag)) = item.get_mut(field) {
+                *flag = json!(i % 3 == 0);
+            }
+        }
+        // A register of a type with no default (a time, a date, an identifier) reads as an
+        // error until it has a value: the seed gives it one, so what a view reads of it reads.
+        fill_registers(&mut item, &registers);
+        items.push(Id::from_raw(item_id(i)), item);
+    }
+    with_holders(list, items)
+}
+
+/// `items` of the list's collection, wrapped in the records the collection is inside: each
+/// holder is a record of its own holding the one below it, the topmost in the root.
+pub(crate) fn with_holders(
+    list: &List,
+    items: Collection<DynRecord>,
+) -> Result<Collection<DynRecord>, String> {
+    let mut items = items;
+    // Each holder's own collection holds the one below it, its own id naming it: a mail
+    // account's conversations.
+    for (level, holder) in list.holders.iter().enumerate().rev() {
+        let schema = lookup(&holder.ty).ok_or("unregistered holder type")?;
+        let mut record = DynRecord::empty(schema).map_err(|e| e.to_string())?;
+        for (k, field) in holder.texts.iter().enumerate() {
+            if let Some(DynValue::Text(text)) = record.get_mut(field) {
+                *text = if k == 0 {
+                    "Holder".to_owned()
+                } else {
+                    format!("Text {k}")
+                };
+            }
+        }
+        // The holder holds the record below it: the next holder, or the list itself.
+        let field = list
+            .holders
+            .get(level.saturating_add(1))
+            .map_or_else(|| list.field.clone(), |next| next.field.clone());
+        match record.get_mut(&field) {
+            Some(DynValue::Collection(slot)) => *slot = items,
+            _ => return Err("the holder's field is not a collection".into()),
+        }
+        let mut held = Collection::default();
+        held.push(Id::from_raw(holder_id(level)), record);
+        items = held;
+    }
+    Ok(items)
+}
+
+/// The field of the root the list's topmost collection is in: the first holder's, or the
+/// list's own when it stands in the root.
+pub(crate) fn top_field(list: &List) -> String {
+    list.holders
+        .first()
+        .map_or_else(|| list.field.clone(), |h| h.field.clone())
+}
+
+/// The reference to the item `id` of the list in `shape`: the root's record, or the record the
+/// item is inside (`$items` holds it either way).
+pub(crate) fn item_ref(shape: &Shape, list: &List, id: &str) -> ResourceRef {
+    let _ = shape;
+    ResourceRef {
+        doc: root_id(shape),
+        item: Some(id.to_owned()),
+        ty: list.item_ty.clone(),
+    }
+}
+
+/// The path an edit of the item `id`'s `field` takes: the item, then the field. Items are
+/// stored flat under their record's `$items`, whether or not they are inside another item.
+pub(crate) fn item_path(id: &str, field: &str) -> Vec<Segment> {
+    vec![
+        Segment::Item(Id::from_raw(id)),
+        Segment::Field(field.to_owned()),
+    ]
+}
+
+/// The id of the holder at `level` (the record the list's collection is inside).
+fn holder_id(level: usize) -> String {
+    format!("hold-{level:03}")
+}
+
 /// The root record with `n` items in its collection (a sidebar of places, its [`PLACES`]),
 /// each with its number in every text field, and referring to the roots it links.
-fn seeded_root(shape: &Shape, n: usize) -> Result<DynRecord, String> {
+fn seeded_root(shape: &Shape, n: usize, meta: &Meta) -> Result<DynRecord, String> {
     let root_schema = lookup(&shape.root_ty).ok_or("unregistered root type")?;
     let mut root = DynRecord::empty(root_schema).map_err(|e| e.to_string())?;
     if let Some(list) = &shape.list {
-        let n = if list.places { n.min(PLACES) } else { n };
-        let item_schema = lookup(&list.item_ty).ok_or("unregistered item type")?;
-        let mut items = Collection::default();
-        for i in 0..n {
-            let mut item = DynRecord::empty(item_schema).map_err(|e| e.to_string())?;
-            for (k, field) in list.texts.iter().enumerate() {
-                if let Some(DynValue::Text(text)) = item.get_mut(field) {
-                    *text = if k == 0 {
-                        format!("Item {i}")
-                    } else {
-                        format!("Text of item {i}")
-                    };
-                }
-            }
-            for field in &list.flags {
-                if let Some(DynValue::Register(flag)) = item.get_mut(field) {
-                    *flag = json!(i % 3 == 0);
-                }
-            }
-            items.push(Id::from_raw(item_id(i)), item);
-        }
-        match root.get_mut(&list.field) {
+        let items = seeded_collection(list, n, meta)?;
+        // The topmost collection is the root's own field: the holder chain's first field, or
+        // the list's when it stands in the root.
+        let field = top_field(list);
+        match root.get_mut(&field) {
             Some(DynValue::Collection(slot)) => *slot = items,
             _ => return Err("the list field is not a collection".into()),
         }
@@ -505,11 +688,11 @@ fn execute(doc: &mut Doc, action: &DynAction, who: &str) -> Result<(), String> {
 }
 
 /// Create the root of `shape`, seeded with `n` items, in `doc`: the roots it links first.
-fn seed(doc: &mut Doc, shape: &Shape, n: usize) -> Result<(), String> {
+fn seed(doc: &mut Doc, shape: &Shape, n: usize, meta: &Meta) -> Result<(), String> {
     for (_, linked) in &shape.links {
-        seed(doc, linked, n)?;
+        seed(doc, linked, n, meta)?;
     }
-    let root = seeded_root(shape, n)?;
+    let root = seeded_root(shape, n, meta)?;
     let action = DynAction {
         app: shape.app.clone(),
         kind: format!("tl.{}.seed", shape.app),
@@ -525,9 +708,9 @@ fn seed(doc: &mut Doc, shape: &Shape, n: usize) -> Result<(), String> {
 }
 
 /// A room seeded with `n` items: the record, ready for a host.
-fn seeded_room(shape: &Shape, n: usize) -> Result<Doc, String> {
+fn seeded_room(shape: &Shape, n: usize, meta: &Meta) -> Result<Doc, String> {
     let mut doc = Doc::new();
-    seed(&mut doc, shape, n)?;
+    seed(&mut doc, shape, n, meta)?;
     // A window opens a room it loads, from storage or a peer: the seeded record, saved and
     // loaded again.
     Doc::load(&doc.save()).map_err(|e| e.to_string())
@@ -553,7 +736,7 @@ pub fn seeded_record(packages: &[Compiled], n: usize) -> Result<Doc, String> {
         .map(|p| &p.meta)
         .filter(|m| m.app != main.meta.app)
         .collect();
-    seeded_room(&shape_of(&main.meta, &others)?, n)
+    seeded_room(&shape_of(&main.meta, &others)?, n, &main.meta)
 }
 
 fn root_id(shape: &Shape) -> String {
@@ -1344,7 +1527,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         })
     };
     for n in counts {
-        let sized = sized(n, seeded_room(&shape, n)?)?;
+        let sized = sized(n, seeded_room(&shape, n, &meta)?)?;
         if let Some(isolation) = &config.memory {
             out.push(memory(&sized, isolation)?);
         }
@@ -1850,8 +2033,7 @@ fn typing(
         && has_default_view(sized.packages, &list.item_ty)
     {
         let target = sized.target(main);
-        let item = ResourceRef::root(root_id(root), root.root_ty.clone())
-            .item(&item_id(target), list.item_ty.clone());
+        let item = item_ref(root, list, &item_id(target));
         let editor = host.open_resource(&item, None).map_err(|e| e.to_string())?;
         // A person types into the item's title where its window edits it (a note), else into
         // the window's first text input (a conversation's draft).
@@ -1959,10 +2141,7 @@ fn peer_change<'a>(
     if let Some((root, list)) = shape.subject() {
         let title = list.texts.first().cloned().unwrap_or_default();
         let edit = Edit::new(
-            vec![
-                Segment::Item(Id::from_raw(item_id(sized.target(room.list.tree())))),
-                Segment::Field(title),
-            ],
+            item_path(&item_id(sized.target(room.list.tree())), &title),
             EditOp::Replace {
                 text: format!("Peer title {sample}"),
             },
@@ -2034,6 +2213,7 @@ fn peer_post(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, Strin
             &format!("Peer post {sample}"),
             1,
             &principals,
+            sized.meta,
         )?;
         // The seeded items' own collections hold nothing: the post is their first.
         let at = tilolang_runtime::place::Placement::At {
