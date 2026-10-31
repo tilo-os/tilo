@@ -473,6 +473,14 @@ pub(crate) enum Outgoing {
     },
     /// Ask for the lane this device's private texts travel on.
     PrivateMessages(tokio::sync::oneshot::Sender<tilo_network_actor::private_messages::Transport>),
+    /// Ask `ws`'s hosts for the record on `channel`, which they replay a
+    /// joining device only once it asks (an on-demand record, or a part of a
+    /// chain behind its head).
+    OpenRecord { ws: WorkspaceId, channel: [u8; 32] },
+    /// Ask the host of the joined room on `ws` to replay what it retains:
+    /// something a message let go earlier waited for has arrived, and the
+    /// message is decided again when it comes back.
+    Replay(WorkspaceId),
     /// Say which devices room `ws` admits, and until when each of their
     /// certificates holds: they alone send and receive its window streams.
     Roster {
@@ -1543,10 +1551,13 @@ fn run(
                     };
                     let endpoint = endpoint.clone();
                     let plane = actor.clone();
+                    let events = events.clone();
                     let channels = Arc::clone(&link);
                     tokio::spawn(async move {
-                        let result =
-                            redeem(endpoint, identity, engine, &plane, request, &channels).await;
+                        let result = redeem(
+                            endpoint, identity, engine, &plane, &events, request, &channels,
+                        )
+                        .await;
                         let _ = landed.send(Enrolled {
                             workspace,
                             room,
@@ -1630,6 +1641,12 @@ async fn take_in(
         }
         let mut run: Vec<native_ingress::Input> = Vec::new();
         for input in waiting {
+            // The channels' governance is between the room's devices: its
+            // governor never admits it, and the channel service settles the
+            // groups with it instead.
+            if link.dispatch(input.message()) {
+                continue;
+            }
             if run
                 .first()
                 .is_some_and(|first: &native_ingress::Input| !first.same_session(&input))
@@ -1660,10 +1677,23 @@ async fn admit(inputs: Vec<native_ingress::Input>, identity: &HostIdentity, link
             return;
         }
     };
+    let mut replay_wanted = false;
     for (_, report) in admitted.inputs {
-        if let Err(error) = report {
-            tracing::debug!(%error, %room, "a room's state was not taken in");
+        match report {
+            Ok(report) => {
+                replay_wanted |= report.replay_wanted;
+            }
+            Err(error) => {
+                tracing::debug!(%error, %room, "a room's state was not taken in");
+            }
         }
+    }
+    if replay_wanted {
+        // A message waited on something the room's host sends of its own
+        // accord as well, such as the checkpoint a sealed record is founded
+        // on: the host replays what it retains, and the message is decided
+        // again.
+        link.ask_replay(room);
     }
     if admitted.changed {
         // The room's governance moved with it: its channels and the devices
@@ -1729,6 +1759,10 @@ async fn carry_out(
             };
             plane.send(command).await.is_ok()
         }
+        Outgoing::Replay(ws) => plane.send(NetCmd::NativeReplay { ws }).await.is_ok(),
+        Outgoing::OpenRecord { ws, channel } => {
+            plane.send(NetCmd::OpenRecord { ws, channel }).await.is_ok()
+        }
         Outgoing::Roster { ws, devices } => plane
             .send(NetCmd::SetRoomRoster { ws, devices })
             .await
@@ -1755,6 +1789,7 @@ async fn redeem(
     identity: HostIdentity,
     engine: Arc<Engine>,
     plane: &tokio::sync::mpsc::Sender<NetCmd>,
+    events: &tokio::sync::mpsc::Sender<NetEvent>,
     request: Enrolling,
     link: &ChannelLink,
 ) -> Result<(), String> {
@@ -1795,6 +1830,16 @@ async fn redeem(
     // people say and record reaches it as it happens, and the devices it
     // admits are told to the plane.
     link.room_changed(request.room);
+    // The room's subscription comes before the session it carries: what the
+    // host says the moment this device joins is the room as it stands, and a
+    // room nobody listens to yet drops it.
+    plane
+        .send(NetCmd::JoinWorkspace {
+            ws: topic,
+            on_event: events.clone(),
+        })
+        .await
+        .map_err(|_| "the collaboration plane is gone".to_owned())?;
     let connect = tilo_network_actor::native_ingress::Connect::new(owner, request.room)
         .map_err(|error| format!("the room was not taken in: {error}"))?;
     plane

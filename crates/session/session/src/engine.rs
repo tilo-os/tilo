@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use tilo_action_broker::channel_encryption::ChannelKeyProvider;
+use tilo_action_broker::channel_encryption::{ChannelAccess, ChannelKeyProvider};
 use tilo_desktop_model::{RoomId, WorkspaceId};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_lock::MutexRecover as _;
@@ -116,6 +116,10 @@ pub struct Engine {
     /// service is running: the session opens the rooms before it opens the
     /// service, and every reader of a sealed record goes through this.
     keys: ChannelKeyProvider,
+    /// The room transport of this session's collaboration plane, once it
+    /// runs: a record the room's hosts send only once asked is asked for
+    /// here, and the plane is gone while this is `None`.
+    link: std::sync::Mutex<Option<Arc<channels::ChannelLink>>>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -156,6 +160,7 @@ impl Engine {
             slots,
             identity,
             keys: ChannelKeyProvider::default(),
+            link: std::sync::Mutex::new(None),
         })
     }
 
@@ -187,7 +192,15 @@ impl Engine {
     ///
     /// A record the room keeps sealed opens with this device's channel keys,
     /// so a room's history reads whole here: the keys a member holds reach
-    /// back past the membership it joined in.
+    /// back past the membership it joined in. Reading one is taking part in
+    /// its channel ([`Self::join_channel`]): a device that holds none of its
+    /// keys yet asks the room for them, and reads the record once they are
+    /// here.
+    ///
+    /// A record the room's hosts send a device only once it asks (an
+    /// on-demand record, or a part of a chain behind its head) is asked for
+    /// on its first read, and reads as nothing yet until its history arrived
+    /// ([`Self::asks_for_record`]).
     ///
     /// # Errors
     /// The room is not held here, this device may not read the record, the
@@ -195,6 +208,15 @@ impl Engine {
     /// cannot be read now.
     pub fn record(&self, room: &str, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
         let room = RoomId::parse(room).ok_or("that is not a room")?;
+        if self.asks_for_record(room, app, record)? {
+            return Ok(None);
+        }
+        let sealed = self.owner.with_current(room, |view| {
+            Ok(view.peer().publication().is_sealed_record(app, record))
+        })?;
+        if sealed && !self.join_channel(room, app, record)? {
+            return Ok(None);
+        }
         let reader = self.identity.device_cert.device_public_key;
         let keys = &self.keys;
         self.owner.with_current(room, |view| {
@@ -214,6 +236,50 @@ impl Engine {
                 DocumentRead::Unchanged(_) | DocumentRead::CheckpointPending => Ok(None),
             }
         })
+    }
+
+    /// Take part in the channel of `record` of `room`, whose keys this device
+    /// reads it with: the channel service asks the room's devices for access
+    /// the first time, and the room's governance answers with the group. Says
+    /// whether the keys are here; while they are not, the record reads as
+    /// nothing, and the answer arrives as the room's other messages do.
+    fn join_channel(&self, room: RoomId, app: &str, record: &str) -> Result<bool, String> {
+        let Some(keys) = self.keys.get() else {
+            // Without a channel service there is nothing to take part with,
+            // and the read says so itself.
+            return Ok(true);
+        };
+        let route = collab_types::ChannelRoute::new(app, record);
+        match keys.access_record(room, &route).0 {
+            ChannelAccess::Ready(_) => Ok(true),
+            ChannelAccess::Waiting | ChannelAccess::Removed => Ok(false),
+            ChannelAccess::NoSecretStore => {
+                Err("this device has no secret store, so it holds no channel keys".to_owned())
+            }
+            ChannelAccess::Unavailable => {
+                Err("this device takes part in no channel of the record".to_owned())
+            }
+        }
+    }
+
+    /// Ask `room`'s hosts for the record on `channel` the first time it is
+    /// read, and say whether it is one they send only once asked (an
+    /// on-demand record, or a part of a chain behind its head): its history
+    /// then arrives as the room's other documents do, and later reads ask
+    /// nobody.
+    fn asks_for_record(&self, room: RoomId, app: &str, record: &str) -> Result<bool, String> {
+        if neighbour_wire::record_sync(record) == neighbour_wire::RecordSync::Eager {
+            return Ok(false);
+        }
+        let held = self
+            .owner
+            .with_current(room, |view| Ok(view.peer().document(app, record).is_some()))?;
+        // With no plane there is no one to ask: the read answers for itself.
+        let Some(link) = self.link.lock_recover().clone().filter(|_| !held) else {
+            return Ok(false);
+        };
+        link.ask_record(room, neighbour_wire::app_document_channel(app, record));
+        Ok(true)
     }
 
     /// The devices the room `room` admits, by the publisher each of their
@@ -303,6 +369,12 @@ impl Engine {
     /// The engine's owner, for what holds the room's session.
     pub(crate) fn owner(&self) -> &NativeWorkspaceOwner {
         &self.owner
+    }
+
+    /// Where a read asks the rooms' hosts for a record they send only once
+    /// asked: the plane this session's channels travel on.
+    pub(crate) fn attach_link(&self, link: Arc<channels::ChannelLink>) {
+        *self.link.lock_recover() = Some(link);
     }
 
     /// Where this session's channel service installs this device's keys: the

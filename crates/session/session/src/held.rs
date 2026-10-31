@@ -58,7 +58,9 @@ impl Session {
 
     /// What a held room has of the app `app`'s `record`, as the room last
     /// admitted it: what a workspace shows of it, and what it held before
-    /// this computer joined.
+    /// this computer joined. A record the room's hosts send only once asked
+    /// (an on-demand record, or a part of a chain behind its head) reads as
+    /// nothing until it is here, and is asked for on its first read.
     ///
     /// # Errors
     /// The room is not held here, or this computer may not read it.

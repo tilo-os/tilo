@@ -103,6 +103,7 @@ impl Channels {
             access
         });
         let pump = spawn_pump(access, Arc::clone(engine), Arc::clone(&link), link.park())?;
+        engine.attach_link(Arc::clone(&link));
         Ok(Self { _pump: pump })
     }
 }
@@ -121,6 +122,10 @@ pub struct ChannelLink {
     /// The rooms whose state moved since it was last read: their channels and
     /// their rosters are read again.
     changed: Mutex<BTreeSet<RoomId>>,
+    /// The records this device asked a room's hosts for, by room topic and
+    /// channel: a read asks once, and the plane asks a host session that
+    /// starts later itself.
+    asked: Mutex<BTreeSet<(WorkspaceId, [u8; 32])>>,
     /// What this session says on the collaboration plane, once it is running.
     outgoing: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Outgoing>>>,
     park: Arc<Park>,
@@ -132,6 +137,7 @@ impl ChannelLink {
         Arc::new(Self {
             inbound: Mutex::new(Vec::new()),
             changed: Mutex::new(BTreeSet::new()),
+            asked: Mutex::new(BTreeSet::new()),
             outgoing: Mutex::new(None),
             park: Arc::new(Park::default()),
         })
@@ -158,6 +164,23 @@ impl ChannelLink {
         self.park.poke();
     }
 
+    /// Take what a room's governor never admits into its replica: the
+    /// channels' governance, which the room's devices settle their groups
+    /// with between each other. Says whether `message` was one of them, and
+    /// so never reaches the room's state.
+    pub(crate) fn dispatch(&self, message: &NeighbourMsg) -> bool {
+        if !matches!(
+            message,
+            NeighbourMsg::MlsGovernance { .. }
+                | NeighbourMsg::MlsAccessRequest { .. }
+                | NeighbourMsg::MlsRoutedAccessRequest { .. }
+        ) {
+            return false;
+        }
+        self.heard(message);
+        true
+    }
+
     /// Room `room`'s state moved here: the devices it admits and the channels
     /// its records are may differ from what was last read.
     pub(crate) fn room_changed(&self, room: RoomId) {
@@ -171,6 +194,37 @@ impl ChannelLink {
         let rooms = changed.iter().copied().collect();
         changed.clear();
         rooms
+    }
+
+    /// Ask `room`'s hosts for the record on `channel` the first time a local
+    /// reader reads it (an on-demand record, or a part of a chain behind its
+    /// head): its history then arrives as the room's other documents do, and
+    /// later reads ask nobody.
+    pub(crate) fn ask_record(&self, room: RoomId, channel: [u8; 32]) {
+        let ws = room_topic_id(room);
+        let outgoing = self.outgoing.lock_recover().clone();
+        let Some(outgoing) = outgoing else {
+            return;
+        };
+        let mut asked = self.asked.lock_recover();
+        if asked.contains(&(ws, channel)) {
+            return;
+        }
+        if outgoing.send(Outgoing::OpenRecord { ws, channel }).is_err() {
+            // The plane is gone: the next read asks again.
+            return;
+        }
+        asked.insert((ws, channel));
+    }
+
+    /// Ask the host of `room` to replay what it retains: a message the room
+    /// held back waited on something the host sends of its own accord too, and
+    /// the replay decides it again.
+    pub(crate) fn ask_replay(&self, room: RoomId) {
+        let outgoing = self.outgoing.lock_recover().clone();
+        if let Some(outgoing) = outgoing {
+            let _ = outgoing.send(Outgoing::Replay(room_topic_id(room)));
+        }
     }
 
     /// Tell the plane which devices room `ws` admits; `false` when the plane

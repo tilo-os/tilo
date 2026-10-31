@@ -21582,6 +21582,7 @@ dependencies = [
  "tilo-relay-session",
  "tilo-resource",
  "tilo-runtime",
+ "tilo-secrets",
  "tilo-service",
  "tilo-session-power",
  "tilo-settings-service",

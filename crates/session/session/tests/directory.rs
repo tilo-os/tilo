@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
 use collab_types::DocumentMutation;
 use ed25519_dalek::Signer as _;
@@ -38,7 +39,7 @@ use tilo_browser_peer::{Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle
 use tilo_compositor::OutputConfig;
 use tilo_desktop::desktop_actions::CHROME_RESOURCE;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay::rooms::PreAdmitRequest;
+use tilo_relay::rooms::{PreAdmitRequest, RemoveMemberRequest};
 use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage, Face, door_path};
 use tilo_relay_protocol::rooms::{PreAdmission, RoomRole};
 use tilo_session::{Options, Session};
@@ -770,6 +771,9 @@ struct Lounge {
     runtime: tokio::runtime::Runtime,
     rooms: tilo_relay::rooms::Rooms,
     host_cert: tilo_user_identity::DeviceCert,
+    /// The certificate of the site's page, the device that recorded in the
+    /// room before anyone joined.
+    page_device: tilo_user_identity::DeviceCert,
     person: [u8; 32],
     /// The room the site's workspace is.
     room: String,
@@ -807,6 +811,7 @@ impl Lounge {
             runtime,
             rooms: host.rooms,
             host_cert: host.host_cert,
+            page_device: host.page_device,
             person,
             room: host.room,
             entry,
@@ -1230,4 +1235,214 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
             .is_open(),
         "and the sheet is done, leaving them in the workspace they joined"
     );
+}
+
+/// Join the lounge's listed workspace and wait until its room and its people
+/// reached this computer.
+fn join_the_lounge(session: &mut Session, lounge: &Lounge) {
+    open_directory(session);
+    ask_to_join(session, &lounge.room);
+    wait_until(session, "the lounge's workspace is held here", |session| {
+        session.held_rooms().iter().any(|room| room == &lounge.room)
+            && session.people(&lounge.room).is_ok_and(|people| {
+                people
+                    .iter()
+                    .any(|member| member.person == hex::encode(lounge.person))
+            })
+    });
+}
+
+/// The line the lounge's chat holds here, as the person reads it: `None`
+/// until this computer may open the record's sealed history.
+fn chat_here(session: &Session, room: &str) -> Option<String> {
+    let record = match session.read_record(room, CHAT, CHAT_RECORD) {
+        Ok(Some(record)) => record,
+        // The room may hold nothing yet, and until this computer is admitted
+        // to the record's channel its writes are not this computer's to open.
+        Ok(None) | Err(_) => return None,
+    };
+    let chat = automerge::AutoCommit::load(&record).ok()?;
+    let (text, _) = chat.get(automerge::ROOT, "text").ok()??;
+    text.into_string().ok()
+}
+
+/// The publisher the lounge's host is known by.
+fn host_publisher(lounge: &Lounge) -> String {
+    publisher_of(&lounge.host_cert)
+}
+
+/// The publisher the lounge's page is known by.
+fn page_publisher(lounge: &Lounge) -> String {
+    publisher_of(&lounge.page_device)
+}
+
+/// The publisher a device's session is known by.
+fn publisher_of(cert: &tilo_user_identity::DeviceCert) -> String {
+    iroh::EndpointId::from_bytes(&cert.device_public_key)
+        .expect("a device key is a publisher")
+        .to_string()
+}
+
+#[test]
+fn a_workspace_joined_brings_the_chat_written_before_it() {
+    let _settled = ui::motion::testing::settled();
+    // This computer keeps its own channel state in the platform secret store,
+    // which the test keeps in memory.
+    tilo_secrets::keep_in_memory_for_process();
+    let mut home = tilo_test_env::TestHome::new().expect("a test home");
+    let (_identity, person) = this_computer_with_an_identity(&mut home);
+    let lounge = Lounge::start(person, "Coffee's on");
+    let _config = community_site(home.env(), &lounge.entry);
+    let state = tempfile::tempdir().expect("a directory for this computer's desk");
+    let mut session = collaborative_session(state.path());
+    session.step(Duration::from_millis(1)).unwrap();
+    join_the_lounge(&mut session, &lounge);
+    wait_until(
+        &mut session,
+        "the lounge's chat, written before this computer joined, reads here",
+        |session| chat_here(session, &lounge.room).as_deref() == Some("Coffee's on"),
+    );
+    let chat = chat_here(&session, &lounge.room).expect("the lounge's chat opened here");
+    assert_eq!(
+        chat, "Coffee's on",
+        "the line the lounge wrote before this computer joined reads as it was written"
+    );
+    // The record the line came in is the room's, sealed as its host keeps it:
+    // what the joined device read it through is the channel service, not a
+    // plain copy of the room's document.
+    let record = session
+        .read_record(&lounge.room, CHAT, CHAT_RECORD)
+        .expect("the chat is this computer's to read")
+        .expect("the chat is here");
+    assert!(
+        automerge::AutoCommit::load(&record).is_ok(),
+        "and it is the chat app's own document"
+    );
+    // The room's window streams carry between the devices the room admits:
+    // its host, the page that recorded there before this computer arrived,
+    // and this computer itself.
+    let roster = session
+        .roster(&lounge.room)
+        .expect("the room's roster is known here");
+    assert_eq!(roster.len(), 3, "the room's devices: {roster:?}");
+    for device in [host_publisher(&lounge), page_publisher(&lounge)] {
+        assert!(
+            roster.contains(&device),
+            "the lounge's own devices are among them: {roster:?}"
+        );
+    }
+}
+
+#[test]
+fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
+    let _settled = ui::motion::testing::settled();
+    tilo_secrets::keep_in_memory_for_process();
+    let mut home = tilo_test_env::TestHome::new().expect("a test home");
+    let (_identity, person) = this_computer_with_an_identity(&mut home);
+    let lounge = Lounge::start(person, "Pulled up a chair");
+    let _config = community_site(home.env(), &lounge.entry);
+    let state = tempfile::tempdir().expect("a directory for this computer's desk");
+    let mut session = collaborative_session(state.path());
+    session.step(Duration::from_millis(1)).unwrap();
+    join_the_lounge(&mut session, &lounge);
+    wait_until(
+        &mut session,
+        "the lounge's chat reads here while this computer is a member",
+        |session| chat_here(session, &lounge.room).is_some(),
+    );
+    let lounge_devices = [host_publisher(&lounge), page_publisher(&lounge)];
+    let roster = session
+        .roster(&lounge.room)
+        .expect("the room's roster is known here");
+    assert!(
+        roster.iter().any(|device| !lounge_devices.contains(device)),
+        "this computer is on the roster beside the lounge's own devices: {roster:?}"
+    );
+    assert_eq!(
+        roster.len(),
+        3,
+        "the lounge's devices and this computer: {roster:?}"
+    );
+
+    // The lounge's owner removes this person, and every device of theirs.
+    lounge
+        .runtime
+        .block_on(lounge.rooms.remove_member(
+            &lounge.room,
+            &lounge.host_cert,
+            RemoveMemberRequest {
+                request_id: [0x62; 32],
+                user_public_key: person,
+            },
+        ))
+        .expect("the lounge removes this person");
+    // The room's governance is what every device's roster is read from, and
+    // it lists this person no longer: the devices of theirs on the room's
+    // roster are gone.
+    let (_generation, members) = lounge
+        .runtime
+        .block_on(lounge.rooms.membership(&lounge.room))
+        .expect("the lounge's members");
+    let mark = members
+        .get(&hex::encode(person))
+        .expect("the room remembers the person it removed");
+    assert!(mark.removed, "the room removed this person: {mark:?}");
+    // The page, still a member, hears the room's governance and lists the
+    // person no more, as every device's roster follows it.
+    let page = lounge.page.as_ref().expect("the site's page runs");
+    let deadline = tilo_test_env::hang_deadline();
+    while page
+        .status()
+        .room_members
+        .get(&lounge.room)
+        .is_none_or(|members| members.contains(&hex::encode(person)))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the lounge's remaining devices hear its governance: {:?}",
+            page.status().room_members,
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // The lounge's page writes after the removal: the room's content from
+    // now on is not this computer's, so the line never reads here.
+    let route = DocumentRoute {
+        app_id: CHAT.to_owned(),
+        cluster_id: lounge.room.clone(),
+        record: CHAT_RECORD.to_owned(),
+    };
+    let mut after = automerge::AutoCommit::load(
+        &lounge
+            .runtime
+            .block_on(
+                lounge
+                    .rooms
+                    .record_document(&lounge.room, CHAT, CHAT_RECORD),
+            )
+            .expect("the lounge's chat")
+            .expect("the lounge holds its chat"),
+    )
+    .expect("the chat's document");
+    let before = after.get_heads();
+    after
+        .put(automerge::ROOT, "text", "The door's shut")
+        .expect("a chat line after the removal");
+    after.commit();
+    page.publish(
+        route,
+        &DocumentMutation::Incremental(after.save_after(&before)),
+    )
+    .expect("the site's page goes on talking without this computer");
+    let held = std::time::Instant::now()
+        .checked_add(Duration::from_secs(5))
+        .expect("a deadline");
+    while std::time::Instant::now() < held {
+        session.step(Duration::from_millis(1)).unwrap();
+        assert_eq!(
+            chat_here(&session, &lounge.room).as_deref(),
+            Some("Pulled up a chair"),
+            "what the lounge wrote after the removal never reads here"
+        );
+    }
 }
