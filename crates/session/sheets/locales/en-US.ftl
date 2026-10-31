@@ -106,6 +106,56 @@ guide-touch-open-overview = Open overview
 guide-touch-close-overview = Close overview
 guide-reset = Reset to default
 
+## What the keyboard's navigation rows move, and what else to know: windows,
+## tabs, strips and workspaces read as the controller rows above name them
+guide-row-move-tab = Move tab
+guide-row-maximize = Maximize or restore
+guide-row-move-group = Move group
+guide-row-resize = Resize
+guide-row-move-group-strip = Move group to strip
+guide-unassigned = Unassigned
+guide-unassigned-inline = unassigned
+guide-strip-jump = Go straight to a strip with { $first } … { $last }; strip 1 is the top one
+guide-app-tab-chords = { $next }, { $previous } and { $reopen } go to the app first; the desktop’s tab shortcuts here always work
+guide-your-shortcuts = Your shortcuts: { $shortcuts }
+
+## The catalogue's shortcut names, which the guide lists
+shortcut-name-focus-previous-window = Focus previous window
+shortcut-name-focus-next-window = Focus next window
+shortcut-name-previous-tab = Previous tab
+shortcut-name-next-tab = Next tab
+shortcut-name-attach-tab-left = Move tab into group on left
+shortcut-name-attach-tab-right = Move tab into group on right
+shortcut-name-maximize-window = Maximize window
+shortcut-name-restore-window = Restore window
+shortcut-name-previous-strip = Strip above
+shortcut-name-next-strip = Strip below
+shortcut-name-previous-workspace = Previous workspace
+shortcut-name-next-workspace = Next workspace
+shortcut-name-move-group-left = Move group left
+shortcut-name-move-group-right = Move group right
+shortcut-name-resize-narrower = Make window narrower
+shortcut-name-resize-wider = Make window wider
+shortcut-name-move-group-to-previous-strip = Move group to strip above
+shortcut-name-move-group-to-next-strip = Move group to strip below
+shortcut-name-reopen-closed-tab = Reopen closed tab
+shortcut-name-search = Search everywhere
+shortcut-name-emoji-picker = Emoji
+shortcut-name-workspace-overview = Overview
+shortcut-name-quick-settings = Quick Settings
+shortcut-name-lock = Lock screen
+shortcut-switch-windows = Switch windows
+shortcut-close-tab = Close tab
+shortcut-new-window = New window
+shortcut-duplicate-tab = New tab of this app
+shortcut-strip-switcher = Strip switcher
+shortcut-screenshot = Screenshot
+shortcut-display-layout = Display layout
+shortcut-capture-screenshot = Capture screenshot
+shortcut-open-terminal = Open terminal
+shortcut-picture-in-picture = Picture in picture
+shortcut-save-recent-replay = Save recent replay
+
 ## Public workspaces
 
 directory-title = Join a workspace

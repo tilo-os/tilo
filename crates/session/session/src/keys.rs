@@ -5,7 +5,7 @@
 //! window or panel gets it ([`SurfaceHost::claim_key`]). A press that is a
 //! chord of the desktop's one shortcut table ([`tilo_desktop::shortcuts`])
 //! or a hardware key (volume, brightness, airplane mode, the touchpad,
-//! playback, Print) is taken, and becomes an invocation of a published
+//! playback, Print, F1) is taken, and becomes an invocation of a published
 //! action: the chord's `desktop:chrome/shortcut`, quick settings' `volume-up`, the
 //! media service's `play-pause`. The session runs those through the same
 //! door every other caller uses; nothing here performs anything itself.
@@ -95,12 +95,23 @@ const KEY_XF86_RFKILL: u32 = 0x1008_ffb5;
 /// whether it works on the lock screen (it changes a level and reveals
 /// nothing behind the lock).
 struct Hardware {
-    resource: &'static str,
-    action: &'static str,
+    action: HardwareAction,
     repeats: bool,
     while_locked: bool,
     /// The readout that answers it on screen.
     readout: Option<OsdKind>,
+}
+
+/// What a hardware key runs: an action of the session's resources, or one of
+/// the desktop's own shortcuts, which the chrome carries out as its chord
+/// would.
+#[derive(Clone, Copy)]
+enum HardwareAction {
+    Resource {
+        resource: &'static str,
+        action: &'static str,
+    },
+    Shortcut(ShortcutAction),
 }
 
 const fn hardware(
@@ -110,8 +121,18 @@ const fn hardware(
     while_locked: bool,
 ) -> Hardware {
     Hardware {
-        resource,
-        action,
+        action: HardwareAction::Resource { resource, action },
+        repeats,
+        while_locked,
+        readout: None,
+    }
+}
+
+/// A key that asks for `action` of the desktop's shortcut table, as the
+/// chord bound to it does.
+const fn desktop(action: ShortcutAction, repeats: bool, while_locked: bool) -> Hardware {
+    Hardware {
+        action: HardwareAction::Shortcut(action),
         repeats,
         while_locked,
         readout: None,
@@ -175,13 +196,19 @@ fn classify(keysym: u32) -> Option<Hardware> {
         // The Print key takes the whole screen, as the studio's own bar
         // does; the lock screen shows no desktop to take.
         keysyms::Print => hardware(CAPTURE_STUDIO, "screenshot", false, false),
+        // F1 names every key the desktop answers. It is the desktop's own
+        // key, which nothing may be bound to, so the guide opens whatever
+        // modifiers are held with it.
+        keysyms::F1 => desktop(ShortcutAction::ShortcutHelp, false, false),
         _ => return None,
     })
 }
 
 /// The surface that takes the session's keys; it shows nothing.
 pub(crate) struct SessionKeys {
-    shortcuts: ShortcutConfig,
+    /// The desktop's shortcut table, shared with the shortcut guide so the
+    /// guide explains the chords the keys resolve against.
+    shortcuts: Rc<RefCell<ShortcutConfig>>,
     invocations: Invocations,
     /// The apps' shortcuts, which work wherever the keyboard is.
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
@@ -191,7 +218,7 @@ pub(crate) struct SessionKeys {
 
 impl SessionKeys {
     pub(crate) fn new(
-        shortcuts: ShortcutConfig,
+        shortcuts: Rc<RefCell<ShortcutConfig>>,
         invocations: Invocations,
         portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
     ) -> Self {
@@ -228,7 +255,10 @@ impl SessionKeys {
             } else {
                 KeyClaim::Take
             };
-            let mut invocation = Invocation::new(hardware.resource, hardware.action);
+            let mut invocation = match hardware.action {
+                HardwareAction::Resource { resource, action } => Invocation::new(resource, action),
+                HardwareAction::Shortcut(action) => Invocation::shortcut(action),
+            };
             invocation.readout = hardware.readout;
             return Some((invocation, claim));
         }
@@ -241,11 +271,9 @@ impl SessionKeys {
             return Some((Invocation::new(&resource, "activate"), KeyClaim::Take));
         }
         let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
-        let action = tilo_desktop::shortcuts::configured_shortcut_action(
-            &self.shortcuts,
-            &logical,
-            modifiers,
-        )?;
+        let shortcuts = self.shortcuts.borrow();
+        let action =
+            tilo_desktop::shortcuts::configured_shortcut_action(&shortcuts, &logical, modifiers)?;
         Some((Invocation::shortcut(action), KeyClaim::Take))
     }
 }
@@ -312,7 +340,11 @@ mod tests {
     }
 
     fn keys() -> SessionKeys {
-        SessionKeys::new(ShortcutConfig::default(), Invocations::default(), None)
+        SessionKeys::new(
+            Rc::new(RefCell::new(ShortcutConfig::default())),
+            Invocations::default(),
+            None,
+        )
     }
 
     #[test]
@@ -384,5 +416,24 @@ mod tests {
         assert_eq!(keys.resolve(&tab, true), None);
         let a = key(keysyms::a, Some('a'), KeyModifiers::default());
         assert_eq!(keys.resolve(&a, false), None);
+    }
+
+    #[test]
+    fn the_first_function_key_shows_the_shortcut_guide() {
+        let keys = keys();
+        let f1 = key(keysyms::F1, None, KeyModifiers::default());
+        assert_eq!(
+            keys.resolve(&f1, false),
+            Some((
+                Invocation::shortcut(ShortcutAction::ShortcutHelp),
+                KeyClaim::Take
+            ))
+        );
+        assert_eq!(
+            Invocation::shortcut(ShortcutAction::ShortcutHelp).arguments["action"],
+            "shortcut_help"
+        );
+        // The lock screen shows no desktop, and no guide to its keys.
+        assert_eq!(keys.resolve(&f1, true), None);
     }
 }

@@ -54,6 +54,7 @@ pub mod run;
 mod search;
 mod setup;
 mod sheets;
+mod shortcut_guide;
 pub mod surfaces;
 pub mod sync;
 mod system_sounds;
@@ -117,6 +118,7 @@ use tilo_sheets::file_picker::FilePickerSeat;
 use tilo_sheets::lock::LockSeat;
 use tilo_sheets::portal::PortalSeat;
 use tilo_sheets::power::{PowerEffect, PowerSeat};
+use tilo_sheets::shortcut_guide::GuideSeat;
 use tilo_sheets::workspace_settings::{
     Settings as WorkspaceSettings, Tab, WorkspaceSettingsEffect, WorkspaceSettingsSeat,
 };
@@ -447,6 +449,9 @@ struct Shared {
     /// Dictation: the speech the person allows once per dictation, and the
     /// sheet they answer on.
     dictation: dictation::Dictation,
+    /// The shortcut guide: the sheet naming every key the desktop answers,
+    /// and the table it explains.
+    shortcut_guide: shortcut_guide::ShortcutGuide,
 }
 
 /// The app a window shows, by its id.
@@ -966,6 +971,7 @@ impl Shared {
             }
         }
         self.asker.follow();
+        self.shortcut_guide.follow();
     }
 
     fn show_quick_settings(&self) {
@@ -1014,6 +1020,7 @@ impl Shared {
             ShortcutAction::DictationToggle
             | ShortcutAction::DictationFinish
             | ShortcutAction::DictationCancel => self.dictation.shortcut(action),
+            ShortcutAction::ShortcutHelp => self.shortcut_guide.toggle(),
             other => tracing::debug!(?other, "shortcut the session has no part in yet"),
         }
     }
@@ -1405,12 +1412,15 @@ impl Session {
             file_picker,
             directory,
             lock,
+            shortcut_guide: guide_seat,
         } = mount_sheets(&mut compositor, &mut doors, &options);
 
         // The capture studio, over everything it captures.
         let capture_studio = capture_studio::mount(&mut compositor, &mut doors, &options);
 
-        let shortcuts = std::mem::take(&mut options.config.shortcuts);
+        // One table for the keys the session answers and the guide that
+        // explains them: a chord that works is a chord the guide shows.
+        let shortcuts = Rc::new(RefCell::new(std::mem::take(&mut options.config.shortcuts)));
         // The desktop's own chords win over every app's: the portal's
         // bindings step aside for the table the session answers first.
         let portal_shortcuts = options
@@ -1419,8 +1429,9 @@ impl Session {
             .and_then(|desktop| desktop.portal())
             .map(|portal| portal.shortcuts().clone());
         if let Some(portal) = &portal_shortcuts {
-            portal.set_shortcut_table(shortcuts.clone());
+            portal.set_shortcut_table(shortcuts.borrow().clone());
         }
+        let shortcut_guide = shortcut_guide::ShortcutGuide::new(guide_seat, Rc::clone(&shortcuts));
         let (commands, invocations) = mount_controls(
             &mut compositor,
             &mut doors,
@@ -1509,6 +1520,7 @@ impl Session {
             clipboard: mount::clipboard::Clipboard::new(),
             overview,
             dictation,
+            shortcut_guide,
         };
         shared.start_search();
         // What the portal brings comes from any thread, and wakes the loop
@@ -1834,6 +1846,13 @@ impl Session {
         self.shared.file_picker.as_ref()
     }
 
+    /// The shortcut guide's seat: the session puts it up with F1, and it
+    /// shows the chords the session answers.
+    #[must_use]
+    pub fn shortcut_guide(&self) -> Option<&GuideSeat> {
+        self.shared.shortcut_guide.seat()
+    }
+
     /// Whether setup is up: it withholds the desktop until it is done.
     #[must_use]
     pub fn setup_up(&self) -> bool {
@@ -1994,6 +2013,7 @@ impl Session {
                 .file_picker
                 .as_ref()
                 .map(tilo_sheets::Seat::presentation),
+            shared.shortcut_guide.presentation(),
             shared.lock.as_ref().map(tilo_sheets::Seat::presentation),
             self.capture_studio
                 .as_ref()
@@ -2555,7 +2575,7 @@ fn mount_setup(
 fn mount_controls(
     compositor: &mut Compositor,
     doors: &mut Doors,
-    shortcuts: ui::shortcut_table::ShortcutConfig,
+    shortcuts: Rc<RefCell<ui::shortcut_table::ShortcutConfig>>,
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
     scale: f64,
 ) -> (Rc<RefCell<Vec<SessionCommand>>>, Invocations) {
@@ -2644,6 +2664,7 @@ struct Sheets {
     portal: Option<PortalSeat>,
     file_picker: Option<FilePickerSeat>,
     lock: Option<LockSeat>,
+    shortcut_guide: Option<GuideSeat>,
 }
 
 fn mount_sheets(compositor: &mut Compositor, doors: &mut Doors, options: &Options) -> Sheets {
@@ -2699,6 +2720,16 @@ fn mount_sheets(compositor: &mut Compositor, doors: &mut Doors, options: &Option
         who,
         options,
     );
+    let shortcut_guide = mount_sheet(
+        compositor,
+        doors,
+        tilo_sheets::shortcut_guide::definition(),
+        GuideSeat::default(),
+        who,
+        options,
+    );
+    // Last, so it covers every other sheet, the guide among them: the lock
+    // screen shows no key of the desktop behind it.
     let lock = mount_lock_screen(compositor, doors, who, options);
     Sheets {
         power,
@@ -2707,6 +2738,7 @@ fn mount_sheets(compositor: &mut Compositor, doors: &mut Doors, options: &Option
         portal,
         file_picker,
         lock,
+        shortcut_guide,
     }
 }
 
