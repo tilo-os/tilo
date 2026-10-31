@@ -42,7 +42,10 @@ impl Layout for LayersLayout {
             style.flex_grow = 0.0;
             style.flex_basis = taffy::Dimension::auto();
         }
-        if slot.fit.height.fill.is_some() {
+        // A layer placed at an edge keeps its own height (a bar at the top is as tall
+        // as the bar); only the layer that takes the whole cell, the one with no
+        // position, fills it top to bottom.
+        if slot.at.is_none() && slot.fit.height.fill.is_some() {
             style.size.height = percent(1.0_f32);
         }
         let cell = taffy::Line {

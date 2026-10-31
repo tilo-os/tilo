@@ -14,8 +14,15 @@ use tilo_surface_host::{Doors, SessionLink, ShellPart, ShellWork};
 use crate::desk::Desk;
 use crate::panels::Held;
 
-/// The shell package's source and its ids lock, as it ships with the session.
-const SOURCE: &str = include_str!("../../../../apps/tl/shell/app.tl");
+/// The shell package's files and its ids lock, as they ship with the session: every `.tl` file
+/// of the package is part of its one module.
+const FILES: [(&str, &str); 5] = [
+    ("app.tl", include_str!("../../../../apps/tl/shell/app.tl")),
+    ("chrome.tl", include_str!("../../../../apps/tl/shell/chrome.tl")),
+    ("docks.tl", include_str!("../../../../apps/tl/shell/docks.tl")),
+    ("layout.tl", include_str!("../../../../apps/tl/shell/layout.tl")),
+    ("system.tl", include_str!("../../../../apps/tl/shell/system.tl")),
+];
 const IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
 
 /// The shell package compiled, or why it does not compile.
@@ -24,10 +31,22 @@ const IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
 /// The package does not compile: its diagnostics.
 pub fn compile() -> Result<tilolang_tilo::tilolang::Compiled, String> {
     let lock = tilolang_tilo::tilolang::IdsLock::parse(IDS).map_err(|error| error.to_string())?;
-    tilolang_tilo::tilolang::compile_package(SOURCE, &lock, &[]).map_err(|diagnostics| {
+    let source = tilolang_tilo::tilolang::PackageSource::new(
+        FILES
+            .into_iter()
+            .map(|(path, text)| (format!("apps/tl/shell/{path}"), text.to_owned())),
+    );
+    tilolang_tilo::tilolang::compile_package_source(&source, &lock, &[]).map_err(|diagnostics| {
         diagnostics
             .iter()
-            .map(|diagnostic| diagnostic.render("apps/tl/shell/app.tl"))
+            .map(|diagnostic| {
+                diagnostic.render(
+                    diagnostic
+                        .file
+                        .as_deref()
+                        .unwrap_or("apps/tl/shell/app.tl"),
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     })
