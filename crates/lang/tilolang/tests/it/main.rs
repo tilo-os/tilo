@@ -10,6 +10,7 @@ mod abi_additions;
 mod blocks;
 mod common;
 mod components;
+mod coverage;
 mod errors;
 mod ids_lock;
 mod language;

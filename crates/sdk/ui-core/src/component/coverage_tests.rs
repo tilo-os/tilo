@@ -20,31 +20,53 @@ fn scan() -> component_scan::Scan {
 /// shrinks: a widget described since must leave it, and no widget may join it.
 const NOT_YET_DESCRIBED: &str = include_str!("not_yet_described.txt");
 
+/// An entry of [`NOT_YET_DESCRIBED`]: `Name — why it is not described yet`.
+fn owed() -> Vec<(String, String)> {
+    NOT_YET_DESCRIBED
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            let (name, why) = line
+                .split_once('—')
+                .unwrap_or_else(|| panic!("`{line}` names no reason after `—`"));
+            (name.trim().to_owned(), why.trim().to_owned())
+        })
+        .collect()
+}
+
 #[test]
 fn every_public_widget_is_a_component_or_says_why_not() {
     let scan = scan();
-    let owed: Vec<&str> = NOT_YET_DESCRIBED.lines().map(str::trim).collect();
-    let paid: Vec<&str> = owed
+    let owed = owed();
+    assert!(
+        owed.iter().all(|(_, why)| !why.is_empty()),
+        "every entry of component/not_yet_described.txt says why it is not described yet"
+    );
+    let paid: Vec<&String> = owed
         .iter()
-        .copied()
+        .map(|(name, _)| name)
         .filter(|name| {
             !scan
                 .widgets
                 .iter()
-                .any(|w| w.name == *name && w.exempt.is_none() && !scan.is_described(&w.name))
+                .any(|w| w.name == **name && w.exempt.is_none() && !scan.is_described(name))
         })
         .collect();
     assert!(
         paid.is_empty(),
         "described now (or gone, or marked not a component), so remove from \
          component/not_yet_described.txt:\n{}",
-        paid.join("\n")
+        paid.iter()
+            .map(|name| name.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
     );
     let missing: Vec<String> = scan
         .widgets
         .iter()
         .filter(|w| w.exempt.is_none() && !scan.is_described(&w.name))
-        .filter(|w| !owed.contains(&w.name.as_str()))
+        .filter(|w| !owed.iter().any(|(name, _)| name == &w.name))
         .map(|w| format!("  {} ({})", w.name, w.file.display()))
         .collect();
     assert!(
