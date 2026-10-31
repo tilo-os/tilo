@@ -21485,6 +21485,7 @@ dependencies = [
  "tilo-session-power",
  "tilo-settings-service",
  "tilo-sheets",
+ "tilo-speaker-service",
  "tilo-surface-host",
  "tilo-system-service",
  "tilo-test-env",

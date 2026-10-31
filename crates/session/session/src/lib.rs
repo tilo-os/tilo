@@ -1916,10 +1916,18 @@ impl Session {
         self.shared.clipboard.step_files();
         // What was copied here reaches the person's other devices, and what
         // they copied there joins the clipboard here.
-        if let Some(fabric) = &self.fabric
-            && self.shared.clipboard.sync_fabric(fabric.as_ref())
-        {
-            self.shared.feed_clipboard();
+        if let Some(fabric) = &self.fabric {
+            let media_enabled = fabric.require_media().is_ok();
+            if self.shared.clipboard.sync_fabric(fabric.as_ref()) {
+                self.shared.feed_clipboard();
+            }
+            // The person's speaker groups, remote audio and the view Settings
+            // asks of them move on the same fabric, on the same pass: a
+            // device arriving, a group being created or a calibration
+            // progressing is what the next snapshot shows.
+            tilo_speaker_service::remote_audio::pump(fabric.as_ref(), media_enabled, None);
+            tilo_speaker_service::groups::pump(fabric.as_ref(), media_enabled);
+            tilo_speaker_service::settings::observe(fabric.as_ref());
         }
         Ok(())
     }
@@ -2586,6 +2594,7 @@ fn start_action_plane(options: &Options) -> Result<Option<Plane>, Error> {
         path,
         std::sync::Arc::clone(&link),
         std::sync::Arc::clone(&options.launches),
+        options.fabric.clone(),
     )?;
     Ok(Some(Plane {
         link,
