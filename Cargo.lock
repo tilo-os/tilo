@@ -20702,11 +20702,13 @@ dependencies = [
 name = "tilo-quick-settings"
 version = "0.1.0"
 dependencies = [
+ "atspi-proxies",
  "image",
  "os-actions",
  "parking_lot",
  "serde",
  "settings-store",
+ "tempfile",
  "tilo-app",
  "tilo-audio-service",
  "tilo-compositor",
@@ -20715,8 +20717,10 @@ dependencies = [
  "tilo-quick-settings",
  "tilo-session",
  "tilo-test-env",
+ "tokio",
  "tracing",
  "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
@@ -21433,7 +21437,6 @@ version = "0.1.0"
 dependencies = [
  "app-catalogue",
  "app-cli",
- "atspi-proxies",
  "block-devices",
  "bounded-command",
  "chrono",

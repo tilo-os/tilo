@@ -1,5 +1,5 @@
-//! What a panel, running as its own process, tells assistive technology, and
-//! what it says back to it.
+//! What the panel, running as its own process, tells assistive technology,
+//! and what it says back to it.
 //!
 //! A panel the session starts is an ordinary app: ui-core's native runner
 //! gives it a window, and its AccessKit tree goes out over AT-SPI2 like any
@@ -58,17 +58,10 @@ fn panel() -> Surface {
         .keyboard(Keyboard::OnDemand)
 }
 
-/// The panel's binary, built beside the session's: Cargo names only the
-/// binaries of the package under test, and the workspace builds the rest.
+/// The panel's own binary: this is the package Cargo builds it for, so it is
+/// there whether a person runs this package's tests or the whole workspace's.
 fn panel_binary() -> PathBuf {
-    let binary =
-        tilo_test_env::package_binary!("tilo-session").with_file_name("tilo-quick-settings");
-    assert!(
-        binary.exists(),
-        "expected the panel at {}; build the workspace first",
-        binary.display()
-    );
-    binary
+    tilo_test_env::package_binary!("tilo-quick-settings")
 }
 
 #[test]

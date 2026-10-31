@@ -38,6 +38,12 @@ tilo-quick-settings = { path = ".", features = ["test-support"] }
 tilo-session = { path = "../session" }
 tilo-test-env = { path = "../../dev/test-env" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
+# What an external reader asks the panel's accessibility tree over AT-SPI2,
+# and the buses and processes the test reads it across.
+atspi-proxies = { version = "0.13.0", default-features = false, features = ["wrappers", "tokio"] }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
+zbus = { workspace = true, features = ["tokio"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

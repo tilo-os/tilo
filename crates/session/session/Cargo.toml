@@ -208,8 +208,6 @@ tilo-onboarding = { path = "../onboarding" }
 # The prepared-setup and journal fixtures: what a device holds before setup runs.
 tilo-onboarding-host = { path = "../onboarding-host", features = ["test-support"] }
 tilo-quick-settings = { path = "../quick-settings", features = ["test-support"] }
-# What an external reader asks a panel's accessibility tree over AT-SPI2.
-atspi-proxies = { version = "0.13.0", default-features = false, features = ["wrappers", "tokio"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 # The sheets' apps mounted for a person, so a test presses a control of one
 # as the person's own gesture.
