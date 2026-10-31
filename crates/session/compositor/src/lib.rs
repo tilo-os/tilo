@@ -74,12 +74,13 @@ mod xdnd_bridge;
 mod xwayland;
 
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction};
-use smithay::reexports::wayland_server::Display;
+use smithay::reexports::wayland_server::{Display, ListeningSocket};
 
 use crate::backend::drm::access_keys::AccessKeys;
 use crate::output_management::Pending;
@@ -174,6 +175,73 @@ fn io(error: impl std::fmt::Display) -> Error {
 /// person's answer rather than on how long the machine took to ask.
 fn display_clock_now() -> Instant {
     tilo_clock::now()
+}
+
+/// The base name of a surface app's own display in the runtime directory.
+const SURFACE_DISPLAY: &str = "tilo-surface";
+
+/// How far up the process tree a surface app's connections are looked for.
+const TREE_DEPTH: u32 = 16;
+
+/// A display bound for a surface app that has not started yet: the socket is
+/// there for the app to find, and its clients wait until the app is known.
+pub struct BoundDisplay {
+    socket: Option<ListeningSocket>,
+    path: PathBuf,
+}
+
+impl BoundDisplay {
+    /// The path the app connects to: its `WAYLAND_DISPLAY`.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The socket, which the loop takes from here on.
+    fn take(&mut self) -> Option<ListeningSocket> {
+        self.socket.take()
+    }
+}
+
+/// A surface app's own display, listening for its clients: while it stands,
+/// connections from the app the session started — and from what that app
+/// runs — are trusted clients of this compositor, standing on the surface
+/// app's output. Dropped, it stops listening and its socket goes.
+pub struct SurfaceDisplay {
+    handle: LoopHandle<'static, LoopData>,
+    token: smithay::reexports::calloop::RegistrationToken,
+}
+
+impl Drop for SurfaceDisplay {
+    fn drop(&mut self) {
+        self.handle.remove(self.token);
+    }
+}
+
+/// Whether `pid` is `ancestor`, or was started by it, up the process tree.
+fn descends_from(pid: i32, ancestor: i32) -> bool {
+    let mut current = pid;
+    for _ in 0..TREE_DEPTH {
+        if current == ancestor {
+            return true;
+        }
+        if current < 2 {
+            return false;
+        }
+        match parent_of(current) {
+            Some(parent) if parent != current => current = parent,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// The process `pid` was started by, as the kernel records it.
+fn parent_of(pid: i32) -> Option<i32> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("PPid:")?.trim().parse().ok())
 }
 
 /// What the event loop's sources reach: the state and the backend.
@@ -362,26 +430,39 @@ impl Compositor {
     /// Connect a client over a socket pair; the returned end is the
     /// client's (`wl_display` connection).
     pub fn connect_client(&mut self) -> Result<UnixStream, Error> {
-        let (ours, theirs) = UnixStream::pair()?;
-        self.display
-            .handle()
-            .insert_client(
-                ours,
-                state::client_data(false, std::sync::Arc::clone(&self.data.state.exited)),
-            )
-            .map_err(io)?;
-        Ok(theirs)
+        self.connect_client_as(false, None)
     }
 
     /// Connect a client the session trusts with privileged protocols
     /// (locking the session); otherwise as [`Compositor::connect_client`].
     pub fn connect_trusted_client(&mut self) -> Result<UnixStream, Error> {
+        self.connect_client_as(true, None)
+    }
+
+    /// Connect a client the session trusts, whose layer surfaces stand on
+    /// `output` whatever output they name themselves: the on-screen keyboard
+    /// belongs on the display the person types on, and it asks for none.
+    pub fn connect_trusted_client_on(&mut self, output: &str) -> Result<UnixStream, Error> {
+        self.connect_client_as(true, Some(output.to_owned()))
+    }
+
+    /// Connect a client whose layer surfaces stand on `output`, when that
+    /// is named, as [`Compositor::connect_client`] otherwise.
+    fn connect_client_as(
+        &self,
+        trusted: bool,
+        output: Option<String>,
+    ) -> Result<UnixStream, Error> {
         let (ours, theirs) = UnixStream::pair()?;
         self.display
             .handle()
             .insert_client(
                 ours,
-                state::client_data(true, std::sync::Arc::clone(&self.data.state.exited)),
+                state::client_data(
+                    trusted,
+                    std::sync::Arc::clone(&self.data.state.exited),
+                    output,
+                ),
             )
             .map_err(io)?;
         Ok(theirs)
@@ -450,6 +531,75 @@ impl Compositor {
         })
     }
 
+    /// Bind a display of a surface app's own in `$XDG_RUNTIME_DIR`, before
+    /// the app starts so it finds it: one connection to this compositor is
+    /// its window's, and an app that speaks the compositor's input protocols
+    /// — the on-screen keyboard does — reaches it on more.
+    ///
+    /// # Errors
+    /// The runtime directory is not there, or every name is taken.
+    pub fn bind_surface_display(&mut self) -> Result<BoundDisplay, Error> {
+        let socket = ListeningSocket::bind_auto(SURFACE_DISPLAY, 1..64).map_err(io)?;
+        let name = socket
+            .socket_name()
+            .ok_or_else(|| io("a surface display without a name"))?;
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+            .ok_or_else(|| io("no runtime directory for a surface app's display"))?;
+        Ok(BoundDisplay {
+            path: PathBuf::from(runtime).join(name),
+            socket: Some(socket),
+        })
+    }
+
+    /// Accept the clients of the surface app `owner` on `bound`, trusted as
+    /// the app the session started and standing on `output` when it is
+    /// named. Every connection must come from that process or one it starts:
+    /// a socket another program of this login finds is of no use to it.
+    ///
+    /// # Errors
+    /// The loop did not take the socket.
+    pub fn accept_surface_clients(
+        &self,
+        mut bound: BoundDisplay,
+        owner: u32,
+        output: Option<String>,
+    ) -> Result<SurfaceDisplay, Error> {
+        let Some(socket) = bound.take() else {
+            return Err(io("the surface display was already accepted"));
+        };
+        let owner = i32::try_from(owner).unwrap_or(-1);
+        let handle = self.event_loop.handle();
+        let token = handle
+            .insert_source(
+                Generic::new(socket, Interest::READ, Mode::Level),
+                move |_, socket, data| {
+                    while let Some(stream) = socket.accept()? {
+                        let peer = rustix::net::sockopt::socket_peercred(&stream)
+                            .map_or(-1, |credentials| credentials.pid.as_raw_pid());
+                        if !descends_from(peer, owner) {
+                            tracing::warn!(
+                                peer,
+                                owner,
+                                "a surface app's display refused a connection that is not the app's"
+                            );
+                            continue;
+                        }
+                        let exited = std::sync::Arc::clone(&data.state.exited);
+                        if let Err(error) = data
+                            .state
+                            .display
+                            .insert_client(stream, state::client_data(true, exited, output.clone()))
+                        {
+                            tracing::warn!(%error, "a surface app's client was not accepted");
+                        }
+                    }
+                    Ok(PostAction::Continue)
+                },
+            )
+            .map_err(io)?;
+        Ok(SurfaceDisplay { handle, token })
+    }
+
     /// Listen for clients on a fresh `wayland-N` socket in
     /// `$XDG_RUNTIME_DIR` and return its name (for `WAYLAND_DISPLAY`).
     pub fn listen(&mut self) -> Result<String, Error> {
@@ -460,7 +610,7 @@ impl Compositor {
             .insert_source(source, |stream, (), data| {
                 if let Err(error) = data.state.display.insert_client(
                     stream,
-                    state::client_data(false, std::sync::Arc::clone(&data.state.exited)),
+                    state::client_data(false, std::sync::Arc::clone(&data.state.exited), None),
                 ) {
                     tracing::warn!(%error, "client not accepted");
                 }

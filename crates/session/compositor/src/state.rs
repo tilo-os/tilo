@@ -54,12 +54,21 @@ pub struct ClientState {
     pid: AtomicU32,
     /// The processes whose clients disconnected, for the session to hear.
     exited: Arc<std::sync::Mutex<Vec<u32>>>,
+    /// The output the session connected the client for: its layer surfaces
+    /// stand there, whichever output they name themselves. The on-screen
+    /// keyboard belongs on the display the person types on.
+    output: Option<String>,
 }
 
 impl ClientState {
     /// Whether the client may use privileged protocols.
     pub(crate) const fn trusted(&self) -> bool {
         self.trusted
+    }
+
+    /// The output the session connected the client for, when it named one.
+    pub(crate) fn output(&self) -> Option<&str> {
+        self.output.as_deref()
     }
 }
 
@@ -1575,14 +1584,17 @@ smithay::delegate_output!(State);
 smithay::delegate_xdg_toplevel_icon!(State);
 
 /// A fresh client's data, for [`DisplayHandle::insert_client`], whose
-/// disconnect is recorded in `exited`.
+/// disconnect is recorded in `exited`, and whose layer surfaces stand on
+/// `output` when the session connected it for one.
 pub(crate) fn client_data(
     trusted: bool,
     exited: Arc<std::sync::Mutex<Vec<u32>>>,
+    output: Option<String>,
 ) -> Arc<ClientState> {
     Arc::new(ClientState {
         trusted,
         exited,
+        output,
         ..ClientState::default()
     })
 }
