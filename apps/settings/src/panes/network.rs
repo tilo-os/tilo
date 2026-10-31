@@ -55,6 +55,7 @@ use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 
 mod asking;
+mod enterprise;
 mod labels;
 pub(crate) mod mobile;
 mod order;
@@ -63,6 +64,8 @@ mod usage;
 pub(crate) mod values;
 mod view;
 pub(crate) mod vpn;
+
+use enterprise::{EnterpriseForm, EnterpriseGiven, join_enterprise};
 
 use view::Page;
 pub(crate) use view::view;
@@ -1087,9 +1090,7 @@ impl NetworkService for DeviceNetwork {
             NetworkChange::JoinHidden { ssid, password } => {
                 nm::connect_hidden_wifi(ssid, password.as_deref().map(String::as_str))
             }
-            NetworkChange::Enterprise { config, password } => {
-                os_actions::connect_enterprise_wifi(config, password)
-            }
+            NetworkChange::Enterprise { config, password } => join_enterprise(config, password),
             NetworkChange::Vpn { uuid, on, .. } => os_actions::set_vpn_connection_uuid(uuid, *on),
             NetworkChange::VpnProfile { uuid, patch, .. } => nm::configure_vpn_profile(uuid, patch),
             NetworkChange::VpnDelete { uuid, .. } => os_actions::delete_vpn_connection_uuid(uuid),
@@ -1457,49 +1458,6 @@ struct ProxyForm {
 struct IdentityForm {
     identity: LocalState<String>,
     ca: LocalState<String>,
-}
-
-/// What an enterprise connection was given; the setup form fills the rest.
-#[derive(Clone)]
-struct EnterpriseGiven {
-    profile: Option<String>,
-    ssid: Option<String>,
-    identity: Option<String>,
-    anonymous_identity: Option<String>,
-    ca_certificate: Option<String>,
-    method: Option<String>,
-    inner_auth: Option<String>,
-    client_certificate: Option<String>,
-    private_key: Option<String>,
-}
-
-/// The enterprise network setup form.
-struct EnterpriseForm {
-    profile: LocalState<String>,
-    ssid: LocalState<String>,
-    identity: LocalState<String>,
-    anonymous: LocalState<String>,
-    ca: LocalState<String>,
-    client_certificate: LocalState<String>,
-    private_key: LocalState<String>,
-    method: LocalState<String>,
-    inner_auth: LocalState<String>,
-}
-
-impl EnterpriseForm {
-    fn new() -> Self {
-        Self {
-            profile: LocalState::new(String::new()),
-            ssid: LocalState::new(String::new()),
-            identity: LocalState::new(String::new()),
-            anonymous: LocalState::new(String::new()),
-            ca: LocalState::new(String::new()),
-            client_certificate: LocalState::new(String::new()),
-            private_key: LocalState::new(String::new()),
-            method: LocalState::new("PEAP".into()),
-            inner_auth: LocalState::new("MSCHAPv2".into()),
-        }
-    }
 }
 
 /// The form that joins a network that does not broadcast its name.
@@ -3117,7 +3075,7 @@ impl NetworkModel {
                 if let Some(password) = password.map(Zeroizing::new) {
                     self.connect_enterprise(given, password)
                 } else {
-                    let config = self.enterprise_config(given.clone());
+                    let config = self.enterprise.config(given.clone());
                     self.ask_enterprise(given, &config.ssid, &config.identity);
                     Begun::Done
                 }
@@ -3206,7 +3164,7 @@ impl NetworkModel {
     /// Save the enterprise network `given` asks for and connect with
     /// `password`.
     fn connect_enterprise(&mut self, given: EnterpriseGiven, password: Zeroizing<String>) -> Begun {
-        let config = self.enterprise_config(given);
+        let config = self.enterprise.config(given);
         self.change(
             NetworkChange::Enterprise { config, password },
             Some(t("net-notice-enterprise-connecting")),
@@ -3218,48 +3176,6 @@ impl NetworkModel {
         let notice = t_args("net-notice-connecting", &[("ssid", ssid.as_str().into())]);
         self.connecting.push(ssid.clone());
         self.change(NetworkChange::JoinHidden { ssid, password }, Some(notice))
-    }
-
-    /// The enterprise network `given` asks for, completed from the setup
-    /// form.
-    fn enterprise_config(&self, given: EnterpriseGiven) -> EnterpriseWifiConfiguration {
-        let EnterpriseGiven {
-            profile,
-            ssid,
-            identity,
-            anonymous_identity,
-            ca_certificate,
-            method,
-            inner_auth,
-            client_certificate,
-            private_key,
-        } = given;
-        let form = &self.enterprise;
-        EnterpriseWifiConfiguration {
-            profile_name: profile.unwrap_or_else(|| form.profile.get()),
-            ssid: ssid.unwrap_or_else(|| form.ssid.get()),
-            identity: identity.unwrap_or_else(|| form.identity.get()),
-            anonymous_identity: anonymous_identity
-                .or_else(|| Some(form.anonymous.get()))
-                .and_then(non_blank),
-            ca_certificate: ca_certificate.unwrap_or_else(|| form.ca.get()),
-            method: match method.unwrap_or_else(|| form.method.get()).as_str() {
-                "TTLS" => os_actions::EnterpriseEapMethod::Ttls,
-                "TLS" => os_actions::EnterpriseEapMethod::Tls,
-                _ => os_actions::EnterpriseEapMethod::Peap,
-            },
-            phase2_auth: Some(
-                inner_auth
-                    .unwrap_or_else(|| form.inner_auth.get())
-                    .to_ascii_lowercase(),
-            ),
-            client_certificate: client_certificate
-                .or_else(|| Some(form.client_certificate.get()))
-                .and_then(non_blank),
-            private_key: private_key
-                .or_else(|| Some(form.private_key.get()))
-                .and_then(non_blank),
-        }
     }
 
     /// A VPN turned on: one carrying all traffic leaves the route through

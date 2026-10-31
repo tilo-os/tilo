@@ -4,6 +4,8 @@ use serde_json::{Map, Value, json};
 use tilo_actions::DoorError;
 use tilo_service::{Service, Started};
 
+use os_actions::{EnterpriseEapMethod, EnterpriseWifiConfiguration};
+
 use crate::device::{Change, Device, Readings};
 use crate::model::{
     Accessory, Band, Bluetooth, Client, Metered, Mobile, MobileProfile, Nearby, Network, SavedKind,
@@ -170,6 +172,11 @@ fn apply_network(network: &mut Network, change: &Change) {
                 if wifi.name == *name {
                     wifi.connected = false;
                 }
+            }
+        }
+        Change::Enterprise { config, .. } => {
+            for wifi in &mut network.wifi.networks {
+                wifi.connected = wifi.name == config.ssid;
             }
         }
         Change::Forget { profile } => {
@@ -437,6 +444,7 @@ fn what_the_device_lacks_is_unavailable() {
         (NETWORK, "set-mobile-apn", json!({"apn": "internet"})),
         (NETWORK, "set-mobile-roaming", json!({"on": true})),
         (NETWORK, "connect-hidden-wifi", json!({"network": "Loft"})),
+        (NETWORK, "connect-enterprise-wifi", json!({})),
         (NETWORK, "toggle-airplane-mode", json!({})),
         (BLUETOOTH, "set-bluetooth", json!({"on": true})),
         (BLUETOOTH, "scan", json!({"on": true})),
@@ -567,6 +575,108 @@ fn a_hidden_network_joins_by_the_name_it_does_not_announce() {
         })
     );
     assert!(!read(&service, NETWORK).to_string().contains("hunter2"));
+}
+
+/// The arguments a work or school network joins with.
+fn campus() -> Value {
+    json!({
+        "ssid": "Campus",
+        "identity": "ada@example.edu",
+        "ca_certificate": "/etc/ssl/certs/campus.pem",
+        "password": "hunter2",
+    })
+}
+
+/// A work or school network joins in one change carrying the identity, the
+/// method and the certificates it was given; an unnamed method, profile and
+/// inner authentication take the setup's defaults.
+#[test]
+fn an_enterprise_network_joins_with_its_identity() {
+    let fake = Fake::laptop();
+    let mut service = service(&fake);
+    let mut enterprise = campus();
+    enterprise["profile"] = json!("Campus");
+    enterprise["anonymous_identity"] = json!("anonymous@example.edu");
+    enterprise["method"] = json!("TTLS");
+    enterprise["inner_auth"] = json!("PAP");
+    enterprise["client_certificate"] = json!("/etc/ssl/certs/ada.pem");
+    enterprise["private_key"] = json!("/etc/ssl/private/ada.key");
+    service
+        .invoke(NETWORK, "connect-enterprise-wifi", &arguments(enterprise))
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        fake.changes(),
+        [Change::Enterprise {
+            config: EnterpriseWifiConfiguration {
+                profile_name: "Campus".into(),
+                ssid: "Campus".into(),
+                identity: "ada@example.edu".into(),
+                anonymous_identity: Some("anonymous@example.edu".into()),
+                ca_certificate: "/etc/ssl/certs/campus.pem".into(),
+                method: EnterpriseEapMethod::Ttls,
+                phase2_auth: Some("pap".into()),
+                client_certificate: Some("/etc/ssl/certs/ada.pem".into()),
+                private_key: Some("/etc/ssl/private/ada.key".into()),
+            },
+            password: Some("hunter2".into()),
+        }]
+    );
+    assert!(!read(&service, NETWORK).to_string().contains("hunter2"));
+
+    service
+        .invoke(NETWORK, "connect-enterprise-wifi", &arguments(campus()))
+        .expect("taken");
+    service.settle();
+    let Some(Change::Enterprise { config, .. }) = fake.changes().last().cloned() else {
+        panic!("the join reached the device: {:?}", fake.changes());
+    };
+    assert_eq!(config.profile_name, "Campus", "the profile is the network");
+    assert_eq!(config.method, EnterpriseEapMethod::Peap);
+    assert_eq!(config.phase2_auth.as_deref(), Some("mschapv2"));
+}
+
+/// What a work or school network lacks, or a method nobody has, is refused
+/// by name before anything reaches the device; what the device refuses is
+/// the resource's problem.
+#[test]
+fn an_enterprise_network_without_what_it_needs_is_refused() {
+    let fake = Fake::laptop();
+    let mut service = service(&fake);
+    let without = |field: &str| {
+        let mut enterprise = campus();
+        enterprise.as_object_mut().expect("an object").remove(field);
+        enterprise
+    };
+    let with = |field: &str, value: &str| {
+        let mut enterprise = campus();
+        enterprise[field] = json!(value);
+        enterprise
+    };
+    for (enterprise, field) in [
+        (with("method", "LEAP"), "method"),
+        (with("inner_auth", "GTC"), "inner authentication"),
+        (without("identity"), "identity"),
+        (without("ssid"), "ssid"),
+        (without("ca_certificate"), "CA certificate"),
+    ] {
+        let refused = service.invoke(NETWORK, "connect-enterprise-wifi", &arguments(enterprise));
+        assert!(
+            matches!(&refused, Err(DoorError::InvalidArguments(reason)) if reason.contains(field)),
+            "{field}: {refused:?}"
+        );
+    }
+    assert!(fake.changes().is_empty(), "nothing reached the device");
+
+    *fake.refuse.lock().expect("refuse") = Some("no certificate agent".into());
+    service
+        .invoke(NETWORK, "connect-enterprise-wifi", &arguments(campus()))
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        read(&service, NETWORK)["problem"],
+        json!("no certificate agent")
+    );
 }
 
 /// The wired link is switched from the resource, and says what it carries.

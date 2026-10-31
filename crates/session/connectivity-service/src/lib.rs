@@ -214,6 +214,34 @@ impl Connectivity {
                 password: password.filter(|password| !password.is_empty()),
                 hidden: true,
             },
+            NetworkAction::ConnectEnterpriseWifi {
+                profile,
+                ssid,
+                identity,
+                anonymous_identity,
+                ca_certificate,
+                method,
+                inner_auth,
+                client_certificate,
+                private_key,
+                password,
+            } => {
+                let ssid = named(ssid, "network's name (ssid)")?;
+                Change::Enterprise {
+                    config: os_actions::EnterpriseWifiConfiguration {
+                        profile_name: given(profile).unwrap_or_else(|| ssid.clone()),
+                        ssid,
+                        identity: named(identity, "identity")?,
+                        anonymous_identity: given(anonymous_identity),
+                        ca_certificate: named(ca_certificate, "CA certificate")?,
+                        method: eap_method(method)?,
+                        phase2_auth: phase2_auth(inner_auth)?,
+                        client_certificate: given(client_certificate),
+                        private_key: given(private_key),
+                    },
+                    password: password.filter(|password| !password.is_empty()),
+                }
+            }
             NetworkAction::DisconnectWifi { network } => Change::Leave { network },
             NetworkAction::ForgetNetwork { profile } => Change::Forget { profile },
             NetworkAction::SetNetworkAutoconnect { profile, on } => {
@@ -316,6 +344,51 @@ fn proxy(server: Option<String>) -> Result<Option<String>, DoorError> {
     }
 }
 
+/// The given entry as it is used: trimmed, and nothing when it is empty.
+fn given(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// The entry `field` demands, else a refusal naming it: an enterprise
+/// network has nothing to join without it.
+fn named(value: Option<String>, field: &str) -> Result<String, DoorError> {
+    given(value).ok_or_else(|| {
+        DoorError::InvalidArguments(format!("an enterprise network joins with its {field}"))
+    })
+}
+
+/// The 802.1X method `method` names, PEAP when it names none.
+fn eap_method(method: Option<String>) -> Result<os_actions::EnterpriseEapMethod, DoorError> {
+    let Some(method) = given(method) else {
+        return Ok(os_actions::EnterpriseEapMethod::Peap);
+    };
+    match method.to_ascii_uppercase().as_str() {
+        "PEAP" => Ok(os_actions::EnterpriseEapMethod::Peap),
+        "TTLS" => Ok(os_actions::EnterpriseEapMethod::Ttls),
+        "TLS" => Ok(os_actions::EnterpriseEapMethod::Tls),
+        _ => Err(DoorError::InvalidArguments(format!(
+            "{method} is not an 802.1X method: PEAP, TTLS or TLS"
+        ))),
+    }
+}
+
+/// The inner authentication `inner_auth` names, `MSCHAPv2` when it names
+/// none.
+fn phase2_auth(inner_auth: Option<String>) -> Result<Option<String>, DoorError> {
+    let Some(inner_auth) = given(inner_auth) else {
+        return Ok(Some("mschapv2".to_owned()));
+    };
+    let named = inner_auth.to_ascii_lowercase();
+    match named.as_str() {
+        "mschapv2" | "pap" | "chap" => Ok(Some(named)),
+        _ => Err(DoorError::InvalidArguments(format!(
+            "{inner_auth} is not an inner authentication: MSCHAPv2, PAP or CHAP"
+        ))),
+    }
+}
+
 /// The `network` resource reading `network`.
 #[must_use]
 pub fn network_resource(network: &Network) -> ResourceSpec {
@@ -338,6 +411,7 @@ fn mark_what_the_device_lacks(resource: &mut ResourceSpec, network: &Network) {
             "scan-wifi",
             "connect-wifi",
             "connect-hidden-wifi",
+            "connect-enterprise-wifi",
         ] {
             unavailable(resource, action, "no_wifi", "This device has no Wi-Fi");
         }
@@ -351,7 +425,12 @@ fn mark_what_the_device_lacks(resource: &mut ResourceSpec, network: &Network) {
             );
         }
     } else if !network.wifi.on {
-        for action in ["scan-wifi", "connect-wifi", "connect-hidden-wifi"] {
+        for action in [
+            "scan-wifi",
+            "connect-wifi",
+            "connect-hidden-wifi",
+            "connect-enterprise-wifi",
+        ] {
             unavailable(resource, action, "wifi_off", "Wi-Fi is off");
         }
     }
