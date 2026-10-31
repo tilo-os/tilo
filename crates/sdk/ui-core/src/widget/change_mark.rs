@@ -124,10 +124,7 @@ impl ChangeMarkProps {
                 "change-window",
                 &[("count", count.max(1).into()), ("who", who.clone().into())],
             ),
-            Some(run) => crate::i18n::widget_format(
-                "change-mark-run",
-                &[("who", who.clone().into()), ("run", run.into())],
-            ),
+            Some(run) => crate::i18n::widget_format("change-mark-run", &[("run", run.into())]),
             None => crate::i18n::widget_format("change-mark-who", &[("who", who.clone().into())]),
         };
         let did = match kind.as_deref() {

@@ -183,8 +183,9 @@ pub struct Options {
     /// Write the window at the `dump` size, at display and text scale 1, as each stage leaves
     /// it, in the light and the dark theme, to PNGs in this directory.
     pub shots: Option<PathBuf>,
-    /// The shipped themes `shots` are taken in, by name (`glass`, `block`), each in its light
-    /// and dark variant; none takes the stock light and dark.
+    /// The themes `shots` are taken in: a shipped theme by name (`glass`, `block`), in its
+    /// light and dark variant, or a theme bundle's directory (`ui::theme_bundle`); none takes
+    /// the stock light and dark.
     pub themes: Vec<String>,
 }
 
@@ -194,9 +195,25 @@ fn theme_pair(name: &str) -> Result<[(&'static str, ui::Theme); 2], String> {
     if ui::theme::Preset::find(name) == Some(ui::theme::Preset::Dark) || name == "default" {
         return Ok([("light", ui::Theme::light()), ("dark", ui::Theme::dark())]);
     }
+    if ui::Theme::named(name).is_none() && Path::new(name).is_dir() {
+        // A theme bundle: one document, shot as both.
+        let theme = ui::theme_bundle::load_dir(Path::new(name))
+            .map_err(|e| format!("--theme {name}: {e}"))?;
+        return Ok([("light", theme.clone()), ("dark", theme)]);
+    }
     let dark = ui::Theme::named(name).ok_or_else(|| format!("--theme {name}: no such theme"))?;
     let light = ui::Theme::named(&format!("{name} light")).unwrap_or_else(|| dark.clone());
     Ok([("light", light), ("dark", dark)])
+}
+
+/// The part of a shot's file name that says which theme family it is in:
+/// the name, or a bundle directory's last component.
+fn family_slug(family: &str) -> String {
+    Path::new(family)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(family)
+        .to_owned()
 }
 
 /// What a check found.
@@ -607,7 +624,11 @@ impl AppCheck<'_> {
                 let file = if family.is_empty() {
                     dir.join(format!("{}-{slug}-{name}.png", self.short))
                 } else {
-                    dir.join(format!("{}-{slug}-{family}-{name}.png", self.short))
+                    dir.join(format!(
+                        "{}-{slug}-{}-{name}.png",
+                        self.short,
+                        family_slug(family)
+                    ))
                 };
                 staged.harness().render_png(&file);
             }

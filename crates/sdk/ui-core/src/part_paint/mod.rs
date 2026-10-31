@@ -6,8 +6,9 @@
 //!
 //! * the sets a document can name: the built-in Default, Glass and Block
 //!   ([`builtin`]) and those a theme installs ([`register_painter_set`],
-//!   [`painter_set`]); the set drawing each surface role is the role's
-//!   [`crate::tokens::Finish`] ([`Theme::painter`]);
+//!   [`painter_set`]), its own loaded from wasm ([`wasm`]); the set drawing
+//!   each surface role is the role's [`crate::tokens::Finish`]
+//!   ([`Theme::painter`]);
 //! * the values a part is drawn with ([`part_tokens`]);
 //! * drawing a painted part into the frame, with its backdrop filled by the
 //!   backdrop pass and held legible ([`paint_part`]), and the cache that
@@ -21,9 +22,12 @@
 pub mod builtin;
 mod draw;
 mod motion;
+pub mod wasm;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod wasm_tests;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};

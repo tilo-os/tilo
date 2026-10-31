@@ -62,6 +62,12 @@ path = "tests/tasks_board.rs"
 name = "hosted"
 path = "tests/hosted.rs"
 
+# One undo, run against the in-process window and against a tilolang host: the record's
+# platform history verb, both.
+[[test]]
+name = "history_undo"
+path = "tests/history_undo.rs"
+
 [features]
 thin = ["dep:runtime-dylib"]
 

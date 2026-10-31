@@ -378,6 +378,10 @@ impl Widget for TreeCore {
 /// one compiled tree; [`Self::model`] and the closures it is given see the
 /// `M` it was built from. Every other method of the tree is reached through
 /// it.
+#[crate::component::not_a_component(
+    part,
+    "`ui.TreeView` (`DescribedTreeView`) is its described form, over its own nodes"
+)]
 #[repr(transparent)]
 pub struct TreeView<T, M = TreeNode<T>> {
     core: TreeCore,

@@ -341,6 +341,7 @@ pub mod text_position;
 pub mod text_render;
 pub mod text_selection;
 pub mod theme;
+pub mod theme_bundle;
 mod theme_document;
 mod theme_layers;
 pub mod tokens;
