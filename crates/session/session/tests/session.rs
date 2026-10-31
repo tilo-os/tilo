@@ -1917,6 +1917,9 @@ mod capture_studio;
 #[path = "session/portal_capture.rs"]
 mod portal_capture;
 
+#[path = "session/secret_captures.rs"]
+mod secret_captures;
+
 impl Dispatch<WlRegistry, ()> for Seen {
     fn event(
         seen: &mut Self,

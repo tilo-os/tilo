@@ -272,10 +272,14 @@ impl App {
         self.floating.secret_on_screen = shown;
     }
 
-    /// What the shell should withhold: everything the app asked for, and
-    /// any window while it shows a secret.
+    /// Whether a capture may not show this app now: everything it asked for
+    /// ([`Self::set_capture_protected`]), and any window while the frame it
+    /// drew shows a secret field with a value. What draws the app in process
+    /// (a hosted surface, a whole scene) asks this, so a typed password is
+    /// withheld from screenshots, recordings, shares and remote viewers
+    /// wherever the app is drawn; the person's own display shows it.
     #[must_use]
-    pub(crate) fn wants_capture_protection(&self) -> bool {
+    pub fn withholds_captures(&self) -> bool {
         self.floating.capture_protected
             || self.floating.secret_on_screen
             || self.floating.presented_secret
@@ -310,7 +314,7 @@ impl App {
     /// before the render worker can present any secret pixels.
     #[cfg(feature = "native")]
     fn capture_frame_ready(&mut self) -> bool {
-        if !self.floating.capture_host_required || !self.wants_capture_protection() {
+        if !self.floating.capture_host_required || !self.withholds_captures() {
             return true;
         }
         self.pump_floating_surface_service();
@@ -525,7 +529,7 @@ impl App {
             }
             *changed = true;
         }
-        let protected = self.wants_capture_protection();
+        let protected = self.withholds_captures();
         if !self.floating.paint_capable_sent && crate::webview::paint::share_capable() {
             client.send(&crate::floating_surface::FloatingSurfaceClientMessage::PaintCapable)?;
             self.floating.paint_capable_sent = true;

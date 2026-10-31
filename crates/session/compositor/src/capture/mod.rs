@@ -786,11 +786,13 @@ where
     ))
 }
 
-/// The placeholders of the windows `output` shows a capture may not see,
-/// where they stand on it, in physical pixels. A capture draws them over
-/// the windows and under the pointer: a protected window hides, one that
-/// merely passes behind it is covered along with it, which shows nothing
-/// it would not show anyway.
+/// The placeholders of what `output` shows a capture may not see, where it
+/// stands on it, in physical pixels: the windows of an app the session keeps
+/// private, and the layers of a hosted surface that shows a secret (see
+/// [`protect`] and [`crate::host::SurfaceHost::withholds_captures`]).
+/// A capture draws them over the scene and under the pointer: a protected
+/// window or surface hides, one that merely passes behind it is covered
+/// along with it, which shows nothing it would not show anyway.
 fn placeholders<R>(state: &State, output: &Output, scale: f64) -> Vec<OutputRenderElement<R>>
 where
     R: ImportAll + ImportMem,
@@ -798,7 +800,7 @@ where
     let Some(geometry) = state.space.output_geometry(output) else {
         return Vec::new();
     };
-    state
+    let mut placeholders: Vec<OutputRenderElement<R>> = state
         .space
         .elements_for_output(output)
         .filter(|window| protected(state, window))
@@ -808,7 +810,18 @@ where
             (size.w > 0 && size.h > 0)
                 .then(|| placeholder::<R>(at.to_physical_precise_round(scale), size))
         })
-        .collect()
+        .collect();
+    for host in state.hosts.iter().filter(|host| host.withholds_captures()) {
+        for layer in host.layers() {
+            let at = (Point::<i32, Logical>::from(layer.location) - geometry.loc).to_f64();
+            let size = Size::<i32, Logical>::from((layer.size.0, layer.size.1))
+                .to_physical_precise_round(scale);
+            if size.w > 0 && size.h > 0 {
+                placeholders.push(placeholder::<R>(at.to_physical_precise_round(scale), size));
+            }
+        }
+    }
+    placeholders
 }
 
 /// What `scene` shows, drawn with `renderer`: its elements and what is

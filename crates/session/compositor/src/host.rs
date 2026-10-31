@@ -174,6 +174,16 @@ pub trait SurfaceHost {
         false
     }
 
+    /// Whether a capture may not show what this surface draws now: it shows
+    /// a secret, such as what the person typed into a password field. Every
+    /// copy of the desktop's pixels — a screenshot, a recording, a share
+    /// stream, the portal's screenshot — draws its layers as the
+    /// placeholder instead, while the person's own display keeps showing
+    /// them (see [`crate::capture::protect`]).
+    fn withholds_captures(&self) -> bool {
+        false
+    }
+
     /// Whether the pointer at this logical point belongs to this surface
     /// rather than to what lies beneath it.
     fn accepts_pointer(&self, x: f64, y: f64) -> bool;

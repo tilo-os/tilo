@@ -17,12 +17,13 @@
               outlives every call made into it"
 )]
 
+use std::collections::BTreeSet;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tilo_compositor::{InputEvent, OutputConfig};
+use tilo_compositor::{InputEvent, OutputConfig, Screenshot};
 use tilo_projector::control::{self, ConnectStage, ProjectorEvent, ProjectorRequest};
 use tilo_projector::{ProjectionDevice, ProjectionMode, ProjectionProtocol};
 use tilo_session::{Options, Session};
@@ -326,4 +327,111 @@ fn a_chosen_receiver_is_asked_for_its_pin_and_projected_to() {
         shown(session).receivers[0].link == Link::Idle
     });
     assert_eq!(broker.log(), vec!["discover", "connect:4821", "stop"]);
+}
+
+/// What a copy of the whole display shows: what a screenshot, a recording,
+/// a share or a remote viewer gets.
+#[track_caller]
+fn copied(session: &mut Session) -> Screenshot {
+    session
+        .compositor()
+        .read_back_region("HEADLESS-1", (0, 0, WIDTH, HEIGHT))
+        .unwrap_or_else(|error| panic!("a copy of HEADLESS-1: {error}"))
+}
+
+/// What the person's own display shows.
+#[track_caller]
+fn displayed(session: &mut Session) -> Screenshot {
+    session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .unwrap_or_else(|error| panic!("a frame of HEADLESS-1: {error}"))
+}
+
+/// The colours in `frame` inside `rect`, inset by `margin` pixels.
+fn colours_in(frame: &Screenshot, rect: (u32, u32, u32, u32), margin: u32) -> BTreeSet<[u8; 4]> {
+    let (x0, y0, x1, y1) = rect;
+    ((y0 + margin)..=(y1 - margin))
+        .flat_map(|y| ((x0 + margin)..=(x1 - margin)).map(move |x| (x, y)))
+        .filter_map(|(x, y)| frame.pixel(x, y))
+        .collect()
+}
+
+/// The rectangle `(x0, y0, x1, y1)` inside which `after` differs from
+/// `before`: what a capture of the same display changed.
+#[track_caller]
+fn differed(before: &Screenshot, after: &Screenshot) -> (u32, u32, u32, u32) {
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+    for y in 0..after.height {
+        for x in 0..after.width {
+            if before.pixel(x, y) != after.pixel(x, y) {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+            }
+        }
+    }
+    assert!(
+        x1 > x0 && y1 > y0,
+        "the sheet the PIN is in changed in the copy"
+    );
+    (x0, y0, x1, y1)
+}
+
+/// A capture taken while a receiver's PIN sheet is up never shows what the
+/// person typed into it: the sheet is one flat placeholder in the copy, and
+/// the display in front of them shows it as it is.
+#[test]
+fn a_capture_of_the_pin_sheet_withholds_the_pin_and_the_display_shows_it() {
+    let _settled = ui::motion::testing::settled();
+    let broker = Broker::answering(television());
+    let mut session = session(&docked(), Some(broker.socket));
+
+    chord(&mut session, &[KEY_LEFT_META, KEY_P]);
+    until(&mut session, up);
+    until(&mut session, |session| !shown(session).receivers.is_empty());
+    let rows = shown(&session).layouts.len();
+    for _ in 0..rows {
+        tap(&mut session, KEY_DOWN);
+    }
+    tap(&mut session, KEY_ENTER);
+    until(&mut session, |session| shown(session).asks_pin);
+
+    // Nothing secret is typed yet: the copy is the sheet as it stands.
+    let asking = copied(&mut session);
+    for digit in [KEY_4, KEY_8, KEY_2, KEY_1] {
+        tap(&mut session, digit);
+    }
+    assert_eq!(seat(&session).pin(), "4821");
+
+    let copy = copied(&mut session);
+    let display = displayed(&mut session);
+    let (x0, y0, x1, y1) = differed(&asking, &copy);
+    assert!(
+        x1 - x0 > 100 && y1 - y0 > 100,
+        "the sheet's own panel left the copy, not a sliver of it: {:?}",
+        (x0, y0, x1, y1)
+    );
+    // Inside the sheet the copy carries nothing but the one placeholder.
+    let withheld = colours_in(&copy, (x0, y0, x1, y1), 8);
+    assert_eq!(
+        withheld.len(),
+        1,
+        "one flat placeholder where the sheet was: {withheld:?}"
+    );
+    // The person's own display still shows the sheet, its label and the
+    // field the PIN went into.
+    let shown_to_the_person = colours_in(&display, (x0, y0, x1, y1), 8);
+    assert!(
+        shown_to_the_person.len() > 8,
+        "the sheet is on the display with its content: {shown_to_the_person:?}"
+    );
+    assert!(
+        !shown_to_the_person.contains(&withheld.iter().next().copied().unwrap()),
+        "and is not the placeholder the copy shows"
+    );
+    assert!(
+        session
+            .display_sheet()
+            .is_some_and(|seat| seat.presentation().is_drawn()),
+        "the sheet is still up for the person"
+    );
 }

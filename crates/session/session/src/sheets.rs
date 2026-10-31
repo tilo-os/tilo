@@ -243,6 +243,14 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
         self.lock_screen
     }
 
+    /// What the person typed into a secret field of the sheet's card, and
+    /// the lock screen itself, which asks for the password the whole time it
+    /// is up: a capture draws such a sheet as the placeholder, the display
+    /// keeps showing it.
+    fn withholds_captures(&self) -> bool {
+        (self.lock_screen && self.drawn()) || self.host.withholds_captures()
+    }
+
     fn layers(&self) -> Vec<HostLayer> {
         if !self.drawn() {
             return Vec::new();

@@ -10,10 +10,15 @@
 //! Protected is: every window of an app known to hold secrets (password
 //! managers and authenticator codes, matched on the app id), every window
 //! of an app the session marks ([`crate::Compositor::protect_app`]) while it
-//! shows a password field or asks for protection itself.
+//! shows a password field or asks for protection itself, and every layer of
+//! a hosted surface that says it shows a secret now
+//! ([`crate::host::SurfaceHost::withholds_captures`]) — the session's own
+//! sheets, panels and lock screen declare that the same way an app's window
+//! is withheld, so a capture never shows what the person typed into them.
 //!
 //! A locked session's outputs show only the lock screen already, so nothing
-//! of the windows behind it is captured either.
+//! of the windows behind it is captured either; the lock screen itself shows
+//! a secret, so a capture of it is the placeholder.
 
 use std::collections::BTreeSet;
 

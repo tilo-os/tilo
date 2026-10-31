@@ -2174,11 +2174,15 @@ impl Session {
             // What the desktop asked to open, and what stopped since.
             if let Some(launch) = &self.shared.launch {
                 launch.follow();
-                // What the apps asked of their own tabs, as the desk
-                // commands they are.
-                if let Some(tabs) = &self.tabs {
-                    tabs.follow(&self.shared.desktop, launch);
-                }
+            }
+            // What the apps asked of their own tabs, and of what a capture
+            // may show of them, as the desk commands they are.
+            if let Some(tabs) = &mut self.tabs {
+                tabs.follow(
+                    &self.shared.desktop,
+                    self.shared.launch.as_deref(),
+                    &mut self.compositor,
+                );
             }
             self.shared.follow_gestures();
             let ran = self.shared.run_invocations(self.compositor.locked());

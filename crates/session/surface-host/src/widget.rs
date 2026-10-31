@@ -245,6 +245,10 @@ impl SurfaceHost for WidgetHost {
         }]
     }
 
+    fn withholds_captures(&self) -> bool {
+        self.host.capture_protected()
+    }
+
     fn below_windows(&self) -> bool {
         self.below
     }

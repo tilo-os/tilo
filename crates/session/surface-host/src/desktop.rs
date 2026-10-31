@@ -308,6 +308,10 @@ impl SurfaceHost for DesktopHost {
         self.desk.borrow().host.layers()
     }
 
+    fn withholds_captures(&self) -> bool {
+        self.desk.borrow().host.withholds_captures()
+    }
+
     fn below_windows(&self) -> bool {
         true
     }

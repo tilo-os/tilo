@@ -12,18 +12,26 @@
 //! The socket is served here, and the asks become desk commands on the
 //! session loop's own pass: the desk is never read from another thread.
 //!
+//! An app also says here that its windows show a secret right now
+//! ([`FloatingSurfaceClientMessage::SetCaptureProtection`]): the session
+//! marks the app private for the compositor, which every capture asks, and
+//! answers on the same connection that the app may show the secret. The mark
+//! lasts while a connection of that app asks for it, and goes when the last
+//! one stops asking or closes.
+//!
 //! The same connections are made for a window the session opens in an app's
 //! running process ([`tilo_app_launch::Connects`]): each window reaches the
 //! collaboration broker and the shell-ui socket as itself, so what it asks is
 //! answered for its own tab.
 
+use std::collections::BTreeMap;
 use std::io::{BufReader, Write};
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -31,6 +39,7 @@ use launcher::services::{SHELL_UI_LAUNCH_PROTOCOL, SHELL_UI_SERVICE};
 use serde::Deserialize;
 use tilo_app_launch::routing;
 use tilo_app_launch::{Connects, Launch, Open, WindowConnections};
+use tilo_compositor::Compositor;
 use tilo_desktop_policy::DesktopPolicy;
 use tilo_surface_host::DesktopHost;
 use ui::floating_surface::{
@@ -140,9 +149,21 @@ impl Connects for ServiceLinks {
 /// tabs arrives here, and the session's loop answers it.
 pub struct AppTabs {
     requests: mpsc::Receiver<Request>,
+    /// The connections that asked for their app's windows to be withheld
+    /// from captures, and the app each speaks for: the mark lasts while one
+    /// of them is open.
+    withheld: BTreeMap<u64, String>,
     /// The listener and its thread, stopped and its socket removed when the
     /// session ends.
     _socket: Socket,
+}
+
+/// What a connection said that this service answers.
+enum Ask {
+    /// What the app asks of its own tabs.
+    Message(Box<FloatingSurfaceClientMessage>),
+    /// The connection ended: what it asked about captures goes with it.
+    Closed,
 }
 
 /// One ask an app made over its own authenticated connection.
@@ -151,7 +172,12 @@ struct Request {
     app: String,
     /// The room its launch runs it in.
     room: String,
-    message: FloatingSurfaceClientMessage,
+    /// The connection the ask came in on, which its answer goes back on and
+    /// which its capture protection lasts as long as.
+    connection: u64,
+    /// Writing to that connection.
+    reply: Arc<Mutex<UnixStream>>,
+    ask: Ask,
 }
 
 impl AppTabs {
@@ -174,28 +200,56 @@ impl AppTabs {
         let socket = Socket::serve(listener, path, launches, requests, wake)?;
         Ok(Self {
             requests: answers,
+            withheld: BTreeMap::new(),
             _socket: socket,
         })
     }
 
     /// Answer what the apps asked since the last pass: each ask is a desk
     /// command, so the desk is read and changed on this thread alone.
-    pub fn follow(&self, desktop: &DesktopHost, apps: &Apps) {
+    pub fn follow(
+        &mut self,
+        desktop: &DesktopHost,
+        apps: Option<&Apps>,
+        compositor: &mut Compositor,
+    ) {
         for request in self.requests.try_iter() {
-            answer(desktop, apps, request);
+            answer(desktop, apps, compositor, &mut self.withheld, request);
         }
     }
 }
 
 /// Answer one ask of the app it came from, or nothing when it cannot be
 /// answered: an ask never changes another app's tab.
-fn answer(desktop: &DesktopHost, apps: &Apps, request: Request) {
-    let Request { app, room, message } = request;
+fn answer(
+    desktop: &DesktopHost,
+    apps: Option<&Apps>,
+    compositor: &mut Compositor,
+    withheld: &mut BTreeMap<u64, String>,
+    request: Request,
+) {
+    let Request {
+        app,
+        room,
+        connection,
+        reply,
+        ask,
+    } = request;
+    let message = match ask {
+        Ask::Closed => {
+            withhold(withheld, compositor, connection, &app, false);
+            return;
+        }
+        Ask::Message(message) => *message,
+    };
     let anchor = desktop.with_policy(|policy| policy.anchor_for(&app).map(|(tab, ..)| tab));
     match message {
         FloatingSurfaceClientMessage::OpenTabBeside {
             target, background, ..
         } => {
+            let Some(apps) = apps else {
+                return;
+            };
             let open = if let Some(target) = target {
                 let Some(open) = target_open(&app, &target) else {
                     tracing::info!(%app, "an app asked to open an address it does not claim");
@@ -231,7 +285,51 @@ fn answer(desktop: &DesktopHost, apps: &Apps, request: Request) {
         FloatingSurfaceClientMessage::PlaceNextWindowBeside { background, .. } => {
             desktop.with_policy(|policy| policy.place_next_beside(&app, anchor, background));
         }
+        FloatingSurfaceClientMessage::SetCaptureProtection {
+            protected,
+            generation,
+        } => {
+            // The app id is the one the launcher vouched for, so an ask can
+            // only ever withhold the asking app's own windows: it narrows
+            // what leaves the display, never widens it.
+            withhold(withheld, compositor, connection, &app, protected);
+            if let Some(generation) = generation {
+                let applied = FloatingSurfaceHostMessage::CaptureProtectionApplied {
+                    generation,
+                    protected,
+                };
+                let written = reply
+                    .lock()
+                    .map_err(|_| "the connection's writer is gone".to_string())
+                    .and_then(|mut stream| {
+                        write_message(&mut stream, &applied).map_err(|error| error.to_string())
+                    });
+                if let Err(error) = written {
+                    tracing::warn!(%error, %app, "a capture protection answer was not written");
+                }
+            }
+            tracing::debug!(connection, %app, protected, "capture protection asked");
+        }
         _ => {}
+    }
+}
+
+/// Mark the windows of `app` private (`private`) or showable again, as
+/// `connection` asks: the mark lasts while one of the app's connections asks
+/// for it, so it goes when the last one stops asking or closes.
+fn withhold(
+    withheld: &mut BTreeMap<u64, String>,
+    compositor: &mut Compositor,
+    connection: u64,
+    app: &str,
+    private: bool,
+) {
+    let asked = withheld.remove(&connection).is_some();
+    if private {
+        withheld.insert(connection, app.to_owned());
+        compositor.protect_app(app, true);
+    } else if asked && !withheld.values().any(|named| named == app) {
+        compositor.protect_app(app, false);
     }
 }
 
@@ -405,6 +503,7 @@ fn serve_connection(
         tracing::info!(%app, "a shell-ui connection names no app this session started");
         return;
     };
+    let reply = Arc::new(Mutex::new(writer));
     while !stop.load(Ordering::Acquire) {
         let frame = match wire_frame::read_line(&mut reader, MAX_FRAME_BYTES) {
             Ok(Some(frame)) => frame,
@@ -418,7 +517,7 @@ fn serve_connection(
             tracing::warn!(%app, "a shell-ui message was refused");
             break;
         };
-        if !asks_about_tabs(&message) {
+        if !answered_here(&message) {
             // Vision, markers and the window's own lifecycle are not this
             // service's; the rest of the connection keeps being read.
             continue;
@@ -427,7 +526,9 @@ fn serve_connection(
             .send(Request {
                 app: app.clone(),
                 room: room.clone(),
-                message,
+                connection,
+                reply: Arc::clone(&reply),
+                ask: Ask::Message(Box::new(message)),
             })
             .is_err()
         {
@@ -435,6 +536,15 @@ fn serve_connection(
         }
         wake();
     }
+    // What this connection asked of what a capture may show goes with it.
+    let _ = requests.send(Request {
+        app: app.clone(),
+        room,
+        connection,
+        reply,
+        ask: Ask::Closed,
+    });
+    wake();
     tracing::debug!(connection, %app, "shell-ui connection closed");
 }
 
@@ -477,7 +587,7 @@ fn launched_room(launches: &Launches, peer: Option<u32>, app: &str) -> Option<St
 }
 
 /// Whether `message` is one this service answers.
-fn asks_about_tabs(message: &FloatingSurfaceClientMessage) -> bool {
+fn answered_here(message: &FloatingSurfaceClientMessage) -> bool {
     matches!(
         message,
         FloatingSurfaceClientMessage::OpenTabBeside { .. }
@@ -485,24 +595,36 @@ fn asks_about_tabs(message: &FloatingSurfaceClientMessage) -> bool {
             | FloatingSurfaceClientMessage::ReopenClosedTab
             | FloatingSurfaceClientMessage::CycleTab { .. }
             | FloatingSurfaceClientMessage::PlaceNextWindowBeside { .. }
+            | FloatingSurfaceClientMessage::SetCaptureProtection { .. }
     )
 }
 
 /// Tell an app speaking another shell-ui version which one this session
 /// speaks, so the one behind can be updated.
 fn refuse_version(writer: &mut UnixStream, app: &str, app_version: Option<u16>) {
-    if let Ok(mut answer) = serde_json::to_vec(&FloatingSurfaceHostMessage::VersionMismatch {
-        shell: FLOATING_SURFACE_PROTOCOL_VERSION,
-    }) {
-        answer.push(b'\n');
-        let _ = writer.write_all(&answer).and_then(|()| writer.flush());
-    }
+    let _ = write_message(
+        writer,
+        &FloatingSurfaceHostMessage::VersionMismatch {
+            shell: FLOATING_SURFACE_PROTOCOL_VERSION,
+        },
+    );
     tracing::info!(
         %app,
         ?app_version,
         shell = FLOATING_SURFACE_PROTOCOL_VERSION,
         "shell-ui version mismatch"
     );
+}
+
+/// Write one message to an app, as the one-line frame every shell-ui version
+/// reads.
+fn write_message(
+    writer: &mut UnixStream,
+    message: &FloatingSurfaceHostMessage,
+) -> std::io::Result<()> {
+    let mut frame = serde_json::to_vec(message).map_err(std::io::Error::other)?;
+    frame.push(b'\n');
+    writer.write_all(&frame).and_then(|()| writer.flush())
 }
 
 #[cfg(test)]
@@ -522,19 +644,23 @@ mod tests {
     }
 
     #[test]
-    fn only_tab_asks_are_answered_here() {
-        assert!(asks_about_tabs(
+    fn only_the_asks_this_service_answers_are_taken() {
+        assert!(answered_here(
             &FloatingSurfaceClientMessage::ReopenClosedTab
         ));
-        assert!(asks_about_tabs(&FloatingSurfaceClientMessage::CloseTab {
+        assert!(answered_here(&FloatingSurfaceClientMessage::CloseTab {
             instance: None
         }));
-        assert!(!asks_about_tabs(&FloatingSurfaceClientMessage::Hello {
+        assert!(answered_here(
+            &FloatingSurfaceClientMessage::SetCaptureProtection {
+                protected: true,
+                generation: Some(1)
+            }
+        ));
+        assert!(!answered_here(&FloatingSurfaceClientMessage::Hello {
             version: 1
         }));
-        assert!(!asks_about_tabs(
-            &FloatingSurfaceClientMessage::PaintCapable
-        ));
+        assert!(!answered_here(&FloatingSurfaceClientMessage::PaintCapable));
     }
 
     #[test]

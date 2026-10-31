@@ -133,6 +133,12 @@ impl SurfaceHost for Popover {
         }
     }
 
+    /// Whether what the panel shows is a secret — its Wi-Fi passphrase field
+    /// with a value in it — and so never leaves the display in a capture.
+    fn withholds_captures(&self) -> bool {
+        self.open.get() && self.host.withholds_captures()
+    }
+
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
         self.open.get() && self.host.accepts_pointer(x, y)
     }
@@ -417,6 +423,10 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
 
     fn lock_screen(&self) -> bool {
         self.0.borrow().lock_screen()
+    }
+
+    fn withholds_captures(&self) -> bool {
+        self.0.borrow().withholds_captures()
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
