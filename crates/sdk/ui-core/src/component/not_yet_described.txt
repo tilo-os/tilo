@@ -21,7 +21,6 @@ DropZone
 EditableLabel
 EmojiPicker
 FilterMenu
-FloatingPanel
 FunnelChart
 GraphCanvas
 Heatmap
