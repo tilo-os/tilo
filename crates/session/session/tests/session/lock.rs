@@ -327,6 +327,9 @@ fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
 fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
     const DISPLAYS: [&str; 2] = ["HEADLESS-1", "HEADLESS-2"];
     let _settled = ui::motion::testing::settled();
+    // What the desk shows before the lock and after it is the same desk: the
+    // bar's own minute turning over in between is not a difference.
+    let _clock = tilo_test_env::held_wall_clock();
     let external = OutputConfig::new("HEADLESS-2", 1024, 768).at(WIDTH, 0);
     let home = private_home();
     let mut session = lockable_session(

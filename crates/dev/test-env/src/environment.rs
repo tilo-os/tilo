@@ -113,7 +113,7 @@ impl Default for Clock {
 
 /// [`CAPTURE_LOCAL_TIME`] in the local time zone, as milliseconds since the
 /// Unix epoch.
-fn capture_millis() -> Option<i64> {
+pub(crate) fn capture_millis() -> Option<i64> {
     use chrono::TimeZone as _;
     let (year, month, day, hour, minute) = CAPTURE_LOCAL_TIME;
     let local = chrono::NaiveDate::from_ymd_opt(year, month, day)?.and_hms_opt(hour, minute, 0)?;

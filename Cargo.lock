@@ -21980,6 +21980,7 @@ dependencies = [
  "tempfile",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-clock",
  "tilo-lock",
  "tilo-paths",
  "workspace-hack",

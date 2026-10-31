@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use super::desk::capture;
+use super::desk::{capture, held_clock};
 use super::*;
 
 use tilo_portal::{Capture as _, CaptureError, CaptureTarget};
@@ -290,6 +290,9 @@ fn the_studio_records_the_display_into_a_file_until_it_is_stopped() {
 #[test]
 fn the_studios_open_action_puts_the_bar_over_the_desktop() {
     let _settled = ui::motion::testing::settled();
+    // The desk is the frame the bar's arrival must change: with the clock
+    // held, a minute turning over cannot pass for it.
+    let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let mut session = studio_session(pictures.path());
     settle(&mut session, 4);
@@ -379,7 +382,8 @@ fn bar_up(session: &mut Session, display: &str) -> Vec<u8> {
 }
 
 /// Step `session` until nothing of the studio is drawn on `display` any
-/// more: the desk shows again as it was before the bar.
+/// more: the desk shows again as it was before the bar. The test holds its
+/// clock, so the bar's own minute is not a change to wait out.
 #[track_caller]
 fn bar_down(session: &mut Session, display: &str, desk: &[u8]) {
     pump(session, &mut [], |session, _| {
@@ -423,6 +427,7 @@ fn middle(picture: &image::RgbaImage) -> (i32, i32) {
 #[test]
 fn a_portal_area_request_is_the_rectangle_the_person_draws_on_that_display() {
     let _settled = ui::motion::testing::settled();
+    let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let (mut session, capture) = asking_session(pictures.path(), directory.path());
@@ -475,6 +480,7 @@ fn a_portal_area_request_is_the_rectangle_the_person_draws_on_that_display() {
 #[test]
 fn a_portal_window_request_is_the_window_the_person_picks() {
     let _settled = ui::motion::testing::settled();
+    let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let (mut session, capture) = asking_session(pictures.path(), directory.path());
@@ -516,6 +522,7 @@ fn a_portal_window_request_is_the_window_the_person_picks() {
 #[test]
 fn a_selection_the_person_closes_is_cancelled_and_the_next_request_still_works() {
     let _settled = ui::motion::testing::settled();
+    let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let (mut session, capture) = asking_session(pictures.path(), directory.path());
@@ -550,6 +557,7 @@ fn a_selection_the_person_closes_is_cancelled_and_the_next_request_still_works()
 #[test]
 fn a_request_the_app_closes_takes_the_studio_down_and_leaves_nothing_behind() {
     let _settled = ui::motion::testing::settled();
+    let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let (mut session, capture) = asking_session(pictures.path(), directory.path());

@@ -121,11 +121,8 @@ fn until_session(session: &mut Session, mut done: impl FnMut(&Session) -> bool) 
 /// frame in which nothing but the real minute turned over is not a change.
 /// Only this thread follows it, so the other tests of the process read their
 /// own clock.
-fn held_clock() -> ui::time::testing::SharedWall {
-    let wall = ui::time::testing::SharedWall::default();
-    wall.follow();
-    wall.pin(ui::clock::capture_wall().expect("the capture instant"));
-    wall
+pub(super) fn held_clock() -> ui::time::testing::SharedWall {
+    tilo_test_env::held_wall_clock()
 }
 
 #[test]

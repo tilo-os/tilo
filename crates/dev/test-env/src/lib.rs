@@ -46,6 +46,9 @@
 //!   test run put it, which an archived run moves away from Cargo's path.
 //! - [`in_own_process`] runs a test that changes what the whole process
 //!   sees, such as a held wall clock, in a process no other test shares.
+//! - [`held_wall_clock`] holds this thread's wall clock at the instant a
+//!   test environment and a capture start at, so two pictures of the desk a
+//!   test compares show the same date and time.
 //! - [`net`] is a network several devices share, whose delivery the test owns:
 //!   `FakeNet` with a `Peer` per device, partitions and heals, and the
 //!   `Converged` assertion that says which path or device disagrees.
@@ -105,6 +108,7 @@ mod own_process;
 pub mod requested_allocations;
 pub mod scenario;
 pub mod swtpm;
+mod wall;
 
 #[cfg(unix)]
 pub use bus::PrivateBus;
@@ -124,6 +128,7 @@ pub use hang::{Within, hang_bound, hang_deadline, recv, wait_for, wait_until, wi
 pub use net::document::{FakeDocumentNet, at_path};
 pub use net::{Converged, FakeNet, Peer};
 pub use own_process::in_own_process;
+pub use wall::held_wall_clock;
 
 use std::ffi::{OsStr, OsString};
 use std::marker::PhantomData;
