@@ -95,6 +95,7 @@ mail-forward-too-large = { $count ->
    *[other] { $files } are more than one message can carry, so they are not attached
 }
 
+mail-account-secret-unavailable = This account's password could not be opened on this device. Check the account in Settings, under External Accounts.
 mail-import-sign-in-required = Imported account settings require authentication. Sign in before connecting.
 
 ## Reader: an HTML message's remote content, links and format

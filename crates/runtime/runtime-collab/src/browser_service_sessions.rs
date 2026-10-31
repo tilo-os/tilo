@@ -1,4 +1,19 @@
-//! Request-scoped Browser credentials; never a collaboration event or document.
+//! Request-scoped account credentials from the session's custody; never a
+//! collaboration event or document.
+//!
+//! One request shape on an app's own admitted route reaches the one
+//! custodian, the session, which holds the person's account vault:
+//!
+//! - Browser lists, resolves and forgets its website sessions;
+//! - Settings, the keeper of the person's accounts, seals an account's
+//!   secret ([`BrowserServiceSessionCommand::StoreAccountSecret`]), which is
+//!   never readable back by Settings;
+//! - the app that keeps an account's type (Mail for email) is released that
+//!   one account's secret
+//!   ([`BrowserServiceSessionCommand::ReleaseAccountSecret`]).
+//!
+//! A sandboxed app never opens the vault itself: its sandbox reaches neither
+//! the vault's files nor the key custody that seals them.
 use browser_continuity_core::sessions::{Service, SessionCookies};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -7,12 +22,49 @@ pub const MAX_BROWSER_SERVICE_SESSION_COMMAND_BYTES: usize = 4096;
 pub const MAX_BROWSER_SERVICE_SESSION_REPLY_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_BROWSER_SERVICE_SESSIONS: usize = 128;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// The longest account secret custody seals or releases.
+pub const MAX_ACCOUNT_SECRET_BYTES: usize = 2048;
+
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum BrowserServiceSessionCommand {
     List,
-    Resolve { id: String, setup_binding: String },
-    Forget { id: String, setup_binding: String },
+    Resolve {
+        id: String,
+        setup_binding: String,
+    },
+    Forget {
+        id: String,
+        setup_binding: String,
+    },
+    /// Seal `password` as the secret of the person's account `account`.
+    /// Only the accounts' keeper (Settings) may; nothing reads it back to it.
+    StoreAccountSecret {
+        account: String,
+        password: Zeroizing<String>,
+    },
+    /// The secret of the person's account `account`, for the app that keeps
+    /// that account's type and nobody else.
+    ReleaseAccountSecret {
+        account: String,
+    },
+}
+impl std::fmt::Debug for BrowserServiceSessionCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::List => f.write_str("List"),
+            Self::Resolve { id, .. } => f.debug_struct("Resolve").field("id", id).finish(),
+            Self::Forget { id, .. } => f.debug_struct("Forget").field("id", id).finish(),
+            Self::StoreAccountSecret { account, .. } => f
+                .debug_struct("StoreAccountSecret")
+                .field("account", account)
+                .finish_non_exhaustive(),
+            Self::ReleaseAccountSecret { account } => f
+                .debug_struct("ReleaseAccountSecret")
+                .field("account", account)
+                .finish(),
+        }
+    }
 }
 impl<'de> Deserialize<'de> for BrowserServiceSessionCommand {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -23,13 +75,30 @@ impl<'de> Deserialize<'de> for BrowserServiceSessionCommand {
         #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
         enum Wire {
             List {},
-            Resolve { id: String, setup_binding: String },
-            Forget { id: String, setup_binding: String },
+            Resolve {
+                id: String,
+                setup_binding: String,
+            },
+            Forget {
+                id: String,
+                setup_binding: String,
+            },
+            StoreAccountSecret {
+                account: String,
+                password: Zeroizing<String>,
+            },
+            ReleaseAccountSecret {
+                account: String,
+            },
         }
         Ok(match Wire::deserialize(deserializer)? {
             Wire::List {} => Self::List,
             Wire::Resolve { id, setup_binding } => Self::Resolve { id, setup_binding },
             Wire::Forget { id, setup_binding } => Self::Forget { id, setup_binding },
+            Wire::StoreAccountSecret { account, password } => {
+                Self::StoreAccountSecret { account, password }
+            }
+            Wire::ReleaseAccountSecret { account } => Self::ReleaseAccountSecret { account },
         })
     }
 }
@@ -53,6 +122,15 @@ pub enum BrowserServiceSessionReply {
         id: String,
         setup_binding: String,
     },
+    /// The account's secret is sealed in the person's vault.
+    AccountSecretStored {
+        account: String,
+    },
+    /// The account's secret, released to the app that keeps its type.
+    AccountSecret {
+        account: String,
+        password: Zeroizing<String>,
+    },
 }
 impl std::fmt::Debug for BrowserServiceSessionReply {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -64,6 +142,14 @@ fn binding(value: &str) -> bool {
 }
 fn id(value: &str) -> bool {
     browser_continuity_core::sessions::valid_id(value)
+}
+/// An account id as the person's accounts record keys it (an address, a
+/// provider id): bounded, printable.
+fn account(value: &str) -> bool {
+    !value.trim().is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+}
+fn secret(value: &str) -> bool {
+    !value.is_empty() && value.len() <= MAX_ACCOUNT_SECRET_BYTES
 }
 
 impl BrowserServiceSessionCommand {
@@ -78,7 +164,21 @@ impl BrowserServiceSessionCommand {
                 id: value,
                 setup_binding,
             } => id(value) && binding(setup_binding),
+            Self::StoreAccountSecret {
+                account: value,
+                password,
+            } => account(value) && secret(password),
+            Self::ReleaseAccountSecret { account: value } => account(value),
         }
+    }
+    /// Whether only Browser may send this: its website sessions. The
+    /// account-secret requests are each authorized by the custodian for the
+    /// app sending them.
+    pub fn browser_only(&self) -> bool {
+        matches!(
+            self,
+            Self::List | Self::Resolve { .. } | Self::Forget { .. }
+        )
     }
     /// # Errors
     /// Refuses invalid commands, serialization failures or oversized wire bytes.
@@ -123,6 +223,11 @@ impl BrowserServiceSessionReply {
                 id: value,
                 setup_binding,
             } => id(value) && binding(setup_binding),
+            Self::AccountSecretStored { account: value } => account(value),
+            Self::AccountSecret {
+                account: value,
+                password,
+            } => account(value) && secret(password),
         }
     }
     pub fn matches(&self, command: &BrowserServiceSessionCommand) -> bool {
@@ -141,6 +246,16 @@ impl BrowserServiceSessionReply {
                 },
                 BrowserServiceSessionCommand::Forget { id, setup_binding },
             ) => self.valid() && forgotten == id && binding == setup_binding,
+            (
+                Self::AccountSecretStored { account: stored },
+                BrowserServiceSessionCommand::StoreAccountSecret { account, .. },
+            )
+            | (
+                Self::AccountSecret {
+                    account: stored, ..
+                },
+                BrowserServiceSessionCommand::ReleaseAccountSecret { account },
+            ) => self.valid() && stored == account,
             _ => false,
         }
     }

@@ -8988,15 +8988,17 @@ fn delegate_browser_service_session_command(
     bytes: &[u8],
 ) -> Result<zeroize::Zeroizing<Vec<u8>>, capnp::Error> {
     let refused = || capnp::Error::failed("private service-session request refused".into());
-    if context.app_id() != "so.tilo.browser"
-        || context.workspace_id().is_empty()
-        || context.person().is_empty()
-    {
+    if context.workspace_id().is_empty() || context.person().is_empty() {
         return Err(refused());
     }
     context.revalidate().map_err(|_| refused())?;
     let command =
         runtime_collab::BrowserServiceSessionCommand::decode(bytes).map_err(|_| refused())?;
+    // Website sessions are Browser's alone; an account secret is authorized
+    // by the custodian for the app asking.
+    if command.browser_only() && context.app_id() != "so.tilo.browser" {
+        return Err(refused());
+    }
     let service = services
         .browser_service_sessions
         .as_ref()
@@ -10005,8 +10007,9 @@ impl channel_handle::Server for CapnpChannelHandle {
     ) -> Promise<(), capnp::Error> {
         Promise::from((|| {
             let refused = || capnp::Error::failed("private service-session request refused".into());
-            if self.route().app_id != "so.tilo.browser"
-                || self.verified_identity.agent_id.is_some()
+            // Only the person's own app connection: never an agent's or a
+            // host's. Which app may ask what is decided per request.
+            if self.verified_identity.agent_id.is_some()
                 || self.verified_identity.host_scope.is_some()
             {
                 return Err(refused());

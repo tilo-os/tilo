@@ -1,5 +1,12 @@
-//! Private, one-shot account requests on the component's original admitted route.
-//! These replies never enter the document, history or durable event queues.
+//! Private, one-shot requests to the session's services, on the app's own
+//! route. These replies never enter the document, history or durable event
+//! queues.
+//!
+//! A window takes its client as it is built ([`Client::capture`]) and uses it
+//! whenever it needs the session: while its route is still joining, once
+//! the session admitted it, or in a room whose record this device's own
+//! channel serves. What the session answers is the session's decision on
+//! that route, taken per request; the client only carries the request there.
 use super::native_initial::{InitialReadBridge, service_capture_bridge};
 pub use runtime_collab::{
     BrowserServiceSessionCommand, BrowserServiceSessionDescriptor, BrowserServiceSessionReply,
@@ -12,8 +19,13 @@ pub struct Client {
     busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 impl Client {
-    /// Capture only while the native host is constructing this admitted component.
-    /// A later component cannot replace the route held by an existing client.
+    /// Capture this window's connection to the session while the native host
+    /// constructs its component: `None` outside a session (a test, a
+    /// `--data-dir` profile), which keeps its own stores.
+    ///
+    /// The captured connection names the app, not a moment: it serves the
+    /// window's requests before its route joined, after, and across a record
+    /// switch on the same app's route.
     pub fn capture() -> Option<Self> {
         service_capture_bridge().map(|bridge| Self {
             bridge,
@@ -22,7 +34,8 @@ impl Client {
     }
     /// Submit without waiting on the frame thread.
     /// # Errors
-    /// Refuses an unavailable or unauthorized original route.
+    /// Refuses a request another is already in flight, or a connection that
+    /// ended.
     pub fn request(
         &self,
         command: BrowserServiceSessionCommand,

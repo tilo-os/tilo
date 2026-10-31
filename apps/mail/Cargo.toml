@@ -53,6 +53,8 @@ tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+# Account secrets custody releases are wiped from memory when dropped.
+zeroize.workspace = true
 # A separate config directory keeps sample, shots, and test constructors away
 # from the user's account store.
 tempfile.workspace = true
