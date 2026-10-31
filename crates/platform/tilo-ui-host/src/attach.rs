@@ -152,6 +152,14 @@ mod tests {
         node
     }
 
+    /// The kinds of `node` and everything it holds.
+    fn kinds_of(node: &UiNode, out: &mut Vec<String>) {
+        out.push(node.kind.clone());
+        for child in &node.children {
+            kinds_of(child, out);
+        }
+    }
+
     #[test]
     fn a_rows_attachments_move_into_its_item_in_order() {
         let mut item = component("ListItem", "m1");
@@ -222,12 +230,6 @@ mod tests {
         );
         let drawn = &hoisted.children[0];
         let mut left = Vec::new();
-        fn kinds_of(node: &UiNode, out: &mut Vec<String>) {
-            out.push(node.kind.clone());
-            for child in &node.children {
-                kinds_of(child, out);
-            }
-        }
         kinds_of(drawn, &mut left);
         for gone in ["ui.ContextMenu", "ui.HoverToolbar", "ui.Swipe"] {
             assert!(

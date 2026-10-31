@@ -9,6 +9,9 @@ type Account (origin: imap.account) {
     name: Text
     trouble: Text
     online: Bool
+    /// What the account's messages end with: the person's own, per account, as every mail
+    /// client signs a message. Empty for none.
+    signature: Text
     mailboxes: Collection<Mailbox>
     threads: Collection<Thread>
 }
@@ -142,17 +145,38 @@ row view thread_row for Thread
 
 row view draft_row for Draft
 
+/// The signature the account `key` signs its messages with: its own, and empty when it has
+/// none or the account is not one of the person's.
+fn signature_of(m: Mail, key: Text) -> Text {
+    m.accounts.find(a -> a.key == key)?.signature ?? ""
+}
+
+/// `body` with the account's signature over it, as every mail client signs a message: the
+/// signature, a blank line, then what follows it (a quotation). `body` alone when the account
+/// has no signature.
+fn signed(m: Mail, key: Text, body: Text) -> Text {
+    let signature = signature_of(m, key)
+    if signature == "" { body } else { "{signature}{body}" }
+}
+
+/// Sets what the account signs its messages with, or clears it: the person's own, per account.
+action set_signature(a: Account, signature: Text) (icon: .pen_tool, label: "Signature") {
+    a.signature = signature
+}
+
 /// Starts a message from the account.
 primary action new_message(a: Account) -> Draft (icon: .pencil, label: "New message") {
     let m = root Mail
-    m.drafts.insert(Draft(from: a.key))
+    let signature = signature_of(m, a.key)
+    m.drafts.insert(Draft(from: a.key, body: signature))
 }
 
 /// Starts a message from the first account.
 primary action new_draft(m: Mail) -> Draft (icon: .pencil, label: "New message") {
     require not m.accounts.is_empty() "Add a mail account in Settings first"
     let from = m.accounts.first()?.key ?? ""
-    m.drafts.insert(Draft(from: from))
+    let signature = signature_of(m, from)
+    m.drafts.insert(Draft(from: from, body: signature))
 }
 
 /// The subject an answer to a conversation has.
@@ -184,7 +208,7 @@ fn quoted(m: Message) -> Text {
 primary action reply(t: Thread) -> Draft (icon: .reply, key: "r") {
     let m = root Mail
     let last = t.messages.last()
-    m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), body: if let l = last { quoted(l) } else { "" }, in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
+    m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), body: signed(m, t.account, if let l = last { quoted(l) } else { "" }), in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
 }
 
 /// Answers the conversation's newest message, to everyone it went to, quoting it.
@@ -193,26 +217,26 @@ action reply_all(t: Thread) -> Draft (icon: .reply_all, label: "Reply all", key:
     let last = t.messages.last()
     m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", cc: if let l = last {
         if l.cc == "" { l.to } else { "{l.to}, {l.cc}" }
-    } else { "" }, subject: re(t.subject), body: if let l = last { quoted(l) } else { "" }, in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
+    } else { "" }, subject: re(t.subject), body: signed(m, t.account, if let l = last { quoted(l) } else { "" }), in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
 }
 
 /// Answers one message of the conversation, to whoever wrote it, quoting it.
 action reply_to(m: Message) -> Draft (icon: .reply) {
     let mail = root Mail
-    mail.drafts.insert(Draft(from: m.account, to: m.from, subject: re(m.subject), body: quoted(m), in_reply_to: m.message_id, references: "{m.references} {m.message_id}"))
+    mail.drafts.insert(Draft(from: m.account, to: m.from, subject: re(m.subject), body: signed(mail, m.account, quoted(m)), in_reply_to: m.message_id, references: "{m.references} {m.message_id}"))
 }
 
 /// Answers one message of the conversation, to everyone it went to but the person answering.
 action reply_all_to(m: Message) -> Draft (icon: .reply_all, label: "Reply all") {
     let mail = root Mail
     let theirs = if m.cc == "" { m.to } else { "{m.to}, {m.cc}" }
-    mail.drafts.insert(Draft(from: m.account, to: m.from, cc: theirs, subject: re(m.subject), body: quoted(m), in_reply_to: m.message_id, references: "{m.references} {m.message_id}"))
+    mail.drafts.insert(Draft(from: m.account, to: m.from, cc: theirs, subject: re(m.subject), body: signed(mail, m.account, quoted(m)), in_reply_to: m.message_id, references: "{m.references} {m.message_id}"))
 }
 
 /// Sends one message of the conversation on, with its sender, when and what it says.
 action forward_message(m: Message) -> Draft (icon: .forward) {
     let mail = root Mail
-    mail.drafts.insert(Draft(from: m.account, subject: "Fwd: {m.subject}", body: "\n\nFrom {m.from_name} <{m.from}> ({m.received}):\n\n> {m.body.replace("\n", "\n> ")}\n"))
+    mail.drafts.insert(Draft(from: m.account, subject: "Fwd: {m.subject}", body: signed(mail, m.account, "\n\nFrom {m.from_name} <{m.from}> ({m.received}):\n\n> {m.body.replace("\n", "\n> ")}\n")))
 }
 
 /// Sends the conversation's newest message on, with its sender and what it says.
@@ -222,7 +246,7 @@ action forward(t: Thread) -> Draft (icon: .forward, key: "f") {
     let said = if let l = last {
         "\n\nFrom {l.from_name} <{l.from}> ({l.received}):\n\n> {l.body.replace("\n", "\n> ")}\n"
     } else { "" }
-    m.drafts.insert(Draft(from: t.account, subject: "Fwd: {t.subject}", body: said))
+    m.drafts.insert(Draft(from: t.account, subject: "Fwd: {t.subject}", body: signed(m, t.account, said)))
 }
 
 /// Archives the conversation: its messages leave the inbox.
@@ -454,7 +478,9 @@ action answer(t: Thread, body: Text) -> Draft (icon: .reply) {
     let m = root Mail
     let last = t.messages.last()
     let said = if let l = last { quoted(l) } else { "" }
-    let d = m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), body: "{body}{said}", in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
+    let signature = signature_of(m, t.account)
+    let lead = if signature == "" { body } else { "{body}\n{signature}" }
+    let d = m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), body: "{lead}{said}", in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
     send(d)
     d
 }
