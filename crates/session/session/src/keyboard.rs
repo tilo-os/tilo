@@ -48,6 +48,11 @@ const WIDEST: u32 = 960;
 const LOWEST: u32 = 220;
 const TALLEST: u32 = 380;
 
+/// How many times the keyboard's app is started for the same display before
+/// it is given up on: one that will not stay up leaves the person without a
+/// keyboard rather than starting for ever.
+const TRIES: u32 = 3;
+
 /// The keyboard's surface app, when one is installed: a window of its own
 /// that the session places at the bottom of a display, and that never takes
 /// the keyboard from the field its taps are typed into.
@@ -213,12 +218,31 @@ impl crate::Session {
         let runs = unlocked && crate::a11y_settings::keyboard_runs(preference, entry);
         if !runs {
             self.stop_keyboard();
+            // Wanted again later, the keyboard is asked afresh: its tries
+            // are the ones since it was last not wanted at all.
+            self.keyboard_run = Run::Down;
+            self.keyboard_starts = 0;
             keyboard.show(Shown::default());
             return;
         }
         if self.keyboard_run == Run::Failed {
             keyboard.show(Shown::default());
             return;
+        }
+        // The app may have exited since the last pass: the keyboard stands on
+        // nothing then, and is started again where the person types.
+        if matches!(self.keyboard_run, Run::Standing { .. }) && !self.surfaces.running(SURFACE) {
+            self.keyboard_run = Run::Down;
+            self.keyboard_starts = self.keyboard_starts.saturating_add(1);
+            if self.keyboard_starts >= TRIES {
+                tracing::error!(
+                    starts = self.keyboard_starts,
+                    "the on-screen keyboard would not stay up: it is not started again this session"
+                );
+                self.keyboard_run = Run::Failed;
+                keyboard.show(Shown::default());
+                return;
+            }
         }
         let Some((screen, (_, _, width, height))) = self.keyboard_display() else {
             // No display to stand on, and nothing to say about one.
@@ -232,6 +256,11 @@ impl crate::Session {
             size,
         };
         if self.keyboard_run != started {
+            if matches!(self.keyboard_run, Run::Standing { .. }) {
+                // Another display, or one that changed size: a fresh start,
+                // and its tries with it.
+                self.keyboard_starts = 0;
+            }
             self.stop_keyboard();
             let Some(surface) = self
                 .surface_apps

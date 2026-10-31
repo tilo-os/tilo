@@ -836,6 +836,9 @@ pub struct Session {
     /// keyboard on another display, or on one that changed size, is started
     /// again where they type.
     keyboard_run: keyboard::Run,
+    /// How often the keyboard's app was started on the display it stands on,
+    /// so one that keeps exiting is given up on rather than started for ever.
+    keyboard_starts: u32,
     /// The portal's link to the loop, while the portal serves.
     portal: Option<portal_link::SessionLink>,
     /// The apps this session started, told to the portal: which of them run
@@ -1596,6 +1599,7 @@ impl Session {
             night_light: (options.config.night_light, options.config.kept),
             keyboard_preference: options.config.on_screen_keyboard,
             keyboard_run: keyboard::Run::default(),
+            keyboard_starts: 0,
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             action_plane,
