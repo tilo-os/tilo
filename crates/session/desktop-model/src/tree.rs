@@ -134,6 +134,23 @@ impl DesktopTree {
         self.workspaces.iter().find(|w| w.id == self.active)
     }
 
+    /// The workspace holding a window of `app`, the first in the tree's
+    /// order: the one whose temperature and room that window lives in. A
+    /// window the tree does not hold yet is in none.
+    #[must_use]
+    pub fn workspace_holding_app(&self, app: &str) -> Option<&Workspace> {
+        self.workspaces.iter().find(|workspace| {
+            workspace.strips.iter().any(|strip| {
+                strip.window_groups.iter().any(|group| {
+                    group
+                        .tabs
+                        .iter()
+                        .any(|tab| crate::apps::canonical_app_id(&tab.tile).as_deref() == Some(app))
+                })
+            })
+        })
+    }
+
     /// The first instant after `now` (Unix seconds) at which a grant of any
     /// workspace stops being live ([`Workspace::next_grant_expiry_after`]): a
     /// policy decision read from this tree at `now` holds until then, or

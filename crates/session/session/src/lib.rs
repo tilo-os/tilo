@@ -97,6 +97,7 @@ mod system_sounds;
 pub mod unlock;
 mod wallpapers;
 mod window_motion;
+mod window_warmth;
 mod workspace_settings;
 mod workspaces;
 
@@ -808,6 +809,9 @@ pub struct Session {
     capture_studio: Option<capture_studio::CaptureStudio>,
     /// The windows opening and closing.
     windows: window_motion::WindowMotions,
+    /// The temperature and colour every app window is told, as the settings
+    /// and wallpapers last said them.
+    warmth: window_warmth::Windows,
     /// Whether the night light is on, and whether a change is kept in the
     /// person's settings.
     night_light: (bool, bool),
@@ -999,6 +1003,9 @@ impl Session {
             music.clone(),
         );
         desktop.set_gestures(options.config.gestures);
+        // What each open window is told of the desk it stands on, from the
+        // settings as they are now; the desk wears the same theme.
+        let warmth = window_warmth::Windows::new(presentation.theme.clone(), &options.person);
         desktop.set_theme(presentation.theme);
         let handle = desktop.with_policy(|policy| policy.handle().clone());
         // The desk as this device left it: its workspaces, the windows they
@@ -1525,6 +1532,7 @@ impl Session {
             captures: options.captures,
             capture_studio,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
+            warmth,
             night_light: (options.config.night_light, options.config.kept),
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
@@ -1992,6 +2000,26 @@ impl Session {
         }
     }
 
+    /// Tell every open app window the temperature of the workspace it is in
+    /// and the colour of the person at this machine, whenever that differs
+    /// from what that window was told: when it opens, when it moves to
+    /// another workspace, when that workspace's picture or temperature
+    /// changes, and when the person chooses another colour.
+    fn follow_window_warmth(&mut self) {
+        let Some(tabs) = &mut self.tabs else {
+            return;
+        };
+        let network = window_warmth::network_status(&self.shared.readings);
+        self.warmth.follow(
+            tabs,
+            &self.shared.handle,
+            &self.shared.wallpapers,
+            &self.shared.person,
+            network,
+            ui::time::now(),
+        );
+    }
+
     /// Carry out everything asked since the last look: the desktop's asks,
     /// the gestures it took, the actions keys asked for, and what those
     /// asked in turn.
@@ -2095,6 +2123,9 @@ impl Session {
         // The menu the reading says is up has its view over the desk, and
         // the view goes when the menu does.
         self.follow_window_menu();
+        // Each open window takes the temperature of the room it is in, as
+        // this pass left it.
+        self.follow_window_warmth();
         self.shared.clipboard.serve_asks(&mut self.compositor);
         // One file of a paste in flight per turn, so a folder of files does
         // not hold up a frame.

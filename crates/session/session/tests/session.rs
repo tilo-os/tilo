@@ -1812,6 +1812,9 @@ mod portal_capture;
 #[path = "session/secret_captures.rs"]
 mod secret_captures;
 
+#[path = "session/window_warmth.rs"]
+mod window_warmth;
+
 impl Dispatch<WlRegistry, ()> for Seen {
     fn event(
         seen: &mut Self,

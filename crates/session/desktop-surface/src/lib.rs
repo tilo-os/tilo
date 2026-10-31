@@ -27,6 +27,7 @@ pub mod person_cursor;
 pub mod session;
 mod shared_tree;
 pub mod surface;
+pub mod warmth;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use surface::peer_view::{

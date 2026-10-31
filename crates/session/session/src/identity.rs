@@ -119,6 +119,15 @@ pub fn install() {
     }
 }
 
+/// Who this device acts for in `room`: the identity its registry presents
+/// there, else the person sitting at it.
+pub(crate) fn person_in(room: &str, person: &str) -> String {
+    tilo_identity_host::registry::selected_principal_id_prompt(room)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| person.to_owned())
+}
+
 /// Put a host offer to the person: one about who they are
 /// ([`HostAction::is_personal`], their name and key here or another of
 /// their devices) is asked from their own avatar in the top bar, where it

@@ -904,6 +904,18 @@ impl Workspace {
         self.policy.app_authors(app, &context_at(now))
     }
 
+    /// Whether what `app`'s window changes in this room is told to that
+    /// window as the person's own change: `person` may change the room
+    /// through `app` at `now` and `app` is an author of it. `None` when
+    /// `person` has no place in the room, so nothing is told to the window.
+    #[must_use]
+    pub fn app_writes_at(&self, person: &str, app: &str, now: u64) -> Option<bool> {
+        self.role_of(person)?;
+        let changes = self.answer_at(person, &self.node().app(app), ActionKind::Undoable, now)
+            == Answer::Allow;
+        Some(changes && self.app_is_author_at(app, now))
+    }
+
     /// The role a person with `agent`'s reach in the room would hold: what
     /// its grants let it change — the room, only its comments, or nothing.
     /// `None` when no live grant admits it.

@@ -419,10 +419,7 @@ impl Automation {
     /// Who this device acts for in `room`: the identity the registry
     /// presents there, else the session's own person.
     fn person_in(&self, room: &str) -> String {
-        tilo_identity_host::registry::selected_principal_id_prompt(room)
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| self.person.clone())
+        crate::identity::person_in(room, &self.person)
     }
 
     /// Start every firing as the person this device acts for in its room,

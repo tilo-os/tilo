@@ -19,6 +19,12 @@
 //! lasts while a connection of that app asks for it, and goes when the last
 //! one stops asking or closes.
 //!
+//! Every connection also receives the appearance of the window it belongs to
+//! ([`FloatingSurfaceHostMessage::Appearance`]): the temperature of the
+//! workspace that window is in, the person's own colour, the theme, and
+//! whether the room it stands in is in sync. It is sent when the connection
+//! opens and again whenever any of that changes.
+//!
 //! The same connections are made for a window the session opens in an app's
 //! running process ([`tilo_app_launch::Connects`]): each window reaches the
 //! collaboration broker and the shell-ui socket as itself, so what it asks is
@@ -42,9 +48,14 @@ use tilo_app_launch::{Connects, Launch, Open, WindowConnections};
 use tilo_compositor::Compositor;
 use tilo_desktop_policy::DesktopPolicy;
 use tilo_surface_host::DesktopHost;
+use ui::Theme;
+use ui::WindowAppearance;
 use ui::floating_surface::{
     FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
+    HostNetworkStatus,
 };
+use ui::room_sync::RoomSync;
+use ui::theme::ThemeDocument;
 
 use crate::Launches;
 use crate::mount::apps::Apps;
@@ -155,16 +166,47 @@ pub struct AppTabs {
     /// from captures, and the app each speaks for: the mark lasts while one
     /// of them is open.
     withheld: BTreeMap<u64, String>,
+    /// The open connections, by the app each vouches for and what it was
+    /// last told of its window's appearance.
+    links: BTreeMap<u64, Link>,
     /// The listener and its thread, stopped and its socket removed when the
     /// session ends.
     _socket: Socket,
+}
+
+/// An open shell-ui connection: the app it vouches for, whether its launch
+/// let the app know the network's state, and what its window was last told.
+struct Link {
+    app: String,
+    /// Whether this app's launch let it know the network's state; a window
+    /// never widens that for itself.
+    network_allowed: bool,
+    /// Writing to the connection.
+    writer: Arc<Mutex<UnixStream>>,
+    /// The appearance the window was last told, so a pass that changes
+    /// nothing sends nothing.
+    told: Option<Delivered>,
+}
+
+/// What an appearance message carried, to tell whether a window needs
+/// another one.
+#[derive(PartialEq)]
+struct Delivered {
+    window: WindowAppearance,
+    theme: ThemeDocument,
+    network: Option<HostNetworkStatus>,
+    room: Option<RoomSync>,
 }
 
 /// What a connection said that this service answers.
 enum Ask {
     /// What the app asks of its own tabs.
     Message(Box<FloatingSurfaceClientMessage>),
-    /// The connection ended: what it asked about captures goes with it.
+    /// The window joined: its side of the connection is open, and it is told
+    /// its window's appearance from the next pass on.
+    Connected { network_allowed: bool },
+    /// The connection ended: what it asked about captures goes with it, and
+    /// its window is told no more.
     Closed,
 }
 
@@ -203,6 +245,7 @@ impl AppTabs {
         Ok(Self {
             requests: answers,
             withheld: BTreeMap::new(),
+            links: BTreeMap::new(),
             _socket: socket,
         })
     }
@@ -216,7 +259,69 @@ impl AppTabs {
         compositor: &mut Compositor,
     ) {
         for request in self.requests.try_iter() {
-            answer(desktop, apps, compositor, &mut self.withheld, request);
+            answer(
+                desktop,
+                apps,
+                compositor,
+                &mut self.withheld,
+                &mut self.links,
+                request,
+            );
+        }
+    }
+
+    /// Give every open window the appearance of the desk it stands on: the
+    /// temperature of its workspace, the person's colour, the theme, and its
+    /// room's sync state, each when it differs from what that window was
+    /// last told. A window opens with one, and gets another whenever any of
+    /// it changes; a pass that changes nothing writes nothing.
+    pub fn publish_window_warmth(
+        &mut self,
+        appearance_of: impl Fn(&str) -> WindowAppearance,
+        room_of: impl Fn(&str) -> Option<RoomSync>,
+        theme: &Theme,
+        network: HostNetworkStatus,
+    ) {
+        for link in self.links.values_mut() {
+            let network = link.network_allowed.then_some(network);
+            let window = appearance_of(&link.app);
+            let room = room_of(&link.app);
+            let unchanged = link.told.as_ref().is_some_and(|last| {
+                last.window == window
+                    && last.theme == theme.document
+                    && last.network == network
+                    && last.room == room
+            });
+            if unchanged {
+                continue;
+            }
+            let mut message = FloatingSurfaceHostMessage::appearance_with_theme(&window, theme);
+            if let FloatingSurfaceHostMessage::Appearance {
+                network_status,
+                room_sync,
+                ..
+            } = &mut message
+            {
+                *network_status = network;
+                room_sync.clone_from(&room);
+            }
+            let written = link
+                .writer
+                .lock()
+                .map_err(|_| "the connection's writer is gone".to_string())
+                .and_then(|mut stream| {
+                    write_message(&mut stream, &message).map_err(|error| error.to_string())
+                });
+            if let Err(error) = written {
+                tracing::warn!(%error, app = %link.app, "a window's appearance was not written");
+                continue;
+            }
+            link.told = Some(Delivered {
+                window,
+                theme: theme.document.clone(),
+                network,
+                room,
+            });
         }
     }
 }
@@ -228,6 +333,7 @@ fn answer(
     apps: Option<&Apps>,
     compositor: &mut Compositor,
     withheld: &mut BTreeMap<u64, String>,
+    links: &mut BTreeMap<u64, Link>,
     request: Request,
 ) {
     let Request {
@@ -240,6 +346,19 @@ fn answer(
     let message = match ask {
         Ask::Closed => {
             withhold(withheld, desktop, compositor, connection, &app, false);
+            links.remove(&connection);
+            return;
+        }
+        Ask::Connected { network_allowed } => {
+            links.insert(
+                connection,
+                Link {
+                    app,
+                    network_allowed,
+                    writer: reply,
+                    told: None,
+                },
+            );
             return;
         }
         Ask::Message(message) => *message,
@@ -435,11 +554,16 @@ impl Drop for Socket {
 }
 
 /// The launcher's word for a connection, written before the sandbox starts:
-/// which app it is, as the launcher knows it.
+/// which app it is, as the launcher knows it, and whether that launch let
+/// the app know the network's state.
 #[derive(Deserialize)]
 struct LauncherHandshake {
     protocol: u16,
     app_id: String,
+    /// Absent from a launcher that predates the field: such an app is told
+    /// nothing of the network.
+    #[serde(default)]
+    network_status_allowed: bool,
 }
 
 /// The app's first frame as every shell-ui version reads it:
@@ -512,6 +636,23 @@ fn serve_connection(
         return;
     };
     let reply = Arc::new(Mutex::new(writer));
+    // From here the window is told the appearance of the desk it stands on,
+    // and it is told once more whenever that changes.
+    if requests
+        .send(Request {
+            app: app.clone(),
+            room: room.clone(),
+            connection,
+            reply: Arc::clone(&reply),
+            ask: Ask::Connected {
+                network_allowed: handshake.network_status_allowed,
+            },
+        })
+        .is_err()
+    {
+        return;
+    }
+    wake();
     while !stop.load(Ordering::Acquire) {
         let frame = match wire_frame::read_line(&mut reader, MAX_FRAME_BYTES) {
             Ok(Some(frame)) => frame,
@@ -677,6 +818,22 @@ mod tests {
         let parsed: LauncherHandshake = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
         assert_eq!(parsed.protocol, SHELL_UI_LAUNCH_PROTOCOL);
         assert_eq!(parsed.app_id, "so.tilo.notes");
+        assert!(!parsed.network_status_allowed);
+        // What the launcher says of the network reaches the window; one that
+        // predates the field leaves it out.
+        let allowed: LauncherHandshake = serde_json::from_value(serde_json::json!({
+            "protocol": SHELL_UI_LAUNCH_PROTOCOL,
+            "app_id": "so.tilo.notes",
+            "network_status_allowed": true,
+        }))
+        .unwrap();
+        assert!(allowed.network_status_allowed);
+        let old: LauncherHandshake = serde_json::from_value(serde_json::json!({
+            "protocol": SHELL_UI_LAUNCH_PROTOCOL,
+            "app_id": "so.tilo.notes",
+        }))
+        .unwrap();
+        assert!(!old.network_status_allowed);
         let mut hello = serde_json::to_vec(&FloatingSurfaceClientMessage::Hello {
             version: FLOATING_SURFACE_PROTOCOL_VERSION,
         })
