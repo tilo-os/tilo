@@ -28,6 +28,14 @@ type Desk (origin: session.desk) {
     workspaces: Collection<Workspace>
     tasks: Collection<Task>
     people: Collection<Person>
+    /// The pointer at the top edge, and a window standing where the bar rides: what a bar that
+    /// shows only sometimes follows. The session writes them with the rest of the desk; no
+    /// action changes them and no preset names them.
+    bar_reached: Bool
+    bar_covered: Bool
+    /// The pointer at the bottom edge, and a window standing where the dock rides.
+    dock_reached: Bool
+    dock_covered: Bool
     title: Text merge register
     agents: Collection<Agent>
     rooms: Collection<Room>
@@ -113,8 +121,6 @@ root arrangement: Arrangement
 
 root Desk
 
-/// The shell's two layers: the desk the person sees (its bar over the surface that is up),
-/// and the top bar alone, which the session's bar part lays out in its band.
 default view desk for Desk
 
 default view desk_view for arrangement
@@ -315,13 +321,13 @@ view workspace_menu(d: Desk) {
 /// The device's status: an icon button named with what it shows — "Notifications", how many
 /// are unread, or that they are silenced — with the count above it as a badge, so the name
 /// assistive technology reads is the whole fact and the number is for the eye. Pressing it
-/// opens the notification centre.
+/// opens or closes the device's status: the quick settings, or the notifications.
 view bell(d: Desk) {
     let name = if d.quiet { "Notifications silenced" } else { "Notifications" }
     let label = if d.unread == 0 { name } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }
     row(gap: .tight, align: .center) {
         ui.Button(label, icon: if d.quiet { .bell_off } else { .bell }, icon_only: true, role: .bar) {
-            on press: open_centre(d)
+            on press: status(d)
         }
         if d.unread > 0 {
             ui.Badge(count: d.unread)

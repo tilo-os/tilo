@@ -13,12 +13,12 @@ view desk(d: Desk) {
     let s = shell
     layers {
         stack(gap: .tight) {
-            if bar_shows(s) {
+            if bar_shows(s, d) {
                 bar_on_edge(s, d)
             }
             surface_or_rest(d)
         }
-        if dock_shows(s) {
+        if dock_shows(s, d) {
             if s.dock_edge == .bottom {
                 row(at: .bottom, fill, align: .center, distribute: .center) {
                     ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .bottom, fill: if s.dock_fit == .full { 1 } else { 0 }) {

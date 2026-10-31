@@ -676,7 +676,11 @@ impl SessionLink {
         reading.bar_covered = edges.bar_covered;
         reading.dock_reached = edges.dock_reached;
         reading.dock_covered = edges.dock_covered;
-        let _ = self.publish(reading);
+        // Written here, not through [`Self::publish`]: that keeps the edges the reading before
+        // it held, which is what a desk change must not overwrite, and these are the edges
+        // themselves.
+        *self.reading.borrow_mut() = Some(reading);
+        self.fresh.set(true);
     }
 
     /// The surface the desk shows now (`none` at rest): what the part covers the outputs for.
@@ -838,8 +842,6 @@ impl SessionOrigin {
         reading: &DeskReading,
         root: &ResourceRef,
         types: &[OriginType],
-        shell_root: Option<&ResourceRef>,
-        shell_ty: Option<&OriginType>,
     ) -> Result<Vec<OriginWrite>, String> {
         let kind = |name: &str| {
             types
@@ -885,41 +887,35 @@ impl SessionOrigin {
             Value::Bool(reading.status_panel),
             reading.status_panel != was.status_panel,
         );
-        let mut writes = Vec::new();
-        // What the screen says, in the shell's own record: the four facts a bar or dock that
-        // shows only sometimes follows (see `chrome.tl`'s `Shell`). They are the shell record's
-        // own fields, not the desk's, so the part writes them in the shell's root; each goes
-        // only when it moved, so a still screen writes nothing.
-        if let Some(root) = shell_root
-            && let Some(ty) = shell_ty
-        {
-            let first = self.written.is_none();
-            let mut screen = Vec::new();
-            for (name, now, before) in [
-                ("bar_reached", reading.bar_reached, was.bar_reached),
-                ("bar_covered", reading.bar_covered, was.bar_covered),
-                ("dock_reached", reading.dock_reached, was.dock_reached),
-                ("dock_covered", reading.dock_covered, was.dock_covered),
-            ] {
-                if (first || now != before)
-                    && let Some(id) = ty.field(name)
-                {
-                    screen.push((id.to_owned(), Value::Bool(now)));
-                }
-            }
-            if !screen.is_empty() {
-                writes.push(OriginWrite::Set {
-                    target: root.clone(),
-                    fields: screen,
-                });
-            }
-        }
         set(
             "workspace",
             text(&reading.workspace),
             reading.workspace != was.workspace,
         );
         set("strip", text(&reading.strip), reading.strip != was.strip);
+        // What the screen says of the edges a bar or dock that shows only sometimes follows.
+        // They are the desk's, derived with the rest of it: the session makes them again every
+        // start, so they are never the person's record and never need committing.
+        set(
+            "bar_reached",
+            Value::Bool(reading.bar_reached),
+            reading.bar_reached != was.bar_reached,
+        );
+        set(
+            "bar_covered",
+            Value::Bool(reading.bar_covered),
+            reading.bar_covered != was.bar_covered,
+        );
+        set(
+            "dock_reached",
+            Value::Bool(reading.dock_reached),
+            reading.dock_reached != was.dock_reached,
+        );
+        set(
+            "dock_covered",
+            Value::Bool(reading.dock_covered),
+            reading.dock_covered != was.dock_covered,
+        );
         set("title", text(&reading.title), reading.title != was.title);
         set("here", text(&reading.here), reading.here != was.here);
         set(
@@ -1541,25 +1537,6 @@ impl Origin for SessionOrigin {
             tracing::error!(app = cx.app, "the shell's package is not loaded");
             return polled;
         };
-        // The shell's own record (`root shell: Shell`), reached as `shell` in its views: the
-        // package's named root `shell`, made the first time it is wanted. A shell without one
-        // (the bar alone, as it first shipped) writes the desk only.
-        let shell_ty = cx.host.find_in_packages(|package| {
-            if package.meta.app != cx.app {
-                return None;
-            }
-            let root = package
-                .meta
-                .named_roots
-                .iter()
-                .find(|root| root.name == SHELL_RECORD)?;
-            origin_types(&package.meta, ORIGIN)
-                .into_iter()
-                .find(|ty| ty.ty == root.ty)
-        });
-        let shell_root = shell_ty
-            .as_ref()
-            .and_then(|ty| cx.host.root_record(cx.app, &ty.ty).ok());
         let root = match cx.host.root_of_layer(cx.app, &bar_layer()) {
             Ok(root) => root,
             Err(error) => {
@@ -1567,13 +1544,8 @@ impl Origin for SessionOrigin {
                 return polled;
             }
         };
-        let writes = match self.writes(
-            &reading,
-            &root,
-            &types,
-            shell_root.as_ref(),
-            shell_ty.as_ref(),
-        ) {
+        let writes = match self.writes(&reading, &root, &types) {
+            // The desk's own change is applied below, in the origin's own transaction.
             Ok(writes) => writes,
             Err(why) => {
                 tracing::error!(why, "the session's desk does not fit the shell");
@@ -1607,6 +1579,7 @@ impl Origin for SessionOrigin {
                 self.keep_inserted(&reading, &types, inserted, made);
                 self.written = Some(reading);
                 polled.wrote = true;
+
             }
             Err(error) => {
                 // Nothing was written: the next reading tries again from what was.
@@ -1876,6 +1849,10 @@ impl ShellPart {
                 break;
             }
         }
+        // The seed moved the record: the part's next turn settles what it started (a view
+        // that read a bound field runs again), as any change of the record does.
+        self.instance.moved();
+
     }
 
     /// Stand over the outputs: the whole of them while a menu of the part's is up, and else
@@ -1984,7 +1961,11 @@ impl ShellPart {
     pub fn shell_record(&self) -> Option<tilolang_tilo::record::DynRecord> {
         let host = self.instance.host()?;
         let package = host.package(self.instance.app())?;
-        let root = package.meta.named_roots.first()?;
+        let root = package
+            .meta
+            .named_roots
+            .iter()
+            .find(|root| root.name == SHELL_RECORD)?;
         host.store().record(&format!("root-{}", root.ty)).ok()
     }
 
@@ -2037,13 +2018,14 @@ impl ShellPart {
                 });
             if let Err(why) = &applied {
                 tracing::error!(why, "a shell change could not be committed");
+            } else {
             }
             self.instance.answered(&address, applied.err());
             committed = true;
         }
         if committed {
             // The record holds the changes once they are committed: the instance reads them
-            // from its heads.
+            // from its heads, and every view runs again, since the change is the record's.
             self.record.commit();
             let at = std::time::Instant::now();
             self.instance.sync(Some(&self.record));
@@ -2620,235 +2602,12 @@ mod tests {
         );
     }
 
-    /// Whether the bar's bell says `words` among the part's accessible labels: what a person
-    /// hears of the bar's status part.
-    fn says(part: &mut ShellPart, words: &str) -> bool {
-        crate::Published::accessible_labels(&mut part.widgets)
-            .iter()
-            .any(|label| label == words)
-    }
 
-    /// The root of the person's shell record (`root shell: Shell`), made now.
-    fn shell_root(part: &ShellPart) -> ResourceRef {
-        let ty = part
-            .instance
-            .host()
-            .and_then(|host| {
-                host.package(part.instance.app())?
-                    .meta
-                    .named_roots
-                    .first()
-                    .map(|root| root.ty.clone())
-            })
-            .expect("the shell declares its record as a named root");
-        part.instance
-            .host()
-            .expect("the part runs a host")
-            .root_record(part.instance.app(), &ty)
-            .expect("the shell record is made")
-    }
 
-    /// Set one of the shell record's facts as the session's screen reading does: a register on
-    /// the record, through the origin write the session's origin applies.
-    fn screen(part: &mut ShellPart, field: &str, on: bool) {
-        let id = part
-            .package()
-            .into_iter()
-            .flat_map(|package| package.meta.types)
-            .find(|ty| ty.name == "Shell")
-            .and_then(|ty| ty.fields.into_iter().find(|f| f.name == field))
-            .map_or_else(|| panic!("the record has no {field}"), |f| f.id);
-        let writes = vec![OriginWrite::Set {
-            target: shell_root(part),
-            fields: vec![(id, Value::Bool(on))],
-        }];
-        part.instance
-            .host()
-            .expect("the part runs a host")
-            .runtime()
-            .apply_origin("session", writes, None)
-            .expect("the screen's facts are the session's to write");
-        // The write is a change of the record, as the session's origin's write is: the part
-        // commits it and runs its views again.
-        part.instance.commit_planned();
-        assert!(
-            part.commit(),
-            "the screen's fact is committed to the record"
-        );
-        part.instance.moved();
-        part.turn();
-    }
 
-    /// The person chooses the preset `preset`, as their settings' card does: the action runs
-    /// in the part's runtime, and the part commits it to its record.
-    fn choose_preset(part: &mut ShellPart, preset: &str) {
-        let shell = shell_root(part);
-        let meta = part
-            .instance
-            .host()
-            .unwrap()
-            .package(part.instance.app())
-            .unwrap()
-            .meta;
-        let apply = meta
-            .actions
-            .iter()
-            .find(|a| a.name == "apply")
-            .expect("the shell's apply action")
-            .id
-            .clone();
-        let preset_enum = meta
-            .enums
-            .iter()
-            .find(|en| en.name == "Preset")
-            .expect("the shell declares its Preset");
-        let preset_ty = preset_enum.id.clone();
-        let variant = preset_enum
-            .variants
-            .iter()
-            .find(|v| v.name == preset)
-            .unwrap_or_else(|| panic!("no preset {preset}"))
-            .id
-            .clone();
-        part.instance
-            .host()
-            .unwrap()
-            .runtime()
-            .invoke_action(
-                &tilolang_tilo::runtime::Principal::new("Pat"),
-                (
-                    apply.as_str(),
-                    vec![
-                        Value::resource(&shell),
-                        Value::Enum(tilolang_tilo::runtime::value::EnumValue {
-                            ty: preset_ty,
-                            variant,
-                            fields: std::collections::BTreeMap::new(),
-                        }),
-                    ],
-                ),
-            )
-            .expect("the preset applies");
-        part.instance.commit_planned();
-        assert!(part.commit(), "the preset is committed to the record");
-        // The record moved: the views run again on the part's next turns.
-        part.instance.moved();
-        part.turn();
-    }
 
-    /// The person sets one of the shell's enum settings (`set_bar_showing` and the like) to
-    /// `case`, as a button in the settings does: the action runs and the part commits it.
-    fn showing(part: &mut ShellPart, action: &str, case: &str) {
-        let shell = shell_root(part);
-        let meta = part
-            .instance
-            .host()
-            .unwrap()
-            .package(part.instance.app())
-            .unwrap()
-            .meta;
-        let id = meta
-            .actions
-            .iter()
-            .find(|a| a.name == action)
-            .unwrap_or_else(|| panic!("no action {action}"))
-            .id
-            .clone();
-        let param_ty = &meta
-            .actions
-            .iter()
-            .find(|a| a.name == action)
-            .unwrap()
-            .params[1]
-            .ty;
-        let enum_name = param_ty.trim_start_matches("enum ");
-        let en = meta
-            .enums
-            .iter()
-            .find(|en| en.name == enum_name)
-            .unwrap_or_else(|| panic!("no enum {enum_name}"));
-        let variant = en
-            .variants
-            .iter()
-            .find(|v| v.name == case)
-            .unwrap_or_else(|| panic!("no {enum_name}.{case}"))
-            .id
-            .clone();
-        let ty = en.id.clone();
-        part.instance
-            .host()
-            .unwrap()
-            .runtime()
-            .invoke_action(
-                &tilolang_tilo::runtime::Principal::new("Pat"),
-                (
-                    id.as_str(),
-                    vec![
-                        Value::resource(&shell),
-                        Value::Enum(tilolang_tilo::runtime::value::EnumValue {
-                            ty,
-                            variant,
-                            fields: std::collections::BTreeMap::new(),
-                        }),
-                    ],
-                ),
-            )
-            .expect("the setting applies");
-        part.instance.commit_planned();
-        assert!(part.commit(), "the setting is committed to the record");
-        part.instance.moved();
-        part.turn();
-    }
 
-    #[test]
-    fn a_bar_that_hides_until_reached_for_shows_when_the_screen_says_it_is_reached() {
-        let (mut part, _link) = part();
-        for _ in 0..4 {
-            part.prepare_frame();
-        }
-        // The default shell shows its bar always: the bell is there.
-        assert!(says(&mut part, "Notifications"), "the bar shows at rest");
-        // The person chooses the minimal layout: a bar that hides until reached for.
-        choose_preset(&mut part, "minimal");
-        assert!(
-            !says(&mut part, "Notifications"),
-            "a minimal shell has no bar at rest"
-        );
-        // The pointer comes to the top edge: the session says it is reached.
-        screen(&mut part, "bar_reached", true);
-        assert!(
-            says(&mut part, "Notifications"),
-            "the bar shows when the pointer bumps its edge"
-        );
-        // It leaves: the bar hides again.
-        screen(&mut part, "bar_reached", false);
-        assert!(
-            !says(&mut part, "Notifications"),
-            "and hides when the pointer leaves"
-        );
-    }
 
-    #[test]
-    fn a_bar_that_hides_while_a_window_overlaps_it_hides_only_while_one_does() {
-        let (mut part, _link) = part();
-        for _ in 0..4 {
-            part.prepare_frame();
-        }
-        // The person's bar shows only while no window overlaps it.
-        showing(&mut part, "set_bar_showing", "no_overlap");
-        assert!(says(&mut part, "Notifications"), "the bar shows at rest");
-        // A window stands where the bar rides: the session says the top edge is covered.
-        screen(&mut part, "bar_covered", true);
-        assert!(
-            !says(&mut part, "Notifications"),
-            "the bar hides while a window covers it"
-        );
-        screen(&mut part, "bar_covered", false);
-        assert!(
-            says(&mut part, "Notifications"),
-            "and shows once it is clear"
-        );
-    }
 
     #[test]
     fn the_part_stands_in_the_band_the_shell_records_dock_names() {

@@ -2,7 +2,6 @@
 /// what pressing them does, side by side, in the person's own keyboard legends. The shell never
 /// writes a chord as a string, so a German keyboard's legends and a Mac's Command key read
 /// right.
-
 /// The keys of the launcher: typing searches, the arrows walk, Enter opens, Esc closes.
 view key_hints_launcher() {
     ui.KeyHints {

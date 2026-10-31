@@ -5,7 +5,6 @@
 /// edge, the Windows preset's taskbar carrying the time and the status at its end.
 ///
 /// They never touch a person's own record: a real first launch starts empty.
-
 scenario "the default shell on a desk" {
     let d = root Desk
     d.person = "Ada Lovelace"

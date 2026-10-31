@@ -13,7 +13,7 @@
 /// floating one, over what is under it. A dock on the top or bottom edge runs along that edge;
 /// one on the leading or trailing edge stands up it.
 view dock(s: Shell, d: Desk) {
-    if dock_shows(s) {
+    if dock_shows(s, d) {
         dock_run(s, d)
     }
 }
@@ -40,8 +40,6 @@ view dock_run(s: Shell, d: Desk) {
             }
         }
     } else if across {
-        // The taskbar: the dock's items leading, the time and the device's status trailing,
-        // in the one bar.
         ui.DragRun(axis: .horizontal) {
             trailing: {
                 clock(d)

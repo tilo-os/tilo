@@ -3,7 +3,6 @@
 /// `session.notify`), so it is attributed, permission checked and undoable as any action is;
 /// the shell only names them and lays them out. A run's payload is `(action, arguments)`, the
 /// session's own vocabulary, written once here.
-
 /// Brings `key`'s workspace to the front, unless it is there already.
 action switch_to_key(key: Text, current: Bool) (icon: .layers, label: "Switch to") {
     require not current "It is in front already"

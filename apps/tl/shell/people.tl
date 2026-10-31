@@ -6,7 +6,6 @@
 ///
 /// Every entry is an action the session or the workspace runs (`session.run`, the chat app's
 /// own). Nothing here reads a copy of presence: it reads the desk's people and agents.
-
 /// A person here, as their presence: a chip that opens their menu.
 view person_chip(p: Person) {
     ui.MenuButton(p.name, icon: .user, role: .plain) {

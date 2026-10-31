@@ -7,7 +7,6 @@
 /// A banner is the centre's newest notice, lifted out of it; a group is an app's or a task's
 /// notices together. Nothing here decides what a notice means: its kind, its sender and its
 /// actions are the sender's. It is a surface of the desk, so it holds no sidebar of its own.
-
 /// The notification centre: every notice, grouped by its sender, newest first, with the way to
 /// clear them all.
 view notices(d: Desk) {

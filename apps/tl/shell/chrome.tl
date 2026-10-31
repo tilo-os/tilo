@@ -123,18 +123,6 @@ type Shell {
     /// A click on the dock's icons magnifies the item under the pointer, as macOS's Dock
     /// does.
     dock_zoom: Bool = false
-    /// The pointer is at, or resting against, the edge the bar rides: a bar that hides until
-    /// it is reached for shows. The session writes the four below; no action changes them and
-    /// no preset names them — they are what the bar and the dock follow when they show only
-    /// sometimes, so the views run again when one moves and at no other time.
-    bar_reached: Bool = false
-    /// A window stands where the bar rides, so a bar that hides while a window overlaps it
-    /// hides.
-    bar_covered: Bool = false
-    /// The pointer is at the edge the dock rides: the dock pinned there shows.
-    dock_reached: Bool = false
-    /// A window stands where the dock rides.
-    dock_covered: Bool = false
 }
 
 /// One part of the top bar, in the person's order.
@@ -445,12 +433,13 @@ fn shows(when: Showing, reached: Bool, covered: Bool) -> Bool {
     if when == .always { true } else if when == .no_overlap { not covered } else { reached }
 }
 
-/// Whether the top bar shows now.
-fn bar_shows(s: Shell) -> Bool {
-    s.bar_shown and shows(s.bar_showing, s.bar_reached, s.bar_covered)
+/// Whether the top bar shows now: the person's settings, and what the screen says of its edge
+/// (the desk's reading, which the session writes).
+fn bar_shows(s: Shell, d: Desk) -> Bool {
+    s.bar_shown and shows(s.bar_showing, d.bar_reached, d.bar_covered)
 }
 
 /// Whether the dock shows now.
-fn dock_shows(s: Shell) -> Bool {
-    s.dock_shown and shows(s.dock_showing, s.dock_reached, s.dock_covered)
+fn dock_shows(s: Shell, d: Desk) -> Bool {
+    s.dock_shown and shows(s.dock_showing, d.dock_reached, d.dock_covered)
 }

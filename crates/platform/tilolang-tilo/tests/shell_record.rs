@@ -57,7 +57,18 @@ fn source() -> String {
 /// it, with the ids lock committed beside it.
 fn room() -> Replica {
     let source = source();
-    let (mut replica, _) = Replica::new("ada", AutoCommit::new(), &[(source.as_str(), IDS)]);
+    // The shell `use`s the three apps its places read (`notes`, `tasks`, `chat`), so they
+    // compile first, as the session compiles them.
+    let (mut replica, _) = Replica::new(
+        "ada",
+        AutoCommit::new(),
+        &[
+            (include_str!("../../../../apps/tl/chat/app.tl"), include_str!("../../../../apps/tl/chat/app.ids")),
+            (include_str!("../../../../apps/tl/notes/app.tl"), include_str!("../../../../apps/tl/notes/app.ids")),
+            (include_str!("../../../../apps/tl/tasks/app.tl"), include_str!("../../../../apps/tl/tasks/app.ids")),
+            (source.as_str(), IDS),
+        ],
+    );
     // The person's shell record, made as the session makes it, and the package's migration
     // seeding it: the bar's parts and the dock's items, on a shell never arranged.
     let meta = replica.host.package(APP).unwrap().meta;
@@ -68,6 +79,34 @@ fn room() -> Replica {
             .expect("the shell record is made");
     }
     replica.host.migrate();
+    // What the session publishes on the desk: the time, who is here and the workspaces. The
+    // views read it as the session writes it, so the test writes it the same way.
+    let desk_ty = meta
+        .roots
+        .iter()
+        .find(|ty| {
+            meta.types
+                .iter()
+                .any(|t| &&t.id == ty && t.name == "Desk")
+        })
+        .cloned();
+    if let Some(ty) = desk_ty {
+        let root = replica.host.root_record(APP, &ty).unwrap();
+        let meta = replica.host.package(APP).unwrap().meta;
+        let clock = crate::fixtures::field_id(&meta, "Desk", "clock");
+        replica
+            .host
+            .runtime()
+            .apply_origin(
+                "session",
+                vec![OriginWrite::Set {
+                    target: root,
+                    fields: vec![(clock, Value::Text("4:28 PM".to_owned()))],
+                }],
+                None,
+            )
+            .expect("the session's clock is written on the desk");
+    }
     replica.commit();
     replica
 }
@@ -204,16 +243,16 @@ fn applying_a_preset_changes_every_setting_it_names_and_undo_restores_them_all()
     choose(
         &r,
         "apply",
-        vec![shell_ref(&r), pick(&r, "Preset", "macos")],
+        vec![shell_ref(&r), pick(&r, "Layout", "macos")],
     );
     r.commit();
-    assert!(is(&r, "preset", "Preset", "macos"));
+    assert!(is(&r, "preset", "Layout", "macos"));
     assert!(is(&r, "dock_showing", "Showing", "no_overlap"));
     assert!(is(&r, "dock_fit", "Fit", "floating"));
     assert!(flag(&r, "dock_zoom"), "macOS's Dock magnifies");
 
     undo(&mut r);
-    assert!(is(&r, "preset", "Preset", "tilo"), "the preset goes back");
+    assert!(is(&r, "preset", "Layout", "tilo"), "the preset goes back");
     assert!(is(&r, "dock_showing", "Showing", "always"));
     assert!(!flag(&r, "dock_zoom"));
 }
@@ -284,7 +323,7 @@ fn says(view: &tilolang_runtime::ViewInstance, words: &str) -> bool {
 
 /// Ada picks the preset `preset`, as pressing its card in the settings does.
 fn use_preset(r: &mut Replica, preset: &str) {
-    choose(r, "apply", vec![shell_ref(r), pick(r, "Preset", preset)]);
+    choose(r, "apply", vec![shell_ref(r), pick(r, "Layout", preset)]);
     r.commit();
 }
 
@@ -301,7 +340,7 @@ fn choosing_a_preset_changes_the_layout_the_person_sees() {
     // The full-width classic bar, always shown: no dock, so no `ui.DragRun` on the desk at
     // all — the bar's own run is there, the dock's is not.
     use_preset(&mut r, "windows");
-    assert!(is(&r, "preset", "Preset", "windows"));
+    assert!(is(&r, "preset", "Layout", "windows"));
     assert!(!flag(&r, "bar_shown"), "the Windows preset has no top bar");
     assert!(flag(&r, "dock_shown"), "and its dock is the taskbar");
     assert!(is(&r, "dock_fit", "Fit", "full"));
@@ -394,16 +433,11 @@ fn a_bar_that_hides_when_a_window_overlaps_it_hides_only_while_one_does() {
 /// the shell's own record, through the origin write the session's door applies
 /// (`SessionLink::publish_edges`), which the host then commits.
 fn set_screen(r: &mut Replica, field: &str, on: bool) {
-    let meta0 = r.host.package(APP).unwrap().meta;
-    let ty = meta0
-        .named_roots
-        .iter()
-        .find(|root| root.name == "shell")
-        .map(|root| root.ty.clone())
-        .expect("the shell declares its record as a named root");
-    let root = r.host.root_record(APP, &ty).unwrap();
+    // What the screen says is the desk's reading, which the session writes on the desk: the
+    // person's shell record keeps their own settings, not the screen's momentary facts.
+    let root = r.host.root_record(APP, "4jk2lkpt").unwrap();
     let meta = r.host.package(APP).unwrap().meta;
-    let id = crate::fixtures::field_id(&meta, "Shell", field);
+    let id = crate::fixtures::field_id(&meta, "Desk", field);
     let writes = vec![OriginWrite::Set {
         target: root,
         fields: vec![(id, Value::Bool(on))],
