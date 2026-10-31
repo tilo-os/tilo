@@ -183,6 +183,11 @@ impl DictationLink {
         self.dictation.borrow_mut().note_copied(id, copied);
     }
 
+    /// Note what the person's answer ran into, for the sheet to say.
+    pub fn failed(&self, error: DictationError) {
+        self.dictation.borrow_mut().note_failure(error);
+    }
+
     /// Throw away the kept transcript of `id`.
     pub fn discard_recovery(&self, id: SessionId) -> bool {
         self.dictation.borrow_mut().discard_recovery_of(id)

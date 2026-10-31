@@ -21459,6 +21459,7 @@ dependencies = [
  "tilo-desktop-surface",
  "tilo-device-fabric",
  "tilo-device-vpn",
+ "tilo-dictation",
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-identity-host",

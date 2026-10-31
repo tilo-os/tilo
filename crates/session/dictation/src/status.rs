@@ -175,10 +175,16 @@ pub enum RuntimeError {
 }
 
 impl RuntimeError {
-    /// A short word for the sheet, without the engine's own message.
+    /// A short word for why it stopped, without the engine's own message:
+    /// what the sheet names to the person.
     #[must_use]
     pub const fn word(self) -> &'static str {
         match self {
+            Self::Worker(
+                SpeechError::ModelUnavailable
+                | SpeechError::ModelReceipt,
+            ) => "model",
+            Self::Worker(SpeechError::UnsupportedLanguage) => "language",
             Self::Worker(_) => "recognizer",
             Self::MicrophoneUnavailable => "microphone",
             Self::VocabularyUnavailable | Self::VocabularyChanged => "vocabulary",

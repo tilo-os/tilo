@@ -34,6 +34,7 @@ mod config;
 mod controls;
 mod desk_layout;
 pub mod desktop_services;
+mod dictation;
 mod display_settings;
 pub mod displays;
 mod env;
@@ -404,6 +405,9 @@ struct Shared {
     /// The overview's pictures and the clock they fly on, which its panel
     /// in the chrome draws with.
     overview: mount::overview::Overview,
+    /// Dictation: the speech the person allows once per dictation, and the
+    /// sheet they answer on.
+    dictation: dictation::Dictation,
 }
 
 /// The app a window shows, by its id.
@@ -938,6 +942,9 @@ impl Shared {
                 .commands
                 .borrow_mut()
                 .push(SessionCommand::NextInputSource),
+            ShortcutAction::DictationToggle
+            | ShortcutAction::DictationFinish
+            | ShortcutAction::DictationCancel => self.dictation.shortcut(action),
             other => tracing::debug!(?other, "shortcut the session has no part in yet"),
         }
     }
@@ -1356,6 +1363,9 @@ impl Session {
         );
 
         let services = mount_services(&mut doors, std::mem::take(&mut options.services));
+        // Dictation joins the services: its recognizer, microphone and
+        // consent are only the session's, and the sheet asks about them.
+        let dictation = dictation::Dictation::mount(&mut compositor, &mut doors, &services, &options);
 
         let search = Rc::new(SessionSearch::new(options.search, options.apps));
         let asker = questions::Asker::new(
@@ -1416,6 +1426,7 @@ impl Session {
             sync,
             clipboard: mount::clipboard::Clipboard::new(),
             overview,
+            dictation,
         };
         shared.start_search();
         // What the portal brings comes from any thread, and wakes the loop
@@ -2203,6 +2214,15 @@ impl Session {
         self.surfaces.serve(&mut self.shared.doors);
         self.follow_displays()?;
         self.shared.services.borrow_mut().poll();
+        // Dictation writes into the field the person is typing in, so it runs
+        // before the frame rather than with the sheets.
+        let locked = self.compositor.locked();
+        self.shared.dictation.step(
+            &mut self.compositor,
+            &self.shared.clipboard,
+            locked,
+            Instant::now(),
+        );
         let compositor = &mut self.compositor;
         self.shared
             .notifications

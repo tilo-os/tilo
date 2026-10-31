@@ -386,6 +386,21 @@ impl Clipboard {
         true
     }
 
+    /// Offer `mime` and `bytes` on the clipboard for the person to paste
+    /// somewhere else, without keeping them: a dictated transcript lives in
+    /// the dictation's private draft until they discard it, not in the
+    /// clipboard's history. False when the clipboard did not take it.
+    pub(crate) fn copy_for_person(&self, compositor: &mut Compositor, mime: &str, bytes: Vec<u8>) -> bool {
+        if let Err(error) = compositor.set_selection(Selection::Clipboard, vec![(mime.to_owned(), bytes)]) {
+            tracing::warn!(%error, "the transcript could not be put on the clipboard");
+            return false;
+        }
+        // The session's own offer is not a copy the person made.
+        self.seen
+            .set(compositor.selection_changes(Selection::Clipboard));
+        true
+    }
+
     /// Make the app in front paste, with the chord it pastes with. A hosted
     /// surface holding the keyboard takes the chord as it is: the app in
     /// front is a window, and the session's own surfaces are closed by then.

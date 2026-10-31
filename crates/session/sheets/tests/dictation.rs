@@ -64,7 +64,7 @@ fn asking(id: u64) -> Prompt {
         draft: String::new(),
         failure: None,
         recovery: None,
-            copied: false,
+        copied: false,
         copy_failed: false,
     }
 }
@@ -76,7 +76,7 @@ fn recovery(id: u64) -> Prompt {
         draft: String::new(),
         failure: None,
         recovery: Some(RecoveryReason::TooLong),
-            copied: false,
+        copied: false,
         copy_failed: false,
     }
 }
@@ -129,10 +129,7 @@ fn every_stage_says_what_happens() {
     let mut app = staged("recovery-too-long");
     let said = told(&mut app);
     assert!(said.contains("The field took no words"), "{said}");
-    assert!(
-        said.contains("too long to insert in one step"),
-        "{said}"
-    );
+    assert!(said.contains("too long to insert in one step"), "{said}");
     assert!(
         said.contains("Kept privately for 10 minutes"),
         "the card says where the words are: {said}"
@@ -158,10 +155,7 @@ fn every_stage_says_what_happens() {
     let mut app = staged("unavailable");
     let said = told(&mut app);
     assert!(said.contains("Dictation isn't available"), "{said}");
-    assert!(
-        said.contains("Microphone access is unavailable"),
-        "{said}"
-    );
+    assert!(said.contains("Microphone access is unavailable"), "{said}");
     let labels: Vec<String> = buttons(&mut app)
         .into_iter()
         .map(|(label, _)| label)

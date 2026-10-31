@@ -355,6 +355,13 @@ impl Dictation {
         false
     }
 
+    /// Note what the person's answer ran into, so the sheet says why nothing
+    /// ran, and stop what it would have started.
+    pub fn note_failure(&mut self, error: DictationError) {
+        self.last_failure = Some(error);
+        self.cancel_active();
+    }
+
     /// Throw away the kept transcript; the next dictation starts clean.
     pub fn discard_recovery(&mut self) {
         self.recovery = None;

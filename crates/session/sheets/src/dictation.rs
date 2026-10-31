@@ -400,10 +400,7 @@ fn words(shown: &Shown) -> Option<Words> {
             (t("dictation-recovery-title"), body)
         }
         Stage::Unavailable => {
-            let said = prompt
-                .failure
-                .unwrap_or(Failure::Unavailable)
-                .key();
+            let said = prompt.failure.unwrap_or(Failure::Unavailable).key();
             (t("dictation-unavailable-title"), t(said))
         }
     };

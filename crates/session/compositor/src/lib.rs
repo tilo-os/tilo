@@ -106,7 +106,7 @@ pub use policy::{
     Arrangement, LayoutPoint, LayoutRect, ResizeEdges, StackPolicy, WindowInfo, WindowPolicy,
     WindowRequest,
 };
-pub use selection::Selection;
+pub use selection::{Selection, TEXT_MIME};
 /// The quarter turns an output is shown at.
 pub use smithay::utils::Transform;
 pub use state::State;
