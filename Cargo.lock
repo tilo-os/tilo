@@ -18929,6 +18929,7 @@ name = "tilo-durable-writer"
 version = "0.1.0"
 dependencies = [
  "parking_lot",
+ "tilo-files",
  "tilo-test-env",
  "tracing",
  "workspace-hack",

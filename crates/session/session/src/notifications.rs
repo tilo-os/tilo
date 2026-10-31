@@ -33,6 +33,33 @@ use crate::app_icons;
 use crate::portal_link::PortalSide;
 use crate::system_sounds::SystemSounds;
 
+/// Mount the banners app on the desk: what it shows of the desktop's
+/// notifications, and its own link to them.
+pub(crate) fn mount_banners(
+    compositor: &mut tilo_compositor::Compositor,
+    doors: &mut tilo_surface_host::Doors,
+    notices: &DesktopNotifications,
+    options: &crate::Options,
+) -> Link {
+    let banners = Link::new();
+    match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
+        .and_then(|component| ui::App::from_component(component, (options.presentation)()))
+    {
+        Ok(app) => {
+            let surface = Rc::new(RefCell::new(crate::panels::Banners::new(
+                app,
+                banners.clone(),
+                options.scale,
+            )));
+            compositor.add_host(Box::new(crate::panels::Held(Rc::clone(&surface))));
+            doors.add(surface);
+            notices.show_banners_elsewhere();
+        }
+        Err(error) => tracing::warn!(%error, "notification banners not mounted"),
+    }
+    banners
+}
+
 /// The most unread notifications one app's icon counts to.
 const MAX_BADGE: u32 = 9_999;
 

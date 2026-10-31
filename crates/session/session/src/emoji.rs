@@ -12,8 +12,7 @@
 //! it.
 
 use std::cell::RefCell;
-use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use emoji::Recents;
@@ -156,15 +155,6 @@ impl FileRecentsStore {
     }
 }
 
-/// Replace the file: directory `0700`, file `0600`, written atomically.
-fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-    }
-    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600)
-}
-
 impl RecentsStore for FileRecentsStore {
     /// What the file held at startup; a missing or malformed file reads as
     /// none.
@@ -172,17 +162,12 @@ impl RecentsStore for FileRecentsStore {
         self.recents.clone()
     }
 
-    /// A pick happens between two frames, so the write goes to the state
+    /// A pick happens between two frames, so the file is kept by the state
     /// writer: its fsyncs can take seconds under I/O pressure.
     fn save(&self, recents: &Recents) -> Result<(), String> {
         let bytes = serde_json::to_vec(recents)
             .map_err(|error| format!("{}: {error}", self.path.display()))?;
-        let path = self.path.clone();
-        tilo_durable_writer::global().submit(path.clone(), move || {
-            if let Err(error) = write(&path, &bytes) {
-                tracing::warn!(%error, path = %path.display(), "could not save emoji recents");
-            }
-        });
+        tilo_durable_writer::keep(self.path.clone(), bytes);
         Ok(())
     }
 }
@@ -190,6 +175,7 @@ impl RecentsStore for FileRecentsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
 
     #[test]
     fn recents_persist_privately() {

@@ -18,7 +18,8 @@
 //!   reader of the files call it.
 //!
 //! Crash safety is the job's own: every job writes through an atomic
-//! replace, so an interrupted write leaves the previous file intact.
+//! replace. [`keep`] is that job for the usual case — a file of this device's
+//! own state, private and crash-safe.
 
 use parking_lot::{Condvar, Mutex};
 use std::collections::HashMap;
@@ -268,6 +269,24 @@ pub fn global() -> &'static DurableWriter {
     WRITER.get_or_init(|| DurableWriter::spawn("tilo-state-writer"))
 }
 
+/// Keep `path` as `bytes`: the file is written away from the caller's thread,
+/// and a write of it that has not started is replaced by this one, so a burst
+/// of saves is one write of the newest. The file and its directory are the
+/// person's own (`0600` in a `0700` directory), and the write is a crash-safe
+/// replacement of the one before.
+///
+/// This is what every piece of this device's own state is written with, from
+/// the desk to the emoji recents: one writer, one policy for how a burst of
+/// changes reaches the disk.
+pub fn keep(path: impl Into<PathBuf>, bytes: Vec<u8>) {
+    let path = path.into();
+    global().submit(path.clone(), move || {
+        if let Err(error) = tilo_files::native::atomic::write_private(&path, &bytes) {
+            tracing::debug!(%error, path = %path.display(), "a kept file is not written");
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +304,41 @@ mod tests {
         });
         running.recv().expect("blocker started");
         (writer, release)
+    }
+
+    /// The ready-made job for a file of this device's own state: written
+    /// with the newest bytes, private, and crash-safe in a directory of the
+    /// person's own.
+    #[test]
+    fn keep_writes_a_private_file_of_the_persons_own() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let home = tilo_test_env::TestHome::new().expect("a home");
+        let dir = home.root().join("state").join("tilo");
+        let path = dir.join("kept.json");
+        let mode = |path: &std::path::Path| {
+            std::fs::metadata(path)
+                .expect("the file is there")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+
+        keep(path.clone(), br#"{"first":true}"#.to_vec());
+        global().flush();
+        assert_eq!(
+            std::fs::read(&path).expect("the file is there"),
+            br#"{"first":true}"#
+        );
+        assert_eq!(mode(&path), 0o600, "the file is the person's alone");
+        assert_eq!(mode(&dir), 0o700, "so is its directory");
+
+        keep(path.clone(), br#"{"second":true}"#.to_vec());
+        global().flush();
+        assert_eq!(
+            std::fs::read(&path).expect("the file is there"),
+            br#"{"second":true}"#,
+            "the newest write replaces the one before"
+        );
     }
 
     #[test]

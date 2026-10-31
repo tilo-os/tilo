@@ -9,17 +9,22 @@
 //! [`crate::topology`]; the edits here only record the outcome. The host owns
 //! the document, decides when to commit, and stamps history.
 //!
-//! Shape: `{ active: uint, workspaces: [ { id, name, room, owner?,
+//! Shape: `{ active: uint, authors_v1?: {actor → author},
+//! view_v1: json, workspaces: [ { id, name, room, owner?,
 //! members: {person → json role}, members_joined_v1: {person → json Unix ms}, grants: {id → json}, sandbox: {id → json},
 //! presets_v1: {key → json},
 //! effect_receipts_v1: {invocation → json},
 //! automations_v1: {shortcut id → json},
 //! arrangement_v1?: "canvas", canvas_v1?: {group id → json place},
-//! strips: [ { id, window_groups: [ { id, tabs: [ { id, title, app_title?, tile_json } ] } ] } ] } ] }`.
-//! Strip widths and maximization are presentation state and never written;
-//! canvas places are the workspace's arrangement and are.
+//! local_v1?: json,
+//! strips: [ { id, name, window_groups: [ { id, tabs: [ { id, title, app_title?, tile_json } ] } ] } ] } ] }`.
+//! Canvas places are the workspace's arrangement, `local_v1` is what only this
+//! device reads of a workspace, and `view_v1` is how this device shows the
+//! desk: none of them reaches another device, and all are in this document
+//! because it is the one store of the desk here.
 
-use std::collections::HashSet;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
 use tilo_sort::CompactSort as _;
 
@@ -33,11 +38,13 @@ use crate::app::AppKind;
 use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace};
 use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
+use crate::partition::OutputPartition;
 use crate::projection::{
     ROOM_AUTOMATIONS_KEY, ROOM_EFFECT_RECEIPTS_KEY, ROOM_MEMBERS_JOINED_KEY,
     ROOM_SCHEDULE_CLAIMS_KEY,
 };
 use crate::receipt::WorkspaceEffectReceipt;
+use crate::serde_ids::deserialize_id_map;
 use crate::topology::{DropTarget, TabMove};
 use crate::tree::DesktopTree;
 use crate::width::WindowWidth;
@@ -45,6 +52,9 @@ use crate::workspace::{UserId, Workspace};
 
 const WORKSPACES_KEY: &str = "workspaces";
 const ACTIVE_KEY: &str = "active";
+const VIEW_KEY: &str = "view_v1";
+const LOCAL_KEY: &str = "local_v1";
+const AUTHORS_KEY: &str = "authors_v1";
 const MEMBERS_KEY: &str = "members";
 const GRANTS_KEY: &str = "grants";
 const SANDBOX_KEY: &str = "sandbox";
@@ -303,6 +313,7 @@ fn write_group(doc: &mut AutoCommit, entry: &ObjId, group: &WindowGroup) {
 }
 
 fn write_strip(doc: &mut AutoCommit, entry: &ObjId, strip: &Strip) {
+    let _ = doc.put_str_if_changed(entry, "name", &strip.name);
     if let Some(groups) = child_object(doc, entry, GROUPS_KEY, ObjType::List) {
         sync_list(
             doc,
@@ -391,6 +402,7 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
         ws.schedule_claims.iter().map(|claim| (claim.key(), claim)),
     );
     write_arrangement(doc, entry, &ws.arrangement);
+    write_local(doc, entry, ws);
     if let Some(strips) = child_object(doc, entry, STRIPS_KEY, ObjType::List) {
         sync_list(
             doc,
@@ -399,6 +411,17 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
             |strip| strip.id.raw(),
             write_strip,
         );
+    }
+}
+
+/// The workspace's own fields that this device reads and no other needs, as
+/// one blob; a workspace with none of them has no key.
+fn write_local(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
+    let local = Local::of(ws);
+    if local.is_empty() {
+        delete_if_present(doc, entry, LOCAL_KEY);
+    } else {
+        put_json_if_changed(doc, entry, LOCAL_KEY, &local);
     }
 }
 
@@ -440,6 +463,137 @@ fn read_arrangement(doc: &AutoCommit, entry: &ObjId) -> Arrangement {
     }
 }
 
+fn read_local(doc: &AutoCommit, entry: &ObjId) -> Option<Local> {
+    let bytes = doc.bytes_at(entry, LOCAL_KEY)?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// How this device shows the desk: which strip and group are in front in
+/// each workspace, how wide each group is, whether it is maximized, which of
+/// its tabs is in front, and which display it is on.
+///
+/// The device's own — another device shows the same desk its own way — but
+/// kept in this document all the same, because it is the one store of the
+/// desk here: a desk reopened without it puts every window back at a default
+/// width, and a version restored from the history could not put the layout
+/// back with the windows.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct View {
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        deserialize_with = "deserialize_id_map"
+    )]
+    active_strip: HashMap<WorkspaceId, StripId>,
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        deserialize_with = "deserialize_id_map"
+    )]
+    active_group: HashMap<StripId, GroupId>,
+    #[serde(default, skip_serializing_if = "OutputPartition::is_empty")]
+    outputs: OutputPartition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fullscreen: Option<GroupId>,
+    /// Each group's look, by group id.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    groups: HashMap<GroupId, Look>,
+}
+
+/// One group as this device shows it.
+#[derive(Debug, Serialize, Deserialize)]
+struct Look {
+    width: WindowWidth,
+    maximized: bool,
+    active_tab: TabId,
+}
+
+impl View {
+    fn of(desktop: &DesktopTree) -> Self {
+        let mut groups = HashMap::new();
+        for workspace in &desktop.workspaces {
+            for strip in &workspace.strips {
+                for group in &strip.window_groups {
+                    groups.insert(
+                        group.id,
+                        Look {
+                            width: group.width,
+                            maximized: group.maximized,
+                            active_tab: group.active_tab,
+                        },
+                    );
+                }
+            }
+        }
+        Self {
+            active_strip: desktop.active_strip.clone(),
+            active_group: desktop.active_group.clone(),
+            outputs: desktop.outputs.clone(),
+            fullscreen: desktop.fullscreen,
+            groups,
+        }
+    }
+}
+
+/// What a workspace holds that this device reads and no other device needs:
+/// the ownership ceremony's records, the defaults for opening each kind of
+/// resource, which windows this device streams to which peer, and the fields
+/// an older build wrote there.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Local {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ownership_transfer_audit: Vec<collab_types::OwnershipTransferAuditV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ownership_transfer_cancellations: Vec<collab_types::OwnershipTransferCancellationV1>,
+    #[serde(default, skip_serializing_if = "default_apps_unset")]
+    default_apps: desktop_policy::WorkspaceDefaults,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::shared_surfaces::SharedSurfaces::is_empty"
+    )]
+    shared_surfaces: crate::shared_surfaces::SharedSurfaces,
+    #[serde(flatten)]
+    retired_fields: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Local {
+    fn of(workspace: &Workspace) -> Self {
+        Self {
+            pending_ownership_transfer: workspace.pending_ownership_transfer.clone(),
+            ownership_transfer_audit: workspace.ownership_transfer_audit.clone(),
+            ownership_transfer_cancellations: workspace.ownership_transfer_cancellations.clone(),
+            default_apps: workspace.default_apps.clone(),
+            shared_surfaces: workspace.shared_surfaces.clone(),
+            retired_fields: workspace.retired_fields.clone(),
+        }
+    }
+
+    /// Give `workspace` what the document recorded of it.
+    fn apply(self, workspace: &mut Workspace) {
+        workspace.pending_ownership_transfer = self.pending_ownership_transfer;
+        workspace.ownership_transfer_audit = self.ownership_transfer_audit;
+        workspace.ownership_transfer_cancellations = self.ownership_transfer_cancellations;
+        workspace.default_apps = self.default_apps;
+        workspace.shared_surfaces = self.shared_surfaces;
+        workspace.retired_fields = self.retired_fields;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pending_ownership_transfer.is_none()
+            && self.ownership_transfer_audit.is_empty()
+            && self.ownership_transfer_cancellations.is_empty()
+            && default_apps_unset(&self.default_apps)
+            && self.shared_surfaces.is_empty()
+            && self.retired_fields.is_empty()
+    }
+}
+
+fn default_apps_unset(defaults: &desktop_policy::WorkspaceDefaults) -> bool {
+    *defaults == desktop_policy::WorkspaceDefaults::default()
+}
+
 /// Make `doc` describe exactly `desktop`, writing only the difference.
 /// Workspaces, strips, groups and tabs are matched by id, so an unchanged
 /// entry keeps its object, its history and any concurrent edit made to it,
@@ -447,19 +601,35 @@ fn read_arrangement(doc: &AutoCommit, entry: &ObjId) -> Arrangement {
 /// an entry the tree no longer holds is deleted. Best-effort: a write that
 /// fails skips the entries nested under it rather than aborting.
 pub fn seed(doc: &mut AutoCommit, desktop: &DesktopTree) {
+    let _ = seed_of_the_view(doc, desktop);
+}
+
+/// [`seed`], saying whether all it wrote was how this device shows the desk —
+/// which workspace, strip and window is in front, how wide each window is —
+/// and nothing of the desk itself. `false` when it wrote nothing at all, or
+/// wrote anything of the desk's own.
+///
+/// A host that keeps every change of the desk as its history uses this to
+/// write a drag once it is over: a resize writes the view on every frame, and
+/// sixty changes a second of how a window looks are not what happened to the
+/// desk.
+pub fn seed_of_the_view(doc: &mut AutoCommit, desktop: &DesktopTree) -> bool {
+    let before = doc.pending_ops();
     if doc.uint_at(&ROOT, ACTIVE_KEY) != Some(desktop.active.raw()) {
         let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(desktop.active.raw()));
     }
-    let Some(list) = child_object(doc, &ROOT, WORKSPACES_KEY, ObjType::List) else {
-        return;
-    };
-    sync_list(
-        doc,
-        &list,
-        &desktop.workspaces,
-        |ws| ws.id.raw(),
-        write_workspace,
-    );
+    put_json_if_changed(doc, &ROOT, VIEW_KEY, &View::of(desktop));
+    let after_view = doc.pending_ops();
+    if let Some(list) = child_object(doc, &ROOT, WORKSPACES_KEY, ObjType::List) {
+        sync_list(
+            doc,
+            &list,
+            &desktop.workspaces,
+            |ws| ws.id.raw(),
+            write_workspace,
+        );
+    }
+    after_view > before && doc.pending_ops() == after_view
 }
 
 fn read_blob_map<T: serde::de::DeserializeOwned>(
@@ -580,12 +750,13 @@ fn tile_from_blob(blob: &[u8], title: &str) -> TileContent {
 }
 
 /// Refresh `desktop` from `doc`. The active workspace, names, rooms,
-/// ownership, members, grants, sandbox, grant sets, receipts and shortcuts come from the
-/// document; `active_strip`, `active_group` and presence stay as the tree
-/// had them. Each workspace keeps its existing strips by id, then the
-/// document's topology and tabs are folded in: width and maximization stay
-/// on the matching local group, and a group seen for the first time gets
-/// local defaults.
+/// ownership, members, grants, sandbox, grant sets, receipts, shortcuts and
+/// each workspace's own fields come from the document; `active_strip`,
+/// `active_group` and presence stay as the tree had them, and so does how
+/// each group is shown ([`rebuild_view`] reads that). Each workspace keeps
+/// its existing strips by id, then the document's topology and tabs are
+/// folded in: width and maximization stay on the matching local group, and a
+/// group seen for the first time gets local defaults.
 pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
     if let Some(raw) = doc.uint_at(&ROOT, ACTIVE_KEY) {
         desktop.active = WorkspaceId::from(raw);
@@ -643,47 +814,104 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
         ws.shortcuts = read_shortcuts(doc, entry);
         ws.schedule_claims = read_schedule_claims(doc, entry);
         ws.arrangement = read_arrangement(doc, entry);
+        if let Some(local) = read_local(doc, entry) {
+            local.apply(&mut ws);
+        }
         rebuilt.push(ws);
     }
     desktop.workspaces = rebuilt;
 
     for (id_raw, entry) in entries {
         let ws_id = WorkspaceId::from(id_raw);
-        let Some(strips) = obj(doc, &entry, STRIPS_KEY) else {
+        let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.id == ws_id) else {
             continue;
         };
-        for strip_pos in 0..doc.length(&strips) {
-            let Some(strip_entry) = obj(doc, &strips, strip_pos) else {
+        rebuild_strips(doc, &entry, ws);
+    }
+}
+
+/// Fold the strips of the workspace `entry` into `ws`, each by its id, into
+/// the strips it already has of that id.
+fn rebuild_strips(doc: &AutoCommit, entry: &ObjId, ws: &mut Workspace) {
+    let Some(strips) = obj(doc, entry, STRIPS_KEY) else {
+        return;
+    };
+    for strip_pos in 0..doc.length(&strips) {
+        let Some(strip_entry) = obj(doc, &strips, strip_pos) else {
+            continue;
+        };
+        let Some(strip_id) = doc.uint_at(&strip_entry, "id").map(StripId::from) else {
+            continue;
+        };
+        // A strip is kept even with no window on it: the desk has it, and it
+        // is named as the person left it.
+        let name = doc.str_at(&strip_entry, "name");
+        let at = ws.strips.iter().position(|s| s.id == strip_id);
+        let strip = if let Some(at) = at {
+            ws.strips.get_mut(at)
+        } else {
+            ws.strips
+                .push(Strip::new(strip_id, name.as_deref().unwrap_or("Main")));
+            ws.strips.last_mut()
+        };
+        let Some(strip) = strip else {
+            continue;
+        };
+        if let Some(name) = name {
+            strip.name = name;
+        }
+        let Some(groups) = obj(doc, &strip_entry, GROUPS_KEY) else {
+            continue;
+        };
+        for group_pos in 0..doc.length(&groups) {
+            let Some(group_entry) = obj(doc, &groups, group_pos) else {
                 continue;
             };
-            let Some(strip_id) = doc.uint_at(&strip_entry, "id").map(StripId::from) else {
+            let Some(group_id) = doc.uint_at(&group_entry, "id") else {
                 continue;
             };
-            let Some(groups) = obj(doc, &strip_entry, GROUPS_KEY) else {
-                continue;
-            };
-            for group_pos in 0..doc.length(&groups) {
-                let Some(group_entry) = obj(doc, &groups, group_pos) else {
+            let doc_tabs = group_tabs(doc, &group_entry);
+            fold_group(strip, group_id, &doc_tabs);
+        }
+    }
+}
+
+/// Read how this device showed the desk from `doc` into `desktop`: which
+/// strip and group are in front, how wide each group is, whether it is
+/// maximized, which of its tabs is in front, and which display it is on.
+///
+/// [`rebuild`] leaves those on the tree it is given, because a host that
+/// holds its own view (the shell's cache) is the one that knows them. A
+/// reader that keeps no view of its own — a session starting on this
+/// document alone, or a version restored out of its history — calls this
+/// after [`rebuild`] and takes the desk back exactly as it was left.
+pub fn rebuild_view(doc: &AutoCommit, desktop: &mut DesktopTree) {
+    let Some(view) = view_of(doc) else {
+        return;
+    };
+    desktop.active_strip = view.active_strip;
+    desktop.active_group = view.active_group;
+    desktop.outputs = view.outputs;
+    desktop.fullscreen = view.fullscreen;
+    for workspace in &mut desktop.workspaces {
+        for strip in &mut workspace.strips {
+            for group in &mut strip.window_groups {
+                let Some(look) = view.groups.get(&group.id) else {
                     continue;
                 };
-                let Some(group_id) = doc.uint_at(&group_entry, "id") else {
-                    continue;
-                };
-                let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.id == ws_id) else {
-                    continue;
-                };
-                if !ws.strips.iter().any(|s| s.id == strip_id) {
-                    ws.strips.push(Strip::new(strip_id, "Main"));
+                group.width = look.width;
+                group.maximized = look.maximized;
+                if group.tabs.iter().any(|tab| tab.id == look.active_tab) {
+                    group.active_tab = look.active_tab;
                 }
-                let strip = ws.strips.iter_mut().find(|s| s.id == strip_id);
-                let Some(strip) = strip else {
-                    continue;
-                };
-                let doc_tabs = group_tabs(doc, &group_entry);
-                fold_group(strip, group_id, &doc_tabs);
             }
         }
     }
+}
+
+fn view_of(doc: &AutoCommit) -> Option<View> {
+    let bytes = doc.bytes_at(&ROOT, VIEW_KEY)?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// One tab as a group entry holds it.
@@ -809,18 +1037,34 @@ pub fn set_active(doc: &mut AutoCommit, workspace_id: WorkspaceId) {
     let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(workspace_id.raw()));
 }
 
-/// Whether `change` did nothing but record which workspace is showing, as
-/// [`set_active`] does on every workspace switch: one operation, putting the
-/// root key. Every workspace's content is as the changes before it left it.
-pub fn only_sets_active(change: &automerge::Change) -> bool {
+/// Whether `change` did nothing but change how this device shows the desk:
+/// which workspace, strip or group is in front, how wide a group is, or on
+/// which display it is. Every operation puts one of the two root keys that
+/// hold none of the desk's content, [`ACTIVE_KEY`] and [`VIEW_KEY`]. Which
+/// workspace's windows exist is as the changes before it left them.
+pub fn only_moves_the_view(change: &automerge::Change) -> bool {
     use automerge::legacy::{Key, ObjectId, OpType};
-    change.len() == 1
-        && change.decode().operations.first().is_some_and(|op| {
+    !change.is_empty()
+        && change.decode().operations.iter().all(|op| {
             op.obj == ObjectId::Root
                 && !op.insert
                 && matches!(op.action, OpType::Put(_))
-                && matches!(&op.key, Key::Map(key) if key == ACTIVE_KEY)
+                && matches!(&op.key, Key::Map(key) if key == ACTIVE_KEY || key == VIEW_KEY)
         })
+}
+
+/// The names this document's changes are known by, by actor (hex), when a
+/// host recorded them: a desk read into this document from one that named its
+/// changes' authors keeps the names people already saw.
+pub fn author_names(doc: &AutoCommit) -> std::collections::BTreeMap<String, String> {
+    doc.bytes_at(&ROOT, AUTHORS_KEY)
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Record the names [`author_names`] reads.
+pub fn set_author_names(doc: &mut AutoCommit, names: &std::collections::BTreeMap<String, String>) {
+    put_json_if_changed(doc, &ROOT, AUTHORS_KEY, names);
 }
 
 /// Record a workspace's owner.

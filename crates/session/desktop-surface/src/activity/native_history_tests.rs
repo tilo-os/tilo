@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod native_history {
-    //! A native session's history: the workspace's own desk log, replayed
-    //! into its room, listed by the activity pane and restored through the
-    //! host that keeps the desk.
+    //! A native session's history: the device's own document of the desk,
+    //! listed by the activity pane and restored through the host that keeps
+    //! the desk.
 
     use super::*;
     use crate::activity::testing::TestHost;
@@ -16,8 +16,6 @@ mod native_history {
         std::collections::BTreeMap<String, String>,
     );
 
-    /// A native session's desk and its log: "Studio" opened with Notes,
-    /// Grace renaming it to "Plans", Ada then closing Notes.
     /// The pane, as a native session serves it.
     fn native_pane() -> RoomActivityPane {
         let mut pane = RoomActivityPane::new();
@@ -25,6 +23,15 @@ mod native_history {
         pane
     }
 
+    /// Write the desk as it stands into `doc` and stamp it at `time`: one
+    /// change of the desk, as a session records each pass.
+    fn stamp(doc: &mut automerge::AutoCommit, tree: &tilo_desktop_model::DesktopTree, time: i64) {
+        tilo_desktop_model::desktop_doc::seed(doc, tree);
+        doc.commit_with(automerge::transaction::CommitOptions::default().with_time(time));
+    }
+
+    /// A native session's desk and its document: "Studio" opened with Notes,
+    /// Grace renaming it to "Plans", Ada then closing Notes.
     fn native_history() -> NativeHistory {
         use crate::activity::ActivitySnapshot;
         use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TileContent};
@@ -41,47 +48,42 @@ mod native_history {
             app_title: None,
         };
         let mut tree = crate::seed_tree(&mut minter, "Studio", vec![notes]);
-        let mut log = automerge::AutoCommit::new();
-        assert!(crate::history_log::record(
-            &mut log,
-            &serde_json::to_value(&tree).unwrap(),
-            "Ada",
-            1_000,
-        ));
+
+        // The one document the desk is kept as: its changes are what the desk
+        // did, who did it and when.
+        let ada = automerge::ActorId::random();
+        let grace = automerge::ActorId::random();
+        let mut doc = automerge::AutoCommit::new();
+        doc.set_actor(ada.clone());
+        stamp(&mut doc, &tree, 1_000);
 
         tree.workspaces[0].name = "Plans".into();
-        let mut peer = log.fork();
-        assert!(crate::history_log::record(
-            &mut peer,
-            &serde_json::to_value(&tree).unwrap(),
-            "Grace",
-            2_000,
-        ));
-        log.merge_incoming(&mut peer).unwrap();
-        tree.workspaces[0].strips[0].window_groups.clear();
-        assert!(crate::history_log::record(
-            &mut log,
-            &serde_json::to_value(&tree).unwrap(),
-            "Ada",
-            3_000,
-        ));
+        let mut peer = doc.fork();
+        peer.set_actor(grace.clone());
+        stamp(&mut peer, &tree, 2_000);
+        doc.merge_incoming(&mut peer).unwrap();
 
-        let room = tree.workspaces[0].room();
-        let history = crate::history_log::room_history(log, room);
+        tree.workspaces[0].strips[0].window_groups.clear();
+        stamp(&mut doc, &tree, 3_000);
+
         // The desk the host keeps: what the model writes back reaches it,
         // and the session applies it on its next pass.
         let written: Rc<RefCell<Option<DesktopTree>>> = Rc::new(RefCell::new(None));
         let desk = Rc::clone(&written);
-        let snapshot = ActivitySnapshot::new(tree, history.doc)
-            .unwrap()
-            .committing(Rc::new(move |restored: &DesktopTree| {
+        let snapshot = ActivitySnapshot::of_desktop(tree, doc).committing(Rc::new(
+            move |restored: &DesktopTree| {
                 *desk.borrow_mut() = Some(restored.clone());
-            }));
-        (snapshot, written, history.authors)
+            },
+        ));
+        let authors = std::collections::BTreeMap::from([
+            (ada.to_hex_string(), "Ada".to_owned()),
+            (grace.to_hex_string(), "Grace".to_owned()),
+        ]);
+        (snapshot, written, authors)
     }
 
-    /// A native session's history is the workspace's own desk log, replayed
-    /// into its room: the pane lists what changed there and who changed it.
+    /// A native session's history is the desk's own document: the pane lists
+    /// what changed there and who changed it.
     #[test]
     fn the_native_history_lists_what_changed_in_the_workspace() {
         let (mut snapshot, _written, authors) = native_history();

@@ -1,20 +1,19 @@
 //! The workspace's activity, read from what this device keeps of it: the
-//! desk's own action log ([`crate::desk_history`]), and the records the
-//! workspace's apps keep in the store.
+//! desk's own document ([`crate::desk_doc`]), and the records the workspace's
+//! apps keep in the store.
 //!
-//! The desk is kept as the tree it is ([`crate::desk_layout`]), and every
-//! change it is kept at is written into the log with who made it and when.
-//! Reading a workspace's history replays that log into the workspace's room
-//! ([`history_log::room_history`]), which is what the Activity app shows: the
-//! windows opened and closed, the strips renamed, the layouts restored, and
-//! who did each. A record the workspace holds carries its own history in the
-//! store, read here as a detached copy of the document its app writes.
+//! The desk is one automerge document, and every change of it carries who made
+//! it and when. The activity pane reads those changes directly
+//! ([`ActivitySnapshot::of_desktop`]): the windows opened and closed, the
+//! strips renamed, the layouts restored, and who did each. A record the
+//! workspace holds carries its own history in the store, read here as a
+//! detached copy of the document its app writes.
 //!
 //! What the workspace holds is read away from the loop ([`Watched`]): the
 //! records belong to apps this process does not own, and one of them being
 //! slow to read must not hold up a frame. What this device has seen of a
-//! workspace is its own, kept beside the desk ([`HistoryMaps`]): only the
-//! person here marks it, and it never reaches a shared record.
+//! workspace is its own, kept in one file ([`HistoryMaps`]): only the person
+//! here marks it, and it never reaches a shared record.
 //!
 //! The desk's layout is this session's to write, so a change the person
 //! undoes or restores reaches the desk itself: the model hands the workspace
@@ -22,13 +21,12 @@
 //! its own change on the pass after the frame it was made in.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, LoadOptions, OnPartialLoad};
 use durable_store::{DurableStore, StorageKey};
 use serde_json::Value;
@@ -44,8 +42,7 @@ use tilo_files::native::Watched;
 use ui::record::RecordCheckout;
 
 use crate::activity_provider::ActivityWire;
-use crate::desk_history::DeskHistory;
-use crate::kept::Kept;
+use crate::desk_doc::{DeskDoc, Kept};
 use crate::lists::Lists;
 
 /// What this device keeps of its own view of the workspaces' activity: the
@@ -69,17 +66,14 @@ pub(crate) fn now_seconds() -> i64 {
 pub(crate) struct Activity(Rc<Inner>);
 
 struct Inner {
-    /// The desk's changes, and where they are kept.
-    desk: DeskHistory,
+    /// The desk's document, whose changes are its history, and where it is
+    /// kept.
+    desk: DeskDoc,
     /// Who sits here.
     person: String,
     host: Rc<NativeActivityHost>,
     /// The records each room holds, read on a worker of its own.
     rooms: RefCell<HashMap<String, Rc<Watched<Vec<DetachedRecordHistory>>>>>,
-    /// Who each desk change's actor is, from the last read.
-    authors: RefCell<BTreeMap<String, String>>,
-    /// Some retained desk change exceeded the replay budget.
-    partial: Cell<bool>,
     /// Where the records are read from; `None` on a session that keeps no
     /// records store.
     store: Option<PathBuf>,
@@ -106,8 +100,9 @@ struct Inner {
 }
 
 impl Activity {
-    /// This session's activity: the desk's log under `state` (kept in memory
-    /// alone without one), the records under `store`, and the person here.
+    /// This session's activity: the desk's document under `state` (kept in
+    /// memory alone without one), the records under `store`, and the person
+    /// here.
     pub(crate) fn new(
         state: Option<&Path>,
         person: String,
@@ -117,7 +112,7 @@ impl Activity {
         let woken = Arc::new(AtomicBool::new(false));
         let requests = activity_requests(Arc::clone(&woken));
         Self(Rc::new(Inner {
-            desk: DeskHistory::load(state),
+            desk: DeskDoc::load(state, &person),
             host: Rc::new(NativeActivityHost {
                 person: person.clone(),
                 maps: HistoryMaps::load(state),
@@ -125,8 +120,6 @@ impl Activity {
             }),
             person,
             rooms: RefCell::default(),
-            authors: RefCell::default(),
-            partial: Cell::new(false),
             store,
             records_moved: Arc::default(),
             restored: RefCell::default(),
@@ -136,6 +129,13 @@ impl Activity {
             wire: RefCell::default(),
             served: Cell::default(),
         }))
+    }
+
+    /// The desk this device left, as its document holds it: what the session
+    /// starts from, and what became of the desk on disk when this build did
+    /// not open it.
+    pub(crate) fn opened_desk(&self) -> Kept {
+        self.0.desk.opened()
     }
 
     /// What the windows ask of the activity and follow.
@@ -163,10 +163,17 @@ impl Activity {
         }
     }
 
-    /// Record the desk as `desk` holds it, at `time` (seconds since the
-    /// epoch), by the person here.
-    pub(crate) fn record_desk(&self, desk: &Value, time: i64) {
-        self.0.desk.record(desk, &self.0.person, time);
+    /// Record the desk as `tree` holds it, at `time` (seconds since the
+    /// epoch), by the person here: one change of the desk's document, and the
+    /// document kept. Whether the desk changed at all.
+    pub(crate) fn record_desk(&self, tree: &DesktopTree, time: i64) -> bool {
+        self.0.desk.record(tree, time)
+    }
+
+    /// [`Self::record_desk`], and write even how the desk looks now: what ends
+    /// the session, which the next one starts from.
+    pub(crate) fn record_desk_now(&self, tree: &DesktopTree, time: i64) -> bool {
+        self.0.desk.record_now(tree, time)
     }
 
     /// The workspace a change the model wrote back leaves the desk at, if
@@ -223,17 +230,12 @@ impl HistorySource for Activity {
         tree: &DesktopTree,
         workspace: WorkspaceId,
     ) -> Option<ActivitySnapshot> {
-        // The desk as it stands is the newest change of it: a drag the
-        // session has not written yet is still what the person made.
-        if let Some(desk) = crate::desk_layout::value(tree) {
-            self.record_desk(&desk, now_seconds());
-        }
-        let room = Self::room_of(tree, workspace)?;
-        let history = history_log::room_history(self.0.desk.log().borrow().clone(), room);
-        *self.0.authors.borrow_mut() = history.authors;
-        self.0.partial.set(history.truncated);
-        let mut desktop = tree.clone();
-        desktop.active = workspace;
+        Self::room_of(tree, workspace)?;
+        // The desk as it stands is the newest change of it: a workspace made
+        // this pass is in the document the pane reads, not only in the tree.
+        self.record_desk(tree, now_seconds());
+        let mut snapshot = ActivitySnapshot::of_desktop(tree.clone(), self.0.desk.document());
+        snapshot.desktop.active = workspace;
         let restored = Rc::downgrade(&self.0);
         let commit = Rc::new(move |tree: &DesktopTree| {
             let Some(inner) = restored.upgrade() else {
@@ -241,9 +243,7 @@ impl HistorySource for Activity {
             };
             *inner.restored.borrow_mut() = Some(tree.clone());
         });
-        ActivitySnapshot::new(desktop, history.doc)
-            .ok()
-            .map(|snapshot| snapshot.committing(commit))
+        Some(snapshot.committing(commit))
     }
 
     fn record_histories(
@@ -266,21 +266,19 @@ impl HistorySource for Activity {
             .collect()
     }
 
-    fn history_is_partial(&self) -> bool {
-        self.0.partial.get()
-    }
-
     fn host(&self) -> Rc<dyn ActivityHost> {
         Rc::clone(&self.0.host) as Rc<dyn ActivityHost>
     }
 
     fn register_authors(&self, authors: &mut ui::AuthorDirectory) {
-        let theirs = self.0.authors.borrow().clone();
-        history_log::register_authors(authors, &theirs, &|_| None);
+        // The names the desk's changes are known by: the person here, and
+        // whoever the desk came from when it was read into its document.
+        let known = self.0.desk.authors();
+        history_log::register_authors(authors, &known, &|_| None);
         // The changes this device made are the person's own: they read as
         // presence shows them here, not as another participant.
         let mine = self.0.person.clone();
-        for (actor, author) in &theirs {
+        for (actor, author) in &known {
             if *author == mine {
                 authors.register_local_identity(actor);
             }
@@ -290,7 +288,7 @@ impl HistorySource for Activity {
     fn revision(&self) -> u64 {
         use std::hash::{Hash as _, Hasher as _};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.0.desk.log().borrow().base_heads().hash(&mut hasher);
+        self.0.desk.heads().hash(&mut hasher);
         self.0
             .records_moved
             .load(Ordering::Acquire)
@@ -491,26 +489,26 @@ impl ActivityHost for NativeActivityHost {
     }
 }
 
-/// This device's private view of the workspaces' activity, kept in one file
-/// beside the desk.
+/// This device's private view of the workspaces' activity, kept in one file.
 ///
-/// Read once, when the session starts, and written by a worker ([`Kept`]).
+/// Read once, when the session starts, and written by the state writer
+/// ([`tilo_durable_writer`]).
 struct HistoryMaps {
     known: RefCell<serde_json::Map<String, Value>>,
-    file: Option<Kept>,
+    path: Option<PathBuf>,
 }
 
 impl HistoryMaps {
     fn load(state: Option<&Path>) -> Self {
-        let file = state.map(|state| Kept::new(state.join("tilo").join(VIEW_FILE)));
-        let known = file
-            .as_ref()
-            .and_then(Kept::read)
+        let path = state.map(|state| state.join("tilo").join(VIEW_FILE));
+        let known = path
+            .as_deref()
+            .and_then(|path| std::fs::read(path).ok())
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
         Self {
             known: RefCell::new(known),
-            file,
+            path,
         }
     }
 
@@ -542,10 +540,10 @@ impl HistoryMaps {
         );
         let mut known = self.known.borrow_mut();
         known.insert(key.to_owned(), map);
-        if let Some(file) = &self.file
+        if let Some(path) = &self.path
             && let Ok(bytes) = serde_json::to_vec(&*known)
         {
-            file.save(bytes);
+            tilo_durable_writer::keep(path.clone(), bytes);
         }
     }
 }
@@ -620,8 +618,12 @@ mod tests {
             }
         }
 
-        /// One pass of the desk: what the windows asked is answered.
+        /// One pass of the desk: what the windows asked is answered. The desk
+        /// as it stood is recorded first, as the pass before this one
+        /// recorded it, so what this pass draws is what the desk is.
         fn frame(&mut self) {
+            let tree = self.handle.read(Clone::clone);
+            self.activity.record_desk(&tree, now_seconds());
             ui::Widget::update(&mut self.surface, &AutoCommit::new(), &ui::automerge::ROOT);
         }
 

@@ -76,6 +76,31 @@ impl crate::Shared {
     }
 }
 
+/// The apps that run now, in the states the portal asks of them: the app
+/// in front is in use, the ones behind it only run.
+pub(crate) fn running_apps(compositor: &tilo_compositor::Compositor) -> Vec<(String, u32)> {
+    use tilo_portal::background::{ACTIVE, RUNNING};
+    let focused = compositor.focused_window().and_then(|window| window.app_id);
+    let mut apps: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    for (window, _) in compositor.windows() {
+        let Some(app_id) = window.app_id else {
+            continue;
+        };
+        let state = if focused.as_deref() == Some(app_id.as_str()) {
+            ACTIVE
+        } else {
+            RUNNING
+        };
+        // An app showing more than one window is as in use as its best.
+        let state = apps
+            .get(&app_id)
+            .copied()
+            .map_or(state, |seen| seen.max(state));
+        apps.insert(app_id, state);
+    }
+    apps.into_iter().collect()
+}
+
 /// Take the choices `document` carries into `prefs`, for the layer drawing
 /// from them.
 pub(crate) fn follow_prefs(prefs: &Prefs, document: &Map<String, Value>) {

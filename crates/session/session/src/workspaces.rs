@@ -876,7 +876,7 @@ impl Personal {
         let Ok(bytes) = postcard::to_allocvec(&stored) else {
             return;
         };
-        write_if_changed(&path, &bytes);
+        keep(&path, &bytes);
     }
 }
 
@@ -901,19 +901,11 @@ fn reorder(tree: &mut DesktopTree, rooms: &[RoomId]) -> bool {
     before != after
 }
 
-/// Write the list where it is kept, unless what is there is what this writes.
-fn write_if_changed(path: &Path, bytes: &[u8]) {
-    if std::fs::read(path).is_ok_and(|current| current == bytes) {
-        return;
-    }
-    if let Some(parent) = path.parent()
-        && std::fs::create_dir_all(parent).is_err()
-    {
-        return;
-    }
-    if let Err(error) = tilo_files::native::atomic::write_with_mode(path, bytes, 0o600) {
-        tracing::warn!(%error, path = %path.display(), "the person's workspaces could not be saved");
-    }
+/// Keep the list where it is kept: the state writer takes the write, so a pass
+/// that changes it does not wait for the disk, and the latest list wins over
+/// one still being written.
+fn keep(path: &Path, bytes: &[u8]) {
+    tilo_durable_writer::keep(path.to_path_buf(), bytes.to_vec());
 }
 
 /// The person's own workspaces as this computer can keep them: nothing when
@@ -1181,6 +1173,18 @@ mod tests {
     use tilo_desktop_model::{IdMinter, Workspace, WorkspaceId};
     use tilo_desktop_surface::seed_tree;
 
+    /// The list as a later session opens it: a session flushes its writes
+    /// before it ends, and opening here stands for that start.
+    fn open(identity: tilo_network_actor::HostIdentity, state: Option<&Path>) -> Personal {
+        written();
+        Personal::open(identity, state)
+    }
+
+    /// Wait for the state writer to write what it was handed.
+    fn written() {
+        tilo_durable_writer::global().flush();
+    }
+
     /// A device of the person's, certified for their own root key.
     fn identity(user: u8, device: u8, label: &str) -> tilo_network_actor::HostIdentity {
         let person = ed25519_dalek::SigningKey::from_bytes(&[user; 32]);
@@ -1255,7 +1259,7 @@ mod tests {
         let (room, name) = (*room, name.clone());
         let identity = identity(0x11, 0x21, "The laptop");
         let device = identity.device_cert.device_public_key;
-        let mut personal = Personal::open(identity.clone(), Some(state.path()));
+        let mut personal = open(identity.clone(), Some(state.path()));
         assert!(
             personal.publish_local(&desk),
             "the workspace the desk starts from is the person's own"
@@ -1271,6 +1275,7 @@ mod tests {
 
         // Kept beside the desk: the next session starts with the same list
         // and has nothing to write.
+        written();
         let kept = state.path().join("tilo").join(FILE);
         let mode = std::os::unix::fs::PermissionsExt::mode(
             &std::fs::metadata(&kept)
@@ -1278,7 +1283,7 @@ mod tests {
                 .permissions(),
         );
         assert_eq!(mode & 0o777, 0o600, "the person's list is theirs alone");
-        let mut reopened = Personal::open(identity, Some(state.path()));
+        let mut reopened = open(identity, Some(state.path()));
         assert!(!reopened.publish_local(&desk), "nothing changed since");
         assert_eq!(
             reopened.agreed, personal.agreed,
@@ -1293,7 +1298,7 @@ mod tests {
         let a = desk();
         let a_identity = identity(0x11, 0x21, "The laptop");
         let a_device = a_identity.device_cert.device_public_key;
-        let mut a_list = Personal::open(a_identity.clone(), Some(a_state.path()));
+        let mut a_list = open(a_identity.clone(), Some(a_state.path()));
         a_list.publish_local(&a);
         let a_workspaces = on_desk(&a);
         let [(a_room, a_name)] = a_workspaces.as_slice() else {
@@ -1305,7 +1310,7 @@ mod tests {
         let b = desk();
         let b_identity = identity(0x11, 0x22, "The desktop");
         let b_device = b_identity.device_cert.device_public_key;
-        let mut b_list = Personal::open(b_identity, Some(b_state.path()));
+        let mut b_list = open(b_identity, Some(b_state.path()));
         b_list.publish_local(&b);
         assert!(
             !b_list.covered_by(&snapshot),
@@ -1357,7 +1362,7 @@ mod tests {
         let own_room = *own_room;
         let joined = RoomId::parse("1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e").expect("a room");
         open_here(&desk, joined, "Book club");
-        let mut personal = Personal::open(identity(0x11, 0x21, "The laptop"), Some(state.path()));
+        let mut personal = open(identity(0x11, 0x21, "The laptop"), Some(state.path()));
         personal.joined(joined);
         personal.publish_local(&desk);
         assert!(listed(&personal, own_room).is_some(), "their own is listed");
@@ -1375,7 +1380,7 @@ mod tests {
         let identity = identity(0x11, 0x21, "The laptop");
         let other = RoomId::parse("1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e").expect("a room");
         open_here(&desk, other, "Book club");
-        let mut personal = Personal::open(identity.clone(), Some(state.path()));
+        let mut personal = open(identity.clone(), Some(state.path()));
         personal.publish_local(&desk);
         assert!(listed(&personal, other).is_some(), "both are listed");
 
@@ -1389,7 +1394,7 @@ mod tests {
             None,
             "a workspace taken off this desk is gone from the list"
         );
-        let mut reopened = Personal::open(identity, Some(state.path()));
+        let mut reopened = open(identity, Some(state.path()));
         assert!(!reopened.publish_local(&desk));
         assert_eq!(reopened.agreed.len(), 1, "and it is not brought back");
     }
@@ -1400,13 +1405,13 @@ mod tests {
         let b_state = tempfile::tempdir().expect("a state directory");
         let a = desk();
         let a_identity = identity(0x11, 0x21, "The laptop");
-        let mut a_list = Personal::open(a_identity.clone(), Some(a_state.path()));
+        let mut a_list = open(a_identity.clone(), Some(a_state.path()));
         let other = RoomId::parse("1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e").expect("a room");
         open_here(&a, other, "Book club");
         a_list.publish_local(&a);
 
         let b = desk();
-        let mut b_list = Personal::open(identity(0x11, 0x22, "The desktop"), Some(b_state.path()));
+        let mut b_list = open(identity(0x11, 0x22, "The desktop"), Some(b_state.path()));
         b_list
             .merge(
                 &a_list.snapshot().expect("the list is signed"),
@@ -1451,7 +1456,7 @@ mod tests {
         let b_state = tempfile::tempdir().expect("a state directory");
         let a = desk();
         let a_identity = identity(0x11, 0x21, "The laptop");
-        let mut a_list = Personal::open(a_identity.clone(), Some(a_state.path()));
+        let mut a_list = open(a_identity.clone(), Some(a_state.path()));
         a_list.publish_local(&a);
         let a_workspaces = on_desk(&a);
         let [(a_room, _)] = a_workspaces.as_slice() else {
@@ -1462,7 +1467,7 @@ mod tests {
         let b = desk();
         let b_identity = identity(0x11, 0x22, "The desktop");
         let b_device = b_identity.device_cert.device_public_key;
-        let mut b_list = Personal::open(b_identity.clone(), Some(b_state.path()));
+        let mut b_list = open(b_identity.clone(), Some(b_state.path()));
         b_list.publish_local(&b);
         // Each device tells the other what it holds, as the sessions they
         // keep between them do.
@@ -1506,7 +1511,7 @@ mod tests {
             (b_device, false, "The desktop"),
             "the control shows the workspace kept off the desktop"
         );
-        let reopened = Personal::open(a_identity.clone(), Some(a_state.path()));
+        let reopened = open(a_identity.clone(), Some(a_state.path()));
         assert_eq!(
             reopened.device_choices(a_room),
             choices,

@@ -8,7 +8,7 @@
 //! whether it shows on the desk, the lock screen or both.
 //!
 //! Which picture a workspace shows is this device's own record, kept beside
-//! the desk's ([`crate::desk_layout`]): a change that covers one workspace
+//! the desk's ([`crate::desk_doc`]): a change that covers one workspace
 //! leaves the others the pictures they had, and the next session starts
 //! with the same. The settings document itself is the person's on every
 //! device, so it carries the choice, not what each workspace here shows.

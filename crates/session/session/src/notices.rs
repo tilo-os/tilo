@@ -40,7 +40,7 @@ use tilo_notifications_service::{Notification, Notifications, Taken};
 use tilo_system_service::update;
 use ui::format::NaiveDate;
 
-use crate::desk_layout::StateNotice;
+use crate::desk_doc::StateNotice;
 use crate::i18n::{t, t_args};
 use crate::mount::drives::Medium;
 

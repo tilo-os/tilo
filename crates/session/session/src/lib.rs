@@ -42,8 +42,8 @@ pub mod controller_nav;
 pub mod controllers;
 mod controls;
 mod desk;
-mod desk_history;
-mod desk_layout;
+mod desk_doc;
+mod desk_migration;
 mod desk_resource;
 mod desk_restore;
 pub mod desktop_services;
@@ -62,7 +62,6 @@ mod held;
 mod here;
 mod i18n;
 pub mod identity;
-mod kept;
 mod keys;
 mod launches;
 mod lists;
@@ -141,10 +140,12 @@ pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
 pub use tilo_quick_settings::host::PanelHost;
 pub use tilo_service::{Service, Services};
 
+use desk::running_apps;
 use keys::{GuideKeys, Invocations, PressedChords};
 use mount::panels::{KeyContext, mount_controls, mount_device, mount_setup};
 use mount::services::{mount_services, start_action_plane};
-use panels::{Banners, Held};
+use notifications::mount_banners;
+use panels::Held;
 use plane::Plane;
 use search::SessionSearch;
 use setup::Setup;
@@ -183,9 +184,6 @@ const LOCK_SCREEN_GRACE: Duration = Duration::from_millis(500);
 /// that needs more than that is not staying up at all: the machine is better
 /// unlocked than locked behind it.
 const LOCK_SCREEN_TRIES: u32 = 3;
-
-/// How often the desk is written while it changes.
-const KEEP_DESK_EVERY: Duration = Duration::from_secs(2);
 
 /// How warm the night light makes the displays, in kelvin.
 const NIGHT_LIGHT_WARMTH: u32 = 3_400;
@@ -292,15 +290,6 @@ struct Shared {
     /// The running applications' tray items, which the bar shows and whose
     /// clicks the session hands back to the applications.
     tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
-    /// The desk as this device last wrote it, and when, so a desk that keeps
-    /// changing (a drag, a rename) is written once in a while rather than
-    /// every frame.
-    kept: RefCell<Option<(String, Instant)>>,
-    /// The desk as the history last recorded it: what changed since is one
-    /// change of the workspace.
-    recorded: RefCell<Option<serde_json::Value>>,
-    /// Where the desk and its pictures are kept between sessions.
-    state: Option<std::path::PathBuf>,
     /// The pictures the desk shows, by workspace.
     wallpapers: std::sync::Arc<wallpapers::Wallpapers>,
     /// Whether the lock screen offers suspend, restart and shut down.
@@ -612,70 +601,6 @@ impl Shared {
         }
     }
 
-    /// Keep this device's desk as it stands: its workspaces, the windows in
-    /// them and the strips and displays they are laid out on, so the next
-    /// session starts here.
-    fn keep_desk_now(&self) {
-        let tree = self.handle.read(Clone::clone);
-        let Some(value) = desk_layout::value(&tree) else {
-            return;
-        };
-        self.record_desk(&value);
-        let Some(state) = &self.state else {
-            return;
-        };
-        let Some(text) = serde_json::to_string(&value).ok() else {
-            return;
-        };
-        let unchanged = self
-            .kept
-            .borrow()
-            .as_ref()
-            .is_some_and(|(kept, _)| *kept == text);
-        if !unchanged && let Err(error) = desk_layout::save_at(state, &text) {
-            // The next pass tries again: the desk is written when it can
-            // be, not dropped because a write failed.
-            tracing::debug!(%error, "the desk is not kept");
-            return;
-        }
-        *self.kept.borrow_mut() = Some((text, Instant::now()));
-    }
-
-    /// [`Self::keep_desk_now`], once in a while: what the workspace's
-    /// history records still counts every change, since a drag or a rename
-    /// is one change of the workspace however many frames it takes.
-    fn keep_desk(&self) {
-        let tree = self.handle.read(Clone::clone);
-        let Some(value) = desk_layout::value(&tree) else {
-            return;
-        };
-        if !self.record_desk(&value) {
-            return;
-        }
-        let now = Instant::now();
-        if self
-            .kept
-            .borrow()
-            .as_ref()
-            .is_some_and(|(_, at)| now.duration_since(*at) < KEEP_DESK_EVERY)
-        {
-            return;
-        }
-        self.keep_desk_now();
-    }
-
-    /// Record the desk as the workspace's history has it, when it changed
-    /// since the last record: whether it did. The same desk is one change,
-    /// however often it is looked at.
-    fn record_desk(&self, value: &serde_json::Value) -> bool {
-        if self.recorded.borrow().as_ref() == Some(value) {
-            return false;
-        }
-        self.activity.record_desk(value, activity::now_seconds());
-        *self.recorded.borrow_mut() = Some(value.clone());
-        true
-    }
-
     /// Take up what the workspace's history wrote back and what the person
     /// opened from it, and tell the apps following it what moved.
     fn serve_activity(&self) {
@@ -853,33 +778,6 @@ impl Shared {
             other => tracing::debug!(?other, "shortcut the session has no part in yet"),
         }
     }
-}
-
-/// The notification banners, mounted on a layer of their own over the
-/// first output; the desk then shows only the centre of `notices`.
-fn mount_banners(
-    compositor: &mut Compositor,
-    doors: &mut Doors,
-    notices: &tilo_desktop_surface::DesktopNotifications,
-    options: &Options,
-) -> tilo_notification_banners::Link {
-    let banners = tilo_notification_banners::Link::new();
-    match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
-        .and_then(|component| ui::App::from_component(component, (options.presentation)()))
-    {
-        Ok(app) => {
-            let surface = Rc::new(RefCell::new(Banners::new(
-                app,
-                banners.clone(),
-                options.scale,
-            )));
-            compositor.add_host(Box::new(Held(Rc::clone(&surface))));
-            doors.add(surface);
-            notices.show_banners_elsewhere();
-        }
-        Err(error) => tracing::warn!(%error, "notification banners not mounted"),
-    }
-    banners
 }
 
 /// A running session: the compositor and the desktop it hosts.
@@ -1096,9 +994,9 @@ impl Session {
         // it current from the player Quick Settings already reads, so the
         // widget is a view of that one reading.
         let music = tilo_desktop::desk_widgets::DeskMusic::default();
-        // The workspace's activity: the desk's own log, and the records its
-        // apps keep in the store. The desk records into it, the model reads
-        // it, and the apps this session runs reach the same model.
+        // The workspace's activity: the desk's own document, and the records
+        // its apps keep in the store. The desk records into it, the model
+        // reads it, and the apps this session runs reach the same model.
         let activity = activity::Activity::new(
             options.state.as_deref(),
             options.person.clone(),
@@ -1121,22 +1019,18 @@ impl Session {
         // The desk as this device left it: its workspaces, the windows they
         // held, and the apps those windows open again.
         let mut restore = desk_restore::Restore::default();
-        let mut keeps_desk = true;
-        if let Some(state) = options.state.as_deref() {
-            match desk_layout::load_at(state) {
-                desk_layout::Kept::Desk(kept) => {
-                    restore = desk_restore::Restore::of(&kept);
-                    handle.replace_tree(*kept);
-                }
-                // The person's desk is on disk and this session did not open
-                // it: they are looking at a desk that is not theirs, and have
-                // to be told where their own still is.
-                desk_layout::Kept::Refused(refusal) => {
-                    keeps_desk = false;
-                    notices::tell_desk_not_opened(&notices, &refusal);
-                }
-                desk_layout::Kept::None => {}
+        match activity.opened_desk() {
+            desk_doc::Kept::Desk(kept) => {
+                restore = desk_restore::Restore::of(&kept);
+                handle.replace_tree(*kept);
             }
+            // The person's desk is on disk and this session did not open it:
+            // they are looking at a desk that is not theirs, and have to be
+            // told where their own still is.
+            desk_doc::Kept::Refused(refusal) => {
+                notices::tell_desk_not_opened(&notices, &refusal);
+            }
+            desk_doc::Kept::None => {}
         }
         workspaces::publish_host_actions(&handle);
         // What the person's settings say the desk shows: a device that kept
@@ -1540,11 +1434,6 @@ impl Session {
             notices: notices.clone(),
             clock,
             tray,
-            kept: RefCell::new(None),
-            recorded: RefCell::new(None),
-            // A desk this session did not open is never written over: it
-            // keeps nothing, so it cannot be.
-            state: keeps_desk.then(|| options.state.clone()).flatten(),
             wallpapers,
             lock_power: options.lock_power,
             lock_layouts: options.config.keyboard_layouts.clone(),
@@ -2617,29 +2506,4 @@ impl Drop for Session {
         // The desk the person left, written whatever ended the session.
         self.shared.keep_desk_now();
     }
-}
-
-/// The apps that run now, in the states the portal asks of them: the app
-/// in front is in use, the ones behind it only run.
-fn running_apps(compositor: &Compositor) -> Vec<(String, u32)> {
-    use tilo_portal::background::{ACTIVE, RUNNING};
-    let focused = compositor.focused_window().and_then(|window| window.app_id);
-    let mut apps: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
-    for (window, _) in compositor.windows() {
-        let Some(app_id) = window.app_id else {
-            continue;
-        };
-        let state = if focused.as_deref() == Some(app_id.as_str()) {
-            ACTIVE
-        } else {
-            RUNNING
-        };
-        // An app showing more than one window is as in use as its best.
-        let state = apps
-            .get(&app_id)
-            .copied()
-            .map_or(state, |seen| seen.max(state));
-        apps.insert(app_id, state);
-    }
-    apps.into_iter().collect()
 }

@@ -575,12 +575,13 @@ impl RoomActivityPane {
                 t
             },
             // A workspace is a cluster of windows saved/reopened collaboratively.
-            // Which workspace shows is the device's view, written on every
-            // switch: no history, and no place in the window, which switching
-            // back and forth used to fill until nothing anyone did was left.
+            // Which workspace, strip or window shows, and how wide it is, is
+            // the device's view, written on every switch and drag: no
+            // history, and no place in the window, which switching back and
+            // forth used to fill until nothing anyone did was left.
             source: HistorySource::new()
                 .with_artifact_kind(ArtifactKind::Cluster)
-                .passing_over(tilo_desktop_model::desktop_doc::only_sets_active),
+                .passing_over(tilo_desktop_model::desktop_doc::only_moves_the_view),
             revert_intent,
             name_intent,
             undo_intent,
@@ -3295,6 +3296,11 @@ struct PatchCounts {
     tabs_removed: usize,
     tab_titles: Vec<String>,
     groups_moved: usize,
+    /// Groups the change put in a strip's `window_groups` list, and took out
+    /// of one: a group added or removed is a layout change, but a group
+    /// taken out and not put back is a window closed.
+    groups_added: usize,
+    groups_removed: usize,
     workspaces_added: usize,
     workspaces_removed: usize,
     geometry: usize,
@@ -3389,9 +3395,11 @@ impl PatchCounts {
             }
             (automerge::PatchAction::Insert { values, .. }, "window_groups") => {
                 self.groups_moved = self.groups_moved.saturating_add(values.len());
+                self.groups_added = self.groups_added.saturating_add(values.len());
             }
             (automerge::PatchAction::DeleteSeq { length, .. }, "window_groups") => {
                 self.groups_moved = self.groups_moved.saturating_add(*length);
+                self.groups_removed = self.groups_removed.saturating_add(*length);
             }
             (automerge::PatchAction::Insert { values, .. }, "workspaces") => {
                 self.workspaces_added = self.workspaces_added.saturating_add(values.len());
@@ -3401,6 +3409,19 @@ impl PatchCounts {
             }
             _ => {}
         }
+    }
+
+    /// Groups the change took out of strips and did not put back: a group
+    /// closes with its last window, so each is a window closed. A group
+    /// moved is taken out and put back, and is no close.
+    fn closed_groups(&self) -> usize {
+        self.groups_removed.saturating_sub(self.groups_added)
+    }
+
+    /// The windows the change closed: the tabs it removed, and the groups it
+    /// closed with their last window.
+    fn closed_windows(&self) -> usize {
+        self.tabs_removed.saturating_add(self.closed_groups())
     }
 
     /// The highest-priority signal wins — governance beats structural
@@ -3486,9 +3507,9 @@ impl PatchCounts {
             };
             return Some((s, EntryKind::Text));
         }
-        if self.tabs_removed > 0 {
+        if self.closed_windows() > 0 {
             return Some((
-                counted("activity-event-closed-windows", self.tabs_removed),
+                counted("activity-event-closed-windows", self.closed_windows()),
                 EntryKind::Delete,
             ));
         }
@@ -3554,7 +3575,7 @@ impl PatchCounts {
         if self.tabs_added > 0 {
             return RoomEventKind::View;
         }
-        if self.tabs_removed > 0 {
+        if self.closed_windows() > 0 {
             return RoomEventKind::Change;
         }
         if self.groups_moved > 0 || self.geometry > 0 || self.active_switched {
