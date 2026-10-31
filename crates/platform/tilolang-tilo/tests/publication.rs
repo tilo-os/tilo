@@ -11,7 +11,7 @@ use tilo_resource::{JsonSchema, Model, Replica as Record, resource};
 use tilolang_runtime::meta::Meta;
 use tilolang_tilo::action::DynAction;
 use tilolang_tilo::meta::MetaExt as _;
-use tilolang_tilo::publish::{PlanRequest, Planner, action_type};
+use tilolang_tilo::publish::{ActionTypes, PlanRequest, Planner, action_type, publish_record};
 use tilolang_tilo::surface::package_surfaces;
 
 use crate::fixtures::Replica;
@@ -37,6 +37,13 @@ root Shelf
 default view main for Shelf
 
 view main(s: Shelf) {
+  page {
+    text(s.name)
+  }
+}
+
+/// Its items, as a list of their names.
+view compact(s: Shelf) {
   page {
     text(s.name)
   }
@@ -266,4 +273,52 @@ fn the_planner_takes_the_arguments_as_published() {
     }});
     let refused = plan(&id("pin"), wrong).unwrap_err();
     assert!(refused.contains(ITEM_KIND), "{refused}");
+}
+
+/// A resource says which views show it, so a host that does not run the app can list them and
+/// mount one: the package's offered views of that type, each opened through the resource's own
+/// `open`, with the type's default view the primary one.
+#[test]
+fn a_resource_lists_the_views_that_show_it() {
+    let meta = shapes();
+    let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
+    let types = ActionTypes::new(&meta, &planner);
+    let shelf = publish_record(&types, "Shelf", "s", "My shelf");
+    let id = |name: &str| {
+        meta.views
+            .iter()
+            .find(|view| view.name == name)
+            .unwrap()
+            .id
+            .clone()
+    };
+    let (main, compact) = (id("main"), id("compact"));
+    let listed: Vec<String> = shelf.views.iter().map(|view| view.id.clone()).collect();
+    assert_eq!(
+        listed,
+        [main.clone(), compact.clone()],
+        "the package's views of the type, as it declares them"
+    );
+    let by_id = |id: &str| shelf.views.iter().find(|view| view.id == id).unwrap();
+    let (first, second) = (by_id(&main), by_id(&compact));
+    assert!(
+        first.primary && !second.primary,
+        "the type's default view is the primary one"
+    );
+    assert_eq!(first.label, "main");
+    assert_eq!(
+        second.description.as_deref(),
+        Some("Its items, as a list of their names.")
+    );
+    assert!(
+        shelf.views.iter().all(|view| view.open_action == "open")
+            && shelf.actions.iter().any(|action| action.id == "open"),
+        "each view opens through the resource's own open"
+    );
+    for view in &shelf.views {
+        assert_eq!(view.validate(&shelf), Vec::<String>::new(), "{view:?}");
+    }
+    // A view is listed on the type it shows: an item has none of its own.
+    let item = publish_record(&types, "Item", "i", "An item");
+    assert!(item.views.is_empty(), "{:?}", item.views);
 }

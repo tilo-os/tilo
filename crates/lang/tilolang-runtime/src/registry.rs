@@ -62,6 +62,9 @@ pub struct Package {
     pub hash: ModuleHash,
     pub meta: Meta,
     pub types: Vec<Rc<TypeInfo>>,
+    /// The description of an app this runtime does not run: its types, actions and views, and
+    /// no code to run them (`Runtime::load_foreign`).
+    pub foreign: bool,
 }
 
 impl Package {
@@ -74,7 +77,26 @@ impl Package {
             .iter()
             .map(|t| type_info(t, &meta.app).map(Rc::new))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { hash, meta, types })
+        Ok(Self {
+            hash,
+            meta,
+            types,
+            foreign: false,
+        })
+    }
+
+    /// The description of an app this runtime does not run: its types, actions and views, and
+    /// no code. Its resources are read from the readings its app publishes and its actions
+    /// invoked at its own door (`crate::delegate`).
+    ///
+    /// # Errors
+    ///
+    /// As [`Package::new`].
+    pub fn foreign(hash: ModuleHash, meta: Meta) -> Result<Self, String> {
+        Ok(Self {
+            foreign: true,
+            ..Self::new(hash, meta)?
+        })
     }
 
     pub fn type_by_id(&self, id: &str) -> Option<&Rc<TypeInfo>> {
