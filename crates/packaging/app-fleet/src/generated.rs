@@ -113,7 +113,11 @@ pub(super) const APPS: &[FleetApp] = &[
             "webseite",
             "surfen",
         ],
-        resource_types: &[],
+        resource_types: &[
+            ("browser.address-book", "Address book"),
+            ("browser.browsing-history", "Browsing history"),
+            ("browser.personal-bookmarks", "Personal bookmarks"),
+        ],
         actions: &[],
     },
     FleetApp {
@@ -228,7 +232,10 @@ pub(super) const APPS: &[FleetApp] = &[
             "leinwand",
             "tafel",
         ],
-        resource_types: &[("canvas.artwork", "Artwork")],
+        resource_types: &[
+            ("canvas.artwork", "Artwork"),
+            ("canvas.recent-artworks", "Recent artworks"),
+        ],
         actions: &[],
     },
     FleetApp {
@@ -236,7 +243,7 @@ pub(super) const APPS: &[FleetApp] = &[
         name: "Chat",
         category: "Network",
         platforms: &["linux", "macos", "web"],
-        tagline: "Rooms for messages, calls and shared work",
+        tagline: "Workspaces for messages, calls and shared work",
         names: &[],
         keywords: &[
             "messenger",
@@ -449,7 +456,7 @@ pub(super) const APPS: &[FleetApp] = &[
         name: "Discord",
         category: "Network",
         platforms: &["linux"],
-        tagline: "Bridges a Discord server and a Tilo room both ways",
+        tagline: "Bridges a Discord server and a Tilo workspace both ways",
         names: &[],
         keywords: &[
             "voice chat",
@@ -559,7 +566,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "leser",
             "e-reader",
         ],
-        resource_types: &[("ebook.library", "Books")],
+        resource_types: &[("ebook.library", "Books"), ("ebook.files", "Book files")],
         actions: &[],
     },
     FleetApp {
@@ -784,7 +791,10 @@ pub(super) const APPS: &[FleetApp] = &[
             "elektronische post",
             "e-mails",
         ],
-        resource_types: &[],
+        resource_types: &[
+            ("mail.copies", "Mail on your devices"),
+            ("mail.trusted-senders", "Trusted senders"),
+        ],
         actions: &[],
     },
     FleetApp {
@@ -1068,7 +1078,7 @@ pub(super) const APPS: &[FleetApp] = &[
         name: "Poker",
         category: "Game",
         platforms: &["linux", "macos", "web"],
-        tagline: "Texas hold'em with everyone in the room",
+        tagline: "Texas hold'em with everyone in the workspace",
         names: &[],
         keywords: &[
             "poker",
@@ -1655,7 +1665,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "video abspielen",
             "untertitel",
         ],
-        resource_types: &[],
+        resource_types: &[("video-player.recent", "Recent videos")],
         actions: &[],
     },
     FleetApp {
