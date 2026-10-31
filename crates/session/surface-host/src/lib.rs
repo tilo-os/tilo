@@ -14,7 +14,7 @@ mod door;
 mod frames;
 mod widget;
 
-pub use desktop::{DeskGesture, DesktopHost, StripPolicy, desktop, desktop_with};
+pub use desktop::{DeskGesture, DesktopHost, StripPolicy, WindowObserver, desktop, desktop_with};
 pub use door::{Doors, Published, Shared, through_door};
 pub use widget::WidgetHost;
 

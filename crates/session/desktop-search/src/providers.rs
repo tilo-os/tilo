@@ -5,6 +5,7 @@
 
 #[cfg(feature = "catalogue")]
 pub mod catalogue;
+pub mod downloaded;
 #[cfg(feature = "indexes")]
 pub mod files;
 pub mod host_apps;

@@ -21,15 +21,18 @@ use crate::lists::{AppLists, Lists};
 use crate::records::Records;
 
 use tilo_actions::DoorError;
+use tilo_actions::remote::downloaded_apps as downloaded_wire;
 use tilo_actions::remote::{
     RemoteActionTarget, application_action_target, application_open_target,
 };
+use tilo_app_launch::downloaded as registry;
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::files_index::FilesIndex;
 use tilo_desktop_search::indexed::IndexedContent;
 use tilo_desktop_search::preferences;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::catalogue::StoreCatalogue;
+use tilo_desktop_search::providers::downloaded::Downloaded;
 use tilo_desktop_search::providers::files::{FileNames, Files, file_uri};
 use tilo_desktop_search::providers::host_apps::{self, HostApps};
 use tilo_desktop_search::providers::jobs::{JobEntry, Jobs};
@@ -111,6 +114,15 @@ struct Kept {
     room: Option<(String, Rc<Settings>, Rc<StoreCatalogue>)>,
 }
 
+/// The programs the person downloaded, as the registry last read them, and
+/// the session's published actions for them: the apps, the offers, and what
+/// a row whose file is gone runs.
+#[derive(Default)]
+struct DownloadedRows {
+    reading: downloaded_wire::DownloadedApps,
+    published: Vec<tilo_actions::ActionDescriptor>,
+}
+
 /// The session's part in the desk's search.
 pub(crate) struct SessionSearch {
     lists: Lists,
@@ -138,6 +150,8 @@ pub(crate) struct SessionSearch {
     /// The workspaces the desk shows, by room and the name it gives them:
     /// what a row of another workspace says.
     workspaces: RefCell<Vec<(String, String)>>,
+    /// The downloaded programs, as of the last reading of the registry.
+    downloaded: RefCell<DownloadedRows>,
 }
 
 /// The resource of the section keeping search's history.
@@ -189,12 +203,19 @@ impl SessionSearch {
             open_tabs: RefCell::default(),
             notifications: RefCell::default(),
             workspaces: RefCell::default(),
+            downloaded: RefCell::default(),
         }
     }
 
-    /// What the session publishes now, and the windows open: read after
-    /// each frame, outside the desktop's trees.
-    pub(crate) fn observe(&self, own: &[tilo_actions::ResourceSpec], open_tabs: Vec<u64>) {
+    /// What the session publishes now, the windows open and the downloaded
+    /// programs as the registry reads them: read after each frame, outside
+    /// the desktop's trees.
+    pub(crate) fn observe(
+        &self,
+        own: &[tilo_actions::ResourceSpec],
+        open_tabs: Vec<u64>,
+        downloaded: Option<downloaded_wire::DownloadedApps>,
+    ) {
         *self.notifications.borrow_mut() = own
             .iter()
             .find(|resource| {
@@ -215,6 +236,20 @@ impl SessionSearch {
         });
         *self.own.borrow_mut() = published;
         *self.open_tabs.borrow_mut() = open_tabs;
+        if let Some(reading) = downloaded {
+            let published = self
+                .own
+                .borrow()
+                .iter()
+                .filter(|action| {
+                    let resource = action.address.resource.as_str();
+                    resource == registry::RESOURCE
+                        || resource.starts_with(downloaded_wire::APP_PREFIX)
+                })
+                .cloned()
+                .collect();
+            *self.downloaded.borrow_mut() = DownloadedRows { reading, published };
+        }
     }
 
     /// The workspaces this device shows, by room and the name the desk gives
@@ -519,6 +554,14 @@ impl SearchHost for SessionSearch {
             Box::new(Waiting::new(room, self.notifications.borrow().clone())),
             Box::new(continue_places),
         ];
+        {
+            let downloaded = self.downloaded.borrow();
+            sources.push(Box::new(Downloaded::new(
+                room,
+                downloaded.reading.clone(),
+                &downloaded.published,
+            )));
+        }
         if let Some(content) = &kept.content {
             sources.push(Box::new(Rc::clone(content)));
         }

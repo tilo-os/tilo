@@ -60,3 +60,10 @@ search-source-records = Records
 search-source-jobs = Running tasks
 search-continue-in-workspace = in { $workspace }
 search-continue-in-another-workspace = in another workspace
+# What the person downloaded: the programs in their apps and the ones running
+# now that no app directory lists yet.
+search-downloaded-appimage = AppImage
+search-downloaded-program = Program
+search-downloaded-missing = The file is gone
+search-downloaded-locate = Locate { $name }
+search-downloaded-add = Add { $name } to apps

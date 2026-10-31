@@ -39,6 +39,7 @@ mod directory;
 mod display_confirm;
 mod display_settings;
 pub mod displays;
+mod downloaded;
 mod env;
 mod i18n;
 pub mod identity;
@@ -651,7 +652,14 @@ impl Shared {
         });
         self.record_places(&tabs);
         let open_tabs = tabs.iter().map(|(tab, ..)| *tab).collect();
-        self.search.observe(&self.doors.resources(), open_tabs);
+        // The downloaded programs, as their registry publishes them: search
+        // lists them from the one registry the app sheets read too.
+        let downloaded = self
+            .doors
+            .read(tilo_app_launch::downloaded::RESOURCE)
+            .and_then(|reading| serde_json::from_value(reading).ok());
+        self.search
+            .observe(&self.doors.resources(), open_tabs, downloaded);
         self.keep_history();
     }
 
@@ -1477,6 +1485,11 @@ impl Session {
         if let Some(launch) = &options.launch {
             launch.lend_doors(Rc::clone(&window_doors));
         }
+
+        // The programs the person downloaded: the registry takes the
+        // windows the desk gives a tab as they appear, so one that names no
+        // application directory is offered the first time it shows itself.
+        downloaded::install(&mut options, &mut policy);
         let mut compositor = start(Box::new(policy))?;
         // A session in a window of another desktop runs no idle timers: that
         // desktop owns idle, blanking, locking and suspend.
