@@ -1,0 +1,188 @@
+//! What an origin derives is never saved to the room record: the clock, the desk, the device's
+//! state are written into the store's unsaved layer, read at once, and gone at the next start,
+//! when the origin writes them again. A change of one reaches the views and leaves no change
+//! behind to be committed, sent or replayed.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "test assertions"
+)]
+
+use automerge::AutoCommit;
+use tilo_actions::ActionInvoker;
+use tilolang_runtime::Principal;
+use tilolang_runtime::origin::OriginWrite;
+use tilolang_runtime::value::{ResourceRef, Value};
+use tilolang_tilo::action::DynAction;
+use tilolang_tilo::host::Host;
+use tilolang_tilo::record::DynValue;
+
+/// A package whose root holds a kind its origin derives (`session.desk`).
+const SHELL: &str = r#"app so.tilo.test.shell "Shell"
+
+type Desk (origin: session.desk) {
+  clock: Text merge register
+  workspace: Text merge register
+  workspaces: Collection<Workspace>
+}
+
+type Workspace (origin: session.workspace) {
+  key: Text merge register
+  name: Text merge register (title)
+}
+
+root Desk
+
+default view bar for Desk
+
+view bar(d: Desk) {
+  row {
+    text(d.clock)
+    text(d.workspace)
+  }
+}
+"#;
+
+const SHELL_IDS: &str = "";
+
+/// A host over a fresh record, with the shell package loaded (its ids made fresh).
+fn host() -> (Host, AutoCommit) {
+    let doc = AutoCommit::new();
+    let host = Host::new(&doc, Principal::new("ada"), || None).unwrap();
+    host.load_builtin(SHELL, SHELL_IDS).unwrap();
+    (host, doc)
+}
+
+/// The heads of `doc`, as text: equal heads say nothing was written to it.
+fn heads(doc: &mut AutoCommit) -> String {
+    doc.get_heads()
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Commit through the executor every action the host queued, as the door does for a window.
+fn commit(host: &Host, doc: &mut AutoCommit) {
+    for committed in host.take_committed() {
+        apply(host, doc, &committed.action);
+    }
+}
+
+fn apply(_host: &Host, doc: &mut AutoCommit, action: &DynAction) {
+    let context = tilo_actions::ActionContext::for_resource(
+        action.resources().first().copied().unwrap_or("room"),
+        &action.kind,
+        &action.kind,
+    )
+    .with_app("so.tilo.lang", "tilolang")
+    .with_invoker(ActionInvoker::actor("ada"));
+    tilo_actions::apply_local_with_context(
+        doc,
+        action,
+        action.encode().unwrap(),
+        Some(b"ada"),
+        context,
+    )
+    .unwrap();
+    doc.commit();
+}
+
+/// The field id of `name` in the shell's `Desk` type.
+fn desk_field(host: &Host, name: &str) -> String {
+    let types = tilolang_tilo::origin::origin_types(
+        &host.package("so.tilo.test.shell").unwrap().meta,
+        "session",
+    );
+    types
+        .iter()
+        .find(|t| t.kind == "session.desk")
+        .unwrap()
+        .fields
+        .iter()
+        .find(|(n, _)| n.as_str() == name)
+        .unwrap()
+        .1
+        .clone()
+}
+
+/// Write the desk's clock through its origin, as the session does each minute.
+fn write_clock(host: &Host, desk: &ResourceRef, clock: &str) {
+    host.runtime()
+        .apply_origin(
+            "session",
+            vec![OriginWrite::Set {
+                target: desk.clone(),
+                fields: vec![(desk_field(host, "clock"), Value::Text(clock.to_owned()))],
+            }],
+            Some("2026-10-31T12:00:00Z".to_owned()),
+        )
+        .unwrap();
+}
+
+fn clock_of(host: &Host, desk: &ResourceRef) -> Option<DynValue> {
+    host.store()
+        .record(&desk.doc)
+        .unwrap()
+        .get(&desk_field(host, "clock"))
+        .cloned()
+}
+
+#[test]
+fn a_session_origin_update_writes_nothing_to_the_record() {
+    let (host, mut doc) = host();
+    // The desk is a root of a derived kind: made in the unsaved layer, so making it writes
+    // nothing to the record either.
+    let before_root = heads(&mut doc);
+    let desk = host.root_of("so.tilo.test.shell").unwrap();
+    commit(&host, &mut doc);
+    assert_eq!(
+        heads(&mut doc),
+        before_root,
+        "the derived root is made in the unsaved layer: the record is untouched"
+    );
+
+    // A minute turns: the origin writes the clock.
+    let before = heads(&mut doc);
+    write_clock(&host, &desk, "12:01");
+    commit(&host, &mut doc);
+    assert_eq!(
+        heads(&mut doc),
+        before,
+        "a derived update is not committed: the record's heads do not move"
+    );
+    // ... and the shell reads what the origin wrote, at once.
+    assert_eq!(
+        clock_of(&host, &desk),
+        Some(DynValue::Register(serde_json::json!("12:01"))),
+        "the view reads the update from the unsaved layer"
+    );
+}
+
+#[test]
+fn a_derived_update_survives_the_record_moving_on() {
+    let (host, mut doc) = host();
+    let desk = host.root_of("so.tilo.test.shell").unwrap();
+    commit(&host, &mut doc);
+    write_clock(&host, &desk, "12:01");
+    commit(&host, &mut doc);
+    assert_eq!(
+        clock_of(&host, &desk),
+        Some(DynValue::Register(serde_json::json!("12:01")))
+    );
+    // The record moves on (a pass, another device): the derived write stays in the unsaved
+    // layer, where it was, and is not re-derived or re-applied through the record.
+    let mut record = doc.fork();
+    automerge::transaction::Transactable::put(&mut record, automerge::ROOT, "a-pass", "kept")
+        .unwrap();
+    record.commit();
+    host.sync_from(&record);
+    assert_eq!(
+        clock_of(&host, &desk),
+        Some(DynValue::Register(serde_json::json!("12:01"))),
+        "the record moving on leaves the derived write where it was"
+    );
+}

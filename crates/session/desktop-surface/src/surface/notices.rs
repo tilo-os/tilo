@@ -144,7 +144,13 @@ impl NotificationHost for NoticeState {
         }
     }
     fn dismiss_history(&self, id: u64) {
-        if self.log.borrow_mut().take_history(id).is_some() {
+        // A notice still up as a banner goes off the stack with it; one retired into the
+        // centre goes from the centre. Either way it is dismissed.
+        let (from_banner, from_history) = {
+            let mut log = self.log.borrow_mut();
+            (log.take_active(id).is_some(), log.take_history(id).is_some())
+        };
+        if from_banner || from_history {
             self.outcome(NotificationOutcome::Dismissed { id });
             self.touch();
         }

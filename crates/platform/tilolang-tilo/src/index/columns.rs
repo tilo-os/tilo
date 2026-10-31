@@ -352,6 +352,8 @@ pub fn access<F>(
             }
             Some(out)
         }
+        // Free text matched anywhere inside a field's text is read item by item, and so is
+        // every other predicate a column is no run of: nothing to narrow a read by.
         _ => None,
     }
 }

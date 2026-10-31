@@ -1,0 +1,85 @@
+//! [`ColorPicker`] as a described component.
+
+use crate::component::{Bound, Component, Described, Event, Value};
+use crate::widget::ColorSwatch;
+
+use super::ColorPicker;
+
+/// A colour, picked from a saturation and value field, a hue strip, the red, green and blue
+/// sliders, or a hex field; a palette of quick picks sits under them when given.
+#[derive(Component)]
+#[component(name = "ColorPicker", role = "Group", label = "label")]
+pub struct ColorPickerProps {
+    /// The colour, as its hex text ("#3a7bd5"), and where a picked colour goes.
+    #[component(bind)]
+    pub value: Bound<String>,
+    /// A palette of quick picks under the sliders.
+    pub swatches: Vec<String>,
+    /// How many swatches stand in a row.
+    pub columns: Option<i64>,
+    /// Its spoken name.
+    pub label: Option<String>,
+    /// A colour was picked: carries its hex text.
+    #[component(event(value = String))]
+    pub change: Event,
+}
+
+impl Default for ColorPickerProps {
+    fn default() -> Self {
+        Self {
+            value: Bound::default(),
+            swatches: Vec::new(),
+            columns: None,
+            label: None,
+            change: Event::None,
+        }
+    }
+}
+
+/// The colour `hex` names, when it is one.
+fn color_of(hex: &str) -> Option<vello::peniko::Color> {
+    crate::color::parse_hex(hex.trim())
+}
+
+impl Described for ColorPicker {
+    type Props = ColorPickerProps;
+
+    fn from_props(_key: &str, props: ColorPickerProps) -> Self {
+        let ColorPickerProps {
+            value,
+            swatches,
+            columns: _,
+            label,
+            ..
+        } = props;
+        let shown = value.clone();
+        // A field with no colour yet starts at the first colour offered, else at none.
+        let color = color_of(&value.state.get())
+            .or_else(|| swatches.iter().find_map(|hex| color_of(hex)))
+            .unwrap_or(vello::peniko::Color::TRANSPARENT);
+        let mut picker = Self::new(color)
+            .on_change(move |color| {
+                shown.edited(Value::Text(crate::color::to_hex(color)));
+            })
+            .with_accessible_name(label.as_deref().unwrap_or("Colour"));
+        if !swatches.is_empty() {
+            picker = picker.with_swatches(
+                swatches
+                    .iter()
+                    .filter_map(|hex| color_of(hex).map(ColorSwatch::new)),
+            );
+        }
+        picker
+    }
+
+    /// A colour set elsewhere is shown in place; other swatches are built again.
+    fn set_props(&mut self, props: ColorPickerProps) -> bool {
+        if !props.swatches.is_empty() {
+            return false;
+        }
+        if let Some(color) = color_of(&props.value.state.get()) {
+            self.set_color(color);
+        }
+        true
+    }
+}

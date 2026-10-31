@@ -1899,7 +1899,7 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
 
             fn next(events: &Receiver<super::EngineEvent>) -> super::EngineEvent {
                 events
-                    .recv_timeout(tilo_test_env::hang_bound())
+                    .recv_timeout(ui::testing::hang_bound())
                     .expect("the engine answers")
             }
             fn fetched(events: &Receiver<super::EngineEvent>) -> Synced {
@@ -1974,7 +1974,7 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                 requests
                     .send(super::EngineRequest::watch(account.clone()))
                     .unwrap();
-                tilo_test_env::wait_until("the inbox to be watched", || server.idling() > 0);
+                ui::testing::wait_until("the inbox to be watched", || server.idling() > 0);
                 server.append("INBOX", &mail("m4", "Fresh", "Just now."), &[]);
                 server.flag("INBOX", 1, "\\Seen");
                 loop {
@@ -2257,11 +2257,11 @@ mod tests {
             };
             tx.send(EngineRequest::send(account, Box::new(draft)))
                 .unwrap();
-            let evt = rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+            let evt = rx.recv_timeout(ui::testing::hang_bound()).unwrap();
             assert!(matches!(evt, EngineEvent::Error { context, message, .. }
                 if context == "send" && message.contains("validated") && message.contains("did not send")));
             assert!(matches!(
-                rx.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
+                rx.recv_timeout(ui::testing::hang_bound()).unwrap(),
                 EngineEvent::Completed {
                     kind: EngineRequestKind::Send,
                     ..
@@ -2276,10 +2276,10 @@ mod tests {
                 ..Default::default()
             }))
             .unwrap();
-            let evt = rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+            let evt = rx.recv_timeout(ui::testing::hang_bound()).unwrap();
             assert!(matches!(evt, EngineEvent::Error { context, .. } if context == "offline"));
             assert!(matches!(
-                rx.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
+                rx.recv_timeout(ui::testing::hang_bound()).unwrap(),
                 EngineEvent::Completed {
                     kind: EngineRequestKind::Connect,
                     ..

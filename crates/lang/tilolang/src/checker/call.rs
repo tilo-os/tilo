@@ -98,6 +98,7 @@ impl Checker<'_> {
         }
         match name {
             "outside" => return self.builtin_outside(args, span),
+            "withdraw" => return self.builtin_withdraw(args, span),
             "model_call" => return self.builtin_model(args, span),
             "run_block" => return self.builtin_run_block(args, span),
             "set" => return self.builtin_set(args, span),
@@ -111,6 +112,8 @@ impl Checker<'_> {
                 return self.builtin_versions(name, args, span);
             }
             "unseen" => return self.builtin_unseen(args, span),
+            "first_unseen" => return self.builtin_first_unseen(args, span),
+            "mentions" => return self.builtin_mentions(args, span),
             "undo" => return self.builtin_undo(args, span),
             "steps" => return self.builtin_steps(args, span),
             "changes" => return self.builtin_changes(args, span),
@@ -562,6 +565,38 @@ impl Checker<'_> {
         }
     }
 
+    /// Whether a field of type `ty` holds a resource: any resource (`host.Resource`), one
+    /// resource type, or any of a union's.
+    fn is_any_resource_field(ty: &Ty) -> bool {
+        matches!(ty, Ty::Record(_) | Ty::Union(_))
+    }
+
+    /// Whether `e` writes a record out here (`Note(title: ...)`) rather than naming one the
+    /// store holds (an action's result, a root, a reference).
+    fn constructs(&self, e: &ast::Expr) -> bool {
+        match &e.kind {
+            ast::ExprKind::Call { callee, .. } => {
+                let ExprKind::Ident(name) = &callee.kind else {
+                    return false;
+                };
+                !self.in_std() && self.env.own_type(name).is_some_and(|t| !t.holder)
+            }
+            ast::ExprKind::If { then, els, .. } => {
+                let last = then.stmts.last();
+                let Some(ast::Stmt {
+                    kind: ast::StmtKind::Expr(t),
+                    ..
+                }) = last
+                else {
+                    return false;
+                };
+                els.as_ref()
+                    .is_some_and(|els| self.constructs(t) && self.constructs(els))
+            }
+            _ => false,
+        }
+    }
+
     /// `Todo(title: "x")`: a record value, not yet a resource.
     fn construct(&mut self, key: &TypeKey, args: &[ast::Arg]) -> Ex {
         let env = self.env;
@@ -645,6 +680,21 @@ impl Checker<'_> {
                     ),
                 );
                 continue;
+            }
+            // A field holding a resource takes one the store has: an action's result, a root,
+            // a reference (`@app.Type:id`). A record written out here is not one: it has no id
+            // until the store makes it, so nothing can hold it, and the change would be rolled
+            // back when it runs. Make it first (`let n = notes.new_note(...)`) and give that.
+            if Self::is_any_resource_field(&f.ty) && self.constructs(&a.value) {
+                self.err(
+                    "E020",
+                    a.value.span,
+                    format!(
+                        "`{}` holds a resource, and a `{}` written out here is not one yet: it has no id until it is made. Make it first and give what the store made (an action's result, a root, or `@app.Type:id`)",
+                        f.name,
+                        self.show(&f.ty)
+                    ),
+                );
             }
             let v = self.expr_as(&a.value, &f.ty);
             let (imp, c) = store_op(&f.ty, Imp::RecSetI, Imp::RecSetF, Imp::RecSetH);
@@ -744,7 +794,9 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
-        let (Some(cap), Some(payload), 2) = (args.first(), args.get(1), args.len()) else {
+        // `outside(capability, payload)` or, held back until a moment, `outside(capability,
+        // payload, at: <a Time>)`: the device carries it out only once the clock reaches it.
+        let (Some(cap), Some(payload)) = (args.first(), args.get(1)) else {
             self.err(
                 "E022",
                 span,
@@ -752,6 +804,28 @@ impl Checker<'_> {
             );
             return Ex::error();
         };
+        let held = match (args.get(2), args.len()) {
+            (None, 2) => None,
+            (Some(third), 3) if third.name.as_ref().is_some_and(|n| n.name == "at") => Some(third),
+            (Some(third), 3) => {
+                self.err(
+                    "E022",
+                    third.value.span,
+                    "`outside` holds an effect back by naming the moment: `outside(\"smtp.send\", payload, at: now + 10s)`",
+                );
+                return Ex::error();
+            }
+            _ => {
+                self.err(
+                    "E022",
+                    span,
+                    "`outside` takes a capability name, a payload, and at most the moment it is held until: `outside(\"post\", payload)`",
+                );
+                return Ex::error();
+            }
+        };
+        let cap = cap.clone();
+        let payload = payload.clone();
         let ExprKind::Str(parts) = &cap.value.kind else {
             self.err(
                 "E022",
@@ -784,11 +858,63 @@ impl Checker<'_> {
         }
         let p = self.expr(&payload.value, None);
         self.st.facts.outside = true;
-        Ex::host(
-            Imp::Outside,
-            vec![Ex::str(name), Self::handle_of(p)],
-            Ty::Unit,
-        )
+        match held {
+            Some(third) => {
+                let at = self.expr_as(&third.value, &Ty::Time);
+                Ex::host(
+                    Imp::OutsideAt,
+                    vec![Ex::str(name), Self::handle_of(p), Self::handle_of(at)],
+                    Ty::Unit,
+                )
+            }
+            None => Ex::host(
+                Imp::Outside,
+                vec![Ex::str(name), Self::handle_of(p)],
+                Ty::Unit,
+            ),
+        }
+    }
+
+    /// `withdraw(r, reason)`: take back the outside effects `r`'s actions queued that nothing
+    /// carried out yet, settling each as withdrawn for `reason`, so they never happen. A person
+    /// takes back what they wrote before it went (undo send); an agent does the same.
+    fn builtin_withdraw(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if self.st.ctx != Ctx::Action {
+            self.err(
+                "E047",
+                span,
+                "`withdraw(r, reason)` takes back an outside effect and only an action may use it",
+            );
+            return Ex::error();
+        }
+        let (Some(r), Some(reason), 2) = (args.first(), args.get(1), args.len()) else {
+            self.err(
+                "E022",
+                span,
+                "`withdraw` takes the resource and why: `withdraw(d, \"Taken back\")`",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        let r = self.expr(&r.value, None);
+        let primary = match &r.ty {
+            Ty::Record(_) => Self::handle_of(r),
+            Ty::Error => return Ex::error(),
+            other => {
+                let t = self.show(other);
+                self.err(
+                    "E020",
+                    span,
+                    format!("`withdraw` takes a resource, a value of a record type; this is {t}"),
+                );
+                return Ex::error();
+            }
+        };
+        let why = self.expr_as(&reason.value, &Ty::Text);
+        self.st.facts.outside = true;
+        Ex::host(Imp::Withdraw, vec![primary, why], Ty::Unit)
     }
 
     /// `run_block(part, source)`: after this action commits, the host evaluates `source` as a
@@ -1418,6 +1544,38 @@ impl Checker<'_> {
                 Ex::error()
             }
             (Ty::Text, "len") if args.is_empty() => Ex::host(Imp::StrLen, vec![r], Ty::Int),
+            (Ty::Text, "find") => {
+                if !self.arity(name, args, 1, span) {
+                    return Ex::error();
+                }
+                let Some(a) = args.first() else {
+                    return Ex::error();
+                };
+                let what = self.expr_as(&a.value, &Ty::Text);
+                Ex::host(Imp::StrFind, vec![r, what], Ty::Int)
+            }
+            (Ty::Text, "slice") => {
+                if !self.arity(name, args, 2, span) {
+                    return Ex::error();
+                }
+                let (Some(from), Some(to)) = (args.first(), args.get(1)) else {
+                    return Ex::error();
+                };
+                let from = self.expr_as(&from.value, &Ty::Int);
+                let to = self.expr_as(&to.value, &Ty::Int);
+                Ex::host(Imp::StrSlice, vec![r, from, to], Ty::Text)
+            }
+            (Ty::Text, "replace") => {
+                if !self.arity(name, args, 2, span) {
+                    return Ex::error();
+                }
+                let (Some(from), Some(to)) = (args.first(), args.get(1)) else {
+                    return Ex::error();
+                };
+                let from = self.expr_as(&from.value, &Ty::Text);
+                let to = self.expr_as(&to.value, &Ty::Text);
+                Ex::host(Imp::StrReplace, vec![r, from, to], Ty::Text)
+            }
             (Ty::RichText, "is_empty") if args.is_empty() => {
                 Ex::host(Imp::RichEmpty, vec![r], Ty::Bool)
             }
@@ -1502,7 +1660,7 @@ impl Checker<'_> {
             (other, _) => {
                 let t = self.show(other);
                 let known = match other {
-                    Ty::Text => "len",
+                    Ty::Text => "len, find, slice, replace",
                     Ty::RichText => "is_empty (and the members excerpt, text, references, people)",
                     Ty::Int => "to_float, to_text",
                     Ty::Float => "to_int, to_text",

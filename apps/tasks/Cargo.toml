@@ -31,6 +31,9 @@ serde_json.workspace = true
 tilo-agent-models = { path = "../../crates/platform/tilo-agent-models" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# The record the app draws: its types, verbs and typed action arguments,
+# shared with the agent that works its issues.
+tasks-model = { path = "../tasks-model" }
 
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:

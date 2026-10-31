@@ -1,0 +1,131 @@
+/// The notifications: the banner that arrives, and the centre that keeps them. Both are views
+/// of the desk's notices (`session.notice`, and each action of a notice through
+/// `session.notice_action`), grouped by what sent them: an app, or the agent task that did.
+/// Each notice carries its sender's own actions, in the order its sender put them, and each
+/// action is the sender's, run through the session (`session.notify`).
+///
+/// A banner is the centre's newest notice, lifted out of it; a group is an app's or a task's
+/// notices together. Nothing here decides what a notice means: its kind, its sender and its
+/// actions are the sender's. It is a surface of the desk, so it holds no sidebar of its own.
+
+/// The notification centre: every notice, grouped by its sender, newest first, with the way to
+/// clear them all.
+view notices(d: Desk) {
+    lens query: Text = ""
+    let all = d.notices.sort_by(n -> n.key)
+    let shown = all.matching(query)
+    stack(gap: .section) {
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Text("Notifications", role: .heading)
+            ui.Text("{shown.len()} to read", role: .caption, secondary: true)
+            spacer
+            ui.Button("Clear all", icon: .trash, size: .small) {
+                on press: clear_notices(d)
+            }
+        }
+        if not shown.is_empty() {
+            ui.TextInput(value: query, placeholder: "Search notifications")
+        }
+        if shown.is_empty() {
+            ui.EmptyState("Nothing to catch up on", message: "What apps and agents tell you shows here", icon: .bell)
+        }
+        for g in groups_of(shown) {
+            notice_group(d, g, shown.filter(n -> n.group == g))
+        }
+    }
+}
+
+/// One sender's notices, under its name: each with its kind, its sender, and its actions.
+view notice_group(d: Desk, sender: Text, notices: List<Notice>) {
+    ui.Section(sender) {
+        for n in notices {
+            notice_row(d, n)
+        }
+    }
+}
+
+/// One notice: its title, what it says, its sender, its actions and the way to dismiss it. An
+/// unread one is lifted and bears a dot.
+view notice_row(d: Desk, n: Notice) {
+    ui.ListRow(n.title, secondary: .some(n.body), meta: .some(n.origin_app), selected: not n.read) {
+        trailing: {
+            ui.Badge(dot: not n.read)
+        }
+    }
+    row(gap: .related, align: .center, wrap: true) {
+        for a in actions_of(d, n) {
+            ui.Button(a.label, size: .small) {
+                on press: notice_action(n, a.key)
+            }
+        }
+        ui.Button("Dismiss", icon: .x, icon_only: true, size: .small, role: .plain) {
+            on press: dismiss_notice(n)
+        }
+    }
+}
+
+/// A banner: the newest notice, risen over the desk, with its first action and a dismiss. The
+/// session takes it away when it is dismissed or its sender closes it.
+///
+/// A desk with room shows the toolkit's banner; a narrow one shows the notice as a row with its
+/// actions under it, so nothing is cut at any text size.
+view banner(d: Desk) {
+    let newest = d.notices.sort_by(n -> n.key).first()
+    if let n = newest {
+        if not (d.quiet and not n.wants_reply) {
+            if space.compact or space.width < 44.0 {
+                banner_row(d, n)
+            } else {
+                banner_full(d, n)
+            }
+        }
+    }
+}
+
+/// A banner on a desk with the room: the notice with its kind's tone and its first action.
+view banner_full(d: Desk, n: Notice) {
+    let actions = actions_of(d, n)
+    ui.Banner(n.title, message: .some(banner_line(n)), kind: if n.kind == "error" { .error } else if n.kind == "warning" { .warning } else if n.kind == "success" { .success } else { .info }, action: if actions.is_empty() { .none } else { .some(actions.first()?.label ?? "Open") }) {
+        on act: notice_action(n, actions.first()?.key ?? "")
+        on dismiss: dismiss_notice(n)
+    }
+}
+
+/// A banner on a narrow desk: the notice as a row, its actions under it.
+view banner_row(d: Desk, n: Notice) {
+    stack(gap: .related) {
+        ui.ListRow(n.title, secondary: .some(banner_line(n))) {
+            trailing: {
+                ui.Badge(dot: true, tone: if n.kind == "error" { .danger } else if n.kind == "warning" { .warning } else { .info })
+            }
+        }
+        row(gap: .related, wrap: true) {
+            for a in actions_of(d, n) {
+                ui.Button(a.label, size: .small) {
+                    on press: notice_action(n, a.key)
+                }
+            }
+            ui.Button("Dismiss", icon: .x, icon_only: true, size: .small, role: .plain) {
+                on press: dismiss_notice(n)
+            }
+        }
+    }
+}
+
+/// What a banner says under its title: what it says, and who sent it.
+fn banner_line(n: Notice) -> Text {
+    if n.body == "" {
+        return n.origin_app
+    }
+    return "{n.body} — {n.origin_app}"
+}
+
+/// The actions `n` offers, in its sender's order.
+fn actions_of(d: Desk, n: Notice) -> List<NoticeAction> {
+    return d.notice_actions.filter(a -> a.notice == n.key)
+}
+
+/// What a list of notices was sent by, each once, in the order the notices came.
+fn groups_of(notices: List<Notice>) -> List<Text> {
+    return notices.map(n -> n.group).group(g -> g).map(p -> p.key)
+}

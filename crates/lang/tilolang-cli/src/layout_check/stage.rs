@@ -88,6 +88,7 @@ impl Staged {
                 device: None,
                 index_dir: None,
                 record_loader: None,
+                root: tilolang_tilo::host::RootView::default(),
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
             },
             Rc::clone(packages) as Rc<dyn Platform>,
@@ -209,10 +210,14 @@ impl Staged {
                 id: doc.clone(),
                 ty: ty.clone(),
             });
-            let (Some(schema), Ok(record)) = (
-                tilolang_tilo::schema::lookup(&ty),
-                host.store().record(&doc),
-            ) else {
+            // The record's type by the package versions this host loaded, not by whatever a
+            // store elsewhere in this process registered last.
+            let (Some(schema), Ok(record)) = host.with_schemas(|| {
+                (
+                    tilolang_tilo::schema::lookup(&ty),
+                    host.store().record(&doc),
+                )
+            }) else {
                 continue;
             };
             for field in &schema.fields {

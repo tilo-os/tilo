@@ -3,10 +3,13 @@
 //! runs them.
 //!
 //! A row's view puts them wherever it likes among its content; they draw nothing there. A
-//! list item (`ui.ListItem`) holds those of its row: each attachment at the top of the row's
-//! view (its calls and loops seen through) moves into the item's `attached` slot, so the list
-//! runs the row's menu, toolbar and swipe. This runs on the tree as the app sent it, before the
-//! window reads it, so the reconciler and the rows see one shape.
+//! list item (`ui.ListItem`) holds those of its row: each attachment anywhere in the row's
+//! view, through its calls (fragments) and its layout (`stack`, `row`, `grid`, `scroll` and
+//! the rest that only arrange children) moves into the item's `attached` slot, so the list
+//! runs the row's menu, toolbar and swipe. A component that gives its children a meaning of
+//! its own (a card, a section) is a place of its own: what it holds stays in it. This runs on
+//! the tree as the app sent it, before the window reads it, so the reconciler and the rows see
+//! one shape.
 
 use crate::UiNode;
 use crate::adapter::{SLOT, description_of, slot_nodes};
@@ -15,6 +18,27 @@ use crate::adapter::{SLOT, description_of, slot_nodes};
 const LIST_ITEM: &str = "ui.ListItem";
 /// The slot of a list item that holds what its row attached.
 const ATTACHED: &str = "attached";
+
+/// The kinds that only arrange their children in a place: an attachment written among them
+/// belongs to the element the place is in, so it is taken through them.
+const LAYOUT: &[&str] = &[
+    "stack",
+    "column",
+    "row",
+    "grid",
+    "split",
+    "page",
+    "layers",
+    "scroll",
+    "primary",
+    "secondary",
+    "fragment",
+];
+
+/// Whether `node` only arranges its children (`stack`, `row`, a view's call).
+fn arranges(node: &UiNode) -> bool {
+    LAYOUT.contains(&node.kind.as_str())
+}
 
 /// Whether `node` attaches to the element it stands in.
 #[must_use]
@@ -83,18 +107,16 @@ fn hoist_item(item: &mut UiNode) {
     }
 }
 
-/// Whether `node` is an attachment, or a fragment (a view's call, a loop's row) holding one at
-/// its top.
+/// Whether `node` is an attachment, or something that only arranges children (a view's call, a
+/// loop's row, a stack) holding one anywhere in the arrangement.
 fn holds_attachment(node: &UiNode) -> bool {
-    attaches(node) || (node.kind == "fragment" && node.children.iter().any(holds_attachment))
+    attaches(node) || (arranges(node) && node.children.iter().any(holds_attachment))
 }
 
-/// Take the attachments at the top of `node` (through fragments) out of it, in order.
+/// Take the attachments anywhere in `node` (through what only arranges children) out of it, in
+/// order.
 fn take_attachments(node: &mut UiNode, out: &mut Vec<UiNode>) {
-    if attaches(node) {
-        return;
-    }
-    if node.kind != "fragment" {
+    if attaches(node) || !arranges(node) {
         return;
     }
     let mut kept = Vec::with_capacity(node.children.len());
@@ -130,6 +152,14 @@ mod tests {
         node
     }
 
+    /// The kinds of `node` and everything it holds.
+    fn kinds_of(node: &UiNode, out: &mut Vec<String>) {
+        out.push(node.kind.clone());
+        for child in &node.children {
+            kinds_of(child, out);
+        }
+    }
+
     #[test]
     fn a_rows_attachments_move_into_its_item_in_order() {
         let mut item = component("ListItem", "m1");
@@ -163,6 +193,70 @@ mod tests {
             kinds(slot),
             ["ui.HoverToolbar", "ui.ContextMenu", "ui.Swipe"],
             "in the order the view wrote them"
+        );
+    }
+
+    // USER REQUIREMENT: a row's view puts its menu and toolbar in the layout it draws, as a
+    // message's does (`stack { row { name } toolbar }`), and the list still runs them.
+    #[test]
+    fn an_attachment_inside_the_rows_layout_moves_into_its_item() {
+        let mut item = component("ListItem", "m1");
+        let mut stack = UiNode::empty("stack", "content");
+        stack.children = vec![
+            fragment("voice", vec![component("ContextMenu", "menu")]),
+            fragment("head", vec![text("Grace Hopper")]),
+            fragment("bar", vec![component("HoverToolbar", "toolbar")]),
+            {
+                let mut inner = UiNode::empty("row", "actions");
+                inner.children = vec![
+                    component("Button", "reply"),
+                    fragment("more", vec![component("Swipe", "swipe")]),
+                ];
+                inner
+            },
+        ];
+        item.children = vec![fragment("row", vec![stack])];
+        let hoisted = hoist(&item);
+        let slot = hoisted
+            .children
+            .iter()
+            .find(|c| c.kind == SLOT)
+            .expect("the item has its attached slot");
+        let kinds: Vec<String> = slot.children.iter().map(|c| c.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            ["ui.ContextMenu", "ui.HoverToolbar", "ui.Swipe"],
+            "the row's attachments, wherever its layout puts them"
+        );
+        let drawn = &hoisted.children[0];
+        let mut left = Vec::new();
+        kinds_of(drawn, &mut left);
+        for gone in ["ui.ContextMenu", "ui.HoverToolbar", "ui.Swipe"] {
+            assert!(
+                !left.iter().any(|kind| kind == gone),
+                "{gone} draws: {left:?}"
+            );
+        }
+        assert!(
+            left.iter().any(|kind| kind == "ui.Text")
+                && left.iter().any(|kind| kind == "ui.Button"),
+            "what the row draws stays: {left:?}"
+        );
+    }
+
+    #[test]
+    fn what_a_component_of_its_own_holds_stays_in_it() {
+        let mut card = component("Card", "card");
+        card.children = vec![fragment(
+            "in",
+            vec![component("ContextMenu", "the card's own menu")],
+        )];
+        let mut item = component("ListItem", "m1");
+        item.children = vec![fragment("row", vec![card])];
+        let hoisted = hoist(&item);
+        assert!(
+            !hoisted.children.iter().any(|c| c.kind == SLOT),
+            "a card's menu is the card's, not the row's"
         );
     }
 

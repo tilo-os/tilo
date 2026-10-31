@@ -1785,3 +1785,97 @@ fn a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_room_whole()
         }
     }
 }
+
+const MAIL: &str = "so.tilo.lang.mail";
+
+/// The shipped Mail package, built with the packages it uses.
+fn mail() -> Bundle {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/mail");
+    let dirs = tilolang::source::dependency_order(&dir, &[]).expect("the packages resolve");
+    let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
+        .expect("the packages compile");
+    let (package, used) = built.split_last().expect("the package is built last");
+    Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled))
+}
+
+/// Apply the search index deltas the instance published to the session's index, over its
+/// certified route, as the session's index applies them.
+fn published_index(index: &tilo_desktop_search::content_index::AppContentIndex, sent: &Sent) {
+    for request in sent.borrow().iter() {
+        if let CollabRequest::PublishSearchIndex { app_id, delta_json } = request {
+            index
+                .publish("room", app_id, "", delta_json)
+                .expect("the session takes every delta");
+        }
+    }
+}
+
+#[test]
+fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
+    use tilo_desktop_search::content_index::AppContentIndex;
+    use tilo_desktop_search::indexed::IndexedContent;
+    use tilo_desktop_search::model::{Source as _, Target};
+
+    // A live Mail instance, its room filled by the package's own scenario, runs its frames.
+    let (mut host, mut window, sent, _inbox, _route) = running_app("ada", MAIL, mail());
+    host.instances_mut()
+        .next()
+        .expect("the instance runs")
+        .stage("a busy inbox");
+    settle(&mut host, &mut window);
+
+    // What it published to the session's one index, as the session keeps it.
+    let index = std::sync::Arc::new(AppContentIndex::in_memory());
+    published_index(&index, &sent);
+    assert!(
+        !index.contents().visible.is_empty(),
+        "the Mail instance published its conversations and messages"
+    );
+
+    // Search reads that index through its production source: a word that appears only inside a
+    // message's body (not its subject, its sender or its conversation's snippet) finds the
+    // message, with no window running a search of its own.
+    let content = IndexedContent::new(std::sync::Arc::clone(&index), |app| app.to_owned());
+    let found = content.query("widths");
+    assert_eq!(
+        found.len(),
+        1,
+        "a word only a message's body holds finds that one message: {found:?}"
+    );
+    assert_eq!(
+        found[0].subtitle.as_deref(),
+        Some("Message"),
+        "the hit is the message, by its type"
+    );
+
+    // A hit opens Mail at the resource: scoping to Mail keeps it, scoping to another app drops
+    // it. `InvokeTarget::app` names the app that published it.
+    let app_of = |hit: &tilo_desktop_search::model::Hit| -> Option<String> {
+        match &hit.target {
+            Target::Invoke(target) => Some(target.app.clone()),
+            _ => None,
+        }
+    };
+    assert_eq!(
+        app_of(&found[0]).as_deref(),
+        Some(MAIL),
+        "the hit opens Mail at its message"
+    );
+    let in_app = |needle: &str, app: &str| {
+        content
+            .query(needle)
+            .into_iter()
+            .filter(|hit| app_of(hit).as_deref() == Some(app))
+            .count()
+    };
+    assert_eq!(
+        in_app("widths", MAIL),
+        1,
+        "scoped to Mail: the hit is there"
+    );
+    assert_eq!(
+        in_app("widths", "so.tilo.lang.notes"),
+        0,
+        "scoped to another app: it is not"
+    );
+}

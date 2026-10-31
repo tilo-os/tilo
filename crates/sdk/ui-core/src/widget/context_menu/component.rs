@@ -21,6 +21,10 @@ pub struct MenuItemProps {
     pub destructive: bool,
     /// Whether it is the one chosen now, in a menu of choices (a sort order).
     pub checked: Option<bool>,
+    /// The plain key that runs it while the window it belongs to has the keyboard, as the app's
+    /// action declared it (`key: "e"`), shown at the row's trailing edge as the keyboard in use
+    /// spells it.
+    pub key: Option<String>,
     /// It was chosen.
     #[component(event)]
     pub choose: Event,
@@ -48,8 +52,14 @@ impl MenuItemProps {
             Some(icon) => item.with_icon(icon),
             None => item,
         };
-        match props.checked {
+        let item = match props.checked {
             Some(checked) => item.with_checked(checked),
+            None => item,
+        };
+        // The app's declared key shows at the row's trailing edge, as the keyboard in use
+        // spells it.
+        match props.key {
+            Some(key) => item.with_shortcut(key),
             None => item,
         }
     }
@@ -79,6 +89,7 @@ impl From<OfferedAction> for MenuItemProps {
             icon: action.icon,
             destructive: action.destructive,
             checked: action.on,
+            key: action.key,
             choose: action.run,
         }
     }

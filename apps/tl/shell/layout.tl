@@ -18,7 +18,7 @@ view layouts(s: Shell) {
             }
         }
         grid(min: 15rem, gap: .section) {
-            for preset in cases(Preset) {
+            for preset in cases(Layout) {
                 layout_card(s, preset)
             }
         }
@@ -34,7 +34,7 @@ fn standing(s: Shell) -> Text {
 
 /// One preset's card: its name, what it is, and a miniature of the shell it makes, drawn
 /// from the preset's own settings rather than pictured.
-view layout_card(s: Shell, preset: Preset) {
+view layout_card(s: Shell, preset: Layout) {
     let chosen = s.preset == preset and not s.tuned
     ui.Card(title: preset.label(), selected: chosen) {
         body: {
@@ -50,7 +50,7 @@ view layout_card(s: Shell, preset: Preset) {
 }
 
 /// What a preset is, in a sentence.
-fn describe(preset: Preset) -> Text {
+fn describe(preset: Layout) -> Text {
     if preset == .tilo {
         "A dock at the bottom and the top bar, always shown."
     } else if preset == .macos {
@@ -66,7 +66,7 @@ fn describe(preset: Preset) -> Text {
 
 /// A preset's shell in miniature: where its bar and dock stand, how they sit, and what they
 /// hold — drawn with the same views the shell itself uses, at the size a card gives them.
-view preview(preset: Preset) {
+view preview(preset: Layout) {
     layers {
         row(fill, align: .center, padding: .tight) {
             if preset == .tilo or preset == .macos or preset == .gnome or preset == .minimal {
@@ -82,7 +82,7 @@ view preview(preset: Preset) {
 }
 
 /// The miniature bar: its parts, left to right, in the fit the preset gives it.
-view preview_bar(preset: Preset) {
+view preview_bar(preset: Layout) {
     row(gap: .tight, align: .center, fill) {
         ui.Icon(.tilo, size: .small)
         if preset == .macos {
@@ -98,7 +98,7 @@ view preview_bar(preset: Preset) {
 }
 
 /// The miniature dock: the launcher and three items, on the fit the preset gives it.
-view preview_dock(preset: Preset) {
+view preview_dock(preset: Layout) {
     if preset == .macos {
         row(gap: .tight, align: .center) {
             ui.Icon(.layout_grid, size: .small)

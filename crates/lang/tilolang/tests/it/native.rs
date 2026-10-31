@@ -795,3 +795,32 @@ fn an_action_whose_on_is_its_subjects_field_says_which_state_it_toggles() {
     );
     assert_eq!(action(&m, "star").toggles, None, "no `on:`, no state");
 }
+
+// An action declares the plain key that runs it while its window has the keyboard; the key is
+// the character itself (read through the person's keymap), never a key code.
+#[test]
+fn an_action_carries_the_plain_key_it_declares() {
+    let m = compile_body(
+        r#"type Thread {
+    subject: Text (title)
+}
+action archive(t: Thread) (icon: .archive, key: "e") {}
+action reply(t: Thread) (key: "r") {}
+action nothing(t: Thread) {}"#,
+    )
+    .meta;
+    assert_eq!(action(&m, "archive").key.as_deref(), Some("e"));
+    assert_eq!(action(&m, "reply").key.as_deref(), Some("r"));
+    assert_eq!(action(&m, "nothing").key, None, "no `key:`, no shortcut");
+    // A key is one character, so `key: "ee"` and `key: " "` are refused.
+    assert!(
+        codes(
+            r#"type Thread {
+    subject: Text (title)
+}
+action a(t: Thread) (key: "ee") {}"#
+        )
+        .iter()
+        .any(|code| code == "E090")
+    );
+}

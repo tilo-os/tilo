@@ -203,6 +203,13 @@ impl Checker<'_> {
                 Type::Bool => vec![Ty::Bool],
                 Type::Int => vec![Ty::Int],
                 Type::Float => vec![Ty::Float],
+                // A moment is a Date, a Time, or one that may be none.
+                Type::Time => vec![
+                    Ty::Date,
+                    Ty::Time,
+                    Ty::Option(Box::new(Ty::Date)),
+                    Ty::Option(Box::new(Ty::Time)),
+                ],
                 Type::RichText => vec![Ty::RichText],
                 _ => Vec::new(),
             };
@@ -263,13 +270,16 @@ impl Checker<'_> {
         };
         match ty {
             Type::Icon => self.icon_value(n, name, value),
+            Type::Picture => self.picture_value(n, name, value),
             Type::Choice {
                 cases,
                 name: choice,
             } => {
                 self.case_value(n, name, value, cases, choice);
             }
-            Type::Option(inner) if matches!(**inner, Type::Icon | Type::Choice { .. }) => {
+            Type::Option(inner)
+                if matches!(**inner, Type::Icon | Type::Choice { .. } | Type::Picture) =>
+            {
                 self.typed_prop(n, d, name, inner, doc, value);
             }
             Type::Option(inner) => {
@@ -361,6 +371,19 @@ impl Checker<'_> {
                 }
             }
         }
+    }
+
+    /// `image: "tilo-blob://<hash>"` or `image: a.photo`: a picture by where its bytes are, as
+    /// the node's prop of that name.
+    fn picture_value(&mut self, n: LocalId, prop: &str, e: &ast::Expr) {
+        let v = self.expr_as(e, &Ty::Text);
+        if v.ty.is_error() {
+            return;
+        }
+        self.emit(host(
+            Imp::UiPropPic,
+            vec![Ex::local(n, Ty::View), Ex::str(prop), v],
+        ));
     }
 
     /// Set the prop `name` to what the Option `v` holds, and leave it unset while it holds
@@ -919,7 +942,8 @@ fn offers_actions(ty: &Type) -> bool {
 /// The language's type of a description's scalar type, for checking literals against it.
 fn lang_type(ty: &Type) -> Ty {
     match ty {
-        Type::Text => Ty::Text,
+        // A picture is named by where its bytes are, which is text.
+        Type::Text | Type::Picture => Ty::Text,
         Type::Int => Ty::Int,
         Type::Float => Ty::Float,
         Type::Bool => Ty::Bool,
@@ -954,6 +978,7 @@ fn fits(ty: &Type, found: &Ty) -> bool {
                 | (Type::Time, Ty::Time)
                 | (Type::RichText, Ty::RichText)
                 | (Type::Float, Ty::Float | Ty::Int)
+                | (Type::Picture, Ty::Text)
                 | (Type::Resource, Ty::Record(_))
         ),
     }

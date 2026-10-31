@@ -26,6 +26,7 @@
 #![cfg(target_os = "linux")]
 
 mod app_icons;
+pub mod arrangement;
 pub mod capture;
 mod chrome;
 mod config;
@@ -46,6 +47,7 @@ mod search;
 mod setup;
 mod sheets;
 pub mod shell;
+pub mod surfaces;
 pub mod sync;
 mod system_sounds;
 pub mod unlock;
@@ -345,6 +347,16 @@ struct Shared {
     /// The copies the person can paste again, and what the Clipboard section
     /// was last fed of them.
     clipboard: mount::clipboard::Clipboard,
+    /// The person's arrangement, as their own record: what is open where,
+    /// with history and undo (shell.md §2). The desk places its windows
+    /// from it.
+    arrangement: Rc<RefCell<arrangement::Arrangement>>,
+    /// Whether the person is mid-gesture or typing, as the compositor last
+    /// said: what an arranging action that is not their own waits for.
+    underway: Rc<Cell<arrangement::Busy>>,
+    /// The heads of the arrangement the file holds, so a record that did not
+    /// move is not written again.
+    kept_arrangement: RefCell<Option<Vec<ui::automerge::ChangeHash>>>,
 }
 
 /// The app a window shows, by its id.
@@ -360,6 +372,20 @@ fn tab_app(tile: &tilo_desktop_model::TileContent) -> Option<String> {
 }
 
 impl Shared {
+    /// Keep the person's arrangement in step with their desk: what the desk
+    /// did on its own is taken in, and what waited for the person to finish
+    /// their gesture or their typing runs once they have.
+    fn follow_arrangement(&self, underway: arrangement::Busy) {
+        let mut arrangement = self.arrangement.borrow_mut();
+        arrangement.observe();
+        if !underway.holds() && arrangement.waiting() > 0 {
+            if let Err(why) = arrangement.release() {
+                tracing::warn!(why, "an arranging action that waited could not be made");
+            }
+            arrangement.observe();
+        }
+    }
+
     /// Carry out what the desktop asked since the last frame.
     fn follow_asks(&self) {
         let asks = std::mem::take(&mut *self.asks.borrow_mut());
@@ -748,6 +774,30 @@ impl Shared {
         *self.kept.borrow_mut() = Some((text, Instant::now()));
     }
 
+    /// Keep the person's arrangement as it stands: its own file, so the next
+    /// session places the same desk from it. Written when the record moved,
+    /// not every frame.
+    fn keep_arrangement(&self) {
+        let Some(state) = &self.state else {
+            return;
+        };
+        let mut arrangement = self.arrangement.borrow_mut();
+        let heads = arrangement.heads();
+        if self
+            .kept_arrangement
+            .borrow()
+            .as_ref()
+            .is_some_and(|kept| *kept == heads)
+        {
+            return;
+        }
+        if let Err(error) = arrangement.save(state) {
+            tracing::debug!(%error, "the arrangement is not kept");
+            return;
+        }
+        *self.kept_arrangement.borrow_mut() = Some(heads);
+    }
+
     /// [`Self::keep_desk_now`], once in a while.
     fn keep_desk(&self) {
         let now = Instant::now();
@@ -1111,6 +1161,36 @@ impl Session {
         if let Some(kept) = options.state.as_deref().and_then(desk_layout::load_at) {
             handle.replace_tree(kept);
         }
+        // The person's arrangement: today's desk, migrated into their own
+        // record, and from then on the record the desk places its windows
+        // from. It is kept beside the desk on this device, and is the
+        // person's own ([`arrangement::record_id`]) on every device theirs.
+        let mut record = ui::automerge::AutoCommit::new();
+        if let Some(text) = options.state.as_deref().and_then(arrangement::load_at) {
+            match ui::automerge::AutoCommit::load(&text) {
+                Ok(kept) => record = kept,
+                Err(error) => tracing::debug!(%error, "the kept arrangement is not this build's"),
+            }
+        }
+        let kept_desk = handle.read(Clone::clone);
+        let records = std::collections::BTreeMap::new();
+        let arrangement = Rc::new(RefCell::new(arrangement::Arrangement::new(
+            &options.person,
+            record,
+            handle.clone(),
+            &kept_desk,
+            &records,
+        )));
+        // Whether the person is mid-gesture or typing, as only the
+        // compositor knows: what an arranging action that is not their own
+        // reads before it moves anything.
+        let busy = Rc::new(Cell::new(arrangement::Busy::default()));
+        let underway = Rc::clone(&busy);
+        doors.add(Rc::new(RefCell::new(arrangement::ArrangementDoor::new(
+            Rc::clone(&arrangement),
+            Rc::new(move || underway.get()),
+        ))));
+        arrangement.borrow_mut().place_now();
         workspaces::publish_host_actions(&handle);
         // What the person's settings say the desk shows: a device that kept
         // no picture yet takes the choice, and otherwise the workspaces keep
@@ -1142,12 +1222,15 @@ impl Session {
 
         // The desk as the session publishes it, and the shell's bar over the
         // chrome, which reads it through the door.
+        let surfaces = Rc::new(surfaces::Surfaces::new());
         let desk = || desk::Desk {
             handle: handle.clone(),
             person: options.person.clone(),
             signals: Rc::clone(&notice_signals),
             status_panel: options.quick_settings.is_some(),
             sync: sync.clone(),
+            notices: notices.clone(),
+            surfaces: Rc::clone(&surfaces),
         };
         let desk_service = desk();
         let shell = shell::Shell::mount(&mut compositor, &mut doors, desk(), options.scale)
@@ -1253,6 +1336,9 @@ impl Session {
             notice_view: RefCell::new(None),
             sync,
             clipboard: mount::clipboard::Clipboard::new(),
+            arrangement,
+            underway: busy,
+            kept_arrangement: RefCell::new(None),
         };
         shared.start_search();
         // What the portal brings comes from any thread, and wakes the loop
@@ -1373,6 +1459,48 @@ impl Session {
     /// take them in: what a headless run does before it reads.
     pub fn settle_services(&self) {
         self.shared.services.borrow_mut().settle();
+    }
+
+    /// The person's arrangement, as their own record.
+    #[must_use]
+    pub fn arrangement(&self) -> &Rc<RefCell<arrangement::Arrangement>> {
+        &self.shared.arrangement
+    }
+
+    /// Undo the person's last arranging step, through the published action
+    /// as any caller does.
+    ///
+    /// # Errors
+    /// The door's refusal: there is no step to take back.
+    pub fn undo_arrangement(&mut self) -> Result<(), DoorError> {
+        let address = ActionAddress::new(arrangement::RECORD_RESOURCE, "undo");
+        self.shared
+            .doors
+            .invoke(&address, &serde_json::Map::new())?;
+        Ok(())
+    }
+
+    /// Invoke a published action as `actor` (an agent, a script), beside
+    /// [`Self::invoke`].
+    ///
+    /// # Errors
+    /// The door's refusal: no such action, bad arguments, or one the caller
+    /// may not run.
+    pub fn invoke_with_actor(
+        &mut self,
+        actor: &str,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        let empty = serde_json::Map::new();
+        let arguments = arguments.as_object().unwrap_or(&empty);
+        if let Ok(mut arrangement) = self.shared.arrangement.try_borrow_mut() {
+            let _ = &mut arrangement;
+        }
+        self.shared
+            .doors
+            .invoke_as(actor, &ActionAddress::new(resource, action), arguments)
     }
 
     /// A window was at `place`: where search's Continue reopens it.
@@ -1732,6 +1860,11 @@ impl Session {
     /// The compositor failed.
     pub fn step(&mut self, timeout: Duration) -> Result<(), Error> {
         self.compositor.dispatch(timeout)?;
+        // What the person is in the middle of, as the desk may not move
+        // under it (shell.md §1).
+        let underway = self.compositor.underway();
+        self.shared.underway.set(underway);
+        self.shared.follow_arrangement(underway);
         self.shared.services.borrow_mut().poll();
         let compositor = &mut self.compositor;
         self.shared
@@ -1747,6 +1880,7 @@ impl Session {
         self.settle()?;
         self.shared.observe();
         self.shared.keep_desk();
+        self.shared.keep_arrangement();
         // The picture is the workspace in front's, which a change covering
         // one workspace lands on.
         self.shared
@@ -1765,6 +1899,7 @@ impl Session {
             return Ok(());
         };
         shell.publish();
+        shell.publish_arrangement(self.shared.arrangement.borrow().reading());
         // What the screen says of its edges is what a bar or dock that shows only sometimes
         // follows; it moves without the desk, so it goes every turn. The part covers the bands
         // the record says the chrome stands in.
@@ -1775,18 +1910,47 @@ impl Session {
             return Ok(());
         }
         let doors = &self.shared.doors;
-        shell.serve(|resource, action, arguments| {
-            doors
-                .invoke(&ActionAddress::new(resource, action), arguments)
-                .map(drop)
-                .map_err(|error| error.to_string())
-        });
+        let resources = doors.resources();
+        shell.serve(
+            |resource, action, name| {
+                tilo_actions::door::resolve(&resources, &ActionAddress::new(resource, action))
+                    .and_then(|spec| spec.params().iter().find(|param| param.name == name))
+                    .map(|param| param.ty)
+            },
+            |resource, action, arguments| {
+                doors
+                    .invoke(&ActionAddress::new(resource, action), arguments)
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            },
+        );
         // What ran may have asked the session in turn (a menu, a sheet).
         self.settle()?;
         if let Some(shell) = self.shell.as_mut() {
             shell.publish();
         }
         Ok(())
+    }
+
+    /// What the shell's bar reads the desk through: a test stages a reading on it, as a
+    /// collaborating session's presence would arrive.
+    #[must_use]
+    pub fn shell_link(&self) -> Option<Rc<tilo_surface_host::SessionLink>> {
+        self.shell.as_ref().map(shell::Shell::link)
+    }
+
+    /// The collaboration plane this session takes part in, when it does: what a test hands it
+    /// is who is here.
+    #[must_use]
+    pub fn sync(&self) -> Option<&Rc<sync::Client>> {
+        self.shared.sync.as_ref()
+    }
+
+    /// The notifications the desk keeps: what apps sent, and what the centre shows. A test
+    /// posts into it as an app's arrival would land.
+    #[must_use]
+    pub fn notices(&self) -> &tilo_desktop_surface::DesktopNotifications {
+        &self.shared.notices
     }
 
     /// How much work the shell's bar did since the session started:

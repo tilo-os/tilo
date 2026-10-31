@@ -115,6 +115,40 @@ impl ControlRow {
         self.selected
     }
 
+    /// A row that is chosen by its press alone, as a component places one: a press its own
+    /// controls did not take runs `chosen`.
+    #[must_use]
+    pub fn on_choose(mut self, mut chosen: Box<dyn FnMut()>) -> Self {
+        self.choice = Some(RowChoice {
+            is_chosen: Box::new(|| false),
+            choose: Box::new(move || {
+                chosen();
+            }),
+        });
+        self
+    }
+
+    /// Whether a press chooses it, as a component's event says.
+    #[must_use]
+    pub fn has_choose(&self) -> bool {
+        self.choice.is_some()
+    }
+
+    /// Show it chosen (or not) in place, without telling what choosing it does.
+    pub fn set_selected(&mut self, selected: bool) {
+        if self.selected != selected {
+            self.selected = selected;
+            self.dirty = true;
+        }
+    }
+
+    /// Show it chosen from the start, as a view says.
+    #[must_use]
+    pub fn with_selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
     fn choose(&mut self) -> bool {
         let Some(choice) = self.choice.as_mut() else {
             return false;

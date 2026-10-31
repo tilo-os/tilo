@@ -12,6 +12,12 @@
 //! `unread`, `flagged` and `mailbox`): a change of one applies at once and becomes final when
 //! the service accepts it. Code writing any other field of the kind is refused (E113), except
 //! in a scenario, whose seed data stands in for the service.
+//!
+//! Some kinds are the origin's to derive rather than to save: the time, the desk, who is here,
+//! the workspaces on the device. The origin makes them again from nothing at every start, so
+//! they are never put in a collaborative record: [their resources live in the store's unsaved
+//! layer](OriginKind::derived), where a change reaches the views at once and leaves no change
+//! behind to be committed, synced or replayed.
 
 /// A field of an origin's kind.
 #[derive(Clone, Copy, Debug)]
@@ -32,6 +38,12 @@ pub struct OriginKind {
     pub name: &'static str,
     pub doc: &'static str,
     pub fields: &'static [OriginField],
+    /// The origin derives these resources from what it holds: it makes them again from
+    /// nothing each time it starts, so they are never saved to a collaborative record. They
+    /// live in the store's unsaved layer, where a change reaches the views without being
+    /// committed: written, remembered, and gone at the next start, when the origin writes them
+    /// again.
+    pub derived: bool,
 }
 
 const fn field(name: &'static str, ty: &'static str, doc: &'static str) -> OriginField {
@@ -74,9 +86,29 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
          `workspace-settings`), by its id.",
     ),
     (
+        "session.arrange",
+        "Arranges the person's own desk: one of the arranging actions the session publishes on \
+         `shell:arrangement` (`open-into`, `move-place`, `resize-strip`, `close-place`, \
+         `pin-place`), by its id, with its arguments as one line of JSON: `move-place \
+         {\"place\":3,\"row\":7}`.",
+    ),
+    (
+        "session.run",
+        "Asks the session to run one of its own actions, by address: the resource and the \
+         action as the door publishes them (a window's `focus` on `desktop:tab:7`, the \
+         chrome's `move-tab-to-strip`, the desk's `show-surface`), then each argument as \
+         `(name, value)` with the name the action's own field has.",
+    ),
+    (
+        "session.notify",
+        "The same as `session.run`, for the notification centre's actions: `notifications.banners`' \
+         `open`, `dismiss`, `act` and `reply`, and the desk's `clear-notices` and \
+         `dismiss-notice`.",
+    ),
+    (
         "session.launch",
-        "Opens an app, or goes to what a dock item stands for: the `key` of the item's \
-         `session.dock-item` — an app id, or a resource's reference.",
+        "Opens an app, or goes to what a dock item stands for: the item's `key` — an app id, \
+         or a resource's reference.",
     ),
     (
         "session.set",
@@ -92,6 +124,7 @@ pub const KINDS: &[OriginKind] = &[
         doc: "This device's desk as the session holds it, for the person at it: the time in their \
               style, who they are, their notifications, the workspaces on this device and the \
               tasks running for them. A shell's bar reads it; the session writes it.",
+        derived: true,
         fields: &[
             field(
                 "person",
@@ -150,11 +183,317 @@ pub const KINDS: &[OriginKind] = &[
                 "Collection<session.person>",
                 "The others here in the workspace in front.",
             ),
+            field(
+                "title",
+                "Text",
+                "What the bar names the desk: the workspace in front, and the strip after it.",
+            ),
+            field(
+                "here",
+                "Text",
+                "The surface the desk shows over its windows: `none`, `desk`, `overview`, \
+                 `switcher`, `launcher`, `centre` or `composer`.",
+            ),
+            field(
+                "agents",
+                "Collection<session.agent>",
+                "The person's agents here, and what each is on and did.",
+            ),
+            field(
+                "rooms",
+                "Collection<session.room>",
+                "The person's other workspaces, with who is in each and what it holds.",
+            ),
+            field(
+                "notices",
+                "Collection<session.notice>",
+                "The notifications in the centre, newest first.",
+            ),
+            field(
+                "banner",
+                "Text",
+                "The notice shown as a banner over the desk now, by its id; empty for none.",
+            ),
+            field(
+                "spotlight",
+                "Text",
+                "What the person last typed in the shell's search, so the shell opens where they \
+                 left off.",
+            ),
+            field(
+                "notice_actions",
+                "Collection<session.notice_action>",
+                "Each action a notice offers, naming the notice it is on, in its sender's order.",
+            ),
+            field(
+                "windows",
+                "Collection<session.window>",
+                "The windows of every strip of the workspace in front, most recently used first.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.window",
+        doc: "A window of the desk: a tab of a strip in the workspace in front.",
+        derived: true,
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "The tab's id, as moving or closing it names it.",
+            ),
+            field("title", "Text", "Its title."),
+            field("origin_app", "Text", "The app it shows, by its name here."),
+            field("icon", "Text", "The app's glyph, as the icon set names it."),
+            field("strip", "Text", "The strip it is in, by its name."),
+            field("workspace", "Text", "The workspace it is in, by its name."),
+            field(
+                "recency",
+                "Int",
+                "How recently it was in front: lower is more recent.",
+            ),
+            field(
+                "seen",
+                "Int",
+                "How many changes of its the person has not seen.",
+            ),
+            field("focused", "Bool", "Whether it has focus now."),
+            field(
+                "preview",
+                "Text",
+                "Whether it may be pictured: `live`, `withheld` (it holds secrets) or `none`.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.agent",
+        doc: "An agent here for the person, or that acted for them: a collaborator shown as one \
+              when the person's setting says so, and a task's own run.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "The agent's id."),
+            field("name", "Text", "Its name here."),
+            field(
+                "state",
+                "Text",
+                "`running`, `waiting` (for the person) or `done`.",
+            ),
+            field("doing", "Text", "What it is on, in a few words."),
+            field(
+                "mark",
+                "Text",
+                "What it last did to what the person is looking at, in a few words.",
+            ),
+            field(
+                "unseen",
+                "Int",
+                "How many changes of its the person has not seen.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.room",
+        doc: "A workspace the person is in, as the workspace overview names it.",
+        derived: true,
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "The workspace's id, as switching to it names it.",
+            ),
+            field("name", "Text", "Its name."),
+            field("current", "Bool", "Whether it is the one in front."),
+            field(
+                "members",
+                "Text",
+                "Who is in it, by their names, in the person's language.",
+            ),
+            field("present", "Int", "How many people are in it now."),
+            field(
+                "activity",
+                "Text",
+                "What happened in it last, in a few words.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.notice",
+        doc: "A notification in the centre, as its sender or its task named it.",
+        derived: true,
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "The notification's id, as acting on it names it.",
+            ),
+            field("title", "Text", "What happened, in a short sentence."),
+            field("body", "Text", "What it says, under the title."),
+            field(
+                "origin_app",
+                "Text",
+                "The app that sent it, or the agent's task.",
+            ),
+            field("icon", "Text", "Its glyph, as the icon set names it."),
+            field(
+                "kind",
+                "Text",
+                "Its kind: `info`, `success`, `warning` or `error`.",
+            ),
+            field("read", "Bool", "Whether the person has seen it."),
+            field(
+                "group",
+                "Text",
+                "What it is grouped under: its app or its task.",
+            ),
+            field(
+                "wants_reply",
+                "Bool",
+                "Whether it asks the person something directly: it is not shown while quiet.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.notice_action",
+        doc: "One action a notification offers, as its sender named it: a message's Reply, an \
+              import's Open.",
+        derived: true,
+        fields: &[
+            field("notice", "Text", "The notice it is on, by its id."),
+            field("key", "Text", "The key the sender answers by."),
+            field("label", "Text", "What it says, in the sender's words."),
+        ],
+    },
+    OriginKind {
+        name: "session.arrangement",
+        doc: "The person's own arrangement: what is open where on their desk (shell.md §2), as \
+              the session keeps it in their own record. A shell's views read it; every change \
+              is one of the arranging actions on `shell:arrangement`, so nothing writes it \
+              directly.",
+        derived: true,
+        fields: &[
+            field(
+                "preset",
+                "Text",
+                "Which preset the person shows: `strips`, `frames` or `spaces`.",
+            ),
+            field(
+                "focused",
+                "Text",
+                "The strip in front, by its id; empty for none.",
+            ),
+            field(
+                "workspaces",
+                "Collection<session.arrangement_workspace>",
+                "The workspaces the desk shows.",
+            ),
+            field(
+                "rows",
+                "Collection<session.arrangement_row>",
+                "The desk's rows, each a strip across a workspace.",
+            ),
+            field(
+                "strips",
+                "Collection<session.arrangement_strip>",
+                "The strips, each a column of places.",
+            ),
+            field(
+                "places",
+                "Collection<session.arrangement_place>",
+                "Every place, showing a resource through a view; each names the strip it is in.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.arrangement_workspace",
+        doc: "A workspace the person's desk shows.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Its id, as the record names it."),
+            field("name", "Text", "Its name."),
+        ],
+    },
+    OriginKind {
+        name: "session.arrangement_row",
+        doc: "A row of the desk: a strip across a workspace's width, holding columns.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Its id, as the record names it."),
+            field("workspace", "Text", "The workspace it is a row of."),
+            field("name", "Text", "Its name."),
+            field(
+                "shell",
+                "Text",
+                "The shell that made it; empty reads as this shell's.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.arrangement_strip",
+        doc: "A strip: a column of places, with a width, in a row of a workspace.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Its id, as the record names it."),
+            field("workspace", "Text", "The workspace it is in."),
+            field("row", "Text", "The row it stands in."),
+            field(
+                "width",
+                "Int",
+                "Its width in per-mille of its row's usable width (333 narrow, 667 normal, \
+                 1000 wide).",
+            ),
+            field("maximized", "Bool", "Whether it is maximized."),
+            field(
+                "active",
+                "Text",
+                "The place in front, by its id; empty for none.",
+            ),
+            field(
+                "placed",
+                "Bool",
+                "Whether it has a place on its workspace's canvas.",
+            ),
+            field("canvas_x", "Int", "The canvas x of its top-leading corner."),
+            field("canvas_y", "Int", "The canvas y of its top-leading corner."),
+            field("canvas_width", "Int", "How wide it stands on the canvas."),
+            field("canvas_height", "Int", "How tall it stands on the canvas."),
+            field(
+                "shell",
+                "Text",
+                "The shell that made it; empty reads as this shell's.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.arrangement_place",
+        doc: "A place: one window, showing a resource through a view.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Its id, as the record names it."),
+            field("strip", "Text", "The strip it is in."),
+            field(
+                "shows",
+                "Text",
+                "The app showing the resource, by its canonical id.",
+            ),
+            field(
+                "shown_as",
+                "Text",
+                "The view it shows the resource through; empty for the app's default.",
+            ),
+            field("record", "Text", "The record it shows, when it shows one."),
+            field("title", "Text", "The title it is shown under."),
+            field("pinned", "Bool", "Whether the person pinned it."),
+            field(
+                "shell",
+                "Text",
+                "The shell that made it; empty reads as this shell's.",
+            ),
         ],
     },
     OriginKind {
         name: "session.workspace",
         doc: "A workspace on this device's desk.",
+        derived: true,
         fields: &[
             field(
                 "key",
@@ -168,32 +507,24 @@ pub const KINDS: &[OriginKind] = &[
     OriginKind {
         name: "session.person",
         doc: "Someone else here in the workspace in front: a person or an agent.",
+        derived: true,
         fields: &[
             field("key", "Text", "Who they are, by their live presence's id."),
             field("name", "Text", "Their name here."),
         ],
     },
     OriginKind {
-        name: "session.dock-item",
-        doc: "One item of the dock as the session holds it: an app the person pinned, an app \
-              running now, or a task. A shell's dock shows them; the session writes the \
-              running and badge fields, the person the pinned ones.",
+        name: "session.task",
+        doc: "A task running for the person: an agent's or a script's.",
+        derived: true,
         fields: &[
-            field("key", "Text", "The app's id, or a resource's reference."),
-            field("title", "Text", "Its name on the dock."),
-            field("icon", "Text", "Its glyph, by the platform icon's name."),
-            people(
-                "pinned",
-                "Bool",
-                "Whether the person pinned it to their dock.",
-            ),
-            field("running", "Bool", "Whether it runs now."),
+            field("key", "Text", "The task's id."),
+            field("title", "Text", "What it is doing, in a few words."),
             field(
-                "badge",
-                "Int",
-                "How many things it has new, as its dock badge shows.",
+                "state",
+                "Text",
+                "`running`, `waiting` (for the person) or `done`.",
             ),
-            field("attention", "Bool", "Whether it wants the person now."),
         ],
     },
     OriginKind {
@@ -202,6 +533,7 @@ pub const KINDS: &[OriginKind] = &[
               the network, Bluetooth, the power, the theme and the do-not-disturb state. The \
               session writes what the device says; the person changes it, as the system's own \
               panel does.",
+        derived: true,
         fields: &[
             field(
                 "key",
@@ -244,23 +576,11 @@ pub const KINDS: &[OriginKind] = &[
         ],
     },
     OriginKind {
-        name: "session.task",
-        doc: "A task running for the person: an agent's or a script's.",
-        fields: &[
-            field("key", "Text", "The task's id."),
-            field("title", "Text", "What it is doing, in a few words."),
-            field(
-                "state",
-                "Text",
-                "`running`, `waiting` (for the person) or `done`.",
-            ),
-        ],
-    },
-    OriginKind {
         name: "imap.account",
         doc: "What the IMAP server of one of the workspace's mail accounts holds. The account itself \
               (its address, servers and signature) is the settings', and its credentials stay in \
               custody: `key` names it.",
+        derived: false,
         fields: &[
             field("key", "Text", "The settings account it mirrors, by its id."),
             field("address", "Text", "Its address."),
@@ -290,6 +610,7 @@ pub const KINDS: &[OriginKind] = &[
     OriginKind {
         name: "imap.mailbox",
         doc: "A mailbox of an account.",
+        derived: false,
         fields: &[
             field("key", "Text", "What messages name it by in `mailbox`."),
             field("name", "Text", "Its name."),
@@ -305,6 +626,7 @@ pub const KINDS: &[OriginKind] = &[
     OriginKind {
         name: "imap.thread",
         doc: "A conversation: messages that answer each other.",
+        derived: false,
         fields: &[
             field("key", "Text", "The conversation's id: its first message's."),
             field("account", "Text", "The key of the account it is in."),
@@ -334,6 +656,7 @@ pub const KINDS: &[OriginKind] = &[
     OriginKind {
         name: "imap.message",
         doc: "A message.",
+        derived: false,
         fields: &[
             field(
                 "key",
@@ -397,4 +720,11 @@ impl OriginKind {
     pub fn origin(&self) -> &'static str {
         self.name.split('.').next().unwrap_or(self.name)
     }
+}
+
+/// Whether the kind named `name` is one its origin derives, and so never saved to a
+/// collaborative record ([`OriginKind::derived`]).
+#[must_use]
+pub fn is_derived(name: &str) -> bool {
+    kind(name).is_some_and(|kind| kind.derived)
 }

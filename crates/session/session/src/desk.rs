@@ -19,7 +19,7 @@ use tilo_surface_host::{DeskReading, shell_part};
 use crate::notifications::NoticeSignals;
 
 /// What the desk's reading is made from ([`Desk::key`]).
-pub(crate) type DeskKey = (u64, i64, u32, bool, u64);
+pub(crate) type DeskKey = (u64, i64, u32, bool, u64, u64, u64, String);
 
 /// The kind of the desk's resource: the origin kind a shell's type holds.
 pub(crate) const DESK_KIND: &str = "session.desk";
@@ -33,6 +33,32 @@ pub(crate) enum DeskEffect {
         #[param("The workspace, by its key")]
         workspace: String,
     },
+    /// Show the surface `surface` over the desk's windows, or close it when it is up.
+    ShowSurface {
+        #[param(
+            "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `workspaces` or `composer`"
+        )]
+        surface: String,
+    },
+    /// Close the surface `surface`, when it is the one up.
+    CloseSurface {
+        #[param("The surface")]
+        surface: String,
+    },
+    /// Clear the notification centre, which Undo puts back.
+    ClearNotices,
+    /// Dismiss the notice `notice` of the centre, by its id.
+    DismissNotice {
+        #[param("The notice, by its id")]
+        notice: String,
+    },
+    /// Open the window switcher, or walk it `steps` windows on: Alt+Tab's press.
+    WalkSwitcher {
+        #[param("How far to walk; 1 the next window, -1 the one before")]
+        steps: Option<i64>,
+    },
+    /// Go to the window the switcher's walk reached, and close the switcher.
+    CommitSwitcher,
 }
 
 /// The desk as the session reads it. See the module docs.
@@ -44,6 +70,98 @@ pub(crate) struct Desk {
     pub(crate) status_panel: bool,
     /// Who is here, when this session takes part in the collaboration plane.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
+    /// The notification centre the reading lists, and what it last said.
+    pub(crate) notices: tilo_desktop_surface::DesktopNotifications,
+    /// The surface the person is in, as the chrome keeps it.
+    pub(crate) surfaces: Rc<crate::surfaces::Surfaces>,
+}
+
+/// What a window with no title is called.
+fn untitled() -> String {
+    tilo_desktop_surface::i18n::t("window-switcher-untitled")
+}
+
+/// The windows the desk shows, by recency: the tabs of every strip of the workspace in front,
+/// the focused one first, then those it was in front of, then the rest along their strips.
+fn windows(tree: &DesktopTree) -> Vec<shell_part::WindowReading> {
+    use tilo_desktop_model::TileContent;
+    let Some(workspace) = tree.active_workspace() else {
+        return Vec::new();
+    };
+    let active_strip = tree
+        .active_strip
+        .get(&workspace.id)
+        .copied()
+        .or_else(|| workspace.strips.first().map(|strip| strip.id));
+    // The tabs the focus history remembers, most recent first.
+    let history: Vec<u64> = workspace
+        .strips
+        .iter()
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.focus_history.iter().rev().copied())
+        .collect();
+    let mut readings = Vec::new();
+    let mut focused_tab = None;
+    for strip in &workspace.strips {
+        let active_group = tree
+            .active_group_for(strip.id)
+            .filter(|id| strip.window_groups.iter().any(|group| group.id == *id))
+            .or_else(|| strip.window_groups.first().map(|group| group.id));
+        for group in &strip.window_groups {
+            for tab in &group.tabs {
+                let focused = Some(strip.id) == active_strip
+                    && Some(group.id) == active_group
+                    && tab.id == group.active_tab;
+                if focused {
+                    focused_tab = Some(tab.id);
+                }
+                let app = match &tab.tile {
+                    TileContent::Foreign { app_id, .. }
+                    | TileContent::LocalApp { app_id, .. }
+                    | TileContent::PeerWindow { app_id, .. }
+                    | TileContent::HostedWindow { app_id, .. } => app_id.clone(),
+                    TileContent::AppPlaceholder { label, .. } | TileContent::Stub { label, .. } => {
+                        label.clone()
+                    }
+                };
+                let title = tab.title.trim();
+                readings.push(shell_part::WindowReading {
+                    key: tab.id.to_string(),
+                    title: if title.is_empty() {
+                        untitled()
+                    } else {
+                        title.to_owned()
+                    },
+                    origin_app: tab.app_title.clone().unwrap_or(app),
+                    icon: String::new(),
+                    strip: strip.name.trim().to_owned(),
+                    workspace: workspace.name.clone(),
+                    recency: 0,
+                    focused,
+                    preview: "none".to_owned(),
+                });
+            }
+        }
+    }
+    let rank = |key: &str| -> i64 {
+        let tab: u64 = key.parse().unwrap_or(u64::MAX);
+        if Some(tab) == focused_tab {
+            return 0;
+        }
+        history
+            .iter()
+            .position(|at| *at == tab)
+            .map_or(i64::MAX / 2, |at| {
+                i64::try_from(at).unwrap_or(0).saturating_add(1)
+            })
+    };
+    for (at, reading) in readings.iter_mut().enumerate() {
+        reading.recency = rank(&reading.key)
+            .saturating_mul(1024)
+            .saturating_add(i64::try_from(at).unwrap_or(0));
+    }
+    readings.sort_by_key(|reading| reading.recency);
+    readings
 }
 
 impl Desk {
@@ -58,7 +176,27 @@ impl Desk {
             self.sync
                 .as_ref()
                 .map_or(0, |sync| sync.here().borrow().revision()),
+            self.notices.revision(),
+            self.surfaces.revision(),
+            self.surfaces.here(),
         )
+    }
+
+    /// The desk's windows, with the one the switcher's walk has reached marked focused while
+    /// it is up: the tile its walk chose is the one lifted.
+    fn windows_reaching(&self, tree: &DesktopTree) -> Vec<shell_part::WindowReading> {
+        let mut windows = windows(tree);
+        if self.surfaces.here() == "switcher"
+            && let Some(at) = self.surfaces.reached(
+                windows.len(),
+                windows.iter().position(|window| window.focused),
+            )
+        {
+            for (index, window) in windows.iter_mut().enumerate() {
+                window.focused = index == at;
+            }
+        }
+        windows
     }
 
     /// The desk now.
@@ -100,6 +238,26 @@ impl Desk {
             // The native session runs no agent tasks of its own yet: none is published until a
             // task host reports to it.
             tasks: Vec::new(),
+            title: title_of(tree),
+            here: self.surfaces.here(),
+            spotlight: self.surfaces.spotlight(),
+            banner: String::new(),
+            windows: self.windows_reaching(tree),
+            agents: Vec::new(),
+            rooms: tree
+                .workspaces
+                .iter()
+                .map(|workspace| shell_part::RoomReading {
+                    key: workspace.id.0.to_string(),
+                    name: workspace.name.clone(),
+                    current: workspace.id == tree.active,
+                    members: self.person.clone(),
+                    present: 0,
+                    activity: String::new(),
+                })
+                .collect(),
+            notices: notices(&self.notices),
+            notice_actions: notice_actions(&self.notices),
             badges: self.signals.badges(),
             people,
             // What the screen says of its edges moves without the desk; the link publishes it
@@ -107,6 +265,74 @@ impl Desk {
             ..DeskReading::default()
         })
     }
+}
+
+/// What the bar names the desk: the workspace in front, and the strip after it.
+fn title_of(tree: &DesktopTree) -> String {
+    let workspace = tree
+        .active_workspace()
+        .map(|workspace| workspace.name.clone())
+        .unwrap_or_default();
+    let strip = strip_in_front(tree);
+    if strip.is_empty() {
+        workspace
+    } else if workspace.is_empty() {
+        strip
+    } else {
+        format!("{workspace} — {strip}")
+    }
+}
+
+/// The notices the centre keeps, newest first, as the desk's reading names them: the banners
+/// still up and the ones retired into the centre.
+fn notices(notices: &tilo_desktop_surface::DesktopNotifications) -> Vec<shell_part::NoticeReading> {
+    let log = notices.log();
+    log.active()
+        .iter()
+        .chain(log.history().iter())
+        .rev()
+        .map(|notification| shell_part::NoticeReading {
+            key: notification.id.to_string(),
+            title: notification.title.clone(),
+            body: notification.body.clone(),
+            origin_app: notification.app_name.clone().unwrap_or_default(),
+            icon: String::new(),
+            kind: match notification.severity {
+                tilo_desktop_surface::notifications::NotificationSeverity::Info => "info",
+                tilo_desktop_surface::notifications::NotificationSeverity::Warning => "warning",
+                tilo_desktop_surface::notifications::NotificationSeverity::Error => "error",
+            }
+            .to_owned(),
+            read: false,
+            group: notification
+                .app_name
+                .clone()
+                .unwrap_or_else(|| notification.id.to_string()),
+            wants_reply: false,
+        })
+        .collect()
+}
+
+/// Each action a notice offers, as its sender named it.
+fn notice_actions(
+    notices: &tilo_desktop_surface::DesktopNotifications,
+) -> Vec<shell_part::NoticeActionReading> {
+    let log = notices.log();
+    log.active()
+        .iter()
+        .chain(log.history().iter())
+        .rev()
+        .flat_map(|notification| {
+            notification
+                .actions
+                .iter()
+                .map(|(key, label)| shell_part::NoticeActionReading {
+                    notice: notification.id.to_string(),
+                    key: key.clone(),
+                    label: label.clone(),
+                })
+        })
+        .collect()
 }
 
 /// The name of the strip in front in the workspace in front, when it has one: what the bar
@@ -121,6 +347,43 @@ fn strip_in_front(tree: &DesktopTree) -> String {
         .and_then(|id| workspace.strips.iter().find(|strip| strip.id == *id))
         .or_else(|| workspace.strips.first());
     active.map_or_else(String::new, |strip| strip.name.trim().to_owned())
+}
+
+impl Desk {
+    /// Bring the window the switcher's walk reached to the front, and close the switcher. The
+    /// walk counts from the window in front as the desk's windows are listed, wrapping.
+    fn commit_switcher(&self) {
+        let windows = self.handle.read(windows);
+        // The window in front leads the list, so the walk counts from its place.
+        let front = windows.iter().position(|window| window.focused);
+        let at = if windows.is_empty() {
+            None
+        } else {
+            Some(
+                self.surfaces
+                    .walk()
+                    .rem_euclid(i64::try_from(windows.len()).unwrap_or(1)),
+            )
+            .and_then(|walk| {
+                let front = i64::try_from(front.unwrap_or(0)).unwrap_or(0);
+                usize::try_from(
+                    front
+                        .saturating_add(walk)
+                        .rem_euclid(i64::try_from(windows.len()).unwrap_or(1)),
+                )
+                .ok()
+            })
+        };
+        let Some(window) = windows.get(at.unwrap_or_default()) else {
+            self.surfaces.forget_walk();
+            self.surfaces.show(crate::surfaces::Surface::Rest);
+            return;
+        };
+        let tab = window.key.parse::<u64>().unwrap_or_default();
+        self.handle.focus_tab(tab);
+        self.surfaces.forget_walk();
+        self.surfaces.show(crate::surfaces::Surface::Rest);
+    }
 }
 
 impl Service for Desk {
@@ -145,8 +408,43 @@ impl Service for Desk {
         if resource != DESK_RESOURCE {
             return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
         }
-        let DeskEffect::SwitchWorkspace { workspace } =
-            decode(&self.resources(), resource, action, arguments)?;
+        let effect = decode(&self.resources(), resource, action, arguments)?;
+        if let DeskEffect::ShowSurface { surface } = &effect {
+            self.surfaces.toggle(surface);
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        if let DeskEffect::CloseSurface { surface } = &effect {
+            self.surfaces.close(surface);
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        if matches!(effect, DeskEffect::ClearNotices) {
+            self.notices.clear_history();
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        if let DeskEffect::WalkSwitcher { steps } = &effect {
+            let opened = self.surfaces.here() == "switcher";
+            self.surfaces.show(crate::surfaces::Surface::Switcher);
+            if opened {
+                self.surfaces.step(steps.unwrap_or(1));
+            }
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        if matches!(effect, DeskEffect::CommitSwitcher) {
+            self.commit_switcher();
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        if let DeskEffect::DismissNotice { notice } = &effect {
+            let id = notice.parse::<u64>().map_err(|_| {
+                DoorError::InvalidArguments(format!("`{notice}` is no notice's id"))
+            })?;
+            self.notices.dismiss_history(id);
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        let DeskEffect::SwitchWorkspace { workspace } = effect else {
+            return Err(DoorError::InvalidArguments(
+                "the desk takes switch-workspace, show-surface or close-surface".to_owned(),
+            ));
+        };
         let known = self.handle.read(|tree| {
             tree.workspaces
                 .iter()

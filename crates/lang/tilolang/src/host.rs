@@ -64,6 +64,12 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Whether the state it toggles is on for the resource, when it says.",
             ),
             (
+                "key",
+                "Option<Text>",
+                "The plain key that runs it while its window has the keyboard (and, on a row's \
+                 action, while that row is selected), when it declares one.",
+            ),
+            (
                 "params",
                 "List<Param>",
                 "What it takes besides the resource, each with its default.",
@@ -238,6 +244,12 @@ pub const VALUE_TYPES: &[ValueType] = &[
         doc: "Someone's lens on a resource: a person or an agent whose window shows it now.",
         fields: &[
             ("who", "Principal", "Whose lens it is."),
+            (
+                "composing",
+                "Bool",
+                "Whether they are typing a message in it now: a draft under way, never what \
+                 it says (what a conversation shows as typing).",
+            ),
             (
                 "mine",
                 "Bool",

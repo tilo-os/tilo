@@ -3098,7 +3098,9 @@ mod bool_control;
 mod checkbox;
 #[cfg(test)]
 mod control_hand_on_tests;
-pub use checkbox::{CheckGlyph, CheckMotion, CheckPose, Checkbox, CheckboxFace, CheckboxInteract};
+pub use checkbox::{
+    CheckGlyph, CheckMotion, CheckPose, Checkbox, CheckboxFace, CheckboxInteract, CheckboxProps,
+};
 mod column;
 pub use column::Column;
 mod composition;
@@ -3125,7 +3127,7 @@ mod face_motions;
 pub use face_motions::FaceMotions;
 mod toggle;
 pub use toggle::{
-    SwitchMotion, SwitchPose, Toggle, ToggleColors, ToggleFace, ToggleInteract,
+    SwitchMotion, SwitchPose, Toggle, ToggleColors, ToggleFace, ToggleInteract, ToggleProps,
     toggle_accessibility, toggle_face_colors,
 };
 mod stack;
@@ -3139,7 +3141,9 @@ pub use document_view::ModelView;
 mod divider;
 pub use divider::{Divider, DividerAxis, RuleEdge, paint_rule};
 mod link;
-pub use link::{Link, os_open as open_external_url, try_os_open as try_open_external_url};
+pub use link::{
+    Link, LinkProps, os_open as open_external_url, try_os_open as try_open_external_url,
+};
 mod flap;
 pub use flap::{FlapState, SplitLayout};
 mod bottom_sheet;
@@ -3214,24 +3218,29 @@ pub use columns::Columns;
 /// The layout primitives: `Stack`, `Row`, `Grid`, `Split`, `Page`, `Layers`.
 pub mod arrange;
 mod image;
-pub use image::{Image, ImageDecodeError, ImageFit};
+pub use image::{Image, ImageDecodeError, ImageFit, ImageProps, PictureSource};
 mod image_crop;
-pub use image_crop::{CropSelection, ImageCropEditor};
+pub use image_crop::{CropEditor, CropSelection, ImageCropEditor, ImageCropEditorProps};
 mod slider;
-pub use slider::{Slider, SliderFace, SliderTouch, SliderTouchStep, paint_held_readout};
+pub use slider::{
+    Slider, SliderFace, SliderProps, SliderTouch, SliderTouchStep, paint_held_readout,
+};
 mod text_input;
 pub use text_input::{
     AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextActionResult, TextInput,
     TextInputKind, TextInputProps, paint_invalid_edge, paint_preedit_underline,
 };
 pub mod code_editor;
-pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};
+pub use code_editor::{
+    CodeEditor, CodeEditorProps, Highlighter, HlState, Language, LineSpans, Span, TokenKind,
+};
 mod editable_label;
-pub use editable_label::{EditOutcome, EditableLabel};
+pub use editable_label::{EditOutcome, EditableLabel, EditableLabelProps};
 pub mod acknowledgement;
 pub mod autocomplete;
 pub use autocomplete::{
-    Autocomplete, AutocompleteOutcome, Suggester, Suggestion, SuggestionList, SuggestionPerson,
+    Autocomplete, AutocompleteOutcome, AutocompleteProps, Suggester, Suggestion, SuggestionList,
+    SuggestionPerson, SuggestionProps,
 };
 pub mod mention_picker;
 pub use mention_picker::{MentionCandidate, MentionQuery};
@@ -3240,12 +3249,12 @@ pub(crate) mod completion_card;
 pub mod text_completion;
 pub use text_completion::{EmojiQuery, TextCompletion};
 mod number_input;
-pub use number_input::{NumberInput, NumberStepperFace, StepperPart};
+pub use number_input::{NumberInput, NumberInputProps, NumberStepperFace, StepperPart};
 pub mod marks;
 pub use marks::{Mark, MarkSpan};
 pub mod markdown_input;
 pub mod rich_text_line;
-pub use rich_text_line::{LineSignal, RichTextLine};
+pub use rich_text_line::{DeclaredLine, LineSignal, RichTextLine, RichTextLineProps};
 pub mod block_editor;
 pub mod paint_damage;
 pub mod rich_doc;
@@ -3262,9 +3271,9 @@ pub use slash_menu::{SlashCommand, SlashHostCommand, SlashMenu};
 pub mod link_popover;
 pub use link_popover::{LinkPopover, PageEntry};
 pub mod page_sidebar;
-pub use page_sidebar::{PageSidebar, PageSidebarEvent};
+pub use page_sidebar::{DeclaredRail, PageSidebar, PageSidebarEvent, PageSidebarProps};
 mod dropdown;
-pub use dropdown::{Dropdown, DropdownFace, FILTER_MIN_OPTIONS};
+pub use dropdown::{Dropdown, DropdownFace, DropdownProps, FILTER_MIN_OPTIONS};
 pub mod aim;
 pub use aim::Trajectory;
 mod hover_intent;
@@ -3272,7 +3281,10 @@ pub use hover_intent::EdgeAim;
 pub mod top_edge_reveal;
 pub use top_edge_reveal::{EdgeGeometry, TopEdgeReveal};
 pub mod tabs;
-pub use tabs::{SharedBy, SharedWith, TabBar, TabDescriptor, TabHolder, TabMark, draw_app_mark};
+pub use tabs::{
+    PresenceFaceProps, SharedBy, SharedWith, TabBar, TabDescriptor, TabHolder, TabItemProps,
+    TabMark, TabStrip, TabStripProps, draw_app_mark, pack_point, unpack_point,
+};
 pub mod scrollbar;
 pub use scrollbar::{
     PressOutcome, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollMetrics,
@@ -3319,7 +3331,7 @@ pub mod shortcut_recorder;
 pub use input_hint::{InputDeviceGlyph, InputHint, InputHintProps, LegendConventions};
 pub mod canvas_navigation_hint;
 pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
-pub use shortcut_recorder::ShortcutRecorder;
+pub use shortcut_recorder::{ShortcutRecorder, ShortcutRecorderProps};
 pub mod context_menu;
 pub mod floating_surface;
 pub mod primitives;
@@ -3329,11 +3341,12 @@ pub use context_menu::{
 };
 mod row_menu;
 pub use primitives::{
-    BarControlFace, DensityRegion, DisclosureGroup, DisclosureRow, DisclosureRowProps,
-    DisclosureState, Fact, FactProps, Facts, FactsFace, FactsProps, FloatingPanel,
-    FloatingPanelFace, FloatingPanelLayout, IconButton, KeyHint, KeyHintProps, KeyHints,
-    KeyHintsFace, KeyHintsProps, Surface, SurfaceLevel, TextStack, TextStackFace, TextStackProps,
-    paint_see_through, paint_surface,
+    BarControlFace, DeclaredModal, DeclaredPanel, DeclaredPopover, DeclaredPopoverButton,
+    DensityRegion, DisclosureGroup, DisclosureRow, DisclosureRowProps, DisclosureState, Fact,
+    FactProps, Facts, FactsFace, FactsProps, FloatingPanel, FloatingPanelFace, FloatingPanelLayout,
+    FloatingPanelProps, IconButton, KeyHint, KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps,
+    ModalProps, PopoverButtonProps, PopoverProps, Surface, SurfaceLevel, TextStack, TextStackFace,
+    TextStackProps, paint_see_through, paint_surface,
 };
 pub use row_menu::RowMenu;
 pub mod context_menu_area;
@@ -3355,6 +3368,10 @@ mod pacer;
 pub use pacer::Pacer;
 pub(crate) mod block_editor_table;
 pub mod data_table;
+mod data_table_component;
+pub use data_table_component::{
+    DataTableCellProps, DataTableColumnProps, DataTableProps, DataTableRowProps, DescribedTable,
+};
 pub mod table {
     pub use super::block_editor_table::*;
 }
@@ -3399,26 +3416,31 @@ pub use file_picker::{FilePicker, FilePickerEntry, FilePickerMode, FilePickerOut
 pub mod progress_bar;
 pub use progress_bar::{ProgressBar, ProgressBarFace, ProgressBarProps};
 pub mod page_preview;
-pub use page_preview::PagePreview;
+pub use page_preview::{PagePreview, PagePreviewProps};
 pub mod spinner;
 pub use spinner::{Spinner, SpinnerProps};
 pub mod program_step;
 pub use program_step::{ProgramStepView, StepAnswer};
 pub mod date_field;
 pub mod date_picker;
-pub use date_field::DateField;
-pub use date_picker::{DateFeed, DatePicker, DateShown, ExternalDatePickerHit};
+pub use date_field::{DateField, DateFieldProps};
+pub use date_picker::{DateFeed, DatePicker, DatePickerProps, DateShown, ExternalDatePickerHit};
 pub mod time_picker;
 pub mod timeline_density;
-pub use time_picker::{TimePicker, TimeValue};
+pub use time_picker::{TimePicker, TimePickerProps, TimeValue};
 pub use timeline_density::TimelineDensity;
 pub mod color_picker;
 pub mod color_swatch;
-pub use color_picker::{ColorPicker, ColorPickerOutcome};
-pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker, SwatchPainter};
+pub use color_picker::{ColorPicker, ColorPickerOutcome, ColorPickerProps};
+pub use color_swatch::{
+    ColorSwatch, ColorSwatchFace, ColorSwatchPicker, ColorSwatchPickerProps, SwatchPainter,
+};
 pub mod picture;
 pub mod picture_choice;
-pub use picture_choice::{ColourFilter, Picture, PictureChoice, PictureOption, TouchpadGesture};
+pub use picture_choice::{
+    ColourFilter, Picture, PictureChoice, PictureChoiceProps, PictureKind, PictureOption,
+    PictureOptionProps, TouchpadGesture,
+};
 pub mod popover;
 pub use popover::{PanelAlign, Popover, PopoverButton, PopoverPrompt, PopoverSide};
 pub mod emoji_picker;
@@ -3523,16 +3545,22 @@ pub use function_plane::FunctionPlane;
 pub mod resizable_split;
 pub use resizable_split::{ResizableSplit, SplitHandle, SplitOrientation, SplitRatio};
 pub mod video_player;
-pub use video_player::VideoPlayer;
+pub use video_player::{DeclaredVideo, VideoPlayer, VideoPlayerProps};
 pub mod webview;
-pub use webview::WebView;
+pub use webview::{WebView, WebViewProps};
 pub mod image_viewer;
+mod image_viewer_component;
 pub use image_viewer::ImageViewer;
+pub use image_viewer_component::{ImageViewerProps, ZoomableImage};
 pub mod tree_view;
+mod tree_view_component;
 pub use tree_view::{
     TreeChildState, TreeClickActivation, TreeHeadingAction, TreeLoadReason, TreeLoadRequest,
     TreeModel, TreeModelChange, TreeMove, TreeNode, TreeRowAction, TreeRowDecoration, TreeRowIcon,
     TreeRowInfo, TreeRowKey, TreeRowTone, TreeSlot, TreeView,
+};
+pub use tree_view_component::{
+    DescribedTreeView, TreeTone, TreeViewNodeProps, TreeViewProps, TreeViewRowProps,
 };
 mod rows;
 pub mod virtual_list;
@@ -3546,23 +3574,29 @@ pub(crate) mod view_choice;
 pub(crate) use activation::take_presses;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
 pub mod media_card;
+mod media_grid_component;
 pub use media_card::{
     ArtPainter, MediaArt, MediaAspect, MediaBadge, MediaCard, MediaCardFace, MediaGrid, MediaSize,
     MediaSource, OwnedBadge, justified_rows,
 };
+pub use media_grid_component::{MediaCardProps, MediaGridProps};
 pub mod capture_button;
 pub use capture_button::{CaptureButtonFace, CaptureKind};
 pub mod transport;
 pub use transport::{TransportControl, TransportFace};
 pub mod media_transport;
+mod media_transport_component;
 pub use media_transport::{
     MediaTransport, TransportActions, TransportArt, TransportEvent, TransportFeed, TransportRepeat,
-    TransportState,
+    TransportState, TransportTriggers,
 };
+pub use media_transport_component::{DeclaredTransport, MediaTransportProps};
 pub mod now_playing;
 pub use now_playing::{Scrub, Song, SongFace};
 pub mod drop_zone;
+mod drop_zone_component;
 pub use drop_zone::{DropZone, DropZoneFace};
+pub use drop_zone_component::DropZoneProps;
 pub mod file_open;
 pub use file_open::{FileOpenEvent, FileOpenSurface};
 pub mod skeleton;
@@ -3576,7 +3610,7 @@ pub mod arriving_view;
 pub use arriving_rows::{ArrivingRows, RowFade};
 pub use arriving_view::{ArrivalFace, ArrivingView, NamedOnce, ReservedShape, Showing};
 pub mod stepper;
-pub use stepper::{Stepper, StepperFace};
+pub use stepper::{Stepper, StepperFace, StepperProps};
 pub mod property_list;
 pub use property_list::{
     Property, PropertyColumn, PropertyList, PropertyListFace, PropertyListProps, PropertyProps,
@@ -3584,13 +3618,14 @@ pub use property_list::{
 };
 pub mod list_row;
 pub use list_row::{
-    ControlRow, ListRow, ListRowFace, ListRowProps, RowAction, RowLeading, RowLeadingShape,
-    RowShape, RowStatus, RowValue, SwipeAction, SwipeActionProps, badge_column_width,
+    ControlRow, ControlRowProps, ListRow, ListRowFace, ListRowProps, RowAction, RowLeading,
+    RowLeadingShape, RowShape, RowStatus, RowValue, SwipeAction, SwipeActionProps,
+    badge_column_width,
 };
 pub mod toggle_group;
 pub use toggle_group::{
-    Segment, SegmentedFace, SegmentedStyle, SegmentedTouch, SegmentedTouchGroup,
-    SegmentedTouchResult, ToggleGroup, segment_colors,
+    Segment, SegmentProps, SegmentedFace, SegmentedStyle, SegmentedTouch, SegmentedTouchGroup,
+    SegmentedTouchResult, ToggleGroup, ToggleGroupProps, ViewTabsProps, segment_colors,
 };
 pub mod view_tabs;
 pub use view_tabs::ViewTabs;
@@ -3604,6 +3639,8 @@ pub mod chrome_body;
 pub use chrome_body::{ChromeBody, ChromeEdge, ChromeProps, ChromeShape};
 pub mod docked;
 pub use docked::{Docked, DockedProps};
+pub mod map;
+pub use map::{MAP_ZOOM_MAX, MAP_ZOOM_MIN, Map, MapCamera, MapPinProps, MapProps, PinPlace};
 pub mod empty_state;
 pub use empty_state::{EmptyState, EmptyStateContent, EmptyStateLayout, EmptyStateProps};
 pub mod find_bar;
@@ -3637,14 +3674,16 @@ pub use change_mark::ChangeMarkProps;
 pub mod conversation;
 pub use conversation::{
     AttachmentAction, AttachmentFace, AttachmentKind, AttachmentSummary, ComposerIntent,
-    ComposerRule, ConversationClock, ConversationDay, ConversationLine, ConversationList,
-    ConversationRole, DayBreaks, DayDividerFace, DeliveryFace, DeliveryState, DeliveryStep,
-    DraftBook, ListCache, ListFace, ListWork, SavedCopy, UploadProgress,
+    ComposerRule, ConversationClock, ConversationDay, ConversationEntryProps, ConversationLine,
+    ConversationList, ConversationListProps, ConversationRole, DayBreaks, DayDividerFace,
+    DeliveryFace, DeliveryState, DeliveryStep, DescribedConversationList, DraftBook, ListCache,
+    ListFace, ListWork, SavedCopy, UploadProgress,
 };
 pub mod card;
 mod tone;
 pub use card::{
-    Actions, Card, CardFace, CardGrid, CardProps, CardWidth, card_column_width, card_columns,
+    Actions, Card, CardFace, CardGrid, CardGridCardProps, CardGridProps, CardProps, CardWidth,
+    DescribedCardGrid, card_column_width, card_columns,
 };
 pub use tone::Tone;
 mod section;
@@ -3667,11 +3706,15 @@ pub use screenshot_markup::{
 pub use selection_handles::{Handle as SelectionHandle, SelectionHandles, TextGrip, TextGrips};
 
 pub mod activity_timeline;
+mod activity_timeline_component;
 pub mod history;
 pub mod history_face;
 pub mod history_group;
 pub mod name_field;
 pub use activity_timeline::ActivityTimeline;
+pub use activity_timeline_component::{
+    ActivityArtifact, ActivityEntryProps, ActivityTimelineProps, DescribedActivityTimeline,
+};
 pub use history::{
     AuthorRelation, EntryKind, HistoryAttribution, HistoryAuthor, HistoryClassification,
     HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay, format_relative_time,
@@ -3683,8 +3726,10 @@ pub use history_face::{EntryBody, EntryFace, HistoryEntryPresenter};
 pub use collab_types::ArtifactKind;
 
 pub mod qr;
+mod qr_component;
 pub mod resource_actions;
 pub use qr::QrWidget;
+pub use qr_component::QrProps;
 
 #[cfg(test)]
 mod a11y_tree_tests;
@@ -3692,6 +3737,10 @@ mod a11y_tree_tests;
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "control_touch_tests.rs"]
+mod control_touch_tests;
 
 #[cfg(test)]
 pub(crate) mod control_result_probe {

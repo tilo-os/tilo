@@ -15,6 +15,9 @@ pub struct ScrollProps {
     pub follow_end: bool,
     /// Scroll sideways instead: a row wider than its column, such as a board's lanes.
     pub across: bool,
+    /// Scroll both ways: a 2D surface whose content is wider and taller than its column, such
+    /// as a desk of strips. Takes precedence over `across`.
+    pub both: bool,
     /// What scrolls.
     #[component(slot(default))]
     pub content: Option<Element>,
@@ -27,9 +30,12 @@ impl Described for Scrollable {
         let ScrollProps {
             follow_end,
             across,
+            both,
             content,
         } = props;
-        let mut scroll = if across {
+        let mut scroll = if both {
+            Self::new(super::ScrollAxis::Both)
+        } else if across {
             Self::new_horizontal()
         } else {
             Self::new_vertical()
@@ -45,10 +51,14 @@ impl Described for Scrollable {
 
     /// The same scroll stays, and keeps its position, while its content changes in place.
     fn set_props(&mut self, props: ScrollProps) -> bool {
-        let same_axis = matches!(
-            (props.across, self.axis),
-            (true, super::ScrollAxis::Horizontal) | (false, super::ScrollAxis::Vertical)
-        );
+        let same_axis = if props.both {
+            matches!(self.axis, super::ScrollAxis::Both)
+        } else {
+            matches!(
+                (props.across, self.axis),
+                (true, super::ScrollAxis::Horizontal) | (false, super::ScrollAxis::Vertical)
+            )
+        };
         props.follow_end == self.follow_end && same_axis
     }
 

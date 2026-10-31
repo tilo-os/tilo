@@ -711,6 +711,8 @@ inputs = [
   "crates/dev/ui-examples/examples/common/gallery_scene.rs",
   "crates/browser/paint-stream/tests/fixtures/",
   "crates/browser/tilo-browser-runtime/src/background_work.rs",
+  # The theme bundle's test loads a theme written only against the theme SDK.
+  "crates/sdk/themes/bauhaus/theme.json",
   "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs",
   "tools/test-assets.py",
   # The ratchets find the checkout by its workspace manifest.
@@ -722,6 +724,7 @@ readers = [
   "crates/sdk/ui-core/src/app/close_admission.rs",
   "crates/sdk/ui-core/tests/support/ratchet.rs",
   "crates/sdk/ui-core/src/webview/paint.rs",
+  "crates/sdk/ui-core/src/theme_bundle/tests.rs",
   "crates/sdk/ui-core/tests/typography_visual_regression.rs",
 ]
 # App, shell and framework sources are read only by the look ratchets in the
@@ -753,6 +756,7 @@ inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/letters/"]
 readers = [
   "apps/tilolang/src/packages.rs",
   "apps/tilolang/tests/board.rs",
+  "apps/tilolang/tests/history_undo.rs",
   "apps/tilolang/tests/opening.rs",
   "apps/tilolang/tests/support.rs",
 ]
@@ -804,6 +808,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/bundle.rs",
   "crates/platform/tilolang-tilo/tests/chat.rs",
   "crates/platform/tilolang-tilo/tests/fixtures.rs",
+  "crates/platform/tilolang-tilo/tests/history_views.rs",
   "crates/platform/tilolang-tilo/tests/legacy.rs",
   "crates/platform/tilolang-tilo/tests/legibility.rs",
   "crates/platform/tilolang-tilo/tests/outbox.rs",
@@ -813,6 +818,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/scenarios.rs",
   "crates/platform/tilolang-tilo/tests/task.rs",
   "crates/platform/tilolang-tilo/tests/tasks.rs",
+  "crates/platform/tilolang-tilo/tests/undo_own.rs",
   "crates/platform/tilolang-tilo/tests/views_migration.rs",
 ]
 
@@ -826,6 +832,19 @@ readers = [
   "crates/platform/tilolang-host/tests/host.rs",
   "crates/platform/tilolang-host/tests/own_records.rs",
 ]
+
+[[cargo]]
+package = "tilo-session"
+# The desk's top bar and overlays compile the tilolang shell package from its
+# sources and ids lock, every file of it.
+inputs = ["apps/tl/shell/"]
+readers = ["crates/session/session/src/shell.rs"]
+
+[[cargo]]
+package = "tilo-surface-host"
+# The part's tests read the shell package's sources and ids lock they lay out.
+inputs = ["apps/tl/shell/"]
+readers = ["crates/session/surface-host/src/shell_part.rs"]
 
 [[cargo]]
 package = "onboarding-walk"

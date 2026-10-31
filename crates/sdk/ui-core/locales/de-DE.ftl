@@ -918,7 +918,7 @@ reference-open = { $label } öffnen
 # What someone else (an agent's run, mostly) changed that the person has not seen yet.
 change-field = Geändert von { $who }
 change-field-before = Geändert von { $who }. Vorher: { $before }
-change-mark-run = { $who } · { $run }
+change-mark-run = { $run }
 change-mark-who = { $who }
 change-mark-created = Erstellt von { $who }
 change-mark-changed = Geändert von { $who }
@@ -1003,6 +1003,8 @@ conversation-delivery-read = Gelesen
 conversation-delivery-failed = Nicht gesendet
 conversation-delivery-uncertain = Status unklar
 conversation-new-messages = Neue Nachrichten
+conversation-jump-unread = Zu den ersten ungelesenen
+conversation-jump-present = Zum Neuesten
 conversation-earlier-unavailable = Frühere Nachrichten sind auf den Hosts dieses Geräts nicht verfügbar
 conversation-attachment-open = Öffnen
 conversation-attachment-open-full-size = In voller Größe öffnen

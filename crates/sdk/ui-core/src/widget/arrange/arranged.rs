@@ -515,16 +515,6 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         dirty
     }
 
-    /// An arrangement paints nothing of its own: it is dirty when a child is. An empty one
-    /// (a group with nothing in it, a view that showed nothing) is never dirty — the default
-    /// says a widget with no children always needs a redraw, which pinned an empty view's
-    /// window to a frame every turn.
-    fn needs_redraw(&self) -> bool {
-        self.slots
-            .iter()
-            .any(|slot| slot.element.needs_redraw())
-    }
-
     /// Laid out once, an arrangement lays out again only for what a child reports.
     fn is_layout_dirty(&self) -> bool {
         self.node.is_none()
@@ -547,6 +537,18 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
             change = change.join(slot.element.take_structure_change());
         }
         change
+    }
+
+    /// An arrangement paints nothing of its own (see [`Self::collect_damage`]), so it is
+    /// dirty exactly when a shown child is. The default (`defaults::needs_redraw`) answers
+    /// `true` for a widget with no children, which made an empty arrangement — a view whose
+    /// every part is conditional and none stands — dirty forever, drawing a frame each time
+    /// it was asked.
+    fn needs_redraw(&self) -> bool {
+        self.slots
+            .iter()
+            .enumerate()
+            .any(|(index, slot)| !self.layout.hidden(index) && slot.element.needs_redraw())
     }
 
     fn name(&self) -> &str {

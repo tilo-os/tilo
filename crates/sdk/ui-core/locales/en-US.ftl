@@ -924,8 +924,9 @@ reference-open = Open { $label }
 # A field they changed, on hover: $who changed it; $before is what it held.
 change-field = Changed by { $who }
 change-field-before = Changed by { $who }. Before: { $before }
-# The mark on a row or wherever a view places it: who, and the task run it was part of.
-change-mark-run = { $who } · { $run }
+# The mark on a row or wherever a view places it: the task run it was part of. Who made the
+# change is the face the chip leads with, and its accessible name says it.
+change-mark-run = { $run }
 change-mark-who = { $who }
 # What the mark says when read out or hovered: what they did.
 change-mark-created = Made by { $who }
@@ -1021,6 +1022,8 @@ conversation-delivery-read = Read
 conversation-delivery-failed = Not sent
 conversation-delivery-uncertain = Status uncertain
 conversation-new-messages = New messages
+conversation-jump-unread = Jump to first unread
+conversation-jump-present = Jump to present
 conversation-earlier-unavailable = Earlier messages aren't available on this device's hosts
 conversation-attachment-open = Open
 conversation-attachment-open-full-size = Open full size

@@ -265,6 +265,14 @@ pub struct Hosted {
     /// they are the same, a turn publishes without building anything.
     published_from: Option<(Rc<Surface>, SurfaceInputs)>,
     registry: ActionRegistry,
+    /// What the instance last published to the session's persistent search index, and what it
+    /// published from: it publishes the app's resources' entries when the record's heads move,
+    /// so a Mail message is found by a word of its body through the system's one search,
+    /// whether or not the window runs. [`None`] until it has published once.
+    search_index: tilo_resource::search_index::Publisher,
+    search_index_from: Option<Vec<String>>,
+    /// How many builds of the entries the index has been sent: the state's generation.
+    search_index_build: u64,
     /// The identity-service connection the instance's connection signs through, held for as
     /// long as the instance runs.
     #[allow(
@@ -332,6 +340,7 @@ impl Hosted {
                     )
                 }),
                 record_loader: None,
+                root: tilolang_tilo::host::RootView::default(),
                 sink: None,
             },
             Rc::new(platform),
@@ -355,6 +364,9 @@ impl Hosted {
             directory_behind: false,
             published_from: None,
             registry,
+            search_index: tilo_resource::search_index::Publisher::default(),
+            search_index_from: None,
+            search_index_build: 0,
             identity: None,
         }
     }
@@ -442,6 +454,7 @@ impl Hosted {
         }
         self.publish();
         self.answer_directory();
+        self.publish_search_index();
         changed
     }
 
@@ -454,6 +467,50 @@ impl Hosted {
                 false
             }
         }
+    }
+
+    /// Publish the app's resources to the session's persistent search index, over the
+    /// instance's certified route: what search finds of the room (a note's title, a message's
+    /// sender, subject and body), keyed by each resource's id, so a hit opens the app at it.
+    /// Nothing is sent while nothing moved; a new route sends the whole set again.
+    fn publish_search_index(&mut self) {
+        let generation: Vec<String> = tilo_resource::heads_of(self.record.doc())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|hash| hash.to_string())
+            .collect();
+        if self.search_index_from.as_deref() == Some(generation.as_slice()) {
+            return;
+        }
+        if self.record.route().app_id != self.spec.app {
+            return;
+        }
+        let Some(host) = self.instance.host() else {
+            return;
+        };
+        host.sync_from(self.record.doc());
+        let entries = tilolang_tilo::search::index_entries(&host);
+        self.search_index_build = self.search_index_build.saturating_add(1);
+        let state = tilo_resource::search_index::IndexState {
+            generation: self.search_index_build,
+            secrets_unlocked: None,
+        };
+        // What a hit's address names opens at its resource; the entries carry the package's
+        // `open`.
+        let deltas = self.search_index.publish(state, entries);
+        let app_id = self.spec.app.clone();
+        for delta in deltas {
+            let Some(bytes) = delta.encode() else {
+                continue;
+            };
+            self.record
+                .manager_mut()
+                .send(collaboration::CollabRequest::PublishSearchIndex {
+                    app_id: app_id.clone(),
+                    delta_json: bytes,
+                });
+        }
+        self.search_index_from = Some(generation);
     }
 
     /// Offer the instance's action directory on its connection, once it is connected, and

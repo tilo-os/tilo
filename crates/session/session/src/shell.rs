@@ -8,48 +8,20 @@ use std::rc::Rc;
 
 use serde_json::{Map, Value};
 use tilo_compositor::Compositor;
-use tilo_surface_host::shell_part::Ask;
+use tilo_surface_host::shell_part::{ArrangementReading, Ask};
 use tilo_surface_host::{Doors, SessionLink, ShellPart, ShellWork};
 
 use crate::desk::Desk;
 use crate::panels::Held;
 
-/// The shell package's files and its ids lock, as they ship with the session: every `.tl` file
-/// of the package is part of its one module.
-const FILES: [(&str, &str); 5] = [
-    ("app.tl", include_str!("../../../../apps/tl/shell/app.tl")),
-    ("chrome.tl", include_str!("../../../../apps/tl/shell/chrome.tl")),
-    ("docks.tl", include_str!("../../../../apps/tl/shell/docks.tl")),
-    ("layout.tl", include_str!("../../../../apps/tl/shell/layout.tl")),
-    ("system.tl", include_str!("../../../../apps/tl/shell/system.tl")),
-];
-const IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
-
-/// The shell package compiled, or why it does not compile.
+/// The shell package and the packages it uses, compiled, the shell last: what the shell's
+/// instance runs.
 ///
 /// # Errors
-/// The package does not compile: its diagnostics.
-pub fn compile() -> Result<tilolang_tilo::tilolang::Compiled, String> {
-    let lock = tilolang_tilo::tilolang::IdsLock::parse(IDS).map_err(|error| error.to_string())?;
-    let source = tilolang_tilo::tilolang::PackageSource::new(
-        FILES
-            .into_iter()
-            .map(|(path, text)| (format!("apps/tl/shell/{path}"), text.to_owned())),
-    );
-    tilolang_tilo::tilolang::compile_package_source(&source, &lock, &[]).map_err(|diagnostics| {
-        diagnostics
-            .iter()
-            .map(|diagnostic| {
-                diagnostic.render(
-                    diagnostic
-                        .file
-                        .as_deref()
-                        .unwrap_or("apps/tl/shell/app.tl"),
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    })
+/// A package does not compile: its diagnostics.
+pub fn compile() -> Result<Vec<tilolang_tilo::tilolang::Compiled>, String> {
+    tilo_surface_host::shell_part::compile_shell()
+}
 }
 
 /// The height of the band the chrome leaves the shell's bar, logical pixels.
@@ -93,13 +65,16 @@ impl Shell {
         desk: Desk,
         scale: f64,
     ) -> Result<Self, String> {
-        let compiled = compile()?;
-        let app = compiled.meta.app.clone();
+        let packages = compile()?;
+        let app = packages
+            .last()
+            .map(|compiled| compiled.meta.app.clone())
+            .ok_or("the shell package did not compile")?;
         let link = Rc::new(SessionLink::default());
         let wake = compositor.waker();
         let part = ShellPart::new(
             &app,
-            vec![compiled],
+            packages,
             &desk.person,
             Rc::clone(&link),
             // The bar's band, at rest: what the chrome leaves it.
@@ -171,18 +146,22 @@ impl Shell {
             .outputs()
             .iter()
             .filter_map(|output| output.rect)
-            .map(|(x, y, w, h)| {
-                (
-                    x,
-                    y,
-                    x.saturating_add(w),
-                    y.saturating_add(h),
-                )
-            })
+            .map(|(x, y, w, h)| (x, y, x.saturating_add(w), y.saturating_add(h)))
             .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))?;
         let width = u32::try_from(x1.saturating_sub(x0)).ok()?;
         let height = u32::try_from(y1.saturating_sub(y0)).ok()?;
         Some((x0, y0, width.max(1), height.max(1)))
+    }
+
+    /// Hand the shell the person's arrangement, which its views draw, whenever it changed.
+    pub(crate) fn publish_arrangement(&self, reading: ArrangementReading) {
+        self.link.publish_arrangement(reading);
+    }
+
+    /// The link the session publishes the desk on and the shell asks through: what a test
+    /// stages a reading on.
+    pub(crate) fn link(&self) -> Rc<SessionLink> {
+        Rc::clone(&self.link)
     }
 
     /// Whether the shell asked something of the door the session has not run yet.
@@ -267,8 +246,14 @@ impl Shell {
     }
 
     /// Run what the shell asked through `invoke` (the session's door).
+    ///
+    /// The shell's effects carry every argument as text (`outside("session.run", ("…", k))`),
+    /// so each is typed here by the type the action itself declares for it: a workspace's key
+    /// is text even when it reads as digits, and a count is a number. `types` answers with the
+    /// declared type of `(resource, action)`'s argument `name`, when the door publishes it.
     pub(crate) fn serve(
         &self,
+        types: impl Fn(&str, &str, &str) -> Option<tilo_actions::params::ParamType>,
         invoke: impl FnMut(&str, &str, &Map<String, Value>) -> Result<(), String>,
     ) {
         let mut invoke = invoke;
@@ -276,7 +261,10 @@ impl Shell {
             let arguments: Map<String, Value> = ask
                 .arguments
                 .iter()
-                .map(|(name, value)| (name.clone(), Value::String(value.clone())))
+                .map(|(name, value)| {
+                    let ty = types(&ask.resource, &ask.action, name);
+                    (name.clone(), typed(value, ty))
+                })
                 .collect();
             invoke(&ask.resource, &ask.action, &arguments)
         });
@@ -298,15 +286,47 @@ impl Shell {
     }
 }
 
+/// `value` (the text the shell's effect wrote) as the door's arguments take it, in the type
+/// the action declares for that argument. Text stays text however it reads: a workspace's
+/// key is `"281474976710657"`, not a number. An undeclared argument keeps the text it came as,
+/// and the door refuses it by name.
+fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
+    use tilo_actions::params::ParamType;
+    match ty {
+        Some(ParamType::Integer) => value
+            .trim()
+            .parse::<i64>()
+            .map_or_else(|_| Value::String(value.to_owned()), Value::from),
+        Some(ParamType::Number) => value
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map_or_else(|| Value::String(value.to_owned()), Value::Number),
+        Some(ParamType::Boolean) => match value.trim() {
+            "true" | "yes" | "on" => Value::Bool(true),
+            "false" | "no" | "off" => Value::Bool(false),
+            _ => Value::String(value.to_owned()),
+        },
+        Some(ParamType::Object) => serde_json::from_str::<Map<String, Value>>(value)
+            .map_or_else(|_| Value::String(value.to_owned()), Value::Object),
+        Some(ParamType::Array) => serde_json::from_str::<Vec<Value>>(value)
+            .map_or_else(|_| Value::String(value.to_owned()), Value::Array),
+        Some(ParamType::Text | ParamType::Resource | ParamType::DateTime | ParamType::Secret)
+        | None => Value::String(value.to_owned()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
     fn the_shell_package_compiles_and_its_ids_lock_holds_every_declaration() {
-        let compiled = super::compile().unwrap_or_else(|why| panic!("{why}"));
+        let packages = super::compile().unwrap_or_else(|why| panic!("{why}"));
+        let compiled = packages.last().expect("the shell package compiles last");
         let lock = compiled.ids.to_text();
         assert_eq!(
             lock,
-            super::IDS,
+            tilo_surface_host::shell_part::shell_ids(),
             "apps/tl/shell/app.ids is not the lock the package compiles to; write:\n{lock}"
         );
     }

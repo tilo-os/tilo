@@ -73,8 +73,10 @@ enum Slot {
     space (icon: .minus)
 }
 
-/// A named set of the settings, which the person applies in one action.
-enum Preset {
+/// A named set of the settings, which the person applies in one action: a chrome preset.
+/// `Viewing.preset` (arrangement.tl) is the *desk* preset — how the same places are shown — and
+/// is a different setting; this one names the bar and the dock.
+enum Layout {
     /// The dock on the bottom with the bar on the top: Tilo's own.
     tilo (icon: .layout_grid)
     /// A floating, rounded, translucent dock at the bottom that hides while a window covers
@@ -92,10 +94,10 @@ enum Preset {
 type Shell {
     /// The preset the settings were last made from; `tuned` says whether the person has
     /// changed a setting since.
-    preset: Preset = .tilo
+    preset: Layout = .tilo
     /// The preset the settings were last made from, kept while the person tunes one thing,
     /// so the picker says "Custom, based on …" rather than losing where they started.
-    based_on: Preset = .tilo
+    based_on: Layout = .tilo
     /// Whether the person has changed a setting since choosing a preset.
     tuned: Bool = false
     /// The top bar.
@@ -190,7 +192,7 @@ migration action seed(s: Shell) {
 
 /// Uses the preset `to`: every setting it names at once. The result is exactly that preset,
 /// so the picker shows it chosen and "custom" is off.
-primary action apply(s: Shell, to: Preset) (icon: .layout_grid, label: "Use this layout") {
+primary action apply(s: Shell, to: Layout) (icon: .layout_grid, label: "Use this layout") {
     s.preset = to
     s.based_on = to
     s.tuned = false
