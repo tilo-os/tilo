@@ -20,6 +20,10 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
+#[path = "spinner_component.rs"]
+mod component;
+pub use component::SpinnerProps;
+
 /// Sized to the concept's body text (14px line-height ≈ 20px) while leaving the
 /// dots large enough for the alpha ramp to read.
 pub const DEFAULT_SIZE_PX: f32 = 24.0;
@@ -55,6 +59,9 @@ pub struct Spinner {
     /// The last draw moved to a new step: its box is damage until the frame
     /// is presented (`mark_drawn`).
     stepped: bool,
+    /// What is under way ("Loading messages"), as assistive technology
+    /// names the spinner.
+    label: Option<String>,
 }
 
 impl Spinner {
@@ -81,7 +88,16 @@ impl Spinner {
             reduce_motion: false,
             drawn_step: None,
             stepped: true,
+            label: None,
         }
+    }
+
+    /// Name what is under way ("Loading messages") for assistive
+    /// technology.
+    #[must_use]
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
     }
 
     /// The step this spinner shows at `now`: its pose, frozen at 0 under
@@ -207,7 +223,11 @@ impl Widget for Spinner {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        Some(AccessNode::new(Role::Spinner).with_state(AccessState::new().busy(true)))
+        Some(
+            AccessNode::new(Role::Spinner)
+                .with_optional_name(self.label.clone())
+                .with_state(AccessState::new().busy(true)),
+        )
     }
 
     /// In the normal presentation the default would freeze the orbit at the

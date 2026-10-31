@@ -24,8 +24,13 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::context_menu::{ContextMenu, MenuItem};
 
+#[path = "toolbar_component.rs"]
+mod component;
 #[path = "toolbar_damage.rs"]
 mod damage;
+#[cfg(test)]
+#[path = "toolbar_touch_tests.rs"]
+mod touch_tests;
 use crate::a11y::{AccessNode, AccessState, Action, Role};
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
@@ -33,6 +38,9 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{TaffyTreeExt, Widget};
+pub use component::{
+    ToolbarButtonProps, ToolbarPart, ToolbarProps, ToolbarSeparatorProps, ToolbarSpacerProps,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Orientation {
@@ -183,6 +191,8 @@ pub struct Toolbar {
     /// Element nodes laid out apart from a host (a painted host).
     detached: Vec<Option<super::floating_surface::DetachedContent>>,
     theme: Theme,
+    /// What reaches the row: a finger's target is larger than a pointer's.
+    interaction: crate::interaction::InteractionEnvironment,
     /// What the frame being drawn and the one on screen show of the row.
     shown: crate::scroll_copy::ShownFrames<damage::BarShown>,
 }
@@ -234,6 +244,7 @@ impl Toolbar {
             measured_scale: None,
             detached: Vec::new(),
             theme: Theme::dark(),
+            interaction: crate::interaction::InteractionEnvironment::default(),
             shown: crate::scroll_copy::ShownFrames::default(),
         }
     }
@@ -1928,6 +1939,18 @@ impl Widget for Toolbar {
             }
         }
     }
+    /// On touch every command is a finger's target, not a pointer's.
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        if self.interaction != environment {
+            self.interaction = environment;
+            self.layout_dirty = true;
+            self.measured_scale = None;
+        }
+        super::defaults::set_interaction_environment(self.children_mut(), environment);
+    }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.items
             .iter_mut()
@@ -2219,7 +2242,11 @@ impl Toolbar {
         // A hit target is a metric, not a spacing step: a custom theme's
         // dense `spacing_px` rescales `s8` but must not shrink the pointer
         // target beneath the 32 px floor (HIG §7b).
-        self.minimum = theme.tokens.metrics.min_pointer_target;
+        self.minimum = theme
+            .tokens
+            .metrics
+            .min_pointer_target
+            .max(self.interaction.minimum_target());
         self.gap = theme.tokens.spacing.s3;
     }
 

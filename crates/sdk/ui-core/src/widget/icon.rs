@@ -23,12 +23,18 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
+#[path = "icon_component.rs"]
+mod component;
+pub use component::IconProps;
+
 /// Where the glyph colour comes from.
 #[derive(Clone, Copy, Debug)]
 enum Tint {
     Primary,
     Dim,
     Accent,
+    /// A status's colour (a check in success, a warning sign in warning).
+    Tone(crate::widget::Tone),
     Fixed(Color),
 }
 
@@ -111,6 +117,14 @@ impl IconWidget {
         self
     }
 
+    /// Resolve the glyph through a status's colour in the active theme: a
+    /// passed check in success, a warning sign in warning.
+    #[must_use]
+    pub fn tone(mut self, tone: crate::widget::Tone) -> Self {
+        self.tint = Tint::Tone(tone);
+        self
+    }
+
     #[must_use]
     pub fn with_stroke(mut self, stroke_px: f64) -> Self {
         self.stroke_px = stroke_px;
@@ -126,6 +140,7 @@ impl IconWidget {
             Tint::Primary => theme.text_primary,
             Tint::Dim => theme.text_dim,
             Tint::Accent => theme.tokens.colors.intent.accent_ink,
+            Tint::Tone(tone) => tone.colour(theme),
             Tint::Fixed(c) => c,
         }
     }

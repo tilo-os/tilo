@@ -23,6 +23,10 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{TaffyTreeExt, Widget};
 
+#[path = "signal_meter_component.rs"]
+mod component;
+pub use component::SignalMeterProps;
+
 /// How many bars a meter has.
 pub const SIGNAL_BARS: u8 = 4;
 

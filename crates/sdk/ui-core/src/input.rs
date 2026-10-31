@@ -138,6 +138,21 @@ impl KeyboardBinding {
         Self { modifiers, key }
     }
 
+    /// The chord of `keys` as a person names them ("Ctrl", "Shift", "S"):
+    /// each modifier by any spelling the chord parsers accept, the last other
+    /// key the chord's key.
+    pub fn from_keys<'a>(keys: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut modifiers = Vec::new();
+        let mut key = KeyLegend::Character(String::new());
+        for token in keys {
+            match crate::keycaps::canonical_modifier(token) {
+                Some(modifier) => modifiers.push(modifier),
+                None => key = KeyLegend::from_name(token),
+            }
+        }
+        Self::new(modifiers, key)
+    }
+
     pub fn command(key: impl AsRef<str>) -> Self {
         Self::new(
             [KeyboardModifier::Command],
