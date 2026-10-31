@@ -510,6 +510,13 @@ impl Personal {
         self.persist();
     }
 
+    /// The rooms on this device's desk that are someone else's, joined through
+    /// their door: whose workspace they are is their host's governance's to
+    /// say, not this person's.
+    pub(crate) fn borrowed(&self) -> &BTreeSet<RoomId> {
+        &self.borrowed
+    }
+
     /// Write what changed on this device's desk since the person's devices
     /// last agreed into the list: new and renamed workspaces, ones taken off
     /// the desk here, and a new order. Returns whether the list changed,
@@ -940,6 +947,60 @@ fn take_personal(personal: &mut Personal, sync: &crate::sync::Client) -> (bool, 
 }
 
 impl crate::Shared {
+    /// Give every workspace on the desk that is nobody's yet the owner its
+    /// governance names: the person at this device for their own — the one
+    /// seeded here, one made here, or one made on another device of theirs —
+    /// and, for a workspace joined through its door, the owner its host's
+    /// governance has, which this device learns when the room comes here. A
+    /// workspace whose owner is not known here keeps none, and never takes
+    /// this person's: a host's workspace is not theirs to claim. One naming
+    /// someone else keeps that name: ownership moves through the
+    /// workspace's own governance, never here.
+    ///
+    /// Run after every pass, so a desk this device kept from before its
+    /// workspaces were anyone's is claimed the first time it is shown, and a
+    /// workspace made here or joined here is claimed as it arrives. A desk
+    /// kept from before this device had an identity is theirs all the same:
+    /// one naming them as the login account at it is claimed for who they
+    /// are now. A pass with nothing to claim writes nothing.
+    pub(crate) fn own_workspaces(&self) {
+        let borrowed = self
+            .personal
+            .as_ref()
+            .map(|personal| personal.borrow().borrowed().clone())
+            .unwrap_or_default();
+        let mut tree = self.handle.read(Clone::clone);
+        let mut changed = false;
+        for workspace in &mut tree.workspaces {
+            if workspace
+                .owner()
+                .is_some_and(|owner| !self.earlier.contains(owner))
+            {
+                continue;
+            }
+            if let Some(owner) = self.owner_of(workspace.room(), &borrowed) {
+                workspace.set_owner(owner);
+                changed = true;
+            }
+        }
+        if changed {
+            self.handle.replace_tree(tree);
+        }
+    }
+
+    /// Who the governance of `room` names as its owner: the room's own, when
+    /// this device holds it, else the person at this device for a workspace
+    /// of their own that no room governs here yet. `None` for a room joined
+    /// through a door whose host has not said whose it is here.
+    fn owner_of(&self, room: RoomId, borrowed: &BTreeSet<RoomId>) -> Option<String> {
+        if let Some(engine) = &self.engine
+            && let Ok(owner) = engine.owner_of(&room.to_string())
+        {
+            return Some(owner);
+        }
+        (!borrowed.contains(&room)).then(|| self.person.clone())
+    }
+
     /// Open the workspace of `room` on this desk, named `name`, through the
     /// desk's own action for making one: a workspace of the person's that
     /// their other device made opens here without joining anything anew.

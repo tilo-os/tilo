@@ -207,6 +207,9 @@ struct Shared {
     /// Who sits here, as the desk's rules and the workspaces' governance
     /// name them.
     person: String,
+    /// The ids they went by before this device had an identity, which their
+    /// own workspaces may still name them by.
+    earlier: Vec<String>,
     search: Rc<SessionSearch>,
     /// The apps the person opens, when this session starts them.
     launch: Option<Rc<mount::apps::Apps>>,
@@ -1024,6 +1027,12 @@ impl Session {
         // The words a notice or a query resolves later, in the person's
         // language, are read now: the loop that shows them reads no file.
         i18n::ensure();
+        // Who sits here, as the one id the session acts as: the person their
+        // workspaces' governance names, which this device's certificate
+        // carries. Everything the person does here — the workspaces they
+        // own, what the desk records, what the sheets change — is theirs.
+        let seat = identity::seat(&options);
+        options.person = seat.person;
         let sources = config::Sources::from_config(&options.config);
         let mut doors = Doors::default();
         // The VPN profiles' kill switch runs for the session's lifetime: a
@@ -1495,6 +1504,7 @@ impl Session {
             desktop,
             activity,
             person: options.person.clone(),
+            earlier: seat.earlier,
             search,
             launch: options.launch,
             restore: RefCell::new(restore),
@@ -2071,6 +2081,10 @@ impl Session {
         self.follow_collaboration();
         self.follow_automation();
         self.shared.follow_personal();
+        // Who each workspace on the desk is whose, after the workspaces this
+        // pass brought: the person's own are theirs, and one joined keeps its
+        // host's owner.
+        self.shared.own_workspaces();
         self.follow_power()?;
         if let Some(comforts) = &mut self.comforts {
             comforts.observe();

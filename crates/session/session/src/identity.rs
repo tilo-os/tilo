@@ -63,6 +63,36 @@ fn identity_directories() -> Vec<PathBuf> {
         .collect()
 }
 
+/// Who sits at this device, as the one id the session acts as, and the ids
+/// they went by before.
+pub(crate) struct Seat {
+    /// The person, by the id the workspaces' governance names them by: their
+    /// root key in hex, which this device's certificate carries — never the
+    /// device's own key. A computer that has no identity yet goes by the
+    /// login account at it, whom its desk is theirs as until the person sets
+    /// one up.
+    pub(crate) person: String,
+    /// The ids they went by before this device had an identity — the login
+    /// account at it, and what the caller named — under which a desk kept
+    /// from then is still theirs.
+    pub(crate) earlier: Vec<String>,
+}
+
+/// Who sits here, read from this device's own identity as the session starts,
+/// which setup settles before the desk opens.
+pub(crate) fn seat(options: &crate::Options) -> Seat {
+    let person = match crate::sync::device_identity() {
+        Some(identity) => hex::encode(identity.device_cert.user_public_key),
+        None if !options.user.is_empty() => options.user.clone(),
+        None => options.person.clone(),
+    };
+    let earlier = [options.user.clone(), options.person.clone()]
+        .into_iter()
+        .filter(|id| !id.is_empty() && *id != person)
+        .collect();
+    Seat { person, earlier }
+}
+
 /// Read who sits here at startup, and keep it current from then on. A value
 /// that cannot be watched is read where it is asked for, as before.
 ///

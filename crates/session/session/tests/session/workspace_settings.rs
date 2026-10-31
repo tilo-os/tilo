@@ -6,12 +6,11 @@ use super::*;
 /// Who sits here, as the session acts for them.
 const PERSON: &str = "person";
 
-/// The workspace in front belongs to the person who sits here, as it does
-/// once the room's custody has taken it, with `members` already in it.
+/// The workspace in front, which the session has taken as the person's own,
+/// with `members` already in it.
 fn own_workspace(session: &Session, members: &[&str]) {
     let mut tree = session.handle().read(Clone::clone);
     let workspace = tree.active_workspace_mut().expect("a workspace in front");
-    workspace.set_owner(PERSON.to_owned());
     for member in members {
         tilo_desktop::workspace_settings::set_member_role(
             workspace,

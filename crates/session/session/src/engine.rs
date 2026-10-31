@@ -247,6 +247,26 @@ impl Engine {
             .ok()
     }
 
+    /// Who governs the room `room`, as the id its governance names: the
+    /// owner the room was made under, whose devices sign for it. A workspace
+    /// joined keeps the owner its host's governance has, never the person who
+    /// joined; one made here has this person's.
+    ///
+    /// # Errors
+    /// The room is not held here yet, or its governance cannot be read now.
+    pub fn owner_of(&self, room: &str) -> Result<String, String> {
+        let room = RoomId::parse(room).ok_or("that is not a room")?;
+        self.owner.with_current(room, |view| {
+            let owner = view.peer().governance().owner_user_public_key();
+            if owner == [0; 32] {
+                // A room whose governance names nobody has no owner to carry:
+                // a claim made here would be this device's, not the room's.
+                return Err("the room's governance names no owner".to_owned());
+            }
+            Ok(hex::encode(owner))
+        })
+    }
+
     /// The engine's owner, for what holds the room's session.
     pub(crate) fn owner(&self) -> &NativeWorkspaceOwner {
         &self.owner

@@ -1038,16 +1038,6 @@ fn private_home() -> tempfile::TempDir {
     root
 }
 
-/// The workspace of the desk `session` shows, owned by the person at it: a
-/// workspace nobody administers admits nobody.
-fn own_the_desk(session: &Session) {
-    let mut tree = session.handle().read(Clone::clone);
-    for workspace in &mut tree.workspaces {
-        workspace.set_owner("person");
-    }
-    session.handle().replace_tree(tree);
-}
-
 /// What the agents the desk's workspace holds, as Settings lists them.
 fn desk_agents(session: &Session) -> Vec<(String, tilo_action_policy::KindSet)> {
     session.handle().read(|tree| {
@@ -1056,6 +1046,39 @@ fn desk_agents(session: &Session) -> Vec<(String, tilo_action_policy::KindSet)> 
             .map(|workspace| workspace.agent_members_at(tilo_clock::unix_now()))
             .unwrap_or_default()
     })
+}
+
+/// The Agents tab of the workspace in front, as the person opens it: whether
+/// it offers what it takes to admit and manage agents, and the agents it
+/// lists.
+#[track_caller]
+fn agents_tab(session: &mut Session) -> (bool, Vec<String>) {
+    use tilo_sheets::workspace_settings::{Tab, WorkspaceSettingsEffect};
+    let sheet = publisher(session, "workspace-settings")
+        .expect("the desk publishes its workspace settings");
+    session
+        .invoke(&sheet, "workspace-settings", &Map::new())
+        .expect("open the workspace settings");
+    session.step(Duration::from_millis(1)).expect("step");
+    press(
+        session,
+        WorkspaceSettingsEffect::SHOW_TAB.id,
+        json!({"tab": "agents"}),
+    );
+    let shown = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .settings();
+    assert_eq!(shown.tab, Tab::Agents, "the tab the person picked");
+    (
+        shown.agents.manage,
+        shown
+            .agents
+            .agents
+            .into_iter()
+            .map(|agent| agent.key)
+            .collect(),
+    )
 }
 
 /// A program of this login at the door: it says who it is, and asks what the
@@ -1135,7 +1158,8 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    own_the_desk(&session);
+    // Nobody set this desk's owner up: the desk a device seeds is the person's
+    // own, and it is what lets the Agent door's question be answered at all.
     assert!(desk_agents(&session).is_empty(), "nobody works here yet");
 
     let (answers, received) = std::sync::mpsc::channel();
@@ -1186,6 +1210,12 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
         [("claude-code".to_owned(), tilo_action_policy::KindSet::READ)],
         "the agent the workspace holds, with the Observer preset's grants"
     );
+    assert_eq!(
+        agents_tab(&mut session),
+        (true, vec!["claude-code".to_owned()]),
+        "the person administers the desk they sit at, and its Agents tab lists \
+         the agent they let in"
+    );
 }
 
 #[test]
@@ -1206,7 +1236,6 @@ fn a_program_the_person_refuses_works_nowhere() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    own_the_desk(&session);
 
     let (answers, received) = std::sync::mpsc::channel();
     let client = std::thread::spawn(move || door_client(&socket, &answers));

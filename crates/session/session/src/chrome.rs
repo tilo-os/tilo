@@ -342,9 +342,13 @@ impl DesktopChromeSource for SessionChrome {
             clock_activity,
             waved,
             own: Some(OwnChip {
-                name: self.person.clone(),
+                // The name they go by, and the root key the picture they
+                // chose hangs on: the id is never shown as their name.
+                name: crate::directory::own_person_name(
+                    ui::local_identity::load().map(|it| it.display_name),
+                ),
                 rgb: ui::presence::user_color(&self.person),
-                identity: String::new(),
+                identity: self.person.clone(),
             }),
             notification_badge: self.signals.unread(),
             notifications_quiet: self.signals.quiet(),

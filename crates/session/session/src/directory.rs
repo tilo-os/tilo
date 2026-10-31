@@ -318,7 +318,7 @@ impl Person {
 /// The name this person goes by in a room: the one they chose, else their
 /// login account's. A room, a public one above all, learns nothing of this
 /// person's devices.
-fn own_person_name(chosen: Option<String>) -> String {
+pub(crate) fn own_person_name(chosen: Option<String>) -> String {
     chosen
         .filter(|name| runtime_identity::is_chosen_display_name(name))
         .and_then(|name| {

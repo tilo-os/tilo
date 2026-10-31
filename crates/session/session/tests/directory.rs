@@ -1083,6 +1083,16 @@ impl Lounge {
     }
 }
 
+/// Whose the workspace in `room` is on this desk, as the desk names them.
+fn owner_on_desk(session: &Session, room: &str) -> Option<String> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .find(|workspace| workspace.room().to_string() == room)
+            .and_then(|workspace| workspace.owner().cloned())
+    })
+}
+
 #[test]
 fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
     let _settled = ui::motion::testing::settled();
@@ -1130,6 +1140,24 @@ fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
         .find(|(_, _, room)| room == &lounge.room)
         .expect("the workspace is on the desk");
     assert_eq!(joined.1, "Lounge", "under the name the site listed it by");
+    // Whose the workspace is stays its host's governance's to say: joining it
+    // never makes it this person's.
+    wait_until(
+        &mut session,
+        "the lounge's owner is named here",
+        |session| owner_on_desk(session, &lounge.room).is_some(),
+    );
+    let host = hex::encode(lounge.host_cert.user_public_key);
+    assert_eq!(
+        owner_on_desk(&session, &lounge.room).as_deref(),
+        Some(host.as_str()),
+        "the workspace joined keeps the owner its host's governance names"
+    );
+    assert_ne!(
+        owner_on_desk(&session, &lounge.room).as_deref(),
+        Some(hex::encode(person).as_str()),
+        "and never the person who only joined it"
+    );
     assert!(
         !session
             .workspace_directory()

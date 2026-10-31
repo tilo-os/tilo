@@ -32,7 +32,9 @@ pub struct Options {
     pub scale: f64,
     /// This device, by id.
     pub device: String,
-    /// The person at it, by the id the desktop's authors name them by.
+    /// The person at it, by the id the desktop's authors name them by. The
+    /// session reads it from this device's own identity as it starts, so a
+    /// caller's value answers only for a computer that has no identity yet.
     pub person: String,
     /// The theme and fonts surface apps draw with.
     pub presentation: fn() -> ComponentRunnerInputs,
