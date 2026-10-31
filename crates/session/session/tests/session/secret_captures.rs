@@ -41,17 +41,12 @@ fn colours(frame: &tilo_compositor::Screenshot) -> std::collections::BTreeSet<[u
 #[test]
 fn a_capture_of_the_lock_screen_withholds_the_password_field() {
     let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            user: "ada".to_owned(),
-            verifier: std::sync::Arc::new(Sesame),
-            ..Options::default()
-        },
+    let home = super::lock::private_home();
+    let mut session = super::lock::lockable_session(
+        &home.path().join("collab.sock"),
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+        Arc::new(Sesame),
+    );
     session.step(Duration::from_millis(1)).unwrap();
 
     // Unlocked, a copy is the desktop with everything on it.
@@ -59,14 +54,12 @@ fn a_capture_of_the_lock_screen_withholds_the_password_field() {
     assert!(colours(&open).len() > 8, "the desktop, not a flat frame");
 
     invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
-    assert!(session.compositor().locked());
-    let screen = publisher(&session, LockEffect::UNLOCK.id).expect("the lock screen is up");
-    invoke_with(
-        &mut session,
-        &screen,
-        LockEffect::TYPE_PASSWORD.id,
-        &serde_json::json!({"password": "sesame"}),
-    );
+    pump(&mut session, &mut [], |session, _| {
+        session.compositor().lock_drawn()
+    });
+    session.step(Duration::from_millis(50)).expect("a turn");
+    super::lock::type_word(&mut session, "sesame");
+    session.step(Duration::from_millis(50)).expect("a turn");
 
     // The copy shows nothing of the lock screen: one flat placeholder over
     // the whole display, the same wherever it is read.
@@ -87,7 +80,7 @@ fn a_capture_of_the_lock_screen_withholds_the_password_field() {
         colours(&display).len()
     );
     assert!(
-        publisher(&session, LockEffect::UNLOCK.id).is_some(),
+        session.compositor().locked() && session.surfaces().running("lock"),
         "and it is still there to unlock"
     );
 }

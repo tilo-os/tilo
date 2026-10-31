@@ -469,6 +469,9 @@ fn device_options(hosted: bool) -> tilo_session::Options {
             os_actions::perform_session_action
         },
         lock_power: !hosted,
+        // The lock screen is the session's own app: started when the session
+        // locks, and shown in place of the desk until a password lifts it.
+        surfaces: lock_screen(),
         user: std::env::var("USER").unwrap_or_default(),
         verifier: tilo_session::unlock::installed(),
         state: tilo_paths::state_dir(),
@@ -477,6 +480,25 @@ fn device_options(hosted: bool) -> tilo_session::Options {
         kill_switch: (!hosted).then(KillSwitch::machine),
         ..Options::default()
     }
+}
+
+/// The lock screen, when one is installed: the app whose window asks the
+/// compositor for the session's lock, drawn on every output and given every
+/// input while the session is locked.
+#[cfg(target_os = "linux")]
+fn lock_screen() -> Vec<tilo_session::surfaces::Surface> {
+    let program = match tilo_session::surfaces::program_path("tilo-lock-screen") {
+        Ok(program) => program,
+        Err(error) => {
+            eprintln!("tilo-session: no lock screen: {error}");
+            return Vec::new();
+        }
+    };
+    vec![
+        tilo_session::surfaces::Surface::new("lock", program)
+            .person(std::env::var("USER").unwrap_or_default())
+            .lock(),
+    ]
 }
 
 /// Xwayland for X11 clients, its display printed. They connect as soon as

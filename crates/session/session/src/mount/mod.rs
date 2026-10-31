@@ -12,7 +12,6 @@ pub mod comforts;
 pub(crate) mod devices;
 pub mod drives;
 pub mod firstboot;
-pub mod lock;
 pub(crate) mod overview;
 pub(crate) mod panels;
 pub(crate) mod power;

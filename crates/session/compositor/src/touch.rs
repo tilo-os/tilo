@@ -72,12 +72,17 @@ impl State {
             self.touch.hosts.push((slot, index, at));
             return;
         }
-        let focus = if self.locked() {
-            self.lock_surface_under(at)
+        let (focus, at) = if self.locked() {
+            self.lock_surface_under(at).map_or((None, at), |under| {
+                (Some((under.surface, under.origin)), under.at)
+            })
         } else {
             self.focus_on_press(at, serial);
-            self.surface_under(at)
-                .map(|(_, surface, origin)| (surface, origin))
+            (
+                self.surface_under(at)
+                    .map(|(_, surface, origin)| (surface, origin)),
+                at,
+            )
         };
         self.touch.clients.retain(|finger| finger.slot != slot);
         self.touch.clients.push(Finger {
@@ -131,6 +136,13 @@ impl State {
                 finger.focus.clone()
             })
             .unwrap_or_default();
+        // The lock screen covers the display, stretched to it: it reads the
+        // point where it drew what the finger is over.
+        let at = if self.locked() {
+            self.lock_point(at)
+        } else {
+            at
+        };
         if let Some(touch) = self.seat.get_touch() {
             touch.motion(
                 self,

@@ -99,6 +99,7 @@ impl State {
         }
         let under = if self.locked() {
             self.lock_surface_under(at)
+                .map(|under| (under.surface, under.origin))
         } else if self.host_under(at).is_some() {
             None
         } else {
@@ -119,6 +120,13 @@ impl State {
             None
         } else {
             self.tablet_target(at)
+        };
+        // The lock screen covers the display, stretched to it: it reads the
+        // point where it drew what the tool is over.
+        let at = if self.locked() {
+            self.lock_point(at)
+        } else {
+            at
         };
         let dh = self.display.clone();
         let tablet_seat = self.seat.tablet_seat();

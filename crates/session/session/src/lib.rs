@@ -66,6 +66,7 @@ mod keys;
 mod launches;
 mod lists;
 mod lock_screen;
+mod lock_service;
 pub mod messages;
 pub mod mount;
 pub mod notices;
@@ -154,7 +155,6 @@ use tilo_sheets::Seat as _;
 use tilo_sheets::directory::DirectorySeat;
 use tilo_sheets::display_confirm::ConfirmSeat;
 use tilo_sheets::file_picker::FilePickerSeat;
-use tilo_sheets::lock::LockSeat;
 use tilo_sheets::portal::PortalSeat;
 use tilo_sheets::power::{PowerEffect, PowerSeat};
 use tilo_sheets::shortcut_guide::GuideSeat;
@@ -172,17 +172,10 @@ const GENERATION: &str = "session";
 /// toggle of it is that same press, not a new ask to open it.
 const DISMISS_GRACE: Duration = Duration::from_millis(300);
 
-/// How long a locked session may show no lock screen before the session puts
-/// it up again: the frame that follows putting it up is drawn in the same
-/// turn, so nothing of it for a moment is nothing of it at all.
-const LOCK_SCREEN_GRACE: Duration = Duration::from_millis(500);
-
-/// How many times the session puts the lock screen up within one lock before
-/// it lifts the lock. Putting it up is the same path every time — the sheet
-/// the session has, shown again, or a sheet mounted as it was at the start —
-/// so three tries cover a screen that went away once or twice, and a screen
-/// that needs more than that is not staying up at all: the machine is better
-/// unlocked than locked behind it.
+/// How many times the session starts its lock screen for one lock before it
+/// lifts the lock: a screen whose app goes is started again, and one that
+/// keeps going is not staying up at all — the machine is better unlocked
+/// than locked behind it.
 const LOCK_SCREEN_TRIES: u32 = 3;
 
 /// How warm the night light makes the displays, in kelvin.
@@ -273,14 +266,11 @@ struct Shared {
     /// What the sites this computer knows list as public workspaces, read
     /// on a worker of its own.
     directory_store: directory::Store,
-    /// The lock screen, while the session is locked.
-    lock: Option<LockSeat>,
+    /// The lock, as the session publishes it for the lock screen to show.
+    lock: lock_service::Lock,
     /// This device's side of the person's session on their devices: what it
     /// says of its own lock and what it has followed from theirs.
     owner_session: owner_session::SessionFollow,
-    /// What mounted the lock screen, to mount it again when a lock finds it
-    /// gone.
-    lock_mount: mount::sheets::LockMount,
     /// The desktop's own notices: what the session tells the person, such as
     /// leaving a workspace.
     notices: tilo_desktop_surface::DesktopNotifications,
@@ -797,10 +787,10 @@ pub struct Session {
     comforts: Option<mount::comforts::Mirror>,
     /// Checking the passwords the lock screen was given.
     unlocking: Unlocking,
-    /// How long the lock has had no lock screen, and how many times the
-    /// session put it up again: a lock is lifted rather than left with
-    /// nothing that can unlock it.
-    lock_watch: LockWatch,
+    /// How many times the session started its lock screen for the lock in
+    /// force: a screen that keeps going is not staying up at all, and the
+    /// lock is lifted rather than left with nothing able to unlock it.
+    lock_starts: u32,
     /// When the person's other devices were last read for their sessions:
     /// their fabric says what it says for a while, and following it more
     /// often would change nothing.
@@ -894,18 +884,6 @@ struct Unlocking {
     ),
     /// Wakes the loop when a verdict lands.
     wake: std::task::Waker,
-}
-
-/// The lock screen's absence while the session is locked, and what the
-/// session did about it: a screen that does not come back must not leave the
-/// machine locked with nothing able to unlock it.
-#[derive(Default)]
-struct LockWatch {
-    /// When the lock screen was found gone, if it is.
-    gone_since: Option<Instant>,
-    /// How many times the session has put the lock screen up again for the
-    /// lock in force.
-    raised: u32,
 }
 
 impl Session {
@@ -1185,8 +1163,6 @@ impl Session {
             portal,
             file_picker,
             directory,
-            lock,
-            lock_mount,
             display_confirm,
             displays: display_seat,
             shortcut_guide: guide_seat,
@@ -1364,6 +1340,10 @@ impl Session {
             std::sync::Arc::clone(&options.launches),
             action_plane.as_ref().map(|plane| plane.path.clone()),
         );
+        // The lock, and the screen that shows it: the session keeps what the
+        // screen shows and publishes it, so the screen is an app of the
+        // session's like any other.
+        let lock = lock_service::Lock::default();
         let mut started = std::mem::take(&mut options.services);
         started.push(Box::new(desk_service));
         let services = mount_services(&mut doors, started);
@@ -1375,6 +1355,9 @@ impl Session {
         // The shell's own readings and verbs, on the same door every other
         // service answers on.
         mount::shell::Shell::mount(&services, &handle, menu_open);
+        services
+            .borrow_mut()
+            .add(Box::new(lock_service::LockService::new(lock.clone())));
         // Dictation joins the services: its recognizer, microphone and
         // consent are only the session's, and the sheet asks about them.
         let dictation =
@@ -1429,7 +1412,6 @@ impl Session {
             file_picker,
             lock,
             owner_session: owner_session::SessionFollow::default(),
-            lock_mount,
             display_confirm,
             notices: notices.clone(),
             clock,
@@ -1500,7 +1482,7 @@ impl Session {
                 verdicts: std::sync::mpsc::channel(),
                 wake: loop_wake,
             },
-            lock_watch: LockWatch::default(),
+            lock_starts: 0,
             owner_session_poll: None,
             captures: options.captures,
             capture_studio,
@@ -1590,6 +1572,12 @@ impl Session {
         self.follow_displays()?;
         self.follow_fullscreen();
         for surface in &self.surface_apps {
+            // The lock screen is started when the session locks: its window
+            // asks for the lock as it opens, so one started here would lock
+            // the session at once.
+            if surface.lock {
+                continue;
+            }
             let room = self.shared.active_room();
             self.surfaces
                 .start_or_log(&mut self.compositor, surface, &room);
@@ -1657,6 +1645,12 @@ impl Session {
     /// Stop the surface app `name`, if it runs.
     pub fn stop_surface(&mut self, name: &str) {
         self.surfaces.stop(name);
+    }
+
+    /// The surface the session starts as its lock screen, when it has one.
+    #[must_use]
+    pub fn lock_screen(&self) -> Option<&surfaces::Surface> {
+        self.surface_apps.iter().find(|surface| surface.lock)
     }
 
     /// Ask the surface app `name` to run `action` of `resource`, as one of
@@ -1812,13 +1806,6 @@ impl Session {
     #[must_use]
     pub fn power_menu(&self) -> Option<&PowerSeat> {
         self.shared.power.as_ref()
-    }
-
-    /// The lock screen's seat, while the session has one: whether it is up,
-    /// and what it shows.
-    #[must_use]
-    pub fn lock_screen(&self) -> Option<&LockSeat> {
-        self.shared.lock.as_ref()
     }
 
     /// The add sheet's seat: the program the person is asked about, when
@@ -2213,7 +2200,6 @@ impl Session {
                 .as_ref()
                 .map(tilo_sheets::Seat::presentation),
             self.display_sheet.presentation(),
-            shared.lock.as_ref().map(tilo_sheets::Seat::presentation),
             self.capture_studio
                 .as_ref()
                 .map(capture_studio::CaptureStudio::presentation),
@@ -2288,13 +2274,18 @@ impl Session {
     /// Lock the session as the person asked: with a key, a command, or
     /// because one of their other devices locked. A session that cannot
     /// check a password never locks: the lock screen could not be left again.
+    /// The desk goes the moment the lock is asked for and not when the screen
+    /// has started, so nothing of what was on it stays up for the start of a
+    /// process; the screen that shows the lock is started here, and asks the
+    /// compositor for the lock itself.
     pub(crate) fn lock_by_person(&mut self) -> Result<(), Error> {
-        if self.unlocking.verifier.available() {
-            self.compositor.lock_now()
-        } else {
+        if !self.unlocking.verifier.available() {
             tracing::warn!("no password can be checked here: not locking");
-            Ok(())
+            return Ok(());
         }
+        self.compositor.lock_now()?;
+        self.start_lock_screen();
+        Ok(())
     }
 
     fn command(&mut self, command: SessionCommand) -> Result<(), Error> {

@@ -2278,6 +2278,22 @@ impl FrameHarness {
     /// found, so a missed change is never stale where it can be seen.
     #[cfg(debug_assertions)]
     fn verify_quiet_frame(&mut self, history_settled: bool) {
+        /// Run `verify` with the clocks standing still: a frame that redraws
+        /// the time it shows, because a minute turned between the two
+        /// inspections, changed what the wall clock says rather than skipped
+        /// publishing a change of its own.
+        fn standing_clock<T>(verify: impl FnOnce() -> T) -> T {
+            #[cfg(feature = "test-support")]
+            {
+                crate::time::testing::with_wall(crate::time::wall(), || {
+                    crate::time::testing::with_monotonic_time(crate::time::now(), verify)
+                })
+            }
+            #[cfg(not(feature = "test-support"))]
+            {
+                verify()
+            }
+        }
         let shown = |harness: &mut Self| {
             (
                 serde_json::to_string(&harness.inspection()).unwrap_or_default(),
@@ -2286,29 +2302,31 @@ impl FrameHarness {
             )
         };
         let (before, after, replaced, resting) = tilo_resource::profiling::unobserved(|| {
-            // The History walks it skipped hold only while every surface
-            // still rests once the frame is drawn.
-            let width = f64::from(self.viewport.0);
-            let resting = crate::history_mode::embedded::surfaces_at_rest(
-                self.root.as_ref(),
-                &self.state.doc,
-                width,
-                false,
-            )
-            .is_some()
-                // What a settled frame did not ask again still holds.
-                && (!history_settled
-                    || crate::history_mode::embedded::settled_checks_hold(
-                        self.root.as_ref(),
-                        &self.state.doc,
-                        width,
-                    ));
-            let before = shown(self);
-            self.host_tick();
-            self.sync_frame();
-            self.publish_undo_status();
-            let replaced = self.composition_changed();
-            (before, shown(self), replaced, resting)
+            standing_clock(|| {
+                // The History walks it skipped hold only while every surface
+                // still rests once the frame is drawn.
+                let width = f64::from(self.viewport.0);
+                let resting = crate::history_mode::embedded::surfaces_at_rest(
+                    self.root.as_ref(),
+                    &self.state.doc,
+                    width,
+                    false,
+                )
+                .is_some()
+                    // What a settled frame did not ask again still holds.
+                    && (!history_settled
+                        || crate::history_mode::embedded::settled_checks_hold(
+                            self.root.as_ref(),
+                            &self.state.doc,
+                            width,
+                        ));
+                let before = shown(self);
+                self.host_tick();
+                self.sync_frame();
+                self.publish_undo_status();
+                let replaced = self.composition_changed();
+                (before, shown(self), replaced, resting)
+            })
         });
         let consistent = before == after && !replaced && resting;
         if consistent {

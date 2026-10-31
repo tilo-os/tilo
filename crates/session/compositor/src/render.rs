@@ -43,8 +43,9 @@ smithay::backend::renderer::element::render_elements! {
     Hosted=MemoryRenderBufferRenderElement<R>,
     /// The idle dim over everything, where no backlight dims.
     Dim=SolidColorRenderElement,
-    /// A client surface under the magnifier.
-    ZoomedSurface=RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
+    /// A client surface drawn scaled: under the magnifier, or as the lock
+    /// screen filling a display it was not made for.
+    ScaledSurface=RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
     /// A hosted surface's layer under the magnifier.
     ZoomedHosted=RescaleRenderElement<MemoryRenderBufferRenderElement<R>>,
     /// A client surface inside the magnifier's lens.
@@ -112,7 +113,7 @@ where
 {
     match element {
         OutputRenderElement::Surface(e) => {
-            OutputRenderElement::ZoomedSurface(scaled(e, centre, zoom))
+            OutputRenderElement::ScaledSurface(scaled(e, centre, zoom))
         }
         OutputRenderElement::Hosted(e) => {
             OutputRenderElement::ZoomedHosted(scaled(e, centre, zoom))
@@ -441,8 +442,8 @@ where
     let mut elements: Vec<OutputRenderElement<R>> = dim.into_iter().collect();
     let hosted = |renderer: &mut R, elements: &mut Vec<OutputRenderElement<R>>, below: bool| {
         for host in state.hosts.iter().rev().filter(|host| {
-            // While locked only the lock screen shows; until then never.
-            host.lock_screen() == locked && host.below_windows() == below
+            // While locked only the lock client shows.
+            !locked && host.below_windows() == below
         }) {
             for picture in host.window_pictures().iter().rev() {
                 if let Some(window) = window_of(picture.window) {
@@ -468,7 +469,7 @@ where
         }
     };
     if locked {
-        hosted(renderer, &mut elements, false);
+        // The lock client's surfaces, and nothing of the session's.
         elements.extend(state.lock_elements(renderer, output));
         return elements;
     }

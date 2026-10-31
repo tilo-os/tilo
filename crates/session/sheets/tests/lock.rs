@@ -9,6 +9,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use std::sync::mpsc::Receiver;
+
 use tilo_sheets::Seat as _;
 use tilo_sheets::lock::{LockApp, LockEffect, LockSeat, Media, Shown, Status};
 use ui::a11y::Action as A11yAction;
@@ -19,15 +21,37 @@ use ui::vello::kurbo::{Point, Rect};
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 
-/// A locked session's screen, showing `shown` on the seat the app reports to.
-fn locked(shown: Shown) -> (HeadlessApp<LockApp>, LockSeat) {
+/// A locked session's screen, showing `shown` on the seat the app reports
+/// to, and what it asks the session.
+fn locked(shown: Shown) -> (HeadlessApp<LockApp>, LockSeat, Receiver<LockEffect>) {
     let seat = LockSeat::default();
+    // What the screen asks goes to the session through the connection its
+    // app opens; the test stands in for it here.
+    let (outgoing, asked) = std::sync::mpsc::channel();
+    seat.ask_with(outgoing);
     seat.show(shown);
     seat.presentation().open(false);
     let mut app = HeadlessApp::<LockApp>::for_person_with_lent("person", seat.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
-    (app, seat)
+    (app, seat, asked)
+}
+
+/// Everything the screen has asked the session since the last look.
+fn asks(asked: &Receiver<LockEffect>) -> Vec<LockEffect> {
+    asked.try_iter().collect()
+}
+
+/// The passwords the screen handed the session since the last look, oldest
+/// first.
+fn typed(asked: &Receiver<LockEffect>) -> Vec<String> {
+    asked
+        .try_iter()
+        .filter_map(|effect| match effect {
+            LockEffect::TypePassword { password } => Some(password),
+            _ => None,
+        })
+        .collect()
 }
 
 fn screen() -> Shown {
@@ -81,7 +105,7 @@ fn labels(app: &mut HeadlessApp<LockApp>) -> Vec<String> {
 
 #[test]
 fn the_screen_says_the_time_whose_session_it_is_and_what_unlocks_it() {
-    let (mut app, _seat) = locked(screen());
+    let (mut app, _seat, _asked) = locked(screen());
     let labels = labels(&mut app);
     for spoken in ["10:42", "Monday, 27 October", "Ada Lovelace", "Unlock"] {
         assert!(
@@ -93,7 +117,7 @@ fn the_screen_says_the_time_whose_session_it_is_and_what_unlocks_it() {
 
 #[test]
 fn the_screen_shows_what_plays_and_a_press_asks_the_player() {
-    let (mut app, seat) = locked(Shown {
+    let (mut app, _seat, asked) = locked(Shown {
         media: Some(song()),
         ..screen()
     });
@@ -127,7 +151,7 @@ fn the_screen_shows_what_plays_and_a_press_asks_the_player() {
         .unwrap();
     app.settle();
     assert_eq!(
-        seat.take_asked(),
+        asks(&asked),
         [LockEffect::PlayPause, LockEffect::NextTrack],
         "each press is what the screen asks of the session"
     );
@@ -135,7 +159,7 @@ fn the_screen_shows_what_plays_and_a_press_asks_the_player() {
 
 #[test]
 fn a_player_that_cannot_skip_offers_only_what_it_can_do() {
-    let (mut app, _seat) = locked(Shown {
+    let (mut app, _seat, _asked) = locked(Shown {
         media: Some(Media {
             playing: false,
             can_toggle: true,
@@ -158,7 +182,7 @@ fn a_player_that_cannot_skip_offers_only_what_it_can_do() {
 
 #[test]
 fn an_agent_asking_for_the_same_thing_reaches_the_same_door() {
-    let (mut app, seat) = locked(Shown {
+    let (mut app, _seat, asked) = locked(Shown {
         media: Some(song()),
         ..screen()
     });
@@ -167,14 +191,14 @@ fn an_agent_asking_for_the_same_thing_reaches_the_same_door() {
     app.effect(&LockEffect::PreviousTrack).unwrap();
     app.settle();
     assert_eq!(
-        seat.take_asked(),
+        asks(&asked),
         [LockEffect::PlayPause, LockEffect::PreviousTrack]
     );
 }
 
 #[test]
 fn nothing_shows_while_nothing_plays() {
-    let (mut app, _seat) = locked(screen());
+    let (mut app, _seat, _asked) = locked(screen());
     let names: Vec<String> = controls(&mut app)
         .into_iter()
         .map(|(name, _)| name)
@@ -246,7 +270,7 @@ fn touch_screen(app: &mut HeadlessApp<LockApp>, at: Point) {
 
 #[test]
 fn a_press_on_the_screen_brings_up_a_keyboard_that_types_the_password() {
-    let (mut app, seat) = locked(screen());
+    let (mut app, seat, asked) = locked(screen());
     assert!(!seat.shown().keyboard, "no keyboard until one is asked for");
 
     // A finger on the screen itself, away from the field and the controls.
@@ -259,10 +283,7 @@ fn a_press_on_the_screen_brings_up_a_keyboard_that_types_the_password() {
     }
     touch.tap(&mut app, PasscodeKey::Enter);
     assert_eq!(
-        seat.take_attempts()
-            .iter()
-            .map(|attempt| attempt.as_str())
-            .collect::<Vec<_>>(),
+        typed(&asked),
         ["sesame"],
         "the keys typed the password and Enter asked to unlock"
     );
@@ -274,7 +295,7 @@ fn a_press_on_the_screen_brings_up_a_keyboard_that_types_the_password() {
 
 #[test]
 fn the_shift_and_symbols_keys_reach_the_other_layers() {
-    let (mut app, seat) = locked(screen());
+    let (mut app, seat, asked) = locked(screen());
     app.effect(&LockEffect::ShowKeyboard).unwrap();
     app.settle();
     assert!(seat.shown().keyboard, "an agent can ask for it too");
@@ -286,10 +307,7 @@ fn the_shift_and_symbols_keys_reach_the_other_layers() {
     touch.tap(&mut app, PasscodeKey::Char('!'));
     touch.tap(&mut app, PasscodeKey::Enter);
     assert_eq!(
-        seat.take_attempts()
-            .iter()
-            .map(|attempt| attempt.as_str())
-            .collect::<Vec<_>>(),
+        typed(&asked),
         ["A!"],
         "shift capitalises one letter, and symbols type themselves"
     );
@@ -297,7 +315,7 @@ fn the_shift_and_symbols_keys_reach_the_other_layers() {
 
 #[test]
 fn a_key_typed_on_a_real_keyboard_puts_the_screens_own_away() {
-    let (mut app, seat) = locked(screen());
+    let (mut app, seat, _asked) = locked(screen());
     app.effect(&LockEffect::ShowKeyboard).unwrap();
     app.settle();
     assert!(seat.shown().keyboard);
@@ -314,7 +332,7 @@ fn the_same_screen_is_shown_whatever_the_display() {
     // A lock surface covers one output; its content has to fit the output it
     // lands on, a small one and one turned upright included.
     for size in [(1920, 1080), (1080, 1920), (1024, 600)] {
-        let (mut app, _seat) = locked(screen());
+        let (mut app, _seat, _asked) = locked(screen());
         app.harness().resize(size).unwrap();
         app.settle();
         let labels = labels(&mut app);

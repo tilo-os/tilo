@@ -167,13 +167,6 @@ pub trait SurfaceHost {
         false
     }
 
-    /// Whether this surface is the lock screen: while the session is
-    /// locked only it (and a lock client's surfaces) is drawn and given
-    /// the pointer and the keyboard; until then it is never drawn.
-    fn lock_screen(&self) -> bool {
-        false
-    }
-
     /// Whether a capture may not show what this surface draws now: it shows
     /// a secret, such as what the person typed into a password field. Every
     /// copy of the desktop's pixels — a screenshot, a recording, a share

@@ -570,11 +570,8 @@ impl State {
     /// windows where it drew, else, where no window is, one beneath them.
     pub(crate) fn host_under(&self, point: Point<f64, Logical>) -> Option<usize> {
         if self.locked() {
-            // Only the lock screen shows, so only it takes the pointer.
-            return self
-                .hosts
-                .iter()
-                .rposition(|host| host.lock_screen() && host.accepts_pointer(point.x, point.y));
+            // Only the lock client shows, and it is not a hosted surface.
+            return None;
         }
         // The last host draws on top, so it is asked first.
         let under = |below: bool| {
@@ -740,12 +737,12 @@ impl State {
                     }
                 }
                 // The topmost hosted surface that wants the keyboard takes
-                // keys from every client.
-                // While locked, only the lock screen may.
+                // keys from every client. While locked, the lock client has
+                // it, and no hosted surface takes one.
                 let wanting = state
                     .hosts
                     .iter()
-                    .rposition(|host| host.wants_keyboard() && (!locked || host.lock_screen()));
+                    .rposition(|host| !locked && host.wants_keyboard());
                 let Some(index) = wanting else {
                     return FilterResult::Forward;
                 };
@@ -802,7 +799,7 @@ impl State {
             return;
         };
         self.pointer = Point::from((x, y));
-        let location = self.pointer;
+        let mut location = self.pointer;
         self.policy.pointer_moved(location.x, location.y);
         if self.drag_motion(location, serial, time) {
             return;
@@ -835,7 +832,14 @@ impl State {
                 // Clients lose the pointer while a hosted surface has it.
                 None
             }
-            PointerTarget::Clients if self.locked() => self.lock_surface_under(location),
+            PointerTarget::Clients if self.locked() => {
+                self.lock_surface_under(location).map(|under| {
+                    // The screen covers the display, stretched to it: it reads
+                    // the point where it drew what the person pointed at.
+                    location = under.at;
+                    (under.surface, under.origin)
+                })
+            }
             PointerTarget::Clients => self.pointer_surface_under(location),
         };
         let Some(pointer) = self.seat.get_pointer() else {

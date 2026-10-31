@@ -51,6 +51,22 @@ impl Published for ServiceDoor {
         self.services.borrow().resources()
     }
 
+    /// The lock screen asks the session through here while it is locked, so
+    /// the services stay behind the door; only the lock's own resource is
+    /// offered then.
+    fn serves_while_locked(&self) -> bool {
+        true
+    }
+
+    fn locked_resources(&mut self) -> Vec<ResourceSpec> {
+        self.services
+            .borrow()
+            .resources()
+            .into_iter()
+            .filter(|resource| resource.id.as_str() == crate::lock_service::LOCK)
+            .collect()
+    }
+
     fn revision(&self) -> Option<u64> {
         Some(self.services.borrow().revision())
     }

@@ -8,7 +8,7 @@
 //! and the door resolves it to the surface publishing it. Nothing calls a
 //! surface directly.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use ui::device_local_door::SharedDoor;
@@ -49,6 +49,19 @@ pub trait Published {
     fn exclusive(&self) -> bool {
         false
     }
+
+    /// Whether a locked session still offers it: only the lock screen's own
+    /// door is, and every other surface is withheld while the session is
+    /// locked.
+    fn serves_while_locked(&self) -> bool {
+        false
+    }
+
+    /// What it publishes while the session is locked. Nothing, but for the
+    /// door publishing the session's services: the lock's own resource.
+    fn locked_resources(&mut self) -> Vec<ResourceSpec> {
+        Vec::new()
+    }
 }
 
 /// Run `address` through `door` (the surface app's own door on this
@@ -77,6 +90,8 @@ pub type Shared = Rc<RefCell<dyn Published>>;
 #[derive(Default, Clone)]
 pub struct Doors {
     surfaces: Vec<Shared>,
+    /// Whether the session is locked: only its lock screen is offered then.
+    locked: Rc<Cell<bool>>,
 }
 
 impl Doors {
@@ -85,14 +100,22 @@ impl Doors {
         self.surfaces.push(surface);
     }
 
+    /// Offer the lock screen's door alone while the session is locked, and
+    /// every other again once it is unlocked.
+    pub fn locked(&self, locked: bool) {
+        self.locked.set(locked);
+    }
+
     /// The surfaces offering their actions now, with their place: only
-    /// the exclusive ones while one is up.
+    /// the exclusive ones while one is up, and only the lock screen's while
+    /// the session is locked.
     fn offered(&self) -> Vec<(usize, &Shared)> {
         let offered: Vec<(usize, &Shared)> = self
             .surfaces
             .iter()
             .enumerate()
             .filter(|(_, surface)| surface.borrow().offered())
+            .filter(|(_, surface)| !self.locked.get() || surface.borrow().serves_while_locked())
             .collect();
         if offered
             .iter()
@@ -123,12 +146,19 @@ impl Doors {
     }
 
     /// Everything the hosted surfaces offer now, in the order they were
-    /// added.
+    /// added: what a locked session's lock screen publishes, while it is
+    /// locked.
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
         self.offered()
             .into_iter()
-            .flat_map(|(_, surface)| surface.borrow_mut().resources())
+            .flat_map(|(_, surface)| {
+                if self.locked.get() {
+                    surface.borrow_mut().locked_resources()
+                } else {
+                    surface.borrow_mut().resources()
+                }
+            })
             .collect()
     }
 
@@ -144,7 +174,12 @@ impl Doors {
     ) -> Result<ResourceOperationStart, DoorError> {
         for (_, surface) in self.offered() {
             let mut surface = surface.borrow_mut();
-            if ui::tilo_actions::door::resolve(&surface.resources(), address).is_some() {
+            let published = if self.locked.get() {
+                surface.locked_resources()
+            } else {
+                surface.resources()
+            };
+            if ui::tilo_actions::door::resolve(&published, address).is_some() {
                 return surface.invoke(address, arguments);
             }
         }

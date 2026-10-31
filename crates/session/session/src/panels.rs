@@ -421,10 +421,6 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
         self.0.borrow().below_windows()
     }
 
-    fn lock_screen(&self) -> bool {
-        self.0.borrow().lock_screen()
-    }
-
     fn withholds_captures(&self) -> bool {
         self.0.borrow().withholds_captures()
     }

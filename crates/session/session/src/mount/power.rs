@@ -52,6 +52,7 @@ impl PowerRun {
             sleep: SleepLock {
                 prepared: false,
                 locked_before: false,
+                awaiting: false,
             },
             idle_sleep: false,
             watch: None,
@@ -83,6 +84,8 @@ struct SleepLock {
     /// Whether the session was already locked when the sleep began: that
     /// lock is not this sleep's to lift.
     locked_before: bool,
+    /// Whether the sleep still waits for the frame that shows the lock.
+    awaiting: bool,
 }
 
 /// Start the session's power from `options`: the policy its link was made
@@ -181,12 +184,19 @@ impl Session {
                 self.machine.sleep = SleepLock {
                     prepared: true,
                     locked_before,
+                    awaiting: false,
                 };
                 // logind's sleep delay waits for the frame that shows the
-                // lock: draw it before admitting the machine may sleep.
+                // lock: the lock screen's window is started here, and the
+                // session admits the machine may sleep once it drew
+                // (`follow_lock`).
                 self.follow_lock()?;
+                if self.compositor.lock_drawn() {
+                    link.bridge().lock_screen_drawn();
+                } else {
+                    self.machine.sleep.awaiting = true;
+                }
                 self.compositor.render()?;
-                link.bridge().lock_screen_drawn();
             }
             PowerSignal::SuspendFailed => {
                 let sleep = std::mem::take(&mut self.machine.sleep);
@@ -194,6 +204,8 @@ impl Session {
                 self.compositor.cancel_suspend();
                 if sleep.prepared && !sleep.locked_before {
                     self.compositor.unlock()?;
+                    // With the lock lifted, the screen that showed it goes.
+                    self.stop_lock_screen();
                     self.follow_lock()?;
                 }
                 tracing::info!("the machine did not sleep; the session stays awake");
@@ -214,6 +226,20 @@ impl Session {
             PowerSignal::Notify(notice) => link.note_notice(&notice),
         }
         Ok(())
+    }
+
+    /// logind's sleep delay waits for the frame that shows the lock: the
+    /// machine may sleep once the lock screen's own frame is in, and one
+    /// that never came is a sleep logind's own delay ends.
+    pub(crate) fn admit_sleep_if_locked(&mut self) {
+        if !self.machine.sleep.awaiting || !self.compositor.lock_drawn() {
+            return;
+        }
+        let Some(link) = &self.machine.link else {
+            return;
+        };
+        self.machine.sleep.awaiting = false;
+        link.bridge().lock_screen_drawn();
     }
 
     /// Lock the session for the machine: a lid, a critical battery, the

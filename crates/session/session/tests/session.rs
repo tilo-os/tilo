@@ -37,7 +37,6 @@ use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{DeviceHost, Options, QuickSettings, Session};
 use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileRequest};
-use tilo_sheets::lock::LockEffect;
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
 use tilo_sheets::workspace_settings::{WorkspaceSettingsApp, WorkspaceSettingsEffect};
@@ -837,73 +836,6 @@ impl tilo_session::Service for PlayerService {
 }
 
 #[test]
-fn the_lock_screens_transport_steers_whatever_plays() {
-    let _settled = ui::motion::testing::settled();
-    let host = Rc::new(FixtureHost::new(QuickSettingsState::fixture()));
-    let asked = Rc::new(RefCell::new(Vec::new()));
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            quick_settings: Some(QuickSettings::Lent(
-                Rc::clone(&host) as Rc<dyn tilo_session::PanelHost>
-            )),
-            services: vec![Box::new(PlayerService {
-                asked: Rc::clone(&asked),
-            })],
-            user: "ada".to_owned(),
-            verifier: std::sync::Arc::new(Sesame),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-    host.update(|state| {
-        state.now_playing = Some(tilo_quick_settings::NowPlaying::fixture());
-    });
-    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
-    session.step(Duration::from_millis(1)).unwrap();
-    assert!(session.compositor().locked());
-    let unlock = tilo_sheets::lock::LockEffect::UNLOCK.id;
-    let screen = publisher(&session, unlock).expect("the lock screen is up");
-    assert!(
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| label == "Clair de lune"),
-        "the locked screen says what plays: {:?}",
-        session.accessible_labels()
-    );
-
-    session
-        .invoke(&screen, LockEffect::PLAY_PAUSE.id, &serde_json::Map::new())
-        .expect("play/pause");
-    session
-        .invoke(&screen, LockEffect::NEXT_TRACK.id, &serde_json::Map::new())
-        .expect("next");
-    pump(&mut session, &mut [], |_, _| asked.borrow().len() == 2);
-    assert_eq!(
-        *asked.borrow(),
-        ["play-pause", "next"],
-        "the locked screen's transport reaches the player, as the unlocked one does"
-    );
-
-    // With nothing playing there is no transport, and no player is steered.
-    host.update(|state| state.now_playing = None);
-    session.step(Duration::from_millis(1)).unwrap();
-    session
-        .invoke(&screen, LockEffect::PLAY_PAUSE.id, &serde_json::Map::new())
-        .expect("play/pause");
-    for _ in 0..20 {
-        session.step(Duration::from_millis(1)).unwrap();
-    }
-    assert_eq!(
-        *asked.borrow(),
-        ["play-pause", "next"],
-        "nothing plays, so nothing is asked of a player"
-    );
-}
-
-#[test]
 fn the_touchpad_key_and_the_sessions_own_action_switch_the_touchpad() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
@@ -1668,48 +1600,6 @@ fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done()
         "the desktop's actions are back"
     );
     assert!(publisher(&session, skip).is_none());
-}
-
-#[test]
-fn the_power_menu_is_a_sheet_whose_lock_locks_the_screen() {
-    use tilo_sheets::Seat as _;
-    let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            user: "ada".to_owned(),
-            verifier: std::sync::Arc::new(Sesame),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-    session.step(Duration::from_millis(1)).unwrap();
-    let lock = PowerEffect::LOCK.id;
-    // The session's own screen resource locks too; the sheet's is another.
-    let sheets = |session: &Session| {
-        publishers(session, lock)
-            .into_iter()
-            .filter(|resource| resource != tilo_session::SESSION_RESOURCE)
-            .collect::<Vec<_>>()
-    };
-    assert!(
-        sheets(&session).is_empty(),
-        "a sheet that is down offers nothing"
-    );
-    session
-        .power_menu()
-        .expect("power menu")
-        .presentation()
-        .open(false);
-    session.step(Duration::from_millis(1)).unwrap();
-    let menu = sheets(&session)
-        .pop()
-        .expect("the open menu publishes its choices");
-    session
-        .invoke(&menu, lock, &serde_json::Map::new())
-        .expect("lock");
-    assert!(session.compositor().locked(), "the screen is locked");
 }
 
 #[test]

@@ -766,6 +766,21 @@ impl Surfaces {
                             app.actions.settle(invocation, &state.update);
                         }
                     }
+                    // The app runs what it publishes: what it asks of its
+                    // own actions comes back over the same socket, as the
+                    // broker hands a provider the invocation of its own
+                    // actions, and nothing of it is the session's.
+                    RemoteActionMessage::Invoke(request)
+                        if request.target.provider == tilo_actions::remote::OWN_PROVIDER =>
+                    {
+                        let invocation = request.invocation;
+                        app.actions.send(RemoteActionMessage::Invoke(request));
+                        app.actions
+                            .send(RemoteActionMessage::Receipt(InvocationReceipt {
+                                invocation,
+                                status: ReceiptStatus::Accepted,
+                            }));
+                    }
                     request => {
                         if let Some(answer) = answer(door, &mut app.actions.answered, request) {
                             app.actions.send(answer);

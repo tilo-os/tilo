@@ -11,6 +11,7 @@ name = "tilo-lock-screen"
 path = "src/main.rs"
 
 [dependencies]
+tracing.workspace = true
 tilo-sheets = { path = "../sheets" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 workspace-hack = { version = "0.1" }

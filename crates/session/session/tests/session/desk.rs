@@ -241,12 +241,15 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
 
     // The lock screen over the desk.
     {
+        let plane = super::lock::private_home();
         let mut session = Session::headless(
             Options {
                 presentation: ui::headless::fixture_runner_inputs,
                 user: "ada".to_owned(),
                 verifier: std::sync::Arc::new(Sesame),
                 collab: false,
+                action_plane: tilo_session::ActionPlane::At(plane.path().join("actions.sock")),
+                surfaces: vec![super::lock::lock_screen()],
                 ..Options::default()
             },
             &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -255,6 +258,17 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
         let client = mapped(&mut session, "org.example.Terminal");
         settle(&mut session, 2);
         invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
+        // The screen is a process of its own, and the frame compared here is
+        // the one it drew: until then a locked output shows the blank the
+        // desk left behind.
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        while !session.compositor().lock_drawn() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the lock screen never drew"
+            );
+            settle(&mut session, 1);
+        }
         settle(&mut session, 8);
         assert!(session.compositor().locked(), "the session locked");
         capture(&mut session, "lock");
