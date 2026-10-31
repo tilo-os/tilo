@@ -1,0 +1,40 @@
+<!-- libvirt (qemu:///session) domain for the trial VM. create-vm.sh fills
+     @ROOT_KEYS@ with the base64 of the root authorized_keys. Mirrors the
+     domain tilo-vm defines (crates/dev/tilo-vm/src/hypervisor.rs). -->
+<domain type='kvm'>
+  <name>tilo-trial</name>
+  <memory unit='MiB'>16384</memory>
+  <vcpu>6</vcpu>
+  <os firmware='efi'>
+    <type arch='x86_64' machine='q35'>hvm</type>
+    <firmware>
+      <feature enabled='no' name='secure-boot'/>
+      <feature enabled='no' name='enrolled-keys'/>
+    </firmware>
+    <smbios mode='sysinfo'/>
+  </os>
+  <sysinfo type='smbios'>
+    <oemStrings>
+      <entry>io.systemd.credential.binary:ssh.authorized_keys.root=@ROOT_KEYS@</entry>
+    </oemStrings>
+  </sysinfo>
+  <features><acpi/><apic/></features>
+  <cpu mode='host-passthrough'/>
+  <devices>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' discard='unmap'/>
+      <source file='/home/tilo/vm/trial.qcow2'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+    <interface type='user'>
+      <backend type='passt'/>
+      <model type='virtio'/>
+      <portForward proto='tcp'><range start='2222' to='22'/></portForward>
+    </interface>
+    <input type='tablet' bus='usb'/>
+    <input type='keyboard' bus='usb'/>
+    <graphics type='spice' port='5900' autoport='no' listen='127.0.0.1'/>
+    <video><model type='virtio'><resolution x='1920' y='1080'/></model></video>
+    <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
+  </devices>
+</domain>

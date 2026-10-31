@@ -1,0 +1,15 @@
+Host trial-host
+  HostName <HOST_IP>
+  User tilo
+  IdentityFile ~/.ssh/id_ed25519
+Host trial-vm trial-vm-root
+  HostName 127.0.0.1
+  Port 2222
+  ProxyJump trial-host
+  IdentityFile ~/.ssh/id_ed25519
+  UserKnownHostsFile ~/.ssh/tilo-trial-known_hosts
+  StrictHostKeyChecking accept-new
+Host trial-vm
+  User quickuser
+Host trial-vm-root
+  User root

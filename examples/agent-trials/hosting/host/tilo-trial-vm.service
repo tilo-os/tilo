@@ -1,0 +1,15 @@
+# ~/.config/systemd/user/tilo-trial-vm.service for the host's `tilo` user
+# (needs `loginctl enable-linger tilo` so it runs at boot without a login).
+[Unit]
+Description=Tilo trial VM
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/vm/up.sh
+ExecStop=%h/vm/down.sh
+TimeoutStartSec=600
+TimeoutStopSec=180
+
+[Install]
+WantedBy=default.target
