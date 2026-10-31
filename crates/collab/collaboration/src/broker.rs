@@ -95,6 +95,17 @@ const ACTION_DIRECTORY_REQUEST_QUEUE: usize = 64;
 
 /// Whether the identity service answered and declined to sign, as opposed
 /// to being unreachable: it reports a refusal as permission denied.
+/// Presence is a room signal, not the app's request: a publish the peer
+/// refused is logged where it happened, and the request that carried the
+/// update still answers.
+async fn publish_presence(
+    what: &'static str,
+    publish: impl std::future::Future<Output = Result<(), runtime_portal::NotAvailable>>,
+) {
+    if let Err(error) = publish.await {
+        tracing::debug!(%error, presence = what, "collab: presence publish refused");
+    }
+}
 fn signing_refused(error: &runtime_portal::NotAvailable) -> bool {
     matches!(
         error,
@@ -637,9 +648,10 @@ impl CollabTransport for BrokerTransport {
             TransportCommand::Primary(request) => SdkCommand::Primary(request),
             TransportCommand::ToRoute(route, request) => SdkCommand::ToRoute(route, request),
             TransportCommand::Join(route, record_kind) => {
-                if let Ok(mut kinds) = self.state.route_record_kinds.lock() {
-                    kinds.insert(route.channel_id(), record_kind.as_str().to_owned());
-                }
+                self.state
+                    .route_record_kinds
+                    .lock_recover()
+                    .insert(route.channel_id(), record_kind.as_str().to_owned());
                 SdkCommand::Join(route, Some(record_kind.as_str().to_owned()))
             }
             TransportCommand::ConfirmPrimaryRoute => {
@@ -1325,24 +1337,17 @@ impl BridgeState {
     /// and survives being read; it is withdrawn by the next change that goes
     /// through ([`Self::change_sent`]), never by the reading.
     fn publication_result(&self) -> Result<(), DocumentPublicationError> {
-        match self.publication_failure.lock() {
-            Ok(failure) => failure.clone().map_or_else(
-                || match self.refused_change() {
-                    Some(said) => Err(DocumentPublicationError::Refused(said)),
-                    None => Ok(()),
-                },
-                Err,
-            ),
-            Err(_) => Err(DocumentPublicationError::Failed(
-                "publication failure state poisoned".into(),
-            )),
-        }
+        self.publication_failure.lock_recover().clone().map_or_else(
+            || match self.refused_change() {
+                Some(said) => Err(DocumentPublicationError::Refused(said)),
+                None => Ok(()),
+            },
+            Err,
+        )
     }
 
     fn record_publication_failure(&self, error: DocumentPublicationError) {
-        if let Ok(mut failure) = self.publication_failure.lock() {
-            failure.get_or_insert(error);
-        }
+        self.publication_failure.lock_recover().get_or_insert(error);
     }
 
     fn publication_failed(
@@ -1383,23 +1388,18 @@ impl BridgeState {
             %error,
             "collab: the broker refused one document change; this bridge stays open"
         );
-        if let Ok(mut last) = self.last_refused_change.lock() {
-            *last = Some(said);
-        }
+        *self.last_refused_change.lock_recover() = Some(said);
         self.notify_events();
     }
 
     /// A change the peer refused while nothing later has been sent, if any.
     fn refused_change(&self) -> Option<String> {
-        self.last_refused_change.lock().ok()?.clone()
+        self.last_refused_change.lock_recover().clone()
     }
 
     /// A change went through: nothing is waiting to be reconciled any more.
     fn change_sent(&self) {
-        let cleared = self
-            .last_refused_change
-            .lock()
-            .is_ok_and(|mut last| last.take().is_some());
+        let cleared = self.last_refused_change.lock_recover().take().is_some();
         if cleared {
             self.notify_events();
         }
@@ -3266,7 +3266,6 @@ impl CollaborationManager {
             .state
             .document_reads
             .document_owner_routes("")
-            .expect("document owner routes")
     }
 
     /// Retire the actual socket-backed capture generation, as a rejoin does.
@@ -4999,7 +4998,7 @@ async fn native_invocation_delivery_turn(
             return Err("original invocation capture did not become current".into());
         }
         let mut turns = Vec::new();
-        let owners = state.document_reads.document_owner_routes(key)?;
+        let owners = state.document_reads.document_owner_routes(key);
         for owner in &owners {
             let semaphore = state.document_reads.delivery_turn(owner)?;
             let remaining = deadline.saturating_duration_since(crate::time::now());
@@ -5015,7 +5014,7 @@ async fn native_invocation_delivery_turn(
         if crate::time::now() >= deadline {
             return Err("original invocation capture did not become current".into());
         }
-        if state.document_reads.document_owner_routes(key)? == owners
+        if state.document_reads.document_owner_routes(key) == owners
             && owners
                 .iter()
                 .all(|owner| state.document_reads.publishable(owner))
@@ -6515,29 +6514,39 @@ async fn dispatch_sdk_request(
             let Some(presence) = route.presence.as_ref() else {
                 return true;
             };
-            let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
+            let key_bytes = match postcard::to_stdvec(&key) {
+                Ok(key_bytes) => key_bytes,
+                Err(error) => {
+                    tracing::warn!(%error, "collab: presence key does not encode");
+                    return true;
+                }
+            };
             match payload {
                 PresencePayload::Pointer { x, y } => {
-                    let _ = presence.publish_pointer(&key_bytes, x, y).await;
+                    publish_presence("pointer", presence.publish_pointer(&key_bytes, x, y)).await;
                 }
                 PresencePayload::Caret { pos } => {
-                    let _ = presence.publish_caret(&key_bytes, pos as u64).await;
+                    publish_presence("caret", presence.publish_caret(&key_bytes, pos as u64)).await;
                 }
                 PresencePayload::Selection { start, end } => {
-                    let _ = presence
-                        .publish_selection(&key_bytes, start as u64, end as u64)
-                        .await;
+                    publish_presence(
+                        "selection",
+                        presence.publish_selection(&key_bytes, start as u64, end as u64),
+                    )
+                    .await;
                 }
                 PresencePayload::Typing { start, end } => {
-                    let _ = presence
-                        .publish_typing(&key_bytes, start as u64, end as u64)
-                        .await;
+                    publish_presence(
+                        "typing",
+                        presence.publish_typing(&key_bytes, start as u64, end as u64),
+                    )
+                    .await;
                 }
                 PresencePayload::Arrived => {
-                    let _ = presence.publish_arrived(&key_bytes).await;
+                    publish_presence("arrived", presence.publish_arrived(&key_bytes)).await;
                 }
                 PresencePayload::Left => {
-                    let _ = presence.publish_left(&key_bytes).await;
+                    publish_presence("left", presence.publish_left(&key_bytes)).await;
                 }
                 // Shell chrome originates these directly on the peer-presence
                 // route: following is an authenticated visual cue apps cannot
@@ -6545,12 +6554,25 @@ async fn dispatch_sdk_request(
                 // are the desktop's own presence, which no app speaks for.
                 PresencePayload::Following { .. } | PresencePayload::Availability { .. } => {}
                 PresencePayload::Interaction(update) => {
-                    if let Ok(json) = serde_json::to_string(&update) {
-                        let _ = presence.publish_interaction(&key_bytes, &json).await;
-                    }
+                    let json = match serde_json::to_string(&update) {
+                        Ok(json) => json,
+                        Err(error) => {
+                            tracing::warn!(%error, "collab: presence interaction does not encode");
+                            return true;
+                        }
+                    };
+                    publish_presence(
+                        "interaction",
+                        presence.publish_interaction(&key_bytes, &json),
+                    )
+                    .await;
                 }
                 PresencePayload::Status { text, automatic } => {
-                    let _ = presence.publish_status(&key_bytes, &text, automatic).await;
+                    publish_presence(
+                        "status",
+                        presence.publish_status(&key_bytes, &text, automatic),
+                    )
+                    .await;
                 }
             }
         }

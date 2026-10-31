@@ -70,8 +70,8 @@ pub fn register_named(app_id: &str, bytes: &[u8], hash: &str) -> Result<(), Stri
 /// unless a package already named one.
 pub fn register_built_in(app_id: &str, bytes: &'static [u8]) {
     let hash = *blake3::hash(bytes).as_bytes();
-    if let Ok(mut registry) = registry().lock()
-        && let std::collections::btree_map::Entry::Vacant(entry) = registry.entry(app_id.to_owned())
+    if let std::collections::btree_map::Entry::Vacant(entry) =
+        registry().lock_recover().entry(app_id.to_owned())
     {
         entry.insert(Named { hash, bytes });
         NAMED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -82,9 +82,7 @@ pub fn register_built_in(app_id: &str, bytes: &'static [u8]) {
 /// it runs with, replacing any its host held before (an update of the app).
 pub fn register_package(app_id: &str, bytes: &[u8]) {
     let hash = *blake3::hash(bytes).as_bytes();
-    let Ok(mut registry) = registry().lock() else {
-        return;
-    };
+    let mut registry = registry().lock_recover();
     if registry.get(app_id).is_some_and(|named| named.hash == hash) {
         return;
     }
@@ -115,9 +113,9 @@ fn kinds() -> &'static Mutex<BTreeMap<String, String>> {
 
 /// Records of kind `kind` belong to the app `app_id`.
 pub fn register_kind(kind: &str, app_id: &str) {
-    if let Ok(mut kinds) = kinds().lock() {
-        kinds.insert(kind.to_owned(), app_id.to_owned());
-    }
+    kinds()
+        .lock_recover()
+        .insert(kind.to_owned(), app_id.to_owned());
 }
 
 /// The app that keeps records of kind `kind`, when this process knows it: a
@@ -125,27 +123,33 @@ pub fn register_kind(kind: &str, app_id: &str) {
 /// app itself.
 #[must_use]
 pub fn app_of_kind(kind: &str) -> Option<String> {
-    kinds().lock().ok()?.get(kind).cloned()
+    kinds().lock_recover().get(kind).cloned()
 }
 
 /// The hash of the surface the changes to a record of kind `kind` are
 /// decided against: its app's.
 #[must_use]
 pub fn hash_of_kind(kind: &str) -> Option<[u8; 32]> {
-    let app = kinds().lock().ok()?.get(kind)?.clone();
+    let app = kinds().lock_recover().get(kind)?.clone();
     hash_of(&app)
 }
 
 /// The hash of the surface `app_id`'s changes are decided against.
 #[must_use]
 pub fn hash_of(app_id: &str) -> Option<[u8; 32]> {
-    registry().lock().ok()?.get(app_id).map(|named| named.hash)
+    registry()
+        .lock_recover()
+        .get(app_id)
+        .map(|named| named.hash)
 }
 
 /// The surface bytes of `app_id`, when this process carries them.
 #[must_use]
 pub fn bytes_of(app_id: &str) -> Option<&'static [u8]> {
-    registry().lock().ok()?.get(app_id).map(|named| named.bytes)
+    registry()
+        .lock_recover()
+        .get(app_id)
+        .map(|named| named.bytes)
 }
 
 /// The person-record kinds `app_id`'s surface declares (its
