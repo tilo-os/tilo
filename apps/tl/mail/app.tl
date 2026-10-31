@@ -35,9 +35,16 @@ type Thread (origin: imap.thread) {
     flagged: Bool
     boxes: Set<Text>
     messages: Collection<Message>
+    /// The labels people gave it (Gmail's and Fastmail's): the person's own, never the server's.
+    labels: Set<Text>
+    /// Snoozed until this moment: out of the inbox until then, and back once it has come, with
+    /// no window open. The epoch when it is not snoozed.
+    snoozed_until: Time = Time("1970-01-01T00:00:00Z")
 
     search {
-        filter "Inbox" = boxes.contains("inbox") (icon: .inbox)
+        filter "Inbox" = boxes.contains("inbox") and snoozed_until <= now (icon: .inbox)
+        filter "Snoozed" = snoozed_until > now (icon: .clock)
+        filter labels (icon: .tag)
         filter flagged "Flagged" (icon: .flag)
         filter "Sent" = boxes.contains("sent") (icon: .send)
         filter "Archive" = boxes.contains("archive") (icon: .archive)
@@ -48,6 +55,16 @@ type Thread (origin: imap.thread) {
         hide key
         hide account
         hide boxes
+    }
+}
+
+/// A label the person gave their conversations: their own, never the server's, as Gmail's and
+/// Fastmail's are. A conversation holds its labels by name, so giving one twice makes it once.
+type Label {
+    name: Text (title)
+
+    search {
+        sort name a_z
     }
 }
 
@@ -96,10 +113,12 @@ type Draft {
     }
 }
 
-/// The person's mail: the accounts the workspace's settings hold, and what they are writing.
+/// The person's mail: the accounts the workspace's settings hold, what they are writing, and
+/// the labels they gave their conversations.
 type Mail {
     accounts: Collection<Account>
     drafts: Collection<Draft>
+    labels: Collection<Label>
     /// How many seconds a sent message waits before it goes, so it can be taken back: the
     /// person's setting, ten by default, and what rules out holding it not at all.
     hold: Int = 10
@@ -269,6 +288,63 @@ action flag(t: Thread, flagged: Bool = not t.flagged) (label: if t.flagged { "Un
     t.flagged = flagged
 }
 
+/// Puts the conversation away until a moment: it leaves the inbox, and comes back once that
+/// moment has come, with no window open. The moment is a field, so it survives closing and
+/// reopening, and an agent snoozes the same way.
+action snooze(t: Thread, until: Time) (icon: .clock, label: "Snooze") {
+    require until > now "Pick a moment still to come"
+    t.snoozed_until = until
+}
+
+/// Puts the conversation away for an hour, the snooze people reach for most.
+action snooze_an_hour(t: Thread) (icon: .clock, label: "Snooze an hour") {
+    snooze(t, now + 1h)
+}
+
+/// Puts the conversation away until tomorrow morning, at nine, in the person's own zone.
+action snooze_until_tomorrow(t: Thread) (icon: .clock, label: "Snooze until tomorrow") {
+    snooze(t, dated("tomorrow 9am", now).at ?? now + 18h)
+}
+
+/// Brings a snoozed conversation back now, whatever its moment was: it is in the inbox again.
+action unsnooze(t: Thread) (icon: .inbox, label: "Bring back") {
+    t.snoozed_until = Time("1970-01-01T00:00:00Z")
+}
+
+/// Gives the conversation a label, or takes one away: `on` says which. The label joins the
+/// person's labels the first time it is given, so it has a filter of its own from then on.
+action label(t: Thread, name: Text, on: Bool = not t.labels.any(l -> l == name)) (icon: .tag) {
+    require name != "" "A label needs a name"
+    let m = root Mail
+    if on { t.labels.add(name) } else { t.labels.remove(name) }
+    if on and not m.labels.any(l -> l.name == name) { m.labels.insert(Label(name: name)) }
+}
+
+/// Renames one of the person's labels, all the conversations that carry it with it.
+action rename_label(m: Mail, l: Label, name: Text) {
+    require name != "" "A label needs a name"
+    require not m.labels.any(x -> x.name == name) "You have a label {name}"
+    for a in m.accounts {
+        for t in a.threads {
+            if t.labels.any(x -> x == l.name) {
+                t.labels.remove(l.name)
+                t.labels.add(name)
+            }
+        }
+    }
+    l.name = name
+}
+
+/// Deletes one of the person's labels, and takes it off every conversation that carries it.
+destructive action delete_label(m: Mail, l: Label) (icon: .trash) {
+    for a in m.accounts {
+        for t in a.threads {
+            if t.labels.any(x -> x == l.name) { t.labels.remove(l.name) }
+        }
+    }
+    m.labels.remove(l)
+}
+
 /// Marks the conversation read, or unread again.
 action mark_read(t: Thread, unread: Bool = not t.unread) (label: if t.unread { "Mark as read" } else { "Mark as unread" }, icon: .mail_open, on: not t.unread) {
     if t.unread != unread {
@@ -344,6 +420,18 @@ view compose(d: Draft) {
     }
 }
 
+/// The query a label's place has: the conversations that carry it, whatever mailbox they are
+/// in.
+fn label_query(name: Text) -> Text {
+    "labels:\"{name}\""
+}
+
+/// What the window calls the place `query` shows: the filters' and the labels' names, and
+/// "All mail" for every conversation.
+fn place_title(m: Mail, query: Text) -> Text {
+    filters(Thread).find(f -> f.query == query)?.label ?? m.labels.find(l -> label_query(l.name) == query)?.name ?? "All mail"
+}
+
 /// The mail window: every account's mail. The unified inbox is every account's inbox in one
 /// list, a conversation in any account opening beside it; one account's window is its
 /// mailboxes as its places.
@@ -365,7 +453,7 @@ view mail(m: Mail) {
 view unified(m: Mail) {
     window query: Text = "is:inbox"
     let places = filters(Thread).filter(f -> f.toggle)
-    let title = places.find(p -> p.query == query)?.label ?? "All mail"
+    let title = place_title(m, query)
     if let a = m.accounts.first() {
         let shown = a.threads.matching(query)
         ui.NavShell(content_kind: .document, sidebar_title: .some("All accounts"), overview_title: .some(title), overview_count: .some(shown.len())) {
@@ -376,6 +464,15 @@ view unified(m: Mail) {
                     }
                     ui.NavItem("all", "All mail", icon: .mail) {
                         on select: set(query, "")
+                    }
+                    if not m.labels.is_empty() {
+                        ui.NavSection("Labels") {
+                            for l in m.labels {
+                                ui.NavItem(label_query(l.name), l.name, icon: .tag, count: .some(a.threads.matching(label_query(l.name)).len())) {
+                                    on select: set(query, label_query(l.name))
+                                }
+                            }
+                        }
                     }
                     for acct in m.accounts {
                         ui.NavSection(acct.name) {
@@ -424,12 +521,14 @@ view unified(m: Mail) {
 /// An account's window: its mailboxes in the sidebar with how many unread each holds, the
 /// conversations of the one chosen, newest first, and the one open beside them. Opening a
 /// conversation reads it. The mailbox is the window's, as people type it in search
-/// (`is:inbox`), so everyone looking sees the same list; it starts on the inbox.
+/// (`is:inbox`), so everyone looking sees the same list; it starts on the inbox. The person's
+/// labels come after the mailboxes, each showing the conversations it is on.
 view mailboxes(a: Account) {
     window query: Text = "is:inbox"
+    let m = root Mail
     let places = filters(Thread).filter(f -> f.toggle)
     let shown = a.threads.matching(query)
-    let title = places.find(p -> p.query == query)?.label ?? "All mail"
+    let title = place_title(m, query)
     ui.NavShell(content_kind: .document, sidebar_title: .some(a.address), overview_title: .some(title), overview_count: .some(shown.len())) {
         sidebar: {
             ui.NavList(selected: if query == "" { "all" } else { query }) {
@@ -441,6 +540,15 @@ view mailboxes(a: Account) {
                 }
                 ui.NavItem("all", "All mail", icon: .mail) {
                     on select: set(query, "")
+                }
+                if not m.labels.is_empty() {
+                    ui.NavSection("Labels") {
+                        for l in m.labels {
+                            ui.NavItem(label_query(l.name), l.name, icon: .tag, count: .some(a.threads.matching(label_query(l.name)).len())) {
+                                on select: set(query, label_query(l.name))
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -540,7 +648,9 @@ view conversation(t: Thread) {
 }
 
 /// One message of a conversation: who wrote it, to whom, what it says and, folded under it,
-/// the message it quotes, as Gmail and Apple Mail fold a quotation; and what came with it.
+/// the message it quotes, as Gmail and Apple Mail fold a quotation; and what came with it. The
+/// hover toolbar and the menu are the list item's: wherever the message's layout places them,
+/// the list runs them.
 view message(m: Message) {
     lens quoting: Bool
     let body = as_lines(m.body)
