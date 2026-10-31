@@ -1788,6 +1788,14 @@ impl FrameHarness {
         &self.theme
     }
 
+    /// The backdrops the last frame's floating surfaces were drawn over, in
+    /// the frame's own pixels: what a host blurs outside the renderer and
+    /// hands back with [`crate::backdrop::provide_backdrops`].
+    #[must_use]
+    pub fn backdrops(&self) -> &crate::backdrop::BackdropFrame {
+        &self.backdrop
+    }
+
     /// Resize in logical pixels and settle geometry-dependent composition
     /// before exposing targets, accessibility, or a drawable frame. Uses the
     /// same bounded prepaint lifecycle as the live App host. Equal sizes are a

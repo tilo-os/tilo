@@ -385,7 +385,7 @@ fn desktop_services(
 #[cfg(target_os = "linux")]
 fn device_options(hosted: bool) -> tilo_session::Options {
     use tilo_quick_settings::device::PlayerLink;
-    use tilo_session::{DeviceHost, Options, QuickSettings, SessionConfig};
+    use tilo_session::{DeviceHost, KillSwitch, Options, QuickSettings, SessionConfig};
     Options {
         config: SessionConfig::load(),
         search: search_options(),
@@ -408,6 +408,9 @@ fn device_options(hosted: bool) -> tilo_session::Options {
         user: std::env::var("USER").unwrap_or_default(),
         verifier: tilo_session::unlock::installed(),
         state: tilo_paths::state_dir(),
+        // A session in a window of another desktop leaves the machine's
+        // traffic to the session that owns it.
+        kill_switch: (!hosted).then(KillSwitch::machine),
         ..Options::default()
     }
 }

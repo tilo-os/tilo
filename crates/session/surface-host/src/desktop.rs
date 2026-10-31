@@ -231,6 +231,11 @@ impl DesktopHost {
         self.desk.borrow_mut().gesture_config = config;
     }
 
+    /// Draw the desk with `theme`: the person's palette, tokens and fonts.
+    pub fn set_theme(&self, theme: ui::Theme) {
+        self.desk.borrow_mut().host.set_theme(theme);
+    }
+
     /// What the touchpad gestures the desktop took asked since the last
     /// call, oldest first.
     pub fn take_gestures(&self) -> Vec<DeskGesture> {
@@ -306,6 +311,18 @@ impl SurfaceHost for DesktopHost {
 
     fn prepare_frame(&mut self) -> bool {
         self.desk.borrow_mut().host.prepare_frame()
+    }
+
+    fn window_pictures(&self) -> Vec<tilo_compositor::WindowPicture> {
+        self.desk.borrow().host.window_pictures()
+    }
+
+    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+        self.desk.borrow().host.backdrops()
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+        self.desk.borrow_mut().host.set_backdrops(images);
     }
 }
 

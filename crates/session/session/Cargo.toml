@@ -95,6 +95,9 @@ tilo-network-secret-agent = { path = "../network-secret-agent" }
 # The person's other devices: what was copied here is shared through
 # the same fabric as everything else that follows them.
 tilo-device-fabric = { path = "../device-fabric" }
+# The person's VPN profiles: a kill-switch profile that drops blocks this
+# device's traffic, decided here and carried out by the root helper.
+tilo-device-vpn = { path = "../../system/device-vpn", default-features = false, features = ["session"] }
 tilo-bluetooth-agent = { path = "../bluetooth-agent" }
 tilo-tray-host = { path = "../tray-host" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
@@ -122,6 +125,8 @@ tilo-resource = { path = "../../sdk/tilo-resource" }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
 zbus = { workspace = true, features = ["tokio", "p2p"] }
 tilo-test-env = { path = "../../dev/test-env" }
+# What `NetworkManager` says, fed in rather than read from a bus.
+tilo-nm = { path = "../../system/tilo-nm" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
 futures-util.workspace = true
 tempfile.workspace = true

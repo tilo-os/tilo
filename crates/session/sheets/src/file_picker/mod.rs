@@ -6,10 +6,11 @@
 //! reach); the sheet shows the toolkit's [`FilePicker`] for it and gives the
 //! answer back through the seat ([`FilePickerSeat::take_answer`]). Every
 //! step a person takes in it is a published action
-//! ([`FilePickerEffect`]); what the chooser lists, where it is and why it
-//! last refused reaches the service as plain data
-//! ([`FilePickerSeat::listing`]). Giving the app files needs the person:
-//! agents may look around and cancel, but never confirm.
+//! ([`FilePickerEffect`]), each naming the request it is taken in, so a
+//! step that arrives after another request opened is refused; what the
+//! chooser lists, where it is and why it last refused reaches the service
+//! as plain data ([`FilePickerSeat::listing`]). Giving the app files needs
+//! the person: agents may look around and cancel, but never confirm.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -37,64 +38,116 @@ pub struct FileChooser {}
 #[resource(kind = "file-chooser.request", label = "File chooser")]
 impl FileChooser {}
 
-/// What a person does in the chooser.
+/// What a person does in the chooser. Every step names the request
+/// ([`FileRequest::handle`]) it is taken in, so one that arrives after
+/// another request opened is refused instead of moving the wrong chooser.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "so.tilo.file-chooser.step")]
 pub enum FilePickerEffect {
     /// Open a folder: one in the list, or any the chooser may reach
     #[effect(own_device, kind = "read")]
     Navigate {
+        #[param("The request it is taken in")]
+        handle: String,
         #[param("The folder's path")]
         path: String,
     },
     /// Open the folder above the one shown
     #[effect(own_device, kind = "read")]
-    Up,
+    Up {
+        #[param("The request it is taken in")]
+        handle: String,
+    },
     /// Choose one entry of the list, and only it
     #[effect(own_device, kind = "read")]
     Select {
+        #[param("The request it is taken in")]
+        handle: String,
         #[param("The entry's path, as listed")]
         path: String,
     },
     /// Add an entry of the list to the choice, or take it out of it
     #[effect(own_device, kind = "read")]
     AlsoSelect {
+        #[param("The request it is taken in")]
+        handle: String,
         #[param("The entry's path, as listed")]
         path: String,
     },
     /// Name the file to save
     #[effect(own_device, kind = "read")]
     SetFilename {
+        #[param("The request it is taken in")]
+        handle: String,
         #[param("The file's name")]
         name: String,
     },
     /// Show only one type of file
     #[effect(own_device, kind = "read")]
     Filter {
+        #[param("The request it is taken in")]
+        handle: String,
         #[param("The type, counted from zero in the list of types")]
         index: u32,
     },
     /// Search every place the chooser may reach; empty goes back to the folder
     #[effect(own_device, kind = "read")]
     Search {
+        #[param("The request it is taken in")]
+        handle: String,
         #[param("What to look for")]
         query: String,
     },
     /// Show what was chosen here before
     #[effect(own_device, kind = "read")]
-    Recent,
+    Recent {
+        #[param("The request it is taken in")]
+        handle: String,
+    },
     /// Give the app what is chosen
     #[effect(own_device, attended)]
-    Confirm,
+    Confirm {
+        #[param("The request it is taken in")]
+        handle: String,
+    },
     /// Save over the file that already has the name
     #[effect(own_device, attended)]
-    Replace,
+    Replace {
+        #[param("The request it is taken in")]
+        handle: String,
+    },
     /// Keep the file that has the name, and choose another
     #[effect(own_device, kind = "read")]
-    KeepExisting,
+    KeepExisting {
+        #[param("The request it is taken in")]
+        handle: String,
+    },
     /// Close the chooser and give the app nothing
     #[effect(own_device, idempotent)]
-    Cancel,
+    Cancel {
+        #[param("The request it is taken in")]
+        handle: String,
+    },
+}
+
+impl FilePickerEffect {
+    /// The request this step is taken in.
+    pub fn handle(&self) -> &str {
+        match self {
+            Self::Navigate { handle, .. }
+            | Self::Up { handle }
+            | Self::Select { handle, .. }
+            | Self::AlsoSelect { handle, .. }
+            | Self::SetFilename { handle, .. }
+            | Self::Filter { handle, .. }
+            | Self::Search { handle, .. }
+            | Self::Recent { handle }
+            | Self::Confirm { handle }
+            | Self::Replace { handle }
+            | Self::KeepExisting { handle }
+            | Self::Cancel { handle } => handle,
+        }
+    }
 }
 
 /// What the chooser asks for.
@@ -317,13 +370,18 @@ impl FilePickerSeat {
         self.presentation.dismissed();
     }
 
-    /// Take the chooser's step `effect`: what can be refused now is.
+    /// Take the chooser's step `effect`: what can be refused now is. A
+    /// step that names a request that is not the one asked is refused: it
+    /// was taken while another request was up.
     fn step(&self, effect: FilePickerEffect) -> Result<(), String> {
         let (listing, roots) = {
             let held = self.held.borrow();
             let Some(request) = held.request.as_ref() else {
                 return Err(t("file-chooser-nothing-asked"));
             };
+            if request.handle != effect.handle() {
+                return Err(t("file-chooser-request-gone"));
+            }
             if held.answer.is_some() {
                 return Err(t("file-chooser-answered"));
             }
@@ -336,7 +394,7 @@ impl FilePickerSeat {
                 .ok_or_else(|| t("file-chooser-not-listed"))
         };
         let step = match effect {
-            FilePickerEffect::Navigate { path } => match listing.entry(Path::new(&path)) {
+            FilePickerEffect::Navigate { path, .. } => match listing.entry(Path::new(&path)) {
                 Some(entry) if entry.directory => Step::Picker(PickerOperation::Navigate {
                     entry: entry_id(&entry.path),
                 }),
@@ -349,25 +407,29 @@ impl FilePickerSeat {
                     Step::Go(path)
                 }
             },
-            FilePickerEffect::Up => Step::Picker(PickerOperation::Up),
-            FilePickerEffect::Select { path } => Step::Picker(PickerOperation::Select {
+            FilePickerEffect::Up { .. } => Step::Picker(PickerOperation::Up),
+            FilePickerEffect::Select { path, .. } => Step::Picker(PickerOperation::Select {
                 entry: listed(&path)?,
             }),
-            FilePickerEffect::AlsoSelect { path } => Step::Picker(PickerOperation::AlsoSelect {
-                entry: listed(&path)?,
-            }),
-            FilePickerEffect::SetFilename { name } => {
+            FilePickerEffect::AlsoSelect { path, .. } => {
+                Step::Picker(PickerOperation::AlsoSelect {
+                    entry: listed(&path)?,
+                })
+            }
+            FilePickerEffect::SetFilename { name, .. } => {
                 Step::Picker(PickerOperation::SetFilename { filename: name })
             }
-            FilePickerEffect::Filter { index } => Step::Picker(PickerOperation::Filter {
+            FilePickerEffect::Filter { index, .. } => Step::Picker(PickerOperation::Filter {
                 index: usize::try_from(index).unwrap_or(usize::MAX),
             }),
-            FilePickerEffect::Search { query } => Step::Picker(PickerOperation::Search { query }),
-            FilePickerEffect::Recent => Step::Picker(PickerOperation::Recent),
-            FilePickerEffect::Confirm => Step::Picker(PickerOperation::Confirm),
-            FilePickerEffect::Replace => Step::Picker(PickerOperation::Replace),
-            FilePickerEffect::KeepExisting => Step::Picker(PickerOperation::KeepExisting),
-            FilePickerEffect::Cancel => Step::Picker(PickerOperation::Cancel),
+            FilePickerEffect::Search { query, .. } => {
+                Step::Picker(PickerOperation::Search { query })
+            }
+            FilePickerEffect::Recent { .. } => Step::Picker(PickerOperation::Recent),
+            FilePickerEffect::Confirm { .. } => Step::Picker(PickerOperation::Confirm),
+            FilePickerEffect::Replace { .. } => Step::Picker(PickerOperation::Replace),
+            FilePickerEffect::KeepExisting { .. } => Step::Picker(PickerOperation::KeepExisting),
+            FilePickerEffect::Cancel { .. } => Step::Picker(PickerOperation::Cancel),
         };
         self.queue(step);
         Ok(())

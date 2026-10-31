@@ -139,6 +139,7 @@ portal-usb-row-read-write = Read and write
 portal-usb-row-read-only = Read only
 portal-a11y-name = Name
 portal-no-such-field = The question has no such field to type into.
+portal-request-gone = That question is no longer showing.
 portal-secret-incomplete = Fill in what the question asks first.
 portal-a11y-answer = Answer
 portal-allow = Allow
@@ -240,6 +241,7 @@ portal-auth-rejected = That password was not accepted.
 
 file-chooser-nothing-asked = The file chooser is not asking anything.
 file-chooser-answered = The file chooser has already answered.
+file-chooser-request-gone = That file chooser is no longer showing.
 file-chooser-not-listed = That is not in the file chooser's list.
 file-chooser-not-a-folder = That is a file, not a folder.
 file-chooser-outside = That is outside the folders the file chooser may open.

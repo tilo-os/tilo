@@ -1741,15 +1741,22 @@ fn a_portal_question_is_answered_through_the_sheets_actions() {
         .invoke(
             &sheet,
             select,
-            &arguments(serde_json::json!({ "index": 1 })),
+            &arguments(serde_json::json!({ "handle": "request-1", "index": 1 })),
         )
         .expect("select");
     session
-        .invoke(&sheet, PortalEffect::CONFIRM.id, &serde_json::Map::new())
+        .invoke(
+            &sheet,
+            PortalEffect::CONFIRM.id,
+            &arguments(serde_json::json!({ "handle": "request-1" })),
+        )
         .expect("confirm");
     let asked = seat.take_asked();
     assert!(
-        asked.contains(&PortalEffect::Select { index: 1 }),
+        asked.contains(&PortalEffect::Select {
+            handle: "request-1".to_owned(),
+            index: 1
+        }),
         "the service reads what was chosen: {asked:?}"
     );
 }
@@ -1788,7 +1795,10 @@ fn the_file_chooser_answers_the_file_chosen_through_its_actions() {
         .invoke(
             &sheet,
             select,
-            &arguments(serde_json::json!({ "path": beach.to_string_lossy() })),
+            &arguments(serde_json::json!({
+                "handle": "request-1",
+                "path": beach.to_string_lossy(),
+            })),
         )
         .expect("select");
     // Choosing takes the choice at once; confirming checks it off the loop.
@@ -1797,7 +1807,7 @@ fn the_file_chooser_answers_the_file_chosen_through_its_actions() {
         .invoke(
             &sheet,
             FilePickerEffect::CONFIRM.id,
-            &serde_json::Map::new(),
+            &arguments(serde_json::json!({ "handle": "request-1" })),
         )
         .expect("confirm");
     let mut answer = None;
@@ -2095,35 +2105,6 @@ fn the_portals_screenshot_is_a_picture_of_every_display() {
 // Frames are written to `$PIXEL_PARITY_OUT` (default
 // `~/.cache/pixel-parity/new`) and named after the old shell's scenes.
 
-/// Where the parity frames are written.
-fn parity_dir() -> std::path::PathBuf {
-    std::env::var_os("PIXEL_PARITY_OUT").map_or_else(
-        || {
-            let home = std::env::var("HOME").expect("HOME");
-            std::path::PathBuf::from(home).join(".cache/pixel-parity/new")
-        },
-        std::path::PathBuf::from,
-    )
-}
-
-/// Write the screen as `name.png` into [`parity_dir`].
-fn capture(session: &mut Session, name: &str) {
-    let dir = parity_dir();
-    std::fs::create_dir_all(&dir).expect("create the parity directory");
-    let shot = session
-        .compositor()
-        .screenshot("HEADLESS-1")
-        .expect("screenshot");
-    image::save_buffer(
-        dir.join(format!("{name}.png")),
-        &shot.rgba,
-        shot.width,
-        shot.height,
-        image::ColorType::Rgba8,
-    )
-    .expect("write the frame");
-}
-
 /// Step `frames` frames of a millisecond each, so what a state's arrival
 /// animates has arrived (motion reads settled, the panels still lay out).
 fn settle(session: &mut Session, frames: u32) {
@@ -2132,168 +2113,8 @@ fn settle(session: &mut Session, frames: u32) {
     }
 }
 
-/// A session drawing the desk in the light theme.
-fn light_session() -> Session {
-    fn light() -> ui::application::ComponentRunnerInputs {
-        let mut inputs = ui::headless::fixture_runner_inputs();
-        inputs.theme = ui::theme::Theme::light();
-        inputs
-    }
-    Session::headless(
-        Options {
-            presentation: light,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
-}
-
-/// Run frames until `done` holds, with no client to pump.
-#[track_caller]
-fn until_session(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    for _ in 0..300 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!("condition not reached");
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one harness captures the whole parity set in a fixed order"
-)]
-fn pixel_parity_frames_match_the_old_shells_scenes() {
-    let _settled = ui::motion::testing::settled();
-    std::fs::create_dir_all(parity_dir()).expect("create the parity directory");
-
-    // The empty desk, both themes: the old shell's `empty-desk` and
-    // `empty-desk` at `--theme light`.
-    {
-        let mut session = session();
-        settle(&mut session, 4);
-        capture(&mut session, "empty-desk");
-        let mut session = light_session();
-        settle(&mut session, 4);
-        capture(&mut session, "empty-desk-light");
-    }
-
-    // One window: the old shell's `desktop` (one tabbed group).
-    {
-        let mut session = session();
-        let client = mapped(&mut session, "org.example.Terminal");
-        settle(&mut session, 4);
-        capture(&mut session, "one-window");
-        drop(client);
-    }
-
-    // Two windows side by side in the strip, and the overview over them.
-    {
-        let mut session = session();
-        let a = mapped(&mut session, "org.example.Terminal");
-        let b = mapped(&mut session, "so.tilo.file-explorer");
-        settle(&mut session, 6);
-        capture(&mut session, "two-windows");
-        invoke(&mut session, CHROME_RESOURCE, "toggle-overview");
-        settle(&mut session, 8);
-        capture(&mut session, "overview");
-        drop((a, b));
-    }
-
-    // Quick settings, by the bar's own action.
-    {
-        let (mut session, _host) = session_with_quick_settings();
-        settle(&mut session, 2);
-        invoke(&mut session, CHROME_RESOURCE, "toggle-quick-settings");
-        settle(&mut session, 8);
-        capture(&mut session, "quick-settings");
-    }
-
-    // Search, opened from the desk.
-    {
-        use tilo_desktop::desktop_actions::{DESK_RESOURCE, SEARCH_RESOURCE};
-        let mut session = session();
-        settle(&mut session, 2);
-        invoke(&mut session, DESK_RESOURCE, "open-search");
-        until_session(&mut session, |session| {
-            find_resource(&session.resources(), SEARCH_RESOURCE).is_some()
-        });
-        settle(&mut session, 8);
-        capture(&mut session, "search");
-    }
-
-    // One notification banner over the desk, saying what the old shell's
-    // `notifications-one` says.
-    {
-        use tilo_desktop::notifications::{Banner, BannerFeed, Notification, NotificationSeverity};
-        let mut session = session();
-        settle(&mut session, 2);
-        let arrived = ui::time::now()
-            .checked_sub(Duration::from_secs(2))
-            .unwrap_or_else(ui::time::now);
-        session.banners().publish(BannerFeed {
-            banners: vec![Banner {
-                notification: Notification::new("Build finished", "All 524 tests passed")
-                    .with_severity(NotificationSeverity::Info)
-                    .with_shown_at(arrived),
-                actions: Vec::new(),
-            }],
-            locked: false,
-            held: false,
-        });
-        settle(&mut session, 12);
-        capture(&mut session, "notification");
-    }
-
-    // A dialog over a window: the portal asking to share a screen.
-    {
-        use tilo_sheets::Seat as _;
-        let mut session = session();
-        let client = mapped(&mut session, "org.example.Terminal");
-        settle(&mut session, 4);
-        let seat = session.portal().expect("portal sheet").clone();
-        seat.presentation().open(false);
-        seat.show(Some(Dialog {
-            handle: "request-1".to_owned(),
-            title: "Share your screen?".to_owned(),
-            heading: "Meet".to_owned(),
-            detail: "Meet asks to record your screen".to_owned(),
-            body: Body::Choices(vec!["Whole screen".to_owned(), "One window".to_owned()]),
-            confirm_label: "Allow".to_owned(),
-            cancel_label: "Cancel".to_owned(),
-            ..Dialog::default()
-        }));
-        settle(&mut session, 8);
-        capture(&mut session, "dialog");
-        drop(client);
-    }
-
-    // The lock screen over the desk.
-    {
-        let mut session = Session::headless(
-            Options {
-                presentation: ui::headless::fixture_runner_inputs,
-                user: "ada".to_owned(),
-                verifier: std::sync::Arc::new(Sesame),
-                collab: false,
-                ..Options::default()
-            },
-            &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-        )
-        .expect("session");
-        let client = mapped(&mut session, "org.example.Terminal");
-        settle(&mut session, 2);
-        invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
-        settle(&mut session, 8);
-        assert!(session.compositor().locked(), "the session locked");
-        capture(&mut session, "lock");
-        drop(client);
-    }
-}
+#[path = "session/desk.rs"]
+mod desk;
 
 /// The id of the tab the desk holds for `app`.
 fn tab_of(session: &Session, app: &str) -> u64 {

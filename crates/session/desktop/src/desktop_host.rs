@@ -48,6 +48,7 @@ use crate::shortcuts::{page_chord, page_shortcut_action};
 use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
 use crate::strip_switcher::Command as StripCommand;
 use crate::topbar::{TOPBAR_HEIGHT_PX, TopBarChrome};
+use crate::window_flight::WindowFlight;
 use crate::window_switcher::WindowSource;
 use crate::workspace_menu::{
     WorkspaceAction, WorkspaceChoice, WorkspaceMenu, WorkspaceMenuChoice, WorkspaceMenuModel,
@@ -629,6 +630,9 @@ pub struct DesktopChrome {
     navigator_seen: Option<(u64, u64, bool, Rect)>,
     /// The tree revision the open overview shows.
     overview_revision: u64,
+    /// Whether the overview is open, as the chrome last drew it, for the
+    /// host whose clock flies its windows in and out.
+    overview_open: Option<Rc<Cell<bool>>>,
     /// Whether the bar last drew its Tilo mark pressed (its menu open).
     menu_shown: Cell<bool>,
     handle: DesktopHandle,
@@ -674,6 +678,7 @@ impl DesktopChrome {
             navigator_frame: StripFrame::empty(Rect::ZERO),
             navigator_seen: None,
             overview_revision: 0,
+            overview_open: None,
             menu_shown: Cell::new(false),
             handle,
             generation,
@@ -761,6 +766,17 @@ impl DesktopChrome {
     #[must_use]
     pub fn with_intents(mut self, intents: Rc<RefCell<Vec<ChromeIntent>>>) -> Self {
         self.intents = intents;
+        self
+    }
+
+    /// Have the overview's windows drawn by the host through `flight`, its
+    /// pictures flying between the desk and the overview on the clock the
+    /// host keeps there; `open` is set as the chrome draws, for the host
+    /// that clock belongs to.
+    #[must_use]
+    pub fn with_overview(mut self, flight: WindowFlight, open: Rc<Cell<bool>>) -> Self {
+        self.overview.set_flight(flight);
+        self.overview_open = Some(open);
         self
     }
 
@@ -1795,6 +1811,9 @@ impl Widget for DesktopChrome {
         changed |= self.bar.update(state, path);
         self.observe_navigation();
         self.keyboard.set(self.wants_keyboard());
+        if let Some(open) = &self.overview_open {
+            open.set(self.overview.is_open());
+        }
         changed | !self.asks.borrow().is_empty()
     }
 
