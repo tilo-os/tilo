@@ -136,6 +136,7 @@ mod tests {
             resource: "d".to_owned(),
             change: change.to_owned(),
             left: None,
+            placed: Vec::new(),
         }
     }
 

@@ -3435,6 +3435,13 @@
           "name": "transcript",
           "doc": "A conversation: each row stands in the page column, the list opens at its newest row and follows it.",
           "type": "bool"
+        },
+        {
+          "name": "unread",
+          "doc": "The item a conversation's reader had not seen when they opened it (`first_unseen(c)`): the \"New messages\" divider stands over the row that shows it, and while that is above the view a pill at the foot offers to take the reader back to it. `None` draws neither. The list works out the row as it builds, so the same list keeps its rows and only the two the divider moved between build again.",
+          "type": {
+            "option": "resource"
+          }
         }
       ],
       "slots": [
@@ -4334,6 +4341,13 @@
           "name": "unread",
           "doc": "Something new waits behind the place: its label stands out at rest.",
           "type": "bool"
+        },
+        {
+          "name": "mentions",
+          "doc": "How many things behind the place name the person (mentions): more specific than the place's unread count, so it takes the badge's place while there are any, as Slack's one badge counts what names you rather than everything new.",
+          "type": {
+            "option": "int"
+          }
         },
         {
           "name": "item",
