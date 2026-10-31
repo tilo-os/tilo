@@ -638,8 +638,8 @@ impl Runtime {
                 .map(|(who, mine, composing)| {
                     Value::Tuple(vec![
                         Value::Principal(who.clone()),
-                        Value::Bool(*mine),
                         Value::Bool(*composing),
+                        Value::Bool(*mine),
                     ])
                 })
                 .collect(),
