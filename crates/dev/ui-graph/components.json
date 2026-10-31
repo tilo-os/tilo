@@ -10,6 +10,58 @@
       }
     },
     {
+      "name": "ActivityTimeline",
+      "doc": "The history of a document, grouped: runs of typing fold into one band that opens to its changes, each day's changes sit under the day's heading, and a change's menu offers reverting it.",
+      "props": [
+        {
+          "name": "fill",
+          "doc": "The pane takes the height its parent gives it and scrolls inside, rather than being as tall as its rows inside another scroll.",
+          "type": "bool"
+        },
+        {
+          "name": "newest_first",
+          "doc": "Whether it lists changes newest first.",
+          "type": "bool"
+        },
+        {
+          "name": "day_headings",
+          "doc": "Whether the pane shows the calendar's Today/Yesterday/This week headings.",
+          "type": "bool"
+        },
+        {
+          "name": "people_filters",
+          "doc": "Whether it offers every person and agent in the history as a filter.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "entries",
+          "doc": "The changes, oldest first.",
+          "accepts": {
+            "component": "ActivityEntry"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "revert",
+          "doc": "A change was reverted: carries the change it is.",
+          "value": "resource"
+        },
+        {
+          "name": "open",
+          "doc": "A change was opened in the app: carries the change it is.",
+          "value": "resource"
+        }
+      ],
+      "semantics": {
+        "role": "List"
+      }
+    },
+    {
       "name": "Avatar",
       "doc": "Who someone is, at a glance: their picture, or their initials on their own colour. A thing or a group shows a glyph on a neutral square.",
       "props": [
@@ -394,6 +446,50 @@
       }
     },
     {
+      "name": "CardGrid",
+      "doc": "Cards in equal, aligned columns: the apps of a store, the devices of a network, the paragraphs of a review. Each card is a resource, and pressing one opens it.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the grid is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "card_width",
+          "doc": "How wide a card is at least before the grid drops a column: small, regular or wide objects.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "CardWidth",
+                "cases": [
+                  "compact",
+                  "regular",
+                  "wide"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "cards",
+          "doc": "The cards, in order.",
+          "accepts": {
+            "component": "CardGridCard"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "List",
+        "label": "name"
+      }
+    },
+    {
       "name": "ChangeMark",
       "doc": "What someone else changed of a resource that the person looking has not seen yet: who, in which task run, and whether they made, changed or removed it. The host fills all but `of` from the resource's versions; activating it shows what they did.",
       "props": [
@@ -666,6 +762,108 @@
       "semantics": {
         "role": "Button",
         "label": "label"
+      }
+    },
+    {
+      "name": "ConversationList",
+      "doc": "A conversation, drawn as every conversation is drawn: each line on its own side, runs of one person's consecutive messages under their name once, a divider where the day changes, and the time and the delivery state under your own.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the conversation is, for assistive technology: \"Conversation with Ada\".",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "lines",
+          "doc": "The lines, oldest first.",
+          "accepts": {
+            "component": "ConversationEntry"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "List",
+        "label": "name"
+      }
+    },
+    {
+      "name": "DataTable",
+      "doc": "A table of resources as columns and rows: the attributes of a device, the songs in a library, the rules of a firewall. Each row is the resource it stands for and says what its columns read in it; pressing a header sorts by that column, and selecting or activating a row reports the row's resource.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the table is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "fill",
+          "doc": "The table takes the height its parent gives it and scrolls inside itself, rather than being as tall as its rows inside another scroll.",
+          "type": "bool"
+        },
+        {
+          "name": "roomy",
+          "doc": "Rows a finger's target tall, rather than a pointer target and a step.",
+          "type": "bool"
+        },
+        {
+          "name": "selectable",
+          "doc": "Whether pressing a row picks it.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "columns",
+          "doc": "The columns, in order.",
+          "accepts": {
+            "component": "DataTableColumn"
+          },
+          "many": true
+        },
+        {
+          "name": "rows",
+          "doc": "The rows, in order.",
+          "accepts": {
+            "component": "DataTableRow"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "select",
+          "doc": "A row was selected: carries the resource it shows.",
+          "value": "resource"
+        },
+        {
+          "name": "activate",
+          "doc": "A row was activated (a double click, Enter, an assistive technology): carries the resource it shows.",
+          "value": "resource"
+        }
+      ],
+      "state": [
+        {
+          "name": "selection",
+          "doc": "The selected rows, by the resource each stands for.",
+          "type": {
+            "option": {
+              "list": "resource"
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Table",
+        "label": "name"
       }
     },
     {
@@ -2152,6 +2350,91 @@
       }
     },
     {
+      "name": "TreeView",
+      "doc": "A tree of nodes: a file explorer, a project's files, the layers of a drawing, a book's pages. Each node is the resource it stands for; opening a branch shows the nodes under it, and selecting or activating a node reports its resource.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the tree is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "fill",
+          "doc": "The tree takes the height it is given and scrolls inside itself, rather than sizing to the rows inside another scroll.",
+          "type": "bool"
+        },
+        {
+          "name": "hide_root",
+          "doc": "The tree's one root node's label is its own name: the nodes under it form the top level.",
+          "type": "bool"
+        },
+        {
+          "name": "single_click",
+          "doc": "A press selects and activates in one, as a navigator sidebar does; a double click activates otherwise.",
+          "type": "bool"
+        },
+        {
+          "name": "selection_follows_focus",
+          "doc": "Moving through the rows with the keyboard selects them as it goes.",
+          "type": "bool"
+        },
+        {
+          "name": "multi_select",
+          "doc": "Whether several nodes may be selected at once (Ctrl-click, Shift-click).",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "nodes",
+          "doc": "The nodes, in order, parents before their children.",
+          "accepts": {
+            "component": "TreeViewNode"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "select",
+          "doc": "A node was selected: carries the resource it shows.",
+          "value": "resource"
+        },
+        {
+          "name": "activate",
+          "doc": "A node was activated (a double click, Enter, an assistive technology): carries the resource it shows.",
+          "value": "resource"
+        }
+      ],
+      "state": [
+        {
+          "name": "expanded",
+          "doc": "The nodes open now, by the resource each stands for. Given, it is where the view says the tree is; without it the tree keeps what a person opened.",
+          "type": {
+            "option": {
+              "list": "resource"
+            }
+          }
+        },
+        {
+          "name": "selection",
+          "doc": "The nodes selected, by the resource each stands for.",
+          "type": {
+            "option": {
+              "list": "resource"
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Tree",
+        "label": "name"
+      }
+    },
+    {
       "name": "VirtualList",
       "doc": "A long list of rows that costs only the rows on screen: each is built when it scrolls into view. Selection follows the person's choice and is reported with the item it shows; the list is one focus stop.",
       "props": [
@@ -2230,6 +2513,85 @@
       "semantics": {
         "role": "List",
         "label": "name"
+      }
+    },
+    {
+      "name": "ActivityEntry",
+      "doc": "One change of a document: what it did, who did it and when.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The change it is: its stable key, what reverting or opening it reports, and where its band and selection stand across changes.",
+          "type": "resource",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "author",
+          "doc": "Who made the change.",
+          "type": {
+            "option": "principal"
+          }
+        },
+        {
+          "name": "time",
+          "doc": "When it was made.",
+          "type": {
+            "option": "time"
+          }
+        },
+        {
+          "name": "summary",
+          "doc": "What the change did, in a sentence: \"Renamed the card\", \"Moved to Done\".",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "kind",
+          "doc": "What kind of change it is: it draws the row's glyph and says whether it can be reverted.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "EntryKind",
+                "cases": [
+                  "text",
+                  "move",
+                  "details",
+                  "comment",
+                  "delete",
+                  "restore",
+                  "access",
+                  "compaction",
+                  "redaction"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "artifact",
+          "doc": "What kind of resource it changed.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "ActivityArtifact",
+                "cases": [
+                  "note",
+                  "file",
+                  "cluster",
+                  "kanban",
+                  "chat-log"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "label": "summary",
+        "presents": "item"
       }
     },
     {
@@ -2487,6 +2849,58 @@
       }
     },
     {
+      "name": "CardGridCard",
+      "doc": "One card of a grid: a summary of the resource it stands for, which a press opens.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The resource the card stands for: its stable key, and what pressing it reports.",
+          "type": "resource",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What the card is called, in its head; without one the body speaks for it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "count",
+          "doc": "How many things the card lists, as a count beside its title.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "selected",
+          "doc": "Whether it is the selected one among its peers.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "body",
+          "doc": "What the card shows, in order.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "activate",
+          "doc": "The card was pressed: open what it stands for."
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "label": "title",
+        "presents": "item"
+      }
+    },
+    {
       "name": "MenuItem",
       "doc": "One command of a menu: what it shows, and what choosing it does.",
       "props": [
@@ -2526,6 +2940,205 @@
       "semantics": {
         "role": "MenuItem",
         "label": "label"
+      }
+    },
+    {
+      "name": "ConversationEntry",
+      "doc": "One line of a conversation: who said it and when, what it says, and how far on its way it is.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The message it stands for: its stable identity, what a caller anchors a scroll to, and what changes follow.",
+          "type": "resource",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "author",
+          "doc": "Who said it, as the person reads names. Empty for one that knowingly continues the run above it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "time",
+          "doc": "When it was said: a divider marks the first line of each day, and the time shows beside an author's name and under your own line.",
+          "type": {
+            "option": "time"
+          }
+        },
+        {
+          "name": "said",
+          "doc": "What it says.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "outgoing",
+          "doc": "Your own line (on the right, with its delivery state under it) rather than the other person's (on the left, under their name).",
+          "type": "bool"
+        },
+        {
+          "name": "delivery",
+          "doc": "How far your own line is on its way.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Delivery",
+                "cases": [
+                  "queued",
+                  "sending",
+                  "submitted",
+                  "sent",
+                  "delivered",
+                  "read",
+                  "failed",
+                  "uncertain"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "label": "said",
+        "presents": "item"
+      }
+    },
+    {
+      "name": "DataTableColumn",
+      "doc": "One column of a table: what it is called, how wide it is, and how its cells read.",
+      "props": [
+        {
+          "name": "header",
+          "doc": "What the column is called, as its header, and the key its cells are held under in a row.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "width",
+          "doc": "How wide it is: as wide as its content, one share of the spare room, or `pixels` wide.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "TableColumnWidth",
+                "cases": [
+                  "auto",
+                  "flex",
+                  "fixed"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "pixels",
+          "doc": "Its width in pixels, when `width` is `fixed`.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "kind",
+          "doc": "How its cells read: prose unless said. Figures line up, and a numeric column sorts as numbers.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "TextKind",
+                "cases": [
+                  "prose",
+                  "numeric",
+                  "secret",
+                  "identifier",
+                  "url",
+                  "code"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "lines",
+          "doc": "How many lines a cell's text wraps to before it is elided; the row grows to hold them.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "sortable",
+          "doc": "Whether pressing its header sorts the table by it.",
+          "type": "bool"
+        },
+        {
+          "name": "priority",
+          "doc": "Which columns give way first when the table is narrow: `0` never hides, higher numbers hide before lower ones.",
+          "type": "int"
+        },
+        {
+          "name": "absent",
+          "doc": "What an empty cell reads as, dimmed.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Cell",
+        "label": "header"
+      }
+    },
+    {
+      "name": "DataTableCell",
+      "doc": "One cell of a row: what its column reads in this row.",
+      "props": [
+        {
+          "name": "column",
+          "doc": "The header of the column it stands under.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "value",
+          "doc": "What it reads: absent (dimmed) when not given.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Cell"
+      }
+    },
+    {
+      "name": "DataTableRow",
+      "doc": "One row of a table: the resource it stands for, and the cells its columns read in it.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The resource the row stands for: its stable key, and what selecting or activating it reports.",
+          "type": "resource",
+          "required": true,
+          "positional": true
+        }
+      ],
+      "slots": [
+        {
+          "name": "cells",
+          "doc": "The cells, in the order of the table's columns. A column with no cell reads as absent.",
+          "accepts": {
+            "component": "DataTableCell"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Row",
+        "presents": "item"
       }
     },
     {
@@ -2803,6 +3416,102 @@
       "doc": "The room left in a toolbar, between the commands before it and those after it, which it pushes to the far end.",
       "semantics": {
         "role": "Generic"
+      }
+    },
+    {
+      "name": "TreeViewRow",
+      "doc": "What one row of a tree shows besides its label: a leading glyph, a tone, trailing text and what assistive technology says of it.",
+      "props": [
+        {
+          "name": "icon",
+          "doc": "A leading glyph: the kind of thing it is.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "The tone its label reads in.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "TreeTone",
+                "cases": [
+                  "primary",
+                  "secondary"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "trailing",
+          "doc": "Trailing text: a count, a kind, a size.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "description",
+          "doc": "What assistive technology says of the row after its label (\"Folder\", \"View\").",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Generic"
+      }
+    },
+    {
+      "name": "TreeViewNode",
+      "doc": "One node of a tree: its label, the resource it stands for, and where it stands.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The resource the node stands for: its stable key, what selecting or activating it reports, and what its children name as their parent.",
+          "type": "resource",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "label",
+          "doc": "What the row is called.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "parent",
+          "doc": "The resource of the node it stands under; without one it is a top-level node.",
+          "type": {
+            "option": "resource"
+          }
+        },
+        {
+          "name": "branch",
+          "doc": "Whether it opens to show the nodes under it. A node with children says so unless it says otherwise.",
+          "type": "bool"
+        },
+        {
+          "name": "selected",
+          "doc": "Whether it is the selected node.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "row",
+          "doc": "What the row shows besides its label.",
+          "accepts": {
+            "component": "TreeViewRow"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "TreeItem",
+        "label": "label",
+        "presents": "item"
       }
     },
     {
