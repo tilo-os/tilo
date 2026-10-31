@@ -58,7 +58,7 @@ pub(crate) fn desk(
 ) -> (DesktopHost, StripPolicy, Rc<RefCell<Vec<DesktopAsk>>>) {
     let asks = Rc::new(RefCell::new(Vec::new()));
     let (desktop, policy) = desktop_with(options.salt, options.scale, |mut surface, handle| {
-        surface.set_notifications(notices);
+        surface.set_notifications(notices.clone());
         let layer = tilo_desktop::desk_widgets::DeskWidgets::new(
             handle.clone(),
             options.person.clone(),
@@ -66,7 +66,8 @@ pub(crate) fn desk(
             widgets,
         )
         .with_fold(fold)
-        .with_overview(overview);
+        .with_overview(overview)
+        .with_notices(notices);
         let beneath = vec![Box::new(layer) as Box<dyn ui::widget::Widget>];
         Box::new(
             DeskLayer::new(

@@ -17,7 +17,10 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
-use tilo_desktop_surface::DesktopHandle;
+use tilo_desktop_surface::notifications::{
+    CLEAR_UNDO_WINDOW, Notification, NotificationIconKind, NotificationSeverity,
+};
+use tilo_desktop_surface::{DesktopHandle, DesktopNotifications, NotificationOutcome};
 use ui::desk_widgets::{DeskWidgetPrefs, ShowMode, WidgetId, WidgetPrefs};
 use ui::motion::{Ambient, Presence, Zoom};
 use ui::presence::PresenceCtx;
@@ -129,6 +132,13 @@ pub struct DeskWidgets {
     /// Whether the overview is up over the desk: a card the person opened
     /// goes with it.
     overview: Rc<Cell<bool>>,
+    /// The desk's notifications: a widget taken off the desk offers Undo
+    /// there for a while.
+    notices: DesktopNotifications,
+    /// The Undo toasts on offer, by notification: each puts its widget back.
+    undo: Rc<RefCell<BTreeMap<u64, WidgetId>>>,
+    /// The widgets an Undo asked back, taken up on the next pass.
+    restores: Rc<RefCell<Vec<WidgetId>>>,
 }
 
 /// One widget as laid out: where it is, and which display that is.
@@ -195,6 +205,9 @@ impl DeskWidgets {
             rect: Rect::ZERO,
             fold: super::DeskFold::default(),
             overview: Rc::default(),
+            notices: DesktopNotifications::default(),
+            undo: Rc::default(),
+            restores: Rc::default(),
         }
     }
 
@@ -211,6 +224,28 @@ impl DeskWidgets {
     #[must_use]
     pub fn with_overview(mut self, up: Rc<Cell<bool>>) -> Self {
         self.overview = up;
+        self
+    }
+
+    /// The same layer posting to `notices`, the desk's own: what it takes off
+    /// the desk offers Undo there.
+    #[must_use]
+    pub fn with_notices(mut self, notices: DesktopNotifications) -> Self {
+        let undo = Rc::clone(&self.undo);
+        let restores = Rc::clone(&self.restores);
+        // The person's answer comes from wherever the toast was shown, not
+        // from this layer: the desk takes it up on its next pass.
+        notices.on_outcome(move |outcome| match outcome {
+            NotificationOutcome::Activated { notification, .. } => {
+                if let Some(widget) = undo.borrow_mut().remove(&notification.id) {
+                    restores.borrow_mut().push(widget);
+                }
+            }
+            NotificationOutcome::Dismissed { id } => {
+                undo.borrow_mut().remove(id);
+            }
+        });
+        self.notices = notices;
         self
     }
 
@@ -639,9 +674,7 @@ impl DeskWidgets {
         let displays = self.displays();
         let areas: Vec<Rect> = displays.iter().map(|(_, area)| *area).collect();
         if placement::thrown_off(&areas, drawn, velocity, motion) {
-            let mut prefs = self.prefs.get(id).clone();
-            prefs.enabled = false;
-            self.store(id, prefs);
+            self.remove(id);
             return;
         }
         let landed = placement::landing(drawn, velocity, motion);
@@ -700,20 +733,7 @@ impl DeskWidgets {
     fn tap(&mut self, id: WidgetId, form: Form, part: Part) {
         match part {
             Part::Pin => self.toggle_pin(id),
-            Part::Remove => {
-                let mut prefs = self.prefs.get(id).clone();
-                prefs.enabled = false;
-                self.store(id, prefs);
-                if self.board.opened() == Some(id) {
-                    self.board.close();
-                }
-                for presence in [self.shown.get_mut(&id), self.opened.get_mut(&id)]
-                    .into_iter()
-                    .flatten()
-                {
-                    presence.snap(false);
-                }
-            }
+            Part::Remove => self.remove(id),
             Part::Collapse => self.board.close(),
             Part::Person(person) => self
                 .asks
@@ -725,6 +745,49 @@ impl DeskWidgets {
             Part::Resize | Part::Body => {}
         }
         self.dirty = true;
+    }
+
+    /// Take `id` off the desk: its remove control, or thrown off the screen.
+    /// Its place and size are kept, switched off, and a toast offers Undo,
+    /// which puts it back where it was.
+    fn remove(&mut self, id: WidgetId) {
+        let mut prefs = self.prefs.get(id).clone();
+        prefs.enabled = false;
+        self.store(id, prefs);
+        if self.board.opened() == Some(id) {
+            self.board.close();
+        }
+        for presence in [self.shown.get_mut(&id), self.opened.get_mut(&id)]
+            .into_iter()
+            .flatten()
+        {
+            presence.snap(false);
+        }
+        if let Some(offset) = self.offsets.get_mut(&id) {
+            offset.snap(Vec2::ZERO);
+        }
+        if let Some(lift) = self.lifts.get_mut(&id) {
+            lift.snap(0.0);
+        }
+        self.offer_undo(id);
+    }
+
+    /// Offer Undo for `id`, just taken off the desk: the toast names it, and
+    /// choosing it before it lapses puts the widget back.
+    fn offer_undo(&self, id: WidgetId) {
+        let name = paint::desk_widget_title(id);
+        let mut toast = Notification::new(
+            crate::i18n::t_args("desk-widget-removed", &[("widget", name.as_str().into())]),
+            String::new(),
+        )
+        .with_severity(NotificationSeverity::Info)
+        .with_icon_kind(NotificationIconKind::Generic);
+        toast.dismiss_after = CLEAR_UNDO_WINDOW;
+        toast.actions = vec![("default".into(), crate::i18n::t("desk-widget-undo"))];
+        toast.bypass_dnd = true;
+        toast.show_on_lock_screen = false;
+        let posted = self.notices.post(toast);
+        self.undo.borrow_mut().insert(posted, id);
     }
 
     /// Keep `id` on this desk even while the person works, or stop.
@@ -758,6 +821,14 @@ impl DeskWidgets {
     /// widget's form at `now`. Returns whether anything changed.
     fn tick(&mut self, now: Instant) -> bool {
         let mut changed = false;
+        // Undo puts a widget the person removed back where it was.
+        let restores: Vec<WidgetId> = std::mem::take(&mut *self.restores.borrow_mut());
+        for id in restores {
+            let mut prefs = self.prefs.get(id).clone();
+            prefs.enabled = true;
+            self.store(id, prefs);
+            changed = true;
+        }
         let fresh = shared(&self.changes).clone();
         if fresh != self.prefs {
             self.prefs = fresh;
@@ -1257,6 +1328,8 @@ impl Widget for DeskWidgets {
             // both arrive without the desk being told anything itself.
             || self.fold.asked()
             || (self.overview.get() && self.board.opened().is_some())
+            // Undo, answered on the toast, reaches the desk this way.
+            || !self.restores.borrow().is_empty()
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1393,6 +1466,9 @@ mod tests {
         fold: super::super::DeskFold,
         /// Whether the overview is over the desk.
         overview: Rc<Cell<bool>>,
+        /// The desk's notifications, where a removed widget's Undo is
+        /// offered.
+        notices: tilo_desktop_surface::DesktopNotifications,
     }
 
     /// A desk with `people` in its workspace, the calendar added, and the
@@ -1423,9 +1499,11 @@ mod tests {
         let changes = std::sync::Arc::new(std::sync::Mutex::new(prefs.clone()));
         let fold = super::super::DeskFold::default();
         let overview: Rc<Cell<bool>> = Rc::default();
+        let notices = tilo_desktop_surface::DesktopNotifications::default();
         let mut widgets = DeskWidgets::new(handle, "me".into(), Rc::clone(&asks), changes.clone())
             .with_fold(fold.clone())
-            .with_overview(Rc::clone(&overview));
+            .with_overview(Rc::clone(&overview))
+            .with_notices(notices.clone());
         widgets = widgets.with_source(source).with_prefs(prefs);
         lay_out(&mut widgets, AREA);
         Rig {
@@ -1434,6 +1512,7 @@ mod tests {
             changes,
             fold,
             overview,
+            notices,
         }
     }
 
@@ -1542,6 +1621,16 @@ mod tests {
         fn point_at(&mut self, at: Point) {
             self.send(&cursor_moved(at.x, at.y));
         }
+
+        /// The newest toast on the desk's notifications.
+        fn toast(&self) -> tilo_desktop_surface::notifications::Notification {
+            self.notices
+                .feed()
+                .banners
+                .last()
+                .map(|banner| banner.notification.clone())
+                .expect("a toast is up")
+        }
     }
 
     fn centre(rect: Rect) -> Point {
@@ -1619,6 +1708,79 @@ mod tests {
             rig.form(WidgetId::Team),
             Form::Glance,
             "the overview covers the open card"
+        );
+    }
+
+    #[test]
+    fn a_widget_taken_off_the_desk_offers_undo_which_puts_it_back() {
+        let mut rig = rig(&[("ada", "Ada")]);
+        rig.point_at(BARE);
+        let glance = rig.slot(WidgetId::Calendar).glance;
+        assert!(rig.click(centre(glance)));
+        let open = rig.slot(WidgetId::Calendar).open;
+
+        // The person removes the widget from its open card.
+        assert!(rig.click(centre(paint::remove_rect(open))));
+        assert_eq!(
+            rig.form(WidgetId::Calendar),
+            Form::Away,
+            "taken off the desk"
+        );
+        let toast = rig.toast();
+        assert_eq!(toast.title, "Calendar removed from the desk");
+        assert_eq!(
+            toast.actions,
+            [("default".to_owned(), "Undo".to_owned())],
+            "the toast offers Undo"
+        );
+
+        // Undo, chosen on the toast, puts it back where it was.
+        rig.notices
+            .answer(tilo_desktop_surface::notifications::BannerAsk::Activate(
+                toast.id,
+            ));
+        rig.widgets.tick(Instant::now());
+        assert_eq!(
+            rig.form(WidgetId::Calendar),
+            Form::Glance,
+            "back on the desk"
+        );
+        assert!(
+            rig.prefs(WidgetId::Calendar).enabled,
+            "and switched on again"
+        );
+
+        // Thrown off the screen, the widget offers the same way back.
+        let glance = rig.slot(WidgetId::Calendar).glance;
+        let from = centre(glance);
+        let t0 = Instant::now();
+        ui::time::testing::with_monotonic_time(t0, || {
+            rig.send(&cursor_moved(from.x, from.y));
+            assert!(rig.send(&mouse_press()));
+        });
+        ui::time::testing::with_monotonic_time(t0 + Duration::from_millis(16), || {
+            rig.send(&cursor_moved(600.0, from.y));
+        });
+        ui::time::testing::with_monotonic_time(t0 + Duration::from_millis(32), || {
+            rig.send(&cursor_moved(20.0, from.y));
+            rig.send(&mouse_release());
+        });
+        assert_eq!(
+            rig.form(WidgetId::Calendar),
+            Form::Away,
+            "thrown off the desk"
+        );
+        let toast = rig.toast();
+        assert_eq!(toast.title, "Calendar removed from the desk");
+        rig.notices
+            .answer(tilo_desktop_surface::notifications::BannerAsk::Activate(
+                toast.id,
+            ));
+        rig.widgets.tick(Instant::now());
+        assert_eq!(
+            rig.form(WidgetId::Calendar),
+            Form::Glance,
+            "and back from the throw"
         );
     }
 
