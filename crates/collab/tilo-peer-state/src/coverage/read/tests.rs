@@ -17,7 +17,7 @@ fn stored() -> (AutoCommit, Vec<u8>) {
         record: "tab:1".into(),
         payload_hash: *blake3::hash(&payload).as_bytes(),
         heads: vec![],
-        author: peer.authority().device_public_key,
+        author: peer.owner_certificates()[0].device_public_key,
         sequence: 1,
         watermarks: BTreeMap::new(),
     };
@@ -27,7 +27,10 @@ fn stored() -> (AutoCommit, Vec<u8>) {
 /// A document that admitted the checkpoint `stored` covers.
 fn admitted() -> BTreeMap<String, u64> {
     let (peer, _, _, _, _) = crate::admission_tests::seeded();
-    BTreeMap::from([(hex::encode(peer.authority().device_public_key), 1)])
+    BTreeMap::from([(
+        hex::encode(peer.owner_certificates()[0].device_public_key),
+        1,
+    )])
 }
 
 #[test]

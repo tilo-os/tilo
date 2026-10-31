@@ -65,6 +65,8 @@ pipewire = ["dep:pipewire"]
 [dev-dependencies]
 image = { workspace = true, features = ["png"] }
 tempfile.workspace = true
+# The bus the tests run on, which starts without the caller's user database.
+tilo-test-env = { path = "../../dev/test-env" }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
 
 [lints]

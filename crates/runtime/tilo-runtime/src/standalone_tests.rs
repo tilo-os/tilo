@@ -30,10 +30,8 @@ const PUBLICATION_HELPER: &str = "TILO_STANDALONE_PUBLICATION_HELPER";
 #[allow(clippy::too_many_lines, reason = "one end-to-end ownership scenario")]
 async fn runtime_invocation_ownership_survives_device_normalization() {
     use tilo_action_broker::{
+        collab_app_broker::{AppBrokerState, PublishedAction, PublishedInput, PublishedSurface},
         collab_broker::CrdtRoute,
-        collab_broker_capnp::{
-            CapnpBrokerState, PublishedAction, PublishedInput, PublishedSurface,
-        },
         test_support::{Workspace, WorkspaceId, WorkspaceTree},
     };
     if isolated_signing_identity(
@@ -46,7 +44,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
 
     let placed = RoomId::new();
     let (joined, directory) = Joined::test_hosting(placed).await;
-    let actor = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+    let actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
         joined.test_certificate().user_public_key,
     );
     let mut workspace = Workspace::in_room(WorkspaceId(41), placed, "Execution isolation");
@@ -66,7 +64,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         cert: admission.certificate().clone(),
         time: time.clone(),
     }));
-    let (broker, turn) = CapnpBrokerState::test_broker_with_authority_and_invoke_turn(
+    let (broker, turn) = AppBrokerState::test_broker_with_authority_and_invoke_turn(
         membership.authority(),
         services,
     );

@@ -441,9 +441,9 @@ decorator_trait! {
     ref {
         fn focus_reveal_context() -> Option<vello::kurbo::Rect>;
         #[doc(hidden)]
-        fn resets_callback_binding() -> bool;
+        fn resets_binding_inheritance() -> bool;
         #[doc(hidden)]
-        fn inactive_callback_boundary() -> Option<NodeId>;
+        fn inactive_bound_dispatch_boundary() -> Option<NodeId>;
         fn native_input_snapshot(state: &AppModel, path: &ModelPath) -> Option<serde_json::Value>;
         fn callback_binding() -> Option<crate::bound_dispatch::CallbackBinding>;
         fn has_separate_document_owner() -> bool;
@@ -603,11 +603,6 @@ decorator_trait! {
         fn take_focus_request() -> Option<String>;
         fn restore_dev_route(route: &crate::widget::router::RouteSnapshot) -> bool;
         fn set_motion_reduced(reduced: bool);
-        fn apply_room_action(
-            doc: &mut crate::widget::Edits<'_>,
-            type_id: &str,
-            payload: &[u8],
-        ) -> bool;
         fn take_structure_dirty() -> bool;
         fn remount_children(remount: &mut crate::widget::Remount<'_>) -> bool;
         fn mark_drawn();

@@ -491,8 +491,8 @@ cargo run -p tilolang-cli -- run apps/tl/counter --peers 2
 ```
 
 `run` builds the package into `.tapp`s for a locally built nested Tilo session
-(`dist/dev/nested-session.sh`, or `dist/dev/nested-pair.sh --peers N` for N people in one
-community workspace), installs them there and opens the app through the session's own action,
+(`dist/dev/nested-session.sh`), installs them there and opens the app through the session's own
+action,
 so the launcher starts it as on a real system. The session bakes the tilolang runtime bundle from
 the build. Then:
 

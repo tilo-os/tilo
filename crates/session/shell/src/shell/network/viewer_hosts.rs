@@ -14,7 +14,7 @@ impl ShellNetwork {
             && let Ok(governor) = owner.with_current(room, |view| {
                 Ok((
                     view.device().device_public_key,
-                    view.governor().device_public_key,
+                    view.room_host().device_public_key,
                 ))
             })
             && governor.0 != governor.1

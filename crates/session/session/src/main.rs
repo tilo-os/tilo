@@ -156,8 +156,7 @@ fn start(
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
     use std::sync::Arc;
-    use tilo_compositor::{DisplayConfig, NestedConfig, OutputConfig};
-    use tilo_session::{Options, Session};
+    use tilo_session::Options;
 
     let CommandLine {
         backend,
@@ -222,25 +221,7 @@ fn start(
         hosted,
         ..device_options(hosted)
     };
-    let started = match backend {
-        Backend::Headless => Session::headless(
-            options,
-            &[OutputConfig::new(
-                "HEADLESS-1",
-                i32::from(size.0),
-                i32::from(size.1),
-            )],
-        ),
-        Backend::Drm => Session::drm(options, DisplayConfig::default()),
-        Backend::Nested => Session::nested(
-            options,
-            &NestedConfig {
-                size,
-                ..NestedConfig::default()
-            },
-        ),
-    };
-    let mut session = match started {
+    let mut session = match start_session(backend, options, size) {
         Ok(session) => session,
         Err(error) => {
             eprintln!("tilo-session: {error}");
@@ -260,6 +241,35 @@ fn start(
         session_bus,
         reach.export_displays,
     )
+}
+
+/// The session on `backend`'s displays, at `size` where the backend runs in
+/// one.
+fn start_session(
+    backend: Backend,
+    options: tilo_session::Options,
+    size: (u16, u16),
+) -> Result<tilo_session::Session, tilo_compositor::Error> {
+    use tilo_compositor::{DisplayConfig, NestedConfig, OutputConfig};
+    use tilo_session::Session;
+    match backend {
+        Backend::Headless => Session::headless(
+            options,
+            &[OutputConfig::new(
+                "HEADLESS-1",
+                i32::from(size.0),
+                i32::from(size.1),
+            )],
+        ),
+        Backend::Drm => Session::drm(options, DisplayConfig::default()),
+        Backend::Nested => Session::nested(
+            options,
+            &NestedConfig {
+                size,
+                ..NestedConfig::default()
+            },
+        ),
+    }
 }
 
 /// `session` running until `command` exits, its displays printed.
@@ -397,10 +407,20 @@ fn desktop_services(
 #[cfg(target_os = "linux")]
 fn device_options(hosted: bool) -> tilo_session::Options {
     use tilo_quick_settings::device::PlayerLink;
-    use tilo_session::{DeviceHost, KillSwitch, Options, QuickSettings, SessionConfig};
+    use tilo_session::{
+        ActionPlane, DeviceHost, KillSwitch, Options, QuickSettings, SessionConfig,
+    };
     Options {
         config: SessionConfig::load(),
         search: search_options(),
+        // The apps this session starts reach its services over the socket
+        // the launcher hands them; a session inside another desktop's
+        // window leaves that desktop's own socket alone.
+        action_plane: if hosted {
+            ActionPlane::Off
+        } else {
+            ActionPlane::Launcher
+        },
         quick_settings: (!hosted).then(|| {
             QuickSettings::Device(Box::new(|wake| {
                 let device = DeviceHost::os(wake);

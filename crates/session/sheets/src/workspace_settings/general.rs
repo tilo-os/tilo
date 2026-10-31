@@ -217,7 +217,7 @@ fn name_field(general: &General, parts: &Parts) -> Element {
             .with_id("ws-general-name")
             .with_accessible_name(general.name_label.clone())
             .with_read_only(!general.can_rename)
-            .on_submit(move |_| save.commit_name()),
+            .on_submit_view(move |_| save.commit_name()),
     )
 }
 
@@ -229,7 +229,7 @@ pub(super) fn button(
     effect: impl Fn() -> WorkspaceSettingsEffect + 'static,
 ) -> Button {
     let press = parts.clone();
-    Button::new(id, label).on_click(move || press.ask(effect()))
+    Button::new(id, label).on_effect(move || press.ask(effect()))
 }
 
 pub(super) fn caption(text: &str) -> Element {

@@ -501,12 +501,12 @@ impl<P: Chained> ChainState<P> {
         // An older part is brought up to the part's storage version before
         // it is read, as the app's record is when it opens: once, as the
         // same housekeeping change on every device.
-        let stored = self
+        let older = self
             .room
             .store
-            .read(&part, tilo_resource::evolution::stored_version)
+            .read(&part, tilo_resource::evolution::needs_migrate::<P>)
             .ok_or("the part is not open here")?;
-        if stored < <P as Resource>::VERSION {
+        if older {
             // Not while a frame reads the store: the part is held at the
             // next refresh, as a part this device asked for is.
             if !self.room.store.takes_writes() {
@@ -722,7 +722,9 @@ impl<P: Chained> ChainState<P> {
                 applied
             })
             .ok_or_else(|| ActionError::Refused("the part is not open here".into()))??;
-        self.room.store.schedule_committed_history(&id);
+        if let Err(error) = self.room.store.schedule_committed_history(&id) {
+            tracing::error!(%error, "an edited part could not be saved");
+        }
         self.refresh();
         self.moved();
         Ok(created)
@@ -1092,7 +1094,9 @@ impl<P: Chained> Chain<P> {
                 written
             })
             .ok_or("the part is not open here")??;
-        self.state.room.store.schedule_committed_history(&id);
+        if let Err(error) = self.state.room.store.schedule_committed_history(&id) {
+            tracing::error!(%error, "a created part could not be saved");
+        }
         self.state.refresh();
         self.state.moved();
         Ok(())

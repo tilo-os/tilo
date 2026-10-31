@@ -2,15 +2,20 @@
 //! person's device may do is what the room's governance lets that person,
 //! and what no room decides stays the relay's person's.
 
+#![expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+)]
+
 use ed25519_dalek::Signer as _;
 use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governance};
 use tilo_peer_state::join::MemberRole;
+use tilo_relay_protocol::AuthenticatedPeer;
 use tilo_relay_protocol::room_operator::WaitListStanding;
 use tilo_relay_protocol::rooms::{
     JoinReply, JoinStep, RoomRole, RoomsReply, RoomsRequest, join_proof_digest,
 };
 use tilo_relay_protocol::voice::{CallOperation, CallState};
-use tilo_relay_protocol::{AuthenticatedPeer, PeerRole};
 use tilo_user_identity::{DeviceCert, sign_device_cert};
 
 use crate::rooms::tests::{governor, guest_device, signed_pre_admission, test_host};
@@ -1028,6 +1033,5 @@ fn peer(cert: &DeviceCert) -> AuthenticatedPeer {
         cert: cert.clone(),
         user_public_key: cert.user_public_key,
         device_public_key: cert.device_public_key,
-        role: PeerRole::Device,
     }
 }

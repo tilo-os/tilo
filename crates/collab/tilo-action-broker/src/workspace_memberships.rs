@@ -3,11 +3,11 @@
 //! authority remain host-owned.
 use super::room_service::{ServiceOutcome, refused};
 use super::{
-    Arc, CapnpBrokerState, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
+    AppBrokerState, Arc, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
     PublishedSurface,
 };
 use tilo_action_policy::roles::AgentPreset;
-use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
 const APP: &str = "so.tilo.desktop";
@@ -16,7 +16,7 @@ const WORKSPACE: &str = "desktop:workspace";
 const AGENT_PREFIX: &str = "desktop:agent:";
 const GRANT_APP_AUTHORSHIP: &str = "grant-app-authorship";
 
-impl CapnpBrokerState {
+impl AppBrokerState {
     /// [`Self::stage_workspace_membership`], started once its admission is
     /// durable, on a thread that may block: never the broker's loop.
     pub(crate) fn invoke_workspace_membership(
@@ -1111,7 +1111,7 @@ mod tests {
             Ok(())
         }
 
-        fn execute(&self, _: OwnerCommitRequest) -> tilo_owner_commit::CommitFuture {
+        fn execute(&self, _: OwnerCommitRequest) -> tilo_peer_state::owner_commit::CommitFuture {
             Box::pin(async { Err("discovery fixture must not mutate the owner".into()) })
         }
     }
@@ -1125,7 +1125,7 @@ mod tests {
             Ok(())
         }
 
-        fn execute(&self, _: OwnerCommitRequest) -> tilo_owner_commit::CommitFuture {
+        fn execute(&self, _: OwnerCommitRequest) -> tilo_peer_state::owner_commit::CommitFuture {
             Box::pin(async { Err("discovery fixture must not mutate the owner".into()) })
         }
     }
@@ -1150,12 +1150,12 @@ mod tests {
             Ok(())
         }
 
-        fn execute(&self, _: OwnerCommitRequest) -> tilo_owner_commit::CommitFuture {
+        fn execute(&self, _: OwnerCommitRequest) -> tilo_peer_state::owner_commit::CommitFuture {
             Box::pin(async { Err("discovery fixture must not mutate the owner".into()) })
         }
     }
 
-    fn membership_surface_counts(state: &CapnpBrokerState, room: &str) -> (usize, usize) {
+    fn membership_surface_counts(state: &AppBrokerState, room: &str) -> (usize, usize) {
         let surfaces = state.published_surfaces();
         let matching = surfaces
             .iter()
@@ -1171,11 +1171,7 @@ mod tests {
         )
     }
 
-    fn assert_membership_action_set(
-        state: &CapnpBrokerState,
-        room: &str,
-        expected: &[(&str, &str)],
-    ) {
+    fn assert_membership_action_set(state: &AppBrokerState, room: &str, expected: &[(&str, &str)]) {
         let mut actual = state
             .published_surfaces()
             .iter()
@@ -1212,7 +1208,7 @@ mod tests {
                     ));
                 let room = tree.desktop.workspaces.first().unwrap().room().to_string();
                 let tree = tree.shared();
-                let state = CapnpBrokerState::new_configured(
+                let state = AppBrokerState::new_configured(
                     &Arc::new(super::super::FanoutState::new()),
                     Arc::new(std::sync::Mutex::new(
                         super::super::BrokerChannels::default(),
@@ -1286,7 +1282,7 @@ mod tests {
                     ));
                 let room = tree.desktop.workspaces.first().unwrap().room().to_string();
                 let tree = tree.shared();
-                let state = CapnpBrokerState::new_configured(
+                let state = AppBrokerState::new_configured(
                     &Arc::new(super::super::FanoutState::new()),
                     Arc::new(std::sync::Mutex::new(
                         super::super::BrokerChannels::default(),
@@ -1349,7 +1345,7 @@ mod tests {
                     room: room.clone(),
                     projected: std::sync::atomic::AtomicBool::new(false),
                 });
-                let state = CapnpBrokerState::new_configured(
+                let state = AppBrokerState::new_configured(
                     &Arc::new(super::super::FanoutState::new()),
                     Arc::new(std::sync::Mutex::new(
                         super::super::BrokerChannels::default(),
@@ -1396,7 +1392,7 @@ mod tests {
                     ));
                 let room = tree.desktop.workspaces.first().unwrap().room().to_string();
                 let tree = tree.shared();
-                let state = CapnpBrokerState::new_configured(
+                let state = AppBrokerState::new_configured(
                     &Arc::new(super::super::FanoutState::new()),
                     Arc::new(std::sync::Mutex::new(
                         super::super::BrokerChannels::default(),

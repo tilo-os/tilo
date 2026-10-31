@@ -122,10 +122,12 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
         subscribe(&bob_client, 701).await,
         Some(Envelope::Ready { .. })
     ));
+    // Charlie's device may host workspaces of his own; here it is the member
+    // device his room authority names, so it takes part like any other.
     let charlie_client = connect(&relay, charlie_device).await.unwrap();
     assert!(matches!(
         subscribe(&charlie_client, 701).await,
-        Some(Envelope::NotAuthorised { .. })
+        Some(Envelope::Ready { .. })
     ));
     assert!(connect(&relay, diana_device).await.is_err());
 

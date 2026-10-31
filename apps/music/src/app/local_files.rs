@@ -329,15 +329,11 @@ impl Music {
             .or_else(|| self.lib.track(id))
     }
 
-    pub(super) fn local_file_resource(&self) -> Option<crate::actions::CatalogTrackResource> {
+    pub(super) fn local_file_resource(&self) -> Option<crate::actions::LocalFile> {
         let file = self.local_file.as_ref()?;
-        Some(crate::actions::CatalogTrackResource {
+        Some(crate::actions::LocalFile {
             id: file.track.id.clone(),
             label: file.track.title.clone(),
-            album_id: String::new(),
-            artist_id: String::new(),
-            offline: false,
-            liked: false,
         })
     }
 }

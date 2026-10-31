@@ -11,6 +11,7 @@ name = "tilo_agent_participant"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Each record is a framework participant of its app's resource kind; the
 # published tree is the door.
@@ -132,12 +133,12 @@ libc.workspace = true
 # A connector app, mounted only where a room's host runs its worker.
 discord = { path = "../../../apps/discord" }
 
+
 [dev-dependencies]
 # The demo room and the helpers that write a chat as its people would.
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 tilo-crypto = { path = "../../system/tilo-crypto", features = ["tls-fixture"] }
 accounts = { path = "../../system/accounts", features = ["person"] }
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tempfile.workspace = true
 tilo-paths.workspace = true
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }

@@ -1,5 +1,4 @@
-//! Checks that a crate's Fluent catalogues agree with each other and with
-//! the keys its code asks for.
+//! Checks that a crate's Fluent catalogues agree with each other.
 //!
 //! A key only English defines shows English on a German desktop, a key the
 //! source lacks is dead copy, and a translation that drops a variable loses
@@ -8,13 +7,9 @@
 //! ```no_run
 //! const CATALOGS: &[(&str, &str)] = &[("en-US", "a = A\n"), ("de-DE", "a = Ä\n")];
 //! tilo_copy_lint::catalog::check_translations(CATALOGS);
-//! tilo_copy_lint::catalog::UsedKeys::scan(&[concat!(env!("CARGO_MANIFEST_DIR"), "/src")])
-//!     .min_keys(100)
-//!     .check_defined(CATALOGS);
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
 
 use fluent::{FluentBundle, FluentResource};
 
@@ -132,180 +127,6 @@ fn assert_values<'a>(locale: &str, catalogue: &str, keys: impl IntoIterator<Item
     }
 }
 
-/// The catalogue keys a crate's sources ask for, each with the first file
-/// that names it.
-#[derive(Debug)]
-pub struct UsedKeys {
-    found: BTreeMap<String, String>,
-    min_keys: usize,
-}
-
-impl UsedKeys {
-    /// Every literal key passed to a `t(` or `t_args(` call in the `.rs`
-    /// files under `dirs`.
-    #[must_use]
-    pub fn scan(dirs: &[impl AsRef<Path>]) -> Self {
-        Self::scan_with_namespaces(dirs, &[])
-    }
-
-    /// As [`Self::scan`], plus every string literal spelled like a key that
-    /// starts with one of `namespaces`, for keys a `match` picks before the
-    /// lookup.
-    ///
-    /// # Panics
-    ///
-    /// When a directory or file under `dirs` cannot be read.
-    #[must_use]
-    pub fn scan_with_namespaces(dirs: &[impl AsRef<Path>], namespaces: &[&str]) -> Self {
-        let mut found = BTreeMap::new();
-        for dir in dirs {
-            // The crate the directory is the sources of (`…/shell/src`):
-            // its own name reaches its own catalogue too.
-            let own = dir
-                .as_ref()
-                .parent()
-                .and_then(Path::file_name)
-                .map(|name| name.to_string_lossy().replace('-', "_"))
-                .unwrap_or_default();
-            for path in rust_files(dir.as_ref()) {
-                let source = std::fs::read_to_string(&path).expect("read source file");
-                let keys = literal_keys(&source, &own).into_iter().chain(
-                    namespaces
-                        .iter()
-                        .flat_map(|prefix| namespaced_keys(&source, prefix)),
-                );
-                for key in keys {
-                    found
-                        .entry(key)
-                        .or_insert_with(|| path.display().to_string());
-                }
-            }
-        }
-        Self { found, min_keys: 1 }
-    }
-
-    /// Fail when the scan finds fewer keys than this, so a broken scan
-    /// cannot pass by finding nothing.
-    #[must_use]
-    pub fn min_keys(mut self, min_keys: usize) -> Self {
-        self.min_keys = min_keys;
-        self
-    }
-
-    /// Panic unless every catalogue defines every key the code asks for: a
-    /// missing one renders as the raw key, or as English in a translation.
-    pub fn check_defined(&self, catalogs: &[(&str, &str)]) {
-        assert!(
-            self.found.len() >= self.min_keys,
-            "the source scan found only {} keys",
-            self.found.len()
-        );
-        for (locale, catalogue) in catalogs {
-            let defined = messages(catalogue);
-            let missing: Vec<_> = self
-                .found
-                .iter()
-                .filter(|(key, _)| !defined.contains_key(*key))
-                .map(|(key, file)| format!("{key} ({file})"))
-                .collect();
-            assert!(missing.is_empty(), "{locale}.ftl lacks {missing:?}");
-        }
-    }
-}
-
-/// Every `.rs` file under `dir`, in a stable order.
-fn rust_files(dir: &Path) -> Vec<PathBuf> {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)
-        .unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
-        .map(|entry| entry.expect("source entry").path())
-        .collect();
-    entries.sort();
-    entries
-        .into_iter()
-        .flat_map(|path| {
-            if path.is_dir() {
-                rust_files(&path)
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                vec![path]
-            } else {
-                Vec::new()
-            }
-        })
-        .collect()
-}
-
-fn is_key(text: &str) -> bool {
-    !text.is_empty()
-        && text
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-}
-
-/// The string literal that opens each `t(` / `t_args(` call in `source`.
-fn literal_keys(source: &str, own: &str) -> Vec<String> {
-    let mut keys = Vec::new();
-    for call in ["t(", "t_args("] {
-        for (start, _) in source.match_indices(call) {
-            let preceded_by_ident = source
-                .get(..start)
-                .and_then(|before| before.chars().next_back())
-                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
-            if preceded_by_ident
-                || other_crates_lookup(source.get(..start).unwrap_or_default(), own)
-            {
-                continue;
-            }
-            let Some(rest) = source.get(start..).and_then(|rest| rest.strip_prefix(call)) else {
-                continue;
-            };
-            let Some(literal) = rest.trim_start().strip_prefix('"') else {
-                continue;
-            };
-            if let Some((key, _)) = literal.split_once('"')
-                && is_key(key)
-            {
-                keys.push(key.to_owned());
-            }
-        }
-    }
-    keys
-}
-
-/// Whether the call that `before` ends at is qualified by another crate's
-/// path (`file_explorer::i18n::t`): it looks its key up in that crate's
-/// catalogue, not the scanned crate's. A call through `crate::`, `self::`,
-/// `super::` or the scanned crate's own name `own`, or an unqualified one,
-/// is the scanned crate's.
-fn other_crates_lookup(before: &str, own: &str) -> bool {
-    let qualifier: String = before
-        .chars()
-        .rev()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    let Some(path) = qualifier.strip_suffix("::") else {
-        return false;
-    };
-    let first = path.split("::").next().unwrap_or_default();
-    !first.is_empty() && first != own && !matches!(first, "crate" | "self" | "super")
-}
-
-/// Every string literal in `source` that starts with `prefix` and is
-/// spelled like a catalogue key.
-fn namespaced_keys(source: &str, prefix: &str) -> Vec<String> {
-    let opening = format!("\"{prefix}");
-    source
-        .match_indices(&opening)
-        .filter_map(|(start, _)| {
-            let literal = source.get(start.saturating_add(1)..)?;
-            let (key, _) = literal.split_once('"')?;
-            (key.len() > prefix.len() && is_key(key)).then(|| key.to_owned())
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,30 +136,6 @@ mod tests {
         let found = messages("a =\n    one\n    two\nb = B\n");
         assert_eq!(found["a"], "\n    one\n    two");
         assert_eq!(found["b"], "B");
-    }
-
-    #[test]
-    fn literal_key_scan_finds_direct_and_wrapped_calls() {
-        let source = "t(\"a-b\") + crate::shell::i18n::t_args(\n    \"c-d\", &[]) + format(\"x\") + tt(\"no\")";
-        assert_eq!(literal_keys(source, "shell"), vec!["a-b", "c-d"]);
-    }
-
-    #[test]
-    fn a_lookup_in_another_crates_catalogue_is_not_this_crates_key() {
-        let source = "file_explorer::i18n::t(\"files-open-unavailable\") + super::i18n::t(\"own-key\") + self::t(\"own-too\") + shell::shell::i18n::t(\"by-name\")";
-        assert_eq!(
-            literal_keys(source, "shell"),
-            vec!["own-key", "own-too", "by-name"]
-        );
-    }
-
-    #[test]
-    fn namespaced_key_scan_finds_keys_picked_by_a_match() {
-        let source = "t(match v { A => \"activity-view-tasks\", B => \"activity-view-replay\" }) + \"activity x\"";
-        assert_eq!(
-            namespaced_keys(source, "activity-"),
-            vec!["activity-view-tasks", "activity-view-replay"]
-        );
     }
 
     #[test]

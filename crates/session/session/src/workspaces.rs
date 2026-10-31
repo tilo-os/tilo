@@ -90,13 +90,23 @@ pub(crate) fn follow_directory(seat: Option<&DirectorySeat>, handle: &DesktopHan
     for effect in seat.take_asked() {
         match effect {
             DirectoryEffect::Open { key } => {
-                let _ = handle.dispatch(
+                let opened = handle.dispatch(
                     &Command::Workspace {
                         generation: crate::GENERATION.into(),
-                        workspace: key,
+                        workspace: key.clone(),
                     },
                     crate::GENERATION,
                 );
+                if let Err(error) = opened {
+                    // The listing named a workspace the desk no longer
+                    // admits: say so where the person picked it, and leave
+                    // the directory up to pick another.
+                    tracing::warn!(%error, %key, "workspace directory open");
+                    let mut directory = seat.directory();
+                    directory.note = Some(error);
+                    seat.show(directory);
+                    continue;
+                }
                 seat.presentation().close();
             }
             DirectoryEffect::Done => {

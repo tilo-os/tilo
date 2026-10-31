@@ -30,10 +30,10 @@ impl NativeTaskBinding {
     ///
     /// # Errors
     /// The binding does not name its starter.
-    pub fn actor(&self) -> Result<crate::collab_broker_capnp::BrokerActor, String> {
+    pub fn actor(&self) -> Result<crate::collab_app_broker::BrokerActor, String> {
         let starter = self.starter.clone().ok_or("native task starter absent")?;
         Ok(
-            crate::collab_broker_capnp::BrokerActor::agent(format!("agent:{}", self.agent_id))
+            crate::collab_app_broker::BrokerActor::agent(format!("agent:{}", self.agent_id))
                 .for_person(starter)
                 .session_delegated()
                 .working_on(&self.task_id),

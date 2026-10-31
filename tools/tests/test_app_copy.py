@@ -152,6 +152,45 @@ class AppCopyTests(unittest.TestCase):
     def test_every_actual_source_key_is_in_its_catalogues(self):
         self.assertEqual(copy.missing_copy(copy.ROOT), [])
 
+    def test_a_crate_reading_anothers_catalogue_is_checked_in_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
+            catalogue = "desk-open = Open\n"
+            self.crate(root, "crates/session/desktop-surface",
+                       {"en-US": catalogue, "de-DE": catalogue}, "")
+            (root / "crates/session/desktop-surface/Cargo.toml").write_text(
+                '[package]\nname = "tilo-desktop-surface"\n')
+            desktop = root / "crates/session/desktop"
+            (desktop / "src").mkdir(parents=True)
+            (desktop / "Cargo.toml").write_text('[package]\nname = "tilo-desktop"\n')
+            (desktop / "src/lib.rs").write_text(
+                "pub use tilo_desktop_surface::{activity, i18n};\n")
+            (desktop / "src/view.rs").write_text('fn bar() { t("desk-absent"); }\n')
+            self.assertEqual(copy.missing_copy(root), [
+                "crates/session/desktop/src/view.rs:1: de-DE lacks desk-absent",
+                "crates/session/desktop/src/view.rs:1: en-US lacks desk-absent",
+            ])
+
+    def test_the_desktop_surface_checks_the_activity_keys_a_match_picks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
+            open_ = "activity-morning-open = Open\n"
+            self.crate(root, "crates/session/desktop-surface",
+                       {"en-US": open_, "de-DE": open_},
+                       '''
+                       fn label(&self) -> &'static str {
+                           let key = if ready { "activity-morning-open" } else { "activity-morning-next" };
+                           let elsewhere = "workspace-tree";
+                           t(key)
+                       }
+                       ''')
+            self.assertEqual(copy.missing_copy(root), [
+                "crates/session/desktop-surface/src/view.rs:3: de-DE lacks activity-morning-next",
+                "crates/session/desktop-surface/src/view.rs:3: en-US lacks activity-morning-next",
+            ])
+
 
 if __name__ == "__main__":
     unittest.main()

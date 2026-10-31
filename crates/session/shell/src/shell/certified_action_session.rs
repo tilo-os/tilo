@@ -219,7 +219,7 @@ impl ActionSessionSource {
 
 #[derive(Clone)]
 pub(crate) enum ActionLifecycle {
-    Certified(tilo_action_broker::collab_broker_capnp::CertifiedActionLifecycle),
+    Certified(tilo_action_broker::collab_app_broker::CertifiedActionLifecycle),
     /// Compatibility for rows admitted without certificate custody. Never
     /// reinterpret these as a certified person's jobs or issue evidence.
     Uncertified {
@@ -395,7 +395,7 @@ impl CertifiedActionSession {
         let joined = tilo_identity_host::join_proof::trusted_current_join_proof(room)
             .map_err(|error| format!("selected workspace identity unavailable: {error}"))?;
         let certificate = &joined.certificate;
-        let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        let person = tilo_action_broker::collab_app_broker::principal_id_for_root(
             certificate.user_public_key,
         );
         if expected_person.is_some_and(|expected| expected != person) {

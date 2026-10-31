@@ -61,6 +61,47 @@ impl TextInput {
             f(&text_input.instance, surface, text_input.serial);
         }
     }
+
+    /// Like [`Self::with_active_text_input`], with what its client last
+    /// committed. Returns whether there is such an instance.
+    fn with_active_text_input_committed<F>(&mut self, mut f: F) -> bool
+    where
+        F: FnMut(&ZwpTextInputV3, &WlSurface, u32, Option<(ContentHint, ContentPurpose)>),
+    {
+        let active_id = match &self.active_text_input_id {
+            Some(active_text_input_id) => active_text_input_id,
+            None => return false,
+        };
+
+        let surface = match self.focus.as_ref().filter(|surface| surface.is_alive()) {
+            Some(surface) => surface,
+            None => return false,
+        };
+
+        let surface_id = surface.id();
+        let text_input = match self
+            .instances
+            .iter()
+            .filter(|instance| instance.instance.id().same_client_as(&surface_id))
+            .find(|instance| &instance.instance.id() == active_id)
+        {
+            Some(text_input) => text_input,
+            None => return false,
+        };
+
+        let committed = match &text_input.committed_state {
+            Some(committed) => committed,
+            None => return false,
+        };
+
+        f(
+            &text_input.instance,
+            surface,
+            committed.serial,
+            committed.content_type,
+        );
+        true
+    }
 }
 
 /// Handle to text input instances
@@ -76,6 +117,7 @@ impl TextInputHandle {
             instance: instance.clone(),
             serial: 0,
             pending_state: Default::default(),
+            committed_state: None,
         });
     }
 
@@ -162,6 +204,22 @@ impl TextInputHandle {
         inner.with_active_text_input(|ti, surface, _| {
             f(ti, surface);
         });
+    }
+
+    /// Access what the active text-input instance's client last committed:
+    /// the serial of that commit and the content type it declared.
+    ///
+    /// Returns whether there is an active instance whose client has
+    /// committed; the callback runs only then. The content type is `None`
+    /// when the client never declared one.
+    pub fn with_active_text_input_committed<F>(&self, mut f: F) -> bool
+    where
+        F: FnMut(&ZwpTextInputV3, &WlSurface, u32, Option<(ContentHint, ContentPurpose)>),
+    {
+        let mut inner = self.inner.lock().unwrap();
+        inner.with_active_text_input_committed(|ti, surface, serial, content_type| {
+            f(ti, surface, serial, content_type);
+        })
     }
 
     /// Call the callback with the serial of the active text_input or with the passed
@@ -261,36 +319,61 @@ where
             zwp_text_input_v3::Request::Commit => {
                 let mut new_state = mem::take(pending_state);
                 let _ = pending_state;
-                let active_text_input_id = &mut guard.active_text_input_id;
 
-                if active_text_input_id.is_some() && *active_text_input_id != Some(resource.id()) {
+                if guard.active_text_input_id.is_some()
+                    && guard.active_text_input_id != Some(resource.id())
+                {
                     debug!("discarding text_input request since we already have an active one");
                     return;
                 }
 
                 match new_state.enable {
                     Some(true) => {
-                        *active_text_input_id = Some(resource.id());
-                        // Drop the guard before calling to other subsystem.
-                        drop(guard);
-                        data.input_method_handle.activate_input_method(state, &focus);
+                        guard.active_text_input_id = Some(resource.id());
                     }
                     Some(false) => {
-                        *active_text_input_id = None;
+                        guard.active_text_input_id = None;
+                        // A field that stops asking for typing forgets the
+                        // state it committed.
+                        if let Some(instance) = tracked(&mut guard.instances, resource) {
+                            instance.committed_state = None;
+                        }
                         // Drop the guard before calling to other subsystem.
                         drop(guard);
                         data.input_method_handle.deactivate_input_method(state);
                         return;
                     }
                     None => {
-                        if *active_text_input_id != Some(resource.id()) {
+                        if guard.active_text_input_id != Some(resource.id()) {
                             debug!("discarding text_input requests before enabling it");
                             return;
                         }
-
-                        // Drop the guard before calling to other subsystems later on.
-                        drop(guard);
                     }
+                }
+
+                // Keep what this client committed, which smithay would
+                // otherwise only hand to the input method and lose. Every
+                // accepted commit is a new revision of what the field
+                // committed: typing, a caret moved, a layout change. A commit
+                // that does not restate the content type keeps the type
+                // committed before it: clients send it only when it changes.
+                if let Some(instance) = tracked(&mut guard.instances, resource) {
+                    let content_type = new_state.content_type.or_else(|| {
+                        instance
+                            .committed_state
+                            .and_then(|committed| committed.content_type)
+                    });
+                    instance.committed_state = Some(CommittedState {
+                        serial: instance.serial,
+                        content_type,
+                    });
+                }
+
+                // Drop the guard before calling to other subsystems later on.
+                drop(guard);
+
+                if new_state.enable == Some(true) {
+                    data.input_method_handle.activate_input_method(state, &focus);
                 }
 
                 if let Some((text, cursor, anchor)) = new_state.surrounding_text.take() {
@@ -358,6 +441,28 @@ struct Instance {
     instance: ZwpTextInputV3,
     serial: u32,
     pending_state: TextInputState,
+    /// What this client last committed, kept so a compositor can tell which
+    /// field it is and whether it changed since. `None` until the client
+    /// commits, and again once it disables the field.
+    committed_state: Option<CommittedState>,
+}
+
+/// The state a client last committed: the serial of the commit that
+/// accepted it, and the content type it declared (kept from an earlier
+/// commit when a commit does not restate it).
+#[derive(Clone, Copy, Debug)]
+struct CommittedState {
+    serial: u32,
+    content_type: Option<(ContentHint, ContentPurpose)>,
+}
+
+fn tracked<'a>(
+    instances: &'a mut Vec<Instance>,
+    resource: &ZwpTextInputV3,
+) -> Option<&'a mut Instance> {
+    instances
+        .iter_mut()
+        .find(|instance| instance.instance == *resource)
 }
 
 #[derive(Debug, Default)]

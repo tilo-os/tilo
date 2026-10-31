@@ -312,6 +312,9 @@ fn swatch_edge(theme: &Theme, fill: Color, ground: Color) -> Color {
 /// The least contrast a swatch's edge keeps against its fill and its ground.
 const SWATCH_EDGE_CONTRAST: f64 = 1.4;
 
+/// The operation type of a picker's chosen swatch.
+const CHANGE_SWATCH: &str = "tilo.ui.swatch.change";
+
 /// A grid of [`ColorSwatch`]es as a widget.
 pub struct ColorSwatchPicker {
     swatches: Vec<ColorSwatch>,
@@ -330,6 +333,9 @@ pub struct ColorSwatchPicker {
     focus_index: usize,
     /// Told each chosen index, as well as [`ColorSwatchPicker::take_choice`].
     on_change: Option<Box<dyn FnMut(usize)>>,
+    /// Every chosen swatch, published as the picker's view action `change`
+    /// ([`ColorSwatchPicker::on_change_view`]) and answered by its handler.
+    change_verb: Option<super::control_verb::ControlVerb<usize>>,
     /// The action a chosen index invokes ([`ColorSwatchPicker::on_action`]).
     action: Option<crate::widget::ActionEmitter<usize>>,
     /// The cell's width (and height, unless `cell_height`), when it is not
@@ -359,6 +365,7 @@ impl ColorSwatchPicker {
             focused: false,
             focus_index: 0,
             on_change: None,
+            change_verb: None,
             action: None,
             cell_width: None,
             cell_height: None,
@@ -370,6 +377,25 @@ impl ColorSwatchPicker {
     #[must_use]
     pub fn on_change(mut self, f: impl FnMut(usize) + 'static) -> Self {
         self.on_change = Some(Box::new(f));
+        self
+    }
+
+    /// Run `f` with each index the person chooses, the picker as control
+    /// `tilo.control:<id>`, publishing the choice as its view action
+    /// `change`: a person's press, a screen reader's, a script's and an
+    /// agent's arrive through the same action.
+    #[must_use]
+    pub fn on_change_view(mut self, f: impl FnMut(usize) + 'static) -> Self {
+        if self.action.is_none() {
+            self.change_verb = Some(super::control_verb::ControlVerb::new(
+                self.test_id().unwrap_or("colour swatches"),
+                "Change",
+                "change",
+                CHANGE_SWATCH,
+                super::control_verb::VerbArgument::Integer,
+            ));
+            self.on_change = Some(Box::new(f));
+        }
         self
     }
 
@@ -481,18 +507,98 @@ impl ColorSwatchPicker {
         {
             tracing::warn!(%error, "swatch action refused its index");
         }
+        if let Some(verb) = &mut self.change_verb {
+            verb.emit(index);
+            return;
+        }
         if let Some(on_change) = self.on_change.as_mut() {
             on_change(index);
         }
     }
 }
 
+impl crate::resources::PublishesResources for ColorSwatchPicker {
+    fn resources(&self, _doc: &crate::automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+        self.change_verb
+            .iter()
+            .map(|verb| verb.resource())
+            .collect()
+    }
+}
+
+impl crate::widget::ResourceOperations for ColorSwatchPicker {
+    /// Answer a `change` addressed to this picker: choose the swatch and hand
+    /// it to the picker's own handler, whoever chose it.
+    fn start_operation(
+        &mut self,
+        op: &super::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &crate::automerge::ObjId,
+    ) -> Result<Option<super::ResourceOperationStart>, String> {
+        let chosen = self
+            .change_verb
+            .as_ref()
+            .map(|verb| verb.start(op))
+            .transpose()?
+            .flatten();
+        let Some(index) = chosen else {
+            return crate::widget::resource_operation::start_by_default(self, op, doc, path);
+        };
+        if index >= self.swatches.len() {
+            return Err(format!("no swatch `{index}`"));
+        }
+        self.selected = Some(index);
+        self.choice = Some(index);
+        if let Some(on_change) = self.on_change.as_mut() {
+            on_change(index);
+        }
+        Ok(Some(super::ResourceOperationStart::Completed(
+            crate::tilo_actions::ActionOutput::default(),
+        )))
+    }
+}
+
 impl crate::widget::controls::ActionControls for ColorSwatchPicker {
-    crate::widget::controls::optional_emitter_controls!();
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+        if let Some(verb) = &mut self.change_verb {
+            verb.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action
+            .as_mut()
+            .and_then(crate::widget::ActionEmitter::take)
+            .or_else(|| {
+                self.change_verb
+                    .as_mut()
+                    .and_then(super::control_verb::ControlVerb::take)
+            })
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+        if let Some(verb) = &mut self.change_verb {
+            verb.refresh_availability(allowed);
+        }
+    }
 
     /// Each swatch is the control its semantic target names, bound to the
     /// picker's action.
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        if let Some(verb) = &self.change_verb {
+            return vec![verb.metadata(self.test_id().unwrap_or("colour swatches"))];
+        }
         let Some(action) = &self.action else {
             return crate::widget::controls::default_bindings(self);
         };
@@ -503,7 +609,11 @@ impl crate::widget::controls::ActionControls for ColorSwatchPicker {
 }
 
 impl Widget for ColorSwatchPicker {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     fn build_layout(
         &mut self,
@@ -779,7 +889,7 @@ mod tests {
             .with_cell(60.0)
             .with_cell_height(40.0)
             .with_painter(move |_, _, _, _, _, _| counted.set(counted.get() + 1))
-            .on_change(move |index| told.borrow_mut().push(index));
+            .on_change_view(move |index| told.borrow_mut().push(index));
         lay_out(&mut picker);
         // Three cells of 60 by 40, less the gap after the last: the grid
         // has no outer inset.
@@ -794,6 +904,11 @@ mod tests {
             &crate::synthetic_input::cursor_moved(third.x, third.y),
         );
         dispatch(&mut picker, &crate::synthetic_input::mouse_press());
+        assert_eq!(
+            crate::testing::answer_controls(&mut picker),
+            1,
+            "the choice reaches its handler when it is answered"
+        );
         assert_eq!(*chosen.borrow(), vec![2]);
 
         // Showing a choice made elsewhere tells no one.

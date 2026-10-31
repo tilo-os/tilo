@@ -409,7 +409,14 @@ mod tests {
         let arguments =
             serde_json::Map::from_iter([("path".to_owned(), serde_json::json!("setup.exe"))]);
         let refused = WindowsEffect::decode("install", &arguments).unwrap_err();
-        assert!(refused.contains("absolute"), "{refused}");
+        assert!(
+            matches!(
+                &refused,
+                ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                    if name == "path" && source.to_string().contains("absolute")
+            ),
+            "{refused}"
+        );
     }
 
     #[test]

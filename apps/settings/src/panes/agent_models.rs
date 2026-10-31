@@ -745,7 +745,8 @@ pub(crate) fn answer(
                 model.submit_vertex_change(provider, cx.reply())?;
                 Ok(Effected::Pending)
             } else if model.provider_admin.is_available() {
-                let provider = ProviderEffect::decode(provider.id(), &provider.arguments())?;
+                let provider = ProviderEffect::decode(provider.id(), &provider.arguments())
+                    .map_err(|error| error.to_string())?;
                 model.submit_provider(provider, cx.reply())?;
                 Ok(Effected::Pending)
             } else {
@@ -1799,7 +1800,8 @@ impl AgentModelsModel {
                 config.sanitised()
             }
             effect => {
-                let effect = ProviderEffect::decode(effect.id(), &effect.arguments())?;
+                let effect = ProviderEffect::decode(effect.id(), &effect.arguments())
+                    .map_err(|error| error.to_string())?;
                 limits_ack = self.remember_limits(&effect);
                 self.proposed_config(effect)?
             }

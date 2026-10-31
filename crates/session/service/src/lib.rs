@@ -116,7 +116,7 @@ pub fn decode<E: Effect>(
     for (name, value) in spec.bound() {
         all.insert(name.clone(), value.clone());
     }
-    E::decode(&spec.id, &all).map_err(DoorError::InvalidArguments)
+    E::decode(&spec.id, &all).map_err(|error| DoorError::InvalidArguments(error.to_string()))
 }
 
 /// A reading as its JSON, for [`Service::read`].

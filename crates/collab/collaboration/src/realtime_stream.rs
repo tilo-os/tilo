@@ -4,7 +4,7 @@ use super::{CollabEvent, InboundBridge};
 
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 pub(super) async fn spawn_realtime_stream(
     channel: &runtime_collab::ChannelHandle,

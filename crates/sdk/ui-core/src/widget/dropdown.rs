@@ -77,6 +77,9 @@ fn menu_min_width() -> f64 {
 
 type SelectionChangeCallback = Box<dyn FnMut(&str)>;
 
+/// The operation type of a chooser's committed selection.
+const CHANGE_DROPDOWN: &str = "tilo.ui.dropdown.change";
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent widget-configuration or ephemeral-UI-state flag (open/hover/focus/enabled/etc), not a state machine; grouping them would misrepresent orthogonal concerns and ripple through every accessor in this file"
@@ -97,6 +100,9 @@ pub struct Dropdown {
     binding: Option<BoxedBinding<String>>,
     on_change: Option<SelectionChangeCallback>,
     action: Option<ActionEmitter<String>>,
+    /// Every committed choice, published as the control's view action
+    /// `change` ([`Self::on_change_view`]) and answered by its own handler.
+    change_verb: Option<super::control_verb::ControlVerb<String>>,
     placeholder: String,
 
     /// Mirror of the bound value. Empty when unset.
@@ -258,6 +264,7 @@ impl Dropdown {
             shortcuts: Vec::new(),
             binding: Some(crate::doc_source::text_key(value_path)),
             on_change: None,
+            change_verb: None,
             action: None,
             placeholder: String::new(),
             selected: String::new(),
@@ -363,6 +370,25 @@ impl Dropdown {
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
         self.on_change = None;
+        self
+    }
+
+    /// Run `callback` with each committed selection, the chooser as control
+    /// `tilo.control:<id>`, publishing it as its view action `change`: a
+    /// person's choice, a screen reader's, a script's and an agent's arrive
+    /// through the same action.
+    #[must_use]
+    pub fn on_change_view(mut self, callback: impl FnMut(&str) + 'static) -> Self {
+        if self.action.is_none() {
+            self.change_verb = Some(super::control_verb::ControlVerb::new(
+                self.test_id().unwrap_or("dropdown"),
+                "Change",
+                "change",
+                CHANGE_DROPDOWN,
+                super::control_verb::VerbArgument::Text,
+            ));
+            self.on_change = Some(Box::new(callback));
+        }
         self
     }
 
@@ -894,6 +920,8 @@ impl Dropdown {
             // bound to view state reports it there, for the view to act on.
             if let Some(action) = &mut self.action {
                 let _ = action.emit(value.to_string());
+            } else if let Some(verb) = &mut self.change_verb {
+                verb.emit(value.to_string());
             } else if let Some(callback) = self.on_change.as_mut() {
                 callback(value);
             } else if let Some(binding) = &mut self.binding {
@@ -916,10 +944,12 @@ impl Dropdown {
         if self.action.is_none() {
             self.publish_local_state();
         }
-        if self.action.is_none()
-            && let Some(callback) = self.on_change.as_mut()
-        {
-            callback(value);
+        if self.action.is_none() {
+            if let Some(verb) = &mut self.change_verb {
+                verb.emit(value.to_string());
+            } else if let Some(callback) = self.on_change.as_mut() {
+                callback(value);
+            }
         }
     }
 
@@ -1091,7 +1121,11 @@ impl Dropdown {
 }
 
 impl Widget for Dropdown {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -1646,11 +1680,77 @@ impl Widget for Dropdown {
     }
 }
 
+impl crate::resources::PublishesResources for Dropdown {
+    fn resources(&self, _doc: &crate::automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+        self.change_verb
+            .iter()
+            .map(|verb| verb.resource())
+            .collect()
+    }
+}
+
+impl crate::widget::ResourceOperations for Dropdown {
+    /// Answer a `change` addressed to this chooser: hand the value to the
+    /// chooser's own handler, whoever chose it.
+    fn start_operation(
+        &mut self,
+        op: &super::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &crate::automerge::ObjId,
+    ) -> Result<Option<super::ResourceOperationStart>, String> {
+        let changed = self
+            .change_verb
+            .as_ref()
+            .map(|verb| verb.start(op))
+            .transpose()?
+            .flatten();
+        let Some(value) = changed else {
+            return crate::widget::resource_operation::start_by_default(self, op, doc, path);
+        };
+        // A menu's choice is a command, reported and never kept, as the
+        // press path reports it; a chooser keeps the value it was told.
+        if self.menu.is_none() {
+            self.selected.clone_from(&value);
+        }
+        if let Some(callback) = self.on_change.as_mut() {
+            callback(&value);
+        }
+        Ok(Some(super::ResourceOperationStart::Completed(
+            crate::tilo_actions::ActionOutput::default(),
+        )))
+    }
+}
+
 impl crate::widget::controls::ActionControls for Dropdown {
-    crate::widget::controls::optional_emitter_controls!(custody);
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+        if let Some(verb) = &mut self.change_verb {
+            verb.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action
+            .as_mut()
+            .and_then(ActionEmitter::take)
+            .or_else(|| {
+                self.change_verb
+                    .as_mut()
+                    .and_then(super::control_verb::ControlVerb::take)
+            })
+    }
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let control_id = self.test_id().unwrap_or("dropdown");
+        if let Some(verb) = &self.change_verb {
+            return vec![verb.metadata(control_id)];
+        }
         crate::widget::controls::value_control_bindings(
-            self.test_id().unwrap_or("dropdown"),
+            control_id,
             self.action.as_ref(),
             self.binding.as_ref().and_then(|b| b.document_key()),
             self.on_change.is_some(),
@@ -1662,6 +1762,9 @@ impl crate::widget::controls::ActionControls for Dropdown {
     ) {
         if let Some(action) = &mut self.action {
             action.refresh_availability(allowed);
+        }
+        if let Some(verb) = &mut self.change_verb {
+            verb.refresh_availability(allowed);
         }
         if self.interactive_open && !self.effectively_enabled() {
             self.close();

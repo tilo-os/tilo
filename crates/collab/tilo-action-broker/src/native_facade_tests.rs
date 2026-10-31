@@ -58,7 +58,9 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_custody() 
             let rig = Rig::with_services(
                 &env,
                 HostServices {
-                    local_person: Some(Arc::new(NativePersonFixture(env.authority.clone()))),
+                    local_person: Some(Arc::new(super::signed_worker::NativePerson(
+                        env.authority.clone(),
+                    ))),
                     host_steps: vec![
                         step(
                             identity_admin::PROVIDER,
@@ -147,7 +149,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_custody() 
 async fn keyless_certified_host_steps_require_a_verified_native_projection() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::collab_broker_capnp::{
+            use crate::collab_app_broker::{
                 host_steps::is_local_host_caller, published_invocation::InvocationCaller,
             };
             use tilo_actions::remote::Caller;
@@ -275,7 +277,9 @@ async fn signed_native_facade_preserves_physical_intent_without_lending_it_to_ot
             let rig = Rig::with_services(
                 &env,
                 HostServices {
-                    local_person: Some(Arc::new(NativePersonFixture(env.authority.clone()))),
+                    local_person: Some(Arc::new(super::signed_worker::NativePerson(
+                        env.authority.clone(),
+                    ))),
                     workspace_governance: Some(governance.clone()),
                     ..env.membership.services()
                 },

@@ -263,7 +263,7 @@ mod tests {
     /// A transition chooser laid out `width` wide, as a host lays it out.
     fn chooser(width: f64, chosen: Rc<RefCell<Vec<usize>>>) -> ToggleGroup {
         let mut group = ToggleGroup::new(LABELS.iter().map(|l| Segment::new(*l)).collect(), 1)
-            .on_change(move |index| chosen.borrow_mut().push(index));
+            .on_view("choice", move |index| chosen.borrow_mut().push(index));
         let mut text = TextRenderer::new();
         group.adopt_theme(&Theme::dark());
         group.measure_naturals(&mut text);
@@ -304,6 +304,9 @@ mod tests {
         dispatch(group, &cursor_moved(at.x, at.y));
         dispatch(group, &mouse_press());
         dispatch(group, &mouse_release());
+        // A press reports a choice through the group's published action; the
+        // choice lands when a host answers it.
+        crate::testing::answer_controls(group);
     }
 
     #[test]

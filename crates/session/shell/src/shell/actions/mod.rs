@@ -1775,14 +1775,11 @@ pub(crate) fn begin(
                     "current workspace authority no longer permits {action_id}"
                 )));
             }
-            if !matches!(action_id, "peer.connect" | "peer.pair-device")
-                && let Some(refusal) = crate::shell::invite_policy::active_invite_route(&state)
-                    .map_or(
-                        Some("no active workspace"),
-                        super::invite_policy::InviteRoute::refusal,
-                    )
+            if !matches!(action_id, "peer.connect" | "peer.pair-device") && !state.may_invite_here()
             {
-                return Err(ActionError::Refused(refusal.into()));
+                return Err(ActionError::Refused(
+                    "you do not have permission to invite people to this workspace".into(),
+                ));
             }
             let request = match action_id {
                 "peer.invite" => crate::shell::overlay_host::PeerSyncAction::PromptInvite,

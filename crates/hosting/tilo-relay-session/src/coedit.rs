@@ -684,8 +684,8 @@ impl RelayCoeditSession {
                         "the host could not deliver a remote action sent on this session"
                     );
                 }
-                // Keep-alives and federation chatter carry no co-edit
-                // payload — keep waiting.
+                // Keep-alives and attach chatter carry no co-edit payload —
+                // keep waiting.
                 _ => {}
             }
         }

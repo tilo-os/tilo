@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use tilo_desktop_model::{IdMinter, Tab, TileContent, WindowWidth, Workspace};
 use tilo_desktop_surface::navigation::{Command, Route};
-use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
+use tilo_desktop_surface::{
+    DesktopHandle, DesktopSurface, TileSource, TypedInsertion, TypedRefusal, seed_tree,
+};
 use ui::widget::TileHost;
 
 struct Notices(Rc<Cell<usize>>);
@@ -1441,6 +1443,63 @@ fn labels(snapshot: &tilo_desktop_surface::navigation::Snapshot) -> Vec<String> 
 }
 
 #[test]
+fn text_committed_into_the_open_search_goes_in_at_the_caret() {
+    let (mut driver, handle, _) = mount();
+    handle.open_search(None);
+    driver.relayout();
+    let field = handle
+        .typed_field()
+        .expect("the open search's query field takes committed text");
+    assert_eq!(
+        handle.commit_typed(field, "sheets"),
+        TypedInsertion::Inserted
+    );
+    driver.relayout();
+    assert_eq!(handle.search_rows().0, "sheets");
+
+    let moved = handle.typed_field().expect("still the field");
+    assert_ne!(
+        moved.revision, field.revision,
+        "the field moved with the text committed into it"
+    );
+    assert_eq!(
+        handle.commit_typed(field, " again"),
+        TypedInsertion::Changed,
+        "text meant for a field that moved goes nowhere"
+    );
+    driver.relayout();
+    assert_eq!(handle.search_rows().0, "sheets");
+
+    assert_eq!(
+        handle.commit_typed(moved, " writer"),
+        TypedInsertion::Inserted
+    );
+    driver.relayout();
+    assert_eq!(handle.search_rows().0, "sheets writer");
+}
+
+#[test]
+fn nothing_of_the_desktops_takes_committed_text_while_search_is_closed() {
+    let (mut driver, handle, _) = mount();
+    assert_eq!(handle.typed_field(), Err(TypedRefusal::NoField));
+    handle.toggle_search();
+    driver.relayout();
+    let field = handle.typed_field().expect("the open search's field");
+    handle.toggle_search();
+    driver.relayout();
+    assert_eq!(
+        handle.typed_field(),
+        Err(TypedRefusal::NoField),
+        "the field went with the search"
+    );
+    assert_eq!(
+        handle.commit_typed(field, "late"),
+        TypedInsertion::Refused(TypedRefusal::NoField),
+        "text committed after the field went goes nowhere"
+    );
+}
+
+#[test]
 fn the_search_shortcut_then_an_app_name_and_enter_opens_the_app() {
     let (mut driver, handle, _) = mount();
     driver.set_platform_conventions(ui::platform::PlatformConventions::new(
@@ -1453,7 +1512,7 @@ fn the_search_shortcut_then_an_app_name_and_enter_opens_the_app() {
         handle.search_open(),
         "Ctrl+K opens search where Ctrl is the command key"
     );
-    assert!(find(&driver.inspection().root, "CommandPalette").is_some());
+    assert!(find(&driver.inspection().root, "ActionPalette").is_some());
     driver.type_text("sheets");
     driver.key("Enter");
     driver.relayout();
@@ -1475,7 +1534,7 @@ fn the_search_shortcut_then_an_app_name_and_enter_opens_the_app() {
         "sheets",
         "the launched app is focused"
     );
-    assert!(find(&driver.inspection().root, "CommandPalette").is_none());
+    assert!(find(&driver.inspection().root, "ActionPalette").is_none());
 }
 
 #[test]
@@ -1524,7 +1583,7 @@ fn search_from_navigation_focuses_an_open_window_and_escape_dismisses() {
 
 /// The open palette's result rows.
 fn result_rows(driver: &ui::headless::FrameHarness) -> Vec<ui::a11y::AccessNode> {
-    let palette = find(&driver.inspection().root, "CommandPalette")
+    let palette = find(&driver.inspection().root, "ActionPalette")
         .unwrap()
         .semantics
         .clone()
@@ -1625,7 +1684,7 @@ fn assistive_technology_and_agents_search_through_the_palette_semantics() {
     let (mut driver, handle, _) = mount();
     handle.toggle_search();
     driver.relayout();
-    let palette = find(&driver.inspection().root, "CommandPalette")
+    let palette = find(&driver.inspection().root, "ActionPalette")
         .expect("the open palette is in the semantic tree")
         .semantics
         .clone()
@@ -1644,7 +1703,7 @@ fn assistive_technology_and_agents_search_through_the_palette_semantics() {
         )
         .unwrap();
     driver.relayout();
-    let palette = find(&driver.inspection().root, "CommandPalette")
+    let palette = find(&driver.inspection().root, "ActionPalette")
         .unwrap()
         .semantics
         .clone()
@@ -1748,7 +1807,7 @@ fn search_opens_an_app_the_node_runs_for_this_desktop() {
         )
         .unwrap();
     driver.relayout();
-    let palette = find(&driver.inspection().root, "CommandPalette")
+    let palette = find(&driver.inspection().root, "ActionPalette")
         .unwrap()
         .semantics
         .clone()
@@ -2267,7 +2326,7 @@ fn search_fits_a_phone_screen() {
     handle.toggle_search();
     driver.relayout();
     driver.relayout();
-    let [x, _, width, _] = find(&driver.inspection().root, "CommandPalette")
+    let [x, _, width, _] = find(&driver.inspection().root, "ActionPalette")
         .expect("search is open")
         .rect;
     assert!(

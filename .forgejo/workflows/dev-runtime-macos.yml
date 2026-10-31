@@ -28,7 +28,6 @@ on:
       - "crates/collab/threshold-identity/**"
       - "crates/collab/tilo-action-broker/**"
       - "crates/collab/tilo-identity-ceremony/**"
-      - "crates/collab/tilo-joined-room/**"
       - "crates/collab/tilo-peer-state/**"
       - "crates/collab/tilo-unlock-protocol/**"
       - "crates/collab/tilo-user-identity/**"

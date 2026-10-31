@@ -1565,100 +1565,66 @@ mod tests {
         installed_root: Option<[u8; 32]>,
     }
 
-    impl app_host::app_host_capnp::app_host::Server for ImportOfferHost {
-        fn list(
-            self: capnp::capability::Rc<Self>,
-            _: app_host::app_host_capnp::app_host::ListParams,
-            mut results: app_host::app_host_capnp::app_host::ListResults,
-        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            let mut entries = results
-                .get()
-                .init_entries(u32::from(self.installed_root.is_some()));
-            if let Some(root) = self.installed_root {
-                let mut entry = entries.reborrow().get(0);
-                entry.set_id(&root);
-                entry.set_payload_root("/payloads/engine");
-                entry.set_manifest_path("/payloads/engine/manifest.toml");
-                entry.set_manifest_text(concat!(
-                    "[package]\nid = \"so.tilo.runtime.chromium\"\nversion = \"4.0.0\"\n",
-                    "kind = \"app\"\n[publisher]\nidentity = \"ed25519:",
-                    "2222222222222222222222222222222222222222222222222222222222222222",
-                    "\"\nsignature = \"\"\n[sandbox]\nnamespaces = []\n",
-                    "seccomp = \"tilo-default\"\nlandlock = \"strict\"\n",
-                    "[sandbox.net]\nmode = \"off\"\n[entrypoint]\nbin = \"bin/engine\"\n",
-                ));
-                entry.set_user_managed(true);
-            }
-            std::future::ready(Ok(()))
-        }
-        fn repositories(
-            self: capnp::capability::Rc<Self>,
-            _: app_host::app_host_capnp::app_host::RepositoriesParams,
-            mut results: app_host::app_host_capnp::app_host::RepositoriesResults,
-        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            results.get().set_json(
-                serde_json::to_string(&crate::config::RegistriesFile {
-                    registries: vec![crate::config::RegistryConfig {
-                        name: self.registry.clone(),
-                        base_url: "https://example.invalid".into(),
-                        owner_pubkey_hex: "55".repeat(32),
-                        enabled: true,
-                        channel: app_cli::ReleaseChannel::Stable,
-                    }],
-                })
-                .unwrap(),
-            );
-            std::future::ready(Ok(()))
-        }
-        fn runtime_offer(
-            self: capnp::capability::Rc<Self>,
-            params: app_host::app_host_capnp::app_host::RuntimeOfferParams,
-            mut results: app_host::app_host_capnp::app_host::RuntimeOfferResults,
-        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            let params = params.get().unwrap();
-            assert_eq!(
-                params.get_registry().unwrap().to_str().unwrap(),
-                self.registry
-            );
-            assert_eq!(
-                params.get_runtime().unwrap().to_str().unwrap(),
-                "tilo-runtime/2026.10.4-chromium"
-            );
-            results
-                .get()
-                .set_offer(serde_json::to_string(&self.offer).unwrap());
-            std::future::ready(Ok(()))
-        }
-        fn install_offer(
-            self: capnp::capability::Rc<Self>,
-            params: app_host::app_host_capnp::app_host::InstallOfferParams,
-            mut results: app_host::app_host_capnp::app_host::InstallOfferResults,
-        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            let params = params.get().unwrap();
-            assert_eq!(
-                params.get_registry().unwrap().to_str().unwrap(),
-                self.registry
-            );
-            assert_eq!(
-                params.get_app_id().unwrap().to_str().unwrap(),
-                self.expected.app_id
-            );
-            assert_eq!(
-                params.get_version().unwrap().to_str().unwrap(),
-                self.expected.version
-            );
-            assert_eq!(
-                params.get_expected_root().unwrap(),
-                self.expected.package_root.as_bytes()
-            );
-            assert_eq!(
-                params.get_expected_publisher().unwrap(),
-                self.expected.publisher
-            );
-            assert_eq!(params.get_expected_size_bytes(), self.expected.size_bytes);
-            self.installs.fetch_add(1, Ordering::SeqCst);
-            results.get().set_id(self.expected.package_root.as_bytes());
-            std::future::ready(Ok(()))
+    impl app_host::wire::Host for ImportOfferHost {
+        fn handle(
+            self: std::rc::Rc<Self>,
+            request: app_host::wire::Operation,
+        ) -> impl core::future::Future<Output = Result<app_host::wire::Answer, String>> + 'static
+        {
+            use app_host::wire::{Action, Answer, Operation, Resource};
+            std::future::ready(match request {
+                Operation::Read(Resource::Packages) => Ok(Answer::Packages(
+                    self.installed_root
+                        .into_iter()
+                        .map(|root| app_host::wire::PackageEntry {
+                            id: root,
+                            pinning: app_host::wire::WirePinning::Tried,
+                            payload_root: "/payloads/engine".into(),
+                            manifest_path: "/payloads/engine/manifest.toml".into(),
+                            manifest_text: concat!(
+                                "[package]\nid = \"so.tilo.runtime.chromium\"\nversion = \"4.0.0\"\n",
+                                "kind = \"app\"\n[publisher]\nidentity = \"ed25519:",
+                                "2222222222222222222222222222222222222222222222222222222222222222",
+                                "\"\nsignature = \"\"\n[sandbox]\nnamespaces = []\n",
+                                "seccomp = \"tilo-default\"\nlandlock = \"strict\"\n",
+                                "[sandbox.net]\nmode = \"off\"\n[entrypoint]\nbin = \"bin/engine\"\n",
+                            )
+                            .into(),
+                            size_bytes: 0,
+                            last_used_unix: 0,
+                            user_managed: true,
+                        })
+                        .collect(),
+                )),
+                Operation::Read(Resource::Repositories) => Ok(Answer::Text(
+                    serde_json::to_string(&crate::config::RegistriesFile {
+                        registries: vec![crate::config::RegistryConfig {
+                            name: self.registry.clone(),
+                            base_url: "https://example.invalid".into(),
+                            owner_pubkey_hex: "55".repeat(32),
+                            enabled: true,
+                            channel: app_cli::ReleaseChannel::Stable,
+                        }],
+                    })
+                    .unwrap(),
+                )),
+                Operation::Read(Resource::RuntimeOffer { registry, runtime }) => {
+                    assert_eq!(registry, self.registry);
+                    assert_eq!(runtime, "tilo-runtime/2026.10.4-chromium");
+                    Ok(Answer::Text(serde_json::to_string(&self.offer).unwrap()))
+                }
+                Operation::Invoke(Action::InstallOffer { registry, expected }) => {
+                    assert_eq!(registry, self.registry);
+                    assert_eq!(expected.app_id, self.expected.app_id);
+                    assert_eq!(expected.version, self.expected.version);
+                    assert_eq!(&expected.root, self.expected.package_root.as_bytes());
+                    assert_eq!(expected.publisher, self.expected.publisher);
+                    assert_eq!(expected.size_bytes, self.expected.size_bytes);
+                    self.installs.fetch_add(1, Ordering::SeqCst);
+                    Ok(Answer::Installed(*self.expected.package_root.as_bytes()))
+                }
+                other => app_host::testing::refuse(&other),
+            })
         }
     }
 

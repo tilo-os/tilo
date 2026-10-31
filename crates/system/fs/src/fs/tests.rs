@@ -1264,8 +1264,9 @@ mod thumb_tests {
                 "the preview is far smaller than the source"
             );
 
-            // The thumbnail's blob hash is now on the node (so it gossips), and the
-            // blob is a content blob in the store that peers can hydrate.
+            // The thumbnail's blob hash is now on the node (so it reaches
+            // peers), and the blob is a content blob in the store that peers
+            // can hydrate.
             let tbh = namespace
                 .lock_recover()
                 .thumb_hash(ino)
@@ -1416,11 +1417,11 @@ mod thumb_tests {
         }
     }
 
-    /// The projected-preview-before-content path: a peer with only gossiped
+    /// The projected-preview-before-content path: a peer with only replicated
     /// metadata (thumbnail blob hash + blob) shows a preview WITHOUT the
     /// file's content ever being local.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_gossiped_thumbnail_is_served_before_content() {
+    async fn a_replicated_thumbnail_is_served_before_content() {
         let dir = tempfile::tempdir().unwrap();
         let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
 
@@ -1433,7 +1434,7 @@ mod thumb_tests {
         let thumb_blob = store.ingest(preview.clone()).await.unwrap();
 
         // The file's content is projected (not local), but the node carries the
-        // gossiped thumbnail hash.
+        // replicated thumbnail hash.
         let projected = iroh_blobs::Hash::from([5u8; 32]);
         let ino = {
             let mut ns = namespace.lock_recover();
@@ -1449,7 +1450,7 @@ mod thumb_tests {
             .expect("a projected preview is served before content");
         assert_eq!(
             served, preview,
-            "the gossiped thumbnail is served without local content"
+            "the replicated thumbnail is served without local content"
         );
     }
 }

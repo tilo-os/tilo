@@ -1,5 +1,5 @@
 //! The current role behind a verified membership proof.
-use super::{DeviceCert, Role, StatePeer, SystemTime};
+use super::{DeviceCert, MembershipError, Role, StatePeer, SystemTime};
 
 impl StatePeer {
     pub(super) fn current_membership_role(
@@ -8,7 +8,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<Role, String> {
         if membership.room() != self.core.room
-            || !self.signed_by_owner(&membership.authority_device_public_key())
+            || !self.signed_by_owner(&membership.host_device_public_key())
         {
             return Err("membership proof is not from a device of the room's owner".into());
         }
@@ -25,15 +25,16 @@ impl StatePeer {
         {
             return Err("membership certificate is absent from governed state".into());
         }
-        self.certificate(&cert.device_public_key, now)?;
+        self.certificate(&cert.device_public_key, now)
+            .map_err(|error| error.to_string())?;
+        // A device the room admitted and then removed is refused as removed,
+        // not as a stranger.
         match self.permissions(cert.device_public_key, now) {
             Ok(member) => Ok(member.role),
-            Err(error)
-                if error.contains("no room membership") && self.has_governed_admission(cert) =>
-            {
+            Err(MembershipError::NoMembership) if self.has_governed_admission(cert) => {
                 Err("member has been removed".into())
             }
-            Err(error) => Err(error),
+            Err(error) => Err(error.to_string()),
         }
     }
 }

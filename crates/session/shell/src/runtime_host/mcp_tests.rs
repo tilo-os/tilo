@@ -2,7 +2,7 @@
     clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
-use crate::shell::collab_broker_capnp::tests::{
+use crate::shell::collab_app_broker::tests::{
     DirectoryResolveMode, drain_directory_bridge, local_directory_fixture_with_membership,
 };
 use crate::shell::remote_actions::BrokerActionHost;
@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use tilo_runtime::mcp::McpServer;
 
 fn fixture() -> (
-    crate::shell::collab_broker_capnp::tests::LocalDirectoryFixture,
+    crate::shell::collab_app_broker::tests::LocalDirectoryFixture,
     String,
     String,
 ) {
@@ -31,7 +31,7 @@ fn fixture() -> (
 /// The next invocation reached the app as the MCP client's agent, recorded
 /// as an agent acting for `person`: never as the person themself.
 fn assert_agent_for(
-    fixture: &mut crate::shell::collab_broker_capnp::tests::LocalDirectoryFixture,
+    fixture: &mut crate::shell::collab_app_broker::tests::LocalDirectoryFixture,
     person: &str,
 ) {
     let (actor, invoker) = fixture
@@ -305,7 +305,7 @@ async fn resources_are_live_room_scoped_and_reads_use_authority() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn root_identity_pagination_and_disconnect_are_exact() {
-    use crate::shell::collab_broker_capnp::ActionDirectoryRoot;
+    use crate::shell::collab_app_broker::ActionDirectoryRoot;
     let (fixture, room, actor) = fixture();
     fixture.broker.replace_action_directory_roots_for_test(
         (1..=130)
@@ -364,7 +364,7 @@ async fn first_allocated_application_peer_supports_query_resolve_and_invoke() {
         workspace.set_owner(actor.clone());
         tree.desktop.workspaces.push(workspace);
         tree.set_active(WorkspaceId(71));
-        let mut fixture = crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_first_allocated_peer(tree.shared());
+        let mut fixture = crate::shell::collab_app_broker::tests::local_directory_fixture_with_first_allocated_peer(tree.shared());
         let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()), room, actor.clone());
         let listed = server.handle(call("tilo_list_apps", &json!({}))).await.unwrap();
         let app = &listed["result"]["structuredContent"]["apps"][0];
@@ -556,7 +556,7 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
                     .state()
                     .action_directory_request_queue()
                     .try_query(
-                        crate::shell::collab_broker_capnp::BrokerActor::person(&actor),
+                        crate::shell::collab_app_broker::BrokerActor::person(&actor),
                         &room,
                         runtime_collab::ActionDirectoryQuery {
                             peer_id: 71,
@@ -765,13 +765,12 @@ async fn an_ask_edited_on_the_sheet_runs_the_persons_arguments_through_the_door(
                 }
                 let delivered = tokio::time::timeout(
                     std::time::Duration::from_secs(5),
-                    notes.read_request().send().promise,
+                    notes.read(),
                 )
                 .await
                 .expect("the app runs it")
                 .unwrap();
-                let wire = delivered.get().unwrap();
-                let text = wire.get_argument().unwrap().to_str().unwrap();
+                let text = delivered.argument.as_deref().unwrap_or_default();
                 let delivered: Value = serde_json::from_str(
                     text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
                         .unwrap_or(text),

@@ -151,6 +151,30 @@ pub enum FilesEffect {
         #[param("Absolute path of the folder to show")]
         path: AbsolutePath,
     },
+    /// Remove from favorites.
+    ///
+    /// Unpins a favorite from the places list of this window. The folder
+    /// stays where it is; nothing on disk changes.
+    #[effect(view, idempotent)]
+    #[effect(icon = "x")]
+    RemoveFavorite {
+        #[param("Absolute path of the favorite to unpin")]
+        path: AbsolutePath,
+    },
+    /// Move favorite.
+    ///
+    /// Puts one favorite before or after another in the places list, in this
+    /// window's own order; nothing on disk changes.
+    #[effect(view, idempotent)]
+    #[effect(icon = "list")]
+    MoveFavorite {
+        #[param("Absolute path of the favorite to move")]
+        source: AbsolutePath,
+        #[param("Absolute path of the favorite it lands beside")]
+        target: AbsolutePath,
+        #[param("Whether it lands before the target, and after it otherwise")]
+        before: bool,
+    },
     /// Parent folder.
     #[effect(view)]
     #[effect(keywords = "go up, parent directory, up one level")]

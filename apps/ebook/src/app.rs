@@ -5504,7 +5504,8 @@ impl BooksApp {
         doc: &AutoCommit,
     ) -> Result<ui::framework::Effected, String> {
         let effect =
-            <crate::resource::BooksEffect as ui::tilo_resource::Effect>::from_payload(payload)?;
+            <crate::resource::BooksEffect as ui::tilo_resource::Effect>::from_payload(payload)
+                .map_err(|error| error.to_string())?;
         let entries: Vec<crate::model::LibraryEntry> =
             <Ebook as ui::tilo_resource::Resource>::read(doc)
                 .map(|record| record.entries.values().cloned().collect())

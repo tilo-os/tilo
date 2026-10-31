@@ -114,18 +114,6 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
         key: PresenceKey,
         payload: PresencePayload,
     },
-    /// A typed action another app in this room published, delivered to every
-    /// connection. A receiver decodes it via its own
-    /// [`ActionRegistry`](tilo_actions::ActionRegistry); an action for a
-    /// different app decodes to nothing, making room-wide fan-out safe.
-    ///
-    /// `from_user_id` is who *sent* the frame, not necessarily who the
-    /// action says authored it.
-    ActionArrived {
-        type_id: String,
-        payload: Vec<u8>,
-        from_user_id: String,
-    },
     /// What this endpoint can do with one route's end-to-end encrypted
     /// content changed: it was admitted, is waiting for access (a new device
     /// before its welcome arrives), was removed, or cannot join. While a

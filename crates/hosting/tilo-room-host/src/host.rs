@@ -178,11 +178,16 @@ impl HostSessions {
     ///
     /// The identity is invalid or, for a certified host, not host-capable;
     /// the state root cannot be created; or the rooms cannot be opened.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the handler is a set of shared handles moved into the sessions it becomes part of; dropping it earlier releases no lock"
+    )]
     pub async fn open(
         cfg: HostConfig,
         identity: HostIdentity,
         endpoint: Endpoint,
         governs: bool,
+        keys: Option<crate::rooms::DeviceKeys>,
         wrap: impl FnOnce(
             &WorkspaceRegistry,
             Option<Arc<dyn AppServingPlane>>,
@@ -242,7 +247,7 @@ impl HostSessions {
             member_limits: cfg
                 .member_limits
                 .map(|limits| Arc::new(crate::member_limits::MemberLimits::new(limits))),
-            arrivals: crate::federation::Arrivals::default(),
+            arrivals: crate::attach::Arrivals::default(),
         };
         let sessions = Self {
             endpoint: endpoint.clone(),
@@ -261,7 +266,7 @@ impl HostSessions {
             return Ok((sessions, None));
         };
         let rooms = crate::rooms::Rooms::open(
-            sessions.room_services(&cfg, &identity, endpoint, revocations),
+            sessions.room_services(&cfg, &identity, endpoint, revocations, keys),
             cfg.state_root.join("rooms"),
         )
         .await
@@ -283,8 +288,10 @@ impl HostSessions {
         identity: &HostIdentity,
         endpoint: Endpoint,
         revocations: Arc<std::sync::RwLock<RevocationList>>,
+        keys: Option<crate::rooms::DeviceKeys>,
     ) -> crate::rooms::RoomServices {
         crate::rooms::RoomServices {
+            keys,
             workspaces: self.workspaces.clone(),
             access: self.access_writer(),
             records: self.room_records(),
@@ -516,6 +523,7 @@ impl RoomHost {
         cfg: HostConfig,
         identity: HostIdentity,
         endpoint: Endpoint,
+        keys: Option<crate::rooms::DeviceKeys>,
     ) -> Result<Self, HostError> {
         if matches!(cfg.trust_policy, TrustPolicy::AllowAny) {
             return Err(HostError::Identity(
@@ -523,7 +531,7 @@ impl RoomHost {
             ));
         }
         let (sessions, governed) =
-            HostSessions::open(cfg, identity, endpoint, true, |_, plane| plane).await?;
+            HostSessions::open(cfg, identity, endpoint, true, keys, |_, plane| plane).await?;
         let Some(Governed { rooms, actions }) = governed else {
             return Err(HostError::Rooms("the host governs no rooms".into()));
         };
@@ -954,8 +962,8 @@ pub struct RelayProtocol {
     pub compactor: crate::compaction::Compactor,
     pub(crate) member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
     /// Told each device whose session here authenticated
-    /// ([`crate::federation::Arrivals`]).
-    pub(crate) arrivals: crate::federation::Arrivals,
+    /// ([`crate::attach::Arrivals`]).
+    pub(crate) arrivals: crate::attach::Arrivals,
 }
 
 impl RelayProtocol {
@@ -1065,6 +1073,10 @@ async fn serve_streams(
 /// under the live policy (the owner and every user the host currently
 /// admits), then the peer loop until the stream ends or `closed` resolves.
 /// Every carrier runs this: an iroh stream, and an in-process stream.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the context is a set of shared handles moved into the peer session it runs"
+)]
 async fn serve_session<R, W>(
     ctx: RelayProtocol,
     mut recv: R,
@@ -1101,6 +1113,24 @@ where
         tracing::debug!("peer session ended with error: {e}");
     }
     Ok(())
+}
+
+/// The device's own host, as its native owner joins the rooms placed on it.
+impl tilo_peer_state::owner::session::OwnHost for RoomHost {
+    fn join_service(&self) -> Arc<dyn tilo_relay_session::workspace_join::LocalJoinService> {
+        Self::join_service(self)
+    }
+
+    fn connect_local(
+        &self,
+        cert: DeviceCert,
+        key: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<RelayClient, ClientError>> + Send + '_>,
+    > {
+        Box::pin(Self::connect_local(self, cert, key, revocations))
+    }
 }
 
 #[cfg(test)]

@@ -1,22 +1,18 @@
-//! Cap'n Proto `AppHost::Server` implementation. Wires the RPC methods to
-//! the device's [`PackageStore`] and its [`Catalog`]. The transport (Unix
-//! socket listener) lives in `transport.rs`.
+//! The app host's side of the wire ([`crate::wire::Host`]): reads of the
+//! device's [`PackageStore`] and its [`Catalog`], and the actions on them.
+//! The transport (Unix socket listener) lives in `transport.rs`.
 //!
-//! capnp 0.26 generates async server methods on `capnp::capability::Rc<Self>`
-//! returning an `impl Future<Output = Result<(), capnp::Error>>`; blocking
-//! work (fs IO, content-store sessions, materialisation) is routed through
-//! `tokio::task::spawn_blocking` so the capnp event loop stays responsive.
+//! Blocking work (fs IO, content-store sessions, materialisation) is routed
+//! through `tokio::task::spawn_blocking` so the connection stays responsive.
 
-use std::{io::Write as _, sync::Arc};
+use std::{io::Write as _, rc::Rc, sync::Arc};
 
-use capnp::Error;
-
-use crate::app_host_capnp::{
-    CatalogueRefusal as WireCatalogueRefusal, FlatpakAction as WireFlatpakAction,
-    Pinning as WirePinning, RemoteAction as WireRemoteAction, app_host,
-};
 use crate::client::Refusal;
 use crate::install::{InstallExpectation, install_verified_tapp};
+use crate::wire::{
+    Action, Answer, Catalogue, Expected, FlatpakVerb, Operation, PackageEntry, RemoteVerb,
+    Resource, WirePinning,
+};
 use package_store::{Catalog, InstalledPackage, PackageStore, Pinning};
 use tilo_app_package::id::PackageId;
 
@@ -77,6 +73,22 @@ impl AppHostServer {
     }
 }
 
+/// Why a call failed, as the caller is told.
+#[derive(Debug)]
+struct Error(String);
+
+impl Error {
+    fn failed(message: String) -> Self {
+        Self(message)
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 fn wire_pinning(p: Pinning) -> WirePinning {
     match p {
         Pinning::Tried => WirePinning::Tried,
@@ -89,14 +101,6 @@ fn parse_pinning(p: WirePinning) -> Pinning {
         WirePinning::Tried => Pinning::Tried,
         WirePinning::Pinned => Pinning::Pinned,
     }
-}
-
-/// Decode raw 32-byte `Data` id into a [`PackageId`].
-fn parse_id(bytes: &[u8]) -> Result<PackageId, Error> {
-    let raw: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| Error::failed(format!("package id must be 32 bytes, got {}", bytes.len())))?;
-    Ok(PackageId::from_bytes(raw))
 }
 
 fn failed(error: impl std::fmt::Display) -> Error {
@@ -155,19 +159,21 @@ fn find_user(catalog: &Catalog, id: PackageId) -> Result<InstalledPackage, Error
     Ok(package)
 }
 
-/// Populate a wire `PackageEntry` builder from a listed package.
-fn fill_entry(mut out: crate::app_host_capnp::package_entry::Builder<'_>, row: &Listed) {
-    out.set_id(row.id.as_bytes());
-    out.set_pinning(wire_pinning(row.package.pinning()));
-    out.set_payload_root(row.package.payload_root.to_string_lossy());
-    out.set_manifest_text(&row.manifest_text);
-    out.set_size_bytes(row.size_bytes);
-    out.set_last_used_unix(row.package.last_used);
-    out.set_user_managed(row.package.user_managed());
-    out.set_manifest_path(row.package.manifest_path.to_string_lossy());
+/// The wire entry of a listed package.
+fn entry(row: &Listed) -> PackageEntry {
+    PackageEntry {
+        id: *row.id.as_bytes(),
+        pinning: wire_pinning(row.package.pinning()),
+        payload_root: row.package.payload_root.to_string_lossy().into_owned(),
+        manifest_text: row.manifest_text.clone(),
+        size_bytes: row.size_bytes,
+        last_used_unix: row.package.last_used,
+        user_managed: row.package.user_managed(),
+        manifest_path: row.package.manifest_path.to_string_lossy().into_owned(),
+    }
 }
 
-/// Run blocking store work off the capnp event loop.
+/// Run blocking store work off the connection.
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, Error> + Send + 'static,
 ) -> Result<T, Error> {
@@ -374,25 +380,6 @@ impl std::fmt::Display for ReadError {
             Self::Refused(refusal, detail) => write!(f, "{refusal:?}: {detail}"),
             Self::Failed(error) => error.fmt(f),
         }
-    }
-}
-
-/// Write a catalogue read's outcome into its results: the rows, or the
-/// refusal with its detail; anything else is raised.
-fn set_catalogue(
-    read: Result<String, ReadError>,
-    set: impl FnOnce(&str, WireCatalogueRefusal, &str),
-) -> Result<(), Error> {
-    match read {
-        Ok(rows) => {
-            set(&rows, WireCatalogueRefusal::None, "");
-            Ok(())
-        }
-        Err(ReadError::Refused(refusal, detail)) => {
-            set("", refusal.to_wire(), &detail);
-            Ok(())
-        }
-        Err(ReadError::Failed(error)) => Err(error),
     }
 }
 
@@ -804,638 +791,308 @@ fn run_host_command(command: std::process::Command) -> Result<String, Error> {
     }
 }
 
-// capnp-rpc capability methods are driven from a single-threaded
-// `LocalSet`: `capnp::capability::Rc` (captured as `self`) is a
-// non-atomic, non-`Send` reference count by capnp's own design, so
-// these futures can never be `Send` and are never meant to cross a
-// thread. Forcing `Send` here would use a different threading model.
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc Server methods run on a single-threaded LocalSet via the non-atomic capnp::capability::Rc; the futures are never sent across threads"
-)]
-impl app_host::Server for AppHostServer {
-    fn list(
-        self: capnp::capability::Rc<Self>,
-        _params: app_host::ListParams,
-        mut results: app_host::ListResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let catalog = Arc::clone(&self.catalog);
-        async move {
-            let rows = blocking(move || {
-                Ok(catalog
-                    .list()
-                    .map_err(failed)?
-                    .into_iter()
-                    .filter_map(listed)
-                    .collect::<Vec<_>>())
-            })
-            .await?;
-            let count = u32::try_from(rows.len())
-                .map_err(|_| Error::failed("too many packages to list".to_string()))?;
-            let mut list = results.get().init_entries(count);
-            for (index, row) in (0..count).zip(rows.iter()) {
-                fill_entry(list.reborrow().get(index), row);
-            }
-            Ok(())
-        }
-    }
-
-    fn resolve(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::ResolveParams,
-        mut results: app_host::ResolveResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let catalog = Arc::clone(&self.catalog);
-        async move {
-            let id = parse_id(params.get().map_err(failed)?.get_id().map_err(failed)?)?;
-            let row = blocking(move || {
-                listed(find(&catalog, id)?)
-                    .ok_or_else(|| Error::failed(format!("package {id} has no readable manifest")))
-            })
-            .await?;
-            fill_entry(results.get().init_entry(), &row);
-            Ok(())
-        }
-    }
-
-    fn pin(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::PinParams,
-        _results: app_host::PinResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let (store, catalog) = (Arc::clone(&self.store), Arc::clone(&self.catalog));
-        async move {
-            let id = parse_id(params.get().map_err(failed)?.get_id().map_err(failed)?)?;
-            blocking(move || {
-                let package = find_user(&catalog, id)?;
-                store.set_pinned(&package.id, true).map_err(failed)
-            })
-            .await
-        }
-    }
-
-    fn unpin(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::UnpinParams,
-        _results: app_host::UnpinResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let (store, catalog) = (Arc::clone(&self.store), Arc::clone(&self.catalog));
-        async move {
-            let id = parse_id(params.get().map_err(failed)?.get_id().map_err(failed)?)?;
-            blocking(move || {
-                let package = find_user(&catalog, id)?;
-                store.set_pinned(&package.id, false).map_err(failed)
-            })
-            .await
-        }
-    }
-
-    fn remove(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::RemoveParams,
-        _results: app_host::RemoveResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let (store, catalog) = (Arc::clone(&self.store), Arc::clone(&self.catalog));
-        let max_bytes = self.max_store_bytes;
-        async move {
-            let id = parse_id(params.get().map_err(failed)?.get_id().map_err(failed)?)?;
-            blocking(move || {
-                let package = find_user(&catalog, id)?;
-                store.remove(&package.id, false).map_err(failed)?;
-                collect_after_change(&store, &catalog, max_bytes, &[]);
-                Ok(())
-            })
-            .await
-        }
-    }
-
-    fn mark_used(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::MarkUsedParams,
-        _results: app_host::MarkUsedResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let (store, catalog) = (Arc::clone(&self.store), Arc::clone(&self.catalog));
-        async move {
-            let id = parse_id(params.get().map_err(failed)?.get_id().map_err(failed)?)?;
-            blocking(move || {
-                let package = find_user(&catalog, id)?;
-                store.mark_used(&package.id).map_err(failed)
-            })
-            .await
-        }
-    }
-
-    async fn review_local(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::ReviewLocalParams,
-        mut results: app_host::ReviewLocalResults,
-    ) -> Result<(), Error> {
-        let p = params.get().map_err(failed)?;
-        let handed = p.get_tapp_bytes().map_err(failed)?;
-        if handed.len() > crate::local_package::MAX_LOCAL_BYTES {
-            return Err(Error::failed(
-                "Local package exceeds the file size limit".into(),
-            ));
-        }
-        let bytes = handed.to_vec();
-        let review = blocking(move || crate::local_package::review(&bytes).map_err(failed)).await?;
-        let json = serde_json::to_string(&review).map_err(failed)?;
-        results.get().set_review_json(&json);
-        Ok(())
-    }
-
-    async fn install_local(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::InstallLocalParams,
-        mut results: app_host::InstallLocalResults,
-    ) -> Result<(), Error> {
-        let p = params.get().map_err(failed)?;
-        let handed = p.get_tapp_bytes().map_err(failed)?;
-        if handed.len() > crate::local_package::MAX_LOCAL_BYTES {
-            return Err(Error::failed(
-                "Local package exceeds the file size limit".into(),
-            ));
-        }
-        let bytes = handed.to_vec();
-        let root = p
-            .get_reviewed_root()
-            .map_err(failed)?
-            .to_string()
-            .map_err(failed)?;
-        let hash = p
-            .get_reviewed_archive_hash()
-            .map_err(failed)?
-            .to_string()
-            .map_err(failed)?;
-        let id = blocking(move || {
-            let root = crate::local_package::install(&bytes, &root, &hash).map_err(failed)?;
-            format!("tapp:{root}")
-                .parse::<PackageId>()
-                .map_err(|_| Error::failed("Invalid local package root".into()))
-        })
-        .await?;
-        results.get().set_id(id.as_bytes());
-        Ok(())
-    }
-
-    fn install(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::InstallParams,
-        mut results: app_host::InstallResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let (store, catalog) = (Arc::clone(&self.store), Arc::clone(&self.catalog));
-        let max_bytes = self.max_store_bytes;
-        async move {
-            let p = params.get().map_err(failed)?;
-            let tapp_bytes = p.get_tapp_bytes().map_err(failed)?.to_vec();
-            let pinning = parse_pinning(p.get_pinning().map_err(failed)?);
-            let expected_root = parse_id(p.get_expected_root().map_err(failed)?)?;
-            let publisher_bytes = p.get_expected_publisher().map_err(failed)?;
-            let publisher: [u8; 32] = publisher_bytes.try_into().map_err(|_| {
-                Error::failed(format!(
-                    "publisher key must be 32 bytes, got {}",
-                    publisher_bytes.len()
-                ))
-            })?;
-            let expected = InstallExpectation {
-                package_root: expected_root,
-                publisher,
-                app_id: p
-                    .get_expected_app_id()
-                    .map_err(failed)?
-                    .to_string()
-                    .map_err(failed)?,
-                version: p
-                    .get_expected_version()
-                    .map_err(failed)?
-                    .to_string()
-                    .map_err(failed)?,
-                size_bytes: p.get_expected_size_bytes(),
-            };
-            let id = blocking(move || {
-                let installed =
-                    install_verified_tapp(&store, &tapp_bytes, pinning, &expected, None)
-                        .map_err(failed)?;
-                // Best-effort: the package is already committed.
-                collect_after_change(&store, &catalog, max_bytes, &[installed.id.as_str()]);
-                installed
-                    .package_id()
-                    .ok_or_else(|| Error::failed("installed package has no package id".into()))
-            })
-            .await?;
-            results.get().set_id(id.as_bytes());
-            Ok(())
-        }
-    }
-
-    fn disk_usage(
-        self: capnp::capability::Rc<Self>,
-        _params: app_host::DiskUsageParams,
-        mut results: app_host::DiskUsageResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let store = Arc::clone(&self.store);
-        async move {
-            let usage = blocking(move || store.disk_usage().map_err(failed)).await?;
-            let mut out = results.get();
-            out.set_total_bytes(usage.total_bytes);
-            let mut by = out.init_by_pinning();
-            by.set_pinned_bytes(usage.pinned_bytes);
-            by.set_tried_bytes(usage.tried_bytes);
-            Ok(())
-        }
-    }
-
-    fn launch(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::LaunchParams,
-        mut results: app_host::LaunchResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let (store, catalog) = (Arc::clone(&self.store), Arc::clone(&self.catalog));
-        async move {
-            let id = parse_id(params.get().map_err(failed)?.get_id().map_err(failed)?)?;
-            let status = blocking(move || {
-                let package = find(&catalog, id)?;
-                let mut command = std::process::Command::new(launcher_bin());
-                command
-                    .arg("run")
-                    .arg("--manifest")
-                    .arg(&package.manifest_path)
-                    .arg("--payload-root")
-                    .arg(&package.payload_root);
-                if let Some(socket) = wayland_socket() {
-                    command.arg("--wayland-socket").arg(socket);
-                }
-                let status = spawn_detached(command)?;
-                if package.user_managed() {
-                    store.mark_used(&package.id).map_err(failed)?;
-                }
-                Ok(status)
-            })
-            .await?;
-            results.get().set_status(&status);
-            Ok(())
-        }
-    }
-
+impl crate::wire::Host for AppHostServer {
     #[allow(
-        clippy::manual_async_fn,
-        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
+        clippy::future_not_send,
+        reason = "calls run on the connection's LocalSet and never cross a thread"
     )]
-    fn launch_desktop(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::LaunchDesktopParams,
-        mut results: app_host::LaunchDesktopResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        async move {
-            let desktop_id = params.get()?.get_desktop_id()?.to_string()?;
-            let status = tokio::task::spawn_blocking(move || {
-                let mut command = std::process::Command::new(launcher_bin());
-                command.arg("run-host").arg("--desktop-id").arg(desktop_id);
-                if let Some(socket) = wayland_socket() {
-                    command.arg("--wayland-socket").arg(socket);
-                }
-                spawn_detached(command)
-            })
-            .await
-            .map_err(|e| Error::failed(format!("join: {e}")))??;
-            results.get().set_status(&status);
-            Ok(())
+    async fn handle(self: Rc<Self>, request: Operation) -> Result<Answer, String> {
+        match request {
+            Operation::Read(resource) => self.read(resource).await,
+            Operation::Invoke(action) => self.invoke(action).await,
         }
+        .map_err(|error| error.0)
     }
+}
 
-    #[allow(
-        clippy::manual_async_fn,
-        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
-    )]
-    fn flatpak(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::FlatpakParams,
-        mut results: app_host::FlatpakResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        async move {
-            let p = params.get()?;
-            let action = p.get_action()?;
-            let app_id = p.get_app_id()?.to_string()?;
-            let reference = p.get_reference()?.to_vec();
-            if reference.len() > 64 * 1024 {
-                return Err(Error::failed("Flatpak reference exceeds 64 KiB".into()));
-            }
-            let status = tokio::task::spawn_blocking(move || {
-                let flatpak = std::path::Path::new("/usr/bin/flatpak");
-                match action {
-                    WireFlatpakAction::Install => {
-                        if reference.is_empty() {
-                            return flatpak_install_flathub_from(flatpak, &app_id);
-                        }
-                        let mut staged = tempfile::NamedTempFile::new()
-                            .map_err(|e| Error::failed(format!("stage Flatpak reference: {e}")))?;
-                        staged
-                            .write_all(&reference)
-                            .map_err(|e| Error::failed(format!("stage Flatpak reference: {e}")))?;
-                        let mut command = std::process::Command::new(flatpak);
-                        command.args(["install", "--user", "--noninteractive", "--"]);
-                        command.arg(staged.path());
-                        run_host_command(command)
-                    }
-                    WireFlatpakAction::Update => flatpak_app_from(flatpak, "update", &app_id),
-                    WireFlatpakAction::Remove => flatpak_remove_from(flatpak, &app_id),
-                }
-            })
-            .await
-            .map_err(|e| Error::failed(format!("join: {e}")))??;
-            results.get().set_status(&status);
-            Ok(())
-        }
-    }
-
-    #[allow(
-        clippy::manual_async_fn,
-        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
-    )]
-    fn remote(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::RemoteParams,
-        mut results: app_host::RemoteResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        async move {
-            let p = params.get()?;
-            let action = p.get_action()?;
-            let name = p.get_name()?.to_string()?;
-            let url = p.get_url()?.to_string()?;
-            let status = tokio::task::spawn_blocking(move || {
-                let flatpak = std::path::Path::new("/usr/bin/flatpak");
-                match action {
-                    WireRemoteAction::Add => flatpak_remote_add_from(flatpak, &name, &url),
-                    WireRemoteAction::Remove => flatpak_remote_delete_from(flatpak, &name),
-                    WireRemoteAction::Enable | WireRemoteAction::Disable => {
-                        flatpak_remote_enabled_from(
-                            flatpak,
-                            &name,
-                            action == WireRemoteAction::Enable,
-                        )
-                    }
-                }
-            })
-            .await
-            .map_err(|e| Error::failed(format!("join: {e}")))??;
-            results.get().set_status(&status);
-            Ok(())
-        }
-    }
-
-    fn install_offer(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::InstallOfferParams,
-        mut results: app_host::InstallOfferResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
+impl AppHostServer {
+    async fn read(&self, resource: Resource) -> Result<Answer, Error> {
         let catalog = Arc::clone(&self.catalog);
-        async move {
-            let params = params.get().map_err(failed)?;
-            let registry = params
-                .get_registry()
-                .map_err(failed)?
-                .to_string()
-                .map_err(failed)?;
-            let expected = InstallExpectation {
-                package_root: parse_id(params.get_expected_root().map_err(failed)?)?,
-                publisher: params
-                    .get_expected_publisher()
-                    .map_err(failed)?
-                    .try_into()
-                    .map_err(|_| Error::failed("publisher key must be 32 bytes".into()))?,
-                app_id: params
-                    .get_app_id()
-                    .map_err(failed)?
-                    .to_string()
-                    .map_err(failed)?,
-                version: params
-                    .get_version()
-                    .map_err(failed)?
-                    .to_string()
-                    .map_err(failed)?,
-                size_bytes: params.get_expected_size_bytes(),
-            };
-            let id = blocking(move || install_offer_from_catalogue(&catalog, &registry, &expected))
+        match resource {
+            Resource::Packages => {
+                let rows = blocking(move || {
+                    Ok(catalog
+                        .list()
+                        .map_err(failed)?
+                        .into_iter()
+                        .filter_map(listed)
+                        .map(|row| entry(&row))
+                        .collect::<Vec<_>>())
+                })
                 .await?;
-            results.get().set_id(id.as_bytes());
-            Ok(())
+                Ok(Answer::Packages(rows))
+            }
+            Resource::Repositories => Ok(Answer::Text(blocking(repositories_json).await?)),
+            Resource::FlatpakStatus => {
+                let status =
+                    blocking(|| flatpak_status_from(std::path::Path::new("/usr/bin/flatpak")))
+                        .await?;
+                Ok(Answer::FlatpakStatus {
+                    available: status.available,
+                    installed: status.installed,
+                    remotes: status.remotes,
+                })
+            }
+            Resource::RegistryCatalogue { registry } => {
+                catalogue_answer(blocking(move || Ok(registry_catalogue(&registry))).await?)
+            }
+            Resource::LastVerifiedCatalogue { registry } => {
+                catalogue_answer(blocking(move || Ok(last_verified_catalogue(&registry))).await?)
+            }
+            Resource::FlatpakCatalogue {
+                remote,
+                user_managed,
+            } => catalogue_answer(
+                blocking(move || {
+                    Ok(flatpak_catalogue_from(
+                        std::path::Path::new("/usr/bin/flatpak"),
+                        &remote,
+                        user_managed,
+                    ))
+                })
+                .await?,
+            ),
+            Resource::RuntimeOffer { registry, runtime } => {
+                if registry.is_empty()
+                    || registry.len() > 256
+                    || registry.chars().any(char::is_control)
+                    || runtime.is_empty()
+                    || runtime.len() > 256
+                    || runtime.chars().any(char::is_control)
+                {
+                    return Err(Error::failed("invalid runtime offer request".into()));
+                }
+                let json = blocking(move || {
+                    let offer = app_cli::runtime_offer(&runtime, &registry).map_err(failed)?;
+                    serde_json::to_string(&offer).map_err(failed)
+                })
+                .await?;
+                if json.len() > 256 * 1024 {
+                    return Err(Error::failed(
+                        "runtime offer exceeds the response limit".into(),
+                    ));
+                }
+                Ok(Answer::Text(json))
+            }
+            Resource::LocalReview { tapp_bytes } => {
+                if tapp_bytes.len() > crate::local_package::MAX_LOCAL_BYTES {
+                    return Err(Error::failed(
+                        "Local package exceeds the file size limit".into(),
+                    ));
+                }
+                let review =
+                    blocking(move || crate::local_package::review(&tapp_bytes).map_err(failed))
+                        .await?;
+                Ok(Answer::Review(
+                    serde_json::to_string(&review).map_err(failed)?,
+                ))
+            }
         }
     }
 
-    #[allow(
-        clippy::manual_async_fn,
-        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per action the host performs"
     )]
-    fn flatpak_status(
-        self: capnp::capability::Rc<Self>,
-        _params: app_host::FlatpakStatusParams,
-        mut results: app_host::FlatpakStatusResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        async move {
-            let status = tokio::task::spawn_blocking(|| {
-                flatpak_status_from(std::path::Path::new("/usr/bin/flatpak"))
-            })
-            .await
-            .map_err(failed)??;
-            let mut result = results.get();
-            result.set_available(status.available);
-            result.set_installed(&status.installed);
-            result.set_remotes(&status.remotes);
-            Ok(())
+    async fn invoke(&self, action: Action) -> Result<Answer, Error> {
+        let (store, catalog) = (Arc::clone(&self.store), Arc::clone(&self.catalog));
+        let max_bytes = self.max_store_bytes;
+        match action {
+            Action::SetPinned { id, pinned } => {
+                let id = PackageId::from_bytes(id);
+                blocking(move || {
+                    let package = find_user(&catalog, id)?;
+                    store.set_pinned(&package.id, pinned).map_err(failed)
+                })
+                .await?;
+                Ok(Answer::Done)
+            }
+            Action::Remove { id } => {
+                let id = PackageId::from_bytes(id);
+                blocking(move || {
+                    let package = find_user(&catalog, id)?;
+                    store.remove(&package.id, false).map_err(failed)?;
+                    collect_after_change(&store, &catalog, max_bytes, &[]);
+                    Ok(())
+                })
+                .await?;
+                Ok(Answer::Done)
+            }
+            Action::InstallLocal {
+                tapp_bytes,
+                reviewed_root,
+                reviewed_archive_hash,
+            } => {
+                if tapp_bytes.len() > crate::local_package::MAX_LOCAL_BYTES {
+                    return Err(Error::failed(
+                        "Local package exceeds the file size limit".into(),
+                    ));
+                }
+                let id = blocking(move || {
+                    let root = crate::local_package::install(
+                        &tapp_bytes,
+                        &reviewed_root,
+                        &reviewed_archive_hash,
+                    )
+                    .map_err(failed)?;
+                    format!("tapp:{root}")
+                        .parse::<PackageId>()
+                        .map_err(|_| Error::failed("Invalid local package root".into()))
+                })
+                .await?;
+                Ok(Answer::Installed(*id.as_bytes()))
+            }
+            Action::Install {
+                tapp_bytes,
+                pinning,
+                expected,
+            } => {
+                let pinning = parse_pinning(pinning);
+                let expected = expectation(expected);
+                let id = blocking(move || {
+                    let installed =
+                        install_verified_tapp(&store, &tapp_bytes, pinning, &expected, None)
+                            .map_err(failed)?;
+                    // Best-effort: the package is already committed.
+                    collect_after_change(&store, &catalog, max_bytes, &[installed.id.as_str()]);
+                    installed
+                        .package_id()
+                        .ok_or_else(|| Error::failed("installed package has no package id".into()))
+                })
+                .await?;
+                Ok(Answer::Installed(*id.as_bytes()))
+            }
+            Action::InstallOffer { registry, expected } => {
+                let expected = expectation(expected);
+                let id =
+                    blocking(move || install_offer_from_catalogue(&catalog, &registry, &expected))
+                        .await?;
+                Ok(Answer::Installed(*id.as_bytes()))
+            }
+            Action::Launch { id } => {
+                let id = PackageId::from_bytes(id);
+                let status = blocking(move || {
+                    let package = find(&catalog, id)?;
+                    let mut command = std::process::Command::new(launcher_bin());
+                    command
+                        .arg("run")
+                        .arg("--manifest")
+                        .arg(&package.manifest_path)
+                        .arg("--payload-root")
+                        .arg(&package.payload_root);
+                    if let Some(socket) = wayland_socket() {
+                        command.arg("--wayland-socket").arg(socket);
+                    }
+                    let status = spawn_detached(command)?;
+                    if package.user_managed() {
+                        store.mark_used(&package.id).map_err(failed)?;
+                    }
+                    Ok(status)
+                })
+                .await?;
+                Ok(Answer::Text(status))
+            }
+            Action::LaunchDesktop { desktop_id } => {
+                let status = blocking(move || {
+                    let mut command = std::process::Command::new(launcher_bin());
+                    command.arg("run-host").arg("--desktop-id").arg(desktop_id);
+                    if let Some(socket) = wayland_socket() {
+                        command.arg("--wayland-socket").arg(socket);
+                    }
+                    spawn_detached(command)
+                })
+                .await?;
+                Ok(Answer::Text(status))
+            }
+            Action::Flatpak {
+                verb,
+                app_id,
+                reference,
+            } => {
+                if reference.len() > 64 * 1024 {
+                    return Err(Error::failed("Flatpak reference exceeds 64 KiB".into()));
+                }
+                let status = blocking(move || {
+                    let flatpak = std::path::Path::new("/usr/bin/flatpak");
+                    match verb {
+                        FlatpakVerb::Install => {
+                            if reference.is_empty() {
+                                return flatpak_install_flathub_from(flatpak, &app_id);
+                            }
+                            let mut staged = tempfile::NamedTempFile::new().map_err(|e| {
+                                Error::failed(format!("stage Flatpak reference: {e}"))
+                            })?;
+                            staged.write_all(&reference).map_err(|e| {
+                                Error::failed(format!("stage Flatpak reference: {e}"))
+                            })?;
+                            let mut command = std::process::Command::new(flatpak);
+                            command.args(["install", "--user", "--noninteractive", "--"]);
+                            command.arg(staged.path());
+                            run_host_command(command)
+                        }
+                        FlatpakVerb::Update => flatpak_app_from(flatpak, "update", &app_id),
+                        FlatpakVerb::Remove => flatpak_remove_from(flatpak, &app_id),
+                    }
+                })
+                .await?;
+                Ok(Answer::Text(status))
+            }
+            Action::Remote { verb, name, url } => {
+                let status = blocking(move || {
+                    let flatpak = std::path::Path::new("/usr/bin/flatpak");
+                    match verb {
+                        RemoteVerb::Add => flatpak_remote_add_from(flatpak, &name, &url),
+                        RemoteVerb::Remove => flatpak_remote_delete_from(flatpak, &name),
+                        RemoteVerb::Enable | RemoteVerb::Disable => {
+                            flatpak_remote_enabled_from(flatpak, &name, verb == RemoteVerb::Enable)
+                        }
+                    }
+                })
+                .await?;
+                Ok(Answer::Text(status))
+            }
+            Action::FlatpakInstallRemote {
+                remote,
+                app_id,
+                branch,
+            } => {
+                require_flatpak_selector(&branch)?;
+                require_flatpak_selector(&remote)?;
+                require_flatpak_selector(&app_id)?;
+                let status = blocking(move || {
+                    flatpak_install_remote_from(
+                        std::path::Path::new("/usr/bin/flatpak"),
+                        &remote,
+                        &app_id,
+                        &branch,
+                    )
+                })
+                .await?;
+                Ok(Answer::Text(status))
+            }
         }
     }
+}
 
-    #[allow(
-        clippy::manual_async_fn,
-        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
-    )]
-    fn repositories(
-        self: capnp::capability::Rc<Self>,
-        _params: app_host::RepositoriesParams,
-        mut results: app_host::RepositoriesResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        async move {
-            let json = tokio::task::spawn_blocking(repositories_json)
-                .await
-                .map_err(|e| Error::failed(format!("join: {e}")))??;
-            results.get().set_json(&json);
-            Ok(())
-        }
+fn expectation(expected: Expected) -> InstallExpectation {
+    InstallExpectation {
+        package_root: PackageId::from_bytes(expected.root),
+        publisher: expected.publisher,
+        app_id: expected.app_id,
+        version: expected.version,
+        size_bytes: expected.size_bytes,
     }
-    async fn runtime_offer(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::RuntimeOfferParams,
-        mut results: app_host::RuntimeOfferResults,
-    ) -> Result<(), Error> {
-        let parameters = params.get().map_err(failed)?;
-        let registry = parameters
-            .get_registry()
-            .map_err(failed)?
-            .to_string()
-            .map_err(failed)?;
-        let runtime = parameters
-            .get_runtime()
-            .map_err(failed)?
-            .to_string()
-            .map_err(failed)?;
-        if registry.is_empty()
-            || registry.len() > 256
-            || registry.chars().any(char::is_control)
-            || runtime.is_empty()
-            || runtime.len() > 256
-            || runtime.chars().any(char::is_control)
-        {
-            return Err(Error::failed("invalid runtime offer request".into()));
-        }
-        let json = tokio::task::spawn_blocking(move || {
-            let offer = app_cli::runtime_offer(&runtime, &registry).map_err(failed)?;
-            serde_json::to_string(&offer).map_err(failed)
-        })
-        .await
-        .map_err(failed)??;
-        if json.len() > 256 * 1024 {
-            return Err(Error::failed(
-                "runtime offer exceeds the response limit".into(),
-            ));
-        }
-        results.get().set_offer(&json);
-        Ok(())
-    }
+}
 
-    #[allow(
-        clippy::manual_async_fn,
-        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
-    )]
-    fn registry_catalogue(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::RegistryCatalogueParams,
-        mut results: app_host::RegistryCatalogueResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        async move {
-            let registry = params
-                .get()
-                .map_err(failed)?
-                .get_registry()
-                .map_err(failed)?
-                .to_string()
-                .map_err(failed)?;
-            let read = tokio::task::spawn_blocking(move || registry_catalogue(&registry))
-                .await
-                .map_err(failed)?;
-            set_catalogue(read, |rows, refusal, detail| {
-                let mut out = results.get();
-                out.set_entries(rows);
-                out.set_refusal(refusal);
-                out.set_detail(detail);
-            })
+/// A catalogue read's outcome as the wire answers it: the rows, or the
+/// refusal with its detail; anything else fails the call.
+fn catalogue_answer(read: Result<String, ReadError>) -> Result<Answer, Error> {
+    match read {
+        Ok(rows) => Ok(Answer::Catalogue(Catalogue::Rows(rows))),
+        Err(ReadError::Refused(refusal, detail)) => {
+            Ok(Answer::Catalogue(Catalogue::Refused { refusal, detail }))
         }
-    }
-
-    #[allow(
-        clippy::manual_async_fn,
-        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
-    )]
-    fn last_verified_catalogue(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::LastVerifiedCatalogueParams,
-        mut results: app_host::LastVerifiedCatalogueResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        async move {
-            let registry = params
-                .get()
-                .map_err(failed)?
-                .get_registry()
-                .map_err(failed)?
-                .to_string()
-                .map_err(failed)?;
-            let read = tokio::task::spawn_blocking(move || last_verified_catalogue(&registry))
-                .await
-                .map_err(failed)?;
-            set_catalogue(read, |rows, refusal, detail| {
-                let mut out = results.get();
-                out.set_entries(rows);
-                out.set_refusal(refusal);
-                out.set_detail(detail);
-            })
-        }
-    }
-    #[allow(
-        clippy::manual_async_fn,
-        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
-    )]
-    fn flatpak_catalogue(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::FlatpakCatalogueParams,
-        mut results: app_host::FlatpakCatalogueResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        async move {
-            let p = params.get().map_err(failed)?;
-            let remote = p
-                .get_remote()
-                .map_err(failed)?
-                .to_string()
-                .map_err(failed)?;
-            let user_managed = p.get_user_managed();
-            let rows = tokio::task::spawn_blocking(move || {
-                flatpak_catalogue_from(
-                    std::path::Path::new("/usr/bin/flatpak"),
-                    &remote,
-                    user_managed,
-                )
-            })
-            .await
-            .map_err(failed)?;
-            set_catalogue(rows, |rows, refusal, detail| {
-                let mut out = results.get();
-                out.set_rows(rows);
-                out.set_refusal(refusal);
-                out.set_detail(detail);
-            })
-        }
-    }
-
-    #[allow(
-        clippy::manual_async_fn,
-        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
-    )]
-    fn flatpak_install_remote(
-        self: capnp::capability::Rc<Self>,
-        params: app_host::FlatpakInstallRemoteParams,
-        mut results: app_host::FlatpakInstallRemoteResults,
-    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        async move {
-            let p = params.get().map_err(failed)?;
-            let remote = p
-                .get_remote()
-                .map_err(failed)?
-                .to_string()
-                .map_err(failed)?;
-            let app_id = p
-                .get_app_id()
-                .map_err(failed)?
-                .to_string()
-                .map_err(failed)?;
-            let branch = p
-                .get_branch()
-                .map_err(failed)?
-                .to_string()
-                .map_err(failed)?;
-            require_flatpak_selector(&branch)?;
-            require_flatpak_selector(&remote)?;
-            require_flatpak_selector(&app_id)?;
-            let status = tokio::task::spawn_blocking(move || {
-                flatpak_install_remote_from(
-                    std::path::Path::new("/usr/bin/flatpak"),
-                    &remote,
-                    &app_id,
-                    &branch,
-                )
-            })
-            .await
-            .map_err(failed)??;
-            results.get().set_status(&status);
-            Ok(())
-        }
+        Err(ReadError::Failed(error)) => Err(error),
     }
 }
 

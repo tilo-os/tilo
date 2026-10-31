@@ -7,6 +7,7 @@
 //! say whether the sheet is up) it lends the app as a service of plain data
 //! in and requests out ([`ui::application::HostContext::lend`]).
 
+pub mod dictation;
 pub mod directory;
 pub mod display_confirm;
 pub mod displays;

@@ -352,7 +352,7 @@ impl PendingManagedConnection {
             return Err(error);
         }
         proof.revalidate(proof.binding(), process)?;
-        // The SDK cannot start Cap'n Proto until after the barrier and recheck.
+        // The SDK cannot start speaking the wire until after the barrier and recheck.
         if let Err(error) = self.socket.write_all(&[1]) {
             if let Ok(mut records) = registry.lock() {
                 records.remove(&process);

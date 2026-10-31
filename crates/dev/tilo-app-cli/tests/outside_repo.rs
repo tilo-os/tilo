@@ -112,7 +112,8 @@ fn scaffold(checkout: &Path, parent: &Path, app: &Path) {
 
 /// A button with an imperative callback and no action behind it is
 /// invisible to scripts, agents and assistive tools: `tilo-app test` must
-/// fail on it and name it, and pass again once it is gone.
+/// fail on it and name it as a control with no action binding, and pass
+/// again once it is gone.
 #[cfg(test)]
 fn an_unbound_control_fails_the_audit(app: &Path) {
     let source = app.join("src/lib.rs");
@@ -144,7 +145,7 @@ fn an_unbound_control_fails_the_audit(app: &Path) {
     assert!(
         text.contains("initial_native_app_contract_is_certified")
             && text.contains("\"forget\"")
-            && text.contains("legacy-callback"),
+            && text.contains("missing-action-binding"),
         "the failure must be the audit naming the control:\n{text}"
     );
 }

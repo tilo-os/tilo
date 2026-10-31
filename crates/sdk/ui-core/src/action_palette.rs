@@ -70,9 +70,13 @@ const SCOPE_PREFIX: &str = "\u{1}scope\u{1f}";
 const SCOPES_KIND: &str = "Search in";
 
 mod api;
+mod history;
+mod host;
+mod rows;
 mod window_place;
 pub use api::{ACTION_PALETTE, MakeActionPalette, builtin_action_palette};
 pub(crate) use api::{ActionPaletteBox, make_action_palette};
+pub use rows::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome, RowFace};
 pub use window_place::placement;
 
 /// The window a palette was asked for from, when a host lays several app
@@ -158,6 +162,21 @@ pub struct SearchAdvance {
     pub added: usize,
     pub pending: bool,
     pub generation: u64,
+}
+
+/// The palette's query field, as text committed from outside the keyboard
+/// (an input method's, or a dictation's) may write into it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QueryField {
+    /// Fingerprint of the field's text and selection
+    /// ([`crate::ime::edit_fingerprint`]): any edit or caret move since moves
+    /// it, so committed text can tell whether the field is still the one it
+    /// was meant for.
+    pub fingerprint: [u8; 32],
+    /// The field takes a secret, so words spoken elsewhere never go into it.
+    pub secret: bool,
+    /// The field takes more than one line.
+    pub multiline: bool,
 }
 
 /// How activating one row resolves.
@@ -344,9 +363,17 @@ struct ProviderRowValidation {
     permissions: Option<crate::permissions::PermissionContext>,
 }
 
+/// The value a host row is collecting in the field, when one is: which row
+/// and what kind of value.
+struct HostStep {
+    id: String,
+    kind: ArgumentKind,
+}
+
 /// The unified Ctrl+K palette: a [`SearchField`] over a [`SearchResultsView`],
 /// fed by the focused app's resource/action tree plus any folded-in
 /// [`SearchProvider`]s.
+#[crate::component::not_a_component(system, "the palette is the system's")]
 pub struct ActionPalette {
     field: SearchField,
     results: SearchResultsView,
@@ -439,6 +466,66 @@ pub struct ActionPalette {
     scrim: Option<Rect>,
     /// Where the pointer last was, for a press on the scrim.
     scrim_pointer: Point,
+    /// The rows a host fed, in the order it gave them; `Some` while the
+    /// palette is over a host's own search ([`Self::rows`]).
+    host_rows: Option<Vec<CommandEntry>>,
+    /// The rows shown, by index into `host_rows`: every one, or those the
+    /// query matches while the host lets the palette narrow.
+    host_visible: Vec<usize>,
+    /// The host rows' labels and descriptions, indexed while they stay the
+    /// same.
+    host_index: ListIndex,
+    /// The host does its own matching, so the query does not narrow its rows.
+    bypass_fuzzy: bool,
+    /// More results are still coming ([`Self::set_searching`]).
+    searching: bool,
+    /// [`crate::search::engine_generation`] the host rows were ranked with.
+    ranked_generation: u64,
+    /// What the field says while nothing is typed; a host names the source
+    /// it searches ("Search files…").
+    query_placeholder: String,
+    /// `Some` while a host step collects a value in the field.
+    host_step: Option<HostStep>,
+    /// The query, kept aside while a host step uses the field.
+    saved_host_query: String,
+    /// The chosen host row, set on activation, drained by
+    /// [`Self::take_outcome`].
+    outcome: Option<CommandOutcome>,
+    /// A ←/→ step asked of the selected adjustable row: its id and -1 or 1.
+    adjustment: Option<(String, i8)>,
+    /// A host step's confirmed value, until the host takes it.
+    submitted_argument: Option<String>,
+    /// A host step was backed out of with Escape, until the host notices.
+    argument_cancelled: bool,
+    /// Backspace at the start of the field took the token away, until the
+    /// host notices ([`Self::take_scope_token_removed`]).
+    scope_token_removed: bool,
+    /// What pressing the token does, when it is a control: its accessible
+    /// name. `None`: Backspace alone removes it.
+    scope_token_action: Option<String>,
+    /// Show the query field alone while nothing is typed, for a host that
+    /// opens search over content the person came to look at.
+    field_only_while_empty: bool,
+    /// The card reserves the band its host paints its own controls into.
+    band_shown: bool,
+    /// Chip rows the host's band is reserving: the palette doesn't know how
+    /// many controls the host has, so this is negotiated, not fixed.
+    band_rows: usize,
+    /// Tallest the host rows' list may grow before it scrolls; the host knows
+    /// the display, the palette does not.
+    max_list_height: Option<f64>,
+    /// The widest the card may be: the room the host has for it.
+    max_width: Option<f64>,
+    /// The modifiers held now, so a selected row can show what its
+    /// alternative activation would do before it is chosen.
+    held: winit::keyboard::ModifiersState,
+    /// The keycap notation the host's rows are drawn with.
+    platform: crate::platform::PlatformConventions,
+    /// The theme's text and interface scales, as last laid out.
+    text_scale: f64,
+    ui_scale: f64,
+    /// The card's own composition changed: a host asks for a new frame.
+    structure_dirty: bool,
 }
 
 enum PaletteFieldSource {
@@ -643,6 +730,31 @@ impl ActionPalette {
             appear: crate::motion::Appearing::closed(),
             scrim: None,
             scrim_pointer: Point::new(f64::NAN, f64::NAN),
+            host_rows: None,
+            host_visible: Vec::new(),
+            host_index: ListIndex::default(),
+            bypass_fuzzy: false,
+            searching: false,
+            ranked_generation: crate::search::engine_generation(),
+            query_placeholder: crate::i18n!("palette-placeholder"),
+            host_step: None,
+            saved_host_query: String::new(),
+            outcome: None,
+            adjustment: None,
+            submitted_argument: None,
+            argument_cancelled: false,
+            scope_token_removed: false,
+            scope_token_action: None,
+            field_only_while_empty: false,
+            band_shown: false,
+            band_rows: 1,
+            max_list_height: None,
+            max_width: None,
+            held: winit::keyboard::ModifiersState::empty(),
+            platform: crate::platform::PlatformConventions::default(),
+            text_scale: 1.0,
+            ui_scale: 1.0,
+            structure_dirty: false,
         }
     }
 
@@ -842,6 +954,9 @@ impl ActionPalette {
         format!("ordinary-confirmation:{}:{part}", self.request_generation)
     }
     fn drain_command(&mut self, doc: &mut crate::widget::Edits<'_>, path: &ObjId) {
+        // Confirm and Cancel publish their press; the palette answers it
+        // here, before reading the command the answer sets.
+        crate::widget::controls::start_pending_control_invocations(&mut self.controls, doc, path);
         match self.command.take() {
             Some(true) if self.confirm.is_some() => self.accept_confirmation(),
             Some(true) => {
@@ -886,6 +1001,27 @@ impl ActionPalette {
     ) -> bool {
         if !self.is_presented() {
             return false;
+        }
+        if self.hosts_rows() {
+            use crate::widget::TaffyTreeExt as _;
+            let mut handled = false;
+            let mut focus_target = None;
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.leaf_node(Style::default());
+            let host = self.route_host_event(
+                event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &modifiers,
+                    state: doc.reborrow(),
+                    path,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            return host || handled;
         }
         if self.handle_key(event, &modifiers, doc, path) {
             return true;
@@ -955,178 +1091,6 @@ impl ActionPalette {
         true
     }
 
-    pub(crate) fn suspend_for_history(&mut self) {
-        self.history_suspended = true;
-        self.request_generation = uuid::Uuid::new_v4();
-    }
-
-    pub(crate) fn history_has_custody(&self) -> bool {
-        self.history_resolution_error.is_some()
-            || self
-                .pending_dispatch
-                .as_ref()
-                .is_some_and(|pending| pending.history_target.is_some())
-            || self
-                .confirm
-                .as_ref()
-                .is_some_and(|confirm| confirm.pending.history_target.is_some())
-            || self
-                .arg
-                .as_ref()
-                .is_some_and(|arg| arg.history_target.is_some())
-    }
-
-    pub(crate) fn history_pending_bound_target(
-        &self,
-    ) -> Option<crate::bound_dispatch::BoundActionTarget> {
-        self.pending_dispatch
-            .as_ref()
-            .and_then(|pending| pending.bound.clone())
-            .or_else(|| {
-                self.confirm
-                    .as_ref()
-                    .and_then(|confirm| confirm.pending.bound.clone())
-            })
-            .or_else(|| self.arg.as_ref().and_then(|arg| arg.bound.clone()))
-    }
-
-    pub(crate) fn history_pending_address(&self) -> Option<tilo_actions::ActionAddress> {
-        self.pending_dispatch
-            .as_ref()
-            .map(|pending| pending.address.clone())
-            .or_else(|| {
-                self.confirm
-                    .as_ref()
-                    .map(|state| state.pending.address.clone())
-            })
-            .or_else(|| self.arg.as_ref().map(|state| state.address.clone()))
-    }
-
-    pub(crate) fn history_pending_invocation(&self) -> Option<tilo_actions::ControlInvocation> {
-        self.pending_dispatch
-            .as_ref()
-            .and_then(PendingOperation::control_invocation)
-            .or_else(|| {
-                self.confirm
-                    .as_ref()
-                    .and_then(|state| state.pending.control_invocation())
-            })
-    }
-
-    pub(crate) fn history_pending_continuation_arguments(
-        &self,
-    ) -> Option<crate::bound_dispatch::ControlContinuationArguments> {
-        self.pending_dispatch
-            .as_ref()
-            .and_then(PendingOperation::continuation_arguments)
-            .or_else(|| {
-                self.confirm
-                    .as_ref()
-                    .and_then(|state| state.pending.continuation_arguments())
-            })
-    }
-
-    pub(crate) fn history_exact_capture_request(
-        &self,
-    ) -> Option<(
-        crate::bound_dispatch::local_target::LocalResourceTarget,
-        tilo_actions::ControlInvocation,
-        crate::bound_dispatch::ControlContinuationArguments,
-    )> {
-        let pending = self
-            .pending_dispatch
-            .as_ref()
-            .or_else(|| self.confirm.as_ref().map(|state| &state.pending))?;
-        if pending.history_witness.is_some() {
-            return None;
-        }
-        Some((
-            pending.history_target.clone()?,
-            pending.control_invocation()?,
-            pending.continuation_arguments()?,
-        ))
-    }
-
-    pub(crate) fn retain_history_exact_witness(
-        &mut self,
-        witness: Result<crate::bound_dispatch::ControlWitness, String>,
-    ) {
-        let identity = witness
-            .as_ref()
-            .map(crate::bound_dispatch::ControlWitness::identity)
-            .cloned()
-            .map_err(Clone::clone);
-        if let Some(pending) = self.pending_dispatch.as_mut() {
-            pending.history_identity = Some(identity);
-            pending.history_witness = Some(witness);
-        } else if let Some(confirm) = self.confirm.as_mut() {
-            confirm.pending.history_identity = Some(identity);
-            confirm.pending.history_witness = Some(witness);
-        }
-    }
-
-    pub(crate) fn retain_history_custody(
-        &mut self,
-        target: crate::bound_dispatch::local_target::LocalResourceTarget,
-        identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
-        witness: Option<Result<crate::bound_dispatch::ControlWitness, String>>,
-    ) {
-        // An unfinished request gets one baseline, including failed evidence.
-        if self.history_has_custody() {
-            return;
-        }
-        if let Some(pending) = self.pending_dispatch.as_mut() {
-            pending.history_target = Some(target);
-            pending.history_identity = identity;
-            pending.history_witness = witness;
-        } else if let Some(confirm) = self.confirm.as_mut() {
-            confirm.pending.history_target = Some(target);
-            confirm.pending.history_identity = identity;
-            confirm.pending.history_witness = witness;
-        } else if let Some(arg) = self.arg.as_mut() {
-            arg.history_target = Some(target);
-            arg.history_draft_identity = identity;
-        }
-    }
-
-    pub(crate) fn retain_history_resolution_error(&mut self, reason: impl Into<String>) {
-        if !self.history_has_custody() {
-            self.history_resolution_error = Some(reason.into());
-        }
-    }
-
-    pub(crate) fn retain_history_refusal(
-        &mut self,
-        pending: PendingOperation,
-        reason: impl Into<String>,
-    ) {
-        let reason = reason.into();
-        self.pending_dispatch = Some(pending);
-        self.history_review_required = true;
-        self.open = true;
-        self.search_announcement = Some(reason);
-    }
-
-    pub(crate) fn resume_after_history(&mut self) {
-        self.history_suspended = false;
-        let Some(mut pending) = self
-            .pending_dispatch
-            .take()
-            .or_else(|| self.confirm.take().map(|state| state.pending))
-        else {
-            return;
-        };
-        pending.confirmation_evidence = serde_json::json!({});
-        if matches!(pending.confirmation, ConfirmationPolicy::None) {
-            self.pending_dispatch = Some(pending);
-            self.history_review_required = true;
-            self.open = true;
-            return;
-        }
-        self.ask_confirmation(pending);
-        self.open = true;
-    }
-
     #[cfg(test)]
     pub(crate) fn is_history_suspended(&self) -> bool {
         self.history_suspended
@@ -1159,6 +1123,10 @@ impl ActionPalette {
     }
 
     pub fn open(&mut self) {
+        if self.hosts_rows() {
+            self.open_host();
+            return;
+        }
         self.history_resolution_error = None;
         self.open = true;
         self.arg = None;
@@ -1167,13 +1135,13 @@ impl ActionPalette {
         self.pending_dispatch = None;
         self.history_review_required = false;
         self.pending_nav = None;
-        self.field = self.query_field();
+        self.field = self.new_query_field();
         self.focus_part(0);
         self.rebuild("");
     }
 
     /// The query field, showing the scope the palette is narrowed to.
-    fn query_field(&self) -> SearchField {
+    fn new_query_field(&self) -> SearchField {
         let mut field = self
             .field_source
             .build()
@@ -1258,6 +1226,10 @@ impl ActionPalette {
     }
 
     pub fn close(&mut self) {
+        if self.hosts_rows() {
+            self.close_host();
+            return;
+        }
         self.history_resolution_error = None;
         self.pending_dispatch = None;
         self.open = false;
@@ -1268,6 +1240,9 @@ impl ActionPalette {
     }
 
     pub fn query(&self) -> &str {
+        if self.hosts_rows() {
+            return self.host_query();
+        }
         self.field.value()
     }
 
@@ -1277,6 +1252,10 @@ impl ActionPalette {
     /// While the palette asks for a name to be typed, this is what stands
     /// in its plain field instead: it searches nothing.
     pub fn set_query(&mut self, q: &str) {
+        if self.hosts_rows() {
+            self.set_host_query(q);
+            return;
+        }
         if let Some(state) = self.confirm.as_mut()
             && state.typed()
         {
@@ -1288,6 +1267,58 @@ impl ActionPalette {
         }
         self.field.set_query(q);
         self.rebuild(q);
+    }
+
+    /// The palette's query field while it takes typing, as text committed
+    /// from outside the keyboard may write into it: the field a dictation
+    /// binds before it listens. `None` while the palette is closed, while
+    /// something else on it takes the keyboard, and while an input method
+    /// composes.
+    pub fn query_field(&self, key: &[u8; 32]) -> Option<QueryField> {
+        if !self.is_presented() {
+            return None;
+        }
+        let content = self.field.ime_content()?;
+        if !self.field.is_focused() || self.field.is_composing() {
+            return None;
+        }
+        let (anchor, focus) = self.field.selection_anchor_focus_or_caret();
+        Some(QueryField {
+            fingerprint: crate::ime::edit_fingerprint(self.field.value(), anchor, focus, key),
+            secret: content.is_secret(),
+            multiline: self.field.ime_multiline(),
+        })
+    }
+
+    /// Write committed text (an input method's, or a dictation's) into the
+    /// query field at the caret, as the input method's commit does, and
+    /// search what it now holds. Returns whether the field took the text:
+    /// it does not while it asks for a typed name, takes a secret, or is
+    /// not focused.
+    #[must_use]
+    pub fn commit_query_text(&mut self, text: &str) -> bool {
+        if !self.is_presented() || !self.field.is_focused() {
+            return false;
+        }
+        if self
+            .field
+            .ime_content()
+            .is_some_and(|content| content.is_secret())
+        {
+            return false;
+        }
+        self.field.insert_at_cursor(text);
+        self.field.take_dirty();
+        // What typing into the field does next: a host-driven palette narrows
+        // the rows it was fed (a step keeps its query aside), a plain one
+        // searches its own.
+        if self.hosts_rows() {
+            self.committed_host_text();
+            return true;
+        }
+        let query = self.field.value().to_owned();
+        self.rebuild(&query);
+        true
     }
 
     /// The labels currently shown, in display order (for tests / diagnostics).
@@ -1753,6 +1784,9 @@ impl ActionPalette {
     pub fn set_cursor(&mut self, index: usize) {
         self.missing_selection = None;
         self.results.set_cursor(index);
+        if self.hosts_rows() {
+            self.sync_list();
+        }
     }
 
     /// Put the row that acts on `resource` under the cursor, so pressing
@@ -1797,11 +1831,15 @@ impl ActionPalette {
     }
 
     pub fn in_argument_mode(&self) -> bool {
-        self.arg.is_some() || self.confirm.is_some()
+        self.arg.is_some() || self.confirm.is_some() || self.in_host_step()
     }
 
     /// Activate the highlighted row, exactly as pressing Enter would.
     pub fn activate_selected(&mut self) {
+        if self.hosts_rows() {
+            self.activate_host_selected();
+            return;
+        }
         let Some(id) = self.results.selected_action_id().map(str::to_string) else {
             return;
         };
@@ -3113,7 +3151,7 @@ impl ActionPalette {
         self.confirm = None;
         self.reset_controls();
         // Restore the query field and result set.
-        self.field = self.query_field();
+        self.field = self.new_query_field();
         self.focus_part(0);
         self.rebuild("");
     }
@@ -3251,10 +3289,15 @@ impl Widget for ActionPalette {
     fn name(&self) -> &str {
         "ActionPalette"
     }
+    /// The registry key a host resolves the card by: the query field's rect,
+    /// as the shell's overlay hosts look the search card up.
     fn test_id(&self) -> Option<&str> {
+        if self.hosts_rows() {
+            return Some("command_palette_input");
+        }
         Some("action-palette")
     }
-    fn resets_callback_binding(&self) -> bool {
+    fn resets_binding_inheritance(&self) -> bool {
         true
     }
     fn is_focusable(&self) -> bool {
@@ -3275,6 +3318,12 @@ impl Widget for ActionPalette {
                     .any(|control| control.is_focused()))
     }
     fn set_focus(&mut self, focused: bool) {
+        if self.hosts_rows() {
+            self.open = focused;
+            self.results.set_focused(focused);
+            self.sync_field_focus();
+            return;
+        }
         if focused {
             if !self.is_focused() {
                 self.focus_part(self.confirm.as_ref().map_or(0, ConfirmState::first_part));
@@ -3302,16 +3351,50 @@ impl Widget for ActionPalette {
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
-        _: &Theme,
+        theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         use crate::widget::TaffyTreeExt;
+        if self.hosts_rows() {
+            self.host_prepare(theme);
+            // `desired_size` is the single source of truth so a hand-placed
+            // card (`set_rect`) and a laid-out one agree.
+            let (width, height) = self.desired_size();
+            let style = Style {
+                size: Size::from_lengths(width as f32, height as f32),
+                ..Style::default()
+            };
+            return tree.widget_leaf(style, nodes, self);
+        }
         let node = tree.leaf_node(Style {
             position: taffy::Position::Absolute,
             ..Style::default()
         });
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+    fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
+        if !self.hosts_rows() {
+            return;
+        }
+        self.rect = crate::widget::layout_rect(tree, node, origin);
+        self.sync_list();
+    }
+    fn take_structure_dirty(&mut self) -> bool {
+        if !self.hosts_rows() {
+            return false;
+        }
+        std::mem::take(&mut self.structure_dirty)
+    }
+    /// Sized by its style alone: nothing a host row changes needs taffy to
+    /// measure it again.
+    fn is_layout_dirty(&self) -> bool {
+        !self.hosts_rows()
+    }
+    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        if self.hosts_rows() {
+            self.set_host_platform(conventions);
+        }
     }
     fn get_rect(&self) -> Rect {
         self.rect
@@ -3324,6 +3407,10 @@ impl Widget for ActionPalette {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if self.hosts_rows() {
+            self.draw_host(scene, transform, text, theme, presence);
+            return;
+        }
         ActionPalette::draw(self, scene, transform, text, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -3335,7 +3422,47 @@ impl Widget for ActionPalette {
             ctx.path,
         );
     }
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.hosts_rows() && self.is_open() && self.row_at(point).is_some() {
+            return Some(winit::window::CursorIcon::Pointer);
+        }
+        None
+    }
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.hosts_rows()
+            .then(|| self.field.ime_cursor_rect())
+            .flatten()
+    }
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        self.hosts_rows()
+            .then(|| self.field.ime_content())
+            .flatten()
+    }
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        if !self.hosts_rows() {
+            return None;
+        }
+        self.host_ime_fingerprint(key)
+    }
+    fn accessibility_hidden(&self) -> bool {
+        self.hosts_rows() && !self.is_open()
+    }
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        if !self.hosts_rows() {
+            return None;
+        }
+        self.host_synthetic_rect(path)
+    }
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        if !self.hosts_rows() {
+            return false;
+        }
+        self.host_focus_synthetic(path)
+    }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        if self.hosts_rows() {
+            return Some(self.host_accessibility());
+        }
         if !self.is_presented() {
             return None;
         }
@@ -3425,6 +3552,9 @@ impl Widget for ActionPalette {
         doc: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
+        if self.hosts_rows() {
+            return self.host_semantic_action(target, action, doc, path);
+        }
         if !self.is_presented() {
             return false;
         }

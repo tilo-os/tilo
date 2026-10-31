@@ -1,0 +1,36 @@
+[package]
+name = "tilo-dictation"
+description = "Dictation in the session: a local recognizer over the microphone, allowed once per dictation by the person, whose text is committed into the field they were in"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "tilo_dictation"
+
+[dependencies]
+agent-provider-config = { path = "../../agent/provider-config" }
+blake3.workspace = true
+bounded-command = { path = "../../system/bounded-command" }
+media = { package = "tilo-media", path = "../../platform/tilo-media" }
+serde.workspace = true
+serde_json.workspace = true
+settings-store = { path = "../../system/settings-store", features = ["watch"] }
+tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settings" }
+tilo-actions = { path = "../../collab/actions" }
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-service = { path = "../service" }
+tracing.workspace = true
+zeroize.workspace = true
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true

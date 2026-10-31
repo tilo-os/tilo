@@ -95,10 +95,13 @@ account-custody = { path = "../../crates/system/account-custody" }
 # Provider metadata is shared with the headless agent runner. This dependency
 # contains no HTTP client and no secret values.
 agent-provider-config = { path = "../../crates/agent/provider-config", features = ["model"] }
-# The audio graph client: enumerate the PipeWire/WirePlumber node graph and
-# route per-application streams. The Sound pane drives audio routing
-# through it (default features only — no gstreamer decode stack pulled in).
+# The bounded audio diagnostics the Sound pane starts (a channel test, a
+# microphone and an output meter), and the event-sound themes it lists.
 media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
+# The session's `sound` resource: the reading the Sound pane shows and the
+# actions its controls take. Without the `service` feature: the pane needs
+# the resource's spec and types, the session runs the service.
+tilo-audio-service = { path = "../../crates/session/audio-service", default-features = false }
 # Trait passes (`sync`, `build_layout`, `handle_event`) mention these crates
 # in their signatures; we re-export them at the same versions the sibling
 # native apps pin so a shared `target/` cache hits across crates.

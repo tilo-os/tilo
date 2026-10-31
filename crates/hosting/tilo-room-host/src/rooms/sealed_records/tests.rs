@@ -182,12 +182,98 @@ async fn retained_writes(
         .collect()
 }
 
-/// A record its members wrote sealed for a long time is folded by the node
-/// that takes part in its channel: a newcomer is sent one sealed snapshot and the
-/// writes since, not every write ever made, and they open to the record as
-/// its members wrote it.
+/// A member's own client to `relay`'s host, subscribed to `workspace_id`'s
+/// room, as the member's phone or laptop reaches it.
+async fn subscribed_member(
+    relay: &crate::rooms::fixtures::TestHost,
+    key: &ed25519_dalek::SigningKey,
+    cert: DeviceCert,
+    workspace_id: u64,
+) -> crate::RelayClient {
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+        .relay_mode(iroh::RelayMode::Disabled)
+        .bind()
+        .await
+        .unwrap();
+    let client = crate::RelayClient::connect_to_pinned_host(
+        endpoint,
+        relay.node_addr(),
+        cert,
+        key.clone(),
+        tilo_user_identity::RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    client
+        .send(crate::Envelope::Subscribe { workspace_id })
+        .unwrap();
+    tilo_test_env::within("the member's subscription", async {
+        while !matches!(client.recv().await, Some(crate::Envelope::Ready { .. })) {}
+    })
+    .await;
+    client
+}
+
+/// Send `delta`, `member`'s write, to the host `client` reaches.
+fn send_members_delta(
+    client: &crate::RelayClient,
+    workspace_id: u64,
+    member: &ed25519_dalek::SigningKey,
+    delta: &crate::CoeditPayload,
+) {
+    client
+        .send(crate::Envelope::Delta {
+            workspace_id,
+            author_device_public_key: member.verifying_key().to_bytes(),
+            authored_at_ns: tilo_clock::unix_now_ns(),
+            delta: delta.encode().unwrap(),
+            signature: [0; 64],
+        })
+        .unwrap();
+}
+
+/// `member` writes `line` as the record's title and sends it to the host
+/// sealed, as the member's own writes travel.
+fn seal_and_send_title(
+    member: &SealingMember,
+    client: &crate::RelayClient,
+    room: &str,
+    workspace_id: u64,
+    key: &ed25519_dalek::SigningKey,
+    line: &str,
+) {
+    let ((), message) = member.seal(room, |doc| {
+        doc.put(ROOT, "title", line).unwrap();
+        doc.commit_edit("fixture", "title");
+    });
+    let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
+    send_members_delta(
+        client,
+        workspace_id,
+        key,
+        &crate::CoeditPayload::RetainedDelta {
+            channel,
+            body: postcard::to_stdvec(&message).unwrap(),
+        },
+    );
+}
+
+/// What a newcomer opening `held` in order reads as the record's title.
+fn newcomer_reads(member: &SealingMember, held: &[SignedOp]) -> Option<String> {
+    let mut newcomer = automerge::AutoCommit::new();
+    for op in held {
+        member.open_into(op, &mut newcomer);
+    }
+    title(&newcomer.save())
+}
+
+/// A record its members wrote sealed for a long time is folded by its
+/// member device: a newcomer is sent the member's checkpoint and the writes
+/// since, not every write ever made, and they open to the record as its
+/// members wrote it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_node_folds_the_sealed_history_a_newcomer_replays() {
+async fn a_members_checkpoint_folds_what_a_newcomer_replays() {
     const WRITES: usize = 400;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
@@ -203,67 +289,61 @@ async fn a_node_folds_the_sealed_history_a_newcomer_replays() {
         .await
         .unwrap();
     let member = SealingMember::join(&rooms, &room, (APP, RECORD), member_key.clone()).await;
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&member_key.to_bytes()))
-        .relay_mode(iroh::RelayMode::Disabled)
-        .bind()
-        .await
-        .unwrap();
-    let client = crate::RelayClient::connect_to_pinned_host(
-        endpoint,
-        relay.node_addr(),
-        member_cert,
-        member_key.clone(),
-        tilo_user_identity::RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    client
-        .send(crate::Envelope::Subscribe { workspace_id })
-        .unwrap();
-    tilo_test_env::within("the member's subscription", async {
-        while !matches!(client.recv().await, Some(crate::Envelope::Ready { .. })) {}
+    let client = subscribed_member(&relay, &member_key, member_cert, workspace_id).await;
+    for index in 0..WRITES {
+        seal_and_send_title(
+            &member,
+            &client,
+            &room,
+            workspace_id,
+            &member_key,
+            &format!("line {index}"),
+        );
+    }
+    tilo_test_env::within("the node to follow the member's writes", async {
+        while readable(&rooms, &room).await.as_deref() != Some("line 399") {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
     })
     .await;
-    for index in 0..WRITES {
-        let ((), message) = member.seal(&room, |doc| {
-            doc.put(ROOT, "title", format!("line {index}")).unwrap();
-            doc.commit_edit("fixture", "title");
-        });
-        let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
-        client
-            .send(crate::Envelope::Delta {
-                workspace_id,
-                author_device_public_key: member_key.verifying_key().to_bytes(),
-                authored_at_ns: tilo_clock::unix_now_ns(),
-                delta: crate::CoeditPayload::RetainedDelta {
-                    channel,
-                    body: postcard::to_stdvec(&message).unwrap(),
-                }
-                .encode()
-                .unwrap(),
-                signature: [0; 64],
-            })
-            .unwrap();
+    // The member's engine folds the history it holds into one checkpoint
+    // and publishes it in place of every write it covers.
+    let compaction = member.compact(&rooms, &room).await;
+    let (channel, _) = neighbour_wire::retention(&compaction, false).unwrap();
+    send_members_delta(
+        &client,
+        workspace_id,
+        &member_key,
+        &crate::CoeditPayload::Checkpoint {
+            channel,
+            body: postcard::to_stdvec(&compaction).unwrap(),
+        },
+    );
+    // What a newcomer is sent past the checkpoint travels as itself.
+    for index in WRITES..WRITES + 3 {
+        seal_and_send_title(
+            &member,
+            &client,
+            &room,
+            workspace_id,
+            &member_key,
+            &format!("line {index}"),
+        );
     }
-    // What a newcomer is sent, opened: every write, and the newest last.
-    let newest = format!("line {}", WRITES - 1);
-    let newcomer_reads = |held: &[SignedOp]| {
-        let mut newcomer = automerge::AutoCommit::new();
-        for op in held {
-            member.open_into(op, &mut newcomer);
-        }
-        title(&newcomer.save())
-    };
-    let held = tilo_test_env::within("the node folds the record's sealed history", async {
+    // What a newcomer is sent, opened: the member's checkpoint, then the
+    // writes after it.
+    let newest = format!("line {}", WRITES + 2);
+    let held = tilo_test_env::within("the node retains the member's checkpoint", async {
         loop {
             let held = retained_writes(&relay, workspace_id, RECORD).await;
             let folded = held.iter().any(|op| {
-                op.author.as_bytes() == &cert.device_public_key && op.encryption.is_some()
+                op.author.as_bytes() == &member_key.verifying_key().to_bytes()
+                    && op.kind == collab_types::OpKind::Compaction
+                    && op.encryption.is_some()
             });
             if folded
                 && held.len() < WRITES / 4
-                && newcomer_reads(&held).as_deref() == Some(newest.as_str())
+                && newcomer_reads(&member, &held).as_deref() == Some(newest.as_str())
             {
                 break held;
             }
@@ -336,7 +416,7 @@ async fn members_writes_the_node_took_in_survive_a_hard_stop() {
         let copy = stopped.path().join(path.file_name().unwrap());
         std::fs::copy(&path, &copy).unwrap();
         copy_dir(path.parent().unwrap(), stopped.path());
-        let held = match GovernedRoom::open(copy, &governor, &key) {
+        let held = match GovernedRoom::open(copy, &governor, &key, None) {
             Ok(reopened) => reopened.readable_document(APP, RECORD).await.unwrap(),
             // Copied while the room wrote its next state.
             Err(_) => None,
@@ -596,7 +676,6 @@ async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
         cert: member_cert.clone(),
         user_public_key: member_cert.user_public_key,
         device_public_key: member_cert.device_public_key,
-        role: tilo_relay_protocol::PeerRole::Device,
     };
     let (outbound, _inbox) = tokio::sync::mpsc::channel(4);
     let calls = rooms

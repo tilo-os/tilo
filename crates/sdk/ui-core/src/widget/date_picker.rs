@@ -659,9 +659,10 @@ impl Widget for DatePicker {
     }
 
     /// Value is the selected date in ISO `YYYY-MM-DD` form; `expanded` is
-    /// left unset since the grid is rendered inline. A picker the app feeds
-    /// ([`DateFeed`]) is addressed: what it chooses goes to the app's feed,
-    /// so it is a bound control, reached by its name.
+    /// left unset since the grid is rendered inline. A picker whose choice is
+    /// published ([`Self::on_view`]) is reached at that choice's address; a
+    /// fed picker ([`DateFeed`]) that publishes none is reached by its name,
+    /// so its choices still go to the app's feed.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let node = AccessNode::new(Role::ComboBox)
@@ -672,7 +673,9 @@ impl Widget for DatePicker {
                     .focusable(self.is_focusable())
                     .focused(self.is_focused()),
             );
-        Some(if self.feed.is_some() {
+        Some(if let Some(choice) = &self.choice {
+            node.with_action_target(choice.choice.id().to_owned())
+        } else if self.feed.is_some() {
             node.with_action_target(format!(
                 "date-picker:{}",
                 self.accessible_name.as_deref().unwrap_or("date")
@@ -1028,7 +1031,8 @@ mod tests {
             host.root::<DatePicker>()
                 .accessibility()
                 .and_then(|node| node.action_target),
-            Some("date-picker:Month".to_owned())
+            Some("date-picker/day".to_owned()),
+            "a fed picker reaches its published choice where it is drawn"
         );
     }
 
@@ -1080,7 +1084,7 @@ mod tests {
 
             let captured: Rc<RefCell<Option<NaiveDate>>> = Rc::new(RefCell::new(None));
             let captured_cb = captured.clone();
-            let mut dp = DatePicker::new(initial).on_change(move |d| {
+            let mut dp = DatePicker::new(initial).on_view("date-picker", move |d| {
                 *captured_cb.borrow_mut() = Some(d);
             });
 
@@ -1107,6 +1111,8 @@ mod tests {
             at_node.send(&mut dp, &mouse_press());
 
             assert_eq!(dp.selected(), target);
+            assert_eq!(*captured.borrow(), None, "the choice waits to be answered");
+            assert_eq!(crate::testing::answer_controls(&mut dp), 1);
             assert_eq!(*captured.borrow(), Some(target));
         }
 
@@ -1116,11 +1122,12 @@ mod tests {
             let captured: Rc<RefCell<Option<NaiveDate>>> = Rc::new(RefCell::new(None));
             let cb = captured.clone();
             let mut dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 6, 30).unwrap())
-                .on_change(move |d| *cb.borrow_mut() = Some(d));
+                .on_view("date-picker", move |d| *cb.borrow_mut() = Some(d));
 
             // Crosses June → July, updating both the selection and the visible
             // month, and emitting the new date.
             dp.move_selection(1);
+            crate::testing::answer_controls(&mut dp);
             assert_eq!(dp.selected(), NaiveDate::from_ymd_opt(2024, 7, 1).unwrap());
             assert_eq!(dp.month_view(), (2024, 7));
             assert_eq!(
@@ -1249,8 +1256,9 @@ mod tests {
             let state = crate::LocalState::new(initial);
             let captured = Rc::new(RefCell::new(None));
             let callback = Rc::clone(&captured);
-            let mut picker = DatePicker::from_state(&state)
-                .on_change(move |date| *callback.borrow_mut() = Some(date));
+            let mut picker = DatePicker::from_state(&state).on_view("date-picker", move |date| {
+                *callback.borrow_mut() = Some(date)
+            });
             let mut doc = AutoCommit::new();
 
             assert!(Widget::perform_action(
@@ -1260,6 +1268,7 @@ mod tests {
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
+            crate::testing::answer_controls(&mut picker);
             assert_eq!(state.with(|date| *date), expected);
             assert_eq!(*captured.borrow(), Some(expected));
 

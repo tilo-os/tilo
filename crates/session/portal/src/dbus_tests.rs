@@ -2,60 +2,31 @@
 //! calls it, and by connections that are not the frontend.
 
 use std::collections::HashMap;
-use std::io::BufRead as _;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tilo_service::{Answer, Questions};
+use tilo_test_env::PrivateBus;
 use zbus::zvariant::{ObjectPath, OwnedValue};
 
 use crate::auth::FRONTEND_BUS_NAME;
 use crate::{BUS_NAME, OBJECT_PATH, Portal, PortalAuthenticator, PortalCaller, question_handle};
 
-/// A session bus of its own, as `dbus-run-session` starts one, stopped on drop.
-pub(crate) struct SessionBus {
-    daemon: std::process::Child,
-    address: String,
-    _directory: tempfile::TempDir,
-}
+/// A session bus of its own, stopped on drop, which the beds here connect
+/// to as an app, the frontend or a stranger.
+pub(crate) struct SessionBus(PrivateBus);
 
 impl SessionBus {
     pub(crate) fn start() -> Self {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let mut daemon = std::process::Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .arg(format!(
-                "--address=unix:path={}",
-                directory.path().join("bus").display()
-            ))
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("the session bus needs dbus-daemon, which the builder image installs");
-        let mut address = String::new();
-        std::io::BufReader::new(daemon.stdout.take().expect("piped"))
-            .read_line(&mut address)
-            .expect("dbus-daemon's address");
-        assert!(!address.trim().is_empty(), "dbus-daemon printed no address");
-        Self {
-            daemon,
-            address: address.trim().to_owned(),
-            _directory: directory,
-        }
+        Self(PrivateBus::start())
     }
 
     pub(crate) async fn connect(&self) -> zbus::Connection {
-        zbus::connection::Builder::address(self.address.as_str())
+        zbus::connection::Builder::address(self.0.address())
             .expect("address")
             .build()
             .await
             .expect("connected")
-    }
-}
-
-impl Drop for SessionBus {
-    fn drop(&mut self) {
-        let _ = self.daemon.kill();
-        let _ = self.daemon.wait();
     }
 }
 

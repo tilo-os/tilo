@@ -11,7 +11,7 @@ mod files_clipboard_tests {
     struct RetiredOwner {
         tree: crate::shell::state::WeakWorkspaceTreeHandle,
         runtime: crate::shell::native_workspace_owner::NativeStateWitness,
-        broker: std::sync::Weak<tilo_action_broker::collab_broker_capnp::CapnpBrokerState>,
+        broker: std::sync::Weak<tilo_action_broker::collab_app_broker::AppBrokerState>,
     }
 
     thread_local! {
@@ -117,7 +117,7 @@ mod files_clipboard_tests {
             }
             .encode()
             .unwrap();
-            let endpoint = session.broker.capnp_socket().to_path_buf();
+            let endpoint = session.broker.app_socket().to_path_buf();
             let room = session.room.clone();
             let agent = agent.to_owned();
             let (send, mut receive) =
@@ -130,12 +130,11 @@ mod files_clipboard_tests {
                 runtime.block_on(tokio::task::LocalSet::new().run_until(async move {
                     let descriptor =
                         runtime_portal::agent_transport::connect_endpoint(&endpoint).unwrap();
-                    let connection = runtime_portal::CapnpClient::from_connected_fd(
-                        descriptor,
-                        capnp_rpc::rpc_twoparty_capnp::Side::Client,
+                    let (client, _end) = runtime_collab::CollabClient::from_connected_fd(
+                        // SAFETY: just connected; this takes its only owner.
+                        unsafe { std::os::fd::FromRawFd::from_raw_fd(descriptor) },
                     )
                     .unwrap();
-                    let client = runtime_collab::CollabClient::from_raw(connection.bootstrap());
                     let channel = tokio::time::timeout(
                         tilo_test_env::hang_bound(),
                         client.join_channel_as_kind(&room, &presentation, &agent, "agent", ""),
@@ -257,7 +256,7 @@ mod files_clipboard_tests {
                 grant_files_folder(&tree, &folders[1]);
                 source_grants
             };
-            let collab = session.broker.capnp_socket().to_path_buf();
+            let collab = session.broker.app_socket().to_path_buf();
             let identity = session.identity_socket().to_path_buf();
             let mut apps =
                 mounted_apps(profile, &session.actor).reaching_broker(Rc::new(move |app, room| {

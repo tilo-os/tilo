@@ -13,9 +13,10 @@
 //!   summed instead, one `TIMING_WINDOW <unix second> <step> <count>
 //!   <total µs> <max µs>` line per step and second.
 //!
-//! Both are off unless the target is enabled (the room load bench,
-//! `crates/dev/room-load`, enables it): a production host pays one
-//! disabled-callsite check per phase and reads no clock.
+//! Both are off unless the target is enabled (a capacity run does, such as the
+//! relay load bench, `crates/hosting/tilo-relay/examples/relay_load`): a
+//! production host pays one disabled-callsite check per phase and reads no
+//! clock.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};

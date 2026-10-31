@@ -208,12 +208,12 @@ const COMPAT_PROTOCOL_VERSION: u16 = 1;
 pub const COMPAT_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024).reject_empty();
 /// The model gateway's handoff: a little-endian `u32` length, then JSON.
 const MODEL_GATEWAY_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024);
-/// Length-prefixed launcher handoff consumed before Cap'n Proto starts on a
+/// Length-prefixed launcher handoff consumed before the wire starts on a
 /// collaboration descriptor. The broker binds it to `SO_PEERCRED` and a
 /// compositor-created one-shot launch record.
 pub const COLLAB_LAUNCH_PROTOCOL_VERSION: u16 = 1;
 /// Prefix that separates a launcher-authenticated connection from a raw
-/// Cap'n Proto diagnostic client. It is deliberately not an authority: the
+/// diagnostic client. It is deliberately not an authority: the
 /// broker still verifies the peer process against the compositor's one-shot
 /// record before it accepts the following frame.
 pub const COLLAB_LAUNCH_MAGIC: [u8; 4] = *b"QCL1";

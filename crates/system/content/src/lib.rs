@@ -77,7 +77,7 @@ pub fn verify(hash: &str, bytes: &[u8]) -> bool {
 ///
 /// A renderer that only knows "the bytes are not here" draws the same grey box for a transfer in
 /// flight and one that will never complete; the two must be distinguishable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ContentState {
     /// The content is here; [`ContentStore::read`] returns it.
     Resolved,

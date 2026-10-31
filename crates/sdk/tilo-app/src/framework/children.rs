@@ -451,12 +451,12 @@ impl<C: ChildRecord> ChildrenState<C> {
 
     fn follow(&self, id: &Id) -> Result<(), String> {
         let record = Self::record(id)?;
-        let stored = self
+        let older = self
             .room
             .store
-            .read(&record, tilo_resource::evolution::stored_version)
+            .read(&record, tilo_resource::evolution::needs_migrate::<C>)
             .ok_or("the child is not open here")?;
-        if stored < <C as Resource>::VERSION {
+        if older {
             if !self.room.store.takes_writes() {
                 return Err("migrated once the store takes writes".into());
             }
@@ -575,7 +575,9 @@ impl<C: ChildRecord> ChildrenState<C> {
                 .ok_or_else(|| {
                     ActionError::Refused(format!("the record listing {verb} is not open here"))
                 })??;
-            self.room.store.schedule_committed_history(&record);
+            if let Err(error) = self.room.store.schedule_committed_history(&record) {
+                tracing::error!(%error, "an edited child record could not be saved");
+            }
         }
         self.refresh();
         self.moved();
@@ -868,7 +870,9 @@ impl<C: ChildRecord> ChildrenState<C> {
                 applied
             })
             .ok_or_else(|| ActionError::Refused("the child is not open here".into()))??;
-        self.room.store.schedule_committed_history(&record);
+        if let Err(error) = self.room.store.schedule_committed_history(&record) {
+            tracing::error!(%error, "a created child record could not be saved");
+        }
         self.refresh();
         self.moved();
         Ok(created)

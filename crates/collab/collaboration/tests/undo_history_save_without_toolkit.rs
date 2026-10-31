@@ -64,10 +64,10 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
     doc.set_actor(store.actor().clone());
     let mut history = UndoLog::new(&mut doc);
     let mut writer = store.writer();
-    // A new record is saving until its first write lands.
+    // A new record holds no edits of its own, so it has nothing to save.
     assert_eq!(
         RecordSaveStatus::of_writer(&doc, &writer),
-        RecordSaveStatus::Saving
+        RecordSaveStatus::Saved
     );
     writer.request(&mut doc);
     writer.flush();

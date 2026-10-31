@@ -3424,10 +3424,8 @@ mod one_person_one_pointer_tests {
     #[test]
     fn one_person_has_one_pointer_that_moves_between_scopes() {
         // phase: a_pointer_published_without_a_scope_belongs_to_the_desktop
-        // A pointer arriving with no scope of its own is on the *desktop* —
-        // the capnp presence surface has no keyed cursor call, so it goes out as
-        // `publishCursor(x, y)` and loses the room scope on the wire. Reading
-        // that back as a *widget* scope told every window the pointer was
+        // A pointer arriving with no scope of its own is on the *desktop*.
+        // Reading it as a *widget* scope told every window the pointer was
         // theirs, so one person came out once per open window.
         {
             let mut ctx = PresenceCtx::default();

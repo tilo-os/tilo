@@ -118,8 +118,6 @@ pub mod public_avatars;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod relay_offers;
 #[cfg(feature = "agents")]
-pub mod reseal;
-#[cfg(feature = "agents")]
 pub mod room_bots;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod state_lock;
@@ -165,7 +163,6 @@ pub mod transport {
 pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
 #[cfg(not(target_arch = "wasm32"))]
 pub use app_serving::{ActionHostPlane, AppServingPlane};
-pub use auth::PeerRole;
 pub use client::{ClientError, RelayClient};
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
 #[cfg(not(target_arch = "wasm32"))]

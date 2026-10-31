@@ -14,7 +14,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::pointer_replay::{HeldPress, PressAt, Release};
-use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
+use crate::widget::{ActionEmitter, ControlBindingMetadata};
 
 /// Hover, press and focus of one pressable surface. Faces take this so an
 /// immediate-mode caller and the retained widget paint the same states.
@@ -398,12 +398,6 @@ impl Activation {
     pub(crate) fn bindings(&self) -> Vec<ControlBindingMetadata> {
         if let Some(action) = &self.action {
             return vec![action.metadata(self.id.clone())];
-        }
-        if self.on_activate.is_some() {
-            return vec![ControlBindingMetadata {
-                control_id: self.id.clone(),
-                kind: ControlBindingKind::LegacyCallback,
-            }];
         }
         Vec::new()
     }

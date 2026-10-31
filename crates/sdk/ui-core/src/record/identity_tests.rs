@@ -1,5 +1,6 @@
 use super::*;
 use crate::state::State;
+use std::path::Path;
 
 fn native(root: &Path) -> Rc<dyn DurableStore> {
     Rc::new(app_state::FsStore::new(root))
@@ -269,7 +270,7 @@ fn former_records_are_validated_and_adopted_exactly_once() {
             let mut state = State::new();
             assert!(set.checkout(&mut state, None, &old));
             put_text(&mut state.doc, "note", "made before files had ids");
-            set.flush(&mut state.doc);
+            set.flush(&mut state.doc).unwrap();
         }
         {
             let mut set = RecordSet::open_in(Rc::clone(&documents), package, room);
@@ -283,7 +284,7 @@ fn former_records_are_validated_and_adopted_exactly_once() {
             assert_eq!(identity(&state.doc).unwrap().id, new.id);
             assert!(room::holds(&room_doc, &file));
             assert!(!room::holds(&room_doc, &RecordId::for_file(path)));
-            set.flush(&mut state.doc);
+            set.flush(&mut state.doc).unwrap();
         }
         let store = RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
         store.open_existing_record_checked(&new).unwrap();
@@ -316,7 +317,7 @@ fn former_records_are_validated_and_adopted_exactly_once() {
             store
                 .with(&old.id, |doc| put_text(doc, "note", "adopt me"))
                 .unwrap();
-            store.flush();
+            store.flush().unwrap();
         }
         let store = RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
         store.open_existing_record_checked(&new).unwrap();

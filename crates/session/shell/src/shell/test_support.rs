@@ -409,7 +409,8 @@ pub struct OwnHostedRoom {
 )]
 pub fn host_active_room(tree: &crate::shell::state::WorkspaceTreeHandle) -> OwnHostedRoom {
     let directory = tempfile::tempdir().expect("a directory for the state file");
-    let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).expect("room");
+    let room =
+        crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::ROOM).expect("room");
     {
         let mut tree = tree.write();
         let active = tree.desktop.active;
@@ -422,8 +423,9 @@ pub fn host_active_room(tree: &crate::shell::state::WorkspaceTreeHandle) -> OwnH
     let owner = crate::shell::native_workspace_owner::open(tree.clone()).expect("the owner opens");
     let person_root = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
     let key = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
-    let certificate = tilo_joined_room::testing::certificate(&person_root, &key, "This device");
-    tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate)
+    let certificate =
+        tilo_peer_state::owner::testing::certificate(&person_root, &key, "This device");
+    tilo_peer_state::owner::testing::enroll_interactive_governor(&owner, &key, &certificate)
         .expect("this device's host lets its owner in");
     assert!(tree.read().holds_room(room));
     OwnHostedRoom {

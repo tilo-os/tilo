@@ -66,7 +66,7 @@ impl RecordSaveStatus {
         }
         match cache.flush(key) {
             Ok(()) => Self::Saved,
-            Err(message) if message == "persistence pending host acknowledgement" => Self::Saving,
+            Err(message) if message == portable_storage::PENDING_ACKNOWLEDGEMENT => Self::Saving,
             Err(message) => Self::Failed(message),
         }
     }
@@ -109,33 +109,16 @@ pub fn room_document(
 
 /// Open the document `store` holds, as a room this device governs reads it:
 /// from its on-disk copy, with a writer that keeps it there. A document that
-/// left the room ([`super::retirement`]) starts over; one written by a newer
-/// build is opened without persistence, so the copy on disk is left intact.
+/// left the room ([`super::retirement`]) starts over.
 pub fn open_stored(mut store: DocStore) -> (AutoCommit, DocWriter) {
-    let mut doc = named_genesis(store.load_or_new());
+    let mut doc = store.load_or_new();
     // The app's document moved to another workspace, which now holds it
     // with its history; this room's app starts over.
     if super::retirement::is_retired(&doc) {
-        doc = named_genesis(store.new_document());
+        doc = store.new_document();
         if let Err(error) = store.save(&mut doc) {
             tracing::error!(%error, "could not start a new app document after a move");
         }
-    }
-    // A document written by a newer build is not opened, and the empty
-    // stand-in must never reach disk — with autosave on, the first edit
-    // (or the exit flush) would save it over the existing document. The store
-    // also refuses the write itself; the disabled writer is what stops
-    // the app logging an error on every keystroke to earn that guarantee.
-    if let Some(reason) = store.refusal() {
-        let reason = reason.to_string();
-        tracing::error!(
-            reason = %reason,
-            "app state was written by a newer version of this app; running \
-             without persistence so the file on disk is left intact"
-        );
-        eprintln!("tilo: {reason}");
-        eprintln!("tilo: this session starts empty and will NOT be saved.");
-        return (doc, DocWriter::disabled(reason));
     }
     let mut autosave = store.writer();
     autosave.seed(&mut doc);
@@ -153,7 +136,9 @@ pub fn open_stored_adopting(
     mut store: DocStore,
     workspace: Option<DocStore>,
 ) -> (AutoCommit, DocWriter) {
-    let fresh = matches!(store.load_complete(), Ok(None)) && store.refusal().is_none();
+    // A record this device holds no copy of, complete and readable: a store
+    // that cannot read its copy says so in the load itself.
+    let fresh = matches!(store.load_complete(), Ok(None));
     if fresh
         && let Some(mut workspace) = workspace
         && let Ok(Some(mut doc)) = workspace.load_complete()
@@ -165,23 +150,6 @@ pub fn open_stored_adopting(
         return (doc, writer);
     }
     open_stored(store)
-}
-
-/// `doc`, with what a brand-new one starts with (the store's schema stamp)
-/// committed as its genesis, which names itself as such. Every change a
-/// record's channel carries names what it is, and a sealed room's channel
-/// holds only what was written on it: an unnamed first change is refused
-/// there, and every later write, which builds on it, makes a record no one
-/// outside this copy can read. A document that already has history is
-/// returned as it is.
-fn named_genesis(mut doc: AutoCommit) -> AutoCommit {
-    if doc.base_heads().is_empty() && doc.pending_ops() > 0 {
-        doc.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
-        );
-    }
-    doc
 }
 
 /// Open the document `store` holds, as a room another host governs reads it:
@@ -205,9 +173,6 @@ pub fn open_with_committed_read(
         fresh.rollback();
         fresh
     });
-    if let Some(reason) = store.refusal() {
-        return Err(reason.to_string());
-    }
     let mut writer = store.writer();
     // Only the previously stored heads are durable. The captured graph must
     // remain a pending local-cache write even without a subsequent user edit.
@@ -225,34 +190,4 @@ pub fn open_with_committed_read(
     writer.request(&mut doc);
     read.applied();
     Ok((doc, writer))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Every change of a record that was just made names what it is: the first send of a record
-    /// opened from a copy no one wrote yet carries only claimed changes, which a sealed room's
-    /// channel takes.
-    #[test]
-    fn a_new_records_first_change_is_its_named_genesis() {
-        let documents: Rc<dyn DurableStore> = Rc::new(durable_store::MemoryStore::new());
-        let store = room_document(&documents, "so.tilo.lang.tasks", "room-1").unwrap();
-        let (mut doc, _writer) = open_stored(store);
-        let bytes = doc.save_after(&[]);
-        let changes = collab_types::claim::named_changes(&bytes).unwrap();
-        assert_eq!(changes.len(), 1, "one change: the record's creation");
-        assert_eq!(
-            changes[0].message(),
-            Some(
-                tilo_actions::FrameworkChange::Genesis
-                    .change_message()
-                    .as_str()
-            )
-        );
-        assert_eq!(
-            app_state::schema_version_of(&doc),
-            app_state::SCHEMA_VERSION
-        );
-    }
 }

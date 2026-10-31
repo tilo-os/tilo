@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -215,6 +216,9 @@ pub struct DropZone {
     action: Option<Button>,
     action_node: Option<NodeId>,
     on_files: Option<Box<dyn FnMut(Vec<PathBuf>)>>,
+    /// The files handed over, published as the zone's effect action `drop`.
+    files_action: Option<crate::widget::ActionEmitter<Vec<PathBuf>>>,
+    native_resource: Option<crate::tilo_actions::ResourceSpec>,
     drag_over: bool,
     cursor: Point,
     metrics: Option<ZoneMetrics>,
@@ -229,9 +233,11 @@ impl DropZone {
             title: title.into(),
             message: None,
             icon: Icon::Download,
-            action: None,
+            files_action: None,
             action_node: None,
             on_files: None,
+            action: None,
+            native_resource: None,
             drag_over: false,
             cursor: Point::ZERO,
             metrics: None,
@@ -261,8 +267,65 @@ impl DropZone {
     }
 
     /// Receive the dropped files.
+    ///
+    /// The zone, as control `id`, publishes receiving them as its effect
+    /// action `drop`, so a person's drop, a script and an agent hand files
+    /// over through the same action.
     #[must_use]
-    pub fn on_files(mut self, f: impl FnMut(Vec<PathBuf>) + 'static) -> Self {
+    #[expect(
+        clippy::expect_used,
+        reason = "the generated text parameter and its action are internally consistent"
+    )]
+    pub fn on_files_view(mut self, f: impl FnMut(Vec<PathBuf>) + 'static) -> Self {
+        use crate::tilo_actions::{
+            ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
+            ResourceSpec,
+        };
+
+        const TYPE_ID: &str = "tilo.ui.drop_zone.drop";
+        let control_id = self.id.clone();
+        let label = self.title.clone();
+        let spec = ActionSpec::typed_operation(
+            "drop",
+            &label,
+            "Hand the zone files",
+            OperationKind::Effect,
+            TYPE_ID,
+            vec![ActionParam::required(
+                "paths",
+                ParamType::Text,
+                "The files to hand over, one path per line",
+            )],
+            move |args| {
+                EncodedAction::encode_operation(
+                    TYPE_ID,
+                    &serde_json::json!({
+                        "control": control_id,
+                        "paths": args.text("paths").unwrap_or_default(),
+                    }),
+                )
+                .expect("generated drop payload is serializable")
+            },
+        )
+        .for_audience(crate::tilo_actions::Audience::Agents);
+        let resource =
+            ResourceSpec::new(format!("tilo.control:{}", self.id), "tilo.control", label)
+                .with_action(spec.clone());
+        let binding = ActionBinding::new(&resource, &spec, |files: Vec<PathBuf>| {
+            serde_json::Map::from_iter([(
+                "paths".into(),
+                serde_json::json!(
+                    files
+                        .iter()
+                        .map(|path| path.to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+            )])
+        })
+        .expect("the paths match the generated text parameter");
+        self.files_action = Some(crate::widget::ActionEmitter::new(binding));
+        self.native_resource = Some(resource);
         self.on_files = Some(Box::new(f));
         self
     }
@@ -286,13 +349,68 @@ impl DropZone {
     }
 
     fn deliver(&mut self, files: Vec<PathBuf>) {
+        if let Some(action) = &mut self.files_action {
+            if let Err(error) = action.emit(files) {
+                tracing::warn!(%error, "the drop zone's action refused its files");
+            }
+            return;
+        }
+        self.hand_over(files);
+    }
+
+    /// Hand `files` to the zone's handler: the drop and the published effect
+    /// action both arrive here.
+    fn hand_over(&mut self, files: Vec<PathBuf>) {
         if let Some(on_files) = &mut self.on_files {
             on_files(files);
         }
     }
+
+    /// Apply a `tilo.ui.drop_zone.drop` addressed to this control.
+    /// `Ok(false)` when the operation is not this control's.
+    fn drop_operation(
+        &mut self,
+        kind: crate::tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<bool, String> {
+        const TYPE_ID: &str = "tilo.ui.drop_zone.drop";
+        if kind != crate::tilo_actions::OperationKind::Effect
+            || type_id != TYPE_ID
+            || self.files_action.is_none()
+        {
+            return Ok(false);
+        }
+        let value: serde_json::Value =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        if value.get("control").and_then(serde_json::Value::as_str) != Some(self.id.as_str()) {
+            return Ok(false);
+        }
+        let paths = value
+            .get("paths")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let files: Vec<PathBuf> = paths
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(PathBuf::from)
+            .collect();
+        if files.is_empty() {
+            return Err("no files to hand over".to_owned());
+        }
+        self.hand_over(files);
+        Ok(true)
+    }
 }
 
 impl Widget for DropZone {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -505,6 +623,92 @@ impl Widget for DropZone {
     }
 }
 
+impl crate::widget::controls::ActionControls for DropZone {
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings: Vec<crate::widget::ControlBindingMetadata> = self
+            .files_action
+            .as_ref()
+            .map(|action| vec![action.metadata(self.id.clone())])
+            .unwrap_or_default();
+        for child in Widget::children(self) {
+            bindings.extend(crate::widget::controls::control_action_bindings(child));
+        }
+        bindings
+    }
+
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.files_action {
+            let _ = action.install_custody(domain, attachment);
+        }
+        for child in Widget::children_mut(self) {
+            crate::widget::controls::install_control_custody(child, domain, attachment);
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<crate::tilo_actions::ControlInvocation> {
+        if let Some(invocation) = self
+            .files_action
+            .as_mut()
+            .and_then(crate::widget::ActionEmitter::take)
+        {
+            return Some(invocation);
+        }
+        Widget::children_mut(self)
+            .into_iter()
+            .find_map(crate::widget::controls::take_control_invocation)
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<crate::tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.files_action {
+            action.refresh_availability(allowed);
+        }
+        for child in Widget::children_mut(self) {
+            crate::widget::controls::refresh_control_action_availability(child, allowed);
+        }
+    }
+}
+
+impl crate::widget::ResourceOperations for DropZone {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        if self.native_resource.is_some() {
+            &["tilo.ui.drop_zone.drop"]
+        } else {
+            &[]
+        }
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .drop_operation(request.kind, request.type_id, request.payload)?
+            .then(|| {
+                crate::widget::ResourceOperationStart::Completed(
+                    crate::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+}
+
+impl crate::resources::PublishesResources for DropZone {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<crate::tilo_actions::ResourceSpec> {
+        self.native_resource.iter().cloned().collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,7 +744,7 @@ mod tests {
         let got = Rc::new(RefCell::new(Vec::new()));
         let sink = got.clone();
         let zone = DropZone::new("import", "Drop books here")
-            .on_files(move |files| sink.borrow_mut().extend(files));
+            .on_files_view(move |files| sink.borrow_mut().extend(files));
         let mut harness =
             crate::headless::FrameHarness::new(crate::State::new(), Box::new(zone), (400, 300));
         let [x, y, w, h] = harness.inspection().root.rect;

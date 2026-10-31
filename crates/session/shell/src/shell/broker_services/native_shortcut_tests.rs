@@ -60,7 +60,7 @@ fn a_saved_shortcut_lives_in_the_room_through_later_commits_and_a_restart() {
         Some(me.clone()),
         "saved with this device's proof"
     );
-    let in_room = |owner: &tilo_joined_room::NativeWorkspaceOwner| {
+    let in_room = |owner: &tilo_peer_state::owner::NativeWorkspaceOwner| {
         owner
             .with_current(fixture.room, |view| {
                 Ok(tilo_automation::decode_saved(

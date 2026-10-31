@@ -3,6 +3,12 @@
 //! split out. These are postcard formats between separately updated
 //! hosts and desktops: a changed byte here is a wire break, not a vector to
 //! recapture.
+//!
+//! The join challenge no longer carries the room's governing device beside the
+//! signer: a host answers a join as a device of the room's owner, which the
+//! membership challenge already names. The two vectors holding a join challenge
+//! (`Complete` and the `Challenge` answer) are that much shorter, and a host
+//! and a desktop of different versions refuse each other's bytes.
 
 use super::IssuedInvitation;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
@@ -20,7 +26,7 @@ const JOIN_REQUESTS: &[(&str, &str)] = &[
     ),
     (
         "Complete",
-        "02010201022430303030303030302d303030302d303030302d303030302d303030303030303030303031030c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f1010101010101010101010101010101010101010101010101010101010101010044012121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212",
+        "02010201022430303030303030302d303030302d303030302d303030302d303030303030303030303031030d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f1010101010101010101010101010101010101010101010101010101010101010044012121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212121212",
     ),
     (
         "MembershipChallenge",
@@ -35,7 +41,7 @@ const JOIN_REQUESTS: &[(&str, &str)] = &[
 const JOIN_RESPONSES: &[(&str, &str)] = &[
     (
         "Challenge",
-        "01010201022430303030303030302d303030302d303030302d303030302d303030303030303030303031030c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f101010101010101010101010101010101010101010101010101010101010101004",
+        "01010201022430303030303030302d303030302d303030302d303030302d303030303030303030303031030d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f101010101010101010101010101010101010101010101010101010101010101004",
     ),
     (
         "MembershipChallenge",
@@ -66,7 +72,6 @@ fn join_challenge() -> JoinChallenge {
         signed_invitation: vec![1, 2],
         room: "00000000-0000-0000-0000-000000000001".into(),
         workspace_id: 3,
-        authority_device_public_key: [12; 32],
         user_public_key: [13; 32],
         device_public_key: [14; 32],
         request_id: [15; 32],
@@ -80,7 +85,7 @@ fn membership_challenge() -> MembershipChallenge {
         version: 1,
         room: "00000000-0000-0000-0000-000000000001".into(),
         workspace_id: 3,
-        authority_device_public_key: [12; 32],
+        host_device_public_key: [12; 32],
         user_public_key: [13; 32],
         device_public_key: [14; 32],
         request_id: [15; 32],

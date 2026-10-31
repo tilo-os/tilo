@@ -33,11 +33,11 @@ use neighbour_wire::NeighbourMsg;
 use tilo_browser_peer::HttpsLink;
 use tilo_desktop_model::RoomId;
 use tilo_identity_host::custody::HostIdentity;
-use tilo_joined_room::NativeWorkspaceOwner;
-use tilo_joined_room::session::{Connect, Scope};
-use tilo_joined_room::voice::{Channel, Participation};
 use tilo_moq::client::{Client, Status};
 use tilo_peer_state::join;
+use tilo_peer_state::owner::NativeWorkspaceOwner;
+use tilo_peer_state::owner::session::{Connect, Scope};
+use tilo_peer_state::owner::voice::{Channel, Participation};
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay_protocol::Envelope;
@@ -70,7 +70,8 @@ impl Native {
         invitation: &str,
         workspace_id: u64,
     ) -> Self {
-        let owner = tilo_joined_room::open_file(&directory.join("joined-rooms.json")).unwrap();
+        let owner =
+            tilo_peer_state::owner::open_file(&directory.join("joined-rooms.json")).unwrap();
         let identity = HostIdentity {
             device_cert: cert,
             device_signing_key: key.clone(),
@@ -79,7 +80,7 @@ impl Native {
             identity_paths: None,
         };
         let endpoint = endpoint(&key).await;
-        let enrollment = tilo_joined_room::enroll::prepare_and_complete(
+        let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
             WorkspaceJoinClient::new(endpoint.clone()),
             identity.clone(),
             workspace_id,
@@ -115,7 +116,7 @@ impl Native {
     ) -> (Arc<Scope>, RelayCoeditSession) {
         let connect = Connect::new(owner.clone(), room).unwrap();
         let (hint, device, revocations, continuity) = connect.material(identity).unwrap();
-        let session = tilo_joined_room::session::dial(
+        let session = tilo_peer_state::owner::session::dial(
             endpoint.clone(),
             workspace_id,
             &hint,
@@ -145,7 +146,7 @@ impl Native {
                         let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
                         let governor = self
                             .owner
-                            .with_current(self.room, |view| Ok(view.governor().device_public_key))
+                            .with_current(self.room, |view| Ok(view.room_host().device_public_key))
                             .unwrap();
                         match self
                             .scope

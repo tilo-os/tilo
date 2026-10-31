@@ -14,10 +14,7 @@ mod keystroke;
 
 use super::private_transport_tests::certified_device;
 use super::*;
-use crate::{
-    auth::PeerRole,
-    workspace::{Membership, WorkspaceRuntime},
-};
+use crate::workspace::{Membership, WorkspaceRuntime};
 use tilo_user_identity::{RevocationList, UserIdentity};
 
 mod presence_cost;
@@ -102,7 +99,6 @@ impl Fixture {
         ] {
             runtime.add_subscriber(Subscriber {
                 device_public_key: peer.device_public_key,
-                role: peer.role,
                 tx: tx.clone(),
                 disconnect: disconnect.clone(),
             });
@@ -127,7 +123,7 @@ impl Fixture {
             )),
             own_user: user.public_key,
             agents: AgentRegistry::default(),
-            federation: None,
+            lease: None,
             session_live: None,
         };
         let store = runtime.store.clone();
@@ -188,7 +184,6 @@ impl Fixture {
             &self.workspace,
             self.envelope(kind),
             Some(self.source.clone()),
-            PeerRole::Device,
             self.metrics.clone(),
         )
         .await
@@ -210,7 +205,6 @@ impl Fixture {
                 signature: [0; 64],
             },
             Some(self.source.clone()),
-            PeerRole::Device,
             self.metrics.clone(),
         )
         .await
@@ -317,7 +311,6 @@ impl Fixture {
             &self.workspace,
             frame,
             authenticated.then(|| self.source.clone()),
-            PeerRole::Device,
             self.metrics.clone(),
         )
         .await
@@ -499,43 +492,34 @@ async fn ordered_checkpoint_is_marked_served_only_after_successful_enqueue() {
 }
 
 #[tokio::test]
-async fn a_change_a_peer_relay_carries_is_decided_as_its_author_and_never_as_this_hosts() {
-    let mut fixture = Fixture::new();
+async fn a_change_an_attached_host_carries_is_decided_as_its_author_and_never_as_this_hosts() {
+    let fixture = Fixture::new();
     let own = [0xA5; 32];
     let member = [0x3C; 32];
     let carrier = fixture.recipient.device_public_key;
     assert_eq!(
-        super::state::deciding_author(&fixture.recipient, &own, &carrier),
+        super::state::deciding_author(&fixture.recipient, false, &own, &carrier),
         carrier,
         "a device's session writes its own"
     );
-    fixture.recipient.role = PeerRole::PeerRelay;
     assert_eq!(
-        super::state::deciding_author(&fixture.recipient, &own, &member),
+        super::state::deciding_author(&fixture.recipient, true, &own, &member),
         member,
-        "a peer relay's carried change is its member's"
+        "an attached host's carried change is its member's"
     );
     assert_eq!(
-        super::state::deciding_author(&fixture.recipient, &own, &own),
+        super::state::deciding_author(&fixture.recipient, true, &own, &own),
         carrier,
         "a change claiming this host's own device is the carrier's"
     );
 }
 
 #[tokio::test]
-async fn ordered_checkpoints_remain_live_for_peer_relays() {
+async fn ordered_checkpoints_remain_live_for_attached_hosts() {
     let mut fixture = Fixture::new();
-    fixture.recipient.role = PeerRole::PeerRelay;
-    fixture.recipient.cert.capabilities.can_act_as_host = true;
-    tilo_user_identity::sign_device_cert(&mut fixture.recipient.cert, &fixture.root_key).unwrap();
     {
         let mut runtime = fixture.workspace.lock().await;
-        runtime.record_peer_relay(fixture.recipient.device_public_key);
-        runtime
-            .subscribers
-            .get_mut(&fixture.recipient.device_public_key)
-            .unwrap()
-            .role = PeerRole::PeerRelay;
+        runtime.note_attached_host(fixture.recipient.device_public_key);
         runtime
             .state_sessions
             .get_mut(&fixture.recipient.device_public_key)
@@ -550,7 +534,7 @@ async fn ordered_checkpoints_remain_live_for_peer_relays() {
     fixture.drained().await;
     assert!(
         fixture.recipient_rx.try_recv().is_ok(),
-        "peer relay checkpoint was incorrectly gated"
+        "an attached host's checkpoint was incorrectly gated"
     );
 }
 
@@ -569,7 +553,6 @@ async fn cleanup_queued_before_recipient_replacement_retains_exact_pending() {
     let (replacement, _rx) = mpsc::channel(2);
     fixture.workspace.lock().await.add_subscriber(Subscriber {
         device_public_key: fixture.recipient.device_public_key,
-        role: PeerRole::Device,
         tx: replacement,
         disconnect: fixture.source.disconnect.clone(),
     });
@@ -932,7 +915,6 @@ async fn state_completion_rechecks_source_and_recipient_membership_and_generatio
             let (replacement, _rx) = mpsc::channel(2);
             fixture.workspace.lock().await.add_subscriber(Subscriber {
                 device_public_key: key,
-                role: PeerRole::Device,
                 tx: replacement,
                 disconnect: fixture.source.disconnect.clone(),
             });
@@ -1052,16 +1034,10 @@ async fn inbound_delta_waits_for_owner_capacity_without_failing_its_session() {
     let envelope = fixture.envelope(0);
     let source = fixture.source.clone();
     let metrics = fixture.metrics.clone();
-    let mut admitting = tokio::spawn(async move {
-        enqueue_state(
-            &workspace,
-            envelope,
-            Some(source),
-            PeerRole::Device,
-            metrics,
-        )
-        .await
-    });
+    let mut admitting =
+        tokio::spawn(
+            async move { enqueue_state(&workspace, envelope, Some(source), metrics).await },
+        );
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(100), &mut admitting)
             .await
@@ -1101,25 +1077,21 @@ async fn aborting_state_receipt_waiter_cannot_cancel_started_transaction() {
 }
 
 #[tokio::test]
-async fn outbound_federation_revocation_and_generation_replacement_fence_completion() {
+async fn outbound_session_revocation_and_replacement_fence_completion() {
     for revoke in [false, true] {
         let mut fixture = Fixture::new();
-        fixture.source.peer.role = PeerRole::PeerRelay;
-        fixture.source.peer.cert.capabilities.can_act_as_host = true;
-        tilo_user_identity::sign_device_cert(&mut fixture.source.peer.cert, &fixture.root_key)
-            .unwrap();
         let lease = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        fixture.source.federation = Some(lease.clone());
+        fixture.source.lease = Some(lease.clone());
         {
             let mut runtime = fixture.workspace.lock().await;
-            runtime.record_peer_relay(fixture.source.peer.device_public_key);
+            runtime.note_attached_host(fixture.source.peer.device_public_key);
             runtime
-                .outbound_federation
+                .outbound_leases
                 .insert(fixture.source.peer.device_public_key, lease.clone());
         }
         let (release, reached) =
             crate::store::test_barrier::install(fixture.store.root(), "state-persist");
-        enqueue_federated(
+        enqueue_from_host(
             &fixture.workspace,
             fixture.envelope(1),
             fixture.source.clone(),
@@ -1132,7 +1104,7 @@ async fn outbound_federation_revocation_and_generation_replacement_fence_complet
         if revoke {
             fixture.revoke_source();
         } else {
-            fixture.workspace.lock().await.outbound_federation.insert(
+            fixture.workspace.lock().await.outbound_leases.insert(
                 fixture.source.peer.device_public_key,
                 Arc::new(std::sync::atomic::AtomicBool::new(true)),
             );
@@ -1143,7 +1115,7 @@ async fn outbound_federation_revocation_and_generation_replacement_fence_complet
         assert_eq!(fixture.store.load_retained().unwrap().len(), 1);
         if !revoke {
             assert!(!Arc::ptr_eq(
-                &fixture.workspace.lock().await.outbound_federation
+                &fixture.workspace.lock().await.outbound_leases
                     [&fixture.source.peer.device_public_key],
                 &lease
             ));
@@ -1194,7 +1166,6 @@ async fn failed_sync_fallback_does_not_advance_the_materialized_retry_fence() {
         &fixture.workspace,
         envelope.clone(),
         Some(fixture.source.clone()),
-        PeerRole::PeerRelay,
         fixture.metrics.clone(),
         true,
         false,
@@ -1214,7 +1185,6 @@ async fn failed_sync_fallback_does_not_advance_the_materialized_retry_fence() {
         &fixture.workspace,
         envelope,
         Some(fixture.source.clone()),
-        PeerRole::PeerRelay,
         fixture.metrics.clone(),
         true,
         false,
@@ -1314,7 +1284,6 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 let (replacement, _rx) = mpsc::channel(32);
                 fixture.workspace.lock().await.add_subscriber(Subscriber {
                     device_public_key: device,
-                    role: PeerRole::Device,
                     tx: replacement,
                     disconnect: fixture.source.disconnect.clone(),
                 });
@@ -1414,7 +1383,6 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
     let (replacement, _rx) = mpsc::channel(2);
     fixture.workspace.lock().await.add_subscriber(Subscriber {
         device_public_key: fixture.source.peer.device_public_key,
-        role: PeerRole::Device,
         tx: replacement,
         disconnect: fixture.source.disconnect.clone(),
     });
@@ -1741,7 +1709,6 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
             let (replacement, _rx) = mpsc::channel(32);
             fixture.workspace.lock().await.add_subscriber(Subscriber {
                 device_public_key: device,
-                role: PeerRole::Device,
                 tx: replacement,
                 disconnect: fixture.source.disconnect.clone(),
             });
@@ -2409,7 +2376,6 @@ async fn replay_cleanup_rechecks_authority_after_waiting_for_worker() {
                 let (replacement, _rx) = mpsc::channel(32);
                 fixture.workspace.lock().await.add_subscriber(Subscriber {
                     device_public_key: device,
-                    role: PeerRole::Device,
                     tx: replacement,
                     disconnect: fixture.source.disconnect.clone(),
                 });
@@ -2732,7 +2698,6 @@ async fn access_requests_reach_every_member() {
             &fixture.workspace,
             access_request_frame(&fixture, 1),
             Some(fixture.source.clone()),
-            PeerRole::Device,
             fixture.metrics.clone(),
         )
         .await

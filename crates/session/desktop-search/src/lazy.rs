@@ -16,7 +16,6 @@ pub trait DesktopSearchApi {
     fn waiting(&self) -> bool;
     fn open(&mut self, data: SearchData);
     fn close(&mut self);
-    fn dismissing(&mut self);
     fn set_query(&mut self, query: &str);
     fn refresh(&mut self) -> bool;
     fn observe(&mut self) -> bool;
@@ -30,6 +29,8 @@ pub trait DesktopSearchApi {
     fn desired_size(&self) -> (f64, f64);
     fn palette(&self) -> &dyn Widget;
     fn palette_mut(&mut self) -> &mut dyn Widget;
+    fn query_field(&self, key: &[u8; 32]) -> Option<ui::action_palette::QueryField>;
+    fn commit_query_text(&mut self, text: &str) -> bool;
 }
 
 impl DesktopSearchApi for DesktopSearch {
@@ -44,9 +45,6 @@ impl DesktopSearchApi for DesktopSearch {
     }
     fn close(&mut self) {
         Self::close(self);
-    }
-    fn dismissing(&mut self) {
-        Self::dismissing(self);
     }
     fn set_query(&mut self, query: &str) {
         Self::set_query(self, query);
@@ -86,6 +84,12 @@ impl DesktopSearchApi for DesktopSearch {
     }
     fn palette_mut(&mut self) -> &mut dyn Widget {
         Self::palette_mut(self)
+    }
+    fn query_field(&self, key: &[u8; 32]) -> Option<ui::action_palette::QueryField> {
+        Self::palette(self).query_field(key)
+    }
+    fn commit_query_text(&mut self, text: &str) -> bool {
+        Self::palette_mut(self).commit_query_text(text)
     }
 }
 
@@ -181,12 +185,6 @@ impl LazyDesktopSearch {
         }
     }
 
-    pub fn dismissing(&mut self) {
-        if let Some(search) = &mut self.search {
-            search.dismissing();
-        }
-    }
-
     pub fn set_query(&mut self, query: &str) {
         match (&mut self.search, &mut self.opening) {
             (Some(search), _) => search.set_query(query),
@@ -266,5 +264,23 @@ impl LazyDesktopSearch {
     /// The palette, once the code is in.
     pub fn palette_mut(&mut self) -> Option<&mut dyn Widget> {
         Some(self.search.as_mut()?.palette_mut())
+    }
+
+    /// What text committed from outside the keyboard (an input method's, a
+    /// dictation's) may write into: the open palette's query field, as it
+    /// stands. `None` while the code is on its way or the field takes no
+    /// typing.
+    pub fn query_field(&self, key: &[u8; 32]) -> Option<ui::action_palette::QueryField> {
+        self.search.as_ref()?.query_field(key)
+    }
+
+    /// Write committed text into the query field at the caret, as the input
+    /// method's commit does, and search what it now holds. Returns whether
+    /// the field took it.
+    #[must_use]
+    pub fn commit_query_text(&mut self, text: &str) -> bool {
+        self.search
+            .as_mut()
+            .is_some_and(|search| search.commit_query_text(text))
     }
 }

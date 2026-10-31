@@ -170,7 +170,7 @@ fn submit_accessory_and_span_highlighting() {
         let sink = seen.clone();
         let mut ti = TextInput::local()
             .with_initial_value("https://tilo.so")
-            .on_submit(move |text| sink.borrow_mut().push(text.to_string()));
+            .on_submit_view(move |text| sink.borrow_mut().push(text.to_string()));
         ti.set_focus(true);
         let mut doc = AutoCommit::new();
         assert!(drive(
@@ -179,6 +179,11 @@ fn submit_accessory_and_span_highlighting() {
             &named_key(NamedKey::Enter),
             mods(false, false)
         ));
+        assert_eq!(
+            crate::testing::answer_controls(&mut ti),
+            1,
+            "the submit reaches its handler when it is answered"
+        );
         assert_eq!(seen.borrow().as_slice(), ["https://tilo.so"]);
         assert!(ti.take_submit(), "the polled signal still fires");
     }
@@ -277,7 +282,7 @@ fn submit_accessory_and_span_highlighting() {
                 "Go",
                 AccessoryAction::Submit,
             )
-            .on_submit(move |text| sink.borrow_mut().push(text.to_string()));
+            .on_submit_view(move |text| sink.borrow_mut().push(text.to_string()));
         ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 32.0));
         draw_to_populate(&mut ti);
         let node = Widget::accessibility(&ti).expect("field semantics");
@@ -298,6 +303,7 @@ fn submit_accessory_and_span_highlighting() {
             mods(false, false),
         );
         assert!(drive(&mut ti, &mut doc, &mouse_press(), mods(false, false)));
+        assert_eq!(crate::testing::answer_controls(&mut ti), 1);
         assert_eq!(seen.borrow().as_slice(), ["example.org"]);
         assert!(ti.take_submit(), "the polled signal fires too");
         assert_eq!(ti.value(), "example.org", "going is not an edit");
@@ -467,7 +473,7 @@ fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
     let captured = changes.clone();
     let mut input = TextInput::local()
         .with_initial_value("a")
-        .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
+        .on_change_view(move |value| captured.borrow_mut().push(value.to_owned()));
     input.set_focus(true);
     let mut document = AutoCommit::new();
     drive(&mut input, &mut document, &char_key("v"), mods(true, false));
@@ -482,6 +488,11 @@ fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
         .unwrap();
     Widget::sync(&mut input, &document, &automerge::ROOT);
     assert_eq!(input.value(), "abc");
+    assert_eq!(
+        crate::testing::answer_controls(&mut input),
+        1,
+        "the committed edit reaches its handler when it is answered"
+    );
     assert_eq!(&*changes.borrow(), &["abc"]);
     Widget::sync(&mut input, &document, &automerge::ROOT);
     assert_eq!(&*changes.borrow(), &["abc"]);
@@ -529,4 +540,43 @@ fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
             "changed target must cancel delayed paste"
         );
     }
+}
+
+/// A field that reports its edits and is submitted publishes one resource
+/// carrying both verbs; a second spec under the same id would shadow the
+/// first and leave one of them answering nothing.
+#[test]
+fn a_field_with_a_change_and_a_submit_publishes_one_resource_with_both() {
+    let _settled = crate::motion::testing::settled();
+    let changed = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let submitted = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let (change_sink, submit_sink) = (changed.clone(), submitted.clone());
+    let mut ti = TextInput::local()
+        .with_id("pin")
+        .with_initial_value("42")
+        .on_change_view(move |value| change_sink.borrow_mut().push(value.to_owned()))
+        .on_submit_view(move |text| submit_sink.borrow_mut().push(text.to_owned()));
+    let published = crate::resources::resources(&ti, &AutoCommit::new());
+    assert_eq!(published.len(), 1, "the field is one resource");
+    let verbs: Vec<&str> = published[0]
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    assert_eq!(verbs, ["submit", "change"]);
+
+    ti.set_focus(true);
+    let mut doc = AutoCommit::new();
+    assert!(drive(
+        &mut ti,
+        &mut doc,
+        &named_key(NamedKey::Enter),
+        mods(false, false)
+    ));
+    assert_eq!(
+        crate::testing::answer_controls(&mut ti),
+        1,
+        "the submit reaches its handler"
+    );
+    assert_eq!(submitted.borrow().as_slice(), ["42"]);
 }

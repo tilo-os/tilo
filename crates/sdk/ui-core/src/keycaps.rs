@@ -769,8 +769,7 @@ mod tests {
             [KeyboardModifier::Control, KeyboardModifier::Shift],
             KeyLegend::Delete,
         );
-        let entry =
-            crate::widget::command_palette::CommandEntry::new("x", "X").keybinding("Super+PageUp");
+        let entry = crate::CommandEntry::new("x", "X").keybinding("Super+PageUp");
         set_active(Keycaps::from_xkb("de", ""));
         let german = (
             binding.keycap_labels(linux),

@@ -8,11 +8,12 @@
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    reason = "test fixtures: a failed step is the assertion"
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion, and the session \
+              outlives every call made into it"
 )]
 
 use std::collections::HashMap;
-use std::io::BufRead as _;
 use std::rc::Rc;
 
 use serde_json::{Map, Value, json};
@@ -20,46 +21,8 @@ use tilo_actions::ResourceSpec;
 use tilo_compositor::OutputConfig;
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{Options, Session};
+use tilo_test_env::PrivateBus;
 use zbus::zvariant::{ObjectPath, OwnedValue};
-
-/// A session bus of its own, as `dbus-run-session` starts one, stopped on drop.
-struct SessionBus {
-    daemon: std::process::Child,
-    address: String,
-    _directory: tempfile::TempDir,
-}
-
-impl SessionBus {
-    fn start() -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let mut daemon = std::process::Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .arg(format!(
-                "--address=unix:path={}",
-                directory.path().join("bus").display()
-            ))
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("the session bus needs dbus-daemon, which the builder image installs");
-        let mut address = String::new();
-        std::io::BufReader::new(daemon.stdout.take().unwrap())
-            .read_line(&mut address)
-            .unwrap();
-        assert!(!address.trim().is_empty(), "dbus-daemon printed no address");
-        Self {
-            daemon,
-            address: address.trim().to_owned(),
-            _directory: directory,
-        }
-    }
-}
-
-impl Drop for SessionBus {
-    fn drop(&mut self) {
-        let _ = self.daemon.kill();
-        let _ = self.daemon.wait();
-    }
-}
 
 const REQUEST: &str = "/org/freedesktop/portal/desktop/request/1_9/t1";
 
@@ -71,13 +34,13 @@ fn published(resources: &[ResourceSpec], id: &str) -> bool {
 
 #[test]
 fn a_portal_file_chooser_request_is_the_sessions_question() {
-    let bus = SessionBus::start();
+    let bus = PrivateBus::start();
     let wake = tilo_service::LoopWake::default();
     let (side, link) = tilo_session::portal_link::channel(wake.handle());
     let desktop = Rc::new(
         DesktopServices::start(
             &Buses {
-                session: Bus::Address(bus.address.clone()),
+                session: Bus::Address(bus.address().to_owned()),
                 system: Bus::None,
             },
             &wake.handle(),
@@ -107,7 +70,7 @@ fn a_portal_file_chooser_request_is_the_sessions_question() {
     // The portal frontend, as xdg-desktop-portal forwards an app's call.
     let runtime = desktop.runtime();
     let frontend = runtime.block_on(async {
-        let frontend = zbus::connection::Builder::address(bus.address.as_str())
+        let frontend = zbus::connection::Builder::address(bus.address())
             .unwrap()
             .build()
             .await
@@ -207,13 +170,13 @@ fn until<T>(session: &mut Session, mut asked: impl FnMut(&mut Session) -> Option
 /// the app.
 #[test]
 fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
-    let bus = SessionBus::start();
+    let bus = PrivateBus::start();
     let wake = tilo_service::LoopWake::default();
     let (side, link) = tilo_session::portal_link::channel(wake.handle());
     let desktop = Rc::new(
         DesktopServices::start(
             &Buses {
-                session: Bus::Address(bus.address.clone()),
+                session: Bus::Address(bus.address().to_owned()),
                 system: Bus::None,
             },
             &wake.handle(),
@@ -242,7 +205,7 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
 
     let runtime = desktop.runtime();
     let (app, id, mut invoked) = runtime.block_on(async {
-        let app = zbus::connection::Builder::address(bus.address.as_str())
+        let app = zbus::connection::Builder::address(bus.address())
             .unwrap()
             .build()
             .await

@@ -36,6 +36,7 @@ use crate::tokens::TextRole;
 use crate::tokens::{EffectiveMotion, MotionSource};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::edge_resize::{RectEdge, WindowEdge};
 
 /// The unscaled title-bar height: a floating window's title bar is a Bar
 /// (HIG §9.1/§9.6), so it takes `metrics.bar_height` — the same 40 px the
@@ -45,8 +46,13 @@ use crate::widget::Widget;
 /// need the reference value in a `const` context.
 pub const TITLE_BAR_HEIGHT: f64 = Metrics::BASE.bar_height as f64;
 pub const RESIZE_GRIP: f64 = 8.0;
+/// A finger is a wider target than a pointer: the band along an edge that
+/// starts a resize under a touch.
+const TOUCH_GRIP: f64 = 22.0;
 pub const MIN_WIDTH: f64 = 280.0;
 pub const MIN_HEIGHT: f64 = 200.0;
+/// The smallest a resize leaves the window, on each axis.
+const MINIMUM: vello::kurbo::Size = vello::kurbo::Size::new(MIN_WIDTH, MIN_HEIGHT);
 const OVERLAY_CHROME_HOLD: Duration = Duration::from_millis(1_050);
 
 /// How the floating window moves, from the standard motions: it appears in
@@ -82,23 +88,13 @@ fn overlay_chrome_fade() -> Duration {
     runs(crate::motion::CROSS_FADE, Direction::Exit)
 }
 
-/// No top edge / top corner — the title bar owns the top of the window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Edge {
-    Right,
-    Bottom,
-    BottomRight,
-    Left,
-    BottomLeft,
-}
-
 #[derive(Clone, Copy, Debug)]
 enum Drag {
     /// `grab` = cursor offset from window origin.
     Move { grab: Point },
     /// `start` = window rect at press, `from` = cursor at press.
     Resize {
-        edge: Edge,
+        edge: RectEdge,
         start: Rect,
         from: Point,
     },
@@ -483,23 +479,11 @@ impl<C: Widget> FloatingWindow<C> {
         self.rect = Rect::new(x0, y0, x0 + w, y0 + h);
     }
 
-    fn resize_edge_at(&self, pt: Point) -> Option<Edge> {
-        self.resize_edge_at_with_grip(pt, RESIZE_GRIP)
-    }
-
-    fn resize_edge_at_with_grip(&self, pt: Point, grip: f64) -> Option<Edge> {
-        let r = self.rect;
-        let near_r = (pt.x - r.x1).abs() <= grip;
-        let near_l = (pt.x - r.x0).abs() <= grip;
-        let near_b = (pt.y - r.y1).abs() <= grip;
-        match (near_l, near_r, near_b) {
-            (_, true, true) => Some(Edge::BottomRight),
-            (true, _, true) => Some(Edge::BottomLeft),
-            (_, true, _) => Some(Edge::Right),
-            (true, _, _) if pt.y > r.y0 + self.title_bar_height() => Some(Edge::Left),
-            (_, _, true) => Some(Edge::Bottom),
-            _ => None,
-        }
+    /// The edge a press at `pt` grabs, by the shared rule
+    /// ([`RectEdge::at`]): its sides, its bottom edge and its corners, never
+    /// its top — the title bar drags the window there.
+    fn edge_at(&self, pt: Point, grip: f64) -> Option<RectEdge> {
+        RectEdge::at(self.rect, pt, grip, self.title_bar_height())
     }
 
     fn title_bar_rect(&self) -> Rect {
@@ -549,26 +533,12 @@ impl<C: Widget> FloatingWindow<C> {
                 self.clamp_into_bounds();
             }
             Drag::Resize { edge, start, from } => {
-                let dx = pt.x - from.x;
-                let dy = pt.y - from.y;
-                let mut r = start;
-                match edge {
-                    Edge::Right => r.x1 = (start.x1 + dx).max(start.x0 + MIN_WIDTH),
-                    Edge::Bottom => r.y1 = (start.y1 + dy).max(start.y0 + MIN_HEIGHT),
-                    Edge::BottomRight => {
-                        r.x1 = (start.x1 + dx).max(start.x0 + MIN_WIDTH);
-                        r.y1 = (start.y1 + dy).max(start.y0 + MIN_HEIGHT);
-                    }
-                    Edge::Left => r.x0 = (start.x0 + dx).min(start.x1 - MIN_WIDTH),
-                    Edge::BottomLeft => {
-                        r.x0 = (start.x0 + dx).min(start.x1 - MIN_WIDTH);
-                        r.y1 = (start.y1 + dy).max(start.y0 + MIN_HEIGHT);
-                    }
-                }
+                let mut r = edge.resize(start, pt - from, MINIMUM);
                 if let Some(aspect) = self.aspect_ratio {
-                    let width_driven = matches!(edge, Edge::Right | Edge::Left)
-                        || (matches!(edge, Edge::BottomRight | Edge::BottomLeft)
-                            && dx.abs() >= (dy * aspect).abs());
+                    let x_side = edge.x;
+                    let width_driven = edge.y.is_none()
+                        || (edge.x.is_some()
+                            && (pt.x - from.x).abs() >= ((pt.y - from.y) * aspect).abs());
                     let min_w = MIN_WIDTH.max(MIN_HEIGHT * aspect);
                     let width = if width_driven {
                         r.width().max(min_w)
@@ -576,7 +546,7 @@ impl<C: Widget> FloatingWindow<C> {
                         (r.height().max(MIN_HEIGHT) * aspect).max(min_w)
                     };
                     let height = width / aspect;
-                    if matches!(edge, Edge::Left | Edge::BottomLeft) {
+                    if x_side == Some(WindowEdge::Leading) {
                         r.x0 = start.x1 - width;
                         r.x1 = start.x1;
                     } else {
@@ -756,7 +726,7 @@ impl<C: Widget> FloatingWindow<C> {
                 self.update_pointer_position(pt);
                 if self.closable && self.close_rect().contains(pt) {
                     self.touch_close_id = Some(touch.id);
-                } else if let Some(edge) = self.resize_edge_at_with_grip(pt, 22.0) {
+                } else if let Some(edge) = self.edge_at(pt, TOUCH_GRIP) {
                     self.drag = Some(Drag::Resize {
                         edge,
                         start: self.rect,
@@ -1140,7 +1110,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 // Tested first so a press exactly on the (half-open) border
                 // — which `Rect::contains` reports as outside — still
                 // starts a resize.
-                if let Some(edge) = self.resize_edge_at(pt) {
+                if let Some(edge) = self.edge_at(pt, RESIZE_GRIP) {
                     self.drag = Some(Drag::Resize {
                         edge,
                         start: self.rect,
@@ -1275,11 +1245,11 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         if !self.open {
             return None;
         }
-        let edge_cursor = |e: Edge| match e {
-            Edge::Right | Edge::Left => CursorIcon::EwResize,
-            Edge::Bottom => CursorIcon::NsResize,
-            Edge::BottomRight => CursorIcon::NwseResize,
-            Edge::BottomLeft => CursorIcon::NeswResize,
+        let edge_cursor = |e: RectEdge| match (e.x, e.y) {
+            (Some(_), None) => CursorIcon::EwResize,
+            (None, Some(_)) => CursorIcon::NsResize,
+            (Some(WindowEdge::Trailing), Some(_)) => CursorIcon::NwseResize,
+            _ => CursorIcon::NeswResize,
         };
         // Owns the cursor regardless of the exact point — the pointer
         // can slip a few px off the grip while the button is held.
@@ -1288,7 +1258,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
             Some(Drag::Resize { edge, .. }) => return Some(edge_cursor(edge)),
             None => {}
         }
-        if let Some(edge) = self.resize_edge_at(point) {
+        if let Some(edge) = self.edge_at(point, RESIZE_GRIP) {
             return Some(edge_cursor(edge));
         }
         if self.title_bar_rect().contains(point) {
@@ -1959,7 +1929,7 @@ mod tests {
             // Fourteen pixels inside the edge is deliberately outside the precise
             // mouse grip but inside the forgiving touch target.
             let grab = Point::new(start.x1 - 14.0, start.y1 - 14.0);
-            assert_eq!(w.resize_edge_at(grab), None);
+            assert_eq!(w.edge_at(grab, RESIZE_GRIP), None);
             assert!(dispatch(
                 &mut w,
                 &touch(winit::event::TouchPhase::Started, 5, grab)

@@ -66,7 +66,6 @@ FRAMEWORK_LAUNCH = re.compile(
 # vocabulary: a surface's `ResourceSurface::effect`, a view's `cx.effects(..)`.
 TYPED_EFFECT_HANDLER = re.compile(r"\bfn\s+effect\s*\(|\.\s*effects\s*\(\s*(?:move\s*)?\|")
 LEGACY_ENTRY_POINTS = {
-    "legacy room-action override": re.compile(r"\bfn\s+apply_room_action\s*\("),
     "bespoke automation entry point": re.compile(
         r"\bfn\s+(?:automation|agent|mcp|control)_"
         r"(?:invoke|enumerate|dispatch|serve|listen)\b"
@@ -135,7 +134,7 @@ CONTROL_CALLBACKS = frozenset(
         "on_name_group", "on_navigate", "on_open_entry", "on_outcome", "on_remove",
         "on_rename", "on_retry",
         "on_revert", "on_row_action", "on_row_click", "on_save",
-        "on_section_action", "on_seek", "on_select", "on_station", "on_submit",
+        "on_section_action", "on_select", "on_station", "on_submit",
         "on_toggle", "on_undo", "on_undo_band", "on_confirm", "on_decline",
     }
 )
@@ -173,6 +172,16 @@ NOT_CONTROL_CALLBACKS = {
     "what this window shows, no edit",
     "on_sync": "a view's per-sync upkeep hook, run by the framework, not a control",
     "on_presented": "a view's after-frame hook, run by the framework, not a control",
+    "on_station_view": "answers the stepper's published view action for the station chosen",
+    "on_files_view": "answers the drop zone's published view action for the files dropped",
+    "on_check_view": "answers the table's published view action for the box turned",
+    "on_row_click_view": "answers the table's published view action for the row clicked",
+    "on_submit_view": "answers the field's published view action for the text submitted",
+    "on_change_view": "answers the control's published view action for the value its person set",
+    "on_toggle_view": "answers the chip's published view action for the flip its person made",
+    "on_remove_view": "answers the chip's published view action for the removal its person made",
+    "on_enter_default": "the surrounding dialog's default action reaching a host that has no "
+    "dialog around the body, not a control of the prompt's own",
 }
 # Buttons a toolkit composite draws itself and runs a closure for: a row's
 # and a property's actions, a row's swipe actions, a card's hover action, a
@@ -2050,13 +2059,29 @@ def write_baseline(
         if path not in files:
             path.unlink()
     for path, rules in files.items():
-        lines = []
+        lines = leading_comments(path)
         for rule in sorted(rules):
             lines.append(f"[ratchets.{rule}]")
             lines += [f'"{relative}" = {limit}' for relative, limit in sorted(rules[rule].items())]
             lines.append("")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+
+
+def leading_comments(path: Path) -> list[str]:
+    """The comment block a baseline file opens with, kept across rewrites: it
+    says why the ceiling that is left is there, which no count can say."""
+    if not path.exists():
+        return []
+    kept: list[str] = []
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith("#"):
+            if kept and line.strip() == "":
+                kept.append("")
+            break
+        kept.append(line)
+    return kept
 
 
 def main() -> int:

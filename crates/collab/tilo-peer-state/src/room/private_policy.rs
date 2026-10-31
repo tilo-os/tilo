@@ -38,7 +38,7 @@ impl Error {
                 Rule::Nonpersistent => "nonpersistent governed private policy grant",
                 Rule::OwnerAmbiguous => "ambiguous canonical room/owner",
                 Rule::OwnerInvalid => "invalid canonical owner",
-                Rule::OwnerRoot => "owner differs from pinned authority root",
+                Rule::OwnerRoot => "owner differs from the room's owner root",
                 Rule::MediaUnreadable => "unreadable governed media policy",
                 Rule::Read => "private policy read failed",
             }
@@ -49,7 +49,7 @@ impl Error {
 }
 pub(crate) struct Metadata<'a, I, J> {
     pub(crate) room: &'a str,
-    pub(crate) authority: &'a DeviceCert,
+    pub(crate) owner: &'a [u8; 32],
     pub(crate) certificates: I,
     pub(crate) revocations: J,
 }
@@ -180,9 +180,9 @@ fn grants<R: PrivateRead, D: Decode>(
 fn canonical_owner<R: PrivateRead>(
     read: &R,
     room: &str,
-    authority: &DeviceCert,
+    owner: &[u8; 32],
 ) -> Result<String, Error> {
-    let expected = crate::room::key_hex::KeyHex::new(&authority.user_public_key);
+    let expected = crate::room::key_hex::KeyHex::new(owner);
     let mut is_string = false;
     let mut owner_is_root = false;
     let owners = read.all(&read.root(), "owner", |value| {
@@ -239,7 +239,7 @@ where
     I: ExactSizeIterator<Item = &'a DeviceCert> + Clone,
     J: Iterator<Item = &'a RevocationEntry>,
 {
-    let owner = canonical_owner(read, meta.room, meta.authority)?;
+    let owner = canonical_owner(read, meta.room, meta.owner)?;
     let mut grants = BTreeMap::new();
     let mut members = BTreeMap::new();
     let mut peers = BTreeMap::new();
@@ -300,7 +300,7 @@ where
     crate::postcard_sink::hash_into(
         &(
             meta.room,
-            meta.authority,
+            meta.owner,
             owner.as_str(),
             members,
             grants,
@@ -320,9 +320,9 @@ where
 pub(crate) fn legacy_owner(
     read: &LegacyRead<'_, AutoCommit>,
     room: &str,
-    authority: &DeviceCert,
+    owner: &[u8; 32],
 ) -> Result<String, Error> {
-    canonical_owner(read, room, authority)
+    canonical_owner(read, room, owner)
 }
 pub(crate) fn legacy_revision<'a, I, J>(
     read: &LegacyRead<'_, AutoCommit>,

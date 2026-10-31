@@ -42,7 +42,6 @@
 #                      joins the site's home workspace through the site's door
 #                      as a computer joins tilo.coffee's Lounge. Without it
 #                      the session follows this machine's configuration.
-#                      nested-pair.sh points two sessions at a local site.
 #   --model-provider SPEC  give the session's person a model provider, as
 #                      Settings' provider pane does (provider settings, and
 #                      the key in the model gateway's own custody), before
@@ -684,14 +683,15 @@ env "${display_env[@]}" TILO_TEST_CONTROL="$control" setsid "$session_bus" "$dbu
 shell_pid=$!
 children+=("$shell_pid")
 
-# Note once the Home workspace is in a room this device's native owner holds.
+# Note once this device's native owner holds the Home workspace.
 confirm_native() {
     local dump tries=600
     while ((tries--)); do
         kill -0 "$shell_pid" 2>/dev/null || return 0
         dump=$("$bin/tilo-control" state-dump 2>/dev/null) || dump='{}'
-        if jq -e '.workspace_tree as $t | (($t.workspaces // [])[] | select(.id == $t.active) | .room | tostring)
-                as $room | ($t.native_authority.rooms // {}) | has($room)' <<<"$dump" >/dev/null; then
+        if jq -e '.workspace_tree as $t
+                | (($t.workspaces // [])[] | select(.id == $t.active) | .id) as $workspace
+                | any((.held_workspaces // [])[]; .workspace == $workspace)' <<<"$dump" >/dev/null; then
             touch "$native_marker"
             echo "the Home workspace is native"
             return 0

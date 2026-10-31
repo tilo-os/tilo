@@ -64,7 +64,7 @@ fn fixture() -> Element {
                 .with_title("Terminal")
                 .with_footer(Actions::new(
                     Button::new("open", "Open")
-                        .on_click(crate::testing::record_click("opened"))
+                        .on_view(crate::testing::record_click("opened"))
                         .role(ButtonRole::Primary),
                 )),
         ),
@@ -447,7 +447,7 @@ fn cards_in_a_scroll_stack_keep_their_content_height() {
             Text::new("All applications").with_id("trailing-heading"),
         ))
         .push(Box::new(
-            Button::new("final-action", "Open all applications").on_click(move || {
+            Button::new("final-action", "Open all applications").on_effect(move || {
                 counter.set(counter.get() + 1);
             }),
         ));
@@ -565,7 +565,7 @@ fn a_pressable_card_activates_but_its_own_actions_do_not_open_it() {
     let card = Card::new(Box::new(Text::new("Quarterly report")))
         .with_title("Report.pdf")
         .with_footer(Actions::new(
-            Button::new("share", "Share").on_click(crate::testing::record_click("shared")),
+            Button::new("share", "Share").on_effect(crate::testing::record_click("shared")),
         ))
         .on_activate("open-report", move || counter.set(counter.get() + 1));
     let mut harness = FrameHarness::new_with_theme(

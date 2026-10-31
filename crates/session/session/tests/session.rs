@@ -11,11 +11,11 @@
     clippy::indexing_slicing,
     clippy::struct_excessive_bools,
     clippy::arithmetic_side_effects,
-    reason = "test fixtures: a failed step is the assertion"
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
 use std::cell::RefCell;
-use std::io::BufRead as _;
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
 use std::rc::Rc;
@@ -41,6 +41,7 @@ use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
 use tilo_sheets::workspace_settings::WorkspaceSettingsEffect;
 use tilo_surface_host::Published;
+use tilo_test_env::PrivateBus;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
     wl_keyboard::WlKeyboard, wl_pointer, wl_pointer::WlPointer, wl_registry,
@@ -456,6 +457,9 @@ fn a_window_fades_in_as_it_opens_and_its_last_frame_fades_out_as_it_closes() {
 mod keys {
     pub const TAB: u32 = 15;
     pub const A: u32 = 30;
+    pub const D: u32 = 32;
+    pub const LEFT_SHIFT: u32 = 42;
+    pub const ESCAPE: u32 = 1;
     pub const LEFT_META: u32 = 125;
     pub const VOLUME_UP: u32 = 115;
     pub const MUTE: u32 = 113;
@@ -1306,10 +1310,10 @@ impl Audio {
         use tilo_audio_service::sound::Device;
         let device = |node, label: &str, chosen| Device {
             node,
+            name: format!("node-{node}"),
             label: label.into(),
             chosen,
-            volume: None,
-            muted: false,
+            ..Device::default()
         };
         Self {
             sound: RefCell::new(tilo_audio_service::sound::Sound {
@@ -1360,7 +1364,6 @@ impl tilo_session::Service for Audio {
 
 #[test]
 fn a_session_without_an_audio_service_offers_no_sound_to_change() {
-    use std::sync::Arc;
     let _settled = ui::motion::testing::settled();
     let reads = Machine::laptop();
     let session = Session::headless(
@@ -1369,8 +1372,8 @@ fn a_session_without_an_audio_service_offers_no_sound_to_change() {
             quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
                 DeviceHost::new(
                     Device {
-                        reads: Arc::new(reads.clone()),
-                        dispatcher: Arc::new(reads),
+                        reads: std::sync::Arc::new(reads.clone()),
+                        dispatcher: std::sync::Arc::new(reads),
                         preferences: Box::new(Kept::default()),
                     },
                     wake,
@@ -1391,7 +1394,6 @@ fn a_session_without_an_audio_service_offers_no_sound_to_change() {
 
 #[test]
 fn the_panels_sound_is_the_audio_services_and_its_changes_are_the_services_actions() {
-    use std::sync::Arc;
     let _settled = ui::motion::testing::settled();
     let machine = Machine::laptop();
     let reads = machine.clone();
@@ -1402,8 +1404,8 @@ fn the_panels_sound_is_the_audio_services_and_its_changes_are_the_services_actio
             quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
                 DeviceHost::new(
                     Device {
-                        reads: Arc::new(reads.clone()),
-                        dispatcher: Arc::new(reads),
+                        reads: std::sync::Arc::new(reads.clone()),
+                        dispatcher: std::sync::Arc::new(reads),
                         preferences: Box::new(Kept::default()),
                     },
                     wake,
@@ -2802,46 +2804,6 @@ fn a_copy_is_listed_pinned_across_a_restart_and_pasted_into_the_app_in_front() {
 // Notifications from an app
 // =====================================================================
 
-/// A session bus of its own, as `dbus-run-session` starts one, stopped on
-/// drop.
-struct SessionBus {
-    daemon: std::process::Child,
-    address: String,
-    _directory: tempfile::TempDir,
-}
-
-impl SessionBus {
-    fn start() -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let mut daemon = std::process::Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .arg(format!(
-                "--address=unix:path={}",
-                directory.path().join("bus").display()
-            ))
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("the session bus needs dbus-daemon, which the builder image installs");
-        let mut address = String::new();
-        std::io::BufReader::new(daemon.stdout.take().unwrap())
-            .read_line(&mut address)
-            .unwrap();
-        assert!(!address.trim().is_empty(), "dbus-daemon printed no address");
-        Self {
-            daemon,
-            address: address.trim().to_owned(),
-            _directory: directory,
-        }
-    }
-}
-
-impl Drop for SessionBus {
-    fn drop(&mut self) {
-        let _ = self.daemon.kill();
-        let _ = self.daemon.wait();
-    }
-}
-
 /// Send one notification over the freedesktop interface on `address`, as an
 /// app of the session would, and name the id the daemon gave it. The
 /// connection is the app's: it stays open until the caller drops it.
@@ -2884,13 +2846,13 @@ async fn notify(address: &str, summary: &str, body: &str, timeout: i32) -> (zbus
 #[test]
 fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
     let _settled = ui::motion::testing::settled();
-    let bus = SessionBus::start();
+    let bus = PrivateBus::start();
     let wake = tilo_service::LoopWake::default();
     let (side, link) = tilo_session::portal_link::channel(wake.handle());
     let desktop = Rc::new(
         DesktopServices::start(
             &Buses {
-                session: Bus::Address(bus.address.clone()),
+                session: Bus::Address(bus.address().to_owned()),
                 system: Bus::None,
             },
             &wake.handle(),
@@ -2923,7 +2885,7 @@ fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
 
     let runtime = desktop.runtime();
     // It waits for the person: nothing here measures the banner running out.
-    let (app, id) = runtime.block_on(notify(bus.address.as_str(), "New mail", "From Ada", 0));
+    let (app, id) = runtime.block_on(notify(bus.address(), "New mail", "From Ada", 0));
 
     pump(&mut session, &mut [&mut client], |session, _| {
         session.notifications().unread() == 1
@@ -2975,4 +2937,63 @@ fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
     assert_eq!(kept.app_id.as_deref(), Some("so.tilo.mail"));
     assert_eq!(centre.unread(), 1, "and it stays unread until read");
     drop(app);
+}
+
+#[test]
+fn the_dictation_key_shows_the_session_s_own_card_and_escape_closes_it() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let mut client = mapped(&mut session, "org.example.Editor");
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        clients[0].seen.keyboard_focused
+    });
+    let before = session.accessible_labels();
+    key(&mut session, keys::LEFT_META, true);
+    key(&mut session, keys::LEFT_SHIFT, true);
+    tap(&mut session, keys::D);
+    key(&mut session, keys::LEFT_SHIFT, false);
+    key(&mut session, keys::LEFT_META, false);
+    pump(&mut session, &mut [&mut client], |session, _| {
+        session
+            .read("dictation:session")
+            .is_some_and(|reading| reading["session"].is_number())
+    });
+    assert_eq!(
+        session.read("dictation:session").expect("dictation reads")["status"],
+        "preparing",
+        "the key asks for a dictation"
+    );
+    let labels = session.accessible_labels().join("\n");
+    assert!(
+        labels.contains("Checking the focused editable field"),
+        "the card is up on the session's own sheet: {labels}"
+    );
+    assert_ne!(session.accessible_labels(), before, "and it is new");
+
+    // Escape is the card's to answer, and the person's typing is not: the
+    // field they were in keeps seeing every other key.
+    tap(&mut session, keys::A);
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        clients[0].seen.keys.contains(&(keys::A, true))
+    });
+    tap(&mut session, keys::ESCAPE);
+    pump(&mut session, &mut [&mut client], |session, _| {
+        session
+            .read("dictation:session")
+            .is_some_and(|reading| reading["status"] == "idle")
+    });
+    let labels = session.accessible_labels().join("\n");
+    assert!(
+        !labels.contains("Checking the focused editable field"),
+        "the card is gone: {labels}"
+    );
+    assert!(
+        !client
+            .seen
+            .keys
+            .iter()
+            .any(|(code, _)| *code == keys::ESCAPE),
+        "Escape was the card's, never the window's: {:?}",
+        client.seen.keys
+    );
 }

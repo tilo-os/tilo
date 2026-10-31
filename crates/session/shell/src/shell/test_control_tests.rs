@@ -254,6 +254,7 @@ fn serialise_error_emits_code_and_message() {
 fn serialise_state_response_emits_workspace_tree_chrome_and_peers() {
     let resp = Response::State {
         workspace_tree: RawJson::of(&serde_json::json!({ "workspaces": [] })),
+        held_workspaces: serde_json::json!([{ "workspace": 42, "room": "r-1" }]),
         chrome: serde_json::json!({ "overlays": {} }),
         peers: serde_json::json!({ "pointers": [] }),
         sharing: serde_json::json!({ "exposures": [] }),
@@ -272,6 +273,10 @@ fn serialise_state_response_emits_workspace_tree_chrome_and_peers() {
     assert_eq!(
         parsed["state"]["workspace_tree"],
         serde_json::json!({ "workspaces": [] })
+    );
+    assert_eq!(
+        parsed["state"]["held_workspaces"],
+        serde_json::json!([{ "workspace": 42, "room": "r-1" }])
     );
 }
 
@@ -330,6 +335,7 @@ fn state_dump_returns_state_response() {
     assert!(actions.is_empty(), "state_dump must have no side effects");
     let Response::State {
         workspace_tree,
+        held_workspaces,
         chrome,
         peers: _,
         sharing: _,
@@ -348,6 +354,11 @@ fn state_dump_returns_state_response() {
         chrome.get("overlays").is_some(),
         "chrome should carry `overlays` key; got {chrome:?}"
     );
+    assert_eq!(
+        held_workspaces,
+        serde_json::json!([]),
+        "a control state without an owner record holds no workspace"
+    );
 }
 
 #[test]
@@ -362,6 +373,7 @@ fn state_dump_default_impl_returns_nulls() {
     assert!(actions.is_empty());
     let Response::State {
         workspace_tree,
+        held_workspaces,
         chrome,
         peers: _,
         sharing: _,
@@ -371,6 +383,7 @@ fn state_dump_default_impl_returns_nulls() {
     };
     assert!(workspace_tree.to_value().is_null());
     assert!(chrome.is_null());
+    assert_eq!(held_workspaces, serde_json::json!([]));
 }
 
 #[test]

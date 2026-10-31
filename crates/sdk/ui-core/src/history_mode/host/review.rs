@@ -227,8 +227,10 @@ impl HistoryHost {
                     self.restored_source = Some(self.source().clone());
                     // Existing writers observe the new canonical heads. Never
                     // finish another action or manufacture another undo span.
-                    if let HistorySourceRegistration::OwnedDocument { owner, .. } = self.source() {
-                        owner.schedule_committed_history();
+                    if let HistorySourceRegistration::OwnedDocument { owner, .. } = self.source()
+                        && let Err(error) = owner.schedule_committed_history()
+                    {
+                        tracing::error!(%error, "a restored record could not be saved");
                     }
                 }
                 receipt.changed
@@ -326,8 +328,10 @@ impl HistoryHost {
                 self.review = None;
                 if receipt.changed {
                     self.restored_source = Some(self.source().clone());
-                    if let HistorySourceRegistration::OwnedDocument { owner, .. } = self.source() {
-                        owner.schedule_committed_history();
+                    if let HistorySourceRegistration::OwnedDocument { owner, .. } = self.source()
+                        && let Err(error) = owner.schedule_committed_history()
+                    {
+                        tracing::error!(%error, "a restored record could not be saved");
                     }
                 }
                 receipt.changed

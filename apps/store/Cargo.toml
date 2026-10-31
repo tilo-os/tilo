@@ -69,7 +69,6 @@ tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
 app-host = { path = "../../crates/packaging/app-host", default-features = false, features = ["test-support", "service"] }
 runtime-bundle = { path = "../../crates/packaging/runtime-bundle" }
-capnp.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

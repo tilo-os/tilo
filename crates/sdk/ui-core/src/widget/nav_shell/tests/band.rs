@@ -10,7 +10,7 @@ const H: u32 = 800;
 fn banded(kind: ContentKind) -> (NavShell, SharedRc<Cell<usize>>) {
     let presses = SharedRc::new(Cell::new(0usize));
     let counted = SharedRc::clone(&presses);
-    let band = Button::new("band-play", "Play").on_click(move || counted.set(counted.get() + 1));
+    let band = Button::new("band-play", "Play").on_effect(move || counted.set(counted.get() + 1));
     let shell = NavShell::new()
         .with_id("banded")
         .content_kind(kind)

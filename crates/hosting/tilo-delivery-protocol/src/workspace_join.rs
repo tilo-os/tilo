@@ -23,11 +23,11 @@ pub const MAX_WORKSPACE_JOIN_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 pub enum WorkspaceHostMode {
     /// Dedicated home/cloud host certified with `can_act_as_host`.
     CertifiedHost,
-    /// One-room native owner whose exact governing device terminates service.
+    /// One-room native owner whose own device terminates service.
     NativeInteractiveWorkspaceOwner,
 }
 
-/// Verified relay-authentication scope derived only from signed hint + authority data.
+/// Verified relay-authentication scope derived only from the signed hint.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[expect(
     clippy::large_enum_variant,
@@ -36,7 +36,7 @@ pub enum WorkspaceHostMode {
 pub enum WorkspaceHostTrust {
     /// Existing dedicated-host authentication remains capability-gated.
     CertifiedHost,
-    /// Narrow exception for the exact interactive room governor.
+    /// Narrow exception for an owner device serving its own room.
     InteractiveOwner(InteractiveOwnerTrust),
 }
 
@@ -45,7 +45,7 @@ pub enum WorkspaceHostTrust {
 pub struct InteractiveOwnerTrust {
     room: String,
     workspace_id: u64,
-    authority: DeviceCert,
+    host: DeviceCert,
     service_public_key: [u8; 32],
 }
 
@@ -69,9 +69,9 @@ impl InteractiveOwnerTrust {
         self.workspace_id
     }
 
-    /// Exact governing certificate that must answer relay authentication.
-    pub fn authority(&self) -> &DeviceCert {
-        &self.authority
+    /// The owner device that must answer relay authentication.
+    pub fn host(&self) -> &DeviceCert {
+        &self.host
     }
 
     /// Exact Iroh service key terminating the signed endpoint.
@@ -79,12 +79,12 @@ impl InteractiveOwnerTrust {
         self.service_public_key
     }
 
-    /// Verify that `authority` may govern exactly `room`/`workspace_id` right now, and bind
+    /// Verify that `host` may serve exactly `room`/`workspace_id` right now, and bind
     /// that scope to the Iroh service key terminating it.
     pub fn verify(
         room: String,
         workspace_id: u64,
-        authority: DeviceCert,
+        host: DeviceCert,
         service_public_key: [u8; 32],
     ) -> Result<Self, WorkspaceJoinError> {
         let canonical_room = uuid::Uuid::parse_str(&room)
@@ -99,9 +99,9 @@ impl InteractiveOwnerTrust {
                 "interactive owner room/workspace binding is invalid".into(),
             ));
         }
-        tilo_user_identity::verify_device_cert_at(&authority, tilo_clock::unix_now_ns())
+        tilo_user_identity::verify_device_cert_at(&host, tilo_clock::unix_now_ns())
             .map_err(|error| WorkspaceJoinError::Protocol(error.to_string()))?;
-        if !authority.capabilities.can_own_workspaces {
+        if !host.capabilities.can_own_workspaces {
             return Err(WorkspaceJoinError::Protocol(
                 "interactive owner certificate cannot govern workspaces".into(),
             ));
@@ -109,15 +109,14 @@ impl InteractiveOwnerTrust {
         Ok(InteractiveOwnerTrust {
             room,
             workspace_id,
-            authority,
+            host,
             service_public_key,
         })
     }
 }
 
 /// Canonical payload for the signed Iroh workspace-host transport hint.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct IrohWorkspaceHostHintV1 {
     /// Frozen payload version.
     pub version: u32,
@@ -127,8 +126,6 @@ pub struct IrohWorkspaceHostHintV1 {
     pub room: String,
     /// Exact governed workspace ID served by this endpoint.
     pub workspace_id: u64,
-    /// Pinned governing device for the room.
-    pub governing_authority: DeviceCert,
     /// Exact Iroh service address the guest dials.
     pub endpoint_addr: iroh_base::EndpointAddr,
     /// Person root that certified the host device.
@@ -137,6 +134,42 @@ pub struct IrohWorkspaceHostHintV1 {
     pub host_device_certificate: DeviceCert,
     /// HTTP packet relay used by this private/local Iroh deployment.
     pub packet_relay_url: String,
+}
+
+/// A signed hint as an earlier build wrote it: it also named the device
+/// that governed the room then. Restarts still read hints their devices
+/// pinned, which is written beside the rooms they hold.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredHint {
+    version: u32,
+    mode: WorkspaceHostMode,
+    room: String,
+    workspace_id: u64,
+    endpoint_addr: iroh_base::EndpointAddr,
+    host_user_public_key: [u8; 32],
+    host_device_certificate: DeviceCert,
+    packet_relay_url: String,
+    /// The room's governor in a hint from before it named its host alone:
+    /// read, never written.
+    #[serde(default, rename = "governing_authority")]
+    _governing_authority: Option<DeviceCert>,
+}
+
+impl<'de> Deserialize<'de> for IrohWorkspaceHostHintV1 {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let stored = StoredHint::deserialize(deserializer)?;
+        Ok(Self {
+            version: stored.version,
+            mode: stored.mode,
+            room: stored.room,
+            workspace_id: stored.workspace_id,
+            endpoint_addr: stored.endpoint_addr,
+            host_user_public_key: stored.host_user_public_key,
+            host_device_certificate: stored.host_device_certificate,
+            packet_relay_url: stored.packet_relay_url,
+        })
+    }
 }
 
 impl IrohWorkspaceHostHintV1 {
@@ -194,53 +227,33 @@ impl IrohWorkspaceHostHintV1 {
         Ok((host, trust))
     }
 
-    /// Require an inspected invitation to name this exact governed host scope.
-    #[expect(
-        clippy::suspicious_operation_groupings,
-        reason = "the grant is checked against this host's governing authority, not a field of the grant itself"
-    )]
+    /// Require an inspected invitation to name this exact host scope, issued
+    /// by the host itself.
     pub fn validate_invitation(
         &self,
         grant: &tilo_workspace_join::InviteGrant,
     ) -> Result<WorkspaceHostTrust, WorkspaceJoinError> {
-        if grant.room != self.room
-            || grant.workspace_id != self.workspace_id
-            || grant.authority != self.governing_authority
-        {
+        if grant.room != self.room || grant.workspace_id != self.workspace_id {
             return Err(WorkspaceJoinError::Protocol(
                 "invitation scope does not match its signed workspace host hint".into(),
             ));
         }
-        match self.mode {
-            WorkspaceHostMode::CertifiedHost if grant.issuer == self.host_device_certificate => {}
-            WorkspaceHostMode::CertifiedHost => {
-                return Err(WorkspaceJoinError::Protocol(
-                    "certified workspace host did not issue the invitation".into(),
-                ));
-            }
-            WorkspaceHostMode::NativeInteractiveWorkspaceOwner
-                if grant.issuer == self.governing_authority && grant.delegation.is_none() => {}
-            WorkspaceHostMode::NativeInteractiveWorkspaceOwner => {
-                return Err(WorkspaceJoinError::Protocol(
-                    "interactive owner invitation is not signed by its exact governor".into(),
-                ));
-            }
+        if grant.issuer != self.host_device_certificate {
+            return Err(WorkspaceJoinError::Protocol(
+                "the workspace host did not issue the invitation".into(),
+            ));
         }
         Ok(self.verified_trust())
     }
 
-    /// Require a returned bootstrap to preserve the signed host/governor scope.
-    #[expect(
-        clippy::suspicious_operation_groupings,
-        reason = "the grant is checked against this host's governing authority, not a field of the grant itself"
-    )]
+    /// Require a returned bootstrap to come from this signed host's scope.
     pub fn validate_bootstrap(
         &self,
         bootstrap: &JoinBootstrap,
     ) -> Result<WorkspaceHostTrust, WorkspaceJoinError> {
-        if bootstrap.room != self.room
-            || bootstrap.workspace_id != self.workspace_id
-            || bootstrap.authority != self.governing_authority
+        // The host that answered is the one the hint signs for.
+        if (&bootstrap.room, bootstrap.workspace_id, &bootstrap.host)
+            != (&self.room, self.workspace_id, &self.host_device_certificate)
         {
             return Err(WorkspaceJoinError::Protocol(
                 "workspace bootstrap does not match its signed host hint".into(),
@@ -256,7 +269,7 @@ impl IrohWorkspaceHostHintV1 {
                 WorkspaceHostTrust::InteractiveOwner(InteractiveOwnerTrust {
                     room: self.room.clone(),
                     workspace_id: self.workspace_id,
-                    authority: self.governing_authority.clone(),
+                    host: self.host_device_certificate.clone(),
                     service_public_key: *self.endpoint_addr.id.as_bytes(),
                 })
             }
@@ -279,8 +292,6 @@ impl IrohWorkspaceHostHintV1 {
         let now_ns = tilo_clock::unix_now_ns();
         tilo_user_identity::verify_device_cert_at(&self.host_device_certificate, now_ns)
             .map_err(|error| WorkspaceJoinError::Protocol(error.to_string()))?;
-        tilo_user_identity::verify_device_cert_at(&self.governing_authority, now_ns)
-            .map_err(|error| WorkspaceJoinError::Protocol(error.to_string()))?;
         match self.mode {
             WorkspaceHostMode::CertifiedHost
                 if !self.host_device_certificate.capabilities.can_act_as_host =>
@@ -290,11 +301,10 @@ impl IrohWorkspaceHostHintV1 {
                 ));
             }
             WorkspaceHostMode::NativeInteractiveWorkspaceOwner
-                if self.host_device_certificate != self.governing_authority
-                    || !self.governing_authority.capabilities.can_own_workspaces =>
+                if !self.host_device_certificate.capabilities.can_own_workspaces =>
             {
                 return Err(WorkspaceJoinError::Protocol(
-                    "interactive workspace host is not the exact room governor".into(),
+                    "interactive workspace host cannot own workspaces".into(),
                 ));
             }
             _ => {}
@@ -345,6 +355,3 @@ pub enum WorkspaceJoinError {
         message: String,
     },
 }
-
-mod delivery_origin;
-pub use delivery_origin::{DeliveryOriginLocatorV1, TRANSPORT_DELIVERY_ORIGIN_V1};

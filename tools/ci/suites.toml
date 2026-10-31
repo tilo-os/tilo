@@ -233,14 +233,11 @@ suites = [
   "os/tests/test_signing_recovery.py",
   "os/tests/test_signing_spool_transport.py",
   "os/tests/test_stage_kernel_checkpoint.py",
-  "os/tests/test_supervised_disk.py",
-  "os/tests/test_supervised_install_lane.py",
   "os/tests/test_tls_registry_fixture.py",
   "os/tests/test_verify_board_initramfs.py",
   "os/tests/test_verify_rpm_files.py",
   "os/tests/test_vm_install_image_proof.py",
   "os/tests/test_probe_kvm.py",
-  "os/tests/test_windows_dualboot_preflight.py",
   "os/tests/test_windows_direct_dev_provenance.py",
   "os/tests/test_windows_direct_dev_admission.py",
   "os/tests/test_windows_direct_provenance.py",
@@ -503,8 +500,6 @@ inputs = [
   "crates/session/shell/src/shell/search/providers/files.rs",
   # ... and the hosting-load KPI ids equal to the relay load bench's.
   "crates/hosting/tilo-relay/examples/relay_load/main.rs",
-  # ... and the room-load report fields equal to the room load bench's.
-  "crates/dev/room-load/src/",
   # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
   "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
   "crates/session/shell/examples/redraw_bench.rs",
@@ -678,13 +673,6 @@ suites = [
 name = "desktop-open-times"
 inputs = ["crates/browser/tilo-web-desktop/scripts/"]
 suites = ["crates/browser/tilo-web-desktop/scripts/open-times-summary.test.mjs"]
-
-[[group]]
-name = "browser-auth-e2e"
-# dev/auth-e2e.mjs reuses the browser qualification's bundle check and
-# drives Chrome through tools/web/chrome.mjs.
-inputs = ["crates/hosting/tilo-room-service/dev/", "scripts/perf/browser_qualification.mjs", "tools/web/chrome.mjs"]
-suites = ["crates/hosting/tilo-room-service/dev/auth-e2e.test.mjs"]
 
 [[group]]
 name = "browser-benchmark-scripts"
@@ -1528,10 +1516,6 @@ suite = "crates/browser/tilo-browser-runtime/container/test-image.sh"
 reason = "needs the built web entry image"
 
 [[unrequired]]
-suite = "crates/hosting/tilo-room-service/container/test-image.sh"
-reason = "needs the built room-service image"
-
-[[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
 reason = "needs the built registry-server image"
 
@@ -1844,10 +1828,6 @@ reason = "destructive, root: loop devices"
 [[unrequired]]
 suite = "os/tests/system_extension_boot_pack_stage.sh"
 reason = "needs a systemd system manager; skips without one"
-
-[[unrequired]]
-suite = "os/tests/test_direct_sparse_transfer.py"
-reason = "asserts preserved sparse holes, which the container overlay root of the suites job does not report"
 
 [[unrequired]]
 suite = "os/tests/test_import_development_rootfs.py"

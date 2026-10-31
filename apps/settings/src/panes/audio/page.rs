@@ -1,19 +1,19 @@
-//! The Sound page as view code over the person's `audio` section and what
-//! the area reads of the device: the outputs and inputs, the levels, the
-//! devices' profiles, each app's stream, the way into Speakers and the
+//! The Sound page as view code over the person's `audio` section and the
+//! session's `sound` reading: the outputs and inputs, the levels, the
+//! cards' profiles, each app's stream, the way into Speakers and the
 //! system sounds.
 
 use std::rc::Rc;
 
-use media::audio::AudioStream;
 use provider_settings_ui::bound::SettingRows as _;
 use settings_store::system_sounds::SystemSoundEvent;
+use tilo_audio_service::sound::{Device, Stream};
 use ui::LocalState;
 use ui::framework::{Actions, Dispatcher, ViewCx};
 use ui::widget::{Button, Dropdown, Element, Row, Slider, Widget};
 
 use super::{
-    AudioArea, AudioDevice, AudioEffect, AudioModel, OUTPUT_SLIDER_WIDTH, STREAM_SLIDER_MIN_WIDTH,
+    AudioArea, AudioEffect, AudioModel, OUTPUT_SLIDER_WIDTH, STREAM_SLIDER_MIN_WIDTH,
     STREAM_SLIDER_WIDTH, area, bound, device_is_headphones, echo_cancellation, event_shown,
     event_sound, follow_shown, level_meter, mono, stream_live_row, system_sounds,
 };
@@ -110,8 +110,8 @@ fn page(
         dispatcher,
         &model,
         &t("sound-apps"),
-        &model.graph.playback_streams,
-        &model.devices.sinks,
+        &model.streams(true),
+        model.outputs(),
         &t("sound-apps-empty"),
     ));
     // The capture streams (which app is using the microphone), routed to a
@@ -120,8 +120,8 @@ fn page(
         dispatcher,
         &model,
         &t("sound-recording"),
-        &model.graph.record_streams,
-        &model.devices.sources,
+        &model.streams(false),
+        model.inputs(),
         &t("sound-recording-empty"),
     ));
     cards.push(speakers_card(actions));
@@ -172,10 +172,10 @@ fn output_card(
             &[("error", error.as_str().into())],
         ))));
     }
-    if model.devices.sinks.len() + model.sets.shown.len() >= 2 {
+    if model.outputs().len() + model.sets.shown.len() >= 2 {
         // The outputs as a list to pick from, the person's speaker sets
         // among them: the one in use checked.
-        output_rows.push(row(device_list(actions, model, &model.devices.sinks, true)));
+        output_rows.push(row(device_list(actions, model, model.outputs(), true)));
     }
     if let Some(error) = &model.volume_error {
         output_rows.push(error_row(
@@ -185,15 +185,18 @@ fn output_card(
     } else {
         output_rows.push(setting_row(&t("sound-volume"), volume_line(actions, model)));
     }
-    let stereo_sink = model.graph.default_sink().filter(|sink| sink.channels == 2);
-    if model.runtime_caps.balance && stereo_sink.is_some() {
+    // A stereo output is the one a channel test and a balance apply to.
+    let stereo = model
+        .output_device()
+        .is_some_and(|device| device.channels == 2);
+    if model.runtime_caps.balance && stereo {
         output_rows.push(balance(cx));
     }
     if model.offers_mono() {
         output_rows.push(mono(cx));
         output_rows.push(note(&t("sound-mono-caption")));
     }
-    if model.runtime_caps.channel_test && stereo_sink.is_some() {
+    if model.runtime_caps.channel_test && stereo {
         // A tone on one side, then the other: one row, its two buttons the
         // row's control.
         let side = |id: &str, label: &str, channel: &str| {
@@ -310,13 +313,8 @@ fn input_card(
     model: &AudioModel,
 ) -> SettingsSection {
     let mut input_rows = Vec::new();
-    if model.devices.sources.len() >= 2 {
-        input_rows.push(row(device_list(
-            actions,
-            model,
-            &model.devices.sources,
-            false,
-        )));
+    if model.inputs().len() >= 2 {
+        input_rows.push(row(device_list(actions, model, model.inputs(), false)));
     }
     if let Some(error) = &model.input_error {
         input_rows.push(error_row(
@@ -334,7 +332,7 @@ fn input_card(
                 ),
         );
     }
-    if model.runtime_caps.microphone_meter && model.graph.default_source().is_some() {
+    if model.runtime_caps.microphone_meter && model.input_device().is_some() {
         let running = model.mic_session.is_some();
         let activity = if running {
             t("sound-mic-listening")
@@ -380,21 +378,21 @@ fn hardware_card(
     model: &AudioModel,
 ) -> Option<SettingsSection> {
     let mut hardware_rows = Vec::new();
-    for hw in &model.graph.hardware {
-        let selectable: Vec<_> = hw.profiles.iter().filter(|p| p.available).collect();
+    for card in &model.sound.hardware {
+        let selectable: Vec<_> = card.profiles.iter().filter(|p| p.available).collect();
         if selectable.len() < 2 {
             continue;
         }
-        let options: Vec<String> = selectable.iter().map(|p| p.description.clone()).collect();
-        let device = hw.id;
-        let active = hw
-            .active_profile
-            .and_then(|i| hw.profiles.iter().find(|p| p.index == i))
-            .map_or_else(|| t("sound-choose-profile"), |p| p.description.clone());
+        let options: Vec<String> = selectable.iter().map(|p| p.label.clone()).collect();
+        let device = card.node;
+        let active = card
+            .profile
+            .and_then(|i| card.profiles.iter().find(|p| p.index == i))
+            .map_or_else(|| t("sound-choose-profile"), |p| p.label.clone());
         hardware_rows.push(
-            cx.setting(&hw.description)
+            cx.setting(&card.label)
                 .described(t("sound-profile"))
-                .id(format!("audio.profile.{}", hw.id))
+                .id(format!("audio.profile.{}", card.node))
                 .choice_effect(
                     options,
                     &LocalState::new(active),
@@ -404,13 +402,10 @@ fn hardware_card(
                 ),
         );
     }
-    for sink in &model.graph.sinks {
-        if let Some(codec) = &sink.codec {
+    for output in model.outputs() {
+        if let Some(codec) = &output.codec {
             hardware_rows.push(provider_settings_ui::widgets::value_row(
-                &t_args(
-                    "sound-codec",
-                    &[("device", sink.description.as_str().into())],
-                ),
+                &t_args("sound-codec", &[("device", output.label.as_str().into())]),
                 codec,
             ));
         }
@@ -425,8 +420,8 @@ fn streams_card(
     dispatcher: &Dispatcher<Settings>,
     model: &AudioModel,
     title: &str,
-    streams: &[AudioStream],
-    devices: &[AudioDevice],
+    streams: &[&Stream],
+    devices: &[Device],
     empty_note: &str,
 ) -> SettingsSection {
     if streams.is_empty() {
@@ -434,7 +429,7 @@ fn streams_card(
     }
     // The routes: every device, after "follow the default".
     let mut options = vec![follow_shown()];
-    options.extend(devices.iter().map(|d| d.name.clone()));
+    options.extend(devices.iter().map(|d| d.label.clone()));
     let items: Vec<Item> = streams
         .iter()
         .map(|stream| {
@@ -455,7 +450,7 @@ fn streams_card(
 fn device_list(
     actions: &Actions<Settings>,
     model: &AudioModel,
-    devices: &[AudioDevice],
+    devices: &[Device],
     outputs: bool,
 ) -> Box<dyn Widget> {
     let choosing = |effect: AudioEffect| actions.effect(&SettingsEffect::from(effect));
@@ -466,19 +461,21 @@ fn device_list(
     for device in devices {
         let icon = if !outputs {
             ui::icons::Icon::Mic
-        } else if device_is_headphones(&device.name) {
+        } else if device_is_headphones(&device.label) {
             ui::icons::Icon::Headphones
         } else {
             ui::icons::Icon::Speaker
         };
         let kind = if outputs { "output" } else { "input" };
-        let mut entry =
-            ui::widget::ListRow::new(format!("audio.{kind}.{}", device.id), device.name.clone())
-                .icon(icon)
-                .checked(device.default)
-                .selected(device.default);
-        if !device.default {
-            let device = device.name.clone();
+        let mut entry = ui::widget::ListRow::new(
+            format!("audio.{kind}.{}", device.node),
+            device.label.clone(),
+        )
+        .icon(icon)
+        .checked(device.chosen)
+        .selected(device.chosen);
+        if !device.chosen {
+            let device = device.label.clone();
             let choose = if outputs {
                 AudioEffect::SelectOutput { device }
             } else {
@@ -526,12 +523,12 @@ fn device_list(
 fn stream_row(
     dispatcher: &Dispatcher<Settings>,
     model: &AudioModel,
-    s: &AudioStream,
+    s: &Stream,
     options: &[String],
     routable: bool,
 ) -> Box<dyn Widget> {
-    let id = s.id;
-    let muted = s.muted.unwrap_or(false);
+    let id = s.node;
+    let muted = s.muted;
     let resource = stream_live_row(s).into_resource();
     let volume = bound(
         Slider::from_state(&LocalState::new(f64::from(s.volume.unwrap_or(1.0))))
@@ -595,7 +592,7 @@ fn stream_row(
     }
     let mut line = ui::widget::ListRow::new(format!("audio.stream.{id}"), s.app.clone())
         .trailing(Box::new(controls));
-    if let Some(media) = s.media_name.as_deref().filter(|media| !media.is_empty()) {
+    if let Some(media) = s.media.as_deref().filter(|media| !media.is_empty()) {
         line = line.secondary(media);
     }
     Box::new(line)

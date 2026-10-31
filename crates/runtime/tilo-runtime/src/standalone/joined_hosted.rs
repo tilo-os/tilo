@@ -6,8 +6,8 @@
 //! invitation its replica redeems ([`RoomHost::place_own_room`]), and from
 //! then on the room is one of the rooms this profile joined, its session
 //! carried in process ([`RoomHost::connect_local`]). The host takes part in
-//! the room's channels with this device's own leaf, so this device takes a
-//! channel's keys there ([`Joined::hosted_channel_keys`]).
+//! the room's channels as this device's one peer, asking this device's own
+//! channel service for their keys.
 //!
 //! An app's write to the room goes to the host as a commit and is
 //! acknowledged once the host keeps it. A write to a record the room does
@@ -21,7 +21,8 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use tilo_desktop_model::RoomId;
-use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
+use tilo_peer_state::owner::session::Reach;
+use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use tilo_relay_session::{CoeditPayload, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
 use tilo_room_host::host::RoomHost;
 
@@ -114,15 +115,27 @@ impl Joined {
             .with_current(room, |view| {
                 Ok(view
                     .transport_hint()
-                    .is_ok_and(|hint| tilo_joined_room::session::hosted_by(hint, &own)))
+                    .is_ok_and(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own)))
             })
             .unwrap_or(false)
+    }
+
+    /// How this device reaches a room's host: its own host in process,
+    /// every other over the network.
+    pub(super) fn reach(&self) -> Reach {
+        Reach {
+            endpoint: self.endpoint.clone(),
+            https: None,
+            own_host: self
+                .room_host()
+                .map(|host| Arc::clone(host) as Arc<dyn tilo_peer_state::owner::session::OwnHost>),
+        }
     }
 
     /// The workspace-join exchange `invitation` asks for: with this
     /// device's own host in process when the invitation names it, an
     /// endpoint cannot dial itself; over the network otherwise.
-    pub(super) fn join_client(&self, invitation: &str) -> WorkspaceJoinClient {
+    pub(super) fn join_client(&self, invitation: &str) -> Result<WorkspaceJoinClient, String> {
         let own = self.own_device();
         let hosted_here = tilo_peer_state::join::decode_and_verify_invitation_text(
             invitation,
@@ -135,76 +148,11 @@ impl Joined {
                 .grant()
                 .transport
                 .iter()
-                .any(|hint| tilo_joined_room::session::hosted_by(hint, &own))
+                .any(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own))
         });
-        match self.room_host().filter(|_| hosted_here) {
-            Some(host) => WorkspaceJoinClient::local(host.join_service(), own),
-            None => WorkspaceJoinClient::new(self.endpoint.clone()),
-        }
-    }
-
-    /// The co-edit session of workspace `ws` with the host `hint` pins: in
-    /// process with this device's own host, dialled otherwise.
-    pub(super) async fn connect(
-        &self,
-        ws: u64,
-        hint: &tilo_peer_state::join::TransportHint,
-        device: tilo_user_identity::DeviceCert,
-        revocations: tilo_user_identity::RevocationList,
-    ) -> Result<RelayCoeditSession, String> {
-        let own = self.own_device();
-        let key = self.custody.device_signing_key.clone();
-        if !tilo_joined_room::session::hosted_by(hint, &own) {
-            return Ok(tilo_joined_room::session::dial(
-                self.endpoint.clone(),
-                ws,
-                hint,
-                device,
-                key,
-                revocations,
-            )
-            .await?);
-        }
-        let client = self
-            .room_host()
-            .ok_or("this device's room host is not running")?
-            .connect_local(device, key, revocations)
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(tilo_joined_room::session::join_local(
-            client, ws, hint, own,
-        )?)
-    }
-
-    /// `channel`'s content keys from this device's own room host when it
-    /// hosts `room`: the host's leaf is this device's, so the keys are taken
-    /// there. `None` for a room hosted elsewhere.
-    pub(in crate::standalone) fn hosted_channel_keys(
-        &self,
-        room: RoomId,
-        channel: collab_types::ChannelId,
-        route: Option<&collab_types::ChannelRoute>,
-        create: bool,
-    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
-        if !self.hosted_here(room) {
-            return None;
-        }
-        let host = Arc::clone(self.room_host()?);
-        let (room, route) = (room.to_string(), route.cloned());
-        let (answer, answered) = std::sync::mpsc::sync_channel(1);
-        // Answered on the runtime's own tasks, never on the asking thread:
-        // the broker asks from its connections' runtime, where waiting on
-        // another runtime panics.
-        tilo_rt::app().spawn(async move {
-            let keys = host
-                .rooms()
-                .own_channel_keys(&room, channel, route.as_ref(), create)
-                .await;
-            let _ = answer.send(keys);
-        });
-        answered
-            .recv()
-            .unwrap_or_else(|_| Some(Err("the runtime stopped".into())))
+        self.reach()
+            .join_client(hosted_here, own)
+            .ok_or_else(|| "this device's room host is not running".into())
     }
 
     /// Commit `request`, an app's write to `room`, a room this device's host
@@ -230,7 +178,10 @@ impl Joined {
         }
         let (held, authors, generation) = self.owner.with_current(room, |view| {
             let now = SystemTime::now();
-            let member = view.peer().permissions(own, now)?;
+            let member = view
+                .peer()
+                .permissions(own, now)
+                .map_err(|error| error.to_string())?;
             Ok((
                 view.peer().holds_document(&app, &record),
                 member
@@ -370,9 +321,7 @@ impl Joined {
             .block_on(async move { host.room_records().retained(ws).await })
             .ok()?;
         let route = collab_types::ChannelRoute::new(app, record);
-        let keys = self
-            .hosted_channel_keys(room, route.channel(&room.to_string()), Some(&route), false)?
-            .ok()?;
+        let keys = self.channel_keys().get()?.record_keys(room, &route)?.ok()?;
         retained.iter().rev().find_map(|kept| {
             let neighbour_wire::NeighbourMsg::AppDocument {
                 app_id,

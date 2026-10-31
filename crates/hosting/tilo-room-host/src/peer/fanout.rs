@@ -227,9 +227,9 @@ impl LiveFanout<'_> {
             return None;
         }
         // An on-demand record's changes go to who opened it; a host this
-        // workspace federates with keeps all of the room.
+        // workspace is attached to keeps all of the room.
         if let crate::store::record_sync::Reach::Opened(channel) = self.frame.reach
-            && !runtime.federated(recipient, sub)
+            && !runtime.attached(recipient)
             && !runtime.holds_record(recipient, &channel)
         {
             return None;
@@ -264,7 +264,7 @@ impl LiveFanout<'_> {
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             return Ok(());
         }
-        if target.peer.role == crate::auth::PeerRole::Device
+        if !runtime.attached(recipient)
             && self
                 .frame
                 .checkpoint_channel
@@ -305,7 +305,7 @@ impl LiveFanout<'_> {
         match target.tx.try_send(delivery) {
             Ok(()) => {
                 *delivered = delivered.saturating_add(1);
-                if target.peer.role == crate::auth::PeerRole::Device
+                if !runtime.attached(recipient)
                     && let Some(channel) = self.frame.checkpoint_channel
                 {
                     runtime.mark_checkpoint_served(recipient, channel);

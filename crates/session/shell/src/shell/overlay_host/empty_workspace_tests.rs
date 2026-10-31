@@ -278,9 +278,9 @@ fn host_with_live_app(
     contract: &tilo_actions::ActionContract,
 ) -> (
     ShellOverlayHost,
-    tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_broker_capnp::InvocationEnvelope>,
+    tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_app_broker::InvocationEnvelope>,
 ) {
-    use crate::shell::collab_broker_capnp::{PublishedAction, PublishedInput, PublishedSurface};
+    use crate::shell::collab_app_broker::{PublishedAction, PublishedInput, PublishedSurface};
     let mut tree = WorkspaceTree::bootstrap_default();
     tree.own_workspaces_for_test(crate::shell::state::local_user_id_for_room);
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);

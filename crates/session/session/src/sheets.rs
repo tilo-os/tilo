@@ -7,7 +7,7 @@
 //! is up.
 
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_compositor::{HostKey, HostLayer, SurfaceHost};
+use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
 use tilo_sheets::Seat;
 use tilo_surface_host::Published;
 use tilo_surface_host::{AppHost, Placement};
@@ -25,6 +25,10 @@ pub(crate) struct Sheet<S: Seat> {
     /// The app answers its actions and draws while the sheet is down too: a
     /// command surface, whose key takes a screenshot without the bar up.
     always_serving: bool,
+    /// The sheet asks the person something about what they are typing into
+    /// and leaves the keyboard where it was: it takes Enter and Escape, and
+    /// every other key reaches the field under it.
+    typing_through: bool,
 }
 
 impl<S: Seat> Sheet<S> {
@@ -53,6 +57,7 @@ impl<S: Seat> Sheet<S> {
             lock_screen: false,
             outputs: Vec::new(),
             always_serving: false,
+            typing_through: false,
         })
     }
 
@@ -60,6 +65,15 @@ impl<S: Seat> Sheet<S> {
     /// offered: what it takes is the whole point of the key that asks it.
     pub(crate) const fn always_serving(mut self) -> Self {
         self.always_serving = true;
+        self
+    }
+
+    /// Ask about what the person is typing into without taking their typing
+    /// from them: the sheet answers Enter and Escape, the field keeps every
+    /// other key. A prompt that asks whether to listen has to leave the
+    /// person's typing where it was.
+    pub(crate) const fn typing_through(mut self) -> Self {
+        self.typing_through = true;
         self
     }
 
@@ -184,7 +198,23 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
     }
 
     fn wants_keyboard(&self) -> bool {
-        self.open()
+        self.open() && !self.typing_through
+    }
+
+    fn claim_key(&mut self, key: &HostKey, _locked: bool) -> KeyClaim {
+        // The card's own two keys: the primary answer on Enter, the way out
+        // on Escape. Ordinary typing is the field's.
+        let answers = self.typing_through
+            && self.open()
+            && matches!(
+                key.unmodified_keysym,
+                xkeysym::key::Return | xkeysym::key::Escape
+            );
+        if answers {
+            KeyClaim::Take
+        } else {
+            KeyClaim::Pass
+        }
     }
 
     fn key(&mut self, key: &HostKey) {

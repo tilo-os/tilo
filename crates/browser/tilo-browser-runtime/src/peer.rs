@@ -29,10 +29,10 @@ use std::sync::Arc;
 use js_sys::{Function, Promise, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
 use tilo_browser_peer::{
-    DeviceSigner, DocumentRoute, FailureSubject, Host, HttpClient, HttpFuture, LocalState,
-    PeerConfig, PeerEvent, PeerEvents, PeerHandle, PeerRecord, PeerSnapshot, PeerStore, SignError,
-    SignFuture,
+    DeviceSigner, FailureSubject, Host, HttpClient, HttpFuture, LocalState, PeerConfig, PeerEvent,
+    PeerEvents, PeerHandle, PeerRecord, PeerSnapshot, PeerStore, SignError, SignFuture,
 };
+use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::live::{
     CursorChat, DragPhase, LiveAnchor, LiveFrame, LiveLayout, LiveObject, LiveParticipant,
     LiveReaction, LiveRecord, LiveWave, LiveWindow, OpsFrame, ParticipantKind, PresenceFrame,

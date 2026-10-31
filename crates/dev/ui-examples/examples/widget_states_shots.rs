@@ -2192,9 +2192,9 @@ fn list_blocks() -> Vec<Block> {
             gutter(vec![Box::new(
                 Row::new()
                     .push(Box::new(
-                        Chip::new("design").with_id("tag-design").on_click(|| {}),
+                        Chip::new("design").with_id("tag-design").on_view(|| {}),
                     ))
-                    .push(Box::new(Chip::new("Sorted by date").menu().on_click(|| {})))
+                    .push(Box::new(Chip::new("Sorted by date").menu().on_view(|| {})))
                     .push(Box::new(Chip::new("Unread").selected(true))),
             )])
         }),

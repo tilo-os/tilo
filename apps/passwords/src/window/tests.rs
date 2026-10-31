@@ -3,6 +3,7 @@ use accounts::{SecretId, SecretItem};
 use ui::automerge::{self, AutoCommit};
 use zeroize::Zeroizing;
 
+use crate::PasswordsEffect;
 use crate::vault::{Dialog, DraftField, Request};
 
 fn temp_root(name: &str) -> std::path::PathBuf {
@@ -20,6 +21,13 @@ fn send(app: &mut PasswordsWindow, doc: &mut AutoCommit, event: &WindowEvent) {
 
 fn request(app: &mut PasswordsWindow, request: Request) {
     app.requests.borrow_mut().push(request);
+    app.settle();
+}
+
+/// Run `effect` on the vault, as the palette, an agent or a bound control
+/// does.
+fn effect(app: &mut PasswordsWindow, effect: PasswordsEffect) {
+    app.core_mut().perform(effect).expect("the effect runs");
     app.settle();
 }
 
@@ -292,7 +300,7 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
         let mut model = crate::PasswordsModel::open_in(&root);
         let mut item = SecretItem::login("Account", "ada", "private-value");
         item.add_origin("https://example.invalid").unwrap();
-        model.save_item(&mut item).unwrap();
+        let id = model.save_item(&mut item).unwrap();
         let mut app = PasswordsWindow::new(model);
 
         request(&mut app, Request::CopySecret);
@@ -307,7 +315,7 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
                 .is_some_and(|message| message.starts_with("Copied password"))
         );
 
-        request(&mut app, Request::RevealSecret);
+        effect(&mut app, PasswordsEffect::Reveal { item: id.0.clone() });
         assert_eq!(
             app.core()
                 .revealed
@@ -315,8 +323,13 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
                 .map(|(_, value, _)| value.to_string()),
             Some("private-value".into())
         );
-        request(&mut app, Request::RevealSecret);
-        assert!(app.core().revealed.is_none(), "the same action hides it");
+        effect(&mut app, PasswordsEffect::Reveal { item: id.0.clone() });
+        assert!(
+            app.core().revealed.is_some(),
+            "revealing again leaves it shown"
+        );
+        effect(&mut app, PasswordsEffect::Hide { item: id.0 });
+        assert!(app.core().revealed.is_none(), "hiding puts it away");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -327,15 +340,15 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
         let mut model = crate::PasswordsModel::open_in(&root);
         let mut item = SecretItem::login("Account", "ada", "private-value");
         item.add_origin("https://example.invalid").unwrap();
-        model.save_item(&mut item).unwrap();
+        let id = model.save_item(&mut item).unwrap();
         let mut app = PasswordsWindow::new(model);
         for copy in [
-            Request::CopySecret,
-            Request::CopyIdentity,
-            Request::CopyOrigins,
+            PasswordsEffect::Copy { item: id.0.clone() },
+            PasswordsEffect::CopyIdentity { item: id.0.clone() },
+            PasswordsEffect::CopyOrigins { item: id.0 },
         ] {
             app.shell.dismiss_toast();
-            request(&mut app, copy);
+            effect(&mut app, copy);
             assert_eq!(
                 app.shell().toast_text(),
                 Some("Could not copy to the clipboard. Try again.")
@@ -437,7 +450,8 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
         let stored = app.core().model.as_ref().unwrap().items();
         assert_eq!(stored[0].title, "Renamed account");
         assert_eq!(stored[0].password, "correct horse battery staple");
-        request(&mut app, Request::CopyOrigins);
+        let id = stored[0].id.0.clone();
+        effect(&mut app, PasswordsEffect::CopyOrigins { item: id });
         let copied = ui::clipboard_paste().unwrap();
         assert!(copied.contains("https://example.com"));
         assert!(copied.contains("https://login.example.com"));

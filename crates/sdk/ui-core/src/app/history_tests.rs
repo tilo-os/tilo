@@ -4368,6 +4368,12 @@ fn emit_pending_control_command(
     let node = node_for_test_id(app, test_id);
     app.perform_node_action(node, &crate::a11y::Action::Activate)
         .unwrap();
+    // The pending control publishes its press; History hosts that chrome and
+    // answers it, which queues the continuation the test takes below.
+    assert!(
+        app.service_history_own_controls(),
+        "History answers its chrome's press"
+    );
     let mut commands = app
         .history
         .as_ref()
@@ -5311,7 +5317,7 @@ fn denied_bridge_with_exit_emission() -> DeniedBridge {
             crate::widget::Column::new()
                 .push(Box::new(crate::widget::BoundAppWidget::new(component)))
                 .push(Box::new(
-                    crate::widget::Button::new("live-pulse", "Live pulse").on_click(|| {}),
+                    crate::widget::Button::new("live-pulse", "Live pulse").on_effect(|| {}),
                 )),
         ),
         denied: denied.clone(),
@@ -5638,36 +5644,18 @@ fn custody_matrix_spec(kind: &str) -> tilo_actions::ResourceSpec {
         "ToggleGroup" => Some(ParamType::Integer),
         _ => None,
     };
-    let spec = if kind == "CommandPalette" {
-        ActionSpec::prompted_operation(
-            "run",
-            "Run",
-            "Value",
-            "Value",
-            OperationKind::Effect,
-            "fixture.control",
-            |value| {
-                EncodedAction::encode_operation(
-                    "fixture.control",
-                    &serde_json::json!({"value":value}),
-                )
-                .unwrap()
-            },
-        )
-    } else {
-        ActionSpec::typed_operation(
-            "run",
-            "Run",
-            "Run",
-            OperationKind::Effect,
-            "fixture.control",
-            parameter
-                .into_iter()
-                .map(|ty| ActionParam::required("value", ty, "Value"))
-                .collect(),
-            |args| EncodedAction::encode_operation("fixture.control", &args.to_json()).unwrap(),
-        )
-    }
+    let spec = ActionSpec::typed_operation(
+        "run",
+        "Run",
+        "Run",
+        OperationKind::Effect,
+        "fixture.control",
+        parameter
+            .into_iter()
+            .map(|ty| ActionParam::required("value", ty, "Value"))
+            .collect(),
+        |args| EncodedAction::encode_operation("fixture.control", &args.to_json()).unwrap(),
+    )
     .with_continuation_identity(|query| match query {
         ContinuationQuery::Exact(arguments) => Some(ContinuationEvidence::Exact {
             target: ContinuationKey::new(
@@ -5707,7 +5695,6 @@ fn custody_matrix_app_with_confirmation(
     kind: &str,
     confirmation: tilo_actions::ConfirmationPolicy,
 ) -> (App, std::rc::Rc<std::cell::RefCell<Vec<serde_json::Value>>>) {
-    use crate::widget::command_palette::{CommandEntry, CommandPalette};
     use crate::widget::toggle_group::Segment;
     use crate::widget::*;
     let mut resource = custody_matrix_spec(kind);
@@ -5772,15 +5759,6 @@ fn custody_matrix_app_with_confirmation(
                 .with_action_id("control")
                 .on_action(unit()),
         ),
-        "CommandPalette" => {
-            let mut palette = CommandPalette::commands();
-            let flat = tilo_actions::flatten(std::slice::from_ref(&resource));
-            palette.set_entries(vec![
-                CommandEntry::from_flat_action(&flat[0]).with_argument_prefill("Prompted value"),
-            ]);
-            palette.open();
-            Box::new(palette)
-        }
         _ => panic!("unknown matrix control"),
     };
     let resources = if kind == "ToggleGroupView" {
@@ -5795,11 +5773,9 @@ fn custody_matrix_app_with_confirmation(
         unsettled_layout: None,
         installed_output: None,
         record: None,
-        child: Box::new(
-            Column::new()
-                .push(control)
-                .push(Box::new(Button::new("pulse", "Live pulse").on_click(|| {}))),
-        ),
+        child: Box::new(Column::new().push(control).push(Box::new(
+            Button::new("pulse", "Live pulse").on_effect(|| {}),
+        ))),
         resources,
         ledger: ledger.clone(),
     });
@@ -5822,7 +5798,8 @@ fn custody_matrix_app_with_confirmation(
     )
     .unwrap();
     layout(&mut app);
-    assert_eq!(app.control_coverage().registered, 1, "{kind}");
+    // The matrix control and the live pulse beside it both publish a route.
+    assert_eq!(app.control_coverage().registered, 2, "{kind}");
     (app, ledger)
 }
 
@@ -5836,33 +5813,11 @@ fn custody_matrix_activate(app: &mut App, kind: &str, second: bool) -> serde_jso
         .find(|node| {
             app.inspect_node(*node, |widget| match kind {
                 "EmptyState" => widget.name() == "EmptyState",
-                "CommandPalette" => widget.test_id() == Some("command_palette_input"),
                 _ => widget.test_id() == Some("control"),
             })
             .unwrap_or(false)
         })
         .unwrap_or_else(|| panic!("mounted real control {kind}"));
-    if kind == "CommandPalette" {
-        app.mutate_node(node, |widget| widget.set_focus(true))
-            .unwrap();
-        let event = crate::synthetic_input::key_input(
-            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
-            ElementState::Pressed,
-        );
-        for _ in 0..2 {
-            let handled = app
-                .dispatch_node(node, |widget, doc, path| {
-                    crate::testing::Dispatch::new()
-                        .doc(doc)
-                        .path(path)
-                        .send(widget, &event)
-                        .handled
-                })
-                .unwrap();
-            assert!(handled);
-        }
-        return serde_json::json!({"value":"Prompted value"});
-    }
     let (action, expected) = match kind {
         "Checkbox" | "Toggle" => (Action::ToggleCheck, serde_json::json!({"value":true})),
         "Slider" => (
@@ -5921,7 +5876,6 @@ const CUSTODY_MATRIX: &[&str] = &[
     "ToggleGroup",
     "ToggleGroupView",
     "EmptyState",
-    "CommandPalette",
 ];
 
 #[test]
@@ -6001,7 +5955,7 @@ fn control_custody_core_first_emission_after_return_keeps_live_semantics() {
             crate::widget::Column::new()
                 .push(Box::new(crate::widget::BoundAppWidget::new(component)))
                 .push(Box::new(
-                    crate::widget::Button::new("live-pulse", "Live pulse").on_click(|| {}),
+                    crate::widget::Button::new("live-pulse", "Live pulse").on_effect(|| {}),
                 )),
         ),
         denied: denied.clone(),

@@ -215,7 +215,7 @@ fn an_agent_mount_and_a_person_mount_converge() {
 
 /// The record's identity alone, as a participant holds it before the
 /// creator's content arrives: the shortest prefix of the creator's history
-/// that names the record and its schema.
+/// that names the record.
 fn identity_only(page: &Replica) -> Vec<u8> {
     use automerge::{ROOT, ReadDoc as _};
     let changes = page
@@ -240,8 +240,7 @@ fn identity_only(page: &Replica) -> Vec<u8> {
                         .iter()
                         .all(|key| prefix.get(&record, *key).unwrap().is_some())
                 });
-            (named && prefix.get(ROOT, "tilo:schema_version").unwrap().is_some())
-                .then(|| prefix.save())
+            named.then(|| prefix.save())
         })
         .expect("the creator's history names the record")
 }

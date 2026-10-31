@@ -378,7 +378,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let dispatch = self.dispatch.clone();
         let (app, record, target) = (app.to_owned(), record.map(str::to_owned), reference.clone());
         ui_core::widget::Chip::reference(reference.label.clone(), &reference.id)
-            .on_click(move || dispatch.open_reference(&app, record.as_deref(), &target))
+            .on_view(move || dispatch.open_reference(&app, record.as_deref(), &target))
     }
 
     /// Open the platform search with `request`, narrowed to this app or one

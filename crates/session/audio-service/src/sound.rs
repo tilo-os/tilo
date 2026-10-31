@@ -52,9 +52,15 @@ pub struct Sound {
     pub muted: bool,
     /// The input sound records from, by node id.
     pub input: Option<u32>,
+    /// Its level from 0 to 1, whether or not muted.
+    pub input_volume: Option<f32>,
     pub input_muted: bool,
     pub outputs: Vec<Device>,
     pub inputs: Vec<Device>,
+    /// Every application's stream, playing or recording.
+    pub streams: Vec<Stream>,
+    /// The sound cards, and the profiles each offers.
+    pub hardware: Vec<Card>,
     /// Actions taken and not yet answered by the device, by id.
     pub pending: Vec<String>,
     /// Why the last change did not happen, until the next one.
@@ -67,11 +73,69 @@ pub struct Sound {
 pub struct Device {
     /// Its `PipeWire` node id.
     pub node: u32,
+    /// Its `node.name`, the machine name a tone or a meter captures on.
+    pub name: String,
     pub label: String,
     /// The one in use.
     pub chosen: bool,
     pub volume: Option<f32>,
     pub muted: bool,
+    /// The channels it plays or records: a stereo output takes a balance,
+    /// a mono one no speaker test.
+    pub channels: usize,
+    /// The Bluetooth codec it is on, when it advertises one.
+    pub codec: Option<String>,
+}
+
+/// One application's stream: what it plays or records, how loud, and where.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct Stream {
+    /// Its `PipeWire` node id.
+    pub node: u32,
+    /// The application, as it named itself.
+    pub app: String,
+    /// What it plays, when the application says.
+    pub media: Option<String>,
+    /// Whether it plays (`true`) or records.
+    pub playback: bool,
+    /// The output (or input) it is linked to now.
+    pub target: Option<u32>,
+    pub volume: Option<f32>,
+    pub muted: bool,
+}
+
+impl Stream {
+    /// What a page calls the stream: the application, and what it plays.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self.media.as_deref().filter(|media| !media.is_empty()) {
+            Some(media) => format!("{} — {media}", self.app),
+            None => self.app.clone(),
+        }
+    }
+}
+
+/// One sound card (a codec or a Bluetooth transport) and its profiles.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct Card {
+    /// Its `PipeWire` device id, the handle a profile is chosen by.
+    pub node: u32,
+    pub label: String,
+    /// The index of the profile in use.
+    pub profile: Option<u32>,
+    pub profiles: Vec<Profile>,
+}
+
+/// One profile a sound card offers.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct Profile {
+    pub index: u32,
+    pub label: String,
+    /// Whether the card offers it here and now.
+    pub available: bool,
 }
 
 /// The `sound` resource's actions; each changes this device only.
@@ -163,6 +227,76 @@ pub enum SoundAction {
         keywords = "microphone, mic mute, mikrofon"
     )]
     ToggleInputMuted,
+    /// Set the microphone's level.
+    #[effect(
+        own_device,
+        idempotent,
+        label = "Input level",
+        icon = "mic",
+        keywords = "microphone level, mic gain, eingangspegel"
+    )]
+    SetInputVolume {
+        #[param("Level from 0 to 1")]
+        level: f64,
+    },
+    /// Play (or record) one application's stream through an output (or
+    /// input), or release it to follow the default.
+    #[effect(
+        own_device,
+        idempotent,
+        label = "Route an application",
+        icon = "speaker",
+        keywords = "per-app volume, application routing, app stream"
+    )]
+    RouteStream {
+        #[param("The stream's audio node")]
+        stream: u32,
+        #[param("The output's (or input's) audio node; none follows the default")]
+        device: Option<u32>,
+    },
+    /// Set one application's volume.
+    #[effect(
+        own_device,
+        idempotent,
+        label = "Application volume",
+        icon = "volume-2",
+        keywords = "per-app volume, application level, app stream"
+    )]
+    SetStreamVolume {
+        #[param("The stream's audio node")]
+        stream: u32,
+        #[param("Level from 0 to 1")]
+        level: f64,
+    },
+    /// Mute or unmute one application.
+    #[effect(
+        own_device,
+        idempotent,
+        label = "Mute an application",
+        icon = "volume-x",
+        keywords = "per-app mute, application mute, app stream"
+    )]
+    SetStreamMuted {
+        #[param("The stream's audio node")]
+        stream: u32,
+        #[param("Whether the stream is muted")]
+        muted: bool,
+    },
+    /// Use another profile of a sound card (high fidelity, a headset's
+    /// microphone).
+    #[effect(
+        own_device,
+        idempotent,
+        label = "Audio device profile",
+        icon = "speaker",
+        keywords = "profile, hfp, a2dp, high fidelity, headset"
+    )]
+    SetProfile {
+        #[param("The sound card's device id")]
+        device: u32,
+        #[param("The profile's index")]
+        profile: u32,
+    },
 }
 
 /// The sound resource reading `sound`.
@@ -187,9 +321,31 @@ pub fn resource(sound: &Sound) -> ResourceSpec {
         }
     }
     if sound.input.is_none() {
-        for action in ["set-input-muted", "toggle-input-muted"] {
+        for action in ["set-input-muted", "toggle-input-muted", "set-input-volume"] {
             unavailable(&mut resource, action, "no_input", "There is no sound input");
         }
+    }
+    if sound.streams.is_empty() {
+        for action in ["route-stream", "set-stream-volume", "set-stream-muted"] {
+            unavailable(
+                &mut resource,
+                action,
+                "no_streams",
+                "No application is playing or recording",
+            );
+        }
+    }
+    if !sound
+        .hardware
+        .iter()
+        .any(|card| card.profiles.iter().any(|profile| profile.available))
+    {
+        unavailable(
+            &mut resource,
+            "set-profile",
+            "no_profiles",
+            "No sound card offers a profile",
+        );
     }
     let outputs = sound.outputs.iter().map(|device| {
         ResourceSpec::new(

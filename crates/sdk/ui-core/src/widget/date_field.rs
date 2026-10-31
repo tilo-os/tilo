@@ -107,7 +107,9 @@ fn field(
     let picker = DatePicker::new(value.unwrap_or(today))
         .with_today(today)
         .with_accessible_name(crate::i18n::widget_format("date-field-calendar", &[]))
-        .on_change(move |day| on_day.set(Some(Some(day))));
+        .on_view(format!("{id}-calendar"), move |day| {
+            on_day.set(Some(Some(day)))
+        });
     let mut content = Stack::stack().push(Box::new(picker));
     if optional && value.is_some() {
         let on_clear = Rc::clone(picked);
@@ -116,7 +118,7 @@ fn field(
             &crate::i18n::widget_format("date-field-clear", &[]),
         )
         .role(ButtonRole::Plain)
-        .on_click(move || on_clear.set(Some(None)));
+        .on_view(move || on_clear.set(Some(None)));
         content = content.push(Box::new(clear));
     }
     Button::new(id, &DateField::label(value))

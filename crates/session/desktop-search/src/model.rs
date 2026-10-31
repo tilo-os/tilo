@@ -61,8 +61,9 @@ pub struct ActionTarget {
     pub resource_kind: String,
     pub resource_label: String,
     pub spec: ActionSpec,
-    /// The argument the row already carries, as `(parameter, value)`: an
-    /// app's `open` invoked for one search hit carries the hit's anchor, so
+    /// The argument the row runs with, as `(parameter, value)`: choosing a
+    /// prompted action fills in the value the person typed, and an app's
+    /// `open` invoked for one search hit carries the hit's anchor, so
     /// choosing the row runs it without asking.
     pub preset: Option<(String, String)>,
 }

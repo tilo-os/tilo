@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use crate::{ArtifactId, Ed25519PublicKey, SignedOp};
 
 /// The verdict on one op from its channel's gate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OpAdmission {
     /// No verdict yet: the op waits for one.
     Unstated,

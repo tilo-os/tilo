@@ -12,6 +12,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use ui::ActionPalette;
 use ui::framework::{EffectAnswer, Effected, LiveRow, Publishes, ViewCx};
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -22,7 +23,6 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Point, Rect};
-use ui::widget::command_palette::CommandPalette;
 use ui::widget::{AppModel, Decorator, Element, EventCtx, ModelPath, Widget};
 use ui::winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use ui::winit::keyboard::{Key, NamedKey};
@@ -44,7 +44,7 @@ const CARD_WIDTH: f64 = 640.0; // allow-breakpoint: a size, not a layout decisio
     reason = "each is one independent part of the launcher's state"
 )]
 pub struct LauncherSurface {
-    palette: CommandPalette,
+    palette: ActionPalette,
     filters: SearchFilters,
     link: Link,
     /// Answers the link here when no host lent one.
@@ -86,12 +86,11 @@ impl LauncherSurface {
             Some(link) => (link, None),
             None => (Link::new(), Some(FixtureSource::new())),
         };
-        let mut palette = CommandPalette::new();
+        let mut palette = ActionPalette::rows(Vec::new());
         // The source ranks and matches; the card shows its rows verbatim.
         palette.set_bypass_fuzzy(true);
-        // The band's chips are the surface's own, painted into the band
-        // the card reserves for them.
-        palette.set_host_filter_strip(true);
+        // The band's chips are the surface's own, painted into the band the
+        // card reserves for them.
         palette.set_filter_band_shown(false);
         palette.set_query_placeholder(t("launcher-placeholder"));
         palette.close();
@@ -123,7 +122,7 @@ impl LauncherSurface {
     }
 
     /// The card.
-    pub fn palette(&self) -> &CommandPalette {
+    pub fn palette(&self) -> &ActionPalette {
         &self.palette
     }
 
@@ -236,7 +235,7 @@ impl LauncherSurface {
                 } else {
                     self.palette.open_argument_step(
                         id.clone(),
-                        ui::widget::command_palette::ArgumentSpec {
+                        ui::ArgumentSpec {
                             prefill: self.palette.argument_buffer().map(str::to_owned),
                             ..spec.clone()
                         },
@@ -246,7 +245,7 @@ impl LauncherSurface {
             }
             None => {
                 if self.field.take().is_some() || self.palette.in_argument_mode() {
-                    self.palette.cancel_argument();
+                    self.palette.cancel_host_step();
                 }
             }
         }
@@ -512,13 +511,13 @@ fn scope_of(name: Option<&str>) -> Result<SearchScope, String> {
 }
 
 impl Decorator for LauncherSurface {
-    type Inner = CommandPalette;
+    type Inner = ActionPalette;
 
-    fn inner(&self) -> &CommandPalette {
+    fn inner(&self) -> &ActionPalette {
         &self.palette
     }
 
-    fn inner_mut(&mut self) -> &mut CommandPalette {
+    fn inner_mut(&mut self) -> &mut ActionPalette {
         &mut self.palette
     }
 

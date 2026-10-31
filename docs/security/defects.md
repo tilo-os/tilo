@@ -536,7 +536,7 @@ tests. A channel-browser widget with no shell call site has since been removed.
 **Resolved.** Both production ingress paths now call
 `validate_admitted_inbound_op` before recording or fanning out an operation.
 The network broker validates the certified route and current workspace role;
-the Cap'n Proto broker uses the independently admitted join identity and the
+the collaboration broker uses the independently admitted join identity and the
 same artifact state. Invalid signatures, live operations dated outside the
 five-minute clock window, per-author sequence replays, route mismatches, role
 violations and already-redacted targets are rejected before publication.
@@ -547,7 +547,7 @@ refuses a replayed duplicate. The old `register_channel_state` observation descr
 bootstrap shape; current authority is populated from admitted workspace state
 at the ingress boundary instead of trusting an app-supplied role attestation.
 Held by the broker ingress tests in
-`crates/collab/tilo-action-broker/src/{collab_broker.rs,collab_broker_capnp.rs,collab_inbound.rs}`
+`crates/collab/tilo-action-broker/src/{collab_broker.rs,collab_app_broker.rs,collab_inbound.rs}`
 and `crates/session/shell/src/shell/collab_broker.rs`, plus
 `crates/collab/collab-types/tests/validator.rs`.
 

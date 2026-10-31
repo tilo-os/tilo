@@ -1520,7 +1520,7 @@ impl crate::widget::Button {
         let request = std::rc::Rc::new(std::cell::Cell::new(false));
         let flag = std::rc::Rc::clone(&request);
         PopoverButton {
-            button: self.on_click(move || flag.set(true)),
+            button: self.on_view(move || flag.set(true)),
             popover: Popover::with_content(content),
             request,
         }
@@ -1666,6 +1666,14 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
         }
         self.button
             .handle_event(event, &mut ctx.reborrow(ctx.path, button));
+        // The button publishes its press; this widget hosts it, so the
+        // press is answered here, before the popover is opened from it.
+        let path = ctx.path;
+        crate::widget::controls::start_pending_control_invocations(
+            &mut self.button,
+            &mut ctx.edits(),
+            path,
+        );
         self.take_request();
     }
 

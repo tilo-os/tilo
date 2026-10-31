@@ -110,9 +110,8 @@ pub enum ChannelAccess {
     /// Nobody can admit this device: the room's governance is unknown here.
     Unavailable,
     /// This device has no secret store open, so it keeps no channel state
-    /// of its own and cannot join a channel its own room host does not take
-    /// part in. Asking again changes nothing while the session runs; the
-    /// route is told if the room comes to be hosted here.
+    /// of its own and cannot join a channel. Asking again changes nothing
+    /// while the session runs.
     NoSecretStore,
 }
 
@@ -174,50 +173,11 @@ pub trait GovernanceTransport {
     fn take_inbound(&self) -> Vec<InboundChannelGovernance>;
 }
 
-/// [`ChannelDirectory::hosted_channel_keys`] as a handle of its own: asked
-/// with no lock of the channel service held ([`ChannelDirectory::hosted_keys`]).
-pub type HostedKeys = Arc<
-    dyn Fn(
-            RoomId,
-            ChannelId,
-            Option<&ChannelRoute>,
-            bool,
-        ) -> Option<Result<ChannelContentKeys, String>>
-        + Send
-        + Sync,
->;
-
 /// The access policy inputs this service needs from the workspace model.
 pub trait ChannelDirectory: Send {
     /// The device key of `room`'s governor, when this device knows the
     /// room's governance: a participant of every channel of the room.
     fn governor_of(&self, room: RoomId) -> Option<Ed25519PublicKey>;
-    /// `channel`'s content keys from the room host this device runs, when
-    /// that host takes part in `room`'s channels. The host's leaf is this
-    /// device's own, so this device takes its keys there rather than being a
-    /// second member of the group. `route` is the channel's record when the
-    /// endpoint named it; `create` opens the channel when it has none yet.
-    /// `None` for a room no host in this process takes part in.
-    fn hosted_channel_keys(
-        &self,
-        room: RoomId,
-        channel: ChannelId,
-        route: Option<&ChannelRoute>,
-        create: bool,
-    ) -> Option<Result<ChannelContentKeys, String>> {
-        let _ = (room, channel, route, create);
-        None
-    }
-    /// [`Self::hosted_channel_keys`], for a directory whose answer waits on
-    /// another thread (a room host in this process): [`ChannelKeyAccess`]
-    /// asks it before it takes the service's lock and hands the answer in,
-    /// so the lock is never held while the host answers. A host answering
-    /// may itself wait for whoever holds that lock, and every other user of
-    /// the service (the broker's loop among them) would wait behind it.
-    /// `None` (the default) when the answer never waits.
-    fn hosted_keys(&self) -> Option<HostedKeys> {
-        None
-    }
     /// Every device that may read `channel`, one of `room`'s channels, at
     /// wall-clock `now` (seconds since the Unix epoch). A channel is one
     /// record's, so a Read Deny on that record, on its app or on any pattern
@@ -356,11 +316,10 @@ impl Unopened {
 
 /// This device's side of every encrypted channel it takes part in.
 ///
-/// Keys of a room this device's own room host takes part in come from that
-/// host and need nothing else. Taking part in any other room's channel needs
-/// this device's own channel state, kept under a key from the platform
-/// secret store; a service opened without it ([`Self::without_store`])
-/// answers those rooms [`ChannelAccess::NoSecretStore`].
+/// Taking part in a room's channel needs this device's own channel state,
+/// kept under a key from the platform secret store; a service opened
+/// without it ([`Self::without_store`]) answers every room
+/// [`ChannelAccess::NoSecretStore`].
 pub struct ChannelEncryption {
     /// This device's own channel state; `None` when no secret store opened.
     store: Option<ChannelEncryptionConfig>,
@@ -382,10 +341,6 @@ pub struct ChannelEncryption {
     queued: bool,
     /// Channels asked about that could not be opened; see [`Unopened`].
     unopened: HashMap<ChannelId, Unopened>,
-    /// Channels of rooms this device's own room host takes part in, and the
-    /// epoch of the keys last taken from it
-    /// ([`ChannelDirectory::hosted_channel_keys`]).
-    hosted: HashMap<ChannelId, (RoomId, u64)>,
     /// The gate this service last registered with the broker for each
     /// channel. Every access re-asserts its channel's gate, and a channel's
     /// keys are read for every live frame sealed or opened; taking the
@@ -397,10 +352,6 @@ pub struct ChannelEncryption {
     /// Channels whose frames arrived while this device took no part in
     /// them: they have a group, so this device never creates one.
     groups_seen: std::collections::HashSet<ChannelId>,
-    /// The hosted keys [`ChannelKeyAccess`] asked for before taking the
-    /// lock this operation runs under, by channel: read instead of asking
-    /// the directory, and cleared when the operation ends.
-    resolved: HashMap<ChannelId, Option<Result<ChannelContentKeys, String>>>,
 }
 
 impl ChannelEncryption {
@@ -439,10 +390,8 @@ impl ChannelEncryption {
         Ok(service)
     }
 
-    /// The service of a device whose secret store did not open: it hands
-    /// out the keys of rooms its own room host takes part in
-    /// ([`ChannelDirectory::hosted_channel_keys`]) and answers every other
-    /// room [`ChannelAccess::NoSecretStore`].
+    /// The service of a device whose secret store did not open: it answers
+    /// every room [`ChannelAccess::NoSecretStore`].
     pub fn without_store(
         directory: Box<dyn ChannelDirectory>,
         broker: Arc<Mutex<BrokerChannels>>,
@@ -467,46 +416,9 @@ impl ChannelEncryption {
             changes: tokio::sync::watch::Sender::new(0),
             queued: false,
             unopened: HashMap::new(),
-            hosted: HashMap::new(),
             registered: HashMap::new(),
             groups_seen: std::collections::HashSet::new(),
-            resolved: HashMap::new(),
         }
-    }
-
-    /// `channel`'s keys from this device's own room host
-    /// ([`ChannelDirectory::hosted_channel_keys`]): as asked before this
-    /// operation's lock was taken, else asked now.
-    fn hosted_keys_of(
-        &self,
-        room: RoomId,
-        channel: ChannelId,
-        route: Option<&ChannelRoute>,
-        create: bool,
-    ) -> Option<Result<ChannelContentKeys, String>> {
-        hosted_answer(
-            &self.resolved,
-            &*self.directory,
-            room,
-            channel,
-            route,
-            create,
-        )
-    }
-
-    /// The channels whose hosted keys the next [`Self::pump`] asks for
-    /// without the inbound governance naming them: unopened channels of a
-    /// device with no store, which open once their room is hosted here
-    /// ([`Self::wake_unopened`]).
-    fn unopened_hosted_asks(&self) -> Vec<(RoomId, ChannelId)> {
-        if self.store.is_some() {
-            return Vec::new();
-        }
-        self.unopened
-            .iter()
-            .filter(|(_, entry)| entry.retry.is_none())
-            .map(|(channel, entry)| (entry.room, *channel))
-            .collect()
     }
 
     /// Increases whenever any channel's keys or access change.
@@ -526,21 +438,11 @@ impl ChannelEncryption {
     /// no genesis arrives. The caller has already decided the endpoint may
     /// read the route.
     pub fn access(&mut self, room: RoomId, channel: ChannelId, now: Instant) -> ChannelAccess {
-        self.access_routed(room, channel, None, now)
+        self.access_routed(room, channel, now)
     }
 
-    fn access_routed(
-        &mut self,
-        room: RoomId,
-        channel: ChannelId,
-        route: Option<&ChannelRoute>,
-        now: Instant,
-    ) -> ChannelAccess {
-        if let Some(keys) = self.hosted_keys_of(room, channel, route, true) {
-            return self.hosted_access(room, channel, keys, now);
-        }
+    fn access_routed(&mut self, room: RoomId, channel: ChannelId, now: Instant) -> ChannelAccess {
         if self.store.is_none() {
-            // Told if the room comes to be hosted here (`wake_unopened`).
             self.note_unopened(channel, Unopened { room, retry: None });
             return ChannelAccess::NoSecretStore;
         }
@@ -559,6 +461,7 @@ impl ChannelEncryption {
             }
         }
         self.unopened.remove(&channel);
+        self.found_governed(room, channel, now);
         let Some(entry) = self.peers.get_mut(&channel) else {
             return ChannelAccess::Unavailable;
         };
@@ -591,8 +494,7 @@ impl ChannelEncryption {
         now: Instant,
     ) -> (ChannelId, ChannelAccess) {
         let channel = route.channel(&room.to_string());
-        let proven = route.proves(&room.to_string(), channel);
-        let access = self.access_routed(room, channel, proven.then_some(route), now);
+        let access = self.access_routed(room, channel, now);
         self.learn_route(room, channel, route);
         (channel, access)
     }
@@ -641,24 +543,12 @@ impl ChannelEncryption {
     /// now known here; and those whose failed open is due again.
     fn wake_unopened(&mut self, now: Instant, recheck: bool) {
         let mut changed = Vec::new();
+        // Without a store nothing opens, whatever the room's governance says.
         let stored = self.store.is_some();
         for (channel, entry) in &mut self.unopened {
             match &mut entry.retry {
                 None => {
-                    // Without a store only a room now hosted here opens.
-                    let opens = if stored {
-                        self.directory.governor_of(entry.room).is_some()
-                    } else {
-                        hosted_answer(
-                            &self.resolved,
-                            &*self.directory,
-                            entry.room,
-                            *channel,
-                            None,
-                            false,
-                        )
-                        .is_some()
-                    };
+                    let opens = stored && self.directory.governor_of(entry.room).is_some();
                     if recheck && opens {
                         changed.push((*channel, true));
                     }
@@ -689,13 +579,27 @@ impl ChannelEncryption {
     /// Observe a current key without opening a channel, requesting access or
     /// changing a removed member's rejoin state.
     fn existing_keys(&self, room: RoomId, channel: ChannelId) -> Option<ChannelContentKeys> {
-        if let Some(keys) = self.hosted_keys_of(room, channel, None, false) {
-            return keys.ok();
-        }
         self.peers
             .get(&channel)
             .filter(|entry| entry.room == room)
             .and_then(|entry| entry.peer.content_keys())
+    }
+
+    /// `channel`'s keys as this device holds them, opening, joining or
+    /// creating nothing: `None` when this device takes part in no channel of
+    /// `room`, `Some(Err(_))` when it does and holds none of this one yet.
+    fn record_keys(
+        &self,
+        room: RoomId,
+        channel: ChannelId,
+    ) -> Option<Result<ChannelContentKeys, String>> {
+        if let Some(keys) = self.existing_keys(room, channel) {
+            return Some(Ok(keys));
+        }
+        if self.store.is_none() || self.directory.governor_of(room).is_none() {
+            return None;
+        }
+        Some(Err("this device holds no channel keys yet".into()))
     }
 
     /// The devices whose membership of `channel` the policy backs at `wall`:
@@ -881,17 +785,6 @@ impl ChannelEncryption {
 
     fn receive_frame(&mut self, room: RoomId, frame: MlsGovernanceFrame, now: Instant, wall: u64) {
         let channel = frame.channel;
-        if self
-            .hosted
-            .get(&channel)
-            .is_some_and(|(hosted, _)| *hosted == room)
-        {
-            // This device's own host changed the channel.
-            if let Some(keys) = self.hosted_keys_of(room, channel, None, false) {
-                self.hosted_access(room, channel, keys, now);
-            }
-            return;
-        }
         let Some(route) = self
             .peers
             .get(&channel)
@@ -967,16 +860,6 @@ impl ChannelEncryption {
         // A route that is not the channel's is a forgery: the request goes
         // with it, rather than being decided as if it named no record.
         if route.is_some_and(|route| !route.proves(&room.to_string(), channel)) {
-            return;
-        }
-        if !self.peers.contains_key(&channel)
-            && self.hosted_keys_of(room, channel, route, false).is_some()
-        {
-            // This device's own host takes part in the room's channels with
-            // this device's leaf and answers the request itself. A second
-            // peer here would found another group under the same device key
-            // (it never sees the host's genesis), and the host's own leaf
-            // would then be dropped as a member that lost its state.
             return;
         }
         if !self.peers.contains_key(&channel)
@@ -1161,6 +1044,24 @@ impl ChannelEncryption {
         Ok(true)
     }
 
+    /// Open `channel` at once when this device governs its room: the device
+    /// a room is governed by takes part in every channel of the room, and no
+    /// other device sends a genesis for it, so it need not wait for one.
+    fn found_governed(&mut self, room: RoomId, channel: ChannelId, now: Instant) {
+        let governs = self
+            .directory
+            .governor_of(room)
+            .zip(self.device())
+            .is_some_and(|(governor, device)| governor == device);
+        if !governs {
+            return;
+        }
+        if let Some(entry) = self.peers.get_mut(&channel) {
+            entry.founding.at = now;
+        }
+        self.found(channel, now, tilo_clock::unix_now());
+    }
+
     /// Create `channel`'s group when this device waited its while and no
     /// genesis of the channel arrived, and the policy lets it read the
     /// channel. A device that has seen a genesis never creates one.
@@ -1172,10 +1073,18 @@ impl ChannelEncryption {
             return;
         }
         let (room, route) = (entry.room, entry.route.clone());
-        let reads = self
-            .allowed(room, channel, route.as_ref(), wall)
+        // The device that governs a room takes part in every channel of it,
+        // the records no grant names included: it reads what its room holds.
+        let governs = self
+            .directory
+            .governor_of(room)
             .zip(self.device())
-            .is_some_and(|(allowed, device)| allowed.contains(&device));
+            .is_some_and(|(governor, device)| governor == device);
+        let reads = governs
+            || self
+                .allowed(room, channel, route.as_ref(), wall)
+                .zip(self.device())
+                .is_some_and(|(allowed, device)| allowed.contains(&device));
         let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
             return;
         };
@@ -1250,38 +1159,6 @@ impl ChannelEncryption {
         self.register_gate(channel, gate);
     }
 
-    /// What an endpoint may do with `channel`, given the keys this device's
-    /// own host answered: its gate holds at their epoch, and a new epoch is
-    /// announced as any channel change is.
-    fn hosted_access(
-        &mut self,
-        room: RoomId,
-        channel: ChannelId,
-        keys: Result<ChannelContentKeys, String>,
-        now: Instant,
-    ) -> ChannelAccess {
-        let keys = match keys {
-            Ok(keys) => keys,
-            Err(error) => {
-                tracing::warn!(%error, %room, "the hosted channel's keys are unavailable");
-                self.note_unopened(channel, Unopened::failed(room, now));
-                return ChannelAccess::Unavailable;
-            }
-        };
-        self.unopened.remove(&channel);
-        self.register_gate(
-            channel,
-            channel_crypto::ChannelGate {
-                encryption_required: true,
-                head_epoch: Some(keys.epoch()),
-            },
-        );
-        if self.hosted.insert(channel, (room, keys.epoch())) != Some((room, keys.epoch())) {
-            self.bump(channel);
-        }
-        ChannelAccess::Ready(keys)
-    }
-
     fn register_gate(&mut self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
         if !gate.encryption_required || self.registered.get(&channel) == Some(&gate) {
             return;
@@ -1318,22 +1195,6 @@ fn wait_after_pass(deadline: Option<Instant>, now: Instant) -> Option<Duration> 
     })
 }
 
-/// `channel`'s hosted keys: the answer in `resolved` when one was asked
-/// for before the service's lock was taken, else `directory`'s now.
-fn hosted_answer(
-    resolved: &HashMap<ChannelId, Option<Result<ChannelContentKeys, String>>>,
-    directory: &dyn ChannelDirectory,
-    room: RoomId,
-    channel: ChannelId,
-    route: Option<&ChannelRoute>,
-    create: bool,
-) -> Option<Result<ChannelContentKeys, String>> {
-    match resolved.get(&channel) {
-        Some(answer) => answer.clone(),
-        None => directory.hosted_channel_keys(room, channel, route, create),
-    }
-}
-
 /// Wakes a host's parked governance pump.
 pub type PumpWake = Arc<dyn Fn() + Send + Sync>;
 
@@ -1342,50 +1203,20 @@ pub type PumpWake = Arc<dyn Fn() + Send + Sync>;
 pub struct ChannelKeyAccess {
     inner: Arc<Mutex<ChannelEncryption>>,
     wake: Option<PumpWake>,
-    /// The service directory's hosted keys ([`ChannelDirectory::hosted_keys`]),
-    /// asked before `inner` is locked: never under it.
-    hosted: Option<HostedKeys>,
 }
 
 impl ChannelKeyAccess {
     pub fn new(service: ChannelEncryption) -> Self {
         Self {
-            hosted: service.directory.hosted_keys(),
             inner: Arc::new(Mutex::new(service)),
             wake: None,
         }
     }
 
-    /// Ask this device's own room host for each of `asks`' keys, with no
-    /// lock of the service held: what the operation run under the lock next
-    /// reads instead of asking the host itself
-    /// ([`ChannelEncryption::hosted_keys_of`]). Empty when the directory's
-    /// answers never wait.
-    fn ask_host<'a>(
-        &self,
-        asks: impl IntoIterator<Item = (RoomId, ChannelId, Option<&'a ChannelRoute>, bool)>,
-    ) -> HashMap<ChannelId, Option<Result<ChannelContentKeys, String>>> {
-        let Some(hosted) = &self.hosted else {
-            return HashMap::new();
-        };
-        asks.into_iter()
-            .map(|(room, channel, route, create)| (channel, hosted(room, channel, route, create)))
-            .collect()
-    }
-
-    /// Run `operation` on the service with `answers` from [`Self::ask_host`]
-    /// in place of the host's; `None` when the lock is poisoned.
-    fn with_answers<T>(
-        &self,
-        answers: HashMap<ChannelId, Option<Result<ChannelContentKeys, String>>>,
-        operation: impl FnOnce(&mut ChannelEncryption) -> T,
-    ) -> Option<T> {
+    /// Run `operation` on the service; `None` when the lock is poisoned.
+    fn run<T>(&self, operation: impl FnOnce(&mut ChannelEncryption) -> T) -> Option<T> {
         let mut service = self.inner.lock().ok()?;
-        service.resolved = answers;
-        let done = operation(&mut service);
-        service.resolved.clear();
-        drop(service);
-        Some(done)
+        Some(operation(&mut service))
     }
 
     /// As [`Self::new`], for a host that parks its pump while
@@ -1394,17 +1225,29 @@ impl ChannelKeyAccess {
     /// first channel is announced or requested without waiting for a timer.
     pub fn with_wake(service: ChannelEncryption, wake: PumpWake) -> Self {
         Self {
-            hosted: service.directory.hosted_keys(),
             inner: Arc::new(Mutex::new(service)),
             wake: Some(wake),
         }
     }
 
+    /// `route`'s channel's keys as this device holds them
+    /// ([`ChannelEncryption::record_keys`]), never opening, joining or
+    /// creating anything. `None` when this device takes part in no channel
+    /// of the route's room; [`Err`] when it does and holds none yet.
+    pub fn record_keys(
+        &self,
+        room: RoomId,
+        route: &ChannelRoute,
+    ) -> Option<Result<ChannelContentKeys, String>> {
+        let channel = route.channel(&room.to_string());
+        self.run(|service| service.record_keys(room, channel))
+            .unwrap_or_else(|| Some(Err("the channel service is unavailable".into())))
+    }
+
     /// See [`ChannelEncryption::access`]; also returns the service's
     /// generation, which changes whenever any channel's keys or access do.
     pub fn access(&self, room: RoomId, channel: ChannelId) -> (ChannelAccess, u64) {
-        let answers = self.ask_host([(room, channel, None, true)]);
-        let Some((access, generation, queued)) = self.with_answers(answers, |service| {
+        let Some((access, generation, queued)) = self.run(|service| {
             let access = service.access(room, channel, Instant::now());
             (
                 access,
@@ -1425,10 +1268,7 @@ impl ChannelKeyAccess {
     pub fn access_record(&self, room: RoomId, route: &ChannelRoute) -> (ChannelAccess, u64) {
         // As `ChannelEncryption::access_record` asks: the route only when it
         // is the channel's.
-        let channel = route.channel(&room.to_string());
-        let proven = route.proves(&room.to_string(), channel);
-        let answers = self.ask_host([(room, channel, proven.then_some(route), true)]);
-        let Some((access, generation, queued)) = self.with_answers(answers, |service| {
+        let Some((access, generation, queued)) = self.run(|service| {
             let (_, access) = service.access_record(room, route, Instant::now());
             (
                 access,
@@ -1452,31 +1292,6 @@ impl ChannelKeyAccess {
     pub fn open_new_write(&self, room: RoomId, envelope: &SignedOp) -> Result<Vec<u8>, String> {
         let (keys, metadata, ciphertext) = self.sealed_parts(room, envelope)?;
         keys.open_current_content(envelope.artifact, &metadata, &ciphertext)
-            .map(|plaintext| plaintext.to_vec())
-            .map_err(|error| error.to_string())
-    }
-
-    /// Open `envelope`, a write of a sealed record's history (a compaction
-    /// included), under any epoch whose key this device holds: what a key
-    /// holder compacting the history reads. Call it only for writes already
-    /// admitted with every envelope check.
-    ///
-    /// # Errors
-    ///
-    /// Refuses unavailable existing channel keys or epochs and invalid ciphertext.
-    /// This read never creates a channel, requests access or rejoins a group.
-    pub fn open_history_write(&self, room: RoomId, envelope: &SignedOp) -> Result<Vec<u8>, String> {
-        let metadata = envelope.encryption.ok_or("the write is not sealed")?;
-        let ciphertext =
-            collab_types::sealed_ciphertext(envelope).map_err(|error| error.to_string())?;
-        let answers = self.ask_host([(room, metadata.channel, None, false)]);
-        let keys = self
-            .with_answers(answers, |service| {
-                service.existing_keys(room, metadata.channel)
-            })
-            .ok_or("channel service unavailable")?
-            .ok_or("this device holds no existing key for the history's channel")?;
-        keys.open_content(envelope.artifact, &metadata, &ciphertext)
             .map(|plaintext| plaintext.to_vec())
             .map_err(|error| error.to_string())
     }
@@ -1538,39 +1353,8 @@ impl ChannelKeyAccess {
     #[must_use]
     pub fn pump_until_due(&self, transport: &dyn GovernanceTransport) -> Option<Duration> {
         let inbound = transport.take_inbound();
-        // What the pass asks this device's own host, asked first with no
-        // lock held: the channels the inbound governance names, and those
-        // that open once their room is hosted here.
-        let unopened = if self.hosted.is_some() {
-            self.inner.lock().ok()?.unopened_hosted_asks()
-        } else {
-            Vec::new()
-        };
-        // A request whose route is not its channel's is dropped unasked
-        // (`receive_request`).
-        let named = inbound.iter().filter_map(|message| match message {
-            InboundChannelGovernance::Frame { room, frame } => {
-                Some((*room, frame.channel, None, false))
-            }
-            InboundChannelGovernance::AccessRequest {
-                room,
-                request,
-                route,
-            } => {
-                let route = route.as_deref();
-                route
-                    .is_none_or(|route| route.proves(&room.to_string(), request.channel))
-                    .then_some((*room, request.channel, route, false))
-            }
-        });
-        let answers = self.ask_host(
-            unopened
-                .into_iter()
-                .map(|(room, channel)| (room, channel, None, false))
-                .chain(named),
-        );
         let now = Instant::now();
-        let deadline = self.with_answers(answers, |service| {
+        let deadline = self.run(|service| {
             service.pump_inbound(inbound, transport, now, tilo_clock::unix_now());
             service.next_pump_deadline(now)
         })?;
@@ -1839,6 +1623,8 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     reason = "test fixtures: a poisoned lock is the test failing"
 )]
 pub mod testing;
+
+mod history;
 
 #[cfg(test)]
 mod tests {
@@ -3361,77 +3147,12 @@ mod tests {
         assert!(service.unopened.is_empty(), "an open that succeeds settles");
     }
 
-    /// This device's own room host is asked for a channel's keys with no
-    /// lock of the service held. The host may wait on whoever waits for
-    /// that lock (the broker's loop, driving the host's commit that holds
-    /// the room): the service's other users go on while the host answers.
-    #[test]
-    fn the_service_is_not_locked_while_its_own_host_answers() {
-        struct Hosting(HostedKeys);
-        impl ChannelDirectory for Hosting {
-            fn governor_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
-                None
-            }
-            fn allowed_devices(
-                &self,
-                _: RoomId,
-                _: ChannelId,
-                _: Option<&ChannelRoute>,
-                _: u64,
-            ) -> Option<BTreeSet<Ed25519PublicKey>> {
-                None
-            }
-            fn hosted_channel_keys(
-                &self,
-                room: RoomId,
-                channel: ChannelId,
-                route: Option<&ChannelRoute>,
-                create: bool,
-            ) -> Option<Result<ChannelContentKeys, String>> {
-                (self.0)(room, channel, route, create)
-            }
-            fn hosted_keys(&self) -> Option<HostedKeys> {
-                Some(Arc::clone(&self.0))
-            }
-        }
-        let (entered, host_asked) = std::sync::mpsc::channel();
-        let (release, released) = std::sync::mpsc::channel::<()>();
-        let released = Mutex::new(released);
-        let hosted: HostedKeys = Arc::new(move |_, _, _, _| {
-            entered.send(()).unwrap();
-            released.lock().unwrap().recv().unwrap();
-            Some(Err("the host answers late".into()))
-        });
-        let access = ChannelKeyAccess::new(ChannelEncryption::without_store(
-            Box::new(Hosting(hosted)),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-        ));
-        let (room, channel) = (RoomId::new(), ChannelId::new());
-        let asking = {
-            let access = access.clone();
-            std::thread::spawn(move || access.access(room, channel).0)
-        };
-        host_asked.recv().unwrap();
-        let (told, heard) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            told.send((access.channel_change(channel), access.generation()))
-                .unwrap();
-        });
-        let read = heard.recv_timeout(Duration::from_secs(10));
-        release.send(()).unwrap();
-        assert!(
-            read.is_ok(),
-            "the service answers its other users while its host answers"
-        );
-        assert!(matches!(asking.join().unwrap(), ChannelAccess::Unavailable));
-    }
-
     /// A device whose secret store did not open keeps no channel state of
-    /// its own. A room its own host does not take part in is answered that
-    /// it has no secret store; asking again creates nothing, sends nothing and leaves its pump
-    /// nothing to do, so nobody asks on a timer.
+    /// its own. A room is answered that it has no secret store; asking again
+    /// creates nothing, sends nothing and leaves its pump nothing to do, so
+    /// nobody asks on a timer.
     #[test]
-    fn without_a_store_a_room_hosted_elsewhere_says_so_and_nothing_is_due() {
+    fn without_a_store_nothing_is_due() {
         let room = Arc::new(Room::default());
         let room_id = RoomId::new();
         let channel = ChannelId::new();

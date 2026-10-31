@@ -23,16 +23,19 @@
 //! waits for the verdict. Threads the main thread starts afterwards inherit
 //! the filter; their calls are let through without a record.
 //!
-//! The path is read with `process_vm_readv`, and backtraces are symbolized
-//! only when the record is read, on the liveness thread, so the supervisor
-//! itself walks no path and never keeps the main thread waiting on the disk.
+//! The path is read with `process_vm_readv`, and the backtrace is captured as
+//! the main thread's return addresses alone. Naming them parses the whole
+//! symbol table of the executable, tens of milliseconds in a large debug
+//! build, so it happens when the record is read, on the liveness thread, in
+//! one pass over every captured stack. The supervisor itself walks no path
+//! and never keeps the main thread waiting on the disk, and the call it holds
+//! waits only for the capture: tens of microseconds.
 //!
 //! A store asked to wait for its writer thread on the main loop (a flush:
 //! the loop asleep until an fsync elsewhere finishes) is recorded the same
 //! way, as the system call [`STORAGE_WAIT`] with what it waited for: no path
 //! is walked, but the desktop freezes just as long.
 
-use std::backtrace::Backtrace;
 use std::sync::OnceLock;
 
 use parking_lot::Mutex;
@@ -104,12 +107,31 @@ impl FileWalk {
     }
 }
 
-/// The standard library, libc and the dynamic loader: frames that say how a
-/// path was walked, never which code walked it.
+/// The standard library, libc, the dynamic loader and the unwinder that
+/// walked the stack, and frames the symbol table could not name: frames that
+/// say how a path was walked, never which code walked it.
+///
+/// A frame outside the executable (libc, the loader) prints as `<unknown>
+/// path+offset (build-id …)`, which `addr2line` resolves from the report
+/// later: it is still libc or the loader, and the site is the code the call
+/// came from, so the search goes past it.
 fn is_runtime_frame(frame: &str) -> bool {
     const RUNTIME: &[&str] = &[
-        "std::", "<std::", "core::", "<core::", "alloc::", "<alloc::", "__", "_dl_", "_nss_",
-        "nss_", "_IO_", "<&", "<[",
+        "std::",
+        "<std::",
+        "core::",
+        "<core::",
+        "alloc::",
+        "<alloc::",
+        "backtrace::",
+        "__",
+        "_dl_",
+        "_nss_",
+        "nss_",
+        "_IO_",
+        "<&",
+        "<[",
+        "<unknown>",
     ];
     const LIBC: &[&str] = &[
         "syscall",
@@ -152,6 +174,7 @@ fn is_runtime_frame(frame: &str) -> bool {
 /// reported, never which code asked for it.
 fn is_storage_frame(frame: &str) -> bool {
     const STORAGE: &[&str] = &[
+        "tilo_liveness::main_thread_files::",
         "shell::compositor::liveness::",
         "durable_store::",
         "<durable_store::",
@@ -199,11 +222,16 @@ fn normalize_frame(frame: &str) -> String {
     normalized
 }
 
+#[derive(Clone)]
 struct Recorded {
     syscall: &'static str,
     path: String,
     count: u64,
-    backtrace: Option<String>,
+    /// Where the main thread was when it first made the call: return
+    /// addresses, innermost first, or why there are none. Addresses, not
+    /// names: the call waits for this record, and naming them walks the whole
+    /// symbol table of a debug build.
+    backtrace: Option<Result<Vec<usize>, String>>,
 }
 
 /// Whether the audit is armed, or why it could not be.
@@ -277,16 +305,30 @@ pub fn report() -> Result<Vec<FileWalk>, String> {
         Some(Err(error)) => return Err(error.clone()),
         None => return Err("the main-thread file audit was never armed".into()),
     }
-    Ok(RECORD
-        .lock()
+    // Copied out under the lock the supervisor writes its records under, and
+    // named after it is released: naming reads the executable's symbol table.
+    let recorded = RECORD.lock().clone();
+    let stacks: Vec<&[usize]> = recorded
         .iter()
+        .filter_map(|walk| match walk.backtrace.as_ref() {
+            Some(Ok(ips)) => Some(ips.as_slice()),
+            _ => None,
+        })
+        .collect();
+    // Every captured stack, named in one pass over the symbol table; one
+    // rendered stack per entry of `stacks`, in the same order.
+    let mut named = super::symtab::render_all(&stacks).into_iter();
+    Ok(recorded
+        .into_iter()
         .map(|walk| FileWalk {
             syscall: walk.syscall.to_owned(),
-            path: walk.path.clone(),
+            path: walk.path,
             count: walk.count,
-            backtrace: walk.backtrace.clone().unwrap_or_else(|| {
-                "no backtrace: the main thread did not answer the capture signal".into()
-            }),
+            backtrace: match walk.backtrace {
+                Some(Ok(_)) => named.next().unwrap_or_default(),
+                Some(Err(why)) => why,
+                None => "no backtrace: the main thread did not answer the capture signal".into(),
+            },
         })
         .collect())
 }
@@ -299,7 +341,13 @@ pub(super) fn record_storage_wait(what: &str) {
     if !matches!(ARMED.get(), Some(Ok(()))) || super::gettid() != unsafe { libc::getpid() } {
         return;
     }
-    let backtrace = Backtrace::force_capture();
+    // The addresses only: this runs on the main thread just before it waits,
+    // and naming them reads the executable's symbol table.
+    let mut frames = Vec::new();
+    backtrace::trace(|frame| {
+        frames.push(frame.ip().addr());
+        true
+    });
     let mut record = RECORD.lock();
     if let Some(seen) = record
         .iter_mut()
@@ -312,7 +360,7 @@ pub(super) fn record_storage_wait(what: &str) {
         syscall: STORAGE_WAIT,
         path: what.to_owned(),
         count: 1,
-        backtrace: Some(backtrace.to_string()),
+        backtrace: Some(Ok(frames)),
     });
 }
 
@@ -505,11 +553,11 @@ fn note_main_call(
         return;
     }
     let backtrace = match super::capture_held_thread(main) {
-        Ok(frames) => {
+        Ok(ips) => {
             *restarted = Some((nr, path.clone()));
-            frames
+            Ok(ips)
         }
-        Err(why) => why,
+        Err(why) => Err(why),
     };
     if let Some(walk) = RECORD
         .lock()
@@ -588,6 +636,36 @@ mod tests {
             walk.handler(),
             "<shell::shell::network::ShellNetwork>::frame_tick"
         );
+    }
+
+    #[test]
+    fn a_site_is_named_past_frames_the_symbol_table_could_not_name() {
+        // libc's openat, which only the executable is named for: the site is
+        // the code that walked the path, not the object the call is in.
+        let walk = walk(
+            "   0: <unknown> /lib64/libc.so.6+0x7b350 (build-id 85075e2a)\n\
+             \x20  1: <std::sys::fs::unix::File>::open_c\n\
+             \x20  2: std::fs::read_to_string\n\
+             \x20  3: shell::shell::host_runtime::proc_stat\n\
+             \x20  4: shell::compositor::native::run\n",
+        );
+        assert_eq!(walk.site(), "shell::shell::host_runtime::proc_stat");
+    }
+
+    #[test]
+    fn a_storage_wait_names_the_store_caller_and_not_the_audit() {
+        let wait = FileWalk {
+            syscall: STORAGE_WAIT.into(),
+            ..walk(
+                "   0: backtrace::backtrace::libunwind::trace\n\
+                 \x20  1: tilo_liveness::main_thread_files::record_storage_wait\n\
+                 \x20  2: durable_store::waiting::call\n\
+                 \x20  3: app_state::fs_store::Store::commit\n\
+                 \x20  4: settings_store::write::flush\n\
+                 \x20  5: shell::compositor::native::run\n",
+            )
+        };
+        assert_eq!(wait.site(), "settings_store::write::flush");
     }
 
     #[test]

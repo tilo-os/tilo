@@ -275,8 +275,15 @@ impl Workbook {
     }
 
     pub fn load(bytes: &[u8]) -> Result<Self, DocError> {
-        let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
+        let mut doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
         let c = open(&doc, &ROOT)?;
+        // As a richtext page: an older workbook's version key is read once,
+        // here, and dropped.
+        if tilo_resource::evolution::adopt_at(&mut doc, &ROOT)
+            .map_err(|error| DocError::Invalid(error.to_string()))?
+        {
+            doc.commit();
+        }
         let ids = seeded_sheet_id_gen(&doc, &c)?;
         Ok(Self { doc, c, ids })
     }

@@ -1354,8 +1354,6 @@ fn peer_sync_and_invite_manager_enable_idempotently_and_fail_closed() {
 /// refuses with the policy's reason.
 #[test]
 fn an_inviter_without_the_grant_is_refused_by_composer_and_issuer_alike() {
-    use crate::shell::invite_policy::{InviteRefusal, InviteRoute, active_invite_route};
-
     let mut tree = WorkspaceTree::default();
     let local = tree.create_hosted_workspace("Joined room").0;
     tree.desktop.active = local;
@@ -1371,7 +1369,6 @@ fn an_inviter_without_the_grant_is_refused_by_composer_and_issuer_alike() {
     let host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
         .with_chrome(chrome.clone());
     let (net, _commands) = crate::shell::network::shell_network_for_test(handle, 0x354);
-    let route = || active_invite_route(&chrome.borrow()).expect("active workspace");
     let issue = || {
         net.issue_invite_named_with_role(
             local,
@@ -1381,12 +1378,14 @@ fn an_inviter_without_the_grant_is_refused_by_composer_and_issuer_alike() {
         )
     };
 
-    let refused = InviteRoute::Refused(InviteRefusal::NotPermitted);
-    assert_eq!(route(), refused, "without a grant Carol may not invite");
+    assert!(
+        !chrome.borrow().may_invite_here(),
+        "without a grant Carol may not invite"
+    );
     assert!(!host.may_invite_here(), "so she is offered no composer");
     assert_eq!(
         issue().expect_err("and the issuer refuses her"),
-        refused.refusal().expect("a refusal has a reason"),
+        "you do not have permission to invite people to this workspace",
     );
 }
 

@@ -403,6 +403,12 @@ impl SearchField {
         self.input.set_text(text);
     }
 
+    /// Insert committed text (an input method's or a dictation's) at the
+    /// caret, replacing the selection, as the input method's commit does.
+    pub fn insert_at_cursor(&mut self, text: &str) {
+        self.input.insert_at_cursor(text);
+    }
+
     pub fn set_focused(&mut self, on: bool) {
         self.input.set_focus(on);
     }

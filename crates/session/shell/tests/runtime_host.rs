@@ -37,7 +37,7 @@ fn profile_is_exclusive_and_workspace_survives_restart() {
     let root = std::path::PathBuf::from(std::env::var_os("TILO_RUNTIME_HOST_TEST_CHILD").unwrap());
     let session = crate::runtime_host::Session::start(&root).unwrap();
     let room_id = session.room.clone();
-    assert!(session.broker.capnp_socket().exists());
+    assert!(session.broker.app_socket().exists());
     assert!(crate::runtime_host::Session::start(&root).is_err());
     let invocation = tilo_actions::InvocationId::new();
     let membership = session.workspace_tree();

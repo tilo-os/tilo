@@ -1318,7 +1318,7 @@ mod tests {
 
         fn action_binding_owns_accessibility_activation() {
             let mut checkbox = Checkbox::new("native", "legacy")
-                .on_change(|_| panic!("legacy callback must be suppressed"))
+                .on_view("checkbox", |_| panic!("legacy callback must be suppressed"))
                 .on_action(crate::widget::test_bool_action_binding());
             let mut doc = AutoCommit::new();
             crate::widget::controls::refresh_control_action_availability(
@@ -1398,8 +1398,9 @@ mod tests {
             let state = crate::LocalState::new(false);
             let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let captured = std::rc::Rc::clone(&changes);
-            let mut first = Checkbox::from_state(&state)
-                .on_change(move |checked| captured.borrow_mut().push(checked));
+            let mut first = Checkbox::from_state(&state).on_view("checkbox", move |checked| {
+                captured.borrow_mut().push(checked)
+            });
             let mut second = Checkbox::from_state(&state);
             let mut document = AutoCommit::new();
 
@@ -1417,6 +1418,7 @@ mod tests {
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
+            assert_eq!(crate::testing::answer_controls(&mut first), 1);
             assert!(!state.get(), "user activation publishes typed state");
             assert_eq!(&*changes.borrow(), &[false]);
 

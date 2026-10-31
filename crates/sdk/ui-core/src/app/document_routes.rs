@@ -815,7 +815,9 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                             entry.needs_snapshot = true;
                         }
                         if applied {
-                            store.schedule_committed_history(&checkout.id);
+                            if let Err(error) = store.schedule_committed_history(&checkout.id) {
+                                tracing::error!(%error, "an applied remote change was not saved");
+                            }
                             if fully_sent
                                 && let Ok(heads) = store.read_checked(&checkout.id, |doc| {
                                     crate::history_mode::sorted_heads(doc.base_heads())

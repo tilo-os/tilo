@@ -35,7 +35,7 @@
 //! returns empty and `send()` is a no-op.
 //!
 //! The default transport (feature `broker-transport`) delegates to the
-//! `runtime-collab` Cap'n Proto broker on a worker thread it owns.
+//! `runtime-collab` collaboration client on a worker thread it owns.
 
 // The broker client brought its lint debt from ui-core, scoped as it was there.
 #![allow(
@@ -121,7 +121,7 @@ pub(crate) mod time {
     #[cfg(all(test, feature = "broker-transport"))]
     pub use tilo_clock::SystemTime;
     pub use tilo_clock::{Duration, Instant, now};
-    // The broker stamps what it hands peers with the wall clock.
+    // The broker stamps the documents it publishes with the wall clock.
     #[cfg(feature = "broker-transport")]
     pub use tilo_clock::wall;
 }
@@ -186,8 +186,8 @@ pub mod record_content;
 mod route_keys;
 #[cfg(feature = "broker-transport")]
 pub use broker::{
-    CertifiedEndpointIdentity, EndpointChannelKeys, HostSessionConnector, display_control,
-    speaker_command, wifi_continuity_command,
+    CertifiedEndpointIdentity, EndpointChannelKeys, HostSessionConnector, SessionResource,
+    display_control, speaker_command, wifi_continuity_command,
 };
 // Committed reads live with the broker worker that retains them. Without the
 // broker transport no committed capture can exist, but the type stays part of
@@ -313,8 +313,43 @@ pub fn display_control(_command: Vec<u8>, _origin: DisplayOrigin) -> Result<Vec<
     Err("Displays need the certified collaboration service.".into())
 }
 
-pub use crate::host::ContinuationMetadata;
+/// The session's published resources need an admitted broker to reach; in
+/// this build the same handle opens nothing and says so.
+#[cfg(not(feature = "broker-transport"))]
+#[derive(Clone)]
+pub struct SessionResource;
 
+#[cfg(not(feature = "broker-transport"))]
+impl SessionResource {
+    /// # Errors
+    ///
+    /// Always reports unavailable on this transport.
+    pub fn open(_resource: &str) -> Result<Self, String> {
+        Err("Published resources need the certified collaboration service.".into())
+    }
+
+    /// Nothing is watched on this transport.
+    #[must_use]
+    pub fn latest(&self) -> Option<Result<String, String>> {
+        None
+    }
+
+    /// Nothing is watched on this transport, so no reading wakes a view.
+    pub fn attach(&self, _wake: tilo_rt::wake::WakeHandle) {}
+
+    /// # Errors
+    ///
+    /// Always reports unavailable on this transport.
+    pub fn invoke(
+        &self,
+        _action: &str,
+        _arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        Err("Published resources need the certified collaboration service.".into())
+    }
+}
+
+pub use crate::host::ContinuationMetadata;
 /// The numbers a semantic checkpoint carries for the portable schemas a
 /// signed manifest can declare (`continuity.semantic_schema`). The tag says
 /// what the payload means, so a device that has not installed the app can
@@ -524,47 +559,34 @@ pub enum CollabRequest {
     /// whole. For small surfaces a caller builds directly; the toolkit's own
     /// publication sends [`Self::PublishActionSurface`].
     PublishActions {
-        app_id: String,
         actions: Vec<ExportedAction>,
     },
     /// Change this application's exported resource/action surface: the
     /// delta from what the broker holds (or, when it resets, a whole new
     /// surface). See [`SurfacePublication`].
     PublishActionSurface {
-        app_id: String,
         delta: SurfaceDelta,
     },
     /// App-owned CRDT state projected for same-identity continuation. The
     /// local broker authenticates the route and stores this only for shell
     /// capture; it is never a room action or a restore command.
     ReportContinuation {
-        app_id: String,
         schema_version: u16,
         metadata: Vec<u8>,
     },
     /// Remove the last continuation report after the app can no longer
     /// produce a safe projection.
-    ClearContinuation {
-        app_id: String,
-    },
+    ClearContinuation,
     /// Answer a handoff request, or report a retirement
     /// ([`handoff::HandoffReport`], encoded). Session-local, on the primary
     /// route; never relayed to peers.
     ReportHandoff {
-        app_id: String,
         message: Vec<u8>,
-    },
-    /// Private, level-triggered playback descriptors for shell-mediated
-    /// same-person handoff. Never part of the room CRDT or peer fan-out.
-    ReportPlayback {
-        app_id: String,
-        reports_json: Vec<u8>,
     },
     /// A change to this app's entries in the system's persistent search
     /// index ([`crate::search::index_publication::IndexDelta`], encoded).
     /// Bound to the certified primary route; never relayed to peers.
     PublishSearchIndex {
-        app_id: String,
         delta_json: Vec<u8>,
     },
     /// One generic active-session continuity transition. The shell binds the
@@ -575,14 +597,12 @@ pub enum CollabRequest {
     },
     RealtimeCommand {
         request_id: u64,
-        app_id: String,
         command: collab_types::realtime::RealtimeCommand,
     },
     /// One Files-owned picker/status/consent command. The broker authenticates
     /// the app route and keeps payload bytes on the shell transfer transport.
     NearbyTransferCommand {
         request_id: u64,
-        app_id: String,
         command: runtime_collab::NearbyTransferCommand,
     },
     OpenWorkspaceControl {

@@ -926,13 +926,6 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertTrue(any("handler registry" in item.reason for item in violations))
-        with self.subTest(phase='legacy room entry point fails'):
-            root = self.fixture(
-                "use tilo_actions::ActionSpec;\n"
-                "fn resources(&self) {}\nfn apply_room_action(&mut self) {}\n"
-            )
-            violations, _ = contract.audit(root)
-            self.assertTrue(any("legacy room-action" in item.reason for item in violations))
         with self.subTest(phase='self attested handler registry fails'):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"

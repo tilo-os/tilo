@@ -9,8 +9,16 @@ use ui::collaboration::PresencePayload;
 use ui::presence::PresenceKey;
 
 pub fn to_peer(key: &PresenceKey, payload: &PresencePayload) -> Option<PeerPresence> {
-    let key = postcard::to_stdvec(key).ok()?;
-    let payload = match payload {
+    Some(PeerPresence {
+        key: postcard::to_stdvec(key).ok()?,
+        payload: payload_to_peer(payload)?,
+    })
+}
+
+/// `payload` as the wire and peers carry it; `None` when a position does
+/// not fit it.
+pub fn payload_to_peer(payload: &PresencePayload) -> Option<PeerPresencePayload> {
+    Some(match payload {
         PresencePayload::Pointer { x, y } => PeerPresencePayload::Pointer { x: *x, y: *y },
         PresencePayload::Caret { pos } => PeerPresencePayload::Caret {
             pos: u64::try_from(*pos).ok()?,
@@ -39,8 +47,7 @@ pub fn to_peer(key: &PresenceKey, payload: &PresencePayload) -> Option<PeerPrese
             state: state.id().to_owned(),
             call: call.clone(),
         },
-    };
-    Some(PeerPresence { key, payload })
+    })
 }
 
 /// The presence a peer sent, as this desktop shows it. `None` for what it

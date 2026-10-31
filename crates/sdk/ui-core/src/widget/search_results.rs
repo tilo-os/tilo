@@ -287,22 +287,6 @@ impl SearchResultsView {
         self.bands = RowBands::resolve(theme);
     }
 
-    /// The headers in order: label, count, level and where each is painted.
-    #[cfg(test)]
-    pub(crate) fn header_list(&self) -> Vec<(String, Option<usize>, HeaderLevel, Rect)> {
-        self.plan()
-            .headers
-            .into_iter()
-            .map(|h| (h.label, h.count, h.level, h.rect))
-            .collect()
-    }
-
-    /// A header's band.
-    #[cfg(test)]
-    pub(crate) fn header_band(&self) -> f64 {
-        self.bands.header
-    }
-
     /// A one- or two-line row's band.
     pub(crate) fn row_band(&self, two_line: bool) -> f64 {
         if two_line {

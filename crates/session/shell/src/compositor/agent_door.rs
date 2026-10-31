@@ -33,7 +33,7 @@
 //! assigned to a task agent minted for the connection, whose run the
 //! person's admission starts — and the connection is served the runtime's
 //! MCP projection through that run
-//! (`tilo_action_broker::collab_broker_capnp::TaskRunHost`): every action it
+//! (`tilo_action_broker::collab_app_broker::TaskRunHost`): every action it
 //! takes, an app's or a host step, is admitted by the run as the agent
 //! working on the issue for the person, attributed to the task agent, in the
 //! run's History group, and refused once the person stops the run. There are
@@ -585,6 +585,7 @@ mod tests {
         let id = WorkspaceId::new();
         let mut workspace = Workspace::new(id, "Demo");
         workspace.set_owner("shell-fixture");
+        let room = workspace.room();
         tree.desktop.workspaces.push(workspace);
         tree.desktop.active = id;
         let handle = WorkspaceTreeHandle::new(tree);
@@ -593,13 +594,49 @@ mod tests {
             crate::shell::hosted_inputs::HostedTileInputs::default(),
         );
         chrome.borrow_mut().test_only_owner_override = Some(true);
-        let broker =
-            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
-                Arc::new(crate::shell::broker_services::NativeWorkspaceAuthority(
-                    handle.clone(),
-                )),
-                tilo_action_broker::services::HostServices::default(),
-            );
+        let broker = crate::shell::collab_app_broker::AppBrokerState::test_broker_with_authority(
+            Arc::new(crate::shell::broker_services::NativeWorkspaceAuthority(
+                handle.clone(),
+            )),
+            tilo_action_broker::services::HostServices::default(),
+        );
+        broker.replace_published_surfaces_for_test(vec![
+            crate::shell::collab_app_broker::PublishedSurface {
+                peer_id: 7,
+                app_id: "so.tilo.settings".into(),
+                route: crate::shell::collab_broker::CrdtRoute::app(
+                    "so.tilo.settings",
+                    room.to_string(),
+                ),
+                actions: vec![crate::shell::collab_app_broker::PublishedAction {
+                    state: tilo_actions::ActionState::default(),
+                    resource: "settings.display".into(),
+                    semantic_identity: None,
+                    action: "inspect".into(),
+                    resource_kind: "settings".into(),
+                    resource_label: "Displays".into(),
+                    action_label: "Inspect".into(),
+                    keywords: Vec::new(),
+                    icon: None,
+                    description: None,
+                    operation_kind: tilo_actions::OperationKind::View,
+                    params: vec![],
+                    contract: tilo_actions::ActionContract::view(),
+                    input: crate::shell::collab_app_broker::PublishedInput::None,
+                    view: None,
+                }],
+                live: true,
+            },
+        ]);
+
+        broker.replace_action_directory_roots_for_test(vec![
+            crate::shell::collab_app_broker::ActionDirectoryRoot {
+                peer_id: 7,
+                app_id: "so.tilo.settings".into(),
+                cluster_id: room.to_string(),
+                record_id: String::new(),
+            },
+        ]);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.sock");

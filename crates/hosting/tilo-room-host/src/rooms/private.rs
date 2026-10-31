@@ -1,5 +1,5 @@
-//! Authenticated, bounded private governor door. No payload enters relay gossip,
-//! room publication, action audit, tracing, or error messages.
+//! Authenticated, bounded private governor door. No payload enters relay
+//! fan-out, room publication, action audit, tracing, or error messages.
 //!
 //! One door, two carriers: a native device's iroh stream on the private ALPN
 //! and a page's HTTPS session (`tilo_relay_protocol::rooms::private::PRIVATE_PATH`).

@@ -1,7 +1,7 @@
 //! The editor's controls: its drawers, formatting tools, panel
 //! fields, pickers and palettes, the context menu and the clipboard.
 
-use super::block_layout::line_spacing as block_line_spacing;
+use super::block_layout::{line_spacing as block_line_spacing, line_spacing_label};
 use super::image_layout::{anchor as image_anchor, wrap as image_wrap};
 use super::text_runs::{char_font_family, char_font_size, char_highlight, parse_hex_rgb};
 use super::toolbar::{HIGHLIGHT_PALETTE, STYLE_PALETTE, ToolAction};
@@ -1366,19 +1366,30 @@ impl Editor {
         for (field, value) in changes {
             self.edit_focused_style(state, true, |st| field.set(st, num::f32_of_f64(value)));
         }
-        if let Some(index) = self.line_spacing_pick.take()
-            && let Some(spacing) = block_layout::LINE_SPACINGS.get(index).copied()
-        {
-            self.dispatch_block_attr(
-                state,
-                "line_spacing",
-                crate::actions::AttrVal::Float(spacing),
-            );
-            self.refresh_blocks(state);
-            self.lifecycle.dirty = true;
+        // Each menu keeps the value it shows; while closed the panel mirrors
+        // the paragraph's own, so a value there the panel did not put is a
+        // pick the person made.
+        let picked = self.line_spacing.selected().to_owned();
+        if picked != self.line_spacing_shown {
+            let spacing = block_layout::LINE_SPACINGS
+                .iter()
+                .find(|spacing| line_spacing_label(**spacing) == picked)
+                .copied();
+            if let Some(spacing) = spacing {
+                self.dispatch_block_attr(
+                    state,
+                    "line_spacing",
+                    crate::actions::AttrVal::Float(spacing),
+                );
+                self.refresh_blocks(state);
+                self.lifecycle.dirty = true;
+            }
+            self.line_spacing_shown = picked;
         }
-        if let Some(id) = self.style_pick_choice.take() {
-            self.apply_panel_hit(state, PanelHit::Pick(id));
+        let picked = self.style_pick.selected().to_owned();
+        if picked != self.style_pick_shown {
+            self.apply_panel_hit(state, PanelHit::Pick(picked.clone()));
+            self.style_pick_shown = picked;
         }
         if let Some(percent) = self.zoom_input.take_changed() {
             self.set_zoom(percent / 100.0);

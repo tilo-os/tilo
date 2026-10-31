@@ -28,6 +28,46 @@ display-confirm-tool-unknown-title = Diese Anzeigeänderung behalten?
 display-confirm-always = Behalten und bei { $tool } nicht mehr fragen
 display-confirm-a11y-description = Ein Anzeigewerkzeug hat einen Bildschirm geändert, den du gerade benutzt, oder einen Modus gewählt, den er noch nie gezeigt hat. Dabei kann er schwarz bleiben. Eingabe behält die Änderung; Escape oder Abwarten stellt die vorherige Anordnung wieder her.
 
+## Dictation
+
+dictation-title = Diktat
+dictation-ask-title = In dieses Feld diktieren?
+dictation-ask-body = Tilo hört einmal über das Mikrofon zu, nur bis du aufhörst, und lässt das Audio auf diesem Gerät. Vorher wird nichts aufgenommen.
+dictation-ask-caption = Deine Wörter gehen in das Feld, in dem du warst.
+dictation-allow = Erlauben
+dictation-deny = Jetzt nicht
+dictation-preparing = Das fokussierte bearbeitbare Feld wird geprüft…
+dictation-loading = Lokale Erkennung wird geladen. Das Mikrofon ist aus.
+dictation-listening = Mikrofon an. Sprich, dann setze ein.
+dictation-live-preview = Vorschau: { $text }
+dictation-stopping-microphone = Mikrofon wird gestoppt…
+dictation-finishing = Mikrofon aus. Dein Text wird fertiggestellt…
+dictation-stopping = Diktat wird beendet…
+dictation-finish = Einsetzen
+dictation-cancel = Abbrechen
+dictation-recovery-title = Das Feld hat keine Wörter angenommen
+dictation-recovery-too-long = Mikrofon aus · Der Text ist zu lang, um ihn in einem Schritt einzusetzen. Er bleibt 10 Minuten privat aufbewahrt. Kopieren legt ihn in deine Zwischenablage; Verwerfen löscht ihn.
+dictation-recovery-vocabulary = Mikrofon aus · Dein persönliches Wörterbuch hat sich geändert. Beginne ein neues Diktat, um die neuen Wörter zu nutzen. Das Gehörte bleibt 10 Minuten privat aufbewahrt; Kopieren legt es in deine Zwischenablage, Verwerfen löscht es.
+dictation-recovery-kept = 10 Minuten privat aufbewahrt.
+dictation-copied = Kopiert. Füge es in das Feld deiner Wahl ein; der private Entwurf bleibt, bis du ihn verwirfst oder 10 Minuten vergehen.
+dictation-copy-failed = Die Zwischenablage ist nicht verfügbar. Dein Transkript bleibt weiterhin privat aufbewahrt; versuche es noch einmal oder verwirf es.
+dictation-copy = Kopieren
+dictation-discard = Verwerfen
+dictation-unavailable-title = Diktieren ist nicht möglich
+dictation-unavailable = Lokales Diktieren ist nicht verfügbar. Es wurde kein Text eingesetzt.
+dictation-editable-required = Fokussiere ein bearbeitbares Feld. Passwörter nehmen kein Diktat an.
+dictation-unsupported-field = Diktieren wird in Terminal-Feldern noch nicht unterstützt. Fokussiere ein anderes bearbeitbares Feld.
+dictation-busy = Das vorige Diktat wird noch beendet. Versuche es gleich noch einmal.
+dictation-target-changed = Das Feld hat gewechselt. Das Diktat wurde ohne Einsetzen von Text abgebrochen.
+dictation-timeout = Das Diktat ist abgelaufen. Es wurde kein Text eingesetzt.
+dictation-model-required = Installiere ein freigegebenes lokales Sprachmodell, bevor du diktierst.
+dictation-language-unavailable = Dieses Sprachmodell unterstützt die gewünschte Sprache nicht.
+dictation-microphone-unavailable = Kein Zugriff auf das Mikrofon. Prüfe dein Eingabegerät.
+dictation-vocabulary-unavailable = Dein persönliches Wörterbuch hat sich geändert oder ist nicht verfügbar. Das Diktat wurde beendet; beginne ein neues.
+dictation-audio-interrupted = Das Mikrofon-Audio wurde unterbrochen. Es wurde kein Text eingesetzt.
+dictation-close = Schließen
+dictation-open-settings = Einrichten
+
 ## Shortcut guide
 
 guide-title = Tastenkürzel

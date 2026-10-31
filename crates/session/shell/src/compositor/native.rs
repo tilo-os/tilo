@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 
-use crate::shell::collab_broker_capnp::LocalSessionLifecycle;
+use crate::shell::collab_app_broker::LocalSessionLifecycle;
 use crate::shell::search::action_api::{ActionArgs, ActionVisibility, ResourceRef};
 use crate::shell::search::visibility::PolicyVisibility;
 
@@ -3605,6 +3605,11 @@ impl ControlState for FrameBuilderControlState<'_> {
         } else {
             tilo_desktop_model::history::without_history(|| test_control::RawJson::of(&*tree))
         }
+    }
+
+    /// The workspaces held here, off the owner record the tree projects.
+    fn held_workspaces_json(&self) -> serde_json::Value {
+        crate::shell::native_workspace_owner::held_workspaces(&self.fb.chrome().tree())
     }
 
     fn windows_json(&self) -> Result<serde_json::Value, String> {
@@ -9658,7 +9663,7 @@ pub fn run() {
     let mut collab_broker: Option<crate::shell::collab_broker::BrokerHandle> = None;
     let mut local_session_lifecycle: Option<LocalSessionLifecycle> = None;
     let mut realtime_fabric_bridge: Option<
-        crate::shell::collab_broker_capnp::RealtimeFabricAppBridge,
+        crate::shell::collab_app_broker::RealtimeFabricAppBridge,
     > = None;
     let mut remote_capture_runtime: Option<
         std::sync::Arc<
@@ -12906,7 +12911,7 @@ pub fn run() {
                         },
                         app_focus: app_focus.clone(),
                         realtime_adapter: realtime_fabric_bridge.as_ref().and_then(
-                            crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::adapter,
+                            crate::shell::collab_app_broker::RealtimeFabricAppBridge::adapter,
                         ),
                         remote_capture: remote_capture_runtime.as_ref().map(std::sync::Arc::clone),
                     })
@@ -13587,7 +13592,7 @@ pub fn run() {
                 realtime_fabric_bridge = broker.realtime_fabric_bridge();
                 remote_capture_runtime = realtime_fabric_bridge
                     .as_ref()
-                    .and_then(crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::realtime_capture_broker)
+                    .and_then(crate::shell::collab_app_broker::RealtimeFabricAppBridge::realtime_capture_broker)
                     .map(|capture| {
                         std::sync::Arc::new(std::sync::Mutex::new(
                             crate::shell::remote_capture::runtime::RemoteCaptureFabricRuntime::production(
@@ -15301,7 +15306,7 @@ mod tests {
     //! `execute_planned_action` → `FrameBuilder::dispatch_event` wire, without
     //! a process or a display.
     use super::*;
-    use crate::shell::collab_broker_capnp::{
+    use crate::shell::collab_app_broker::{
         native_consent_fixture_root, run_isolated_native_consent_test,
         wait_for_local_session_worker_teardown,
     };
@@ -17236,7 +17241,7 @@ mod tests {
 
     fn attach_directory_fixture(
         frame_builder: &mut FrameBuilder,
-        directory: &crate::shell::collab_broker_capnp::tests::LocalDirectoryFixture,
+        directory: &crate::shell::collab_app_broker::tests::LocalDirectoryFixture,
     ) {
         attach_fixture_broker(frame_builder, &directory.broker);
     }
@@ -17590,10 +17595,11 @@ mod tests {
     }
 
     fn wait_ms_answer_with_loop_wake(unrelated_wake: bool, early_index_wake: bool) {
+        use crate::shell::collab_app_broker::AppBrokerState;
         use std::io::Write as _;
 
         let mut fixture = ControlFixture::new();
-        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let broker = AppBrokerState::test_broker_with_idle_directory_queue();
         attach_fixture_broker(&mut fixture.frame_builder, &broker);
         let actor = fixture.frame_builder.chrome().active_local_user();
         let job = 41;
@@ -17701,10 +17707,10 @@ mod tests {
             .enable_all()
             .build()
             .expect("runtime");
-        let mut fixture = ControlFixture::new();
         tokio::task::LocalSet::new().block_on(&runtime, async {
+            let mut fixture = ControlFixture::new();
             let directory =
-                crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
+                crate::shell::collab_app_broker::tests::local_directory_fixture_with_membership(
                     fixture.frame_builder.chrome().tree_handle(),
                 );
             attach_directory_fixture(&mut fixture.frame_builder, &directory);
@@ -17715,7 +17721,7 @@ mod tests {
             writer.write_all(enumerate).expect("cold directory query");
             fixture.pump(&mut conn);
             let _ = socket_response(&mut reader);
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+            crate::shell::collab_app_broker::tests::drain_directory_bridge(&directory).await;
             writer.write_all(enumerate).expect("warm directory query");
             fixture.pump(&mut conn);
             let test_control::Response::Answer(rows) = socket_response(&mut reader) else {
@@ -17757,7 +17763,7 @@ mod tests {
                 .expect("dispatch");
             assert!(!woken.get(), "an unanswered admission wakes nobody");
 
-            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+            crate::shell::collab_app_broker::tests::drain_directory_bridge(&directory).await;
             // The answer itself ends the loop's park; no other wake is needed
             // for the next pump to answer the client.
             assert!(park_until_woken(
@@ -17806,10 +17812,10 @@ mod tests {
             .enable_all()
             .build()
             .expect("runtime");
-        let mut fixture = ControlFixture::new();
         tokio::task::LocalSet::new().block_on(&runtime, async {
+            let mut fixture = ControlFixture::new();
             let mut directory =
-                crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
+                crate::shell::collab_app_broker::tests::local_directory_fixture_with_membership(
                     fixture.frame_builder.chrome().tree_handle(),
                 );
             attach_directory_fixture(&mut fixture.frame_builder, &directory);
@@ -17851,7 +17857,7 @@ mod tests {
                 .expect("a representable deadline");
             let listing = loop {
                 woken.set(false);
-                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                crate::shell::collab_app_broker::tests::drain_directory_bridge(&directory).await;
                 // What it waits for wakes the loop by itself: the page, the
                 // index build.
                 assert!(
@@ -17937,7 +17943,7 @@ mod tests {
                 .checked_add(tilo_test_env::hang_bound())
                 .expect("a representable deadline");
             let admitted = loop {
-                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                crate::shell::collab_app_broker::tests::drain_directory_bridge(&directory).await;
                 fixture.pump(&mut conn);
                 if let Some(answer) = socket_answer(&mut reader) {
                     break answer;
@@ -18025,13 +18031,13 @@ mod tests {
                 .enable_all()
                 .build()
                 .expect("runtime");
-            let tree = directory_test_tree();
-            let mut frame_builder = FrameBuilder::with_handle(tree.clone(), false, (800, 600));
             tokio::task::LocalSet::new().block_on(&runtime, async {
+                let tree = directory_test_tree();
                 let mut directory =
-                    crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
-                        tree,
+                    crate::shell::collab_app_broker::tests::local_directory_fixture_with_membership(
+                        tree.clone(),
                     );
+                let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
                 attach_directory_fixture(&mut frame_builder, &directory);
                 let mut ctx = TestControlCtx::new();
                 let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
@@ -18061,7 +18067,7 @@ mod tests {
                     &mut state,
                 );
                 let _cold = socket_response(&mut reader);
-                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                crate::shell::collab_app_broker::tests::drain_directory_bridge(&directory).await;
 
                 writer
                     .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
@@ -18130,7 +18136,7 @@ mod tests {
                     test_control::Response::Answer(_)
                 ));
 
-                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                crate::shell::collab_app_broker::tests::drain_directory_bridge(&directory).await;
                 pump_test_control_conn(
                     &mut conn,
                     &mut frame_builder,
@@ -18177,7 +18183,7 @@ mod tests {
                     &mut state,
                 );
                 let _ = socket_response(&mut reader);
-                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                crate::shell::collab_app_broker::tests::drain_directory_bridge(&directory).await;
                 writer
                     .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
                     .expect("read refreshed directory query");
@@ -18201,7 +18207,7 @@ mod tests {
                 );
 
                 directory.set_resolve_mode(
-                    crate::shell::collab_broker_capnp::tests::DirectoryResolveMode::NotFound,
+                    crate::shell::collab_app_broker::tests::DirectoryResolveMode::NotFound,
                 );
                 writer
                     .write_all(format!("{invoke}\n").as_bytes())
@@ -18214,7 +18220,7 @@ mod tests {
                     &mut lock,
                     &mut state,
                 );
-                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                crate::shell::collab_app_broker::tests::drain_directory_bridge(&directory).await;
                 pump_test_control_conn(
                     &mut conn,
                     &mut frame_builder,
@@ -18247,13 +18253,13 @@ mod tests {
                 .enable_all()
                 .build()
                 .expect("runtime");
-            let tree = directory_test_tree();
-            let mut frame_builder = FrameBuilder::with_handle(tree.clone(), false, (800, 600));
             tokio::task::LocalSet::new().block_on(&runtime, async {
+                let tree = directory_test_tree();
                 let mut directory =
-                    crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
-                        tree,
+                    crate::shell::collab_app_broker::tests::local_directory_fixture_with_membership(
+                        tree.clone(),
                     );
+                let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
                 attach_directory_fixture(&mut frame_builder, &directory);
                 let mut ctx = TestControlCtx::new();
                 let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
@@ -18281,7 +18287,7 @@ mod tests {
                     &mut state,
                 );
                 let _ = socket_response(&mut reader);
-                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                crate::shell::collab_app_broker::tests::drain_directory_bridge(&directory).await;
                 writer.write_all(enumerate).expect("warm directory query");
                 pump_test_control_conn(
                     &mut conn,
@@ -18327,7 +18333,7 @@ mod tests {
                     PendingConnectionProgress::Waiting,
                     "write-side EOF must not discard a response the client can still read"
                 );
-                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                crate::shell::collab_app_broker::tests::drain_directory_bridge(&directory).await;
                 assert_eq!(
                     pump_pending(&mut conn, &frame_builder, &mut ctx),
                     PendingConnectionProgress::WroteResponse
@@ -18360,13 +18366,13 @@ mod tests {
                 .enable_all()
                 .build()
                 .expect("runtime");
-            let tree = directory_test_tree();
-            let mut frame_builder = FrameBuilder::with_handle(tree.clone(), false, (800, 600));
             tokio::task::LocalSet::new().block_on(&runtime, async {
+                let tree = directory_test_tree();
                 let mut directory =
-                    crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
-                        tree,
+                    crate::shell::collab_app_broker::tests::local_directory_fixture_with_membership(
+                        tree.clone(),
                     );
+                let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
                 attach_directory_fixture(&mut frame_builder, &directory);
                 let mut ctx = TestControlCtx::new();
                 let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
@@ -18394,7 +18400,7 @@ mod tests {
                     &mut state,
                 );
                 let _ = socket_response(&mut reader);
-                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                crate::shell::collab_app_broker::tests::drain_directory_bridge(&directory).await;
                 writer.write_all(enumerate).expect("warm directory query");
                 pump_test_control_conn(
                     &mut conn,
@@ -18455,7 +18461,7 @@ mod tests {
                 crate::shell::search::providers::live_app_actions::set_directory_start_timeout_for_test(
                     None,
                 );
-                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                crate::shell::collab_app_broker::tests::drain_directory_bridge(&directory).await;
                 assert!(directory.take_invocation_actor().is_none());
 
                 writer
@@ -18470,7 +18476,7 @@ mod tests {
                     &mut state,
                 );
                 let _ = socket_response(&mut reader);
-                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                crate::shell::collab_app_broker::tests::drain_directory_bridge(&directory).await;
                 writer
                     .write_all(enumerate)
                     .expect("read refreshed directory page");
@@ -18502,7 +18508,7 @@ mod tests {
                     pump_pending(&mut conn, &frame_builder, &mut ctx),
                     PendingConnectionProgress::Closed
                 );
-                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                crate::shell::collab_app_broker::tests::drain_directory_bridge(&directory).await;
                 assert!(directory.take_invocation_actor().is_none());
             });
             crate::shell::search::providers::live_app_actions::set_directory_start_timeout_for_test(
@@ -19852,7 +19858,7 @@ mod tests {
         }
         // Phase `action_enumeration_preserves_directory_resource_hierarchy`.
         {
-            use crate::shell::collab_broker_capnp::ActionDirectoryRoot;
+            use crate::shell::collab_app_broker::ActionDirectoryRoot;
             use crate::shell::search::providers::live_app_actions::fixture_with_directory_page;
 
             let mut fb = FrameBuilder::new((800, 600));
@@ -19993,19 +19999,15 @@ mod tests {
             assert!(actions.is_empty());
             let test_control::Response::State {
                 workspace_tree,
+                held_workspaces,
                 chrome,
-                peers: _,
-                sharing: _,
+                ..
             } = resp
             else {
                 panic!("expected Response::State; got something else");
             };
-            // Sanity: both blobs are non-null and shaped like objects.
-            assert!(
-                workspace_tree.to_value().is_object(),
-                "workspace_tree should be an object"
-            );
-            assert!(chrome.is_object(), "chrome should be an object");
+            assert!(workspace_tree.to_value().is_object() && chrome.is_object());
+            assert!(held_workspaces.is_array(), "{held_workspaces:#}");
         }
     }
 
@@ -20385,7 +20387,7 @@ mod tests {
             );
             assert_eq!(
                 lifecycle.snapshot().expect("native bootstrap").liveness,
-                crate::shell::collab_broker_capnp::LocalSessionLiveness::Active
+                crate::shell::collab_app_broker::LocalSessionLiveness::Active
             );
 
             let fixture = native_consent_fixture_root();
@@ -20400,7 +20402,7 @@ mod tests {
                     .snapshot()
                     .expect("onboarding revocation")
                     .liveness,
-                crate::shell::collab_broker_capnp::LocalSessionLiveness::Inactive
+                crate::shell::collab_app_broker::LocalSessionLiveness::Inactive
             );
             drop(broker);
             wait_for_local_session_worker_teardown(&lifecycle);
@@ -20456,7 +20458,7 @@ mod tests {
             let locked = lifecycle.snapshot().expect("synchronous lock revoke");
             assert_eq!(
                 locked.liveness,
-                crate::shell::collab_broker_capnp::LocalSessionLiveness::Inactive
+                crate::shell::collab_app_broker::LocalSessionLiveness::Inactive
             );
             assert!(locked.generation > active.generation);
 
@@ -20471,7 +20473,7 @@ mod tests {
             let unlocked = lifecycle.snapshot().expect("fresh unlock");
             assert_eq!(
                 unlocked.liveness,
-                crate::shell::collab_broker_capnp::LocalSessionLiveness::Active
+                crate::shell::collab_app_broker::LocalSessionLiveness::Active
             );
             assert!(unlocked.generation > locked.generation);
             assert_eq!(unlocked.epoch, active.epoch);
@@ -20507,7 +20509,7 @@ mod tests {
                     .snapshot()
                     .expect("deferred native state")
                     .liveness,
-                crate::shell::collab_broker_capnp::LocalSessionLiveness::Active,
+                crate::shell::collab_app_broker::LocalSessionLiveness::Active,
                 "the deferred broker must publish current native state before launch preparation"
             );
             drop(broker);
@@ -20528,7 +20530,7 @@ mod tests {
             close_native_session_authority(Some(&lifecycle));
             assert_eq!(
                 lifecycle.snapshot().expect("logout close").liveness,
-                crate::shell::collab_broker_capnp::LocalSessionLiveness::Closed
+                crate::shell::collab_app_broker::LocalSessionLiveness::Closed
             );
             drop(broker);
             wait_for_local_session_worker_teardown(&lifecycle);

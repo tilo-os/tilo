@@ -383,7 +383,7 @@ pub enum NeighbourMsg {
     /// invoke, observe or cancel its actions, or the answer to one.
     ///
     /// It travels only on an exact-target route, never workspace-wide
-    /// gossip, so arguments and results are not disclosed to the rest of
+    /// fan-out, so arguments and results are not disclosed to the rest of
     /// the room. The receiver takes the caller from the authenticated
     /// transport; nothing in the frame names it. Appended to preserve all
     /// existing Postcard discriminants.

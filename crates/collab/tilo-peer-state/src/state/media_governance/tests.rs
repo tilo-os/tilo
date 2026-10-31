@@ -3,7 +3,8 @@ use crate::SeedState;
 use crate::seed_room;
 use automerge::AutoCommit;
 use tilo_user_identity::{
-    DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert, sign_revocation_entry,
+    DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
+    sign_revocation_entry,
 };
 use web_time::Duration;
 #[expect(
@@ -72,7 +73,7 @@ fn fixture(revision: u64) -> (StatePeer, SigningKey, SigningKey, SystemTime) {
 }
 fn revoked(peer: &StatePeer, root: &SigningKey, now: SystemTime) -> StatePeer {
     let mut entry = RevocationEntry {
-        user_public_key: peer.core.authority.user_public_key,
+        user_public_key: peer.owner(),
         revoked_device_public_key: [99; 32],
         revoked_at_ns: 2,
         reason: RevocationReason::Retired,
@@ -82,10 +83,10 @@ fn revoked(peer: &StatePeer, root: &SigningKey, now: SystemTime) -> StatePeer {
     let mut candidate = peer.clone();
     candidate
         .receive_from(
-            TransportOrigin::UntrustedPresence(peer.core.authority.device_public_key),
+            TransportOrigin::UntrustedPresence(peer.owner_certificates()[0].device_public_key),
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                cert: Box::new(peer.core.authority.clone()),
+                cert: Box::new(peer.owner_certificates()[0].clone()),
                 revocations: vec![entry],
             },
             now,
@@ -141,7 +142,7 @@ fn room_media_exhaustion_keeps_the_record_and_reopens_denied() {
     let restored = StatePeer::restore(
         &bytes,
         peer.room(),
-        peer.core.authority.clone(),
+        peer.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
         now,
@@ -156,60 +157,6 @@ fn room_media_exhaustion_keeps_the_record_and_reopens_denied() {
         u64::MAX
     );
 }
-#[test]
-fn room_media_combined_certificate_and_delegation_has_one_basis_revision() {
-    let (mut peer, root, key, now) = fixture(1);
-    let host = SigningKey::from_bytes(&[93; 32]);
-    let mut cert = peer.core.authority.clone();
-    cert.device_public_key = host.verifying_key().to_bytes();
-    cert.device_label = "invitation host".into();
-    sign_device_cert(&mut cert, &root).unwrap();
-    let delegation = crate::join::sign_workspace_delegation(
-        peer.room(),
-        1,
-        &peer.core.authority,
-        cert.clone(),
-        crate::join::WorkspaceDelegationPermissions {
-            issue_invitations: true,
-            admit_invited_members: true,
-        },
-        [1; 16],
-        None,
-        &key,
-    )
-    .unwrap();
-    assert!(
-        peer.governance_mut()
-            .admit_certificate_with_workspace_delegation(
-                cert.clone(),
-                delegation.clone(),
-                &key,
-                now
-            )
-            .unwrap()
-    );
-    assert_eq!(
-        peer.validated_media_policy()
-            .unwrap()
-            .unwrap()
-            .authorization_revision,
-        2
-    );
-    assert!(
-        !peer
-            .governance_mut()
-            .admit_certificate_with_workspace_delegation(cert, delegation, &key, now)
-            .unwrap()
-    );
-    assert_eq!(
-        peer.validated_media_policy()
-            .unwrap()
-            .unwrap()
-            .authorization_revision,
-        2
-    );
-}
-
 #[test]
 fn room_media_reconciliation_preserves_disabled_policy_before_first_call() {
     let (peer, root, key, now) = fixture(0);
@@ -243,16 +190,17 @@ fn no_policy_document_fixture() -> (StatePeer, SigningKey, SigningKey, SystemTim
 #[test]
 fn room_media_security_no_policy_accepts_host_revocation_without_enabling_media() {
     let (mut peer, root, key, now) = no_policy_document_fixture();
+    let owner = peer.owner_certificates()[0].clone();
     let sibling_key = SigningKey::from_bytes(&[209; 32]);
-    let mut sibling = peer.core.authority.clone();
+    let mut sibling = owner.clone();
     sibling.device_public_key = sibling_key.verifying_key().to_bytes();
     sibling.device_label = "same-root revocation carrier".into();
     sign_device_cert(&mut sibling, &root).unwrap();
     assert!(peer.admit_certificate(sibling.clone(), &key, now).unwrap());
     let before = peer.durable().unwrap();
     let mut entry = RevocationEntry {
-        user_public_key: peer.core.authority.user_public_key,
-        revoked_device_public_key: peer.core.authority.device_public_key,
+        user_public_key: peer.owner(),
+        revoked_device_public_key: owner.device_public_key,
         revoked_at_ns: 2,
         reason: RevocationReason::Retired,
         signature: [0; 64],
@@ -261,10 +209,10 @@ fn room_media_security_no_policy_accepts_host_revocation_without_enabling_media(
     let mut observed = peer.clone();
     let error = observed
         .receive_from(
-            TransportOrigin::UntrustedPresence(peer.core.authority.device_public_key),
+            TransportOrigin::UntrustedPresence(owner.device_public_key),
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                cert: Box::new(peer.core.authority.clone()),
+                cert: Box::new(owner.clone()),
                 revocations: vec![entry.clone()],
             },
             now,
@@ -287,7 +235,7 @@ fn room_media_security_no_policy_accepts_host_revocation_without_enabling_media(
         observed
             .core
             .revocations
-            .is_revoked(&peer.core.authority.device_public_key)
+            .is_revoked(&owner.device_public_key)
     );
     assert!(
         media::parse(observed.admitted_room().unwrap())
@@ -295,20 +243,17 @@ fn room_media_security_no_policy_accepts_host_revocation_without_enabling_media(
             .is_none()
     );
     assert_eq!(peer.durable().unwrap(), before);
-    let restore_error = StatePeer::restore(
+    // The revoked device's room reopens; the device itself writes nothing more.
+    let reopened = StatePeer::restore(
         &observed.durable().unwrap(),
         peer.room(),
-        peer.core.authority.clone(),
+        owner.clone(),
         vec![],
         RevocationList::new(),
         now,
     )
-    .err()
-    .expect("a persisted host revocation must deny reopen");
-    assert!(
-        restore_error.contains("pinned authority device is revoked"),
-        "{restore_error}"
-    );
+    .unwrap();
+    assert!(reopened.permissions(owner.device_public_key, now).is_err());
 }
 
 #[test]
@@ -318,7 +263,7 @@ fn room_media_security_no_policy_refuses_foreign_and_forged_revocations() {
     let foreign_root = SigningKey::from_bytes(&[210; 32]);
     let mut foreign = RevocationEntry {
         user_public_key: foreign_root.verifying_key().to_bytes(),
-        revoked_device_public_key: peer.core.authority.device_public_key,
+        revoked_device_public_key: peer.owner_certificates()[0].device_public_key,
         revoked_at_ns: 3,
         reason: RevocationReason::Retired,
         signature: [0; 64],
@@ -328,10 +273,10 @@ fn room_media_security_no_policy_refuses_foreign_and_forged_revocations() {
     assert!(
         received
             .receive_from(
-                TransportOrigin::UntrustedPresence(peer.core.authority.device_public_key),
+                TransportOrigin::UntrustedPresence(peer.owner_certificates()[0].device_public_key),
                 NeighbourMsg::IdentityHello {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                    cert: Box::new(peer.core.authority.clone()),
+                    cert: Box::new(peer.owner_certificates()[0].clone()),
                     revocations: vec![foreign],
                 },
                 now,
@@ -344,10 +289,10 @@ fn room_media_security_no_policy_refuses_foreign_and_forged_revocations() {
     assert!(
         received
             .receive_from(
-                TransportOrigin::UntrustedPresence(peer.core.authority.device_public_key),
+                TransportOrigin::UntrustedPresence(peer.owner_certificates()[0].device_public_key),
                 NeighbourMsg::IdentityHello {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                    cert: Box::new(peer.core.authority.clone()),
+                    cert: Box::new(peer.owner_certificates()[0].clone()),
                     revocations: vec![invalid_signature],
                 },
                 now,

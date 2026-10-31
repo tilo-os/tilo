@@ -3,6 +3,11 @@
 //! methods as the wire doors, and destructive governance held back until the
 //! person's own confirmation can be asked for.
 
+#![expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+)]
+
 use ed25519_dalek::Signer as _;
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governance};

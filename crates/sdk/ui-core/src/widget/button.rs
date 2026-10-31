@@ -2302,18 +2302,10 @@ impl crate::resources::PublishesResources for Button {
 impl crate::widget::controls::ActionControls for Button {
     crate::widget::controls::optional_emitter_controls!(custody);
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        use crate::widget::{ControlBindingKind, ControlBindingMetadata};
-        if let Some(action) = &self.action {
-            return vec![action.metadata(self.id.clone())];
-        }
-        let mut bindings = Vec::new();
-        if self.on_click.is_some() {
-            bindings.push(ControlBindingMetadata {
-                control_id: self.id.clone(),
-                kind: ControlBindingKind::LegacyCallback,
-            });
-        }
-        bindings
+        self.action
+            .as_ref()
+            .map(|action| vec![action.metadata(self.id.clone())])
+            .unwrap_or_default()
     }
     fn has_action_control_bindings(&self) -> bool {
         self.action.is_some()

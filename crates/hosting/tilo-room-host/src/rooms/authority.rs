@@ -154,7 +154,7 @@ fn refuse_changing_the_owner(
     room: &GovernedRoom,
     change: &Change,
 ) -> Result<(), CollaborationError> {
-    let owner = hex::encode(room.peer().authority().user_public_key);
+    let owner = hex::encode(room.peer().owner());
     if let Change::RemoveMember { person }
     | Change::Ban { person }
     | Change::Restrict { person, .. } = change

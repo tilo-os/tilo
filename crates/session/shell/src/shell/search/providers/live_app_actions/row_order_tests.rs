@@ -3,8 +3,8 @@ use automerge::AutoCommit;
 
 use super::{LiveAppActionsProvider, PROVIDER_ID, row_facts};
 use crate::shell::chrome_state::{ChromeState, SearchScope};
+use crate::shell::collab_app_broker::{PublishedAction, PublishedInput, PublishedSurface};
 use crate::shell::collab_broker::CrdtRoute;
-use crate::shell::collab_broker_capnp::{PublishedAction, PublishedInput, PublishedSurface};
 use crate::shell::search::{ResourceKind, SearchBudget, SearchContext, SearchProvider as _};
 use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
 

@@ -106,12 +106,12 @@ pub use policy::{
     Arrangement, LayoutPoint, LayoutRect, ResizeEdges, StackPolicy, WindowInfo, WindowPolicy,
     WindowRequest,
 };
-pub use selection::Selection;
+pub use selection::{Selection, TEXT_MIME};
 /// The quarter turns an output is shown at.
 pub use smithay::utils::Transform;
 pub use state::State;
 pub use switch_scan::{Scan, SwitchConfig, SwitchPair};
-pub use text_input::TextEntry;
+pub use text_input::{TextEntry, TextField, TextFieldRefusal, TextInsertion};
 pub use window_frame::{Edge, Shadow, WindowFrame};
 pub use x11_windows::{Icon, Identity as X11Identity};
 
@@ -506,6 +506,20 @@ impl Compositor {
     #[must_use]
     pub fn text_entry(&self) -> TextEntry {
         self.data.state.text_entry()
+    }
+
+    /// The text field the person is typing into, as dictation names it: its
+    /// identity and the revision of what its client last committed, or why
+    /// dictated text may not be written there.
+    pub fn dictation_field(&self) -> Result<TextField, TextFieldRefusal> {
+        self.data.state.dictation_field()
+    }
+
+    /// Insert committed text into `field` once, if the person is still
+    /// typing into that same revision of it. The text goes through the
+    /// trusted input method, never as keystrokes.
+    pub fn insert_dictation(&mut self, field: TextField, text: &str) -> TextInsertion {
+        self.data.state.insert_dictation(field, text)
     }
 
     /// Flash every output: a visual alert for what a person who cannot hear

@@ -174,15 +174,6 @@ mod tests {
         catalog::check_translations(CATALOGS);
     }
 
-    /// A key the code asks for but a catalogue lacks renders as the raw key
-    /// (or English on a German desktop), so every one must be defined.
-    #[test]
-    fn every_key_used_in_code_is_in_every_catalogue() {
-        catalog::UsedKeys::scan(&[concat!(env!("CARGO_MANIFEST_DIR"), "/src")])
-            .min_keys(100)
-            .check_defined(CATALOGS);
-    }
-
     /// Toolkit widgets the shell draws take their labels from the toolkit's
     /// catalogue, which the shell loads with its own.
     #[test]

@@ -18,16 +18,17 @@ mod compaction;
 mod delivery;
 mod dispatch;
 mod fanout;
-mod federation;
+mod hello;
 mod live;
 mod records;
 mod replay;
 mod session;
 mod state;
 mod subscribe;
+mod sync;
 mod test_hooks;
 
-pub use admission::enqueue_federated;
+pub use admission::enqueue_from_host;
 pub(crate) use admission::{HostAdmission, enqueue_host_state};
 use admission::{enqueue_state, enqueue_state_inner};
 #[cfg(test)]
@@ -79,7 +80,7 @@ use compaction::handle_compaction;
 #[cfg(test)]
 use dispatch::handle_inbound_frame;
 use dispatch::{handle_envelope, handle_private};
-use federation::{handle_peer_relay_hello, handle_sync_request};
+use hello::handle_host_hello;
 use live::{
     handle_live, handle_live_join, handle_live_leave, handle_presence, handle_voice,
     route_record_content,
@@ -87,6 +88,7 @@ use live::{
 use records::handle_open_record;
 pub use subscribe::get_or_autobind_workspace;
 use subscribe::{Subscription, handle_subscribe, handle_unsubscribe};
+use sync::handle_sync_request;
 
 use crate::store::bounded::Invariant;
 use access_audit::AccessAudit;
@@ -184,7 +186,7 @@ pub struct PeerContext {
     pub own_user_public_key: [u8; 32],
     /// Exact certified device running this relay. Private actions may use this
     /// identity for a local durable-broker self-connection even though its
-    /// host capability classifies it as a peer relay.
+    /// certificate says it may host.
     pub own_device_cert: tilo_user_identity::DeviceCert,
     /// Metrics — cheap counters.
     pub metrics: Arc<crate::metrics::Metrics>,
@@ -248,6 +250,8 @@ struct SessionCtx<'a> {
     state_outbound: Option<&'a mpsc::Sender<StateDelivery>>,
     connection_live: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
     own_user_public_key: &'a [u8; 32],
+    /// The certificate of the device running this relay, so a session can
+    /// recognise its own host's local self-connection.
     own_device_cert: &'a tilo_user_identity::DeviceCert,
     metrics: &'a Arc<crate::metrics::Metrics>,
     trust_policy: &'a Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,

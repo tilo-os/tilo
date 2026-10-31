@@ -339,6 +339,15 @@ returns typed `Derived` entries whose actions are the parent's verbs with
 arguments bound, e.g. `Derived::new(folder_label).with(Snippets::NEW_SNIPPET.bind(snippets::NewSnippet::paths().folder, name))`.
 No string ids.
 
+A derived row is reached by id through `child = path`, which builds that one
+row the same way (`fn(&Self, &str) -> Option<ResourceSpec>`): it answers for an
+address the shorthand page of `children` leaves out, and `None` for one the
+state no longer holds. A row whose address is its whole identity, not a name
+among the record's, is published with `Derived::addressed`
+(`music.album:<id>`), the form a search hit or an agent names it by. What the
+rows are and which addresses one takes is `children`'s and `child`'s to
+agree on, in one place per resource.
+
 ### 2.6 Child records
 
 A child that can need its own permissions, sharing or history (a chat's

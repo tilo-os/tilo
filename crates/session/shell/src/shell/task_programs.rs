@@ -20,7 +20,7 @@ use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
 use tilo_lock::MutexRecover as _;
 
-use tilo_action_broker::collab_broker_capnp::TaskRunHost;
+use tilo_action_broker::collab_app_broker::TaskRunHost;
 
 /// One task's session of the door.
 type Door = tilo_runtime::mcp::McpServer<TaskRunHost>;

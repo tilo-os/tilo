@@ -12,7 +12,7 @@ use std::{
     },
 };
 use tilo_files::native::atomic::lease::{FileLease, LeaseMode};
-pub(crate) use tilo_joined_room::{LimitedWriter, MAX_STATE_BYTES};
+pub(crate) use tilo_peer_state::owner::{LimitedWriter, MAX_STATE_BYTES};
 
 /// Where a snapshot stands among the writes of one state file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -210,7 +210,7 @@ struct Writer {
 }
 
 type Attachment = (
-    tilo_joined_room::WeakNativeWorkspaceOwner,
+    tilo_peer_state::owner::WeakNativeWorkspaceOwner,
     WeakWorkspaceTreeHandle,
 );
 

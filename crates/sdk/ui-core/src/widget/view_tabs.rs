@@ -217,7 +217,7 @@ mod tests {
     fn activating_a_tab_from_assistive_technology_shows_it_and_reports_it() {
         let chosen = std::rc::Rc::new(std::cell::Cell::new(None));
         let seen = std::rc::Rc::clone(&chosen);
-        let mut tabs = tabs().on_change(move |index| seen.set(Some(index)));
+        let mut tabs = tabs().on_view("request-tabs", move |index| seen.set(Some(index)));
         let target = tabs
             .accessibility()
             .and_then(|node| {
@@ -233,6 +233,11 @@ mod tests {
             &automerge::ROOT,
         );
         assert!(acted);
+        assert_eq!(
+            crate::testing::answer_controls(&mut tabs),
+            1,
+            "the choice reaches its handler when it is answered"
+        );
         assert_eq!(tabs.selected(), 3);
         assert_eq!(chosen.get(), Some(3));
     }

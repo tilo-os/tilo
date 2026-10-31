@@ -1,32 +1,29 @@
-/// What every published action carries besides the fields a test is about:
-/// its operation kind, parameters and contract.
-fn published_operation(mut row: collab_capnp::exported_action::Builder<'_>) {
-    row.set_operation_kind("view");
-    row.set_params_json("[]");
-    row.set_contract_json(serde_json::to_string(&tilo_actions::ActionContract::default()).unwrap());
+/// An action published with `identity` as its semantic identity, as the
+/// wire carries it.
+fn published_with_identity(identity: Option<(&str, &str)>) -> Result<ExportedAction, String> {
+    let mut action = serde_json::json!({
+        "resource": "opaque-alias",
+        "action": "open",
+        "resource_kind": "store.app",
+        "resource_label": "A misleading label",
+        "action_label": "Open",
+        "operation_kind": "View",
+        "params": [],
+        "contract": tilo_actions::ActionContract::default(),
+        "input": ExportedInput::None,
+    });
+    if let Some((kind, key)) = identity {
+        action["semantic_identity"] = serde_json::json!({"kind": kind, "key": key});
+    }
+    let action: ExportedAction =
+        serde_json::from_value(action).map_err(|error| error.to_string())?;
+    action.check()?;
+    Ok(action)
 }
 
-#[cfg(feature = "client")]
 #[test]
 fn action_semantic_identity_is_optional_bounded_and_kind_exact() {
-    let decode = |identity: Option<(&str, &str)>| {
-        let mut message = capnp::message::Builder::new_default();
-        let mut row = message.init_root::<collab_capnp::exported_action::Builder<'_>>();
-        row.set_resource("opaque-alias");
-        row.set_resource_kind("store.app");
-        row.set_resource_label("A misleading label");
-        published_operation(row.reborrow());
-        if let Some((kind, key)) = identity {
-            let mut out = row.reborrow().init_semantic_identity();
-            out.set_kind(kind);
-            out.set_key(key);
-        }
-        decode_exported_action(
-            message
-                .get_root_as_reader::<collab_capnp::exported_action::Reader<'_>>()
-                .unwrap(),
-        )
-    };
+    let decode = published_with_identity;
     assert!(decode(None).unwrap().semantic_identity.is_none());
     let decoded = decode(Some(("store.app", "app:so.tilo.chat"))).unwrap();
     assert_eq!(decoded.resource, "opaque-alias");
@@ -83,9 +80,7 @@ fn clear_tilo_env() -> tilo_test_env::ScopedEnv {
 #[test]
 fn try_connect_without_env_returns_service_fd_missing() {
     let _env = clear_tilo_env();
-    // Not using `expect_err` because `CollabClient` intentionally
-    // doesn't implement `Debug` (the underlying capnp client hook
-    // isn't `Debug`).
+    // `CollabClient` is not `Debug`, so no `expect_err`.
     match try_connect() {
         Err(NotAvailable::ServiceFdMissing) => {}
         Err(other) => panic!("unexpected error: {other:?}"),
@@ -247,22 +242,29 @@ fn wifi_continuity_is_bounded_redacted_and_bound_to_a_local_profile() {
 fn action_directory_and_view_metadata_round_trip() {
     // phase: action_directory_resource_presentation_round_trips
     {
-        let mut message = capnp::message::Builder::new_default();
-        {
-            let mut page = message.init_root::<collab_capnp::action_directory_page::Builder<'_>>();
-            page.set_revision("r1");
-            page.set_exhausted(true);
-            let mut rows = page.init_rows(1);
-            let mut row = rows.reborrow().get(0);
-            row.set_resource("totp:mail");
-            row.set_resource_kind("totp");
-            row.set_resource_label("Mail code");
-            row.set_resource_presentation_json(r#"{"detail":"expires in 18 s","badge":"438 291"}"#);
-        }
-        let reader = message
-            .get_root_as_reader::<collab_capnp::action_directory_page::Reader<'_>>()
-            .expect("page reader");
-        let decoded = decode_action_directory_page(reader).expect("page decodes");
+        let page = serde_json::json!({
+            "revision": "r1",
+            "exhausted": true,
+            "next_cursor": [],
+            "stale_cursor": false,
+            "budget_exhausted": false,
+            "rows": [{
+                "parent_resource": "",
+                "resource": "totp:mail",
+                "resource_kind": "totp",
+                "resource_label": "Mail code",
+                "presentation": {"detail": "expires in 18 s", "badge": "438 291"},
+                "action": null,
+                "descriptor": null,
+                "has_children": false,
+                "visibility": null,
+            }],
+        });
+        let decoded: ActionDirectoryPage =
+            read_directory_answer(&page.to_string(), 1 << 20, |page: &ActionDirectoryPage| {
+                page.rows.iter().collect()
+            })
+            .expect("page decodes");
         assert_eq!(
             decoded.rows[0].presentation,
             Some(tilo_actions::ResourcePresentation {
@@ -274,69 +276,40 @@ fn action_directory_and_view_metadata_round_trip() {
     }
     // phase: exported_view_metadata_round_trips
     {
-        let mut message = capnp::message::Builder::new_default();
-        {
-            let mut action = message.init_root::<collab_capnp::exported_action::Builder<'_>>();
-            action.set_resource("notes:brief");
-            action.set_action("show-editor");
-            published_operation(action.reborrow());
-            let mut view = action.init_view();
-            view.set_id("editor");
-            view.set_label("Editor");
-            view.set_description("Edit this note");
-            view.set_open_action("show-editor");
-            view.set_primary(true);
-            let mut range = view.reborrow().init_range();
-            range.set_action("show-range");
-            range.set_start_param("start");
-            range.set_end_param("end");
-            range.set_unit_param("unit");
-            let mut mount = view.init_mount();
-            mount.set_action("mount-editor");
-            mount.set_capability_param("slot_capability");
-            mount.set_view_param("slot_view");
-        }
-        let reader = message
-            .get_root_as_reader::<collab_capnp::exported_action::Reader<'_>>()
-            .expect("action reader");
-        let decoded = decode_exported_action(reader).expect("action decodes");
-        assert_eq!(
-            decoded.view,
-            Some(ExportedView {
-                id: "editor".into(),
-                label: "Editor".into(),
-                description: Some("Edit this note".into()),
-                open_action: "show-editor".into(),
-                primary: true,
-                range: Some(ExportedViewRange {
-                    action: "show-range".into(),
-                    start_param: "start".into(),
-                    end_param: "end".into(),
-                    unit_param: "unit".into()
-                }),
-                mount: Some(ExportedViewMount {
-                    action: "mount-editor".into(),
-                    capability_param: "slot_capability".into(),
-                    view_param: "slot_view".into(),
-                }),
-            })
-        );
+        let mut action = published_with_identity(None).unwrap();
+        action.view = Some(ExportedView {
+            id: "editor".into(),
+            label: "Editor".into(),
+            description: Some("Edit this note".into()),
+            open_action: "show-editor".into(),
+            primary: true,
+            range: Some(ExportedViewRange {
+                action: "show-range".into(),
+                start_param: "start".into(),
+                end_param: "end".into(),
+                unit_param: "unit".into(),
+            }),
+            mount: Some(ExportedViewMount {
+                action: "mount-editor".into(),
+                capability_param: "slot_capability".into(),
+                view_param: "slot_view".into(),
+            }),
+        });
+        let json = serde_json::to_string(&action).unwrap();
+        let decoded: ExportedAction = serde_json::from_str(&json).expect("action decodes");
+        assert_eq!(decoded, action);
     }
 }
 
 #[test]
-fn a_rejection_relayed_through_several_hops_is_still_a_rejection() {
+fn a_marked_rejection_is_a_rejection() {
     let marked = format!("{LOCAL_DOCUMENT_REJECTED}{LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING}");
-    for hops in 0..3 {
-        let relayed = format!("{}{marked}", "remote exception: ".repeat(hops));
-        assert_eq!(
-            local_document_rejection(&relayed),
-            Some(LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING),
-            "{hops} hops"
-        );
-    }
     assert_eq!(
-        local_document_rejection("remote exception: admission journal outcome unknown"),
+        local_document_rejection(&marked),
+        Some(LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING),
+    );
+    assert_eq!(
+        local_document_rejection("admission journal outcome unknown"),
         None,
         "an unmarked failure stays uncertain"
     );

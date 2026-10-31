@@ -241,25 +241,34 @@ fn sound() -> audio::sound::Sound {
         outputs: vec![
             Device {
                 node: 40,
+                name: "node-40".into(),
                 label: "Speakers".into(),
                 chosen: true,
                 volume: Some(0.25),
                 muted: true,
+                channels: 2,
+                codec: None,
             },
             Device {
                 node: 41,
+                name: "node-41".into(),
                 label: "Headphones".into(),
                 chosen: false,
                 volume: None,
                 muted: false,
+                channels: 2,
+                codec: None,
             },
         ],
         inputs: vec![Device {
             node: 50,
+            name: "node-50".into(),
             label: "Microphone".into(),
             chosen: true,
             volume: None,
             muted: true,
+            channels: 1,
+            codec: None,
         }],
         ..audio::sound::Sound::default()
     }

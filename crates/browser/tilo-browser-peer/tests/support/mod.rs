@@ -19,9 +19,8 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use sha2::{Digest as _, Sha256};
 use tilo_browser_peer::invite::ask_to_join_pre_admitted;
-use tilo_browser_peer::{
-    DocumentRoute, Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle, PeerSnapshot,
-};
+use tilo_browser_peer::{Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle, PeerSnapshot};
+use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::rooms::PreAdmitRequest;

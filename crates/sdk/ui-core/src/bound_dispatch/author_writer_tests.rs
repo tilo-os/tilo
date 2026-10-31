@@ -282,7 +282,9 @@ fn per_author_mounts_write_as_their_authors_and_the_record_keeps_its_writer() {
                 assert!(doc.get(ROOT, "agent").unwrap().is_some());
             })
             .unwrap();
-        records.flush();
+        // The page's cache takes the bytes and its host acknowledges them in
+        // its own time: what this test waits for is the hand-over.
+        records.try_flush_written().unwrap();
         (writer, you_writer)
     };
 

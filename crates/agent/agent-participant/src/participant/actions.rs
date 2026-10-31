@@ -24,7 +24,7 @@ use tilo_actions::remote::{
     RemoteActionMessage, application_open_target, workspace_provider, workspace_provider_room,
 };
 use tilo_actions::{ActionFailure, ActionOutput, PROMPTED_PARAM};
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::AgentParticipant;
 

@@ -4,11 +4,10 @@
 
 use uuid::Uuid;
 
-/// The routing key one connection names on the capnp transport.
+/// The routing key one connection names on the collaboration wire.
 ///
 /// An app's traffic is addressed by `(app_id, cluster_id, record_id)`,
-/// but capnp's `joinChannel(channelId, identity)` carries a single
-/// string, so the triple travels *inside* the channel id. This pair of
+/// but a join carries a single channel string, so the triple travels *inside* the channel id. This pair of
 /// functions is the only place the encoding is written down, so the two
 /// halves cannot drift apart.
 ///

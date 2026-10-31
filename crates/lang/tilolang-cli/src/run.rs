@@ -1,8 +1,7 @@
 //! `tilolang run`: the package as an app in a nested Tilo session this tool starts.
 //!
-//! The session is `dist/dev/nested-session.sh` (one person) or `dist/dev/nested-pair.sh
-//! --peers N` (N people in one community workspace) over the build in
-//! `target/nested-session`, which carries the tilolang runtime binary beside the Tilo runtime.
+//! The session is `dist/dev/nested-session.sh` over the build in `target/nested-session`,
+//! which carries the tilolang runtime binary beside the Tilo runtime.
 //! The session bakes and signs the tilolang runtime bundle itself. This tool builds each package
 //! into a `.tapp` naming the session's exact Tilo runtime, installs it into each session's state,
 //! starts the sessions and opens the app through the session's own action
@@ -27,8 +26,6 @@ use crate::session::{self, Peer};
 pub struct RunOptions {
     pub dir: PathBuf,
     pub search: Vec<PathBuf>,
-    /// How many sessions (people) share the workspace.
-    pub peers: usize,
     pub headless: bool,
     /// Render with lavapipe only, never this machine's GPU (`nested-session.sh --software`).
     pub software: bool,
@@ -65,7 +62,7 @@ fn prepare(script: &std::path::Path, peers: &[Peer]) -> Result<(String, String),
     baked.ok_or_else(|| "no session to run".to_owned())
 }
 
-/// The command that starts the sessions: one nested session, or N in one community workspace.
+/// The command that starts the session.
 fn session_command(
     repo: &std::path::Path,
     options: &RunOptions,
@@ -73,19 +70,8 @@ fn session_command(
     ready: &std::path::Path,
     apps: &[crate::package::BuiltApp],
 ) -> Command {
-    let mut command = if options.peers == 1 {
-        let mut command = Command::new(repo.join(session::SESSION_SCRIPT));
-        command.arg("--state").arg(base.join("a"));
-        command
-    } else {
-        let mut command = Command::new(repo.join(session::PAIR_SCRIPT));
-        command
-            .arg("--peers")
-            .arg(options.peers.to_string())
-            .arg("--state")
-            .arg(base);
-        command
-    };
+    let mut command = Command::new(repo.join(session::SESSION_SCRIPT));
+    command.arg("--state").arg(base.join("a"));
     command
         .args(["--no-build", "--apps", ""])
         .arg("--ready")
@@ -209,10 +195,7 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
         .unwrap_or_else(|| crate::state_dir().join("sessions"));
     std::fs::create_dir_all(&base).map_err(|error| format!("{}: {error}", base.display()))?;
     let base = std::fs::canonicalize(&base).map_err(|error| error.to_string())?;
-    let peers: Vec<Peer> = ('a'..='z')
-        .take(options.peers)
-        .map(|name| Peer::new(base.join(name.to_string()), &repo))
-        .collect::<Result<_, _>>()?;
+    let peers = vec![Peer::new(base.join("a"), &repo)?];
     let (tilo_runtime, tilolang_runtime) = prepare(&repo.join(session::SESSION_SCRIPT), &peers)?;
     let build = BuildOptions {
         dir: options.dir.clone(),

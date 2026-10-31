@@ -91,6 +91,9 @@ struct HostOpening {
     config: HostConfig,
     identity: room_host::HostIdentity,
     endpoint: iroh::Endpoint,
+    /// This device's channel service: the host takes its channels' keys
+    /// from it, as this device's one peer.
+    channel_keys: crate::shell::channel_encryption::ChannelKeyProvider,
 }
 
 /// The opening of this device's host, held by the caller that opened it
@@ -105,9 +108,16 @@ impl HostOpening {
         if let Some(host) = self.handle.get() {
             return Ok((host, None));
         }
-        let host = RoomHost::open(self.config, self.identity, self.endpoint)
-            .await
-            .map_err(|error| format!("this device's room host did not open: {error}"))?;
+        let host = RoomHost::open(
+            self.config,
+            self.identity,
+            self.endpoint,
+            Some(crate::shell::channel_encryption::host_device_keys(
+                &self.channel_keys,
+            )),
+        )
+        .await
+        .map_err(|error| format!("this device's room host did not open: {error}"))?;
         Ok((self.handle.install(Arc::new(host)), Some(held)))
     }
 }
@@ -165,7 +175,7 @@ impl ShellNetwork {
                 .with_current(room, |view| {
                     let hosted_here = view
                         .transport_hint()
-                        .is_ok_and(|hint| tilo_joined_room::session::hosted_by(hint, &own));
+                        .is_ok_and(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own));
                     if !hosted_here {
                         return Ok(false);
                     }
@@ -179,50 +189,6 @@ impl ShellNetwork {
         })
     }
 
-    /// `channel`'s content keys from this device's own room host, which takes
-    /// part in the channel with this device's leaf, when `room` is hosted
-    /// here: what this device's broker seals and
-    /// opens the room's records with. `None` for a room hosted elsewhere, or
-    /// while the host is not open. Blocks on the host: call it off the frame
-    /// loop.
-    ///
-    /// The host answers on this network's runtime, never on the caller's
-    /// thread: the broker asks from its connections' own runtime, where
-    /// entering another runtime to wait panics and takes the asking app's
-    /// connection with it.
-    pub(crate) fn hosted_channel_keys(
-        &self,
-        room: RoomId,
-        channel: collab_types::ChannelId,
-        route: Option<&collab_types::ChannelRoute>,
-        create: bool,
-    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
-        let own = *self.local_peer_id.as_bytes();
-        if !self.tree.read().native_authority.hosted_on(room, &own) {
-            return None;
-        }
-        let Some(host) = self.room_host() else {
-            return Some(Err("this device's room host is not open".into()));
-        };
-        let runtime = match self.runtime_handle() {
-            Ok(runtime) => runtime,
-            Err(error) => return Some(Err(error)),
-        };
-        let (room, route) = (room.to_string(), route.cloned());
-        let (answer, answered) = std::sync::mpsc::sync_channel(1);
-        runtime.spawn(async move {
-            let keys = host
-                .rooms()
-                .own_channel_keys(&room, channel, route.as_ref(), create)
-                .await;
-            let _ = answer.send(keys);
-        });
-        // The task ends without answering only when the runtime shuts down.
-        answered
-            .recv()
-            .unwrap_or_else(|_| Some(Err("this device's network stopped".into())))
-    }
-
     /// Whether this device's own host holds `room`, as the native owner,
     /// already open, has it.
     pub(crate) fn hosted_here(&self, room: RoomId) -> bool {
@@ -234,7 +200,7 @@ impl ShellNetwork {
             .with_current(room, |view| {
                 Ok(view
                     .transport_hint()
-                    .is_ok_and(|hint| tilo_joined_room::session::hosted_by(hint, &own)))
+                    .is_ok_and(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own)))
             })
             .unwrap_or(false)
     }
@@ -303,6 +269,7 @@ impl ShellNetwork {
         Ok(HostOpening {
             handle,
             lock: Arc::clone(&self.embedded_host.opening),
+            channel_keys: self.channel_keys(),
             config,
             identity: room_host::HostIdentity {
                 user_public_key: certificate.user_public_key,
@@ -325,110 +292,9 @@ impl ShellNetwork {
         self.embedded_host
             .host_generation
             .fetch_add(1, Ordering::AcqRel);
-        self.mend_own_rooms(&host);
         // The rooms hosted here that the native owner holds join now.
         let _ = self.cmd_tx.try_send(NetCmd::LocalHostReady);
         host
-    }
-
-    /// Bring this device's replica of each room its own `host` governs back
-    /// to the host's history where it diverged from it
-    /// ([`tilo_joined_room::NativeWorkspaceOwner::adopt_own_host_history`]):
-    /// a replica an earlier build wrote membership changes into under this
-    /// device's key refused the host's every write since, and no app opened
-    /// there. The membership changes only that replica held (an agent
-    /// invited, a grant given) are the person's: the host commits each
-    /// again, as it was made. One the host refuses is said to the person,
-    /// as any refused governance change is, to be made again. On the
-    /// network's runtime; nothing waits for it.
-    pub(super) fn mend_own_rooms(&self, host: &Arc<RoomHost>) {
-        let (Some(owner), Ok(runtime)) = (self.opened_native_owner(), self.runtime_handle()) else {
-            return;
-        };
-        let own = *self.local_peer_id.as_bytes();
-        let rooms: Vec<(RoomId, tilo_user_identity::DeviceCert)> = owner
-            .rooms()
-            .into_iter()
-            .filter_map(|room| {
-                owner
-                    .with_current(room, |view| {
-                        Ok((view.device() == view.governor()
-                            && view.transport_hint().is_ok_and(|hint| {
-                                tilo_joined_room::session::hosted_by(hint, &own)
-                            }))
-                        .then(|| (room, view.device().clone())))
-                    })
-                    .ok()
-                    .flatten()
-            })
-            .collect();
-        if rooms.is_empty() {
-            return;
-        }
-        let host = Arc::clone(host);
-        let tree = self.tree.clone();
-        runtime.spawn(async move {
-            for (room, device) in rooms {
-                let history = match host.rooms().governed_history(&room.to_string()).await {
-                    Ok(history) => history,
-                    Err(error) => {
-                        tracing::debug!(%room, %error, "a room this device's host governs has no history to mend from");
-                        continue;
-                    }
-                };
-                let adopting = owner.clone();
-                let adopted = tokio::task::spawn_blocking(move || {
-                    adopting.adopt_own_host_history(room, &history, std::time::SystemTime::now())
-                })
-                .await;
-                let beyond = match adopted {
-                    Ok(Ok(Some(beyond))) => beyond,
-                    Ok(Ok(None)) => continue,
-                    Ok(Err(error)) => {
-                        tracing::error!(
-                            %room,
-                            %error,
-                            "this device's replica of a room its host governs could not take the host's history"
-                        );
-                        continue;
-                    }
-                    Err(error) => {
-                        tracing::error!(%room, %error, "mending a room's replica stopped");
-                        continue;
-                    }
-                };
-                tracing::warn!(
-                    %room,
-                    changes = beyond.len(),
-                    "this device's replica of a room its host governs had diverged from the host's history; it took the host's, and the host commits the membership changes only the replica held"
-                );
-                for change in beyond {
-                    let command =
-                        tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
-                            change: change.clone(),
-                        };
-                    if let Err(error) = host
-                        .rooms()
-                        .commit_own_membership(&room.to_string(), &device, command)
-                        .await
-                    {
-                        tracing::error!(
-                            %room,
-                            ?change,
-                            %error,
-                            "a membership change only this device's replica held did not take"
-                        );
-                        tree.write().refuse_room_change(
-                            room,
-                            crate::shell::state::RoomChange::Governance(
-                                crate::shell::state::GovernanceRequest::Policy(change),
-                            ),
-                            format!("it did not reach the workspace ({error}); make it again"),
-                        );
-                    }
-                }
-            }
-        });
     }
 
     /// Run the host operation `action` with `arguments` at this device's own
@@ -734,7 +600,7 @@ impl ShellNetwork {
             .grant()
             .transport
             .iter()
-            .any(|hint| tilo_joined_room::session::hosted_by(hint, &own));
+            .any(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own));
         if !hosted_here {
             return None;
         }

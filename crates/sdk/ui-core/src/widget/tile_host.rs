@@ -1699,10 +1699,10 @@ impl Widget for TileHost {
         }
     }
 
-    fn resets_callback_binding(&self) -> bool {
+    fn resets_binding_inheritance(&self) -> bool {
         self.history.is_some()
     }
-    fn inactive_callback_boundary(&self) -> Option<NodeId> {
+    fn inactive_bound_dispatch_boundary(&self) -> Option<NodeId> {
         self.history
             .as_ref()
             .filter(|history| !history.live_interactive())

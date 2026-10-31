@@ -2,7 +2,7 @@
 //!
 //! Production connects through the launcher-inherited `TILO_SVC_COLLAB_FD`
 //! capability. Headless diagnostics use the same protocol through an
-//! explicit Cap'n Proto endpoint.
+//! explicit endpoint.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
@@ -140,7 +140,7 @@ impl Link {
         Ok(Self::with_manager(manager, Some(wake)))
     }
 
-    /// Connect to an explicit typed Cap'n Proto socket. This is for headless
+    /// Connect to an explicit typed collaboration socket. This is for headless
     /// diagnostics that run outside the launcher but still exercise the
     /// production protocol.
     ///

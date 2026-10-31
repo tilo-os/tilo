@@ -4,7 +4,7 @@
 //! environment or a log. This is the documented exception to "the host
 //! never holds a room's root": nobody is present to approve guests, and
 //! the room is public anyway. Each guest is pre-admitted as their own
-//! person; the operator (tilo-room-service) decides who may join.
+//! person; the operator decides who may join.
 //!
 //! Visitors who only watch (a page embedding the room) are not members one
 //! by one: they all act as the room's one spectator person, a Viewer whose
@@ -522,38 +522,6 @@ fn parse_keys(flag: &str, keys: &[String]) -> anyhow::Result<BTreeSet<[u8; 32]>>
                 .with_context(|| format!("--{flag} {key:?} is not 64 lowercase hex characters"))
         })
         .collect()
-}
-
-/// The relay of the persistent room `name` whose `room --state` is `state`
-/// and whose root key is in `root_file`, as that room starts it: its state
-/// root and identity. Refuses a state whose host has no device key yet.
-pub(crate) fn room_relay(
-    state: &Path,
-    root_file: &Path,
-    name: &str,
-) -> anyhow::Result<(PathBuf, RelayIdentity)> {
-    let root = read_root_file(root_file)?;
-    anyhow::ensure!(
-        state.join("host-device.key").is_file(),
-        "{} holds no room host",
-        state.display()
-    );
-    let host = host_key(state)?;
-    let host_cert = enrol(
-        &root,
-        &host,
-        &format!("{name} room host"),
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
-    )?;
-    Ok((
-        tilo_relay_protocol::metrics::room_relay_root(state),
-        RelayIdentity {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_signing_key: host,
-            device_cert: host_cert,
-            revocations: RevocationList::new(),
-        },
-    ))
 }
 
 /// The host's own device key, kept beside the relay's state. The root is

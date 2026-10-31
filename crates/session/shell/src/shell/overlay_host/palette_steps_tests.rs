@@ -311,11 +311,7 @@ fn a_secret_is_typed_into_a_masked_field_and_never_into_the_query() {
     select(&mut h, "Zqfixture unlock");
     assert!(press(&mut h, NamedKey::Enter));
     let kind = h.host.search.argument_step().map(|(_, spec)| spec.kind);
-    assert_eq!(
-        kind,
-        Some(ui::widget::command_palette::ArgumentKind::Secret),
-        "a masked field step"
-    );
+    assert_eq!(kind, Some(ui::ArgumentKind::Secret), "a masked field step");
     h.host
         .ask_as_launcher(launcher_app::source::Ask::Argument("hunter2".into()));
     assert_eq!(h.host.palette_query(), QUERY, "the secret is not the query");

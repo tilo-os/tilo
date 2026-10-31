@@ -1,20 +1,21 @@
 //! Audio pane — output volume + mute, microphone input level, device
 //! capabilities, diagnostics, and per-application routing.
 //!
-//! Every control drives real state through an [`AudioEffect`]:
-//! - **Volume / Mute** forward to `os_actions` (`wpctl` on the default
-//!   sink), the same bindings the compositor's quick-settings panel uses.
-//! - **Input level** forwards to the default *source* through
-//!   [`InputControl`].
-//! - **Device selection** enumerates the real sinks/sources and runs
-//!   `wpctl set-default <id>` through the graph's control, remembering the
-//!   choice in the person's `audio` settings. With no `PipeWire` nothing is
-//!   listed, and nothing is fabricated.
-//! - **Per-application routing** enumerates the `PipeWire` node graph via
-//!   [`media::audio`] (`pw-dump`): each application stream is a row that
-//!   routes just that app to a chosen device, with its own volume and mute.
-//!   The graph is re-read on a throttle while the pane is open, so a headset
-//!   plugged in or an app that starts playing appears.
+//! Everything the pane shows and changes is the session's `sound` resource
+//! ([`tilo_audio_service::sound`]): its readings say which outputs and
+//! inputs are there, which one plays, how loud, the applications' streams
+//! and the sound cards' profiles, and every control takes one of its
+//! actions. The pane watches the resource while it is open, so a headset
+//! plugged in or an application that starts playing appears in a reading,
+//! and it holds no reading of the audio graph of its own.
+//!
+//! Every control drives that state through an [`AudioEffect`]:
+//! - **Volume / Mute** take the resource's `set-volume` and `set-muted`.
+//! - **Input level** takes `set-input-volume`.
+//! - **Device selection** takes `route-output` and `select-input`, and
+//!   remembers the choice in the person's `audio` settings.
+//! - **Per-application routing** takes each stream's `route-stream`,
+//!   `set-stream-volume` and `set-stream-muted`.
 //!
 //! Balance, mono output, echo cancellation and system sounds are the
 //! person's `audio` settings; the compositor session applies them. The page
@@ -22,28 +23,22 @@
 
 use std::rc::Rc;
 use std::sync::Arc;
-use ui::time::{Duration, Instant};
+use ui::time::Duration;
 
-use media::audio::default_node::{self, DefaultNode, VolumeState};
-use media::audio::{
-    AudioEnumerator, AudioGraph, AudioStream, GraphControl, NoopGraphControl, RealEnumerator,
-    RealGraphControl,
-};
 use media::audio_runtime::{
     AudioRuntimeControl, BoundedSession, MicrophoneMeterSession, RealAudioRuntime,
     RuntimeCapabilities,
 };
 use media::event_sound::SoundTheme;
-use os_actions::Dispatcher;
 use provider_settings_ui::bound::SettingRows as _;
 use settings_store::system_sounds::SystemSoundEvent;
+use tilo_audio_service::sound::{Device, SOUND, Sound, SoundAction, Stream};
 use tracing::warn;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::tilo_resource::{self, Effect};
 
 use crate::area::AreaContext;
-use crate::dispatcher::dispatcher_or_real;
 use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
 
@@ -68,9 +63,6 @@ crate::area::pane_area! {
     }
     fn busy(&self) -> bool {
         self.model.get().is_some_and(|model| model.borrow().busy())
-    }
-    fn next_wake(&self) -> Option<Instant> {
-        self.model.get().and_then(|model| model.borrow().next_wake())
     }
 }
 
@@ -114,12 +106,6 @@ pub(crate) fn system_sounds(cx: &ViewCx<AudioPrefs>) -> Item {
         .id("audio.system_sounds")
         .toggle(AudioPrefs::paths().system_sounds.enabled)
 }
-
-/// How often the pane re-reads the `PipeWire` graph while it is open, so a
-/// device plugged in (a headset) or an application that just started playing
-/// appears without reopening Settings. Cheap enough for an actively-viewed
-/// pane; the enumeration is one `pw-dump`.
-const HOTPLUG_INTERVAL: Duration = Duration::from_millis(1_500);
 
 /// The picker entry meaning "no explicit device — follow the default".
 /// Choosing it clears the stream's `target.object` metadata.
@@ -226,46 +212,58 @@ pub(crate) fn answer(
         .ok_or_else(crate::area::missing)?
         .model();
     let mut model = model.borrow_mut();
-    match model.plan(&effect)? {
-        Plan::Local => model.apply_local(&effect).map(|_| Effected::done()),
-        // `wpctl` and `pw-cli` each take up to their timeout, and a slider
-        // drag commits many values: run them off the UI thread, so the
-        // click is answered and painted at once.
-        Plan::Device { key, work, settle } => {
-            let work = model.changes.submit(key, work);
-            Ok(app.job(
-                cx,
-                work,
-                move |app: &SettingsApp, ran: Option<Result<(), String>>, _| {
-                    // Replaced by a newer change of the same kind before it
-                    // ran: that one settles the model.
-                    let Some(result) = ran else {
-                        return Ok(Effected::done());
-                    };
-                    crate::panes::audio::area(app)
-                        .ok_or_else(crate::area::missing)?
-                        .model()
-                        .borrow_mut()
-                        .settle(settle, result)
-                        .map(|_| Effected::done())
-                },
-            ))
-        }
-    }
+    let (key, work, settle) = match model.plan(&effect)? {
+        Plan::Local => return model.apply_local(&effect).map(|_| Effected::done()),
+        Plan::Sound {
+            key,
+            action,
+            settle,
+        } => (key, model.invoking(action), settle),
+        Plan::Change { key, work, settle } => (key, work, settle),
+    };
+    // A change takes up to its timeout, and a slider drag commits many
+    // values: run them off the UI thread, so the click is answered and
+    // painted at once.
+    let work = model.changes.submit(key, work);
+    Ok(app.job(
+        cx,
+        work,
+        move |app: &SettingsApp, ran: Option<Result<(), String>>, _| {
+            // Replaced by a newer change of the same kind before it ran:
+            // that one settles the model.
+            let Some(result) = ran else {
+                return Ok(Effected::done());
+            };
+            crate::panes::audio::area(app)
+                .ok_or_else(crate::area::missing)?
+                .model()
+                .borrow_mut()
+                .settle(settle, result)
+                .map(|_| Effected::done())
+        },
+    ))
 }
 
-/// A change of the audio hardware: one `wpctl` or `pw-cli` run.
-type DeviceWork = Box<dyn FnOnce() -> Result<(), String> + Send>;
+/// A change run off the UI thread: one action of the session's sound
+/// resource, or one call of the shell's speaker lane.
+type ChangeWork = Box<dyn FnOnce() -> Result<(), String> + Send>;
 
 /// An effect as decided on the UI thread ([`AudioModel::plan`]).
 enum Plan {
     /// A diagnostic, started on the UI thread ([`AudioModel::apply_local`]).
     Local,
-    /// A device change still to run, keyed by what it changes, and what
+    /// An action of the sound resource, invoked off the UI thread, and what
     /// the model takes in once it ran.
-    Device {
+    Sound {
         key: ChangeKey,
-        work: DeviceWork,
+        action: SoundAction,
+        settle: Settle,
+    },
+    /// Work off the UI thread that is not one action of the resource: the
+    /// shell's speaker lane, and an output choice that leaves a set.
+    Change {
+        key: ChangeKey,
+        work: ChangeWork,
         settle: Settle,
     },
 }
@@ -294,15 +292,15 @@ enum Settle {
     SpeakerSet(String),
     Input { id: u32, name: String },
     Profile,
-    Route(u32),
+    Route,
     StreamVolume,
     StreamMuted,
 }
 
-/// The device changes of one Sound area, run off the UI thread one at a
-/// time. A change a newer one of the same kind replaced before it ran is
-/// dropped, so the hardware ends at the last value asked for whatever order
-/// the background executor starts them in.
+/// The changes of one Sound area, run off the UI thread one at a time. A
+/// change a newer one of the same kind replaced before it ran is dropped, so
+/// the sound ends at the last value asked for whatever order the background
+/// executor starts them in.
 #[derive(Clone, Default)]
 struct DeviceChanges {
     latest: Arc<std::sync::Mutex<(u64, std::collections::HashMap<ChangeKey, u64>)>>,
@@ -316,7 +314,7 @@ impl DeviceChanges {
     fn submit(
         &self,
         key: ChangeKey,
-        work: DeviceWork,
+        work: ChangeWork,
     ) -> impl FnOnce() -> Option<Result<(), String>> + Send + 'static {
         let ticket = {
             let mut latest = self
@@ -405,95 +403,74 @@ impl AudioRuntimeControl for NoopAudioRuntime {
     }
 }
 
-/// Side-effect interface for the microphone (default *source*) gain.
-/// `os_actions::Dispatcher` only covers the sink, so the pane carries this
-/// tiny extra seam; the production impl shells out to `wpctl`, tests inject
-/// a recorder.
-pub trait InputControl: Send + Sync {
+/// The session's `sound` resource as the pane reaches it: the reading it
+/// stands at, each later one, and the actions that change it. The
+/// production impl is the session's, over the collaboration service; a
+/// screenshot and a test give it a reading of their own.
+pub trait SoundResource: Send + Sync {
+    /// The newest reading since the last call; `None` when nothing changed.
+    fn latest(&self) -> Option<Result<String, String>>;
+    /// Wake `wake`'s owner when a reading arrives, so a page showing the
+    /// resource draws the new one.
+    fn attach(&self, wake: ui::WakeHandle);
+    /// Take one of its actions.
+    ///
     /// # Errors
-    /// Returns the backend's error string when the `wpctl` call to set the
-    /// default source's gain fails (missing binary, no default source, …).
-    fn set_input_volume(&self, pct: f32) -> Result<(), String>;
+    /// The session did not answer, or the action refused it.
+    fn invoke(
+        &self,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String>;
 }
 
-/// Production impl: the default source's level.
-pub struct RealInput;
+/// The sound resource the running session publishes ([`SOUND`]).
+struct SessionSound(ui::collaboration::SessionResource);
 
-impl InputControl for RealInput {
-    fn set_input_volume(&self, pct: f32) -> Result<(), String> {
-        default_node::set_volume(DefaultNode::Source, pct)
+impl SessionSound {
+    /// Watch the session's sound, waiting for the reading it begins at.
+    fn open() -> Result<Self, String> {
+        ui::collaboration::SessionResource::open(SOUND).map(Self)
     }
 }
 
-/// One enumerated audio device (a sink or a source) as the graph lists it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AudioDevice {
-    /// `PipeWire` node id — the handle `wpctl set-default <id>` takes.
-    pub id: u32,
-    pub name: String,
-    /// Whether this device is the current system default for its class.
-    pub default: bool,
-}
+impl SoundResource for SessionSound {
+    fn latest(&self) -> Option<Result<String, String>> {
+        self.0.latest()
+    }
 
-/// The enumerated sinks (outputs) and sources (inputs).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AudioDevices {
-    pub sinks: Vec<AudioDevice>,
-    pub sources: Vec<AudioDevice>,
-}
+    fn attach(&self, wake: ui::WakeHandle) {
+        self.0.attach(wake);
+    }
 
-impl AudioDevices {
-    /// Name of the current default sink, if any.
-    pub fn default_sink(&self) -> Option<&str> {
-        self.sinks
-            .iter()
-            .find(|d| d.default)
-            .map(|d| d.name.as_str())
-    }
-    /// Name of the current default source, if any.
-    pub fn default_source(&self) -> Option<&str> {
-        self.sources
-            .iter()
-            .find(|d| d.default)
-            .map(|d| d.name.as_str())
-    }
-    fn sink_id(&self, name: &str) -> Option<u32> {
-        self.sinks.iter().find(|d| d.name == name).map(|d| d.id)
-    }
-    fn source_id(&self, name: &str) -> Option<u32> {
-        self.sources.iter().find(|d| d.name == name).map(|d| d.id)
+    fn invoke(
+        &self,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        self.0.invoke(action, arguments)
     }
 }
 
-/// A static [`AudioEnumerator`] that always yields the same graph — used by the
-/// test/shots constructors so re-enumeration (when enabled) is deterministic
-/// and never touches `pw-dump`.
-struct StaticEnumerator(AudioGraph);
-impl AudioEnumerator for StaticEnumerator {
-    fn enumerate(&self) -> AudioGraph {
-        self.0.clone()
-    }
-}
+/// A reading given once, for the sample reading a screenshot shows.
+struct SampleSound(std::sync::Mutex<Option<Result<String, String>>>);
 
-/// Map the media crate's graph devices into the pane's local [`AudioDevices`]
-/// view (id + human label + default flag) so a hotplug re-enumeration refreshes
-/// the sink/source pickers the same way the first read seeded them.
-fn devices_from_graph(graph: &AudioGraph) -> AudioDevices {
-    let map = |ds: &[media::audio::AudioDevice]| {
-        ds.iter()
-            // The sink a speaker set plays from is how the set plays, not an
-            // output of its own: the set is listed instead.
-            .filter(|d| d.name != media::audio::SPEAKER_GROUP_SINK)
-            .map(|d| AudioDevice {
-                id: d.id,
-                name: d.description.clone(),
-                default: d.is_default,
-            })
-            .collect()
-    };
-    AudioDevices {
-        sinks: map(&graph.sinks),
-        sources: map(&graph.sources),
+impl SoundResource for SampleSound {
+    fn latest(&self) -> Option<Result<String, String>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
+    fn attach(&self, _: ui::WakeHandle) {}
+
+    fn invoke(
+        &self,
+        _: &str,
+        _: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        Ok(())
     }
 }
 
@@ -510,9 +487,9 @@ pub struct AudioArea {
     /// The sound sections' actions.
     sections: crate::sections::Sections,
     model: std::cell::OnceCell<SharedModel>,
-    /// The device's audio, read off the UI thread after the window's first
-    /// frame ([`Self::start_read`]); `None` stands for the sample graph a
-    /// screenshot shows.
+    /// The session's sound resource, opened off the UI thread after the
+    /// window's first frame ([`Self::start_read`]); `None` stands for the
+    /// sample reading a screenshot shows.
     pub(crate) read: crate::device_read::DeviceRead<Option<AudioRead>>,
     /// Moves whenever what the page shows of the device does: a new
     /// reading, a change it took, a notice, a test starting or ending.
@@ -535,7 +512,7 @@ impl AudioArea {
     }
 
     /// Take in what moved since the last frame: tests and changes that
-    /// ended, the graph a page follows. The page is built again when
+    /// ended, the resource's newest reading. The page is built again when
     /// anything it shows did.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get()
@@ -561,7 +538,8 @@ impl AudioArea {
         }
     }
 
-    /// The model, over `PipeWire`, or over a sample graph for a screenshot.
+    /// The model, over the session's sound resource, or over a sample
+    /// reading for a screenshot.
     pub fn model(&self) -> &SharedModel {
         self.model.get_or_init(|| {
             let read = self.read.take().unwrap_or_else(|| self.read_now());
@@ -573,30 +551,27 @@ impl AudioArea {
         })
     }
 
-    /// What a read of the device would find, read on this thread: the
-    /// device's audio, or `None` for the sample graph.
+    /// What a read would find, read on this thread: the session's sound
+    /// resource, or `None` for the sample reading.
     fn read_now(&self) -> Option<AudioRead> {
-        let (device, output, input) = self.route();
-        device.then(|| AudioRead::of_device(output.as_deref(), input.as_deref()))
+        self.route().then(|| AudioRead::of_session(&self.storage))
     }
 
-    /// Whether the area reaches the device, and the remembered output and
-    /// input devices a read routes to again.
-    fn route(&self) -> (bool, Option<String>, Option<String>) {
-        let prefs = self.storage.settings::<AudioDevicePrefs>().get();
-        (self.devices, prefs.output_device, prefs.input_device)
+    /// Whether the area reaches this device's audio.
+    fn route(&self) -> bool {
+        self.devices
     }
 
-    /// Read the device's audio off the UI thread; `false` when it has been
+    /// Watch the session's sound off the UI thread; `false` when it has been
     /// read or is being read.
     pub(crate) fn start_read(&self) -> bool {
         if self.is_open() {
             return false;
         }
-        let (device, output, input) = self.route();
-        self.read.start(move || {
-            device.then(|| AudioRead::of_device(output.as_deref(), input.as_deref()))
-        })
+        let device = self.route();
+        let storage = self.storage.clone();
+        self.read
+            .start(move || device.then(|| AudioRead::of_session(&storage)))
     }
 
     /// Whether the area has read what its rows show: its pane was shown,
@@ -612,31 +587,30 @@ impl AudioArea {
         let model = self.model().borrow();
         let offer = |effect: AudioEffect| SettingsEffect::from(effect).bound();
         let mut rows = Vec::new();
-        for stream in model
-            .graph
-            .playback_streams
-            .iter()
-            .chain(&model.graph.record_streams)
-        {
+        for stream in &model.sound.streams {
             rows.push(stream_live_row(stream));
         }
         for (kind, devices) in [
-            ("settings.audio-output", &model.devices.sinks),
-            ("settings.audio-input", &model.devices.sources),
+            ("settings.audio-output", &model.sound.outputs),
+            ("settings.audio-input", &model.sound.inputs),
         ] {
             for device in devices {
                 let select = if kind == "settings.audio-output" {
                     AudioEffect::SelectOutput {
-                        device: device.name.clone(),
+                        device: device.label.clone(),
                     }
                 } else {
                     AudioEffect::SelectInput {
-                        device: device.name.clone(),
+                        device: device.label.clone(),
                     }
                 };
                 rows.push(
-                    LiveRow::new(format!("{kind}:{}", device.id), kind, device.name.clone())
-                        .operation(offer(select)),
+                    LiveRow::new(
+                        format!("{kind}:{}", device.node),
+                        kind,
+                        device.label.clone(),
+                    )
+                    .operation(offer(select)),
                 );
             }
         }
@@ -671,24 +645,24 @@ fn bound<I, C: ui::framework::ActionControl<I>>(
 /// One app's stream as a row of the published surface: its volume, mute
 /// and route are operations on it, which the pane's controls for that
 /// stream bind to.
-fn stream_live_row(stream: &AudioStream) -> LiveRow {
+fn stream_live_row(stream: &Stream) -> LiveRow {
     let offer = |effect: AudioEffect| SettingsEffect::from(effect).bound();
     let kind = if stream.playback {
         "settings.audio-playback"
     } else {
         "settings.audio-recording"
     };
-    LiveRow::new(format!("{kind}:{}", stream.id), kind, stream.label())
+    LiveRow::new(format!("{kind}:{}", stream.node), kind, stream.label())
         .operation(offer(AudioEffect::SetStreamMuted {
-            stream: stream.id,
-            muted: !stream.muted.unwrap_or(false),
+            stream: stream.node,
+            muted: !stream.muted,
         }))
         .operation(offer(AudioEffect::SetStreamVolume {
-            stream: stream.id,
+            stream: stream.node,
             volume: f64::from(stream.volume.unwrap_or(1.0)),
         }))
         .operation(offer(AudioEffect::RouteStream {
-            stream: stream.id,
+            stream: stream.node,
             device: FOLLOW_DEFAULT.into(),
         }))
 }
@@ -703,29 +677,20 @@ pub struct AudioModel {
     reaches_devices: bool,
     /// The sound sections' actions, which remember the devices chosen.
     sections: crate::sections::Sections,
-    output: Arc<dyn OutputControl>,
-    input: Arc<dyn InputControl>,
-    devices: AudioDevices,
-    /// The `PipeWire` node graph: the per-application streams the
-    /// "Applications" / "Recording" cards route, plus the devices they can
-    /// be routed to.
-    graph: AudioGraph,
-    /// Side-effect surface for editing the graph (route a stream, per-app
-    /// volume/mute). Production shells out; tests inject a recorder.
-    gctl: Arc<dyn GraphControl>,
-    /// Source of fresh graph snapshots for hotplug re-enumeration.
-    enumerator: Arc<dyn AudioEnumerator>,
-    /// How often to re-enumerate the graph. `MAX` disables it.
-    hotplug_interval: Duration,
-    last_enum: Option<Instant>,
+    /// The session's sound resource, while it reaches one: its readings
+    /// feed what the page shows and its actions change the device.
+    sounds: Option<Arc<dyn SoundResource>>,
+    /// What the resource last read: the outputs and inputs, their levels,
+    /// the applications' streams and the sound cards.
+    sound: Sound,
     runtime: Arc<dyn AudioRuntimeControl>,
     runtime_caps: RuntimeCapabilities,
     /// Installed freedesktop sound themes, for the theme picker.
     sound_themes: Vec<SoundTheme>,
     /// Whether this machine can play event sounds at all.
     event_sounds_available: bool,
-    /// Why the output volume could not be read; the slider and mute switch
-    /// are then not offered at a made-up level.
+    /// Why the resource could not be reached; the controls then are not
+    /// offered at made-up levels.
     volume_error: Option<String>,
     /// Why the input level could not be read.
     input_error: Option<String>,
@@ -742,18 +707,13 @@ pub struct AudioModel {
     changed: bool,
     /// Device changes on their way off the UI thread.
     changes: DeviceChanges,
-    /// The hotplug re-read of the graph, on the background executor.
-    rescan: crate::device_read::DeviceRead<AudioGraph>,
-    /// While a pane shows the area: `PipeWire`'s own change stream, which
-    /// says when to re-read the graph.
-    following: std::rc::Weak<GraphMonitor>,
     /// What the output in use plays, for its meter.
     output_meter: level_meter::Level,
     /// While a pane shows the area: the capture behind the output's meter.
     /// Held by the pane, so it ends when the page is left.
     metering: std::rc::Weak<OutputMetering>,
-    /// What a page showing the model holds: the graph is followed, and the
-    /// speaker sets read, only while one does.
+    /// What a page showing the model holds: the readings are taken in, and
+    /// the speaker sets read, only while one does.
     page: std::rc::Weak<()>,
     /// The person's speaker sets, each an output like any other.
     sets: SpeakerSets,
@@ -773,195 +733,63 @@ struct OutputMetering {
     refused: std::cell::RefCell<Option<String>>,
 }
 
-/// `pw-dump --monitor`, held open while a pane shows the Sound area. It
-/// prints each change to the graph as it happens, so the pane re-reads the
-/// graph on a change instead of every [`HOTPLUG_INTERVAL`]. (The native
-/// registry watch in `media::audio_watch` would link libpipewire into
-/// Settings; `pw-dump` is the tool the graph is already read with.)
-struct GraphMonitor {
-    /// Held for its lifetime: dropping the monitor ends `pw-dump`.
-    _process: Option<media::audio::GraphMonitorProcess>,
-    changed: Arc<std::sync::atomic::AtomicBool>,
-    /// Cleared when the monitor ends; the pane then reads on its timer.
-    alive: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl GraphMonitor {
-    /// Start the monitor; `None` when `pw-dump` cannot run here. It starts
-    /// flagged, so the first look reads the graph. Must be called on the UI
-    /// thread, in the window's wake scope.
-    fn start() -> Option<Self> {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        let (process, stdout) = media::audio::GraphMonitorProcess::start()?;
-        let changed = Arc::new(AtomicBool::new(true));
-        let alive = Arc::new(AtomicBool::new(true));
-        let (flag, running) = (Arc::clone(&changed), Arc::clone(&alive));
-        let wake = ui::WakeHandle::new();
-        let started = crate::device_read::thread(
-            "settings-audio-monitor",
-            Box::new(move || {
-                use std::io::BufRead as _;
-                let mut stdout = std::io::BufReader::new(stdout);
-                let mut graph = std::collections::HashSet::new();
-                let mut update = Vec::new();
-                // Each update is one pretty-printed array, closed by a `]`
-                // line of its own.
-                while stdout
-                    .read_until(b'\n', &mut update)
-                    .is_ok_and(|read| read > 0)
-                {
-                    // An update that never closes is read as a change, not
-                    // kept growing.
-                    let overlong = update.len() > 16 * 1024 * 1024;
-                    if overlong || update.ends_with(b"\n]\n") || update == b"]\n" {
-                        let moved = serde_json::from_slice::<serde_json::Value>(&update)
-                            .map_or(true, |update| moves_graph(&update, &mut graph));
-                        update.clear();
-                        if moved {
-                            flag.store(true, Ordering::Release);
-                            wake.wake();
-                        }
-                    }
-                }
-                running.store(false, Ordering::Release);
-                wake.wake();
-            }),
-        );
-        // Dropping the process on failure ends it.
-        started.ok()?;
-        Some(Self {
-            _process: Some(process),
-            changed,
-            alive,
-        })
-    }
-
-    /// Flagged by hand: no process, never ends.
-    #[cfg(test)]
-    fn by_hand() -> Self {
-        use std::sync::atomic::AtomicBool;
-        Self {
-            _process: None,
-            changed: Arc::new(AtomicBool::new(true)),
-            alive: Arc::new(AtomicBool::new(true)),
-        }
-    }
-
-    fn is_alive(&self) -> bool {
-        self.alive.load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    /// Whether a change waits to be read.
-    fn pending(&self) -> bool {
-        self.changed.load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    /// Whether the graph changed since the last call.
-    fn take(&self) -> bool {
-        self.changed
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
-    }
-}
-
-/// Whether `update`, one array `pw-dump --monitor` printed, adds, changes
-/// or removes a node, a device or the default-device metadata. Clients,
-/// ports and links do not count: every `pw-dump` run that re-reads the
-/// graph comes and goes as a client, and counting it would re-read forever.
-/// `graph` keeps the ids that counted, since a removal names only its id.
-fn moves_graph(update: &serde_json::Value, graph: &mut std::collections::HashSet<u64>) -> bool {
-    let mut moved = false;
-    for object in update.as_array().into_iter().flatten() {
-        let Some(id) = object.get("id").and_then(serde_json::Value::as_u64) else {
-            continue;
-        };
-        match object.get("type").and_then(serde_json::Value::as_str) {
-            Some(
-                "PipeWire:Interface:Node"
-                | "PipeWire:Interface:Device"
-                | "PipeWire:Interface:Metadata",
-            ) => {
-                graph.insert(id);
-                moved = true;
-            }
-            Some(_) => {}
-            None => moved |= graph.remove(&id),
-        }
-    }
-    moved
-}
-
-/// What the Sound area reads of the device: the levels, the device list and
-/// node graph, what the audio runtime can do and the installed sound
-/// themes. That is several `wpctl`/`pw-dump`/`pactl` runs, so the window's
-/// warm-up makes the read off the UI thread.
+/// What the Sound area reads: the session's sound resource, the reading it
+/// began at, and what the audio runtime here can do. Opening the resource
+/// waits for that reading, so the window's warm-up makes the read off the UI
+/// thread.
 pub(crate) struct AudioRead {
-    initial: VolumeState,
-    volume_error: Option<String>,
-    input_volume: f32,
-    input_error: Option<String>,
-    devices: AudioDevices,
-    devices_error: Option<String>,
-    graph: AudioGraph,
+    /// The resource, watched for as long as the pane is open; `None` when
+    /// the session could not be reached.
+    sounds: Option<Arc<dyn SoundResource>>,
+    /// The reading [`open`](SoundResource) handed back.
+    sound: Sound,
+    /// Why the session could not be reached: no reading is shown, and
+    /// nothing is made up in its place.
+    error: Option<String>,
     runtime_caps: RuntimeCapabilities,
     sound_themes: Vec<SoundTheme>,
     event_sounds_available: bool,
 }
 
 impl AudioRead {
-    /// Read this device's audio. The remembered physical route (`output`,
-    /// `input`, the devices' names) is applied again when its device is
-    /// present.
-    fn of_device(output: Option<&str>, input: Option<&str>) -> Self {
+    /// Watch the session's sound resource, through the store the remembered
+    /// devices are read from. The devices the person chose last are put in
+    /// use again when the reading lists them.
+    fn of_session(storage: &ui::storage::AppStorage) -> Self {
         crate::device_read::off_ui_thread();
-        let (initial, volume_error) = match media::audio::default_node::volume_state(
-            media::audio::default_node::DefaultNode::Sink,
-        ) {
-            Ok(state) => (state, None),
-            Err(error) => (
-                VolumeState {
-                    level: 0.0,
-                    muted: false,
-                },
-                Some(error),
-            ),
-        };
-        let (input_volume, input_error) = match default_node::volume_state(DefaultNode::Source) {
-            Ok(state) => (state.level, None),
-            Err(error) => (0.0, Some(error)),
-        };
-        let (mut graph, devices_error) = match media::audio::try_enumerate() {
-            Ok(graph) => (graph, None),
-            Err(error) => (AudioGraph::default(), Some(error)),
-        };
-        if let Some(name) = output
-            && let Some(dev) = graph.sinks.iter().find(|d| d.description == name)
-        {
-            let id = dev.id;
-            if RealGraphControl.set_default_sink(id).is_ok() {
-                for sink in &mut graph.sinks {
-                    sink.is_default = sink.id == id;
+        let remembered = storage.settings::<AudioDevicePrefs>().get();
+        let (sounds, sound, error) = match SessionSound::open() {
+            Ok(resource) => {
+                let reading = resource.latest().unwrap_or_else(|| {
+                    Err("The session's sound resource published no reading.".to_string())
+                });
+                match reading.and_then(|reading| reading_of(&reading)) {
+                    Ok(sound) => {
+                        restore_choice(&resource, &sound, &remembered);
+                        let sound = resource
+                            .latest()
+                            .and_then(Result::ok)
+                            .and_then(|reading| reading_of(&reading).ok())
+                            .unwrap_or(sound);
+                        (
+                            Some(Arc::new(resource) as Arc<dyn SoundResource>),
+                            sound,
+                            None,
+                        )
+                    }
+                    Err(error) => (
+                        Some(Arc::new(resource) as Arc<dyn SoundResource>),
+                        Sound::default(),
+                        Some(error),
+                    ),
                 }
             }
-        }
-        if let Some(name) = input
-            && let Some(dev) = graph.sources.iter().find(|d| d.description == name)
-        {
-            let id = dev.id;
-            if RealGraphControl.set_default_source(id).is_ok() {
-                for source in &mut graph.sources {
-                    source.is_default = source.id == id;
-                }
-            }
-        }
-        let devices = devices_from_graph(&graph);
+            Err(error) => (None, Sound::default(), Some(error)),
+        };
         Self {
-            initial,
-            volume_error,
-            input_volume,
-            input_error,
-            devices,
-            devices_error,
-            graph,
+            sounds,
+            sound,
+            error,
             runtime_caps: RealAudioRuntime.capabilities(),
             sound_themes: media::event_sound::installed_themes(),
             event_sounds_available: media::event_sound::sound_backend()
@@ -970,87 +798,146 @@ impl AudioRead {
     }
 }
 
+/// Put the devices `remembered` in use again, when the reading lists them.
+fn restore_choice(resource: &impl SoundResource, sound: &Sound, remembered: &AudioDevicePrefs) {
+    let output = remembered.output_device.as_deref().and_then(|name| {
+        sound
+            .outputs
+            .iter()
+            .find(|device| device.label == name && !device.chosen)
+            .map(|device| device.node)
+    });
+    let input = remembered.input_device.as_deref().and_then(|name| {
+        sound
+            .inputs
+            .iter()
+            .find(|device| device.label == name && !device.chosen)
+            .map(|device| device.node)
+    });
+    for action in [
+        output.map(|node| SoundAction::RouteOutput { node }),
+        input.map(|node| SoundAction::SelectInput { node }),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let id = action.id();
+        if let Err(error) = resource.invoke(id, &action.arguments()) {
+            tracing::debug!(target: "tilo::settings", op = id, %error, "a remembered device was not put in use");
+        }
+    }
+}
+
+/// An output or input of the sample reading: a stereo device whose node
+/// name is its label.
+fn device(node: u32, label: &str, chosen: bool) -> Device {
+    Device {
+        node,
+        name: label.to_lowercase().replace(' ', "-"),
+        label: label.to_owned(),
+        chosen,
+        volume: Some(0.8),
+        muted: false,
+        channels: 2,
+        codec: None,
+    }
+}
+
+/// An application's stream of the sample reading.
+fn stream(
+    node: u32,
+    app: &str,
+    media: &str,
+    target: Option<u32>,
+    playback: bool,
+    volume: f32,
+) -> Stream {
+    Stream {
+        node,
+        app: app.to_owned(),
+        media: Some(media.to_owned()),
+        playback,
+        target,
+        volume: Some(volume),
+        muted: false,
+    }
+}
+
+/// The [`Sound`] a reading's JSON stands for.
+fn reading_of(reading: &str) -> Result<Sound, String> {
+    serde_json::from_str(reading)
+        .map_err(|error| format!("The session's sound reading is not a sound: {error}"))
+}
+
 impl AudioModel {
     /// Whether the output can play both channels in each ear: a stereo
     /// output, on a sound server that mixes it down.
     fn offers_mono(&self) -> bool {
         self.runtime_caps.mono_output
             && self
-                .graph
-                .default_sink()
-                .is_some_and(|sink| sink.channels == 2)
+                .output_device()
+                .is_some_and(|device| device.channels == 2)
     }
 
     /// Whether calls can have an echo-cancelled microphone.
     fn offers_echo_cancellation(&self) -> bool {
-        self.runtime_caps.echo_cancellation && !self.graph.sources.is_empty()
+        self.runtime_caps.echo_cancellation && !self.sound.inputs.is_empty()
     }
 
-    /// The model over what `read` found on this device.
+    /// The model over what `read` found on the session's sound resource.
     fn from_read(sections: crate::sections::Sections, read: AudioRead) -> Self {
         let AudioRead {
-            initial,
-            volume_error,
-            input_volume,
-            input_error,
-            devices,
-            devices_error,
-            graph,
+            sounds,
+            sound,
+            error,
             runtime_caps,
             sound_themes,
             event_sounds_available,
         } = read;
-        let runtime: Arc<dyn AudioRuntimeControl> = Arc::new(RealAudioRuntime);
-        Self {
-            output: Arc::new(SystemOutput(dispatcher_or_real(None))),
-            input: Arc::new(RealInput),
-            devices,
-            graph,
-            gctl: Arc::new(RealGraphControl),
-            enumerator: Arc::new(RealEnumerator),
-            hotplug_interval: HOTPLUG_INTERVAL,
-            last_enum: Some(ui::time::now()),
+        if let Some(sounds) = sounds.as_deref() {
+            sounds.attach(ui::WakeHandle::new());
+        }
+        let reaches_devices = sounds.is_some();
+        let mut model = Self {
+            reaches_devices,
+            sections,
+            sounds,
+            sound,
+            runtime: Arc::new(RealAudioRuntime),
             runtime_caps,
-            runtime,
             sound_themes,
             event_sounds_available,
-            volume_error,
-            input_error,
-            devices_error,
+            volume_error: error.clone(),
+            input_error: error.clone(),
+            devices_error: error,
             runtime_notice: None,
             channel_test: None,
             mic_session: None,
             mic_meter: level_meter::Level::default(),
-            volume: initial.level,
-            input_volume,
-            muted: initial.muted,
+            volume: 0.0,
+            input_volume: 0.0,
+            muted: false,
             changed: false,
             changes: DeviceChanges::default(),
-            rescan: crate::device_read::DeviceRead::default(),
-            following: std::rc::Weak::new(),
             output_meter: level_meter::Level::default(),
             metering: std::rc::Weak::new(),
             page: std::rc::Weak::new(),
             sets: SpeakerSets::default(),
             speakers: Arc::new(crate::speaker_setup::BrokerSpeakers),
-            reaches_devices: true,
-            sections,
-        }
+        };
+        model.take_levels();
+        model
     }
 
-    /// A model with no devices and controls that do nothing, remembering
+    /// A model with no resource and controls that do nothing, remembering
     /// the devices chosen through `sections`; tests give it what they
     /// drive.
     fn detached(sections: crate::sections::Sections) -> Self {
         Self {
-            output: Arc::new(NoopOutput),
-            input: Arc::new(NoopInput),
-            devices: AudioDevices::default(),
-            graph: AudioGraph::default(),
-            gctl: Arc::new(NoopGraphControl),
-            enumerator: Arc::new(StaticEnumerator(AudioGraph::default())),
-            hotplug_interval: Duration::MAX,
-            last_enum: Some(ui::time::now()),
+            reaches_devices: false,
+            sections,
+            sounds: None,
+            sound: Sound::default(),
             runtime: Arc::new(NoopAudioRuntime),
             runtime_caps: RuntimeCapabilities::default(),
             sound_themes: Vec::new(),
@@ -1067,147 +954,190 @@ impl AudioModel {
             muted: false,
             changed: false,
             changes: DeviceChanges::default(),
-            rescan: crate::device_read::DeviceRead::default(),
-            following: std::rc::Weak::new(),
             output_meter: level_meter::Level::default(),
             metering: std::rc::Weak::new(),
             page: std::rc::Weak::new(),
             sets: SpeakerSets::default(),
             speakers: Arc::new(NoSpeakerSets),
-            reaches_devices: false,
-            sections,
         }
     }
 
     /// What a screenshot and the crate's tests show: speakers and
     /// headphones, a microphone, and three apps playing or recording.
     fn sample(sections: crate::sections::Sections) -> Self {
-        use media::audio::AudioDevice as GDevice;
-        let sink = |id, serial, name: &str, def| GDevice {
-            id,
-            serial,
-            name: name.to_string(),
-            description: name.to_string(),
-            is_default: def,
-            volume: Some(0.7),
-            muted: Some(false),
-            channels: 2,
-            codec: None,
-        };
-        let stream = |id, serial, app: &str, media: &str, target, playback, volume| AudioStream {
-            id,
-            serial,
-            app: app.to_string(),
-            media_name: Some(media.to_string()),
-            playback,
-            target_id: Some(target),
-            volume: Some(volume),
-            muted: Some(false),
-        };
-        let graph = AudioGraph {
-            sinks: vec![
-                sink(51, 51, "Speakers", true),
-                sink(91, 269, "Headphones", false),
+        let sound = Sound {
+            output: Some(51),
+            volume: Some(0.65),
+            muted: false,
+            input: Some(52),
+            input_volume: Some(0.7),
+            input_muted: false,
+            outputs: vec![
+                device(51, "Speakers", true),
+                device(91, "Headphones", false),
             ],
-            sources: vec![sink(52, 52, "Built-in Microphone", true)],
-            playback_streams: vec![
+            inputs: vec![device(52, "Built-in Microphone", true)],
+            streams: vec![
                 // Routed away from the default onto the Headphones.
-                stream(84, 300, "Music", "Nightcall", 91, true, 0.85),
+                stream(84, "Music", "Nightcall", Some(91), true, 0.85),
                 // Following the default (Speakers).
-                stream(90, 320, "Browser", "Conference call", 51, true, 0.60),
+                stream(90, "Browser", "Conference call", Some(51), true, 0.60),
+                stream(95, "Meeting", "Microphone", Some(52), false, 0.75),
             ],
-            record_streams: vec![stream(95, 340, "Meeting", "Microphone", 52, false, 0.75)],
-            hardware: vec![],
+            hardware: Vec::new(),
+            ..Sound::default()
         };
+        // A sound is plain data: it always serialises.
+        let reading = serde_json::to_string(&sound).unwrap_or_default();
         let mut model = Self::detached(sections);
+        model.reaches_devices = true;
+        model.sounds = Some(Arc::new(SampleSound(std::sync::Mutex::new(Some(Ok(
+            reading,
+        ))))));
         model.speakers = Arc::new(SampleSpeakerSets);
-        model.volume = 0.65;
-        model.input_volume = 0.7;
+        model.take_sound(sound);
         // Music plays on the speakers: their meter shows it.
         model.output_meter.set(0.46);
         model.output_meter.set_live(true);
-        model.with_graph(graph, Arc::new(NoopGraphControl))
+        model
     }
 
-    /// The model over `graph`, editing it through `gctl`; the device
-    /// pickers list the graph's devices.
+    /// The model over the reading `sound`, changed through `sounds`; the
+    /// device pickers list its devices.
+    #[cfg(test)]
     #[must_use]
-    fn with_graph(mut self, graph: AudioGraph, gctl: Arc<dyn GraphControl>) -> Self {
-        self.enumerator = Arc::new(StaticEnumerator(graph.clone()));
-        if !graph.sinks.is_empty() || !graph.sources.is_empty() {
-            self.devices = devices_from_graph(&graph);
-        }
-        self.graph = graph;
-        self.gctl = gctl;
+    fn with_sound(mut self, sound: Sound, sounds: Arc<dyn SoundResource>) -> Self {
+        self.reaches_devices = true;
+        self.sounds = Some(sounds);
+        self.take_sound(sound);
         self
     }
 
-    pub fn devices(&self) -> &AudioDevices {
-        &self.devices
+    /// The outputs the reading lists, the one in use first.
+    pub fn outputs(&self) -> &[Device] {
+        &self.sound.outputs
     }
 
-    pub fn graph(&self) -> &AudioGraph {
-        &self.graph
+    /// The inputs the reading lists.
+    pub fn inputs(&self) -> &[Device] {
+        &self.sound.inputs
+    }
+
+    /// The applications' streams: the playing ones when `playback`.
+    pub fn streams(&self, playback: bool) -> Vec<&Stream> {
+        self.sound
+            .streams
+            .iter()
+            .filter(|stream| stream.playback == playback)
+            .collect()
+    }
+
+    /// The output in use, as the reading lists it.
+    fn output_device(&self) -> Option<&Device> {
+        self.sound
+            .outputs
+            .iter()
+            .find(|device| Some(device.node) == self.sound.output)
+    }
+
+    /// The input in use, as the reading lists it.
+    fn input_device(&self) -> Option<&Device> {
+        self.sound
+            .inputs
+            .iter()
+            .find(|device| Some(device.node) == self.sound.input)
     }
 
     /// Carry out `effect` on this thread; what it reported. The window
-    /// answers effects through [`answer`], which makes the device changes
-    /// off the UI thread instead.
+    /// answers effects through [`answer`], which takes the change on the
+    /// resource off the UI thread instead.
     #[cfg(test)]
     fn apply(&mut self, effect: &AudioEffect) -> Result<String, String> {
         match self.plan(effect)? {
             Plan::Local => self.apply_local(effect),
-            Plan::Device { work, settle, .. } => {
+            Plan::Sound { action, settle, .. } => {
+                let result = self.invoking(action)();
+                self.settle(settle, result)
+            }
+            Plan::Change { work, settle, .. } => {
                 let result = work();
                 self.settle(settle, result)
             }
         }
     }
 
+    /// `action` of the sound resource as work for the background executor:
+    /// a pane that reaches no resource has nothing to invoke.
+    fn invoking(&self, action: SoundAction) -> ChangeWork {
+        let sounds = self.sounds.clone();
+        Box::new(move || match sounds {
+            Some(sounds) => {
+                let id = action.id();
+                sounds.invoke(id, &action.arguments()).inspect_err(|error| {
+                    warn!(target: "tilo::settings", op = id, error = %error, "the sound resource refused a change");
+                })
+            }
+            None => Ok(()),
+        })
+    }
+
     /// Decide what `effect` does: a preference or diagnostic change made
-    /// here, or a device change for [`answer`] to run off the UI thread.
+    /// here, or an action of the sound resource for [`answer`] to take off
+    /// the UI thread.
     #[expect(
         clippy::too_many_lines,
-        reason = "one arm per device effect, each naming its call and what it settles"
+        reason = "one arm per device effect, each naming its action and what it settles"
     )]
     fn plan(&mut self, effect: &AudioEffect) -> Result<Plan, String> {
         self.changed = true;
-        let device = |key: ChangeKey, work: DeviceWork, settle: Settle| -> Result<Plan, String> {
-            Ok(Plan::Device { key, work, settle })
+        let sound = |key: ChangeKey, action: SoundAction, settle: Settle| -> Result<Plan, String> {
+            Ok(Plan::Sound {
+                key,
+                action,
+                settle,
+            })
         };
         match effect {
             AudioEffect::SetOutputVolume { volume } => {
-                let volume = volume.clamp(0.0, 1.0) as f32;
-                let output = Arc::clone(&self.output);
-                device(
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "a level from 0 to 1 fits a f32"
+                )]
+                let level = volume.clamp(0.0, 1.0) as f32;
+                sound(
                     ChangeKey::OutputVolume,
-                    Box::new(move || output.set_volume(volume * 100.0)),
-                    Settle::OutputVolume(volume),
+                    SoundAction::SetVolume {
+                        level: f64::from(level),
+                    },
+                    Settle::OutputVolume(level),
                 )
             }
-            AudioEffect::SetOutputMuted { muted } => {
-                let (output, muted) = (Arc::clone(&self.output), *muted);
-                device(
-                    ChangeKey::OutputMuted,
-                    Box::new(move || output.set_mute(muted)),
-                    Settle::OutputMuted(muted),
-                )
-            }
+            AudioEffect::SetOutputMuted { muted } => sound(
+                ChangeKey::OutputMuted,
+                SoundAction::SetMuted { muted: *muted },
+                Settle::OutputMuted(*muted),
+            ),
             AudioEffect::SetInputVolume { volume } => {
-                let volume = volume.clamp(0.0, 1.0) as f32;
-                let input = Arc::clone(&self.input);
-                device(
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "a level from 0 to 1 fits a f32"
+                )]
+                let level = volume.clamp(0.0, 1.0) as f32;
+                sound(
                     ChangeKey::InputVolume,
-                    Box::new(move || input.set_input_volume(volume * 100.0)),
-                    Settle::InputVolume(volume),
+                    SoundAction::SetInputVolume {
+                        level: f64::from(level),
+                    },
+                    Settle::InputVolume(level),
                 )
             }
             AudioEffect::SelectOutput { device: name } => {
-                let id = self
-                    .devices
-                    .sink_id(name)
+                let node = self
+                    .outputs()
+                    .iter()
+                    .find(|device| &device.label == name)
+                    .map(|device| device.node)
                     .ok_or_else(|| t("sound-notice-device-gone"))?;
-                let control = Arc::clone(&self.gctl);
                 // Leaving a speaker set: the chosen output first, so the
                 // set's sink going away leaves this choice in place.
                 let leaving = self
@@ -1216,22 +1146,31 @@ impl AudioModel {
                     .iter()
                     .any(|set| set.output_here)
                     .then(|| Arc::clone(&self.speakers));
-                device(
-                    ChangeKey::OutputDevice,
-                    Box::new(move || {
-                        control.set_default_sink(id)?;
-                        leaving.map_or(Ok(()), |speakers| {
-                            speaker_call(
-                                speakers.as_ref(),
-                                ui::collaboration::SpeakerCommand::StopUsingAsOutput,
-                            )
+                let settle = Settle::Output {
+                    id: node,
+                    name: name.clone(),
+                };
+                match leaving {
+                    None => sound(
+                        ChangeKey::OutputDevice,
+                        SoundAction::RouteOutput { node },
+                        settle,
+                    ),
+                    Some(speakers) => {
+                        let route = self.invoking(SoundAction::RouteOutput { node });
+                        Ok(Plan::Change {
+                            key: ChangeKey::OutputDevice,
+                            work: Box::new(move || {
+                                route()?;
+                                speaker_call(
+                                    speakers.as_ref(),
+                                    ui::collaboration::SpeakerCommand::StopUsingAsOutput,
+                                )
+                            }),
+                            settle,
                         })
-                    }),
-                    Settle::Output {
-                        id,
-                        name: name.clone(),
-                    },
-                )
+                    }
+                }
             }
             AudioEffect::SelectSpeakerSet { group } => {
                 let set = self
@@ -1240,54 +1179,58 @@ impl AudioModel {
                     .iter()
                     .find(|set| &set.id == group)
                     .ok_or_else(|| t("sound-notice-device-gone"))?;
-                let (speakers, id) = (Arc::clone(&self.speakers), set.id.clone());
-                device(
-                    ChangeKey::OutputDevice,
-                    Box::new(move || {
+                let (speakers, id, group) =
+                    (Arc::clone(&self.speakers), set.id.clone(), group.clone());
+                Ok(Plan::Change {
+                    key: ChangeKey::OutputDevice,
+                    work: Box::new(move || {
                         speaker_call(
                             speakers.as_ref(),
                             ui::collaboration::SpeakerCommand::UseAsOutput { group: id },
                         )
                     }),
-                    Settle::SpeakerSet(group.clone()),
-                )
+                    settle: Settle::SpeakerSet(group),
+                })
             }
             AudioEffect::SelectInput { device: name } => {
-                let id = self
-                    .devices
-                    .source_id(name)
+                let node = self
+                    .inputs()
+                    .iter()
+                    .find(|device| &device.label == name)
+                    .map(|device| device.node)
                     .ok_or_else(|| t("sound-notice-device-gone"))?;
-                let control = Arc::clone(&self.gctl);
-                device(
+                sound(
                     ChangeKey::InputDevice,
-                    Box::new(move || control.set_default_source(id)),
+                    SoundAction::SelectInput { node },
                     Settle::Input {
-                        id,
+                        id: node,
                         name: name.clone(),
                     },
                 )
             }
             AudioEffect::SetDeviceProfile {
-                device: hardware_id,
+                device: card,
                 profile,
             } => {
                 let index = self
-                    .graph
+                    .sound
                     .hardware
                     .iter()
-                    .find(|hardware| hardware.id == *hardware_id)
-                    .and_then(|hardware| {
-                        hardware
+                    .find(|known| known.node == *card)
+                    .and_then(|known| {
+                        known
                             .profiles
                             .iter()
-                            .find(|known| known.available && &known.description == profile)
+                            .find(|known| known.available && &known.label == profile)
                     })
                     .map(|known| known.index)
                     .ok_or_else(|| t("sound-notice-device-gone"))?;
-                let (gctl, hardware_id) = (Arc::clone(&self.gctl), *hardware_id);
-                device(
-                    ChangeKey::Profile(hardware_id),
-                    Box::new(move || gctl.set_device_profile(hardware_id, index)),
+                sound(
+                    ChangeKey::Profile(*card),
+                    SoundAction::SetProfile {
+                        device: *card,
+                        profile: index,
+                    },
                     Settle::Profile,
                 )
             }
@@ -1296,42 +1239,57 @@ impl AudioModel {
                 device: target,
             } => {
                 let known = self.stream(*stream)?;
-                let gctl = Arc::clone(&self.gctl);
-                let work: DeviceWork = if is_follow_default(target) {
-                    Box::new(move || gctl.unroute_stream(known.id))
+                // The device' node, as the reading lists it; "follow the
+                // default" clears the stream's target instead.
+                let node = if is_follow_default(target) {
+                    None
                 } else {
                     let devices = if known.playback {
-                        &self.graph.sinks
+                        self.outputs()
                     } else {
-                        &self.graph.sources
+                        self.inputs()
                     };
-                    let serial = devices
-                        .iter()
-                        .find(|candidate| &candidate.description == target)
-                        .map(|candidate| candidate.serial);
-                    Box::new(move || {
-                        serial
-                            .ok_or_else(|| "audio route is no longer available".to_string())
-                            .and_then(|serial| gctl.route_stream(known.id, serial))
-                    })
+                    Some(
+                        devices
+                            .iter()
+                            .find(|device| &device.label == target)
+                            .map(|device| device.node)
+                            .ok_or_else(|| t("sound-notice-device-gone"))?,
+                    )
                 };
-                device(ChangeKey::Route(*stream), work, Settle::Route(*stream))
+                Ok(Plan::Sound {
+                    key: ChangeKey::Route(*stream),
+                    action: SoundAction::RouteStream {
+                        stream: *stream,
+                        device: node,
+                    },
+                    settle: Settle::Route,
+                })
             }
             AudioEffect::SetStreamVolume { stream, volume } => {
-                let known = self.stream(*stream)?;
-                let (gctl, volume) = (Arc::clone(&self.gctl), volume.clamp(0.0, 1.0) as f32);
-                device(
+                self.stream(*stream)?;
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "a level from 0 to 1 fits a f32"
+                )]
+                let level = volume.clamp(0.0, 1.0) as f32;
+                sound(
                     ChangeKey::StreamVolume(*stream),
-                    Box::new(move || gctl.set_node_volume(known.id, volume)),
+                    SoundAction::SetStreamVolume {
+                        stream: *stream,
+                        level: f64::from(level),
+                    },
                     Settle::StreamVolume,
                 )
             }
             AudioEffect::SetStreamMuted { stream, muted } => {
-                let known = self.stream(*stream)?;
-                let (gctl, muted) = (Arc::clone(&self.gctl), *muted);
-                device(
+                self.stream(*stream)?;
+                sound(
                     ChangeKey::StreamMuted(*stream),
-                    Box::new(move || gctl.set_node_mute(known.id, muted)),
+                    SoundAction::SetStreamMuted {
+                        stream: *stream,
+                        muted: *muted,
+                    },
                     Settle::StreamMuted,
                 )
             }
@@ -1339,8 +1297,8 @@ impl AudioModel {
         }
     }
 
-    /// What a device change that ran makes of the model: the level or
-    /// device it set, or the notice of why it failed.
+    /// What a change that ran makes of the model: the level or device it
+    /// set, or the notice of why it failed.
     fn settle(&mut self, settle: Settle, result: Result<(), String>) -> Result<String, String> {
         self.changed = true;
         let percent = |value: f32| i64::from((value.clamp(0.0, 1.0) * 100.0).round() as u32);
@@ -1372,8 +1330,9 @@ impl AudioModel {
             }
             Settle::Output { id, name } => {
                 result.map_err(|error| self.failed("sound-notice-device-err", error))?;
-                for sink in &mut self.devices.sinks {
-                    sink.default = sink.id == id;
+                // The choice shows at once; the next reading confirms it.
+                for device in &mut self.sound.outputs {
+                    device.chosen = device.node == id;
                 }
                 for set in &mut self.sets.shown {
                     set.output_here = false;
@@ -1385,8 +1344,8 @@ impl AudioModel {
             Settle::SpeakerSet(group) => {
                 result.map_err(|error| self.failed("sound-notice-device-err", error))?;
                 // The set's sink is the output now: no device of this one is.
-                for sink in &mut self.devices.sinks {
-                    sink.default = false;
+                for device in &mut self.sound.outputs {
+                    device.chosen = false;
                 }
                 for set in &mut self.sets.shown {
                     set.output_here = set.id == group;
@@ -1396,8 +1355,8 @@ impl AudioModel {
             }
             Settle::Input { id, name } => {
                 result.map_err(|error| self.failed("sound-notice-in-device-err", error))?;
-                for source in &mut self.devices.sources {
-                    source.default = source.id == id;
+                for device in &mut self.sound.inputs {
+                    device.chosen = device.node == id;
                 }
                 self.remember(AudioDevicePrefs::REMEMBER_INPUT.with(name))?;
                 Ok(t("sound-notice-in-device"))
@@ -1406,9 +1365,8 @@ impl AudioModel {
                 result.map_err(|error| self.failed("sound-notice-profile-err", error))?;
                 Ok(t("sound-notice-profile"))
             }
-            Settle::Route(stream) => {
+            Settle::Route => {
                 result.map_err(|error| {
-                    warn!(target: "tilo::settings", op = "route_stream", stream, error = %error, "audio stream route failed");
                     t_args("sound-notice-stream-route-err", &[("error", error.into())])
                 })?;
                 Ok(t("sound-notice-stream-route"))
@@ -1428,7 +1386,7 @@ impl AudioModel {
         }
     }
 
-    /// Carry out an effect that changes no hardware: a bounded diagnostic.
+    /// Carry out an effect that changes no device: a bounded diagnostic.
     fn apply_local(&mut self, effect: &AudioEffect) -> Result<String, String> {
         match effect {
             AudioEffect::TestSpeaker { channel } => {
@@ -1444,11 +1402,10 @@ impl AudioModel {
                     "sound-test-right"
                 });
                 let session = self
-                    .graph
-                    .default_sink()
-                    .filter(|sink| sink.channels == 2)
+                    .output_device()
+                    .filter(|device| device.channels == 2)
                     .ok_or_else(|| t("sound-notice-test-need"))
-                    .and_then(|sink| self.runtime.start_channel_test(&sink.name, left))
+                    .and_then(|device| self.runtime.start_channel_test(&device.name, left))
                     .map_err(|error| {
                         let notice = t_args(
                             "sound-notice-test-err",
@@ -1474,12 +1431,11 @@ impl AudioModel {
                     return Ok(t("sound-notice-mic-stopped"));
                 }
                 let session = self
-                    .graph
-                    .default_source()
+                    .input_device()
                     .ok_or_else(|| t("sound-notice-mic-none"))
-                    .and_then(|source| {
+                    .and_then(|device| {
                         self.runtime
-                            .start_microphone_meter(&source.name, Duration::from_secs(8))
+                            .start_microphone_meter(&device.name, Duration::from_secs(8))
                     })
                     .map_err(|error| {
                         let notice = t_args("sound-notice-mic-err", &[("error", error.into())]);
@@ -1506,19 +1462,17 @@ impl AudioModel {
         }
     }
 
-    /// The stream `id`, if the graph still has it.
-    fn stream(&self, id: u32) -> Result<AudioStream, String> {
-        self.graph
-            .playback_streams
+    /// The stream `node`, if the resource still lists it.
+    fn stream(&self, node: u32) -> Result<&Stream, String> {
+        self.sound
+            .streams
             .iter()
-            .chain(&self.graph.record_streams)
-            .find(|stream| stream.id == id)
-            .cloned()
+            .find(|stream| stream.node == node)
             .ok_or_else(|| t("sound-notice-stream-gone"))
     }
 
-    /// `key`'s message for a device call that failed with `error`, shown
-    /// on the pane too.
+    /// `key`'s message for a change that failed with `error`, shown on the
+    /// pane too.
     fn failed(&mut self, key: &str, error: String) -> String {
         warn!(target: "tilo::settings", op = key, error = %error, "audio change failed");
         let notice = t_args(key, &[("error", error.into())]);
@@ -1534,77 +1488,100 @@ impl AudioModel {
             .map_err(|error| t_args("sound-notice-pref-err", &[("error", error.into())]))
     }
 
-    /// The picker label for a stream's *current* route: the device it is linked
-    /// to, or "Default" when that device is the system default (so a stream on
-    /// the default reads as following it, not pinned).
-    fn stream_target_label(&self, s: &AudioStream) -> String {
-        let devices = if s.playback {
-            &self.graph.sinks
+    /// The picker label for a stream's *current* route: the device it is
+    /// linked to, or "Default" when that device is the system default (so a
+    /// stream on the default reads as following it, not pinned).
+    fn stream_target_label(&self, stream: &Stream) -> String {
+        let devices = if stream.playback {
+            self.outputs()
         } else {
-            &self.graph.sources
+            self.inputs()
         };
-        match s
-            .target_id
-            .and_then(|tid| devices.iter().find(|d| d.id == tid))
+        match stream
+            .target
+            .and_then(|node| devices.iter().find(|device| device.node == node))
         {
-            Some(d) if d.is_default => follow_shown(),
-            Some(d) => d.description.clone(),
+            Some(device) if device.chosen => follow_shown(),
+            Some(device) => device.label.clone(),
             None => follow_shown(),
         }
     }
 
-    /// Re-enumerate the graph on the hotplug throttle. When the topology
-    /// changed (a device plugged/unplugged, an app started/stopped playing),
-    /// adopt the new graph, refresh the device pickers, and drop the composed
-    /// tree so the next layout rebuilds with the new rows. Returns whether a
-    /// structural change was adopted.
-    fn poll_hotplug(&mut self) -> bool {
-        // `pw-dump` can take up to its timeout, so the graph is read on the
-        // background executor and taken in by a later sync; scrolling the
-        // pane never waits for it.
-        let fresh = if self.rescan.is_finished()
-            && let Some(graph) = self.rescan.take()
-        {
-            graph
-        } else {
-            let monitor = self
-                .following
-                .upgrade()
-                .filter(|monitor| monitor.is_alive());
-            let due = match (monitor, self.hotplug_interval, self.last_enum) {
-                // A change during a re-read stays flagged for the next one.
-                (Some(monitor), ..) => self.rescan.is_finished() && monitor.take(),
-                (None, i, _) if i == Duration::ZERO => true,
-                (None, i, _) if i == Duration::MAX => false,
-                (None, i, Some(t)) => t.elapsed() >= i,
-                (None, _, None) => true,
-            };
-            if !due || !self.rescan.is_finished() {
-                return false;
-            }
-            self.last_enum = Some(ui::time::now());
-            let enumerator = Arc::clone(&self.enumerator);
-            if self.rescan.start(move || enumerator.enumerate()) {
-                return false;
-            }
-            // No background executor runs here: read on this thread.
-            self.enumerator.enumerate()
-        };
-        if fresh.topology_signature() == self.graph.topology_signature() {
+    /// Take in the newest reading the resource published since the last
+    /// call, if one came. Whether it changes what the page shows.
+    fn take_reading(&mut self) -> bool {
+        let Some(sounds) = self.sounds.as_deref() else {
             return false;
+        };
+        let Some(reading) = sounds.latest() else {
+            return false;
+        };
+        self.changed = true;
+        match reading.and_then(|reading| reading_of(&reading)) {
+            Ok(sound) => {
+                self.volume_error = None;
+                self.input_error = None;
+                self.devices_error = None;
+                self.take_sound(sound);
+            }
+            Err(error) => {
+                // The controls are not offered at made-up levels.
+                warn!(target: "tilo::settings", %error, "the sound reading was not understood");
+                self.volume_error = Some(error.clone());
+                self.input_error = Some(error.clone());
+                self.devices_error = Some(error);
+            }
         }
-        // Pane-owned diagnostics are bound to the old node name. Persistent
-        // mono is owned by the compositor session and handles hot-plug there.
-        self.channel_test = None;
-        self.mic_session = None;
-        self.mic_meter.set_live(false);
-        // Refresh the sink/source pickers from the same enumeration so a new
-        // headset is selectable, keeping the current default marker.
-        self.devices = devices_from_graph(&fresh);
-        self.graph = fresh;
-        // A set taking or leaving the output adds or removes its sink.
-        self.sets.due = true;
         true
+    }
+
+    /// Show `sound`: its levels feed the controls, and a device or an app
+    /// that went away takes the diagnostics bound to it along.
+    fn take_sound(&mut self, sound: Sound) {
+        let moved = self.sound.output != sound.output
+            || self.sound.input != sound.input
+            || self.sound.outputs.len() != sound.outputs.len()
+            || self.sound.inputs.len() != sound.inputs.len()
+            || self.sound.streams.len() != sound.streams.len()
+            || !self
+                .sound
+                .outputs
+                .iter()
+                .map(|device| device.node)
+                .eq(sound.outputs.iter().map(|device| device.node))
+            || !self
+                .sound
+                .inputs
+                .iter()
+                .map(|device| device.node)
+                .eq(sound.inputs.iter().map(|device| device.node))
+            || !self
+                .sound
+                .streams
+                .iter()
+                .map(|stream| stream.node)
+                .eq(sound.streams.iter().map(|stream| stream.node));
+        let problem = sound.problem.clone();
+        self.sound = sound;
+        if moved {
+            // The diagnostics are bound to the node that was in use.
+            self.channel_test = None;
+            self.mic_session = None;
+            self.mic_meter.set_live(false);
+            // A set taking or leaving the output adds or removes its sink.
+            self.sets.due = true;
+        }
+        if let Some(problem) = problem {
+            self.runtime_notice = Some(problem);
+        }
+        self.take_levels();
+    }
+
+    /// The controls start at the levels the reading gives.
+    fn take_levels(&mut self) {
+        self.volume = self.sound.volume.unwrap_or(0.0);
+        self.input_volume = self.sound.input_volume.unwrap_or(0.0);
+        self.muted = self.sound.muted;
     }
 
     /// Read the speaker sets again when they are due, and take in a read
@@ -1613,9 +1590,10 @@ impl AudioModel {
         self.sets.poll(&self.speakers)
     }
 
-    /// Advance the bounded speaker/mic diagnostics and re-enumerate the
-    /// `PipeWire` graph on the hotplug throttle.
-    fn tick_sessions_and_hotplug(&mut self) {
+    /// Advance the bounded speaker/mic diagnostics, take in the resource's
+    /// newest reading, and read the speaker sets again while a page shows
+    /// the model.
+    fn tick(&mut self) {
         if self
             .channel_test
             .as_mut()
@@ -1636,16 +1614,11 @@ impl AudioModel {
                 self.changed = true;
             }
         }
-        // While a page shows the model, re-read the PipeWire graph on a
-        // change (or the hotplug throttle) so a device plugged in or an app
-        // that just started playing appears live.
-        if self.page.upgrade().is_some() {
-            if self.poll_hotplug() {
-                self.changed = true;
-            }
-            if self.poll_speaker_sets() {
-                self.changed = true;
-            }
+        // A device plugged in or an app that starts playing reaches the
+        // resource as a new reading while the pane watches it.
+        self.take_reading();
+        if self.page.upgrade().is_some() && self.poll_speaker_sets() {
+            self.changed = true;
         }
         self.follow_output_meter();
     }
@@ -1663,9 +1636,9 @@ impl AudioModel {
             return;
         };
         let sink = self
-            .graph
-            .default_sink()
-            .map(|sink| sink.name.clone())
+            .output_device()
+            .map(|device| device.name.clone())
+            .filter(|name| !name.is_empty())
             .filter(|_| self.runtime_caps.microphone_meter);
         let mut session = metering.session.borrow_mut();
         if let Some((name, running)) = session.as_mut() {
@@ -1702,11 +1675,11 @@ impl AudioModel {
 }
 
 impl AudioModel {
-    /// Take in what moved: tests that ended and, while a page shows the
-    /// model, the graph and the speaker sets. Whether what the page shows
-    /// changed since the last call, by this or by an effect.
+    /// Take in what moved: tests that ended, the resource's readings and,
+    /// while a page shows the model, the speaker sets. Whether what the page
+    /// shows changed since the last call, by this or by an effect.
     fn poll(&mut self) -> bool {
-        self.tick_sessions_and_hotplug();
+        self.tick();
         std::mem::take(&mut self.changed)
     }
 
@@ -1715,27 +1688,9 @@ impl AudioModel {
         self.mic_session.is_some() || self.channel_test.is_some()
     }
 
-    /// When a page showing the model next re-reads the graph while nothing
-    /// else happens.
-    fn next_wake(&self) -> Option<Instant> {
-        self.page.upgrade()?;
-        if let Some(monitor) = self
-            .following
-            .upgrade()
-            .filter(|monitor| monitor.is_alive())
-        {
-            // A change that came during a re-read is read once it ends (its
-            // end wakes the window).
-            return (monitor.pending() && self.rescan.is_finished()).then(ui::time::now);
-        }
-        (self.hotplug_interval != Duration::MAX)
-            .then(|| self.last_enum.unwrap_or_else(ui::time::now) + self.hotplug_interval)
-    }
-
-    /// Start following the device for a page that shows the model:
-    /// `PipeWire`'s change stream and the output's meter run while a page
-    /// holds what this answers. Pages showing the model share one, so
-    /// building a page again never restarts them.
+    /// Start following what a page that shows the model needs: the output's
+    /// meter runs while a page holds what this answers. Pages showing the
+    /// model share one, so building a page again never restarts it.
     fn follow(&mut self) -> Rc<dyn std::any::Any> {
         let page = crate::watch::shared(&mut self.page, || ());
         if !self.reaches_devices {
@@ -1746,73 +1701,17 @@ impl AudioModel {
             self.metering = Rc::downgrade(&metering);
             metering
         });
-        let monitor = self.following.upgrade().or_else(|| {
-            let monitor = Rc::new(GraphMonitor::start()?);
-            self.following = Rc::downgrade(&monitor);
-            Some(monitor)
-        });
         self.follow_output_meter();
-        Rc::new((page, monitor, metering))
-    }
-}
-
-/// An input that changes nothing.
-struct NoopInput;
-
-impl InputControl for NoopInput {
-    fn set_input_volume(&self, _: f32) -> Result<(), String> {
-        Ok(())
-    }
-}
-
-/// The default output's volume and mute.
-pub trait OutputControl: Send + Sync {
-    /// # Errors
-    /// The mixer's message when the volume could not be set.
-    fn set_volume(&self, pct: f32) -> Result<(), String>;
-    /// # Errors
-    /// The mixer's message when the output could not be muted or unmuted.
-    fn set_mute(&self, muted: bool) -> Result<(), String>;
-}
-
-/// The default output, through the system's dispatcher.
-struct SystemOutput(Arc<dyn Dispatcher + Send + Sync>);
-
-impl OutputControl for SystemOutput {
-    fn set_volume(&self, pct: f32) -> Result<(), String> {
-        self.0.set_volume(pct)
-    }
-    fn set_mute(&self, muted: bool) -> Result<(), String> {
-        self.0.set_mute(muted)
-    }
-}
-
-/// An output that changes nothing.
-struct NoopOutput;
-
-impl OutputControl for NoopOutput {
-    fn set_volume(&self, _: f32) -> Result<(), String> {
-        Ok(())
-    }
-    fn set_mute(&self, _: bool) -> Result<(), String> {
-        Ok(())
+        Rc::new((page, metering))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dispatcher::testing::RecordingDispatcher;
-    use media::audio::NoopGraphControl;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// Records the microphone gains the input slider forwards, so the test
-    /// can assert the source volume reached the backend.
-    #[derive(Default)]
-    struct RecordingInput {
-        calls: Mutex<Vec<f32>>,
-    }
+    use tilo_audio_service::sound::{Card, Profile};
 
     type App = ui::framework::testing::TestApp<crate::SettingsShell>;
 
@@ -1845,32 +1744,350 @@ mod tests {
         app
     }
 
-    /// Levels that could not be read are reported, not drawn as sliders at
-    /// a made-up position; when nothing can be read, the failure is said
-    /// once rather than once per row.
-    #[test]
-    fn unreadable_levels_are_shown_as_errors() {
-        let mut app = on_sound();
-        let error = "wpctl: Could not connect to PipeWire";
-        change_model(&mut app, move |model| {
-            model.volume_error = Some(error.into());
-        });
-        let volume = "Can't read the output volume: wpctl: Could not connect to PipeWire";
-        let text = frame(&mut app);
-        assert!(text.contains(volume), "{text}");
+    /// The `sound` resource as a test drives it: a reading to publish, and
+    /// every action taken, with its arguments.
+    #[derive(Default)]
+    struct RecordingSound {
+        published: Mutex<Option<Result<String, String>>>,
+        taken: Mutex<Vec<(String, serde_json::Value)>>,
+        /// What a reading wakes, once a page attached it.
+        wake: Mutex<Option<ui::WakeHandle>>,
+    }
 
-        change_model(&mut app, move |model| {
-            model.input_error = Some(error.into());
-            model.devices_error = Some(error.into());
-        });
-        let text = frame(&mut app);
-        let devices = "Can't list audio devices: wpctl: Could not connect to PipeWire";
-        assert!(text.contains(devices), "{text}");
-        assert!(!text.contains(volume), "{text}");
-        assert!(
-            !text.contains(&t("sound-apps-empty")),
-            "no list of apps that only looks silent: {text}"
+    impl RecordingSound {
+        /// Publish `sound` as the resource's newest reading.
+        fn publish(&self, sound: &Sound) {
+            let reading = serde_json::to_string(sound).expect("a reading is JSON");
+            *self.published.lock().unwrap() = Some(Ok(reading));
+            if let Some(wake) = self.wake.lock().unwrap().as_ref() {
+                wake.wake();
+            }
+        }
+
+        /// Publish a reading that is not a sound.
+        fn publish_unreadable(&self) {
+            *self.published.lock().unwrap() = Some(Ok("{ not a reading".into()));
+        }
+
+        /// The actions taken, as their id and arguments.
+        fn taken(&self) -> Vec<(String, serde_json::Value)> {
+            self.taken.lock().unwrap().clone()
+        }
+
+        /// The arguments of `action`, which the pane must have taken.
+        fn arguments(&self, action: &str) -> serde_json::Value {
+            let taken = self.taken();
+            taken.iter().find(|(id, _)| id == action).map_or_else(
+                || panic!("{action} was not taken: {taken:?}"),
+                |(_, arguments)| arguments.clone(),
+            )
+        }
+    }
+
+    impl SoundResource for RecordingSound {
+        fn latest(&self) -> Option<Result<String, String>> {
+            self.published.lock().unwrap().take()
+        }
+
+        fn attach(&self, wake: ui::WakeHandle) {
+            *self.wake.lock().unwrap() = Some(wake);
+        }
+
+        fn invoke(
+            &self,
+            action: &str,
+            arguments: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<(), String> {
+            self.taken.lock().unwrap().push((
+                action.to_owned(),
+                serde_json::Value::Object(arguments.clone()),
+            ));
+            Ok(())
+        }
+    }
+
+    /// A model over a published reading, changed through `sounds`.
+    fn published(sounds: Arc<dyn SoundResource>) -> AudioModel {
+        let sample = AudioModel::sample(crate::sections::Sections::default());
+        let reading = sample.sound.clone();
+        let mut model = sample.with_sound(reading, sounds);
+        // The sample's speaker sets would need the shell.
+        model.speakers = Arc::new(SampleSpeakerSets);
+        model
+    }
+
+    /// A page open on the sound is woken by each reading the session
+    /// publishes, so a headset plugged in shows without looking for it.
+    #[test]
+    fn a_new_reading_wakes_the_page_showing_it() {
+        let scope = ui::WakeScope::new();
+        let _entry = scope.enter();
+        let sounds = Arc::new(RecordingSound::default());
+        let mut model = AudioModel::from_read(
+            crate::sections::Sections::default(),
+            AudioRead {
+                sounds: Some(Arc::clone(&sounds) as Arc<dyn SoundResource>),
+                sound: Sound::default(),
+                error: None,
+                runtime_caps: RuntimeCapabilities::default(),
+                sound_themes: Vec::new(),
+                event_sounds_available: false,
+            },
         );
+        assert!(
+            !scope.is_pending(),
+            "opening the page asks for no frame of its own"
+        );
+
+        let reading = Sound {
+            output: Some(91),
+            outputs: vec![
+                device(51, "Speakers", false),
+                device(91, "Headphones", true),
+            ],
+            ..Sound::default()
+        };
+        sounds.publish(&reading);
+        assert!(scope.is_pending(), "the reading woke the page showing it");
+        assert!(model.poll(), "the page shows the reading it was woken for");
+        assert_eq!(
+            model.output_device().map(|device| device.label.as_str()),
+            Some("Headphones"),
+        );
+    }
+
+    /// What the pane shows is the reading the resource published, and a
+    /// newer reading is what it shows next.
+    #[test]
+    fn the_page_shows_the_published_reading() {
+        let sounds = Arc::new(RecordingSound::default());
+        let mut app = on_sound();
+        {
+            let sounds = Arc::clone(&sounds) as Arc<dyn SoundResource>;
+            change_model(&mut app, move |model| *model = published(sounds));
+        }
+        let text = frame(&mut app);
+        assert!(text.contains("Speakers"), "{text}");
+        assert!(text.contains("Music"), "an app's stream is listed: {text}");
+        assert!(text.contains("Browser"), "{text}");
+        assert!(
+            text.contains("Meeting"),
+            "a recording stream is too: {text}"
+        );
+
+        // Another output in use, an app that stopped, one that started.
+        let mut reading = AudioModel::sample(crate::sections::Sections::default()).sound;
+        reading.output = Some(91);
+        reading.outputs = vec![
+            device(51, "Speakers", false),
+            device(91, "Headphones", true),
+        ];
+        reading.streams = vec![stream(84, "Music", "Nightcall", Some(91), true, 0.85)];
+        sounds.publish(&reading);
+        let text = frame(&mut app);
+        assert!(
+            !text.contains("Browser"),
+            "an app that stopped playing is gone: {text}"
+        );
+        let output = app
+            .with_widget::<crate::window::Inspected, _>(|settings| {
+                area(settings)
+                    .unwrap()
+                    .model()
+                    .borrow()
+                    .output_device()
+                    .map(|device| device.label.clone())
+            })
+            .unwrap();
+        assert_eq!(output.as_deref(), Some("Headphones"));
+    }
+
+    /// Every control takes one of the resource's actions, with the node or
+    /// level it changes.
+    #[test]
+    fn a_change_takes_the_resources_action() {
+        let sounds = Arc::new(RecordingSound::default());
+        let mut model = published(Arc::clone(&sounds) as Arc<dyn SoundResource>);
+        model.sound.hardware.push(Card {
+            node: 7,
+            label: "Headset".into(),
+            profile: Some(1),
+            profiles: vec![
+                Profile {
+                    index: 1,
+                    label: "High Fidelity".into(),
+                    available: true,
+                },
+                Profile {
+                    index: 2,
+                    label: "Headset microphone".into(),
+                    available: true,
+                },
+                Profile {
+                    index: 3,
+                    label: "Off".into(),
+                    available: false,
+                },
+            ],
+        });
+
+        for effect in [
+            AudioEffect::SetOutputVolume { volume: 0.30 },
+            AudioEffect::SetOutputMuted { muted: true },
+            AudioEffect::SetInputVolume { volume: 0.40 },
+            AudioEffect::SetDeviceProfile {
+                device: 7,
+                profile: "Headset microphone".into(),
+            },
+            AudioEffect::RouteStream {
+                stream: 84,
+                device: "Speakers".into(),
+            },
+            AudioEffect::RouteStream {
+                stream: 84,
+                device: FOLLOW_DEFAULT.into(),
+            },
+            AudioEffect::SetStreamVolume {
+                stream: 90,
+                volume: 0.30,
+            },
+            AudioEffect::SetStreamMuted {
+                stream: 95,
+                muted: true,
+            },
+        ] {
+            model.apply(&effect).unwrap();
+        }
+
+        let level = |arguments: serde_json::Value| {
+            arguments["level"].as_f64().expect("a level is a number")
+        };
+        assert!((level(sounds.arguments("set-volume")) - 0.30).abs() < 0.001);
+        assert_eq!(sounds.arguments("set-muted")["muted"], true);
+        assert!((level(sounds.arguments("set-input-volume")) - 0.40).abs() < 0.001);
+        let profile = sounds.arguments("set-profile");
+        assert_eq!(
+            (profile["device"].clone(), profile["profile"].clone()),
+            (7.into(), 2.into())
+        );
+        assert_eq!(
+            sounds
+                .taken()
+                .iter()
+                .filter(|(id, _)| id == "route-stream")
+                .map(|(_, arguments)| (arguments["stream"].clone(), arguments["device"].clone()))
+                .collect::<Vec<_>>(),
+            vec![(84.into(), 51.into()), (84.into(), serde_json::Value::Null)],
+            "a stream goes to the device it was given, or follows the default"
+        );
+        let volume = sounds.arguments("set-stream-volume");
+        assert_eq!(volume["stream"], 90);
+        assert_eq!(sounds.arguments("set-stream-muted")["muted"], true);
+        // The model shows what it set.
+        assert!((model.volume - 0.30).abs() < 0.001);
+        assert!(model.muted);
+        assert!((model.input_volume - 0.40).abs() < 0.001);
+
+        // A device or stream the reading no longer lists is refused.
+        assert!(
+            model
+                .apply(&AudioEffect::SelectOutput {
+                    device: "Not here".into()
+                })
+                .is_err()
+        );
+        assert!(
+            model
+                .apply(&AudioEffect::SetStreamMuted {
+                    stream: 999,
+                    muted: true
+                })
+                .is_err()
+        );
+    }
+
+    /// Choosing an output or an input routes it on the resource, and the
+    /// choice is remembered for the next time Settings opens.
+    #[test]
+    fn choosing_a_device_routes_it_and_remembers_it() {
+        let sounds = Arc::new(RecordingSound::default());
+        let mut app = on_sound();
+        {
+            let sounds = Arc::clone(&sounds) as Arc<dyn SoundResource>;
+            change_model(&mut app, move |model| {
+                let published = published(sounds);
+                model.sounds = published.sounds;
+                model.reaches_devices = true;
+                model.sound = published.sound;
+                model.sound.inputs.push(device(54, "USB Microphone", false));
+            });
+        }
+        app.effect(&SettingsEffect::from(AudioEffect::SelectOutput {
+            device: "Headphones".into(),
+        }))
+        .unwrap();
+        app.effect(&SettingsEffect::from(AudioEffect::SelectInput {
+            device: "USB Microphone".into(),
+        }))
+        .unwrap();
+        assert_eq!(sounds.arguments("route-output")["node"], 91);
+        assert_eq!(sounds.arguments("select-input")["node"], 54);
+        let _ = frame(&mut app);
+        let remembered = app.settings::<AudioDevicePrefs>().get();
+        assert_eq!(remembered.output_device.as_deref(), Some("Headphones"));
+        assert_eq!(remembered.input_device.as_deref(), Some("USB Microphone"));
+        assert!(
+            app.effect(&SettingsEffect::from(AudioEffect::SelectOutput {
+                device: "Not here".into()
+            }))
+            .is_err()
+        );
+    }
+
+    /// A stream on the output in use follows it; one linked elsewhere names
+    /// that device.
+    #[test]
+    fn a_stream_names_the_device_it_plays_on() {
+        let model = published(Arc::new(RecordingSound::default()));
+        let label = |node: u32| {
+            let stream = model.stream(node).expect("the reading lists it");
+            model.stream_target_label(stream)
+        };
+        assert_eq!(label(90), follow_shown(), "on the output in use");
+        assert_eq!(label(84), "Headphones", "linked away from it");
+        assert_eq!(
+            label(95),
+            follow_shown(),
+            "a recording stream on the input in use"
+        );
+    }
+
+    /// The devices chosen last are put in use again when the resource's
+    /// first reading lists them.
+    #[test]
+    fn a_remembered_device_is_put_in_use_again() {
+        let mut model = published(Arc::new(RecordingSound::default()));
+        let remembered = AudioDevicePrefs {
+            output_device: Some("Headphones".into()),
+            input_device: Some("USB Microphone".into()),
+        };
+        model.sound.inputs.push(device(54, "USB Microphone", false));
+        let sounds = RecordingSound::default();
+        restore_choice(&sounds, &model.sound, &remembered);
+        let taken = sounds.taken();
+        assert_eq!(taken[0].0, "route-output");
+        assert_eq!(taken[0].1["node"], 91);
+        assert_eq!(taken[1].0, "select-input");
+        assert_eq!(taken[1].1["node"], 54);
+
+        // The device already in use is not routed again.
+        let chosen = AudioDevicePrefs {
+            output_device: Some("Speakers".into()),
+            ..AudioDevicePrefs::default()
+        };
+        let sounds = RecordingSound::default();
+        restore_choice(&sounds, &model.sound, &chosen);
+        assert!(sounds.taken().is_empty());
     }
 
     struct FakeSession {
@@ -1959,41 +2176,74 @@ mod tests {
             }))
         }
     }
-    impl InputControl for RecordingInput {
-        fn set_input_volume(&self, pct: f32) -> Result<(), String> {
-            self.calls.lock().unwrap().push(pct);
-            Ok(())
-        }
-    }
 
-    fn sample_devices() -> AudioDevices {
-        let device = |id, name: &str, default| AudioDevice {
-            id,
-            name: name.into(),
-            default,
-        };
-        AudioDevices {
-            sinks: vec![
-                device(51, "Built-in Audio Analog Stereo", true),
-                device(52, "HDMI / DisplayPort", false),
-            ],
-            sources: vec![
-                device(53, "Built-in Audio Analog Stereo", true),
-                device(54, "USB Microphone", false),
-            ],
-        }
-    }
-
-    fn model() -> AudioModel {
-        AudioModel::detached(crate::sections::Sections::default())
-    }
-
-    fn recording(rec: &Arc<RecordingDispatcher>) -> AudioModel {
-        let mut model = model();
-        model.output = Arc::new(SystemOutput(
-            Arc::clone(rec) as Arc<dyn Dispatcher + Send + Sync>
-        ));
+    /// A channel test and a microphone meter capture on the node the
+    /// reading names, not on a name of the pane's own.
+    #[test]
+    fn a_test_captures_the_output_the_reading_names() {
+        let runtime = Arc::new(RecordingRuntime {
+            calls: Mutex::new(Vec::new()),
+            drops: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut model = published(Arc::new(RecordingSound::default()));
+        model.runtime = runtime.clone();
         model
+            .apply(&AudioEffect::TestSpeaker {
+                channel: "left".into(),
+            })
+            .unwrap();
+        model.apply(&AudioEffect::ToggleMicrophoneTest).unwrap();
+        assert_eq!(
+            runtime.calls.lock().unwrap().as_slice(),
+            ["test(speakers,true)", "meter(built-in-microphone)"]
+        );
+    }
+
+    /// Levels that could not be read are reported, not drawn as sliders at
+    /// a made-up position; when nothing can be read, the failure is said
+    /// once rather than once per row.
+    #[test]
+    fn unreadable_levels_are_shown_as_errors() {
+        let mut app = on_sound();
+        let error = "wpctl: Could not connect to PipeWire";
+        change_model(&mut app, move |model| {
+            model.volume_error = Some(error.into());
+        });
+        let volume = "Can't read the output volume: wpctl: Could not connect to PipeWire";
+        let text = frame(&mut app);
+        assert!(text.contains(volume), "{text}");
+
+        change_model(&mut app, move |model| {
+            model.input_error = Some(error.into());
+            model.devices_error = Some(error.into());
+        });
+        let text = frame(&mut app);
+        let devices = "Can't read the sound: wpctl: Could not connect to PipeWire";
+        assert!(text.contains(devices), "{text}");
+        assert!(!text.contains(volume), "{text}");
+        assert!(
+            !text.contains(&t("sound-apps-empty")),
+            "no list of apps that only looks silent: {text}"
+        );
+    }
+
+    /// A reading the pane cannot read is what the controls are missing, and
+    /// the next reading that reads clears it.
+    #[test]
+    fn a_reading_that_is_not_a_sound_is_an_error_until_the_next() {
+        let sounds = Arc::new(RecordingSound::default());
+        let mut model = published(Arc::clone(&sounds) as Arc<dyn SoundResource>);
+        sounds.publish_unreadable();
+        assert!(model.poll());
+        assert!(model.volume_error.is_some());
+        assert!(model.devices_error.is_some());
+
+        let reading = AudioModel::sample(crate::sections::Sections::default()).sound;
+        sounds.publish(&reading);
+        assert!(model.poll());
+        assert!(model.volume_error.is_none());
+        assert!(model.devices_error.is_none());
+        assert!(model.input_error.is_none());
     }
 
     /// The shell's speaker lane, recording what Settings asks; the set is
@@ -2046,54 +2296,33 @@ mod tests {
 
     /// A speaker set is listed among the outputs (the sink it plays from
     /// is not), choosing it plays through it, and choosing another output
-    /// leaves it, remembering that output.
+    /// leaves it and routes the output on the resource.
     #[test]
     fn a_speaker_set_is_an_output_chosen_like_any_other() {
-        use media::audio::AudioDevice as GDevice;
         use ui::collaboration::SpeakerCommand;
-        let sink = |id, name: &str, description: &str, default| GDevice {
-            id,
-            serial: id,
-            name: name.into(),
-            description: description.into(),
-            is_default: default,
-            volume: Some(0.5),
-            muted: Some(false),
-            channels: 2,
-            codec: None,
-        };
-        let graph = AudioGraph {
-            sinks: vec![
-                sink(51, "alsa_output.speakers", "Speakers", true),
-                // The sink a set plays from is not an output of its own.
-                sink(77, media::audio::SPEAKER_GROUP_SINK, "Speaker group", false),
-            ],
-            ..AudioGraph::default()
-        };
         let speakers = Arc::new(RecordingSpeakers::default());
+        let sounds = Arc::new(RecordingSound::default());
         let mut app = on_sound();
         {
             let speakers = Arc::clone(&speakers);
+            let sounds = Arc::clone(&sounds) as Arc<dyn SoundResource>;
             change_model(&mut app, move |model| {
-                let devices = devices_from_graph(&graph);
-                model.devices = devices;
-                model.graph = graph;
+                let published = published(sounds);
+                model.sounds = published.sounds;
+                model.reaches_devices = true;
                 model.speakers = speakers;
                 model.sets = SpeakerSets::default();
             });
         }
-        let lists_the_set = |app: &mut App| {
+        assert!(
             app.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| {
                     harness
                         .inspection_json()
                         .is_ok_and(|frame| frame.contains("Living room"))
-                })
-        };
-        assert!(lists_the_set(&mut app), "the set is in the output list");
-        let text = frame(&mut app);
-        assert!(text.contains("Speakers"), "{text}");
-        assert!(!text.contains("Speaker group"), "{text}");
+                }),
+            "the set is in the output list"
+        );
 
         app.effect(&SettingsEffect::from(AudioEffect::SelectSpeakerSet {
             group: "cd".repeat(16),
@@ -2120,10 +2349,9 @@ mod tests {
         );
         assert!(
             model(&mut app, |model| model
-                .devices()
-                .sinks
+                .outputs()
                 .iter()
-                .all(|sink| !sink.default)),
+                .all(|device| !device.chosen)),
             "and no other output is"
         );
 
@@ -2137,12 +2365,12 @@ mod tests {
                 .contains(&SpeakerCommand::StopUsingAsOutput),
             "choosing another output leaves the set"
         );
+        assert_eq!(sounds.arguments("route-output")["node"], 51);
         assert!(!model(&mut app, |model| model.sets.shown[0].output_here));
         assert!(model(&mut app, |model| model
-            .devices()
-            .sinks
+            .outputs()
             .iter()
-            .any(|sink| sink.default)));
+            .any(|device| device.chosen)));
         let _ = frame(&mut app);
         assert_eq!(
             app.settings::<AudioDevicePrefs>()
@@ -2152,453 +2380,6 @@ mod tests {
             Some("Speakers"),
             "the chosen output is remembered"
         );
-    }
-
-    /// Volume, mute and the input level reach their backends once each.
-    #[test]
-    fn volume_mute_and_input_reach_their_backends() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let input = Arc::new(RecordingInput::default());
-        let mut model = recording(&rec);
-        model.input = input.clone();
-        model
-            .apply(&AudioEffect::SetOutputVolume { volume: 0.30 })
-            .unwrap();
-        model
-            .apply(&AudioEffect::SetOutputMuted { muted: true })
-            .unwrap();
-        model
-            .apply(&AudioEffect::SetInputVolume { volume: 0.40 })
-            .unwrap();
-        let calls = rec.calls();
-        assert_eq!(calls.len(), 2, "{calls:?}");
-        assert!(calls[0].starts_with("set_volume(") && calls[0].contains("30."));
-        assert_eq!(calls[1], "set_mute(true)");
-        let inputs = input.calls.lock().unwrap().clone();
-        assert_eq!(inputs.len(), 1);
-        assert!((inputs[0] - 40.0).abs() < 0.5, "{inputs:?}");
-        assert!(model.muted);
-    }
-
-    /// Default sink/source switching, profiles and the remembered default.
-    #[test]
-    fn default_selection_switches() {
-        let d = sample_devices();
-        assert_eq!(d.default_sink(), Some("Built-in Audio Analog Stereo"));
-
-        let dev = Arc::new(RecordingGraph::default());
-        let mut app = on_sound();
-        {
-            let dev = Arc::clone(&dev);
-            change_model(&mut app, move |model| {
-                model.devices = d;
-                model.gctl = dev;
-            });
-        }
-        app.effect(&SettingsEffect::from(AudioEffect::SelectOutput {
-            device: "HDMI / DisplayPort".into(),
-        }))
-        .unwrap();
-        app.effect(&SettingsEffect::from(AudioEffect::SelectInput {
-            device: "USB Microphone".into(),
-        }))
-        .unwrap();
-        assert_eq!(dev.calls(), ["default_sink(52)", "default_source(54)"]);
-        let _ = frame(&mut app);
-        let remembered = app.settings::<AudioDevicePrefs>().get();
-        assert_eq!(
-            remembered.output_device.as_deref(),
-            Some("HDMI / DisplayPort"),
-            "the chosen output is remembered"
-        );
-        assert_eq!(remembered.input_device.as_deref(), Some("USB Microphone"));
-        assert!(
-            app.effect(&SettingsEffect::from(AudioEffect::SelectOutput {
-                device: "Not here".into()
-            }))
-            .is_err()
-        );
-
-        let rec = Arc::new(RecordingGraph::default());
-        let mut graph = graph_two_sinks_one_stream();
-        graph.hardware.push(AudioHardwareDevice {
-            id: 7,
-            description: "Headset".into(),
-            active_profile: Some(1),
-            profiles: vec![
-                DeviceProfile {
-                    index: 1,
-                    name: "a2dp".into(),
-                    description: "High Fidelity".into(),
-                    available: true,
-                },
-                DeviceProfile {
-                    index: 2,
-                    name: "hfp".into(),
-                    description: "Headset microphone".into(),
-                    available: true,
-                },
-            ],
-        });
-        let mut model = self::model().with_graph(graph, rec.clone());
-        model
-            .apply(&AudioEffect::SetDeviceProfile {
-                device: 7,
-                profile: "Headset microphone".into(),
-            })
-            .unwrap();
-        assert_eq!(rec.calls(), vec!["profile(7,2)"]);
-    }
-
-    use media::audio::{
-        AudioDevice as GDevice, AudioGraph as G, AudioHardwareDevice, AudioStream as GStream,
-        DeviceProfile, GraphControl,
-    };
-
-    /// Records every graph edit the pane dispatches, so a routing/volume/mute
-    /// change can be asserted without touching `pw-metadata` / `wpctl`.
-    #[derive(Default)]
-    struct RecordingGraph {
-        calls: Mutex<Vec<String>>,
-    }
-    impl RecordingGraph {
-        fn push(&self, s: String) {
-            self.calls.lock().unwrap().push(s);
-        }
-        fn calls(&self) -> Vec<String> {
-            self.calls.lock().unwrap().clone()
-        }
-    }
-    impl GraphControl for RecordingGraph {
-        fn set_default_sink(&self, id: u32) -> Result<(), String> {
-            self.push(format!("default_sink({id})"));
-            Ok(())
-        }
-        fn set_default_source(&self, id: u32) -> Result<(), String> {
-            self.push(format!("default_source({id})"));
-            Ok(())
-        }
-        fn route_stream(&self, stream: u32, serial: u32) -> Result<(), String> {
-            self.push(format!("route({stream},{serial})"));
-            Ok(())
-        }
-        fn unroute_stream(&self, stream: u32) -> Result<(), String> {
-            self.push(format!("unroute({stream})"));
-            Ok(())
-        }
-        fn set_node_volume(&self, id: u32, v: f32) -> Result<(), String> {
-            self.push(format!("volume({id},{v:.2})"));
-            Ok(())
-        }
-        fn set_node_mute(&self, id: u32, m: bool) -> Result<(), String> {
-            self.push(format!("mute({id},{m})"));
-            Ok(())
-        }
-        fn set_device_profile(&self, id: u32, profile: u32) -> Result<(), String> {
-            self.push(format!("profile({id},{profile})"));
-            Ok(())
-        }
-    }
-
-    /// Two sinks (the default "Speakers", and "Headphones" as a routing target)
-    /// and one playback stream (node 84) currently following the default.
-    fn graph_two_sinks_one_stream() -> G {
-        G {
-            sinks: vec![
-                GDevice {
-                    id: 51,
-                    serial: 51,
-                    name: "alsa_speakers".into(),
-                    description: "Speakers".into(),
-                    is_default: true,
-                    volume: Some(0.8),
-                    muted: Some(false),
-                    channels: 2,
-                    codec: None,
-                },
-                GDevice {
-                    id: 91,
-                    serial: 269,
-                    name: "alsa_hp".into(),
-                    description: "Headphones".into(),
-                    is_default: false,
-                    volume: Some(1.0),
-                    muted: Some(false),
-                    channels: 2,
-                    codec: None,
-                },
-            ],
-            sources: vec![],
-            playback_streams: vec![GStream {
-                id: 84,
-                serial: 300,
-                app: "music".into(),
-                media_name: Some("A Song".into()),
-                playback: true,
-                target_id: Some(51),
-                volume: Some(0.5),
-                muted: Some(false),
-            }],
-            record_streams: vec![],
-            hardware: vec![],
-        }
-    }
-
-    fn routing_model(gctl: Arc<dyn GraphControl>) -> AudioModel {
-        model().with_graph(graph_two_sinks_one_stream(), gctl)
-    }
-
-    /// Bounded diagnostics, hotplugged sinks, and balance/mono settings
-    /// without owning the transform.
-    #[test]
-    fn audio_diagnostics_hotplug_and_transforms_stay_bounded() {
-        {
-            let drops = Arc::new(AtomicUsize::new(0));
-            let runtime = Arc::new(RecordingRuntime {
-                calls: Mutex::new(vec![]),
-                drops: drops.clone(),
-            });
-            let mut graph = graph_two_sinks_one_stream();
-            graph.sources.push(media::audio::AudioDevice {
-                id: 52,
-                serial: 52,
-                name: "alsa_input.mic".into(),
-                description: "Microphone".into(),
-                is_default: true,
-                volume: Some(0.7),
-                muted: Some(false),
-                channels: 1,
-                codec: None,
-            });
-            let mut model = model().with_graph(graph, Arc::new(NoopGraphControl));
-            model.runtime_caps = runtime.capabilities();
-            model.runtime = runtime.clone();
-            let profile = tempfile::tempdir().unwrap();
-            let stored = crate::area::AreaContext::in_profile(profile.path().to_path_buf())
-                .storage
-                .settings::<AudioPrefs>();
-            stored.update(|prefs| prefs.balance = 0.75).unwrap();
-            model
-                .apply(&AudioEffect::TestSpeaker {
-                    channel: "left".into(),
-                })
-                .unwrap();
-            model.apply(&AudioEffect::ToggleMicrophoneTest).unwrap();
-            assert_eq!(
-                runtime.calls.lock().unwrap().as_slice(),
-                ["test(alsa_speakers,true)", "meter(alsa_input.mic)",]
-            );
-            assert_eq!(drops.load(Ordering::SeqCst), 0);
-            let prefs = stored.get();
-            assert!((prefs.balance - 0.75).abs() < 0.001);
-            drop(model);
-            assert_eq!(
-                drops.load(Ordering::SeqCst),
-                2,
-                "only bounded tone and mic diagnostics belong to this pane"
-            );
-        }
-
-        {
-            let mut before = graph_two_sinks_one_stream();
-            before.sinks.retain(|d| d.description == "Speakers");
-            before.playback_streams.clear();
-            let after = {
-                let mut g = graph_two_sinks_one_stream();
-                g.playback_streams.clear();
-                g
-            };
-            let mut model = model().with_graph(before, Arc::new(RecordingGraph::default()));
-            model.enumerator = Arc::new(Scripted {
-                seq: vec![after],
-                idx: Mutex::new(0),
-            });
-            model.hotplug_interval = Duration::ZERO;
-            model.last_enum = None;
-            let _page = model.follow();
-            assert_eq!(model.graph().sinks.len(), 1, "starts with one sink");
-            // The re-read runs on the background executor: the sync that
-            // starts it returns at once, and a later sync adopts it.
-            assert!(
-                !model.poll(),
-                "the sync starting the re-read waits for nothing"
-            );
-            let deadline = tilo_test_env::hang_deadline();
-            while !model.poll() {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the plugged-in sink is adopted"
-                );
-                std::thread::yield_now();
-            }
-            assert_eq!(model.graph().sinks.len(), 2);
-            assert!(model.devices().sinks.iter().any(|d| d.name == "Headphones"));
-        }
-    }
-
-    /// A shown pane re-reads the graph when `PipeWire` reports a change,
-    /// never on a timer; once the monitor ends it reads on the timer again.
-    #[test]
-    fn a_followed_graph_is_read_on_a_change_not_on_a_timer() {
-        let mut before = graph_two_sinks_one_stream();
-        before.sinks.retain(|d| d.description == "Speakers");
-        let after = graph_two_sinks_one_stream();
-        let mut model = model().with_graph(before, Arc::new(RecordingGraph::default()));
-        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        model.enumerator = Arc::new(Counting {
-            graph: after,
-            reads: Arc::clone(&reads),
-        });
-        model.hotplug_interval = HOTPLUG_INTERVAL;
-        model.last_enum = None;
-        let page = model.follow();
-        let monitor = Rc::new(GraphMonitor::by_hand());
-        model.following = Rc::downgrade(&monitor);
-        assert!(monitor.take(), "the monitor starts flagged");
-        let adopt = |model: &mut AudioModel| {
-            let deadline = tilo_test_env::hang_deadline();
-            while !model.poll() {
-                assert!(std::time::Instant::now() < deadline, "the read lands");
-                std::thread::yield_now();
-            }
-        };
-
-        for _ in 0..3 {
-            assert!(!model.poll());
-        }
-        assert_eq!(reads.load(Ordering::SeqCst), 0, "no change, no re-read");
-        assert_eq!(model.next_wake(), None, "an idle pane sets no deadline");
-
-        monitor.changed.store(true, Ordering::Release);
-        adopt(&mut model);
-        assert_eq!(reads.load(Ordering::SeqCst), 1, "one change, one re-read");
-        assert_eq!(model.graph().sinks.len(), 2, "the new headset is shown");
-        assert_eq!(model.next_wake(), None);
-
-        monitor.alive.store(false, Ordering::Release);
-        assert!(
-            model.next_wake().is_some(),
-            "a monitor that ended leaves the pane on its timer"
-        );
-        drop(page);
-        assert_eq!(model.next_wake(), None, "no page, no timer");
-    }
-
-    /// Only nodes, devices and the default-device metadata move the graph;
-    /// the clients and links every `pw-dump` run brings do not, and a
-    /// removal counts only for an id that counted.
-    #[test]
-    fn only_nodes_devices_and_defaults_move_the_graph() {
-        let mut graph = std::collections::HashSet::new();
-        let update = |json: &str| serde_json::from_str::<serde_json::Value>(json).unwrap();
-        assert!(!moves_graph(
-            &update(
-                r#"[{"id":90,"type":"PipeWire:Interface:Client","info":{}},
-                       {"id":91,"type":"PipeWire:Interface:Link","info":{}}]"#
-            ),
-            &mut graph
-        ));
-        assert!(!moves_graph(
-            &update(r#"[{"id":90,"info":null}]"#),
-            &mut graph
-        ));
-        assert!(moves_graph(
-            &update(r#"[{"id":60,"type":"PipeWire:Interface:Node","info":{}}]"#),
-            &mut graph
-        ));
-        assert!(moves_graph(
-            &update(r#"[{"id":31,"type":"PipeWire:Interface:Metadata","metadata":[]}]"#),
-            &mut graph
-        ));
-        assert!(moves_graph(
-            &update(r#"[{"id":60,"info":null}]"#),
-            &mut graph
-        ));
-        assert!(!moves_graph(
-            &update(r#"[{"id":60,"info":null}]"#),
-            &mut graph
-        ));
-    }
-
-    struct Counting {
-        graph: AudioGraph,
-        reads: Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    impl AudioEnumerator for Counting {
-        fn enumerate(&self) -> AudioGraph {
-            self.reads.fetch_add(1, Ordering::SeqCst);
-            self.graph.clone()
-        }
-    }
-
-    /// Routing, unrouting, per-app volume and mute each reach the graph;
-    /// a stream that is gone is refused.
-    #[test]
-    fn per_app_streams_route_and_mix() {
-        let rec = Arc::new(RecordingGraph::default());
-        let mut model = routing_model(rec.clone());
-        assert_eq!(
-            model.stream_target_label(&model.graph.playback_streams[0].clone()),
-            follow_shown(),
-            "a stream on the default sink follows it"
-        );
-        for effect in [
-            AudioEffect::RouteStream {
-                stream: 84,
-                device: "Headphones".into(),
-            },
-            AudioEffect::RouteStream {
-                stream: 84,
-                device: FOLLOW_DEFAULT.into(),
-            },
-            AudioEffect::SetStreamVolume {
-                stream: 84,
-                volume: 0.30,
-            },
-            AudioEffect::SetStreamMuted {
-                stream: 84,
-                muted: true,
-            },
-        ] {
-            model.apply(&effect).unwrap();
-        }
-        // Headphones' object.serial is 269 — the routing handle, not its node id.
-        assert_eq!(
-            rec.calls(),
-            vec![
-                "route(84,269)",
-                "unroute(84)",
-                "volume(84,0.30)",
-                "mute(84,true)"
-            ]
-        );
-        assert!(
-            model
-                .apply(&AudioEffect::SetStreamMuted {
-                    stream: 999,
-                    muted: true
-                })
-                .is_err()
-        );
-    }
-
-    /// A scripted enumerator: each `enumerate()` yields the next graph in the
-    /// sequence, holding on the last — so a test can present a "device plugged
-    /// in" snapshot on demand.
-    struct Scripted {
-        seq: Vec<G>,
-        idx: Mutex<usize>,
-    }
-    impl AudioEnumerator for Scripted {
-        fn enumerate(&self) -> G {
-            let mut i = self.idx.lock().unwrap();
-            let g = self.seq[(*i).min(self.seq.len() - 1)].clone();
-            if *i < self.seq.len() - 1 {
-                *i += 1;
-            }
-            g
-        }
     }
 
     /// Mono output, echo cancellation and the system sounds are the
@@ -2710,45 +2491,49 @@ mod tests {
         );
     }
 
-    /// A mixer that does not answer until it is let go, as `wpctl` does
-    /// against a wedged `PipeWire`.
-    struct StalledOutput(Arc<crate::stall::Stall>);
+    /// A session that does not answer a change until it is let go.
+    struct StalledSound {
+        gate: Arc<crate::stall::Stall>,
+        published: Mutex<Option<Result<String, String>>>,
+    }
 
-    impl StalledOutput {
-        fn wait(&self) -> Result<(), String> {
-            if self.0.wait() {
+    impl SoundResource for StalledSound {
+        fn latest(&self) -> Option<Result<String, String>> {
+            self.published.lock().unwrap().take()
+        }
+
+        fn attach(&self, _: ui::WakeHandle) {}
+
+        fn invoke(
+            &self,
+            _: &str,
+            _: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<(), String> {
+            if self.gate.wait() {
                 Ok(())
             } else {
-                Err("the mixer never answered".into())
+                Err("the session never answered".into())
             }
         }
     }
 
-    impl OutputControl for StalledOutput {
-        fn set_volume(&self, _: f32) -> Result<(), String> {
-            self.wait()
-        }
-        fn set_mute(&self, _: bool) -> Result<(), String> {
-            self.wait()
-        }
-    }
-
     /// A click on the volume control is answered and the window keeps
-    /// drawing while the mixer takes its time: the device call runs off
-    /// the UI thread, and its result lands once it returns.
+    /// drawing while the session takes its time: the action runs off the UI
+    /// thread, and its result lands once it returns.
     #[test]
-    fn a_stalled_mixer_never_holds_the_window() {
+    fn a_stalled_session_never_holds_the_window() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let gate = crate::stall::Stall::new();
-        let stalled = Arc::clone(&gate);
-        app.with_widget::<crate::window::Inspected, _>(move |settings| {
-            crate::panes::audio::area(settings)
-                .unwrap()
-                .model()
-                .borrow_mut()
-                .output = Arc::new(StalledOutput(stalled));
-        })
-        .expect("the Settings window is mounted");
+        {
+            let stalled = Arc::clone(&gate);
+            change_model(&mut app, move |model| {
+                model.sounds = Some(Arc::new(StalledSound {
+                    gate: stalled,
+                    published: Mutex::new(None),
+                }));
+                model.volume = 0.65;
+            });
+        }
 
         app.start_effect(&SettingsEffect::from(AudioEffect::SetOutputVolume {
             volume: 0.3,
@@ -2758,22 +2543,15 @@ mod tests {
             .poll_frame()
             .expect("the window draws its next frame");
         gate.assert_held("the click");
-        let shows_set_level = |app: &mut ui::framework::testing::TestApp<crate::SettingsShell>| {
+        let shows_set_level = |app: &mut App| {
             app.with_widget::<crate::window::Inspected, _>(|settings| {
-                (crate::panes::audio::area(settings)
-                    .unwrap()
-                    .model()
-                    .borrow()
-                    .volume
-                    - 0.3)
-                    .abs()
-                    < 0.01
+                (area(settings).unwrap().model().borrow().volume - 0.3).abs() < 0.01
             })
             .unwrap()
         };
         assert!(
             !shows_set_level(&mut app),
-            "the level is not shown as set before the mixer took it"
+            "the level is not shown as set before the session took it"
         );
 
         gate.release();
@@ -2781,7 +2559,7 @@ mod tests {
         while !shows_set_level(&mut app) {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the level the mixer took is shown"
+                "the level the session took is shown"
             );
             app.settle();
             std::thread::yield_now();
@@ -2789,12 +2567,12 @@ mod tests {
     }
 
     /// Changes of one kind that the background executor starts out of
-    /// order leave the hardware at the last one asked for.
+    /// order leave the device at the last one asked for.
     #[test]
-    fn a_replaced_device_change_is_dropped() {
+    fn a_replaced_change_is_dropped() {
         let changes = DeviceChanges::default();
         let ran = Arc::new(Mutex::new(Vec::new()));
-        let job = |level: u32| -> DeviceWork {
+        let job = |level: u32| -> ChangeWork {
             let ran = Arc::clone(&ran);
             Box::new(move || {
                 ran.lock().unwrap().push(level);
@@ -2805,7 +2583,7 @@ mod tests {
         let second = changes.submit(ChangeKey::OutputVolume, job(80));
         let mute = changes.submit(ChangeKey::OutputMuted, job(0));
         assert_eq!(second(), Some(Ok(())));
-        assert_eq!(first(), None, "the older level never reaches the mixer");
+        assert_eq!(first(), None, "the older level never reaches the device");
         assert_eq!(mute(), Some(Ok(())), "another kind of change is kept");
         assert_eq!(ran.lock().unwrap().as_slice(), [80, 0]);
     }

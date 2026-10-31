@@ -1200,7 +1200,7 @@ impl NavList {
                     (view.handler)(key);
                 }
             })
-            .on_activate(move |id| {
+            .on_activate_view("nav-list-activate", move |id| {
                 // Activating the selected destination still navigates to its
                 // screen; selection callbacks remain change-only.
                 let mut shared = activate_shared.borrow_mut();

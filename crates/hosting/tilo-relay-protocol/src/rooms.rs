@@ -50,7 +50,6 @@ pub struct JoinChallengeView {
     pub room: String,
     /// The room's relay workspace.
     pub workspace_id: u64,
-    pub authority_device_public_key: [u8; 32],
     /// The joining person.
     pub user_public_key: [u8; 32],
     pub device_public_key: [u8; 32],

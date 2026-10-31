@@ -87,7 +87,6 @@ pub enum ControlBindingKind {
     /// through the normal action door; useful for custom-painted controls and
     /// process-local editing state that does not belong in document history.
     SemanticAction(String),
-    LegacyCallback,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -675,10 +674,10 @@ pub(crate) fn humanize_control_id(id: &str) -> String {
 }
 
 /// A reusable action-intent queue for controls, including custom widgets.
-/// Widgets call [`emit`](Self::emit) from any interaction path. Mounted shared
-/// controls install independent host custody; custom producers should use
-/// [`new_in`](Self::new_in) with their actual owner domain. The private `take`
-/// path remains only as explicitly unqualified migration compatibility.
+/// Widgets call [`emit`](Self::emit) from any interaction path. A control a
+/// host mounts is adopted by the host's custody, which keeps the same queue;
+/// custom producers bound to an owner from the start use
+/// [`new_in`](Self::new_in).
 pub struct ActionEmitter<I> {
     binding: tilo_actions::ActionBinding<I>,
     pending: crate::control_custody::ControlHolder,
@@ -691,7 +690,7 @@ impl<I> ActionEmitter<I> {
     pub fn new(binding: tilo_actions::ActionBinding<I>) -> Self {
         Self {
             binding,
-            pending: crate::control_custody::ControlHolder::new(
+            pending: crate::control_custody::ControlHolder::unowned(
                 crate::control_custody::ControlProducerDiscipline::Fifo {
                     limit: ACTION_EMITTER_QUEUE_LIMIT,
                 },
@@ -706,23 +705,25 @@ impl<I> ActionEmitter<I> {
     pub fn new_replace_one(binding: tilo_actions::ActionBinding<I>) -> Self {
         Self {
             binding,
-            pending: crate::control_custody::ControlHolder::new(
+            pending: crate::control_custody::ControlHolder::unowned(
                 crate::control_custody::ControlProducerDiscipline::ReplaceOne,
             ),
             available: true,
         }
     }
 
-    /// Construct already registered, including for emitting inside a builder.
+    /// Construct on a host's domain, including for emitting inside a builder.
     pub fn new_in(binding: tilo_actions::ActionBinding<I>, domain: &crate::ControlDomain) -> Self {
-        let mut emitter = Self::new(binding);
-        emitter.pending = crate::control_custody::ControlHolder::registered(
-            domain,
-            crate::control_custody::ControlProducerDiscipline::Fifo {
-                limit: ACTION_EMITTER_QUEUE_LIMIT,
-            },
-        );
-        emitter
+        Self {
+            binding,
+            pending: crate::control_custody::ControlHolder::in_domain(
+                domain,
+                crate::control_custody::ControlProducerDiscipline::Fifo {
+                    limit: ACTION_EMITTER_QUEUE_LIMIT,
+                },
+            ),
+            available: true,
+        }
     }
     pub fn install_custody(
         &mut self,
@@ -741,7 +742,7 @@ impl<I> ActionEmitter<I> {
     pub fn emit(&mut self, input: I) -> Result<(), tilo_actions::ActionBindingError> {
         if self.available {
             let invocation = self.binding.invoke(input)?;
-            self.pending.emit(invocation);
+            let _ = self.pending.emit(invocation);
         }
         Ok(())
     }
@@ -1396,14 +1397,17 @@ pub trait Widget {
         std::any::type_name::<Self>()
     }
 
-    /// Structural chrome can explicitly leave an inherited document callback.
+    /// Structural chrome can opt out of the component binding it would
+    /// otherwise inherit from its parent.
     #[doc(hidden)]
-    fn resets_callback_binding(&self) -> bool {
+    fn resets_binding_inheritance(&self) -> bool {
         false
     }
-    /// Drawn live content whose input is suspended by a framework surface.
+    /// Drawn live content whose input and bound dispatch a framework surface
+    /// suspends: it stays visible and keeps its state, but takes no events and
+    /// opens no records.
     #[doc(hidden)]
-    fn inactive_callback_boundary(&self) -> Option<NodeId> {
+    fn inactive_bound_dispatch_boundary(&self) -> Option<NodeId> {
         None
     }
 
@@ -2338,20 +2342,6 @@ pub trait Widget {
     /// Whether `sync` still needs to run on idle frames without input or
     /// collab events — e.g. waiting out a document-adoption grace window.
     fn needs_idle_sync(&self) -> bool {
-        false
-    }
-
-    /// Apply an action another app in this room published, if this app owns
-    /// the document — lets an app address a document it doesn't hold by
-    /// saying what should happen instead of writing bytes directly, keeping
-    /// each document to one writer. An unrecognised `type_id` is silently
-    /// declined, not an error.
-    fn apply_room_action(
-        &mut self,
-        _doc: &mut crate::widget::Edits<'_>,
-        _type_id: &str,
-        _payload: &[u8],
-    ) -> bool {
         false
     }
 
@@ -3307,7 +3297,6 @@ pub use app_widget::{
     AppCommand, AppHostIntent, AppWidget, DeviceDisplayMoveReply, DocumentOpenCapability,
     DocumentOpenOutcome, DocumentOpenReply, HostShellAllow, IconDescriptor, WindowPublication,
 };
-pub mod command_palette;
 pub mod input_hint;
 pub mod shortcut_recorder;
 pub use input_hint::{InputDeviceGlyph, InputHint, InputHintProps, LegendConventions};
@@ -3537,8 +3526,11 @@ pub use virtual_list::{
     RowSelection, VecListModel, VirtualList, VirtualListProps,
 };
 mod activation;
+pub(crate) mod control_verb;
 mod dismissal;
 pub(crate) mod view_choice;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use activation::NATIVE_INVOKE;
 pub(crate) use activation::take_presses;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
 pub mod media_card;

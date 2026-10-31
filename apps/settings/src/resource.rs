@@ -86,7 +86,8 @@ pub fn parse_settings_uri(uri: &str) -> Result<SettingsEffect, String> {
         }
         let mut arguments = serde_json::Map::new();
         arguments.insert("model".to_owned(), serde_json::Value::from(id));
-        return SettingsEffect::decode("show-local-model", &arguments);
+        return SettingsEffect::decode("show-local-model", &arguments)
+            .map_err(|error| error.to_string());
     }
     // Pane links only select a view. A fragment naming a setting on the
     // pane (`settings://keyboard#keyboard.layout`) shows that setting; any

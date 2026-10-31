@@ -91,7 +91,6 @@ async fn activation_failure_fences_original_sessions_and_retry(operation: &'stat
         let (state_tx, state_rx) = mpsc::channel(32);
         runtime.add_subscriber(Subscriber {
             device_public_key: peer.device_public_key,
-            role: peer.role,
             tx,
             disconnect,
         });
@@ -117,7 +116,6 @@ async fn activation_failure_fences_original_sessions_and_retry(operation: &'stat
         &workspace,
         crate::transport::decode(&room_half[4..]).unwrap(),
         None,
-        crate::auth::PeerRole::Device,
         metrics.clone(),
     )
     .await
@@ -135,7 +133,6 @@ async fn activation_failure_fences_original_sessions_and_retry(operation: &'stat
         &workspace,
         crate::transport::decode(&raw[4..]).unwrap(),
         None,
-        crate::auth::PeerRole::Device,
         metrics.clone(),
     )
     .await
@@ -161,7 +158,6 @@ async fn activation_failure_fences_original_sessions_and_retry(operation: &'stat
         let mut runtime = workspace.lock().await;
         runtime.add_subscriber(Subscriber {
             device_public_key: peer.device_public_key,
-            role: peer.role,
             tx: new_tx.clone(),
             disconnect: new_disconnect,
         });
@@ -187,7 +183,6 @@ async fn activation_failure_fences_original_sessions_and_retry(operation: &'stat
         &workspace,
         crate::transport::decode(&raw[4..]).unwrap(),
         None,
-        crate::auth::PeerRole::Device,
         metrics,
     )
     .await
@@ -282,7 +277,6 @@ async fn selected_shell_activation_publishes_complete_ordered_pair_and_suppresse
     let (state_tx, mut state_rx) = mpsc::channel(32);
     runtime.add_subscriber(Subscriber {
         device_public_key: receiver.device_public_key,
-        role: receiver.role,
         tx,
         disconnect,
     });
@@ -303,7 +297,6 @@ async fn selected_shell_activation_publishes_complete_ordered_pair_and_suppresse
     let (slow_state, mut slow_frames) = mpsc::channel(1);
     runtime.add_subscriber(Subscriber {
         device_public_key: slow.device_public_key,
-        role: slow.role,
         tx: slow_tx,
         disconnect: slow_disconnect,
     });
@@ -332,7 +325,6 @@ async fn selected_shell_activation_publishes_complete_ordered_pair_and_suppresse
                 &workspace,
                 crate::transport::decode(&raw[4..]).unwrap(),
                 None,
-                crate::auth::PeerRole::Device,
                 metrics.clone(),
             )
             .await
@@ -370,7 +362,6 @@ async fn selected_shell_activation_publishes_complete_ordered_pair_and_suppresse
             &workspace,
             crate::transport::decode(&raw[4..]).unwrap(),
             None,
-            crate::auth::PeerRole::Device,
             metrics.clone(),
         )
         .await
@@ -412,15 +403,9 @@ async fn shared_retained_metrics_count_only_newly_written_payload_bytes() {
     };
     let expected = crate::transport::encode(&envelope).unwrap().len() as u64;
     for _ in 0..2 {
-        enqueue_state(
-            &workspace,
-            envelope.clone(),
-            None,
-            crate::auth::PeerRole::Device,
-            metrics.clone(),
-        )
-        .await
-        .unwrap();
+        enqueue_state(&workspace, envelope.clone(), None, metrics.clone())
+            .await
+            .unwrap();
     }
     let owner = crate::persistence::handle(&workspace).await;
     crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
@@ -1831,7 +1816,6 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
     ] {
         wr.add_subscriber(Subscriber {
             device_public_key: peer.device_public_key,
-            role: peer.role,
             tx: tx.clone(),
             disconnect: session_disconnect.clone(),
         });
@@ -1906,7 +1890,6 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
                 let (replacement, _rx) = mpsc::channel(2);
                 runtime.add_subscriber(Subscriber {
                     device_public_key: device,
-                    role: crate::auth::PeerRole::Device,
                     tx: replacement,
                     disconnect: replacement_disconnect,
                 });
@@ -1957,7 +1940,6 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
     ] {
         wr.add_subscriber(Subscriber {
             device_public_key: peer.device_public_key,
-            role: peer.role,
             tx: tx.clone(),
             disconnect: session_disconnect.clone(),
         });
@@ -2128,13 +2110,11 @@ async fn replacement_action_capability_requires_enable_then_durable_registration
     let (broker_disconnect, _broker_disconnect_rx) = mpsc::channel(1);
     runtime.add_subscriber(Subscriber {
         device_public_key: source.device_public_key,
-        role: source.role,
         tx: source_state.clone(),
         disconnect: source_disconnect.clone(),
     });
     runtime.add_subscriber(Subscriber {
         device_public_key: broker.device_public_key,
-        role: broker.role,
         tx: old_broker_state.clone(),
         disconnect: broker_disconnect.clone(),
     });
@@ -2191,7 +2171,6 @@ async fn replacement_action_capability_requires_enable_then_durable_registration
 
     runtime.lock().await.add_subscriber(Subscriber {
         device_public_key: broker.device_public_key,
-        role: broker.role,
         tx: replacement_state.clone(),
         disconnect: broker_disconnect.clone(),
     });
@@ -2336,7 +2315,6 @@ async fn bounded_private_queue_for_room_namespace() {
     ] {
         wr.add_subscriber(Subscriber {
             device_public_key: peer.device_public_key,
-            role: peer.role,
             tx: tx.clone(),
             disconnect: session_disconnect.clone(),
         });
@@ -2427,7 +2405,6 @@ async fn bounded_private_queue_for_room_namespace() {
     // silently withdraw a separately negotiated private capability.
     wr.lock().await.add_subscriber(Subscriber {
         device_public_key: b.device_public_key,
-        role: b.role,
         tx: btx.clone(),
         disconnect: recipient_disconnect.clone(),
     });
@@ -2527,30 +2504,6 @@ async fn bounded_private_queue_for_room_namespace() {
         }))
     ));
 
-    // Host certificates retain their PeerRelay role; no facade exception.
-    let mut relay_peer = a.clone();
-    relay_peer.cert.capabilities = DeviceCapabilities::host();
-    sign_device_cert(&mut relay_peer.cert, &root).unwrap();
-    relay_peer = crate::auth::accept_hello(
-        &crate::auth::Hello::new(relay_peer.cert.clone(), [7; 32]),
-        &user.public_key,
-        &crate::policy::TrustPolicy::AllowMatchingUser,
-        &RevocationList::new(),
-        unix_now_ns(),
-    )
-    .unwrap();
-    crate::auth::verify_hello_ack2(
-        &crate::auth::build_hello_ack2(&a_key, &[6; 32]),
-        &relay_peer.device_public_key,
-        &[6; 32],
-    )
-    .unwrap();
-    assert_eq!(relay_peer.role, crate::auth::PeerRole::PeerRelay);
-    assert_eq!(
-        route_private(&action, &relay_peer, &session).await.unwrap(),
-        Some(UnavailableReason::NotAuthorised)
-    );
-
     // Removal after dispatch but before recipient wire delivery fails closed.
     wr.lock()
         .await
@@ -2586,7 +2539,6 @@ async fn bounded_private_queue_for_room_namespace() {
     let (replacement, _rx) = mpsc::channel(2);
     wr.lock().await.add_subscriber(Subscriber {
         device_public_key: b.device_public_key,
-        role: b.role,
         tx: replacement.clone(),
         disconnect: recipient_disconnect.clone(),
     });
@@ -2629,7 +2581,6 @@ async fn bounded_private_queue_for_room_namespace() {
     let (new_disconnect, mut new_disconnect_rx) = mpsc::channel(1);
     wr.lock().await.add_subscriber(Subscriber {
         device_public_key: a.device_public_key,
-        role: a.role,
         tx: new_source.clone(),
         disconnect: new_disconnect,
     });
@@ -2693,7 +2644,6 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
     let (bdis, _bdis_rx) = mpsc::channel(1);
     wr.add_subscriber(Subscriber {
         device_public_key: browser.device_public_key,
-        role: browser.role,
         tx: btx.clone(),
         disconnect: bdis.clone(),
     });
@@ -2712,7 +2662,7 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
         signature: [0; 64],
     };
     let env = checkpoint_at(1);
-    wr.fanout_delta(&native.device_public_key, native.role, &env, &raw, 1)
+    wr.fanout_delta(&native.device_public_key, &env, &raw, 1)
         .unwrap();
     brx.try_recv().unwrap();
     assert!(!wr.needs_checkpoint(&browser.device_public_key, &[1; 32]));
@@ -2771,13 +2721,13 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
     let env2 = checkpoint_at(2);
     wr.lock()
         .await
-        .fanout_delta(&native.device_public_key, native.role, &env2, &raw, 2)
+        .fanout_delta(&native.device_public_key, &env2, &raw, 2)
         .unwrap();
     assert!(brx.try_recv().is_ok());
     let env3 = checkpoint_at(3);
     wr.lock()
         .await
-        .fanout_delta(&native.device_public_key, native.role, &env3, &raw, 3)
+        .fanout_delta(&native.device_public_key, &env3, &raw, 3)
         .unwrap();
     assert!(brx.try_recv().is_err(), "satisfied by one checkpoint");
 
@@ -2785,7 +2735,6 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
     let (native_disconnect, _native_disconnect_rx) = mpsc::channel(1);
     wr.lock().await.add_subscriber(Subscriber {
         device_public_key: native.device_public_key,
-        role: native.role,
         tx: native_tx,
         disconnect: native_disconnect,
     });

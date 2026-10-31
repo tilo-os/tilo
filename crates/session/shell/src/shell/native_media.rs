@@ -14,7 +14,7 @@
 //! (`Roster::cameras`, `Roster::screens`); the app says which of those
 //! pictures it shows and at what size ([`Command::Show`]) and collects them
 //! ([`Command::Pictures`]).
-use super::collab_broker_capnp::{LocalSessionLifecycle, LocalSessionPermit};
+use super::collab_app_broker::{LocalSessionLifecycle, LocalSessionPermit};
 use crate::portal::capture_broker::BorrowedCaptureHandle;
 use crate::portal::{
     CaptureBroker, CaptureKind, CaptureLeaseId, CaptureSessionBinding, GrantStoreHandle,

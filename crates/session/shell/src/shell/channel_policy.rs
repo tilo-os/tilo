@@ -56,15 +56,7 @@ pub struct WorkspaceChannelDirectory {
     own_devices: OwnDevices,
     authenticated_changes: AuthenticatedChanges,
     governors: Governors,
-    hosted: Option<HostedChannelKeys>,
 }
-
-/// A channel's content keys from the room host this device runs, for a room
-/// that host takes part in; `None` for any other room. See
-/// [`ChannelDirectory::hosted_channel_keys`]. Its answer waits on that host,
-/// so the channel service asks it with no lock of its own held
-/// ([`ChannelDirectory::hosted_keys`]).
-pub type HostedChannelKeys = tilo_action_broker::channel_encryption::HostedKeys;
 
 /// The device keys of this device and of `room`'s governor, as the room's
 /// admitted document names them: the governor takes part in every channel
@@ -79,17 +71,7 @@ impl WorkspaceChannelDirectory {
             own_devices,
             authenticated_changes: Box::new(|_| None),
             governors: Box::new(|_| None),
-            hosted: None,
         }
-    }
-
-    /// The directory, taking the keys of the rooms this device's own room
-    /// host takes part in from that host, whose leaf in their groups is this
-    /// device's own.
-    #[must_use]
-    pub fn with_hosted_channel_keys(mut self, hosted: HostedChannelKeys) -> Self {
-        self.hosted = Some(hosted);
-        self
     }
 
     /// The directory, reading who governs each room from `governors`.
@@ -168,20 +150,6 @@ pub fn fleet_devices(
 }
 
 impl ChannelDirectory for WorkspaceChannelDirectory {
-    fn hosted_channel_keys(
-        &self,
-        room: RoomId,
-        channel: ChannelId,
-        route: Option<&ChannelRoute>,
-        create: bool,
-    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
-        (self.hosted.as_ref()?)(room, channel, route, create)
-    }
-
-    fn hosted_keys(&self) -> Option<tilo_action_broker::channel_encryption::HostedKeys> {
-        self.hosted.clone()
-    }
-
     fn governor_of(&self, room: RoomId) -> Option<Ed25519PublicKey> {
         (self.governors)(room).map(|(_, governor)| Ed25519PublicKey::from_bytes(governor))
     }

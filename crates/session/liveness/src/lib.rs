@@ -120,7 +120,9 @@ const DUMP_WAIT: Duration = Duration::from_secs(2);
 /// for its backtrace, the wait for any thread dump in progress included:
 /// well inside half the [`DEFAULT_BUDGET`], so the audit's own hold on the
 /// call never reads as a stalled main loop. A held thread answers within
-/// microseconds when it answers at all.
+/// microseconds when it answers at all, and this is only the ceiling: the
+/// hold is the capture of the return addresses, and naming them happens when
+/// the record is read, off the main thread.
 const HELD_CAPTURE_WAIT: Duration = Duration::from_millis(100);
 
 /// Where the liveness socket of the control socket at `control` is bound.
@@ -980,13 +982,18 @@ fn capture_thread(tid: i32) -> Option<String> {
     ask.frames(tid)
 }
 
-/// The backtrace of thread `tid` of this process while a seccomp listener
-/// holds its system call, or why there is none. Bounded by
-/// [`HELD_CAPTURE_WAIT`] in all: the caller holds the call, and a thread
-/// dump that started meanwhile (the liveness stall report, which leaves a
-/// thread in a seccomp wait alone) would otherwise keep it held for that
-/// dump's whole wait and then this capture's.
-pub(crate) fn capture_held_thread(tid: i32) -> Result<String, String> {
+/// The return addresses of thread `tid` of this process, innermost first,
+/// while a seccomp listener holds its system call, or why there is none.
+/// Bounded by [`HELD_CAPTURE_WAIT`] in all: the caller holds the call, and a
+/// thread dump that started meanwhile (the liveness stall report, which
+/// leaves a thread in a seccomp wait alone) would otherwise keep it held for
+/// that dump's whole wait and then this capture's.
+///
+/// Addresses, not names: naming them reads the executable's whole symbol
+/// table, tens of milliseconds in a large debug build, and every one of them
+/// is time the held call spends on the main thread. The reader names them
+/// ([`symtab::render_all`]).
+pub(crate) fn capture_held_thread(tid: i32) -> Result<Vec<usize>, String> {
     let deadline = Instant::now()
         .checked_add(HELD_CAPTURE_WAIT)
         .unwrap_or_else(Instant::now);
@@ -1000,8 +1007,8 @@ pub(crate) fn capture_held_thread(tid: i32) -> Result<String, String> {
     if !signal_capture(&ask, tid) {
         return Err("no backtrace: the main thread could not be signalled".into());
     }
-    ask.wait(&[tid], deadline);
-    ask.frames(tid).ok_or_else(|| {
+    ask.wait_yielding(&[tid], deadline);
+    ask.ips(tid).ok_or_else(|| {
         format!(
             "no backtrace: the main thread did not answer the capture signal within {} ms",
             HELD_CAPTURE_WAIT.as_millis()

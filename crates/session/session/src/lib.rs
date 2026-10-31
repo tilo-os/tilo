@@ -35,17 +35,20 @@ mod controls;
 mod desk;
 mod desk_layout;
 pub mod desktop_services;
+mod dictation;
 mod display_settings;
 pub mod displays;
 mod env;
 mod i18n;
 pub mod identity;
 mod keys;
+mod launches;
 mod lists;
 pub mod mount;
 pub mod notices;
 mod notifications;
 mod panels;
+mod plane;
 pub mod portal_link;
 mod questions;
 pub mod run;
@@ -94,6 +97,7 @@ pub use controls::{
 };
 pub use env::SessionEnvironment;
 pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS};
+pub use launches::Launches;
 pub use lists::{AppLists, Lists};
 pub use mount::vpn::KillSwitch;
 pub use run::{Backend, Reach};
@@ -165,6 +169,11 @@ pub struct Options {
     /// The apps this session starts: what the desktop asks for, by name, and
     /// what a search row or a file opens.
     pub launch: Option<Rc<mount::apps::Apps>>,
+    /// The apps this session started, which its broker admits a connection
+    /// for: the app, room and process it launched itself. The apps it starts
+    /// record their launch here; a session whose apps run in its own process
+    /// (a test) records one itself.
+    pub launches: std::sync::Arc<Launches>,
     /// Setup to run over everything before the desktop is used: the first
     /// use of this device, or the recovery of its identity.
     pub setup: Option<OnboardingView>,
@@ -227,6 +236,34 @@ pub struct Options {
     /// machine with the helper: a profile set to connect and not connected
     /// blocks traffic while its switch is on. Without one, nothing does.
     pub kill_switch: Option<KillSwitch>,
+    /// Whether the apps this session runs read and invoke what its services
+    /// publish, and on which socket. Off, the apps it starts reach no
+    /// service at all.
+    pub action_plane: ActionPlane,
+}
+
+/// Where a session serves its apps the resources its services publish.
+#[derive(Clone, Debug, Default)]
+pub enum ActionPlane {
+    /// Nowhere: the apps reach no service.
+    #[default]
+    Off,
+    /// On the socket the launcher hands an app for its session
+    /// (`launcher::services::collab_socket`), which is also what tells the
+    /// launcher to bind one.
+    Launcher,
+    /// On `path`: a session started for a test, which leaves the machine's
+    /// own socket alone.
+    At(std::path::PathBuf),
+}
+
+/// The plane while the session serves it: what the apps ask of the services,
+/// and the broker that answers them on the socket.
+struct Plane {
+    link: std::sync::Arc<plane::Link>,
+    /// Held so the broker's thread ends and its socket is unlinked with the
+    /// session.
+    _broker: tilo_action_broker::collab_broker::BrokerHandle,
 }
 
 /// Where quick settings reads the device from.
@@ -241,6 +278,10 @@ pub enum QuickSettings {
 
 /// The settings app, which quick settings opens.
 const SETTINGS_APP: &str = "so.tilo.settings";
+
+/// Where Settings installs the local speech models dictation needs: the
+/// page of the models the person's devices run themselves.
+const SPEECH_MODELS_ANCHOR: &str = "settings.section:agent_models";
 
 /// The default for [`Options::session_actions`]: a session that owns no
 /// machine (a test, a screenshot, a session in a window) carries out
@@ -315,6 +356,8 @@ impl Default for Options {
             collab: true,
             fabric: None,
             kill_switch: None,
+            action_plane: ActionPlane::default(),
+            launches: std::sync::Arc::default(),
         }
     }
 }
@@ -406,6 +449,9 @@ struct Shared {
     /// The overview's pictures and the clock they fly on, which its panel
     /// in the chrome draws with.
     overview: mount::overview::Overview,
+    /// Dictation: the speech the person allows once per dictation, and the
+    /// sheet they answer on.
+    dictation: dictation::Dictation,
 }
 
 /// The app a window shows, by its id.
@@ -576,6 +622,36 @@ impl Shared {
     fn close_quick_settings(&self) {
         if let Some(panel) = &self.quick_settings {
             panel.open.set(false);
+        }
+    }
+
+    /// Take the person where the speech models are set up when the dictation
+    /// card's "Set up" was pressed: Settings at its models page, through the
+    /// action path search rows use; a plain launch opens Settings too when no
+    /// action host runs an app's actions.
+    fn follow_dictation(&self) {
+        if !self.dictation.take_model_setup() {
+            return;
+        }
+        let room = self.active_room();
+        let target =
+            tilo_desktop_search::Target::Invoke(Box::new(tilo_desktop_search::InvokeTarget::open(
+                SETTINGS_APP,
+                room.clone(),
+                SPEECH_MODELS_ANCHOR,
+            )));
+        let opened = self.search.perform_checked(&room, target, &mut |own| {
+            self.doors.invoke(&own.address, &own.arguments).map(drop)
+        });
+        if opened.is_ok() {
+            return;
+        }
+        let launch = Command::Launch {
+            generation: GENERATION.into(),
+            app: SETTINGS_APP.into(),
+        };
+        if let Err(error) = self.handle.dispatch(&launch, GENERATION) {
+            tracing::warn!(%error, "open settings for speech models");
         }
     }
 
@@ -940,6 +1016,9 @@ impl Shared {
                 .commands
                 .borrow_mut()
                 .push(SessionCommand::NextInputSource),
+            ShortcutAction::DictationToggle
+            | ShortcutAction::DictationFinish
+            | ShortcutAction::DictationCancel => self.dictation.shortcut(action),
             other => tracing::debug!(?other, "shortcut the session has no part in yet"),
         }
     }
@@ -1125,6 +1204,9 @@ pub struct Session {
     portal: Option<portal_link::SessionLink>,
     /// The person's device fabric, while this session runs on one.
     fabric: Option<tilo_device_fabric::link::SharedLink>,
+    /// The plane the apps it runs read and invoke its services on, while it
+    /// serves one.
+    action_plane: Option<Plane>,
     /// The desktop services the portal and the notifications daemon run
     /// in, fed what the session knows of itself.
     desktop: Option<Rc<desktop_services::DesktopServices>>,
@@ -1371,9 +1453,19 @@ impl Session {
             options.scale,
         );
 
+        // What the broker admits a connection by, and what an app started
+        // from here on is written into.
+        if let Some(apps) = &options.launch {
+            apps.lend_launches(std::sync::Arc::clone(&options.launches));
+        }
+        let action_plane = start_action_plane(&options)?;
         let mut started = std::mem::take(&mut options.services);
         started.push(Box::new(desk_service));
         let services = mount_services(&mut doors, started);
+        // Dictation joins the services: its recognizer, microphone and
+        // consent are only the session's, and the sheet asks about them.
+        let dictation =
+            dictation::Dictation::mount(&mut compositor, &mut doors, &services, &options);
 
         let search = Rc::new(SessionSearch::new(options.search, options.apps));
         let asker = questions::Asker::new(
@@ -1434,6 +1526,7 @@ impl Session {
             sync,
             clipboard: mount::clipboard::Clipboard::new(),
             overview,
+            dictation,
         };
         shared.start_search();
         // What the portal brings comes from any thread, and wakes the loop
@@ -1470,6 +1563,7 @@ impl Session {
             night_light: (options.config.night_light, options.config.kept),
             portal: options.portal,
             fabric: options.fabric,
+            action_plane,
             screen_locked: false,
             desktop: options.desktop,
             running: Vec::new(),
@@ -2221,7 +2315,24 @@ impl Session {
         self.surfaces.poll();
         self.surfaces.serve(&mut self.shared.doors);
         self.follow_displays()?;
-        self.shared.services.borrow_mut().poll();
+        {
+            let mut services = self.shared.services.borrow_mut();
+            services.poll();
+            if let Some(plane) = &self.action_plane {
+                plane.link.serve(&mut services);
+            }
+        }
+        // Dictation writes into the field the person is typing in, so it runs
+        // before the frame rather than with the sheets.
+        let locked = self.compositor.locked();
+        self.shared.dictation.step(
+            &mut self.compositor,
+            &self.shared.handle,
+            &self.shared.clipboard,
+            locked,
+            Instant::now(),
+        );
+        self.shared.follow_dictation();
         let compositor = &mut self.compositor;
         self.shared
             .notifications
@@ -2488,6 +2599,32 @@ fn mount_controls(
         portal,
     )));
     (commands, invocations)
+}
+
+/// The plane the apps read and invoke this session's services on, when it
+/// serves one: the socket the launcher hands its apps, and the link the loop
+/// answers their calls through.
+fn start_action_plane(options: &Options) -> Result<Option<Plane>, Error> {
+    let path = match &options.action_plane {
+        ActionPlane::Off => return Ok(None),
+        ActionPlane::Launcher => {
+            // The launcher hands an app the socket under the services root,
+            // which only its owner may reach.
+            launcher::services::ensure_services_root()?;
+            launcher::services::collab_socket()
+        }
+        ActionPlane::At(path) => path.clone(),
+    };
+    let link = plane::Link::new(options.wake.handle());
+    let broker = plane::serve(
+        path,
+        std::sync::Arc::clone(&link),
+        std::sync::Arc::clone(&options.launches),
+    )?;
+    Ok(Some(Plane {
+        link,
+        _broker: broker,
+    }))
 }
 
 /// The services, published on the door.

@@ -5,10 +5,9 @@ use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::{sync::Arc, time::SystemTime};
-use tilo_delivery_protocol::descriptor::GenerationExpectation;
-use tilo_joined_room::testing::{APP, ROOM, raw_fixture, raw_fixture_at};
-use tilo_joined_room::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
-use tilo_peer_state::{TransportOrigin, join};
+use tilo_peer_state::TransportOrigin;
+use tilo_peer_state::owner::testing::{APP, ROOM, raw_fixture, raw_fixture_at};
+use tilo_peer_state::owner::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 
 struct Fixture {
     enrollment: VerifiedNativeEnrollment,
@@ -19,7 +18,7 @@ struct Fixture {
 /// The state tree the owner publishes into.
 pub(crate) fn tree_of(owner: &NativeWorkspaceOwner) -> WorkspaceTreeHandle {
     let host: Arc<dyn std::any::Any + Send + Sync> =
-        tilo_joined_room::testing::file_host(owner).expect("the owner keeps its own file");
+        tilo_peer_state::owner::testing::file_host(owner).expect("the owner keeps its own file");
     host.downcast::<TreeHost>()
         .expect("a desktop owner publishes into its state tree")
         .tree
@@ -49,7 +48,7 @@ pub(super) fn prepare_enrollment(
 fn fixture(owner: &NativeWorkspaceOwner) -> Fixture {
     let (intent, bootstrap, messages, governor, now) = raw_fixture();
     let pending = prepare_enrollment(owner, &intent, now).unwrap();
-    let enrollment = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+    let enrollment = tilo_peer_state::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     Fixture {
         enrollment,
         messages,
@@ -82,6 +81,46 @@ fn publications_and_encodes<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
     )
 }
 
+/// The state dump's view of what is held: one row per workspace whose room's
+/// replica is installed, by the workspace's id and its room.
+#[test]
+fn held_workspaces_names_each_held_workspace_and_its_room() {
+    let (_directory, owner, room, _now, _key) = test_enrolled_owner();
+    let tree = tree_of(&owner);
+    let held = held_workspaces(&tree.read());
+    let rows = held.as_array().expect("held workspaces are a list");
+    assert_eq!(rows.len(), 1, "the enrolled fixture holds one room: {held}");
+    let workspace = rows[0]["workspace"].as_u64().expect("a workspace id");
+    assert_eq!(rows[0]["room"], serde_json::json!(room.to_string()));
+    let stored_room = tree
+        .read()
+        .desktop
+        .workspaces
+        .iter()
+        .find(|stored| stored.id.raw() == workspace)
+        .expect("the held workspace is one of the desktop's")
+        .room();
+    assert_eq!(stored_room, room, "it is the workspace for that room");
+}
+
+/// A workspace whose enrollment is still in flight is not held yet: the dump
+/// names it once the record has its replica installed.
+#[test]
+fn held_workspaces_leaves_out_a_workspace_whose_enrollment_is_in_flight() {
+    let (_directory, owner, room, commit) = test_owner_before_enrollment();
+    let tree = tree_of(&owner);
+    assert_eq!(
+        held_workspaces(&tree.read()),
+        serde_json::json!([]),
+        "an enrollment in flight is not a held workspace"
+    );
+    commit();
+    let held = held_workspaces(&tree.read());
+    let rows = held.as_array().expect("held workspaces are a list");
+    assert_eq!(rows.len(), 1, "the installed room is held: {held}");
+    assert_eq!(rows[0]["room"], serde_json::json!(room.to_string()));
+}
+
 #[test]
 fn native_owner_publication_writes_only_its_own_file_and_keeps_the_live_document() {
     let directory = tempfile::tempdir().unwrap();
@@ -99,14 +138,14 @@ fn native_owner_publication_writes_only_its_own_file_and_keeps_the_live_document
     let pending = pending.unwrap();
     assert!(publications > 0, "a pending enrollment is published");
     assert_eq!(encodes, 0, "a publication does not encode the state file");
-    let enrollment = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+    let enrollment = tilo_peer_state::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     let (installed, publications, encodes) =
         publications_and_encodes(|| owner.install(&enrollment, now));
     installed.unwrap();
     assert!(publications > 0, "an install is published");
     assert_eq!(encodes, 0, "a publication does not encode the state file");
     persist::wait_for_saves();
-    let stored = tilo_joined_room::read_file(&owner_file(&path)).unwrap();
+    let stored = tilo_peer_state::owner::read_file(&owner_file(&path)).unwrap();
     assert_eq!(stored.revision(), owner.revision());
     assert!(stored.holds(RoomId::parse(ROOM).unwrap()));
     let tree = tree.read();
@@ -146,7 +185,7 @@ fn native_owner_state_file_is_the_pretty_tree_without_the_record() {
     );
     let file: serde_json::Value = serde_json::from_slice(&oracle).unwrap();
     assert!(file.get("native_authority").is_none());
-    tilo_joined_room::preflight_storage(&tree.native_authority).unwrap();
+    tilo_peer_state::owner::preflight_storage(&tree.native_authority).unwrap();
 }
 
 #[test]
@@ -231,7 +270,7 @@ fn a_lapsed_proof_is_dropped_and_only_its_own_attempt() {
     let owner = open(tree.clone()).unwrap();
     let (intent, _, _, _, now) = raw_fixture();
     let id = prepare_enrollment(&owner, &intent, now).unwrap();
-    let other = tilo_joined_room::testing::pending_id(id.room(), id.generation() + 1);
+    let other = tilo_peer_state::owner::testing::pending_id(id.room(), id.generation() + 1);
     assert!(owner.drop_lapsed_enrollment(id.room(), &other).is_err());
     assert!(owner.pending_enrollment(id.room()).unwrap().is_some());
     assert!(owner.drop_lapsed_enrollment(id.room(), &id).unwrap());
@@ -273,7 +312,7 @@ fn native_pending_complete_survives_restart_and_cancellation_preserves_exact_pro
     let cancelled = owner.pending_enrollment(id.room()).unwrap().unwrap();
     assert_eq!(cancelled.intent_bytes(), durable.intent_bytes());
     assert_eq!(cancelled.status(), PendingEnrollmentStatus::Cancelled);
-    let late = tilo_joined_room::testing::finalize(intent, id.clone(), bootstrap).unwrap();
+    let late = tilo_peer_state::owner::testing::finalize(intent, id.clone(), bootstrap).unwrap();
     assert!(owner.install(&late, now).is_err());
     assert!(owner.with_current(id.room(), |_| Ok(())).is_err());
     assert!(
@@ -454,184 +493,6 @@ fn native_v1_hidden_records_and_future_files_are_preserved_and_refused() {
     );
 }
 
-fn bootstrap_candidate(
-    owner: &NativeWorkspaceOwner,
-    generation: u64,
-    now: SystemTime,
-) -> join::TransportHint {
-    use tilo_delivery_protocol::descriptor;
-    owner
-        .with_current(RoomId::parse(ROOM).unwrap(), |view| {
-            let authority = descriptor::DescriptorAuthority {
-                peer: view,
-                pinned_governor: view.governor(),
-                pinned_host: view.host().unwrap(),
-                workspace: view.workspace(),
-                generation: descriptor::GenerationExpectation::FirstAccepted {
-                    minimum_generation: 1,
-                },
-                now,
-            };
-            let ns = tilo_joined_room::testing::ns(now)?;
-            descriptor::issue_transport_hint(
-                &descriptor::DescriptorSettings {
-                    origin: "https://native.example".into(),
-                    issued_at_ns: ns,
-                    expires_at_ns: ns.checked_add(120_000_000_000).unwrap(),
-                    generation,
-                },
-                &authority,
-                &SigningKey::from_bytes(&[69; 32]),
-            )
-            .map_err(|e| e.to_string())
-        })
-        .unwrap()
-}
-fn bootstrap_response(
-    pending: &NativeBootstrap,
-    hint: &join::TransportHint,
-    now: SystemTime,
-) -> tilo_delivery_protocol::bootstrap::BootstrapResponse {
-    use ed25519_dalek::Signer;
-    use tilo_delivery_protocol::{bootstrap, descriptor};
-    let metadata = descriptor::inspect_persisted_hint(hint, &hint.host).unwrap();
-    let mut response = bootstrap::BootstrapResponse {
-        version: 1,
-        request: pending.request().clone(),
-        host_certificate: postcard::to_stdvec(&hint.host).unwrap(),
-        hint: postcard::to_stdvec(hint).unwrap(),
-        generation: metadata.generation,
-        descriptor_digest: metadata.descriptor_digest,
-        issued_at_ns: tilo_joined_room::testing::ns(now).unwrap(),
-        expires_at_ns: tilo_joined_room::testing::ns(now)
-            .unwrap()
-            .checked_add(10_000_000_000)
-            .unwrap(),
-        signature: [[0; 32]; 2],
-    };
-    response.signature = bootstrap::split_signature(
-        SigningKey::from_bytes(&[61; 32])
-            .sign(&response.signing_digest().unwrap())
-            .to_bytes(),
-    );
-    response
-}
-#[test]
-fn native_bootstrap_floor_requires_exact_governor_ack_and_survives_stale_save_and_reopen() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("state.json");
-    let tree = tree_at(&path);
-    let owner = open(tree.clone()).unwrap();
-    let fixture = fixture(&owner);
-    owner.install(&fixture.enrollment, fixture.now).unwrap();
-    let room = RoomId::parse(ROOM).unwrap();
-    let stale = tree.read().clone();
-    let hint = bootstrap_candidate(&owner, 2, fixture.now);
-    let key = SigningKey::from_bytes(&[63; 32]);
-    let pending = owner
-        .begin_bootstrap(room, &hint, &key, fixture.now)
-        .unwrap();
-    let mut bad = bootstrap_response(&pending, &hint, fixture.now);
-    bad.request.nonce[0] ^= 1;
-    assert!(owner.finish_bootstrap(pending, &bad, fixture.now).is_err());
-    assert!(matches!(
-        owner
-            .with_current(room, super::NativeCommittedView::descriptor_expectation)
-            .unwrap(),
-        GenerationExpectation::FirstAccepted { .. }
-    ));
-    let pending = owner
-        .begin_bootstrap(room, &hint, &key, fixture.now)
-        .unwrap();
-    let response = bootstrap_response(&pending, &hint, fixture.now);
-    owner
-        .finish_bootstrap(pending, &response, fixture.now)
-        .unwrap();
-    persist::save_tree_to(&stale, &path).unwrap();
-    let continuity = owner.with_current(room, |v| Ok(v.continuity())).unwrap();
-    let same = owner
-        .begin_bootstrap(room, &hint, &key, fixture.now)
-        .unwrap();
-    let response = bootstrap_response(&same, &hint, fixture.now);
-    owner
-        .finish_bootstrap(same, &response, fixture.now)
-        .unwrap();
-    assert_eq!(
-        owner.with_current(room, |v| Ok(v.continuity())).unwrap(),
-        continuity
-    );
-    let rollback = bootstrap_candidate(&owner, 1, fixture.now);
-    assert!(
-        owner
-            .begin_bootstrap(room, &rollback, &key, fixture.now)
-            .is_err()
-    );
-    let equivocation =
-        bootstrap_candidate(&owner, 2, fixture.now + std::time::Duration::from_nanos(1));
-    assert!(
-        owner
-            .begin_bootstrap(room, &equivocation, &key, fixture.now)
-            .is_err()
-    );
-    drop(stale);
-    drop(owner);
-    drop(tree);
-    let mut loaded = persist::load_tree_from(&path).unwrap();
-    loaded.persist_path = Some(path);
-    let reopened = open(loaded.shared()).unwrap();
-    match reopened
-        .with_current(room, super::NativeCommittedView::descriptor_expectation)
-        .unwrap()
-    {
-        GenerationExpectation::Current {
-            generation,
-            descriptor_digest,
-        } => {
-            assert_eq!(generation, 2);
-            assert_eq!(descriptor_digest, response.descriptor_digest);
-        }
-        GenerationExpectation::FirstAccepted { .. } => {
-            panic!("restart erased acknowledged descriptor floor")
-        }
-    }
-    assert!(
-        reopened
-            .begin_bootstrap(room, &rollback, &key, fixture.now)
-            .is_err()
-    );
-}
-#[test]
-fn native_identity_replacement_synchronously_fences_and_rejects_pending_bootstrap() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("state.json");
-    let owner = open(tree_at(&path)).unwrap();
-    let fixture = fixture(&owner);
-    owner.install(&fixture.enrollment, fixture.now).unwrap();
-    let room = RoomId::parse(ROOM).unwrap();
-    let hint = bootstrap_candidate(&owner, 1, fixture.now);
-    let pending = owner
-        .begin_bootstrap(room, &hint, &SigningKey::from_bytes(&[63; 32]), fixture.now)
-        .unwrap();
-    let response = bootstrap_response(&pending, &hint, fixture.now);
-    let calls = Arc::new(AtomicUsize::new(0));
-    let counter = calls.clone();
-    let _subscription = owner.observe_fences(Arc::new(move |got, _| {
-        assert_eq!(got, room);
-        counter.fetch_add(1, Ordering::SeqCst);
-    }));
-    owner.invalidate_identity(room);
-    owner.invalidate_identity(room);
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(owner.with_current(room, |_| Ok(())).is_err());
-    assert!(
-        owner
-            .finish_bootstrap(pending, &response, fixture.now)
-            .is_err()
-    );
-    assert!(owner.contains_room(room));
-}
-
 #[test]
 fn native_file_writer_excludes_competing_owner_and_encoded_overflow_preserves_disk() {
     let directory = tempfile::tempdir().unwrap();
@@ -655,7 +516,7 @@ fn native_file_writer_excludes_competing_owner_and_encoded_overflow_preserves_di
 
 #[test]
 fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_device() {
-    use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
+    use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let owner = open(tree_at(&path)).unwrap();
@@ -737,6 +598,22 @@ fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_devi
     assert_eq!(record(&path), committed);
 }
 
+/// Grant `person` the room's invite governance action in `workspace`.
+pub(crate) fn grant_invite(workspace: &mut crate::shell::state::Workspace, person: &str) {
+    let node = tilo_action_policy::roles::governance_action(
+        &workspace.policy.room,
+        tilo_action_policy::roles::governance::INVITE,
+    );
+    workspace.grant(tilo_action_policy::Grant::new(
+        format!("invite:{person}"),
+        tilo_action_policy::Subject::person(person),
+        node,
+        tilo_action_policy::KindSet::of(tilo_action_policy::roles::GOVERNANCE_KIND),
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Subject::person("room-owner"),
+    ));
+}
+
 pub(crate) fn test_enrolled_owner() -> (
     tempfile::TempDir,
     NativeWorkspaceOwner,
@@ -793,20 +670,6 @@ pub(crate) fn test_owner_before_enrollment() -> (
     });
     (directory, owner, room, commit)
 }
-pub(crate) fn test_descriptor(
-    owner: &NativeWorkspaceOwner,
-    generation: u64,
-    now: SystemTime,
-) -> join::TransportHint {
-    bootstrap_candidate(owner, generation, now)
-}
-pub(crate) fn test_bootstrap_response(
-    pending: &NativeBootstrap,
-    hint: &join::TransportHint,
-    now: SystemTime,
-) -> tilo_delivery_protocol::bootstrap::BootstrapResponse {
-    bootstrap_response(pending, hint, now)
-}
 fn fresh_slot(
     path: &std::path::Path,
 ) -> (
@@ -844,7 +707,7 @@ fn native_enrollment_target_slot_publishes_new_room_only_with_actual_owner_barri
         owner.with_current(previous, |_| Ok(())).is_err(),
         "preparation must not expose the room"
     );
-    let enrolled = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+    let enrolled = tilo_peer_state::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrolled, now).unwrap();
     let room = RoomId::parse(ROOM).unwrap();
     assert_eq!(tree.read().room_of(local), Some(room));
@@ -867,7 +730,8 @@ fn native_enrollment_target_slot_reassignment_rejects_late_complete_and_keeps_pr
     let pending = owner
         .prepare_enrollment_into(&intent, Some(local), now)
         .unwrap();
-    let enrolled = tilo_joined_room::testing::finalize(intent, pending.clone(), bootstrap).unwrap();
+    let enrolled =
+        tilo_peer_state::owner::testing::finalize(intent, pending.clone(), bootstrap).unwrap();
     let replaced = RoomId::new();
     assert!(tree.write().stand_in_room(local, replaced));
     assert!(owner.install(&enrolled, now).is_err());
@@ -893,7 +757,8 @@ fn native_enrollment_target_slot_failed_barrier_preserves_previous_binding() {
     let pending = owner
         .prepare_enrollment_into(&intent, Some(local), now)
         .unwrap();
-    let enrolled = tilo_joined_room::testing::finalize(intent, pending.clone(), bootstrap).unwrap();
+    let enrolled =
+        tilo_peer_state::owner::testing::finalize(intent, pending.clone(), bootstrap).unwrap();
     let before = record(&path);
     assert!(with_failure(Checkpoint::BeforePublish, || owner.install(&enrolled, now)).is_err());
     assert_eq!(tree.read().room_of(local), Some(previous));
@@ -922,7 +787,7 @@ fn native_authenticated_bootstrap_admits_historical_signed_coverage_but_ongoing_
         .iter()
         .map(|message| postcard::to_stdvec(message).unwrap())
         .collect();
-    let complete = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+    let complete = tilo_peer_state::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&complete, now).unwrap();
     let room = RoomId::parse(ROOM).unwrap();
     // The historical governance is admitted on Complete's evidence: the
@@ -949,7 +814,7 @@ fn native_authenticated_bootstrap_admits_historical_signed_coverage_but_ongoing_
     let (intent, bootstrap, _, _, _) = raw_fixture_at(historical);
     let separate = open(tree_at(&directory.path().join("ongoing.json"))).unwrap();
     let pending = prepare_enrollment(&separate, &intent, historical).unwrap();
-    let complete = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+    let complete = tilo_peer_state::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     separate.install(&complete, now).unwrap();
     assert!(
         separate
@@ -990,31 +855,6 @@ fn native_uncertain_new_pending_proof_remains_required_without_send_receipt() {
         owner.pending_enrollment(room).is_err(),
         "fenced writer cannot hand out retry-send custody"
     );
-}
-
-#[test]
-fn native_reopen_refuses_each_partial_acknowledged_descriptor_pair() {
-    for removed in ["floor", "hint"] {
-        let (directory, owner, room, now, key) = test_enrolled_owner();
-        let hint = test_descriptor(&owner, 3, now);
-        let pending = owner.begin_bootstrap(room, &hint, &key, now).unwrap();
-        let response = test_bootstrap_response(&pending, &hint, now);
-        owner.finish_bootstrap(pending, &response, now).unwrap();
-        let path = directory.path().join("state.json");
-        drop(owner);
-        let mut raw: serde_json::Value = serde_json::from_slice(&record(&path)).unwrap();
-        raw["rooms"][ROOM][removed] = serde_json::Value::Null;
-        let bytes = serde_json::to_vec(&raw).unwrap();
-        std::fs::write(owner_file(&path), &bytes).unwrap();
-        let mut loaded = persist::load_tree_from(&path).unwrap();
-        loaded.persist_path = Some(path.clone());
-        let tree = loaded.shared();
-        assert!(
-            open(tree.clone()).is_err(),
-            "partial {removed} cannot reset an acknowledged floor or skip descriptor validation"
-        );
-        assert_eq!(record(&path), bytes);
-    }
 }
 
 #[test]
@@ -1092,7 +932,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     let id = owner
         .prepare_enrollment_into(&intent, Some(local), now)
         .unwrap();
-    let complete = tilo_joined_room::testing::finalize(intent, id, bootstrap).unwrap();
+    let complete = tilo_peer_state::owner::testing::finalize(intent, id, bootstrap).unwrap();
     let stale = tree.read().clone();
     let before = record(&path);
     std::fs::remove_file(&observed_acl).unwrap();

@@ -16,6 +16,7 @@ use serde::Deserialize;
 use tilo_action_policy::ActionKind;
 use tilo_actions::PathStep;
 use tilo_actions::surface::Surface;
+use tilo_lock::MutexRecover;
 
 use crate::claim::{ClaimedAction, UnitPath};
 use crate::receipt::{ReceiptSurface, Record, SurfaceSource};
@@ -171,7 +172,7 @@ impl ContentSurfaces {
     }
 
     fn file(&self, record: &Record<'_>, hash: &[u8; 32]) -> Option<Arc<SurfaceFile>> {
-        if let Some(file) = self.parsed.lock().ok()?.get(hash) {
+        if let Some(file) = self.parsed.lock_recover().get(hash) {
             return Some(Arc::clone(file));
         }
         let hex = hex::encode(hash);
@@ -181,7 +182,7 @@ impl ContentSurfaces {
             return None;
         }
         let file = Arc::new(SurfaceFile::parse(&bytes).ok()?);
-        self.parsed.lock().ok()?.insert(*hash, Arc::clone(&file));
+        self.parsed.lock_recover().insert(*hash, Arc::clone(&file));
         Some(file)
     }
 }

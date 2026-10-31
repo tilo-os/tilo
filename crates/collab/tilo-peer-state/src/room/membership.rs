@@ -71,6 +71,33 @@ impl std::fmt::Display for MembershipRefusal {
     }
 }
 
+/// The room document after each of `changes`, in the order the batch applies
+/// them: a batch is judged change by change, where its writer made each.
+///
+/// # Errors
+/// A change does not decode, or does not apply on the one before it.
+fn stages(at: &AutoCommit, changes: &[Vec<u8>]) -> Result<Vec<AutoCommit>, MembershipRefusal> {
+    use automerge::ReadDoc as _;
+    let mut stages = Vec::with_capacity(changes.len());
+    let mut current = at.clone();
+    for bytes in changes {
+        let change = automerge::Change::from_bytes(bytes.clone())
+            .map_err(|error| MembershipRefusal::Position(error.to_string()))?;
+        if current.get_change_by_hash(&change.hash()).is_none() {
+            let mut next = super::candidate(Some(&current), std::slice::from_ref(bytes))
+                .map_err(MembershipRefusal::Position)?;
+            if next.get_heads() == current.get_heads() {
+                return Err(MembershipRefusal::Position(
+                    "a change of the batch does not apply where its writer made it".into(),
+                ));
+            }
+            current = next;
+        }
+        stages.push(current.clone());
+    }
+    Ok(stages)
+}
+
 /// The room as `changes`' writer saw it, and with the changes on it: `before`
 /// at the dependencies the batch names outside itself.
 ///
@@ -111,6 +138,7 @@ pub fn authorize(
     room: &str,
     (person, device, foreign): (&[u8; 32], &str, bool),
     at: &AutoCommit,
+    batch: &[Vec<u8>],
     after: &AutoCommit,
     now_ns: u64,
 ) -> Result<(), MembershipRefusal> {
@@ -125,6 +153,7 @@ pub fn authorize(
     }
     let held = tilo_desktop_model::projection::room_policy_of(at, room);
     let wanted = tilo_desktop_model::projection::room_policy_of(after, room);
+    let stages = stages(at, batch)?;
     let actor = hex::encode(person);
     let bound = roles::foreign_device_bound();
     let authority = held.person_on_device(&actor, foreign, &bound);
@@ -132,33 +161,58 @@ pub fn authorize(
     let writer = (actor.as_str(), &authority, &cx);
     settings(room, at, after, &held, writer)?;
     sandbox(&before, &written, &held, writer)?;
-    let invited = redemptions(room, &held, &wanted, &before, &written, now_ns)?;
-    if !invited.is_empty() {
-        held.check_action(&authority, governance::INVITE, &cx, false)
-            .map_err(|refusal| MembershipRefusal::Refused(refusal.to_string()))?;
-    }
     let assigned = assignments(room, at, &held, &wanted, writer)?;
     let (shared, unshared) = super::share::changed(
         (at, &held, &wanted),
         (actor.as_str(), device, &authority, &cx),
     )
     .map_err(MembershipRefusal::Refused)?;
+    // Each change is judged where its writer made it: an admission where its
+    // inviter made it, a removal where its writer made it. A batch that
+    // admits someone and removes them again is both decisions, not neither.
     // What the invitations admit is the inviters', a set's grants its
     // assigner's and a share's its sharer's; the rest is the writer's.
+    let mut invited = BTreeMap::new();
     let mut replay = held.clone();
-    for (person, (role, _)) in &invited {
-        replay.members.insert(person.clone(), *role);
-    }
-    replay.grants.retain(|grant| {
-        !unshared.contains(&grant.id) && !shared.iter().any(|given| given.id == grant.id)
-    });
-    replay.grants.extend(assigned);
-    replay.grants.extend(shared);
-    let base = replay.clone();
-    for change in changes(&base, &wanted) {
-        replay
-            .apply(&actor, &authority, change, &cx, false)
-            .map_err(|refusal| MembershipRefusal::Refused(refusal.to_string()))?;
+    let mut previous_document = at.clone();
+    let mut previous = held.clone();
+    for stage in &stages {
+        let stage_policy = tilo_desktop_model::projection::room_policy_of(stage, room);
+        let admitted = redemptions(
+            room,
+            &previous,
+            &stage_policy,
+            &governance_of(Some(&previous_document)),
+            &governance_of(Some(stage)),
+            now_ns,
+        )?;
+        if !admitted.is_empty() {
+            held.check_action(&authority, governance::INVITE, &cx, false)
+                .map_err(|refusal| MembershipRefusal::Refused(refusal.to_string()))?;
+        }
+        let mut base = previous.clone();
+        for (person, (role, _)) in &admitted {
+            base.members.insert(person.clone(), *role);
+            replay.members.insert(person.clone(), *role);
+        }
+        base.grants.retain(|grant| {
+            !unshared.contains(&grant.id) && !shared.iter().any(|given| given.id == grant.id)
+        });
+        base.grants.extend(assigned.iter().cloned());
+        base.grants.extend(shared.iter().cloned());
+        replay.grants.retain(|grant| {
+            !unshared.contains(&grant.id) && !shared.iter().any(|given| given.id == grant.id)
+        });
+        replay.grants.extend(assigned.iter().cloned());
+        replay.grants.extend(shared.iter().cloned());
+        for change in changes(&base, &stage_policy) {
+            replay
+                .apply(&actor, &authority, change, &cx, false)
+                .map_err(|refusal| MembershipRefusal::Refused(refusal.to_string()))?;
+        }
+        invited.extend(admitted);
+        previous_document = stage.clone();
+        previous = stage_policy;
     }
     if replay.members != wanted.members || sorted(&replay.grants) != sorted(&wanted.grants) {
         return Err(MembershipRefusal::Mismatch);
@@ -232,17 +286,6 @@ fn redemptions(
     now_ns: u64,
 ) -> Result<BTreeMap<String, (Role, String)>, MembershipRefusal> {
     let malformed = |error: String| MembershipRefusal::Malformed(error);
-    for (invite, values) in &before.invitation_receipts {
-        let kept = written.invitation_receipts.get(invite);
-        if values
-            .iter()
-            .any(|value| !kept.is_some_and(|kept| kept.contains(value)))
-        {
-            return Err(MembershipRefusal::Refused(format!(
-                "the redemption of invitation {invite} is the room's record"
-            )));
-        }
-    }
     let mut invited = BTreeMap::new();
     for (invite, values) in &written.invitation_receipts {
         let held_values = before.invitation_receipts.get(invite);
@@ -313,6 +356,19 @@ fn redemptions(
                 )));
             }
             invited.insert(person, (role, device));
+        }
+    }
+    // A receipt the room held stays as it is, so a spent invitation stays
+    // spent, whichever change of the batch would take it back.
+    for (invite, values) in &before.invitation_receipts {
+        let kept = written.invitation_receipts.get(invite);
+        if values
+            .iter()
+            .any(|value| !kept.is_some_and(|kept| kept.contains(value)))
+        {
+            return Err(MembershipRefusal::Refused(format!(
+                "the redemption of invitation {invite} is the room's record"
+            )));
         }
     }
     Ok(invited)
@@ -592,8 +648,9 @@ fn sorted(grants: &[Grant]) -> Vec<&Grant> {
 }
 
 /// The devices the batch admits or removes: each a device of a member of
-/// the room as written, and the writer's own, one an invitation admits, a
-/// further device of someone already a member, or one they may admit.
+/// the room as written — or of one the batch admitted and removed again —
+/// and the writer's own, one an invitation admits, a further device of
+/// someone already a member, or one they may admit.
 fn identities(
     held: &RoomPolicy,
     wanted: &RoomPolicy,
@@ -616,7 +673,7 @@ fn identities(
             .map_err(|error| MembershipRefusal::Malformed(error.to_string()))?;
         tilo_user_identity::verify_device_cert(&identity.device_cert)
             .map_err(|error| MembershipRefusal::Malformed(error.to_string()))?;
-        if wanted.role_of(&person).is_none() {
+        if wanted.role_of(&person).is_none() && !invited.contains_key(&person) {
             return Err(MembershipRefusal::Refused(format!(
                 "device {device} is not of a member"
             )));
@@ -630,8 +687,7 @@ fn identities(
             && held.role_of(&person).is_some()
             && identity.admission.is_none()
             && identity.admissions.is_empty()
-            && identity.delegate.is_none()
-            && identity.workspace_delegations.is_empty();
+            && identity.delegate.is_none();
         if person != actor
             && !redeemed
             && !further

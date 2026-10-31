@@ -279,7 +279,12 @@ pub(super) async fn handle_presence(
             "presence sent before subscribing to workspace".into(),
         ));
     }
-    if peer.role == crate::auth::PeerRole::Device
+    let ws = session.workspaces.lock().await.get(&workspace_id).cloned();
+    let attached = match &ws {
+        Some(ws) => ws.lock().await.attached(&peer.device_public_key),
+        None => false,
+    };
+    if !attached
         && let Envelope::Presence { payload, .. } = &mut env
         && let Some(mut attributed) = crate::AttributedPresence::decode(payload)
     {
@@ -295,10 +300,6 @@ pub(super) async fn handle_presence(
             .encode()
             .map_err(|error| PeerError::Protocol(error.to_string()))?;
     }
-    let ws = {
-        let map = session.workspaces.lock().await;
-        map.get(&workspace_id).cloned()
-    };
     let mut legacy_writer = false;
     if let Some(ws) = ws {
         if session.live_bridge.is_some() {
@@ -326,7 +327,7 @@ pub(super) async fn handle_presence(
         // (`SyncReq`) or after rejecting a checkpoint — each means it needs the
         // next live checkpoint (the per-device checkpoint gate in
         // `fanout_delta`).
-        if peer.role == crate::auth::PeerRole::Device {
+        if !attached {
             wr.request_checkpoint(&peer.device_public_key);
         }
         // A spectator's presence asks for its baseline: nobody sees it. In
@@ -347,7 +348,7 @@ pub(super) async fn handle_presence(
             }
             return Ok(None);
         }
-        wr.fanout_presence(&peer.device_public_key, peer.role, &env, slot);
+        wr.fanout_presence(&peer.device_public_key, &env, slot);
         let authority = wr.room_authority.clone();
         drop(wr);
         if let Some(body) = asks {
@@ -361,8 +362,8 @@ pub(super) async fn handle_presence(
         }
     }
     if legacy_writer
-        && let (Some(bridge), crate::auth::PeerRole::Device, Envelope::Presence { payload, .. }) =
-            (session.live_bridge, peer.role, &env)
+        && !attached
+        && let (Some(bridge), Envelope::Presence { payload, .. }) = (session.live_bridge, &env)
     {
         bridge.presence(
             workspace_id,

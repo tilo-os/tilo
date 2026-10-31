@@ -1911,7 +1911,7 @@ mod semantic_target_tests {
             .push(Box::new(crate::widget::Button::new("first", "First")))
             .push(Box::new(
                 crate::widget::Button::new("probe", "Probe")
-                    .on_click(move || counter.set(counter.get() + 1)),
+                    .on_effect(move || counter.set(counter.get() + 1)),
             ));
         let app = App::new_with_controlled_inputs(crate::state::State::new(), Box::new(column));
         let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();

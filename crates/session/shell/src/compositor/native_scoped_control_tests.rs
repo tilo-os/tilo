@@ -23,7 +23,7 @@ use super::*;
 )]
 fn a_program_in_an_app_lists_and_runs_actions_with_its_workspaces_scope() {
     use crate::compositor::workspace_door::{AppScope, Holder};
-    use crate::shell::collab_broker_capnp::ActionDirectoryRoot;
+    use crate::shell::collab_app_broker::ActionDirectoryRoot;
     use crate::shell::search::providers::live_app_actions::fixture_with_directory_page;
     use std::io::Write as _;
 

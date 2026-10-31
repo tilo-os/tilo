@@ -21,7 +21,7 @@ use mail_review::app::MailApp;
 use mail_review::resource::MailShell;
 use mail_review::review_fixture::{CANDIDATES, cv_line, cv_pdf};
 use serde_json::{Value, json};
-use tilo_action_broker::collab_broker_capnp::{
+use tilo_action_broker::collab_app_broker::{
     InvocationEnvelope, PublishedAction, PublishedSurface,
 };
 use tilo_actions::InvocationUpdate;

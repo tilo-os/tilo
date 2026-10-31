@@ -22,8 +22,9 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_browser_peer::invite::{ask_to_join, guest_certificate};
 use tilo_browser_peer::{
-    DocumentRoute, Host, HttpClient, HttpsLink, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle,
+    Host, HttpClient, HttpsLink, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle,
 };
+use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::https as carrier;
 use tilo_relay_protocol::rooms::{JoinReply, Room, RoomRole, RoomsReply, RoomsRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};

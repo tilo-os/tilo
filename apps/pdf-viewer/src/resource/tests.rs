@@ -180,7 +180,14 @@ fn a_relative_path_is_refused_for_every_path_action() {
         let mut arguments = serde_json::Map::new();
         arguments.insert("path".into(), "notes.pdf".into());
         let error = PdfEffect::decode(id, &arguments).expect_err(id);
-        assert!(error.contains("absolute"), "{id}: {error}");
+        assert!(
+            matches!(
+                &error,
+                ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                    if name == "path" && source.to_string().contains("absolute")
+            ),
+            "{id}: {error}"
+        );
     }
 }
 

@@ -3,7 +3,6 @@
 # raise one. Regenerate with check_source_file_size.py --write-baseline.
 
 [ceilings]
-"apps/agent/src/model.rs" = 3500
 "apps/browser/src/browser_widget.rs" = 6500
 "apps/calendar/src/app.rs" = 5000
 "apps/calendar/src/app/tests.rs" = 3500
@@ -47,10 +46,10 @@
 "crates/agent/model-gateway/src/service.rs" = 4000
 "crates/browser/tilo-browser-peer/src/session.rs" = 4000
 "crates/browser/tilo-browser-runtime/src/browser.rs" = 3500
-"crates/collab/collaboration/src/broker.rs" = 13500
+"crates/collab/collaboration/src/broker.rs" = 13000
 "crates/collab/tilo-action-broker/src/channel_encryption.rs" = 3500
-"crates/collab/tilo-action-broker/src/collab_broker_capnp.rs" = 20500
-"crates/collab/tilo-action-broker/src/collab_broker_capnp/action_host.rs" = 4000
+"crates/collab/tilo-action-broker/src/collab_app_broker.rs" = 16500
+"crates/collab/tilo-action-broker/src/collab_app_broker/action_host.rs" = 4000
 "crates/collab/tilo-peer-state/src/state.rs" = 4000
 "crates/dev/tilo-app-cli/src/lib.rs" = 10500
 "crates/dev/tilo-app-cli/src/main.rs" = 4500
@@ -64,7 +63,6 @@
 "crates/hosting/tilo-relay/src/enroll.rs" = 3500
 "crates/hosting/tilo-room-host/src/store/retained.rs" = 3500
 "crates/packaging/launcher/src/run.rs" = 6500
-"crates/runtime/runtime-collab/src/lib.rs" = 4500
 "crates/runtime/runtime-fs/src/operations.rs" = 5000
 "crates/runtime/runtime-identity/src/unix.rs" = 3500
 "crates/runtime/tilo-runtime/src/mcp.rs" = 3500
@@ -87,7 +85,6 @@
 "crates/sdk/ui-core/src/widget/activity_timeline.rs" = 6500
 "crates/sdk/ui-core/src/widget/block_editor.rs" = 13500
 "crates/sdk/ui-core/src/widget/cartesian_plot.rs" = 4000
-"crates/sdk/ui-core/src/widget/command_palette.rs" = 3500
 "crates/sdk/ui-core/src/widget/context_menu.rs" = 3500
 "crates/sdk/ui-core/src/widget/data_table.rs" = 6000
 "crates/sdk/ui-core/src/widget/file_picker.rs" = 4435
@@ -124,7 +121,7 @@
 "crates/session/shell/src/shell/frame.rs" = 9746
 "crates/session/shell/src/shell/frame_retained_tests.rs" = 4000
 "crates/session/shell/src/shell/launcher.rs" = 7000
-"crates/session/shell/src/shell/network.rs" = 13000
+"crates/session/shell/src/shell/network.rs" = 12500
 "crates/session/shell/src/shell/overlay_host/overlay_host_tests.rs" = 4000
 "crates/session/shell/src/shell/peer_presence.rs" = 4500
 "crates/session/shell/src/shell/portal_dialog.rs" = 3500

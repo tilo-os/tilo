@@ -382,15 +382,6 @@ where
     ) {
         self.child.on_external_event(payload, state, root);
     }
-
-    fn apply_room_action(
-        &mut self,
-        doc: &mut crate::widget::Edits<'_>,
-        type_id: &str,
-        payload: &[u8],
-    ) -> bool {
-        self.child.apply_room_action(doc, type_id, payload)
-    }
 }
 
 impl<K> crate::view::capability::ViewState for ModelView<K>

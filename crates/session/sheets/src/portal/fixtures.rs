@@ -63,7 +63,7 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
             ..base(
                 "action-grant",
                 "Let Scribe use Mail?",
-                "Mail · Send",
+                "Mail",
                 "Sensitive: it acts for you where others can see it.",
             )
         },
@@ -73,7 +73,7 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
             ..base(
                 "store-review",
                 "Publish to the Store?",
-                "Store · Publish",
+                "Store",
                 "Files\nso.tilo.notes 2.4.1\nhttps://store.tilo.so/apps/notes\nsigning key ed25519:4f2a…",
             )
         },
@@ -114,7 +114,7 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
             ..base(
                 "draft",
                 "Confirm Scribe's request",
-                "Mail · Send",
+                "Mail",
                 "Sensitive. Check what it would send, and change it if you like.",
             )
         },
@@ -199,7 +199,7 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
             ..base(
                 "drive",
                 "Open this Windows drive?",
-                "External drive · 512 GB",
+                "External drive",
                 "Changes made here can confuse Windows if it was not shut down.",
             )
         },

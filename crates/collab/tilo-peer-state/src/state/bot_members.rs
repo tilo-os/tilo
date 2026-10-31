@@ -167,7 +167,7 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let member = self.permissions(caller.device_public_key, now)?;
+        let member = self.membership(caller.device_public_key, now)?;
         let cx = Context::at_time(now);
         let bound = roles::foreign_device_bound();
         let id = install.installation.id.as_str().to_owned();
@@ -201,7 +201,6 @@ impl StatePeer {
                     revocations: vec![],
                     admission: None,
                     admissions: vec![],
-                    workspace_delegations: vec![],
                     delegate: Some(row),
                 }
             }
@@ -279,7 +278,7 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let member = self.permissions(caller.device_public_key, now)?;
+        let member = self.membership(caller.device_public_key, now)?;
         let id = renewal.installation.as_str();
         let live = self.live_bot(id)?.ok_or("no such bot")?;
         let row = live.delegate.clone().ok_or("bot row missing")?;
@@ -323,7 +322,6 @@ impl StatePeer {
                     revocations: vec![],
                     admission: None,
                     admissions: vec![],
-                    workspace_delegations: vec![],
                     delegate: Some(fresh),
                 },
             ]
@@ -591,7 +589,7 @@ impl StatePeer {
         action: &str,
         now: SystemTime,
     ) -> Result<super::MemberAuthority, String> {
-        let member = self.permissions(caller.device_public_key, now)?;
+        let member = self.membership(caller.device_public_key, now)?;
         let bound = roles::foreign_device_bound();
         member
             .policy
@@ -719,7 +717,6 @@ impl StatePeer {
             revocations: vec![],
             admission: None,
             admissions: vec![],
-            workspace_delegations: vec![],
             delegate: Some(fresh),
         };
         self.put_bot_change(

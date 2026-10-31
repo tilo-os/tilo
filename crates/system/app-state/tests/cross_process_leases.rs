@@ -105,7 +105,7 @@ fn a_second_window_writes_beside_the_first_without_taking_its_author() {
         first_owner.is_primary(),
         "the first window is the stored author"
     );
-    let mut first_doc = first_owner.new_document().unwrap();
+    let mut first_doc = first_owner.new_document();
     first_doc.put(automerge::ROOT, "window", "first").unwrap();
     let first = DocWriter::start_new(&first_owner, &mut first_doc).unwrap();
     first.try_flush().unwrap();
@@ -118,7 +118,7 @@ fn a_second_window_writes_beside_the_first_without_taking_its_author() {
         "a second window found the stored author taken and writes as a secondary"
     );
     assert_ne!(second_owner.actor(), &author, "its actor is its own");
-    let mut second_doc = second_owner.new_document().unwrap();
+    let mut second_doc = second_owner.new_document();
     second_doc.put(automerge::ROOT, "window", "second").unwrap();
     let second = DocWriter::start_new(&second_owner, &mut second_doc).unwrap();
     second.try_flush().unwrap();

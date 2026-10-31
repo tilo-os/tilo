@@ -321,12 +321,10 @@ fn toml_encodings_are_pinned() {
         },
         device_role: DeviceRole::AlwaysOnServer,
         services: ServiceCapabilities::home_peer(),
-        retired_peer_relays: None,
         environments: None,
         web_entry: None,
         member_limits: None,
         max_room_grants: None,
-        retired_workspaces: None,
     };
     let encoded = r#"identity_root = "/var/lib/tilo"
 state_root = "/var/lib/tilo-relay"

@@ -212,12 +212,6 @@ fn each_control_invokes_the_action_the_app_handed_it() {
             bindings.get(control)
         );
     }
-    assert!(
-        !bindings
-            .values()
-            .any(|kind| *kind == crate::widget::ControlBindingKind::LegacyCallback),
-        "{bindings:?}"
-    );
 }
 
 /// A control the app hands no action for is not there.

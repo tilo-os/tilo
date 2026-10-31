@@ -30,9 +30,8 @@ directories; receipt replay across modes fails the existing request binding.
 
 After independently signing/admitting the medium's published OCI identity,
 create it using `create-development-disk.py --boot-profile installer-media`
-through `create-supervised-kata-disk.py`, with the exact authenticated live UKI
-path from final verification. This writes only an owned image file in the
-supervised disposable guest and materializes target EFI/prediction artifacts.
+with the exact authenticated live UKI path from final verification. This writes
+only an owned image file and materializes target EFI/prediction artifacts.
 The installed-content verifier must match the medium profile. Disk creation,
 source policy tests, VM boot and actual GUI install remain unperformed until
 real signed artifacts exist.

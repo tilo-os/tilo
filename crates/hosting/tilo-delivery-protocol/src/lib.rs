@@ -1,8 +1,6 @@
 //! Wire contract of Tilo's browser-facing delivery.
 //!
-//! Every type here is an inert, validated record: the signed workspace-host
-//! transport descriptor and the session authentication it binds, the
-//! first-contact bootstrap exchange; the private action and
+//! Every type here is an inert, validated record: the private action and
 //! agent-read vocabularies; the v2 live envelope; and the workspace join contract.
 //! Browsers, the action broker and both hosts link this crate without linking the
 //! relay daemon. The live presence and ops frames are `tilo_relay_protocol::live`.
@@ -16,14 +14,6 @@
     )
 )]
 
-pub mod auth;
-pub mod bootstrap;
-pub mod descriptor;
-mod origin;
 pub mod peer_actions;
 pub mod transport_v2;
 pub mod workspace_join;
-
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
-tilo_automerge_isolate::test_worker!();

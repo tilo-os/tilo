@@ -70,8 +70,8 @@ fn standalone_native_steps_run_alongside_each_other_in_plan_order() {
     );
     let bodies = f.script.bodies.lock().unwrap().clone();
     let results = tool_results(&bodies[1]);
-    let ids: Vec<&str> = results.iter().map(|(id, _)| id.as_str()).collect();
-    assert_eq!(ids, ["call_0", "call_1", "call_2"], "plan order");
+    let ids: Vec<String> = results.iter().map(|(id, _)| id.clone()).collect();
+    assert_eq!(ids, asked_ids(&bodies[1]), "plan order");
     for (id, result) in &results {
         assert_eq!(result["result"], "succeeded", "{id}: {result}");
     }

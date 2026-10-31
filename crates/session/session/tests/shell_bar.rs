@@ -14,7 +14,8 @@
     clippy::cast_sign_loss,
     clippy::cast_precision_loss,
     clippy::arithmetic_side_effects,
-    reason = "test fixtures: a failed step is the assertion"
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
 use std::collections::HashMap;
