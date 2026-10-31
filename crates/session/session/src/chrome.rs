@@ -496,19 +496,23 @@ impl DesktopRules for SessionRules {
 }
 
 impl crate::Session {
-    /// The rows of the window menu the chrome shows now, in order, as a
+    /// The rows of the window menu the session shows now, in order, as a
     /// harness reads them: empty while it is closed.
     #[must_use]
     pub fn window_menu_rows(&self) -> Vec<String> {
-        self.with_chrome(|chrome| {
-            chrome
-                .window_menu()
-                .labels()
-                .into_iter()
-                .flatten()
-                .collect()
-        })
-        .unwrap_or_default()
+        let Some(reading) = self.read(crate::mount::shell::WINDOW_MENU) else {
+            return Vec::new();
+        };
+        reading
+            .get("rows")
+            .and_then(serde_json::Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| row.get("label").and_then(serde_json::Value::as_str))
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 

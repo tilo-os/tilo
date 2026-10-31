@@ -233,8 +233,6 @@ zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-# The resource effects the tests' own questions are declared with.
-tilo-resource = { path = "../../sdk/tilo-resource" }
 # Reporting an ending to a session's apps as its spawner would, with the
 # memory cause a launcher remembers.
 tilo-app-launch = { path = "../app-launch", features = ["test-support"] }

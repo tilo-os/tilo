@@ -54,7 +54,6 @@ use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer
 use crate::strip_switcher::Command as StripCommand;
 use crate::topbar::{BarSpace, Placement, TOPBAR_HEIGHT_PX, TopBarChrome};
 use crate::window_flight::WindowFlight;
-use crate::window_menu::WindowMenu;
 use crate::window_switcher::{
     NoThumbnails, SwitcherOutcome, SwitcherScope, WindowSource, WindowSwitcher,
 };
@@ -665,7 +664,6 @@ pub struct DesktopChrome {
     tilo_menu: TiloMenu,
     workspace_menu: WorkspaceMenu,
     /// What the person can do to the window in front, at its window.
-    window_menu: WindowMenu,
     /// Where the person is in the workspace (the strip ribbon grown into
     /// the strip switcher, and the window rail).
     navigator: StripNavigator,
@@ -775,7 +773,6 @@ impl DesktopChrome {
             overview: OverviewPanel::new(),
             tilo_menu,
             workspace_menu: WorkspaceMenu::new(),
-            window_menu: WindowMenu::new(),
             navigator: StripNavigator::default(),
             switcher: WindowSwitcher::default(),
             emoji: EmojiPicker::new(),
@@ -870,7 +867,7 @@ impl DesktopChrome {
     /// Whether a menu the chrome opened is up.
     #[must_use]
     pub fn menu_open(&self) -> bool {
-        self.tilo_menu.is_open() || self.workspace_menu.is_open() || self.window_menu.is_open()
+        self.tilo_menu.is_open() || self.workspace_menu.is_open()
     }
 
     /// Let the open menus take what they cover, in the order they stand;
@@ -879,18 +876,11 @@ impl DesktopChrome {
         &mut self,
         event: &WindowEvent,
         ctx: &mut EventCtx<'_>,
-        [tilo_menu, workspace_menu, window_menu]: [NodeId; 3],
+        [tilo_menu, workspace_menu]: [NodeId; 2],
     ) -> bool {
         if self.workspace_menu.is_open() {
             self.workspace_menu
                 .handle_event(event, &mut ctx.reborrow(ctx.path, workspace_menu));
-            if *ctx.handled {
-                return true;
-            }
-        }
-        if self.window_menu.is_open() {
-            self.window_menu
-                .handle_event(event, &mut ctx.reborrow(ctx.path, window_menu));
             if *ctx.handled {
                 return true;
             }
@@ -903,13 +893,6 @@ impl DesktopChrome {
             }
         }
         false
-    }
-
-    /// The window menu, as the host sees it: open or not, the window it is
-    /// for, and what it offers.
-    #[must_use]
-    pub const fn window_menu(&self) -> &WindowMenu {
-        &self.window_menu
     }
 
     /// Whether keys should come here rather than to the window in front:
@@ -1119,49 +1102,6 @@ impl DesktopChrome {
             self.tilo_menu.toggle(Rect::ZERO, self.rect);
         }
         self.workspace_menu.close();
-        self.window_menu.close();
-    }
-
-    /// Open the menu of the window in front at its window, or close it when
-    /// it is up. Nothing without a focused window to offer it for.
-    fn toggle_window_menu(&mut self) -> bool {
-        if self.window_menu.is_open() {
-            self.window_menu.close();
-            return true;
-        }
-        let Some(tab) = self.focused_tab() else {
-            return false;
-        };
-        let rows = self.handle.window_menu(tab);
-        if rows.is_empty() {
-            return false;
-        }
-        let anchor = self.tab_anchor(tab);
-        self.window_menu.toggle(tab, &rows, anchor, self.rect);
-        true
-    }
-
-    /// The tab of the window in front: the active group's, in the strip on
-    /// the display the person works on.
-    fn focused_tab(&self) -> Option<TabId> {
-        self.handle
-            .read(|tree| tilo_desktop_surface::navigation::active_route(tree).map(|ids| ids.tab))
-    }
-
-    /// The corner of `tab`'s window in the chrome, as last laid out: the
-    /// menu opens under it. A tab the surface does not show keeps the corner
-    /// of the area under the bar.
-    fn tab_anchor(&self, tab: TabId) -> Rect {
-        let corner = self
-            .handle
-            .shown_tabs()
-            .into_iter()
-            .find(|(shown, _)| *shown == tab)
-            .map_or_else(
-                || Point::new(self.content.x0 + 8.0, self.content.y0 + 8.0),
-                |(_, at)| Point::new(at.x0 + self.content.x0, at.y0 + self.content.y0),
-            );
-        Rect::new(corner.x, corner.y, corner.x, corner.y)
     }
 
     /// Say what became of an action the person asked for, and say nothing
@@ -2025,13 +1965,6 @@ impl DesktopChrome {
         match action {
             ShortcutAction::WorkspaceOverview => self.toggle_overview(),
             ShortcutAction::EmojiPicker => self.toggle_emoji(),
-            // The window in front offers what can be done to it, at its
-            // window: the desk's own window menu.
-            ShortcutAction::TabMenu => {
-                if !self.toggle_window_menu() {
-                    return false;
-                }
-            }
             ShortcutAction::FocusPreviousWindow | ShortcutAction::FocusNextWindow => {
                 let step = if action == ShortcutAction::FocusPreviousWindow {
                     -1
@@ -2340,13 +2273,6 @@ impl Widget for DesktopChrome {
             self.apply_workspace_choice(choice);
             changed = true;
         }
-        if let Some((tab, row)) = self.window_menu.take_choice() {
-            let done = self
-                .handle
-                .choose_window_menu(tab, &row, None, &self.generation);
-            self.report(done);
-            changed = true;
-        }
         let menu_open = self.tilo_menu.is_menu_open();
         if self.menu_shown.replace(menu_open) != menu_open {
             self.bar.set_tilo_menu_open(menu_open);
@@ -2408,15 +2334,7 @@ impl Widget for DesktopChrome {
         let _ = taffy.set_style(overview, style);
         let tilo_menu = self.tilo_menu.build_layout(taffy, theme, map);
         let workspace_menu = self.workspace_menu.build_layout(taffy, theme, map);
-        let window_menu = self.window_menu.build_layout(taffy, theme, map);
-        let mut kids = vec![
-            bar,
-            content,
-            overview,
-            tilo_menu,
-            workspace_menu,
-            window_menu,
-        ];
+        let mut kids = vec![bar, content, overview, tilo_menu, workspace_menu];
         // Every other display's bar stands over its own display's top
         // edge, laid out across the desk: it takes no room in the column,
         // its place carrying it where its display is.
@@ -2448,7 +2366,6 @@ impl Widget for DesktopChrome {
             overview,
             tilo_menu,
             workspace_menu,
-            window_menu,
             compact @ ..,
         ] = &kids[..]
         else {
@@ -2460,7 +2377,6 @@ impl Widget for DesktopChrome {
         self.tilo_menu.apply_layout(taffy, *tilo_menu, inner);
         self.workspace_menu
             .apply_layout(taffy, *workspace_menu, inner);
-        self.window_menu.apply_layout(taffy, *window_menu, inner);
         for (bar, node) in self.compact.iter_mut().zip(compact) {
             bar.apply_layout(taffy, *node, inner);
         }
@@ -2513,16 +2429,7 @@ impl Widget for DesktopChrome {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let kids = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        let [
-            bar,
-            _,
-            overview,
-            tilo_menu,
-            workspace_menu,
-            window_menu,
-            compact @ ..,
-        ] = &kids[..]
-        else {
+        let [bar, _, overview, tilo_menu, workspace_menu, compact @ ..] = &kids[..] else {
             return;
         };
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -2563,7 +2470,7 @@ impl Widget for DesktopChrome {
         }
         // The menus take what they cover, the keyboard and the press that
         // dismisses them.
-        if self.menu_event(event, ctx, [*tilo_menu, *workspace_menu, *window_menu]) {
+        if self.menu_event(event, ctx, [*tilo_menu, *workspace_menu]) {
             return;
         }
         // While the switcher is open every key is the switcher's, and the
@@ -2626,7 +2533,6 @@ impl Widget for DesktopChrome {
             &self.overview,
             &self.tilo_menu,
             &self.workspace_menu,
-            &self.window_menu,
         ];
         children.extend(self.compact.iter().map(|bar| bar as &dyn Widget));
         children
@@ -2714,7 +2620,6 @@ impl Widget for DesktopChrome {
             &mut self.overview,
             &mut self.tilo_menu,
             &mut self.workspace_menu,
-            &mut self.window_menu,
         ];
         children.extend(self.compact.iter_mut().map(|bar| bar as &mut dyn Widget));
         children

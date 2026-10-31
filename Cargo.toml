@@ -454,6 +454,7 @@ members = [
     "crates/session/topbar",
     "crates/session/tray-host",
     "crates/session/wayland-ext",
+    "crates/session/window-menu",
     "crates/session/window-share",
 
     # System

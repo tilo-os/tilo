@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tilo_compositor::Compositor;
 
 use crate::controls::SessionControls;
-use crate::keys::{GuideKeys, Invocations, PressedChords, Presses, SessionKeys};
+use crate::keys::{DeskKeys, GuideKeys, Invocations, PressedChords, Presses, SessionKeys};
 use crate::panels::{Held, Popover, Readout};
 use crate::setup::Setup;
 use crate::{
@@ -84,6 +84,8 @@ pub(crate) struct KeyContext {
     pub(crate) displays: Option<tilo_sheets::Presentation>,
     /// Whether a desk widget has its card open, which Escape folds.
     pub(crate) fold: tilo_desktop::desk_widgets::DeskFold,
+    /// Whether the shell's window menu is up, which Escape closes.
+    pub(crate) menu: crate::mount::shell::MenuOpen,
 }
 
 /// The hardware keys' readout above the apps, and the session's own
@@ -100,6 +102,7 @@ pub(crate) fn mount_controls(
         controller_keys,
         displays,
         fold,
+        menu,
     }: KeyContext,
     scale: f64,
 ) -> (Rc<RefCell<Vec<SessionCommand>>>, Invocations, PressedChords) {
@@ -120,7 +123,7 @@ pub(crate) fn mount_controls(
         },
         portal,
         guide,
-        fold,
+        DeskKeys::new(fold, menu),
         displays,
         controller,
         controller_keys,

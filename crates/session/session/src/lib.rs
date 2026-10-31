@@ -823,6 +823,9 @@ impl Shared {
             ShortcutAction::Search => {
                 invocations.push(Invocation::new(DESK_RESOURCE, "open-search"));
             }
+            ShortcutAction::TabMenu => {
+                invocations.push(Invocation::new(mount::shell::WINDOW_MENU, "open"));
+            }
             ShortcutAction::Lock => self.commands.borrow_mut().push(SessionCommand::Lock),
             ShortcutAction::ToggleMagnifier => self
                 .commands
@@ -947,6 +950,9 @@ pub struct Session {
     /// there: the bar and what else the desktop runs as a process of its
     /// own.
     surface_apps: Vec<surfaces::Surface>,
+    /// No program draws the shell's window menu on this machine, so it is
+    /// not looked for again.
+    window_menu_view_absent: bool,
     /// The displays as the person arranged them, kept in step with the ones
     /// attached.
     displays: display_settings::Displays,
@@ -1309,6 +1315,9 @@ impl Session {
         // buttons, and a key of their own leads with the keyboard again.
         let controller: Rc<Cell<Option<ui::ControllerFamily>>> = Rc::new(Cell::new(None));
         let controller_keys: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+        // Whether the shell's window menu is up: the keys that close it read
+        // it, and the verbs that open and close it are the ones writing here.
+        let menu_open = mount::shell::MenuOpen::default();
         let shortcut_guide = shortcut_guide::ShortcutGuide::new(
             guide_seat,
             Rc::clone(&shortcuts),
@@ -1329,6 +1338,7 @@ impl Session {
                     .as_ref()
                     .map(|seat| tilo_sheets::Seat::presentation(seat).clone()),
                 fold,
+                menu: menu_open.clone(),
             },
             options.scale,
         );
@@ -1459,6 +1469,9 @@ impl Session {
             .add(Box::new(tilo_agent_runs::Served::new(
                 std::sync::Arc::clone(&agent_runs),
             )));
+        // The shell's own readings and verbs, on the same door every other
+        // service answers on.
+        mount::shell::Shell::mount(&services, &handle, menu_open);
         // Dictation joins the services: its recognizer, microphone and
         // consent are only the session's, and the sheet asks about them.
         let dictation =
@@ -1607,6 +1620,7 @@ impl Session {
             _settings_watch: settings_watch,
             surfaces,
             surface_apps,
+            window_menu_view_absent: false,
             displays: display_settings::Displays::default(),
             confirmation: display_confirm::Confirmation::default(),
             display_sheet: display_sheet::DisplaySheet::new(
@@ -2005,6 +2019,48 @@ impl Session {
         &self.input
     }
 
+    /// Start the view of the shell's window menu while the reading says one
+    /// is up, and stop it when the reading says none is. Many a machine has
+    /// no such view installed, or another one bound in its place: the menu
+    /// is a reading either way, and this only puts it on the screen.
+    fn follow_window_menu(&mut self) {
+        /// The view's surface name; its program is found by the crate's own
+        /// name.
+        const VIEW: &str = "window-menu";
+        let up = self
+            .read(mount::shell::WINDOW_MENU)
+            .is_some_and(|reading| reading.get("tab").is_some_and(|tab| !tab.is_null()));
+        if up == self.surfaces.running(VIEW) || self.window_menu_view_absent {
+            return;
+        }
+        if !up {
+            self.surfaces.stop(VIEW);
+            return;
+        }
+        let program = match surfaces::program_path("tilo-window-menu") {
+            Ok(program) => program,
+            Err(error) => {
+                // Nothing draws the menu here: the reading still offers it,
+                // and whoever is bound to the slot on this machine draws it.
+                tracing::debug!(%error, "no window menu view to start");
+                self.window_menu_view_absent = true;
+                return;
+            }
+        };
+        let surface = surfaces::Surface::new(VIEW, program)
+            .layer(surfaces::Layer::Overlay)
+            .anchor(
+                surfaces::Anchor::TOP
+                    | surfaces::Anchor::BOTTOM
+                    | surfaces::Anchor::LEFT
+                    | surfaces::Anchor::RIGHT,
+            )
+            .keyboard(surfaces::Keyboard::OnDemand);
+        if let Err(error) = self.start_surface(&surface) {
+            tracing::warn!(%error, "the window menu view did not start");
+        }
+    }
+
     /// Carry out everything asked since the last look: the desktop's asks,
     /// the gestures it took, the actions keys asked for, and what those
     /// asked in turn.
@@ -2101,6 +2157,9 @@ impl Session {
             // them out on its next pass.
             self.shared.desktop.with_widgets(WidgetHost::relayout);
         }
+        // The menu the reading says is up has its view over the desk, and
+        // the view goes when the menu does.
+        self.follow_window_menu();
         self.shared.clipboard.serve_asks(&mut self.compositor);
         // One file of a paste in flight per turn, so a folder of files does
         // not hold up a frame.

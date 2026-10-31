@@ -22617,6 +22617,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-window-menu"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-vello",
+ "tilo-winit",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-window-share"
 version = "0.1.0"
 dependencies = [

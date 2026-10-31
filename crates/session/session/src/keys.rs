@@ -25,7 +25,7 @@ use xkeysym::key as keysyms;
 
 use crate::Shared;
 use crate::mount::services::answered;
-
+use crate::mount::shell::{MenuOpen, WINDOW_MENU};
 /// One published action to invoke, with its arguments.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Invocation {
@@ -295,6 +295,23 @@ impl GuideKeys {
     }
 }
 
+/// What stands over the desk and what the keys owe it: Escape folds the card
+/// a desk widget has open, and closes the shell's window menu while it is up.
+/// Neither hears keys itself, so both say here what theirs are worth.
+#[derive(Clone, Default)]
+pub(crate) struct DeskKeys {
+    fold: DeskFold,
+    menu: MenuOpen,
+}
+
+impl DeskKeys {
+    /// The desk's fold and the shell's window menu, as the session holds them.
+    #[must_use]
+    pub(crate) fn new(fold: DeskFold, menu: MenuOpen) -> Self {
+        Self { fold, menu }
+    }
+}
+
 /// The surface that takes the session's keys; it shows nothing.
 pub(crate) struct SessionKeys {
     /// The desktop's shortcut table, shared with the shortcut guide so the
@@ -316,6 +333,9 @@ pub(crate) struct SessionKeys {
     /// is under the windows and hears no keys itself, so it says here what
     /// its keys are worth.
     fold: DeskFold,
+    /// Whether the shell's window menu is up, which Escape closes: while it
+    /// is, a press is the menu's and not the window's.
+    menu: MenuOpen,
     /// The shortcut resources whose chords are held down, by key.
     held: RefCell<BTreeMap<u32, String>>,
     /// The controller the person last drove the desktop with, which a press
@@ -332,7 +352,7 @@ impl SessionKeys {
         presses: Presses,
         portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
         guide: GuideKeys,
-        fold: DeskFold,
+        desk: DeskKeys,
         displays: Option<tilo_sheets::Presentation>,
         controller: Rc<Cell<Option<ui::ControllerFamily>>>,
         controller_keys: Rc<Cell<bool>>,
@@ -348,7 +368,8 @@ impl SessionKeys {
             triggered,
             portal,
             guide,
-            fold,
+            fold: desk.fold,
+            menu: desk.menu,
             held: RefCell::new(BTreeMap::new()),
             controller,
             controller_keys,
@@ -359,6 +380,13 @@ impl SessionKeys {
     /// has open, and what sits behind the desk does not hear it.
     fn folds_the_desk(&self, key: &HostKey) -> bool {
         key.unmodified_keysym == keysyms::Escape && self.fold.is_open()
+    }
+
+    /// Whether `key` closes the shell's window menu: Escape, while the menu
+    /// is up. The menu is drawn elsewhere, so this surface is the one that
+    /// hears it.
+    fn closes_the_menu(&self, key: &HostKey) -> bool {
+        key.unmodified_keysym == keysyms::Escape && self.menu.get()
     }
 
     /// Whether `key` is the display sheet's chord, which puts the sheet up:
@@ -551,6 +579,9 @@ impl SurfaceHost for SessionKeys {
                     .map_or(KeyClaim::Pass, |(_, claim)| claim);
             }
         }
+        if self.closes_the_menu(key) {
+            return KeyClaim::Take;
+        }
         if self.folds_the_desk(key) {
             return KeyClaim::Take;
         }
@@ -584,6 +615,12 @@ impl SurfaceHost for SessionKeys {
         }
         if self.guide.up() {
             self.guide_key(key);
+            return;
+        }
+        if self.closes_the_menu(key) {
+            self.invocations
+                .borrow_mut()
+                .push(Invocation::new(WINDOW_MENU, "close"));
             return;
         }
         if self.folds_the_desk(key) {
@@ -742,7 +779,7 @@ mod tests {
             Presses::default(),
             None,
             GuideKeys::default(),
-            DeskFold::default(),
+            DeskKeys::default(),
             None,
             Rc::new(Cell::new(None)),
             Rc::new(Cell::new(false)),
@@ -759,7 +796,7 @@ mod tests {
             Presses::default(),
             None,
             guide.clone(),
-            DeskFold::default(),
+            DeskKeys::default(),
             None,
             Rc::new(Cell::new(None)),
             Rc::new(Cell::new(false)),
@@ -992,7 +1029,7 @@ mod tests {
             },
             None,
             GuideKeys::default(),
-            DeskFold::default(),
+            DeskKeys::default(),
             None,
             Rc::new(Cell::new(None)),
             Rc::new(Cell::new(false)),
@@ -1058,7 +1095,7 @@ mod tests {
             Presses::default(),
             None,
             GuideKeys::default(),
-            fold.clone(),
+            DeskKeys::new(fold.clone(), MenuOpen::default()),
             None,
             Rc::new(Cell::new(None)),
             Rc::new(Cell::new(false)),
