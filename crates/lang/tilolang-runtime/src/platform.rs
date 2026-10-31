@@ -768,13 +768,16 @@ impl Core {
         let Some(storage) = storage else {
             return Ok(None);
         };
-        let items = store.listing(
+        // A record the store does not hold yet (one just made, or empty) has nothing unseen.
+        let Ok(items) = store.listing(
             at,
             &crate::store::FieldSpec {
                 id: storage,
                 kind: crate::meta::FieldKind::Collection,
             },
-        )?;
+        ) else {
+            return Ok(None);
+        };
         let len = items.len();
         if len == 0 {
             return Ok(None);

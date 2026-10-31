@@ -841,3 +841,109 @@ fn the_transcript_marks_the_first_message_the_person_had_not_seen() {
         "his answer is what is new"
     );
 }
+
+/// A direct message is a conversation in the same model as a channel: it stands in the sidebar
+/// with everyone the workspace has, pressing a person opens the conversation with them (the
+/// one already open, not a new empty one), and it takes messages as a channel does.
+#[test]
+fn a_direct_message_opens_with_a_person_and_takes_their_messages() {
+    // A room with Ben in it: everyone the workspace has, from its own membership.
+    let mut policy = tilo_action_policy::RoomPolicy::new("room-dm", "ada");
+    policy
+        .members
+        .insert("ben".to_owned(), tilo_action_policy::Role::Editor);
+    let (mut ada, loaded) = Replica::standing(
+        "ada",
+        AutoCommit::new(),
+        &[(CHAT, CHAT_IDS)],
+        Some(tilo_action_policy::Standing::person(policy, "ada")),
+    );
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    // The room's membership, as the host hands it to the runtime.
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", "owner"),
+            tilolang_runtime::members::Member::person("ben", "editor"),
+        ],
+        None,
+    );
+
+    // The sidebar offers Ben under Direct messages: everyone in the workspace, from its
+    // membership rather than a copy Chat keeps.
+    let sidebar = ada.view(APP);
+    let section = {
+        let mut seen = Vec::new();
+        find_all(sidebar.tree(), "ui.NavSection", &mut seen);
+        seen.into_iter()
+            .find(|s| s.props.get("title") == Some(&Value::text("Direct messages")))
+            .expect("the direct messages section")
+            .clone()
+    };
+    let mut people = Vec::new();
+    texts(&section, &mut people);
+    assert!(people.contains(&"ben".to_owned()), "{people:?}");
+
+    // Pressing them opens the conversation with Ben, once: a person has one.
+    let person = {
+        let mut items = Vec::new();
+        find_all(&section, "ui.NavItem", &mut items);
+        items
+            .into_iter()
+            .find(|item| item.props.get("key") == Some(&Value::text("/person/ben")))
+            .expect("Ben's place")
+            .clone()
+    };
+    // The place's event runs the action the app declared for it.
+    let offered = sidebar
+        .event_action(&person.key, "select")
+        .expect("the place opens a conversation");
+    assert_eq!(
+        ada.host
+            .package(APP)
+            .unwrap()
+            .meta
+            .actions
+            .iter()
+            .any(|a| a.name == "message_person"),
+        true
+    );
+    let dm = call(
+        &ada,
+        "message_person",
+        vec![all.clone(), Value::Principal(Principal::new("ben"))],
+    );
+    let again = call(
+        &ada,
+        "message_person",
+        vec![all, Value::Principal(Principal::new("ben"))],
+    );
+    assert_eq!(
+        target(&dm).id_string(),
+        target(&again).id_string(),
+        "a person has one conversation"
+    );
+    // It takes a message from Ben, which Ada reads as any conversation's: an item created by
+    // `insert` is held in its holder's record, and the store's index of records learns of it
+    // on the next scan, as a `commit` and a sync does.
+    // Ada's own sync first: the room's host scans the records, so the new conversation is
+    // one the store can find.
+    ada.commit();
+    ben.host.sync_from(&ada.doc);
+    ben.commit();
+    ben.host.sync_from(&ben.doc);
+    ada.sync_with(&mut ben);
+    let _ = ada.host.wait_index();
+    call(
+        &ben,
+        "send",
+        vec![dm.clone(), rich("Still on for Saturday?"), Value::none()],
+    );
+    ben.commit();
+    ben.host.sync_from(&ben.doc);
+    ada.sync_with(&mut ben);
+    let mut conversation = ada.host.open_resource(&target(&dm), None).unwrap();
+    assert_eq!(said(&mut conversation), ["Still on for Saturday?"]);
+}
