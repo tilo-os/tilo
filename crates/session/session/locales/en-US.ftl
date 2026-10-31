@@ -38,7 +38,8 @@ display-tool-reapply-refused = { $tool } tried to reapply a display layout you r
 display-tool-reapply-refused-unknown = A display tool tried to reapply a display layout you reverted
 
 ## The session's own resources: the input devices, the screen, the night light,
-## the magnifier, the displays and the clipboard.
+## the magnifier, the displays, the clipboard and the questions about the
+## person's apps.
 session-input = Input devices
 session-toggle-touchpad = Turn the touchpad on or off
 session-param-touchpad-on = Whether the touchpad is on; leave out to switch it
@@ -72,6 +73,9 @@ session-param-displays-mode = How the displays are used together: extend, mirror
 session-clipboard = Clipboard
 session-clipboard-paste-files = Paste files here
 session-param-paste-destination = The folder the copied files are pasted into
+session-apps = Apps
+session-apps-uninstall = Uninstall an app
+session-param-app = The app's name
 
 ## A timer Clocks ran in the background has come due.
 clock-due-title = Clocks
@@ -93,3 +97,7 @@ app-list-uninstalled = Uninstalled { $name }
 app-list-uninstalled-file = Its file is in the Trash.
 app-list-uninstalled-files = All its copies are in the Trash.
 app-list-removed = Removed { $name } from your apps
+app-list-add-failed = Couldn't add { $name } to your apps
+app-list-locate-failed = Couldn't find { $name }
+app-list-remove-failed = Couldn't remove { $name } from your apps
+app-list-uninstall-failed = Couldn't uninstall { $name }

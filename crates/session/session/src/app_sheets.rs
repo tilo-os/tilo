@@ -10,16 +10,16 @@
 //! everything is asked first, and whether it happened is read off the
 //! registry again rather than assumed.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use serde_json::{Map, Value};
-use tilo_actions::remote::downloaded_apps::{self as wire, DownloadedApps};
+use tilo_actions::remote::downloaded_apps::{self as wire, DownloadedApps, DownloadedDoing};
 use tilo_app_launch::downloaded;
 use tilo_desktop_surface::DesktopNotifications;
-use tilo_desktop_surface::notifications::Notification;
+use tilo_desktop_surface::notifications::{Notification, NotificationSeverity};
 use tilo_service::Services;
 use tilo_sheets::Seat as _;
 use tilo_sheets::add_app::{AddAppEffect, AddSeat, Offer};
@@ -49,6 +49,9 @@ pub(crate) struct AppSheets {
     /// The uninstalls answered, until the registry's reading shows them
     /// gone.
     uninstalling: RefCell<Vec<Uninstalling>>,
+    /// The last failure the person was told of: the registry's failures are
+    /// said once, in the order they happened.
+    reported: Cell<u64>,
 }
 
 /// An app the person said to uninstall, and what the sheet said would go.
@@ -75,6 +78,7 @@ impl AppSheets {
             asked: RefCell::new(BTreeSet::new()),
             wanted: RefCell::new(VecDeque::new()),
             uninstalling: RefCell::new(Vec::new()),
+            reported: Cell::new(0),
         }
     }
 
@@ -89,22 +93,30 @@ impl AppSheets {
         self.uninstall.as_ref()
     }
 
-    /// Ask the person whether to uninstall the app whose entry is
-    /// `desktop_id`: the question stands on the uninstall sheet until they
-    /// answer it.
-    pub(crate) fn ask_uninstall(&self, desktop_id: &str) {
+    /// Ask the person whether to uninstall `app`, named by its entry's id or
+    /// by the name they know it by: the question stands on the uninstall
+    /// sheet until they answer it. Asked about its id, so the same app asked
+    /// about twice is asked once.
+    pub(crate) fn ask_uninstall(&self, app: &str) {
+        let reading = self.reading();
+        let asked = reading
+            .as_ref()
+            .and_then(|reading| app_named(reading, app))
+            .map_or_else(|| app.trim().to_owned(), |app| app.desktop_id.clone());
         let mut wanted = self.wanted.borrow_mut();
-        if !wanted.iter().any(|queued| queued == desktop_id) {
-            wanted.push_back(desktop_id.to_owned());
+        if !wanted.iter().any(|queued| *queued == asked) {
+            wanted.push_back(asked);
         }
     }
 
     /// Carry out what the person answered on either sheet, ask the next
-    /// question, and say what a finished uninstall did.
+    /// question, and say what a finished uninstall did — or why one did not
+    /// happen.
     pub(crate) fn follow(&self) {
         let reading = self.reading();
         self.follow_add(reading.as_ref());
         self.follow_uninstall(reading.as_ref());
+        self.follow_failures(reading.as_ref());
     }
 
     /// The registry's reading now: the apps the person has and the programs
@@ -225,10 +237,10 @@ impl AppSheets {
         if self.standing() {
             return;
         }
-        let Some(desktop_id) = self.wanted.borrow_mut().pop_front() else {
+        let Some(asked) = self.wanted.borrow_mut().pop_front() else {
             return;
         };
-        match question(reading, &desktop_id) {
+        match question(reading, &asked) {
             Some(app) => {
                 seat.show(app);
                 seat.presentation().open(false);
@@ -268,6 +280,42 @@ impl AppSheets {
         }
     }
 
+    /// Say what the registry could not do: the person answered a question or
+    /// chose a row and nothing happened, so this is why. Said once each, as
+    /// the registry counts its attempts.
+    fn follow_failures(&self, reading: Option<&DownloadedApps>) {
+        let Some(reading) = reading else {
+            return;
+        };
+        let mut reported = self.reported.get();
+        for failure in &reading.failures {
+            if failure.attempt <= reported {
+                continue;
+            }
+            reported = failure.attempt;
+            // A failed uninstall leaves the app where it was: nothing more
+            // comes of it, and the notice for the failure is the one to show.
+            self.uninstalling
+                .borrow_mut()
+                .retain(|pending| pending.desktop_id != failure.subject);
+            let name = ArgValue::Text(failure.name.clone());
+            let title = match failure.doing {
+                DownloadedDoing::Add => t_args("app-list-add-failed", &[("name", name)]),
+                DownloadedDoing::Locate => t_args("app-list-locate-failed", &[("name", name)]),
+                DownloadedDoing::Remove => t_args("app-list-remove-failed", &[("name", name)]),
+                DownloadedDoing::Uninstall => {
+                    t_args("app-list-uninstall-failed", &[("name", name)])
+                }
+            };
+            self.notices.post(
+                Notification::new(title, failure.detail.clone())
+                    .with_severity(NotificationSeverity::Error)
+                    .with_app_name(t("app-list-app-name")),
+            );
+        }
+        self.reported.set(reported);
+    }
+
     /// Say what a finished uninstall did, as the question said what would
     /// go.
     fn tell_uninstalled(&self, pending: &Uninstalling) {
@@ -291,13 +339,10 @@ impl AppSheets {
     }
 }
 
-/// What the uninstall sheet is asked: the app whose entry is `desktop_id`,
-/// and every copy of it that would go to the Trash.
-fn question(reading: Option<&DownloadedApps>, desktop_id: &str) -> Option<App> {
-    let app = reading?
-        .apps
-        .iter()
-        .find(|app| app.desktop_id == desktop_id)?;
+/// What the uninstall sheet is asked: the app `asked` names, and every copy
+/// of it that would go to the Trash.
+fn question(reading: Option<&DownloadedApps>, asked: &str) -> Option<App> {
+    let app = app_named(reading?, asked)?;
     let copies: Vec<PathBuf> = if app.copies.is_empty() {
         vec![PathBuf::from(&app.file)]
     } else {
@@ -312,6 +357,22 @@ fn question(reading: Option<&DownloadedApps>, desktop_id: &str) -> Option<App> {
             home: tilo_paths::home(),
         },
     })
+}
+
+/// The app of `reading` that `asked` names: by its entry's id, or by the
+/// name the person knows it by (trimmed, in any case).
+fn app_named<'a>(reading: &'a DownloadedApps, asked: &str) -> Option<&'a wire::DownloadedApp> {
+    let asked = asked.trim();
+    reading
+        .apps
+        .iter()
+        .find(|app| app.desktop_id == asked)
+        .or_else(|| {
+            reading
+                .apps
+                .iter()
+                .find(|app| app.name.eq_ignore_ascii_case(asked))
+        })
 }
 
 /// The program an offer asks about, as the add sheet shows it.
@@ -642,7 +703,12 @@ mod tests {
             "Tilo Imager",
             &[applications.clone(), downloads.clone()],
         );
-        desk.until("the app", || !desk.apps().is_empty());
+        // The entry is written once per copy, so the registry's reading may
+        // first land between the two writes: wait for the one that lists
+        // every copy, which is what the question is built from.
+        desk.until("the app, with every copy of it", || {
+            desk.apps().first().is_some_and(|app| app.copies.len() == 2)
+        });
 
         // The question lists every copy that goes, and where they are.
         desk.sheets.ask_uninstall(&desktop_id);

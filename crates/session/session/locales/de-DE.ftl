@@ -40,7 +40,8 @@ display-tool-reapply-refused = { $tool } wollte eine Anzeigeanordnung erneut anw
 display-tool-reapply-refused-unknown = Ein Anzeigewerkzeug wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
 
 ## Die eigenen Ressourcen der Sitzung: die Eingabegeräte, der Bildschirm, das
-## Nachtlicht, die Lupe, die Bildschirme und die Zwischenablage.
+## Nachtlicht, die Lupe, die Bildschirme, die Zwischenablage und die Fragen zu
+## den Apps der Person.
 session-input = Eingabegeräte
 session-toggle-touchpad = Touchpad ein- oder ausschalten
 session-param-touchpad-on = Ob das Touchpad an ist; weglassen zum Umschalten
@@ -74,6 +75,9 @@ session-param-displays-mode = Wie die Bildschirme zusammen genutzt werden: erwei
 session-clipboard = Zwischenablage
 session-clipboard-paste-files = Dateien hier einfügen
 session-param-paste-destination = Der Ordner, in den die kopierten Dateien eingefügt werden
+session-apps = Apps
+session-apps-uninstall = Eine App deinstallieren
+session-param-app = Der Name der App
 
 ## A timer Clocks ran in the background has come due.
 clock-due-title = Uhren
@@ -95,3 +99,7 @@ app-list-uninstalled = { $name } deinstalliert
 app-list-uninstalled-file = Ihre Datei liegt im Papierkorb.
 app-list-uninstalled-files = Alle ihre Kopien liegen im Papierkorb.
 app-list-removed = { $name } aus deinen Apps entfernt
+app-list-add-failed = { $name } konnte nicht zu deinen Apps hinzugefügt werden
+app-list-locate-failed = { $name } wurde nicht gefunden
+app-list-remove-failed = { $name } konnte nicht aus deinen Apps entfernt werden
+app-list-uninstall-failed = { $name } konnte nicht deinstalliert werden

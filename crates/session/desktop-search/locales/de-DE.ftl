@@ -67,3 +67,5 @@ search-downloaded-program = Programm
 search-downloaded-missing = Diese App ist nicht auffindbar
 search-downloaded-locate = { $name } suchen
 search-downloaded-add = { $name } zu den Apps hinzufügen
+search-downloaded-uninstall = { $name } deinstallieren
+search-downloaded-remove = { $name } aus den Apps entfernen

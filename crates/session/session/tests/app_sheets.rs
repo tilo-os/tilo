@@ -6,6 +6,9 @@
 //! Uninstalling takes every copy to the Trash and says so; keeping the app
 //! changes nothing; and asking about an app that is not there any more says
 //! so rather than leaving a question standing about it.
+//!
+//! Search's Uninstall row asks that same question, and an uninstall that
+//! cannot move the app's file says why instead of quietly doing nothing.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -23,6 +26,7 @@ use std::time::{Duration, Instant};
 
 use tilo_actions::ResourceSpec;
 use tilo_compositor::OutputConfig;
+use tilo_desktop::desktop_actions::{DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
 use tilo_session::{Options, Session};
 
 const WIDTH: i32 = 1280;
@@ -119,6 +123,56 @@ fn notices(session: &Session) -> Vec<(String, String)> {
         .iter()
         .map(|notice| (notice.title.clone(), notice.body.clone()))
         .collect()
+}
+
+/// The rows the open search shows now.
+fn rows(session: &Session) -> Vec<ResourceSpec> {
+    fn find(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                Some(resource.clone())
+            } else {
+                find(&resource.children, id)
+            }
+        })
+    }
+    find(&session.resources(), SEARCH_RESOURCE)
+        .map(|search| search.children)
+        .unwrap_or_default()
+}
+
+/// Search for `query`, as the person does, and wait for its rows.
+fn search(session: &mut Session, query: &str) {
+    let arguments = serde_json::json!({"query": query})
+        .as_object()
+        .expect("an object")
+        .clone();
+    session
+        .invoke(DESK_RESOURCE, "open-search", &arguments)
+        .expect("the desk opens search");
+    until(session, "search's rows", |session| {
+        !rows(session).is_empty()
+    });
+}
+
+/// Press the search row titled `title`, as the person does.
+#[track_caller]
+fn choose_row(session: &mut Session, title: &str) {
+    until(session, &format!("the row {title}"), |session| {
+        row(session, title).is_some()
+    });
+    let chosen = row(session, title).expect("the row asked for");
+    let arguments = serde_json::Map::new();
+    session
+        .invoke(chosen.id.as_str(), "choose", &arguments)
+        .expect("the row is chosen");
+}
+
+/// The open search's row titled `title`.
+fn row(session: &Session, title: &str) -> Option<ResourceSpec> {
+    rows(session)
+        .into_iter()
+        .find(|row| row.kind == SEARCH_ROW_KIND && row.label == title)
 }
 
 /// Run the session until `done` holds, or fail saying what never happened.
@@ -306,5 +360,129 @@ fn asking_about_an_app_that_is_not_there_any_more_says_so() {
             "App not found".to_owned(),
             "It's no longer in your apps.".to_owned()
         )]
+    );
+}
+
+/// Search lists the app the person downloaded with the rows that act on it,
+/// under the app's own row; choosing "Uninstall Tilo Imager" puts the
+/// question on the desk, and answering it uninstalls the app.
+#[test]
+fn the_uninstall_row_of_a_downloaded_app_asks_the_question() {
+    let _settled = ui::motion::testing::settled();
+    let home = tilo_test_env::TestHome::new().expect("a home");
+    let file = home.home().join("Applications/Tilo Imager.AppImage");
+    let desktop_id = app(&home, "tilo-imager", "Tilo Imager", &[&file]);
+    let mut session = session();
+    until(&mut session, "the app is in their apps", |session| {
+        published(session, &desktop_id)
+    });
+
+    search(&mut session, "tilo imager");
+    let uninstalling: Vec<String> = rows(&session)
+        .into_iter()
+        .map(|row| row.label)
+        .filter(|label| label.to_lowercase().contains("uninstall"))
+        .collect();
+    assert_eq!(
+        uninstalling,
+        ["Uninstall Tilo Imager"],
+        "one row uninstalls the app, and it is the one that asks"
+    );
+    choose_row(&mut session, "Uninstall Tilo Imager");
+    until(&mut session, "the question", |session| {
+        publisher(session, "confirm").is_some()
+    });
+    let labels = session.accessible_labels();
+    assert!(
+        labels.iter().any(|label| label == "Uninstall Tilo Imager?"),
+        "the question is the uninstall question: {labels:?}"
+    );
+    assert!(file.is_file(), "nothing goes before the person answers");
+
+    answer(&mut session, "confirm");
+    until(&mut session, "the app to leave their apps", |session| {
+        !published(session, &desktop_id)
+    });
+    assert!(!file.exists(), "its file went to the Trash");
+    assert_eq!(
+        notices(&session),
+        [(
+            "Uninstalled Tilo Imager".to_owned(),
+            "Its file is in the Trash.".to_owned()
+        )]
+    );
+}
+
+/// "Uninstall an app", the question's own row, asks about the app by the
+/// name the person types: the same question the app's row asks.
+#[test]
+fn the_uninstall_question_takes_the_app_by_name() {
+    use tilo_desktop_search::providers::downloaded::{APP_PARAM, APPS_RESOURCE, ASK_UNINSTALL};
+
+    let _settled = ui::motion::testing::settled();
+    let home = tilo_test_env::TestHome::new().expect("a home");
+    let file = home.home().join("Applications/Tilo Imager.AppImage");
+    let desktop_id = app(&home, "tilo-imager", "Tilo Imager", &[&file]);
+    let mut session = session();
+    until(&mut session, "the app is in their apps", |session| {
+        published(session, &desktop_id)
+    });
+
+    let mut arguments = serde_json::Map::new();
+    arguments.insert(APP_PARAM.to_owned(), "tilo imager".into());
+    session
+        .invoke(APPS_RESOURCE, ASK_UNINSTALL, &arguments)
+        .expect("the question is offered");
+    until(&mut session, "the question", |session| {
+        publisher(session, "confirm").is_some()
+    });
+    let labels = session.accessible_labels();
+    assert!(
+        labels.iter().any(|label| label == "Uninstall Tilo Imager?"),
+        "the name finds the app: {labels:?}"
+    );
+    assert!(file.is_file(), "nothing goes before the person answers");
+}
+
+/// An uninstall that cannot move the app's file says so, and leaves the app
+/// and its file where they were.
+#[test]
+fn an_uninstall_that_cannot_trash_the_file_says_so() {
+    let _settled = ui::motion::testing::settled();
+    let home = tilo_test_env::TestHome::new().expect("a home");
+    let file = home.home().join("Applications/Dropped.AppImage");
+    let desktop_id = app(&home, "Dropped", "Dropped Tool", &[&file]);
+    // Nothing can be moved into a Trash that is not a folder.
+    std::fs::write(home.data().join("Trash"), b"a file where the Trash goes").expect("the Trash");
+    let mut session = session();
+    until(&mut session, "the app is in their apps", |session| {
+        published(session, &desktop_id)
+    });
+
+    session.ask_uninstall(&desktop_id);
+    until(&mut session, "the question", |session| {
+        publisher(session, "confirm").is_some()
+    });
+    answer(&mut session, "confirm");
+    until(&mut session, "the notice", |session| {
+        !notices(session).is_empty()
+    });
+    let shown = notices(&session);
+    let [(title, body)] = shown.as_slice() else {
+        panic!("one notice says it: {shown:?}");
+    };
+    assert_eq!(title, "Couldn't uninstall Dropped Tool");
+    assert!(
+        body.contains("Trash"),
+        "the notice says what stopped it: {body}"
+    );
+    assert!(file.is_file(), "the app's file stays");
+    assert!(
+        published(&session, &desktop_id),
+        "and the app stays in their apps"
+    );
+    assert!(
+        publisher(&session, "confirm").is_none(),
+        "the question is taken down"
     );
 }

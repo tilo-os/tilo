@@ -1,6 +1,13 @@
 //! What a person does with the programs they downloaded: answer the offer
 //! to add one to their apps, and point, take off or uninstall an app that is
 //! already there.
+//!
+//! These are the work, not the rows: a person adds a program by choosing the
+//! offer search lists for it ([`crate::downloaded::Offer`] carries the file),
+//! and uninstalling asks first, which only the session's own question does.
+//! Every action here is therefore listed for agents and scripts and never in
+//! a person's listings ([`tilo_actions::Audience::Agents`]), so an app is
+//! removed or added once, from the one row that names it.
 
 use tilo_resource::{AbsolutePath, Effect};
 
@@ -12,6 +19,7 @@ pub enum DownloadedAppsAction {
     /// Add this program to your apps.
     #[effect(
         own_device,
+        audience = "agents",
         icon = "plus",
         keywords = "add app, appimage, downloaded program, add to apps, hinzufügen"
     )]
@@ -25,6 +33,7 @@ pub enum DownloadedAppsAction {
     #[effect(
         own_device,
         idempotent,
+        audience = "agents",
         icon = "x",
         keywords = "do not add, decline, ignore, downloaded program, ablehnen"
     )]
@@ -41,6 +50,7 @@ pub enum DownloadedAppAction {
     /// Point this app at its file, wherever it is now.
     #[effect(
         own_device,
+        audience = "agents",
         icon = "search",
         keywords = "locate, find file, missing file, moved, wiederfinden"
     )]
@@ -52,6 +62,7 @@ pub enum DownloadedAppAction {
     #[effect(
         own_device,
         idempotent,
+        audience = "agents",
         icon = "x",
         keywords = "remove from apps, take off, forget, entfernen"
     )]
@@ -61,6 +72,7 @@ pub enum DownloadedAppAction {
     #[effect(
         own_device,
         destructive,
+        audience = "agents",
         icon = "trash",
         keywords = "uninstall, delete, trash, remove app, deinstallieren"
     )]

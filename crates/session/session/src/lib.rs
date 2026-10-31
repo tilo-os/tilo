@@ -2028,10 +2028,10 @@ impl Session {
         self.shared.app_sheets.uninstall()
     }
 
-    /// Ask the person whether to uninstall the app whose entry is
-    /// `desktop_id`, which the downloaded programs' registry lists.
-    pub fn ask_uninstall(&self, desktop_id: &str) {
-        self.shared.app_sheets.ask_uninstall(desktop_id);
+    /// Ask the person whether to uninstall `app`, by its entry's id in the
+    /// downloaded programs' registry or by the name they know it by.
+    pub fn ask_uninstall(&self, app: &str) {
+        self.shared.app_sheets.ask_uninstall(app);
     }
 
     /// Workspace settings' seat: what it shows, kept current by whoever
@@ -2663,6 +2663,10 @@ impl Session {
                 {
                     tracing::warn!(%error, "the input source choice was not kept");
                 }
+                Ok(())
+            }
+            SessionCommand::AskUninstall { app } => {
+                self.shared.app_sheets.ask_uninstall(&app);
                 Ok(())
             }
             SessionCommand::SetTouchpad { on } => {
