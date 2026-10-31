@@ -109,7 +109,10 @@ const SHELL_FILES: &[(&str, &str)] = &[
         "people.tl",
         include_str!("../../../../apps/tl/shell/people.tl"),
     ),
-    ("rooms.tl", include_str!("../../../../apps/tl/shell/rooms.tl")),
+    (
+        "rooms.tl",
+        include_str!("../../../../apps/tl/shell/rooms.tl"),
+    ),
     (
         "scenarios.tl",
         include_str!("../../../../apps/tl/shell/scenarios.tl"),
@@ -156,14 +159,18 @@ pub const fn shell_ids() -> &'static str {
     SHELL_IDS
 }
 
-/// The shell's bar layer: the `bar` view over the `Desk` root. The shell package has two
-/// roots (`Desk` and its `Arrangement`), so each layer names its own; the bar is never "the
-/// first root's default view".
+/// The shell's layer over the desk: the `desk` view over the `Desk` root, the bar and the
+/// surface under it. The shell package has two roots (`Desk` and its `Arrangement`), so each
+/// layer names its own; the part is never "the first root's default view".
+///
+/// The part lays the whole desk view out at its band, so at rest only the bar's band shows and
+/// a closed surface lays nothing out below it; while a surface or a menu of the bar's is up the
+/// part covers the outputs and the same view has the room to show it.
 #[must_use]
 pub fn bar_layer() -> RootView {
     RootView {
         root: Some("Desk".to_owned()),
-        view: Some("bar".to_owned()),
+        view: Some("desk".to_owned()),
     }
 }
 
@@ -699,7 +706,11 @@ impl SessionOrigin {
             text(&reading.spotlight),
             reading.spotlight != was.spotlight,
         );
-        set("banner", text(&reading.banner), reading.banner != was.banner);
+        set(
+            "banner",
+            text(&reading.banner),
+            reading.banner != was.banner,
+        );
         let mut writes = Vec::new();
         if !fields.is_empty() {
             writes.push(OriginWrite::Set {
@@ -838,8 +849,7 @@ impl SessionOrigin {
                 },
             ));
         }
-        if let (Ok(ty), Some(collection)) = (kind("notice_action"), field(desk, "notice_actions"))
-        {
+        if let (Ok(ty), Some(collection)) = (kind("notice_action"), field(desk, "notice_actions")) {
             writes.extend(sync_items(
                 &mut self.notice_actions,
                 &reading.notice_actions,
@@ -1987,16 +1997,10 @@ impl ShellPart {
 
 #[cfg(test)]
 mod tests_support {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "test fixtures"
-    )]
+    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
 
     use super::*;
     use tilo_compositor::KeyModifiers;
-
-    pub(super) const IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
 
     /// A desk at rest with two windows and two workspaces.
     pub(super) fn reading_with_windows() -> DeskReading {
@@ -2030,19 +2034,18 @@ mod tests_support {
 
     /// A part over `reading`, its outputs set.
     pub(super) fn part_with(reading: DeskReading) -> (ShellPart, Rc<SessionLink>) {
-        let lock = tilolang_tilo::tilolang::IdsLock::parse(IDS).unwrap();
-        let compiled = tilolang_tilo::tilolang::compile_package_source(
-            &crate::shell_part::package_source(),
-            &lock,
-            &[],
-        )
-        .unwrap();
-        let app = compiled.meta.app.clone();
+        let packages = crate::shell_part::compile_shell().unwrap_or_else(|why| panic!("{why}"));
+        let app = packages
+            .last()
+            .expect("the shell compiles last")
+            .meta
+            .app
+            .clone();
         let link = Rc::new(SessionLink::default());
         link.publish(reading);
         let mut part = ShellPart::new(
             &app,
-            vec![compiled],
+            packages,
             "Pat",
             Rc::clone(&link),
             32,
@@ -2282,11 +2285,7 @@ mod tests {
 
 #[cfg(test)]
 mod surface_keys {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "test fixtures"
-    )]
+    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
 
     use super::tests_support::{alt, key, part_with, reading_with_windows, tab};
     use tilo_compositor::{KeyClaim, SurfaceHost as _};
@@ -2362,10 +2361,14 @@ mod surface_keys {
             (1280, 800),
             "the launcher has the desk's room"
         );
-        assert!(part.accepts_pointer(640.0, 400.0), "the launcher takes presses");
+        assert!(
+            part.accepts_pointer(640.0, 400.0),
+            "the launcher takes presses"
+        );
     }
 
     fn escape() -> tilo_compositor::HostKey {
         key(0xff1b, true)
     }
 }
+

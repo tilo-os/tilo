@@ -227,16 +227,16 @@ pub const KINDS: &[OriginKind] = &[
         doc: "A window of the desk: a tab of a strip in the workspace in front.",
         derived: true,
         fields: &[
-            field("key", "Text", "The tab's id, as moving or closing it names it."),
+            field(
+                "key",
+                "Text",
+                "The tab's id, as moving or closing it names it.",
+            ),
             field("title", "Text", "Its title."),
             field("origin_app", "Text", "The app it shows, by its name here."),
             field("icon", "Text", "The app's glyph, as the icon set names it."),
             field("strip", "Text", "The strip it is in, by its name."),
-            field(
-                "workspace",
-                "Text",
-                "The workspace it is in, by its name.",
-            ),
+            field("workspace", "Text", "The workspace it is in, by its name."),
             field(
                 "recency",
                 "Int",
@@ -263,7 +263,11 @@ pub const KINDS: &[OriginKind] = &[
         fields: &[
             field("key", "Text", "The agent's id."),
             field("name", "Text", "Its name here."),
-            field("state", "Text", "`running`, `waiting` (for the person) or `done`."),
+            field(
+                "state",
+                "Text",
+                "`running`, `waiting` (for the person) or `done`.",
+            ),
             field("doing", "Text", "What it is on, in a few words."),
             field(
                 "mark",
@@ -282,7 +286,11 @@ pub const KINDS: &[OriginKind] = &[
         doc: "A workspace the person is in, as the workspace overview names it.",
         derived: true,
         fields: &[
-            field("key", "Text", "The workspace's id, as switching to it names it."),
+            field(
+                "key",
+                "Text",
+                "The workspace's id, as switching to it names it.",
+            ),
             field("name", "Text", "Its name."),
             field("current", "Bool", "Whether it is the one in front."),
             field(
@@ -291,7 +299,11 @@ pub const KINDS: &[OriginKind] = &[
                 "Who is in it, by their names, in the person's language.",
             ),
             field("present", "Int", "How many people are in it now."),
-            field("activity", "Text", "What happened in it last, in a few words."),
+            field(
+                "activity",
+                "Text",
+                "What happened in it last, in a few words.",
+            ),
         ],
     },
     OriginKind {
@@ -299,18 +311,30 @@ pub const KINDS: &[OriginKind] = &[
         doc: "A notification in the centre, as its sender or its task named it.",
         derived: true,
         fields: &[
-            field("key", "Text", "The notification's id, as acting on it names it."),
+            field(
+                "key",
+                "Text",
+                "The notification's id, as acting on it names it.",
+            ),
             field("title", "Text", "What happened, in a short sentence."),
             field("body", "Text", "What it says, under the title."),
-            field("origin_app", "Text", "The app that sent it, or the agent's task."),
             field(
-                "icon",
+                "origin_app",
                 "Text",
-                "Its glyph, as the icon set names it.",
+                "The app that sent it, or the agent's task.",
             ),
-            field("kind", "Text", "Its kind: `info`, `success`, `warning` or `error`."),
+            field("icon", "Text", "Its glyph, as the icon set names it."),
+            field(
+                "kind",
+                "Text",
+                "Its kind: `info`, `success`, `warning` or `error`.",
+            ),
             field("read", "Bool", "Whether the person has seen it."),
-            field("group", "Text", "What it is grouped under: its app or its task."),
+            field(
+                "group",
+                "Text",
+                "What it is grouped under: its app or its task.",
+            ),
             field(
                 "wants_reply",
                 "Bool",

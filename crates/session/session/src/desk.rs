@@ -35,7 +35,9 @@ pub(crate) enum DeskEffect {
     },
     /// Show the surface `surface` over the desk's windows, or close it when it is up.
     ShowSurface {
-        #[param("The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `workspaces` or `composer`")]
+        #[param(
+            "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `workspaces` or `composer`"
+        )]
         surface: String,
     },
     /// Close the surface `surface`, when it is the one up.
@@ -185,9 +187,10 @@ impl Desk {
     fn windows_reaching(&self, tree: &DesktopTree) -> Vec<shell_part::WindowReading> {
         let mut windows = windows(tree);
         if self.surfaces.here() == "switcher"
-            && let Some(at) = self
-                .surfaces
-                .reached(windows.len(), windows.iter().position(|window| window.focused))
+            && let Some(at) = self.surfaces.reached(
+                windows.len(),
+                windows.iter().position(|window| window.focused),
+            )
         {
             for (index, window) in windows.iter_mut().enumerate() {
                 window.focused = index == at;
@@ -360,9 +363,11 @@ impl Desk {
             )
             .and_then(|walk| {
                 let front = i64::try_from(front.unwrap_or(0)).unwrap_or(0);
-                usize::try_from(front.saturating_add(walk).rem_euclid(
-                    i64::try_from(windows.len()).unwrap_or(1),
-                ))
+                usize::try_from(
+                    front
+                        .saturating_add(walk)
+                        .rem_euclid(i64::try_from(windows.len()).unwrap_or(1)),
+                )
                 .ok()
             })
         };
@@ -426,9 +431,9 @@ impl Service for Desk {
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::DismissNotice { notice } = &effect {
-            let id = notice
-                .parse::<u64>()
-                .map_err(|_| DoorError::InvalidArguments(format!("`{notice}` is no notice's id")))?;
+            let id = notice.parse::<u64>().map_err(|_| {
+                DoorError::InvalidArguments(format!("`{notice}` is no notice's id"))
+            })?;
             self.notices.dismiss_history(id);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }

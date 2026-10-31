@@ -71,21 +71,3 @@ view agent_line(a: Agent) {
         on activate: open_task(a.key)
     }
 }
-
-/// Who is here in the workspace in front, and what the person's agents are doing, each opening
-/// its menu. The desk shows it at rest, and the overview's strips show the same people on the
-/// windows they are on.
-view here_now(d: Desk) {
-    if not d.people.is_empty() or not d.agents.is_empty() {
-        ui.Section("Here") {
-            row(gap: .related, wrap: true) {
-                for p in d.people {
-                    person_chip(p)
-                }
-                for a in d.agents.filter(a -> a.state != "done") {
-                    agent_chip(a)
-                }
-            }
-        }
-    }
-}

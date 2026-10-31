@@ -261,16 +261,19 @@ view presence(d: Desk) {
     row(gap: .sibling, align: .center, distribute: .end) {
         if not space.compact {
             for p in d.people {
-                ui.Button(p.name, icon: .user, icon_only: true, role: .plain) {
-                    on press: show_person(p.key)
-                }
+                person_chip(p)
             }
             if d.person != "" {
                 ui.Avatar(name: .some(d.person))
             }
         }
-        ui.Button(if d.unread > 0 { "{d.unread}" } else { "Notifications" }, icon: if d.quiet { .bell_off } else { .bell }, icon_only: d.unread == 0, role: .bar) {
-            on press: status(d)
+        row(gap: .tight, align: .center) {
+            ui.Button(if d.unread > 0 { "Notifications, {d.unread} unread" } else { "Notifications" }, icon: if d.quiet { .bell_off } else { .bell }, icon_only: true, role: .bar) {
+                on press: status(d)
+            }
+            if d.unread > 0 {
+                ui.Badge(count: d.unread)
+            }
         }
     }
 }

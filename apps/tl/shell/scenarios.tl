@@ -232,6 +232,7 @@ action seed_notices(d: Desk) -> Int {
     d.notices.insert(Notice(key: "n5", title: "Ada shared a notebook", body: "Launch checklist is now yours to edit.", origin_app: "Chat", group: "Chat", kind: "info", read: true))
     d.notices.insert(Notice(key: "n6", title: "Backup finished", body: "Your laptop backed up 12 GB of changes.", origin_app: "Settings", group: "Settings", kind: "success", read: true))
     return d.notices.len()
+}
 
 /// Adds a workspace, with one row, to `a`, and returns the row's key.
 action a_workspace(a: Arrangement, name: Text) -> Text {
@@ -357,3 +358,4 @@ scenario "resources standing as content" -> Arrangement {
         i += 1
     }
     a
+}

@@ -545,7 +545,9 @@ fn the_bars_overview_shows_every_window_and_picking_one_brings_it_front() {
         .find(|w| w.key == first.to_string())
         .map(|w| w.title.clone())
         .expect("the notes window is one of them");
-    until(&mut session, |session| session.shell_control(&notes).is_some());
+    until(&mut session, |session| {
+        session.shell_control(&notes).is_some()
+    });
     press(&mut session, &notes);
     until(&mut session, |session| {
         session.handle().read(|tree| {
@@ -630,10 +632,7 @@ fn the_notification_centre_lists_a_notice_and_it_dismisses() {
         .invoke(
             tilo_surface_host::shell_part::DESK_RESOURCE,
             "dismiss-notice",
-            &serde_json::Map::from_iter([(
-                "notice".to_owned(),
-                serde_json::Value::String(id),
-            )]),
+            &serde_json::Map::from_iter([("notice".to_owned(), serde_json::Value::String(id))]),
         )
         .unwrap();
     until(&mut session, |session| desk(session).notices.is_empty());
@@ -697,7 +696,8 @@ fn a_persons_presence_opens_their_menu() {
     until(&mut session, |session| says(session, &desk(session).clock));
     // Someone else here, as the collaboration plane lists them.
     let mut member = tilo_desktop::here::LiveMember::default();
-    member.publisher = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd".to_owned();
+    member.publisher =
+        "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd".to_owned();
     member.kind = "person".to_owned();
     member.label = "Mia Clayton".to_owned();
     session

@@ -30,7 +30,7 @@ view overview(d: Desk) {
         }
         rooms_here(d)
         if query == "" {
-            for s in strips_of(here) {
+            for s in window_strips(here) {
                 picture(d, here, s)
             }
         } else {
@@ -148,13 +148,13 @@ view window_line(d: Desk, w: Win) {
     }
 }
 
-/// The strips of a list of windows, by name, in the order the windows stand in them.
-fn strips_of(windows: List<Win>) -> List<Text> {
+/// The strips a list of windows names, by name, in the order the windows stand in them.
+fn window_strips(windows: List<Win>) -> List<Text> {
     let in_order = windows.sort_by(w -> w.recency).map(w -> w.strip).filter(s -> s != "")
     return in_order.group(s -> s).map(p -> p.key)
 }
 
 /// The names of the strips of `workspace`, as the desk's windows name them.
 fn strip_names(d: Desk, workspace: Text) -> List<Text> {
-    return strips_of(d.windows.filter(w -> w.workspace == workspace))
+    return window_strips(d.windows.filter(w -> w.workspace == workspace))
 }
