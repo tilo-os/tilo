@@ -204,9 +204,7 @@ impl Published {
                 state.search_context.dictating,
                 state.notification_log().history().is_empty(),
                 state.can_undo_notification_history_clear(),
-                crate::bluetooth::PairingPromptHandle::global()
-                    .current()
-                    .is_some(),
+                state.pairing.current().is_some(),
             ],
         }
     }

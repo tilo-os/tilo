@@ -1336,9 +1336,7 @@ pub(crate) fn action_available(id: &str, chrome: &ChromeState, display_waiting: 
         "dictation.finish" | "dictation.cancel" => chrome.search_context.dictating,
         "notifications.clear" => !chrome.notification_log().history().is_empty(),
         "notifications.clear.undo" => chrome.can_undo_notification_history_clear(),
-        BLUETOOTH_PAIRING_DECLINE_ID => crate::bluetooth::PairingPromptHandle::global()
-            .current()
-            .is_some(),
+        BLUETOOTH_PAIRING_DECLINE_ID => chrome.pairing.current().is_some(),
         _ => true,
     }
 }
@@ -1350,8 +1348,11 @@ pub(crate) fn action_available(id: &str, chrome: &ChromeState, display_waiting: 
 /// means comparing a code with the device in front of you, or typing the one
 /// it shows; only the person at this machine can do that, on the dialog
 /// itself. An agent or a script can always say no, and never yes.
-pub(crate) fn decline_bluetooth_pairing() -> Result<(), ActionError> {
-    if crate::bluetooth::PairingPromptHandle::global().dismiss() {
+pub(crate) fn decline_bluetooth_pairing(
+    chrome: &mut ChromeState,
+    _: &ActionArgs,
+) -> Result<(), ActionError> {
+    if chrome.pairing.dismiss() {
         Ok(())
     } else {
         Err(ActionError::Refused(

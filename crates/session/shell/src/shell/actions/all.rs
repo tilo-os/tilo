@@ -631,7 +631,7 @@ impl Action {
             "search-action-bluetooth-pairing-decline",
             "search-action-bluetooth-pairing-decline-subtitle",
             "search-kw-bluetooth-pairing-decline",
-            |_, _| decline_bluetooth_pairing(),
+            decline_bluetooth_pairing,
         ),
         chrome(
             "capture.open",

@@ -27,7 +27,10 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+#[path = "shortcut_recorder_component.rs"]
+mod component;
 use crate::widget::{InputHint, LegendConventions, TaffyTreeExt, Widget};
+pub use component::ShortcutRecorderProps;
 
 pub struct ShortcutRecorder {
     id: String,
@@ -55,6 +58,8 @@ pub struct ShortcutRecorder {
     gap: f64,
     /// The theme of the latest layout, for measuring the keycaps.
     layout_theme: Option<Theme>,
+    /// What a recorded chord is reported to, as a described component's binding path does.
+    edits: Option<crate::component::Bound<String>>,
 }
 
 impl ShortcutRecorder {
@@ -80,6 +85,7 @@ impl ShortcutRecorder {
             reset_edge: f64::from(crate::tokens::Metrics::BASE.bar_control_height),
             gap: f64::from(crate::tokens::Spacing::BASE.s2),
             layout_theme: None,
+            edits: None,
         }
     }
 
@@ -97,6 +103,34 @@ impl ShortcutRecorder {
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
         self
+    }
+
+    /// Report each recorded chord to the component binding `edits`, as a described component
+    /// does: the person's recording and reset, never a chord the view gave.
+    #[must_use]
+    pub fn on_edit(mut self, edits: crate::component::Bound<String>) -> Self {
+        self.edits = Some(edits);
+        self
+    }
+
+    /// The chord it shows.
+    #[must_use]
+    pub fn chord(&self) -> &str {
+        &self.value
+    }
+
+    /// The chord its reset puts back.
+    #[must_use]
+    pub fn default_chord(&self) -> &str {
+        &self.default
+    }
+
+    /// Show `chord` in place, as one set elsewhere.
+    pub fn set_chord(&mut self, chord: &str) {
+        if self.value != chord {
+            chord.clone_into(&mut self.value);
+            self.capturing = false;
+        }
     }
 
     fn reset_rect(&self) -> Option<Rect> {
@@ -150,6 +184,9 @@ impl ShortcutRecorder {
         } else {
             self.stored.publish(&value);
         }
+        if let Some(edits) = &self.edits {
+            edits.edited(crate::component::Value::Text(value.clone()));
+        }
         self.value = value;
         self.capturing = false;
     }
@@ -192,7 +229,9 @@ impl Widget for ShortcutRecorder {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.height = crate::widget::ControlSize::Regular.height(theme);
+        self.height = crate::widget::ControlSize::Regular
+            .height(theme)
+            .max(f64::from(self.interaction.minimum_target()));
         self.reset_edge = crate::widget::ControlSize::Small.height(theme);
         self.gap = f64::from(theme.tokens.spacing.s2);
         self.layout_theme = Some(theme.clone());
@@ -399,6 +438,7 @@ impl Widget for ShortcutRecorder {
         let mut state = AccessState::new().focusable(true).focused(self.focused);
         state.invalid = self.invalid;
         let mut node = AccessNode::new(Role::Button)
+            .with_bounds(self.interaction.minimum_target_rect(self.rect))
             .with_name("Change shortcut")
             .with_value(self.binding().accessible_label(self.platform))
             .with_state(state);
