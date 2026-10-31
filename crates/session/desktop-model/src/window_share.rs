@@ -26,15 +26,21 @@
 //! windows among them to the room, and every other member shows each as a
 //! tab of the sharer's window in its own layout, for as long as the share
 //! lasts.
+//!
+//! A window that closes ends its share as it goes
+//! ([`Workspace::end_window_shares`]): the grants are in the same workspace
+//! the close already changes, so the close retracts them itself, and the
+//! room stops naming a window that no longer exists.
 
 use std::collections::BTreeMap;
 
-use tilo_action_policy::share::share_id_prefix;
+use tilo_action_policy::share::{is_of_share, share_id_prefix};
 use tilo_action_policy::{
-    ActionKind, Answer, Context, Level, RoomPolicy, Segment, Subject, TreePath,
+    ActionKind, Answer, Context, GrantId, Level, RoomPolicy, Segment, Subject, TreePath,
 };
 
 use crate::ids::{TabId, device_salt_of_key, peer_salt_of};
+use crate::workspace::Workspace;
 
 /// Key of the room's governed device identities, by device key.
 const PEER_IDENTITIES_KEY: &str = "peer_identities_v1";
@@ -308,10 +314,26 @@ pub fn window_shares(
     shares
 }
 
+impl Workspace {
+    /// The window `tab` is gone: the share of it ends here, and with it the
+    /// share of what it showed ([`window_shows_share_id`] starts with the
+    /// window's own share id). [`Workspace::note_close`] calls it as it
+    /// applies a close, so the room's record stops naming the window the
+    /// moment it closes, and a window reopened afterwards carries no share of
+    /// the one that went. Answers the grants retracted, for whoever mirrors
+    /// the workspace's policy into the room's document.
+    pub fn end_window_shares(&mut self, tab: TabId) -> Vec<GrantId> {
+        let share = window_share_id(tab);
+        self.revoke_grants_matching(|grant| is_of_share(grant, &share))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tilo_action_policy::share::{ShareAccess, share_grants};
+
+    use crate::ids::compose_id;
 
     const ROOM: &str = "6f1d2c3b-4a59-4e8d-9c7b-1a2b3c4d5e6f";
 
@@ -470,6 +492,145 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// The device the two windows below run on, and the room's name for it.
+    const ANA: u16 = 0x0A51;
+    const APP: &str = "so.tilo.notes";
+    const NOTES: TabId = compose_id(ANA, 4);
+    const TERMINAL: TabId = compose_id(ANA, 5);
+    const GROUP: u64 = compose_id(ANA, 6);
+    const STRIP: u64 = compose_id(ANA, 7);
+
+    /// A workspace in [`ROOM`] holding one group of two windows, both shared
+    /// with the room — the first with the note it shows beside its own share
+    /// — and the room's devices, as its document lists them.
+    fn shared_windows() -> (Workspace, BTreeMap<u16, String>) {
+        use crate::app::AppKind;
+        use crate::ids::{RoomId, StripId, WorkspaceId};
+        use crate::layout::{Strip, Tab, TileContent, WindowGroup};
+        use crate::width::WindowWidth;
+
+        let window = |id: TabId, title: &str| Tab {
+            id,
+            title: title.into(),
+            tile: TileContent::AppPlaceholder {
+                kind: AppKind::Other(APP.into()),
+                label: title.into(),
+            },
+            app_title: None,
+        };
+        let mut workspace = Workspace::in_room(
+            WorkspaceId(1),
+            RoomId::parse(ROOM).expect("a room id"),
+            "Team",
+        );
+        workspace.strips = vec![Strip {
+            id: StripId(STRIP),
+            name: "Main".into(),
+            window_groups: vec![WindowGroup {
+                id: GROUP,
+                tabs: vec![window(NOTES, "Notes"), window(TERMINAL, "Terminal")],
+                active_tab: NOTES,
+                width: WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            }],
+        }];
+        for (id, node) in [
+            (window_share_id(NOTES), window_node(ROOM, APP, NOTES)),
+            (
+                window_shows_share_id(NOTES),
+                TreePath::room(ROOM)
+                    .app(APP)
+                    .kind("notes.notebook")
+                    .any(Level::Resource)
+                    .item("notes.page/pages/7"),
+            ),
+            (window_share_id(TERMINAL), window_node(ROOM, APP, TERMINAL)),
+        ] {
+            workspace.policy.grants.extend(
+                share_grants(ROOM, "ana", &id, &node, ShareAccess::View)
+                    .expect("one resource of the room"),
+            );
+        }
+        (workspace, BTreeMap::from([(ANA, "aa".to_owned())]))
+    }
+
+    #[test]
+    fn closing_a_window_ends_the_shares_it_showed() {
+        use crate::commands::{DesktopCommand, TabLocation, apply_command};
+        use crate::tree::DesktopTree;
+
+        let (mut workspace, owners) = shared_windows();
+        let shared = |workspace: &Workspace| {
+            window_shares(&workspace.policy, &owners, 1)
+                .keys()
+                .copied()
+                .collect::<Vec<TabId>>()
+        };
+        assert_eq!(
+            shared(&workspace),
+            [NOTES, TERMINAL],
+            "both windows are shared with the room"
+        );
+        assert_eq!(
+            window_shares(&workspace.policy, &owners, 1)[&NOTES].shows,
+            Some(WindowShows {
+                record: String::new(),
+                item: Some("notes.page/pages/7".into()),
+            }),
+            "the first window is shared as the note it is at"
+        );
+
+        // The person closes the first window: its share ends there, and what
+        // it showed goes with it.
+        let mut mint = || Ok(0_u64);
+        let mut create = |_: &str, _: u64| Err("a close opens no record".to_owned());
+        assert_eq!(
+            apply_command(
+                &mut workspace,
+                &DesktopCommand::CloseTab {
+                    location: TabLocation {
+                        strip: STRIP,
+                        group: GROUP,
+                        tab: NOTES,
+                    },
+                },
+                &mut mint,
+                &mut create,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            shared(&workspace),
+            [TERMINAL],
+            "the share of the closed window ended, and the room still shows the other"
+        );
+
+        // The window reopens where it was without the share that went: a
+        // window comes back, its share does not, and nobody shares it again
+        // but the person.
+        let mut tree = DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        let active = tree.active;
+        assert_eq!(
+            tree.reopen_closed(active).map(|put| put.tab),
+            Some(NOTES),
+            "the window is back"
+        );
+        assert_eq!(
+            shared(&tree.workspaces[0]),
+            [TERMINAL],
+            "a reopened window carries no share of the one that went"
+        );
+
+        // A window closed from its own bar ends its share the same way.
+        assert!(tree.close_tab(TERMINAL).is_some());
+        assert!(shared(&tree.workspaces[0]).is_empty());
     }
 
     #[test]

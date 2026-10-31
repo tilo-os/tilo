@@ -97,9 +97,11 @@ impl ClosedTabs {
 
 impl Workspace {
     /// Remember the window at `strip`, `group` and `tab` (indices) as closed,
-    /// so [`Self::reopen_closed`] puts it back. Called by the removal path
-    /// every close goes through, so whatever closed a window — its ✕, a
-    /// chord, a menu row, a window closed whole — the close can be undone.
+    /// so [`Self::reopen_closed`] puts it back, and end the shares it showed
+    /// ([`Self::end_window_shares`]): a window that closes stops being shared.
+    /// Called by the removal path every close goes through, so whatever closed
+    /// a window — its ✕, a chord, a menu row, a window closed whole — the
+    /// close can be undone and the room stops showing it.
     /// Returns whether there was such a window.
     pub fn note_close(&mut self, strip: usize, group: usize, tab: usize) -> bool {
         let Some((strip_id, holding)) = self
@@ -112,6 +114,7 @@ impl Workspace {
         let Some(closing) = holding.tabs.get(tab) else {
             return false;
         };
+        let closing_id = closing.id;
         let entry = ClosedTab {
             strip: strip_id,
             group: holding.id,
@@ -122,6 +125,7 @@ impl Workspace {
             tab: closing.relaunchable(),
         };
         self.closed_tabs.push(entry);
+        self.end_window_shares(closing_id);
         true
     }
 
