@@ -16,9 +16,10 @@
 
 use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, TileContent};
 use tilo_desktop_search::providers::{CommandSpec, WindowEntry};
-use tilo_desktop_search::{SearchData, Target};
+use tilo_desktop_search::{Reach, SearchData, Target};
 use ui::automerge::AutoCommit;
 use ui::kurbo::{Point, Rect};
+use ui::search::system::SearchScope;
 use ui::taffy::{NodeId, TaffyTree};
 use ui::widget::Widget;
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
@@ -140,9 +141,12 @@ fn typed_field(
 /// host, starting an app, opening an address.
 pub trait SearchHost {
     /// What to search beyond the desktop's own, in the workspace of room
-    /// `room`. Called as search opens, inside the desktop's update pass: it
+    /// `room`, narrowed to it unless `scope` is
+    /// [`SearchScope::All`](ui::search::system::SearchScope::All): then the
+    /// rows of every workspace are offered too, each saying which workspace
+    /// it is in. Called as search opens, inside the desktop's update pass: it
     /// reads what the host keeps, never the desktop's own tree.
-    fn feed(&self, room: &str) -> SearchHostFeed;
+    fn feed(&self, room: &str, scope: SearchScope) -> SearchHostFeed;
     /// Whether the host carries out `target` itself; the desktop then hands
     /// it back through [`DesktopHandle::take_search_choices`].
     fn performs(&self, target: &Target) -> bool;
@@ -602,8 +606,14 @@ fn commands(
 }
 
 impl DesktopSurface {
-    /// Open search over what the desktop has open now.
-    pub(super) fn open_search(&mut self, doc: &AutoCommit, query: Option<String>) {
+    /// Open search over what the desktop has open now: over the workspace in
+    /// front, or over every workspace when `every_workspace`.
+    pub(super) fn open_search(
+        &mut self,
+        doc: &AutoCommit,
+        query: Option<String>,
+        every_workspace: bool,
+    ) {
         let (windows, commands, (room, people), host) = {
             let shared = self.shared.borrow();
             (
@@ -615,7 +625,12 @@ impl DesktopSurface {
                 shared.search_host.clone(),
             )
         };
-        let mut feed = host.map(|host| host.feed(&room)).unwrap_or_default();
+        let scope = if every_workspace {
+            SearchScope::All
+        } else {
+            SearchScope::Workspace
+        };
+        let mut feed = host.map(|host| host.feed(&room, scope)).unwrap_or_default();
         let usage = feed.usage.take();
         let mut applications = self.tiles.search_applications();
         applications.extend(feed.applications);
@@ -627,7 +642,11 @@ impl DesktopSurface {
             applications,
             windows,
             commands,
-            answers: true,
+            reach: if every_workspace {
+                Reach::EveryWorkspace
+            } else {
+                Reach::Workspace
+            },
             published: feed.published,
             sources,
             preferences: feed.preferences,
@@ -710,7 +729,7 @@ impl DesktopSurface {
             .and_then(|row| row.groups.iter().find(|candidate| candidate.id == group))
             .and_then(|window| window.active_host());
         let Some(host) = host else {
-            self.open_search(doc, request.query);
+            self.open_search(doc, request.query, false);
             return;
         };
         // The field says what it searches: the part of the app asked for,
@@ -747,8 +766,8 @@ impl DesktopSurface {
         let request = self.shared.borrow_mut().search_request.take();
         match request {
             Some(SearchRequest::Toggle) if self.search.is_open() => self.close_search(),
-            Some(SearchRequest::Toggle) => self.open_search(doc, None),
-            Some(SearchRequest::Open(query)) => self.open_search(doc, query),
+            Some(SearchRequest::Toggle) => self.open_search(doc, None, false),
+            Some(SearchRequest::Open(query)) => self.open_search(doc, query, false),
             Some(SearchRequest::Applications) => self.open_applications_search(None),
             Some(SearchRequest::NewTab(strip, group)) => {
                 self.open_applications_search(Some((strip, group)));
@@ -775,7 +794,7 @@ impl DesktopSurface {
         if let Some(ask) = ask {
             self.commit_typed(&ask);
         }
-        self.follow_search();
+        self.follow_search(doc);
         self.publish_search_rows();
     }
 
@@ -829,7 +848,13 @@ impl DesktopSurface {
 
     /// After the palette handled input (an event, or an assistive
     /// technology action), take its outcome.
-    fn follow_search(&mut self) {
+    fn follow_search(&mut self, doc: &AutoCommit) {
+        // Backspace at the start of the field, or the token's own button,
+        // takes the scope away: the same search, over every workspace.
+        if self.search.is_open() && self.search.take_scope_widened() {
+            let query = self.search.query().to_owned();
+            self.open_search(doc, Some(query), true);
+        }
         if self.search.is_open() {
             let closed = self.search.observe();
             let refreshed = self.search.refresh();
@@ -1036,7 +1061,10 @@ impl DesktopSurface {
             // handed to it ([`SearchHost::performs`]). Without a host
             // running them, a desktop lists no host-published actions or
             // jobs.
-            Target::Action(_) | Target::Invoke(_) | Target::Cancel { .. } => None,
+            Target::Action(_)
+            | Target::Invoke(_)
+            | Target::Cancel { .. }
+            | Target::Prefer { .. } => None,
         };
         if let Some(admitted) = admitted {
             shared.queue.push(admitted);
@@ -1053,7 +1081,7 @@ impl DesktopSurface {
         let modifiers = *ctx.modifiers;
         if !self.search.is_open() {
             if is_search_chord(event, modifiers, self.platform) {
-                self.open_search(&ctx.state, None);
+                self.open_search(&ctx.state, None, false);
                 self.shared.borrow_mut().search_open = true;
                 return true;
             }
@@ -1087,7 +1115,7 @@ impl DesktopSurface {
                 palette.handle_event(event, &mut ctx.reborrow(&path, node_id));
             }
         }
-        self.follow_search();
+        self.follow_search(&ctx.state);
         true
     }
 

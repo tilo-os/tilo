@@ -301,6 +301,116 @@ fn a_windows_search_stands_over_that_window() {
     assert!(palette.y0 > window.y0, "below the window's top");
 }
 
+/// A host whose search has a place of its own in every workspace: one in
+/// the workspace in front, and one another workspace names.
+#[derive(Default)]
+struct Everywhere {
+    /// The scope search asked it to cover, in order.
+    scopes: std::cell::RefCell<Vec<ui::search::system::SearchScope>>,
+}
+
+/// The place another workspace names, offered only when search covers every
+/// workspace, and saying which one it is in.
+struct Elsewhere {
+    every_workspace: bool,
+}
+
+impl tilo_desktop_search::Source for Elsewhere {
+    fn id(&self) -> &'static str {
+        "continue"
+    }
+
+    fn name(&self) -> String {
+        "Continue".into()
+    }
+
+    fn query(&self, _: &str) -> Vec<tilo_desktop_search::Hit> {
+        if !self.every_workspace {
+            return Vec::new();
+        }
+        vec![tilo_desktop_search::Hit {
+            kind: tilo_desktop_search::ResourceKind::Note,
+            provider: self.id().into(),
+            id: "quarterly-plan".into(),
+            title: "Quarterly plan".into(),
+            subtitle: Some("in Planning".into()),
+            facts: Vec::new(),
+            score: ui::search::system::MAX_PROVIDER_SCORE,
+            icon: None,
+            target: tilo_desktop_search::Target::Window { tab: 0, app: None },
+        }]
+    }
+}
+
+impl SearchHost for Everywhere {
+    fn feed(&self, _: &str, scope: ui::search::system::SearchScope) -> SearchHostFeed {
+        self.scopes.borrow_mut().push(scope);
+        SearchHostFeed {
+            sources: vec![Box::new(Elsewhere {
+                every_workspace: scope == ui::search::system::SearchScope::All,
+            })],
+            ..SearchHostFeed::default()
+        }
+    }
+
+    fn performs(&self, _: &tilo_desktop_search::Target) -> bool {
+        false
+    }
+}
+
+/// What a person searches is the workspace in front; the field says so and
+/// takes it away from the start of the line, and the search then offers what
+/// every workspace holds, saying which workspace a row is in.
+#[test]
+fn a_search_of_the_workspace_in_front_widens_to_every_workspace() {
+    let (surface, handle) = desktop(1);
+    let host = std::rc::Rc::new(Everywhere::default());
+    handle.set_search_host(host.clone());
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1280, 800),
+        Theme::dark(),
+    );
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    handle.open_search(None);
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    assert_eq!(
+        *host.scopes.borrow(),
+        [ui::search::system::SearchScope::Workspace],
+        "the search opens over the workspace in front"
+    );
+    let (_, rows) = handle.search_rows();
+    assert!(
+        rows.iter().all(|row| row.title != "Quarterly plan"),
+        "another workspace's rows wait: {rows:?}"
+    );
+
+    frame.key("Backspace");
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    assert_eq!(
+        *host.scopes.borrow(),
+        [
+            ui::search::system::SearchScope::Workspace,
+            ui::search::system::SearchScope::All
+        ],
+        "the same search, over every workspace"
+    );
+    let (_, rows) = handle.search_rows();
+    assert!(
+        rows.iter()
+            .any(|row| row.title == "Quarterly plan"
+                && row.subtitle.as_deref() == Some("in Planning")),
+        "the row says which workspace it is in: {rows:?}"
+    );
+}
+
 /// An acknowledgement is said politely over the desktop, wakes the host
 /// for its fade and end, and is no notification.
 #[test]

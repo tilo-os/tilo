@@ -53,6 +53,10 @@ impl Source for People {
         "people"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-kind-people")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         if needle.trim().is_empty() {
             return Vec::new();

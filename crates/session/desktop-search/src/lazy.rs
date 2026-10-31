@@ -21,6 +21,7 @@ pub trait DesktopSearchApi {
     fn observe(&mut self) -> bool;
     fn escape(&mut self) -> bool;
     fn take_choice(&mut self) -> Option<Target>;
+    fn take_scope_widened(&mut self) -> bool;
     fn results(&self) -> &[Hit];
     fn query(&self) -> &str;
     fn choose(&mut self, index: usize, argument: Option<String>) -> bool;
@@ -61,6 +62,9 @@ impl DesktopSearchApi for DesktopSearch {
     }
     fn take_choice(&mut self) -> Option<Target> {
         Self::take_choice(self)
+    }
+    fn take_scope_widened(&mut self) -> bool {
+        Self::take_scope_widened(self)
     }
     fn results(&self) -> &[Hit] {
         Self::results(self)
@@ -222,6 +226,14 @@ impl LazyDesktopSearch {
 
     pub fn take_choice(&mut self) -> Option<Target> {
         self.search.as_mut()?.take_choice()
+    }
+
+    /// Whether the scope token was taken away: the host widens the search
+    /// to every workspace, opening it again.
+    pub fn take_scope_widened(&mut self) -> bool {
+        self.search
+            .as_mut()
+            .is_some_and(|search| search.take_scope_widened())
     }
 
     /// The rows shown, in palette order; none while the code is on its way.

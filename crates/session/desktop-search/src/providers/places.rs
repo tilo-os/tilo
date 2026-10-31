@@ -100,11 +100,19 @@ pub fn continue_kind() -> ResourceKind {
     ResourceKind::Custom(crate::i18n::t("search-kind-continue"))
 }
 
-/// The places of one workspace, as search offers them.
+/// The places of one workspace, as search offers them, or of every
+/// workspace when the search is widened.
 pub struct Continue {
     places: Vec<Place>,
     /// The tabs still open, which a place without an anchor comes back to.
     open_tabs: Vec<u64>,
+    /// The workspace search opened in: a place elsewhere says which
+    /// workspace holds it, since rows of two workspaces otherwise read
+    /// alike.
+    home: String,
+    /// The name the desk gives each workspace, by room: what a place
+    /// elsewhere says.
+    names: Vec<(String, String)>,
     app_name: Box<dyn Fn(&str) -> String>,
 }
 
@@ -125,6 +133,27 @@ impl Continue {
                 .cloned()
                 .collect(),
             open_tabs,
+            home: room.to_owned(),
+            names: Vec::new(),
+            app_name: Box::new(app_name),
+        }
+    }
+
+    /// The places of every workspace of `recent`, each naming the workspace
+    /// it is in where that is not `home` ("in Lounge"), which the desk
+    /// gives as `(room, name)` pairs.
+    pub fn everywhere(
+        recent: &RecentPlaces,
+        home: &str,
+        open_tabs: Vec<u64>,
+        names: Vec<(String, String)>,
+        app_name: impl Fn(&str) -> String + 'static,
+    ) -> Self {
+        Self {
+            places: recent.places().to_vec(),
+            open_tabs,
+            home: home.to_owned(),
+            names,
             app_name: Box::new(app_name),
         }
     }
@@ -143,6 +172,22 @@ impl Continue {
             },
         };
         let mut facts = vec![(self.app_name)(&place.app)];
+        if place.room != self.home {
+            facts.push(
+                match self
+                    .names
+                    .iter()
+                    .find(|(room, _)| *room == place.room)
+                    .map(|(_, name)| name)
+                {
+                    Some(name) => crate::i18n::t_args(
+                        "search-continue-in-workspace",
+                        &[("workspace", name.as_str().into())],
+                    ),
+                    None => crate::i18n::t("search-continue-in-another-workspace"),
+                },
+            );
+        }
         if let Some(device) = &place.device {
             facts.push(crate::i18n::t_args(
                 "search-continue-on-device",
@@ -166,6 +211,10 @@ impl Continue {
 impl Source for Continue {
     fn id(&self) -> &'static str {
         "continue"
+    }
+
+    fn name(&self) -> String {
+        crate::i18n::t("search-kind-continue")
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {

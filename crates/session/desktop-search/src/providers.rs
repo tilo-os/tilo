@@ -83,6 +83,10 @@ impl Source for Applications {
         "applications"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-apps")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         let browsing = needle.trim().is_empty();
         let ranks = rank::rank_rows(&self.ranker, needle, &self.fields);
@@ -136,6 +140,10 @@ impl Source for Windows {
         "desktop-windows"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-windows")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         self.0
             .iter()
@@ -177,6 +185,10 @@ pub struct Commands(pub Vec<CommandSpec>);
 impl Source for Commands {
     fn id(&self) -> &'static str {
         "desktop-commands"
+    }
+
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-commands")
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {
@@ -271,6 +283,10 @@ impl Source for Actions {
         "app-actions"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-app-actions")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         // Every open window's actions would bury everything else unasked.
         if needle.trim().is_empty() {
@@ -356,6 +372,10 @@ impl Published {
 impl Source for Published {
     fn id(&self) -> &'static str {
         "published-actions"
+    }
+
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-published-actions")
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {
@@ -517,6 +537,10 @@ impl Content {
 impl Source for Content {
     fn id(&self) -> &'static str {
         "app-content"
+    }
+
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-app-content")
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {
@@ -711,6 +735,10 @@ impl Source for Answers {
         "quick-answers"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-kind-answers")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         self.answers(needle)
     }
@@ -879,6 +907,10 @@ impl Source for WebSearch {
         "web"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-kind-web")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         use crate::answers::web::{Named, named};
         let typed = needle.trim();
@@ -938,7 +970,10 @@ impl Recents {
     pub fn record(&mut self, hit: &Hit) {
         if matches!(
             hit.target,
-            Target::Copy { .. } | Target::Open { .. } | Target::Cancel { .. }
+            Target::Copy { .. }
+                | Target::Open { .. }
+                | Target::Cancel { .. }
+                | Target::Prefer { .. }
         ) {
             return;
         }
@@ -952,6 +987,10 @@ impl Recents {
 impl Source for Recents {
     fn id(&self) -> &'static str {
         "recent"
+    }
+
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-recent")
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {
@@ -968,6 +1007,103 @@ impl Source for Recents {
                 score: MAX_PROVIDER_SCORE
                     .saturating_sub(i32::try_from(position).unwrap_or(MAX_PROVIDER_SCORE)),
                 ..hit.clone()
+            })
+            .collect()
+    }
+}
+
+/// The sources search asks, as the rows that switch each off and on again:
+/// a row per source, saying what it shows now and flipping it, so what a
+/// person wants to stop finding is one search away.
+///
+/// The rows come from the sources this search was built from, each named
+/// as the person knows it; the actions source stays whatever is switched,
+/// because it is how anything is done from search.
+pub struct Switches {
+    /// The switchable sources, as `(id, name)`, in search's own order.
+    sources: Vec<(String, String)>,
+    preferences: crate::preferences::SearchPreferences,
+}
+
+impl Switches {
+    /// The switches for `sources`, each shown as it stands in `preferences`.
+    #[must_use]
+    pub fn new(
+        sources: Vec<(String, String)>,
+        preferences: &crate::preferences::SearchPreferences,
+    ) -> Self {
+        Self {
+            sources,
+            preferences: preferences.clone(),
+        }
+    }
+}
+
+impl Source for Switches {
+    fn id(&self) -> &'static str {
+        "search-sources"
+    }
+
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-switches")
+    }
+
+    fn query(&self, needle: &str) -> Vec<Hit> {
+        // What is asked for by name, not browsed: a switch is nothing to
+        // look at while nothing is typed.
+        if needle.trim().is_empty() {
+            return Vec::new();
+        }
+        let keywords = crate::i18n::t("search-source-keywords");
+        self.sources
+            .iter()
+            .filter_map(|(id, name)| {
+                let enabled = self.preferences.enabled(id);
+                let (title, detail) = if enabled {
+                    (
+                        crate::i18n::t_args(
+                            "search-source-disable",
+                            &[("source", name.as_str().into())],
+                        ),
+                        crate::i18n::t_args(
+                            "search-source-disable-detail",
+                            &[("source", name.as_str().into())],
+                        ),
+                    )
+                } else {
+                    (
+                        crate::i18n::t_args(
+                            "search-source-enable",
+                            &[("source", name.as_str().into())],
+                        ),
+                        crate::i18n::t_args(
+                            "search-source-enable-detail",
+                            &[("source", name.as_str().into())],
+                        ),
+                    )
+                };
+                let score = rank_fields(
+                    needle,
+                    &[
+                        (&title, ui::search::FieldWeight::TITLE),
+                        (&detail, ui::search::FieldWeight::SUBTITLE),
+                        (&keywords, ui::search::FieldWeight::KEYWORD),
+                    ],
+                )?;
+                Some(Hit {
+                    kind: ResourceKind::Action,
+                    provider: self.id().into(),
+                    id: id.clone(),
+                    title,
+                    subtitle: Some(detail),
+                    facts: Vec::new(),
+                    score,
+                    icon: None,
+                    target: Target::Prefer {
+                        source: id.clone(),
+                        enabled: !enabled,
+                    },
+                })
             })
             .collect()
     }

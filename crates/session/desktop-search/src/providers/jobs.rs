@@ -107,6 +107,10 @@ impl Source for Jobs {
         "app-jobs"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-jobs")
+    }
+
     /// Unasked, what is still running; asked, the jobs whose action or app
     /// is named, finished ones too.
     fn query(&self, needle: &str) -> Vec<Hit> {

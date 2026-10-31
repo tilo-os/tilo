@@ -10,7 +10,7 @@ use ui::{ActionPalette, CommandEntry};
 use crate::model::{Hit, Source, Target, search, search_with};
 use crate::providers::{
     Actions, Answers, AppEntry, Applications, CommandSpec, Commands, Content, Published,
-    PublishedActions, Recents, WebSearch, WindowEntry, Windows,
+    PublishedActions, Recents, Switches, WebSearch, WindowEntry, Windows,
 };
 use crate::window::WindowSearch;
 use ui::search::system::ResourceKind;
@@ -18,6 +18,19 @@ use ui::search::system::ResourceKind;
 /// Row id prefix of the row that lists the rest of a group the palette's
 /// height cut short; `more:{i}` expands `more_rows[i]`.
 const MORE_PREFIX: &str = "more:";
+
+/// How far the desk's own search reaches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Reach {
+    /// Names only: the applications a new tab may show.
+    #[default]
+    Names,
+    /// Everything the desk has open, over the workspace in front, and what a
+    /// query that is not a name answers.
+    Workspace,
+    /// The same over every workspace, each row saying which one holds it.
+    EveryWorkspace,
+}
 
 /// What the host can search right now, collected when search opens.
 #[derive(Default)]
@@ -33,12 +46,10 @@ pub struct SearchData {
     pub providers: Vec<Box<dyn ui::search::SearchProvider>>,
     /// Search what the resources hold, not what can be done to them.
     pub content_only: bool,
-    /// Offer what a query that is not a name answers: its sum or unit
-    /// conversion, the address it is, and searching the web for it
-    /// ([`crate::providers::Answers`], [`crate::providers::WebSearch`]).
-    /// The desktop's search over everything does; a search narrowed to the
-    /// apps or one window does not.
-    pub answers: bool,
+    /// How far the search reaches: the desktop's search over everything
+    /// answers what is not a name and covers a workspace, a search narrowed
+    /// to the apps or one window does neither.
+    pub reach: Reach,
     /// The exchange rates the host last fetched, which money is answered
     /// with, and now, in Unix seconds, to say how old they are.
     pub rates: Option<crate::answers::currency::Rates>,
@@ -120,7 +131,7 @@ impl Sources {
             } else {
                 data.published
             }),
-            answers: data.answers.then(|| {
+            answers: (data.reach != Reach::Names).then(|| {
                 (
                     Answers {
                         rates: data.rates,
@@ -220,6 +231,18 @@ impl DesktopSearch {
     pub fn open(&mut self, mut data: SearchData) {
         let placeholder = data.placeholder.take().unwrap_or_else(placeholder);
         self.palette.set_query_placeholder(placeholder.as_str());
+        // A search over the workspace in front says so at the start of the
+        // field, and offers the one control that widens it; over every
+        // workspace there is nothing left to say or widen.
+        let (token, widen) = match data.reach {
+            Reach::Workspace => (
+                Some(crate::i18n::t("search-scope-workspace")),
+                Some(crate::i18n::t("search-launcher-widen")),
+            ),
+            Reach::Names | Reach::EveryWorkspace => (None, None),
+        };
+        self.palette.set_scope_token(token);
+        self.palette.set_scope_token_action(widen);
         self.sources = Some(Sources::new(data));
         self.choice = None;
         self.shown_query = None;
@@ -303,6 +326,36 @@ impl DesktopSearch {
         true
     }
 
+    /// What every source finds for `query`: the desktop's own, the ones the
+    /// host adds, and the rows that switch each of them off and on again.
+    fn everywhere(
+        &self,
+        sources: &Sources,
+        query: &str,
+    ) -> Vec<ui::search::system::KindGroup<Hit>> {
+        let mut all: Vec<&dyn Source> = vec![
+            &self.recents,
+            &sources.applications,
+            &sources.windows,
+            &sources.content,
+            &sources.actions,
+            &sources.published,
+            &sources.commands,
+        ];
+        if let Some((answers, web)) = &sources.answers {
+            all.extend([answers as &dyn Source, web]);
+        }
+        all.extend(sources.host.iter().map(|source| &**source));
+        let switches = switches(sources, &all);
+        all.retain(|source| sources.preferences.enabled(source.id()));
+        if let Some(switches) = &switches {
+            all.push(switches);
+        }
+        let usage = &self.usage;
+        let now = sources.now;
+        search_with(query, &all, 0, &|hit| usage.strength(query, hit, now))
+    }
+
     fn rebuild_rows(&mut self, query: String, generation: u64) {
         let Some(sources) = &self.sources else {
             return;
@@ -321,23 +374,7 @@ impl DesktopSearch {
             held.extend(actions);
             held
         } else {
-            let mut all: Vec<&dyn Source> = vec![
-                &self.recents,
-                &sources.applications,
-                &sources.windows,
-                &sources.content,
-                &sources.actions,
-                &sources.published,
-                &sources.commands,
-            ];
-            if let Some((answers, web)) = &sources.answers {
-                all.extend([answers as &dyn Source, web]);
-            }
-            all.extend(sources.host.iter().map(|source| &**source));
-            all.retain(|source| sources.preferences.enabled(source.id()));
-            let usage = &self.usage;
-            let now = sources.now;
-            search_with(&query, &all, 0, &|hit| usage.strength(&query, hit, now))
+            self.everywhere(sources, &query)
         };
         // Each group shares what the palette shows without scrolling; a
         // group cut short offers the rest in place.
@@ -460,6 +497,18 @@ impl DesktopSearch {
     /// it is remembered, and its target is the choice. A switch stays in
     /// view, showing what it flipped to; anything else closes search.
     fn choose_hit(&mut self, hit: Hit, argument: Option<String>) {
+        // A source switched off or on again: the rows change under the
+        // switch, which stays where it is so it can be flipped back.
+        if let Target::Prefer { source, enabled } = &hit.target {
+            let (source, enabled) = (source.clone(), *enabled);
+            if let Some(sources) = &mut self.sources {
+                sources.preferences.set_enabled(&source, enabled);
+            }
+            self.choice = Some(hit.target);
+            let query = self.palette.query().to_owned();
+            self.rebuild_rows(query, ui::search::engine_generation());
+            return;
+        }
         self.remember(&hit);
         let mut target = hit.target;
         let mut toggles = false;
@@ -529,6 +578,13 @@ impl DesktopSearch {
         self.choice.take()
     }
 
+    /// Whether the person took the field's scope token away since the last
+    /// call: the search is narrowed no more, and the host opens it again
+    /// over every workspace.
+    pub fn take_scope_widened(&mut self) -> bool {
+        self.palette.take_scope_token_removed()
+    }
+
     fn hit(&self, id: &str) -> Option<Hit> {
         let index: usize = id.strip_prefix("hit:")?.parse().ok()?;
         self.rows.get(index).cloned()
@@ -556,6 +612,22 @@ impl DesktopSearch {
 
 /// One hit as a palette row: an application wears its own glyph, the one
 /// its windows wear, never the generic grid every app shared.
+/// The rows that switch a source off and on again, one per switchable
+/// source of a search over everything, by the name a person knows it by.
+/// A search of the desktop's own (the apps only, one window) has no host
+/// sources and nothing to keep a choice in, and offers none.
+fn switches(sources: &Sources, all: &[&dyn Source]) -> Option<Switches> {
+    if sources.host.is_empty() {
+        return None;
+    }
+    let names = all
+        .iter()
+        .filter(|source| crate::preferences::switchable(source.id()))
+        .map(|source| (source.id().to_owned(), source.name()))
+        .collect();
+    Some(Switches::new(names, &sources.preferences))
+}
+
 fn entry_for(hit: &Hit, id: String) -> CommandEntry {
     let (mut entry, icon) = match &hit.target {
         Target::Action(action) => {
@@ -590,6 +662,18 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
                 Some(descriptor) => CommandEntry::from_descriptor(id, descriptor),
                 None => CommandEntry::new(id, hit.title.clone()),
             },
+            hit.icon
+                .unwrap_or_else(|| ui::search::system::icon_for_kind(&hit.kind)),
+        ),
+        // A source's switch wears what it is set to now, as a published
+        // switch does: `enabled` is what choosing it makes it, so the badge
+        // says the other.
+        Target::Prefer { enabled, .. } => (
+            CommandEntry::new(id, hit.title.clone()).badge(crate::i18n::t(if *enabled {
+                "search-source-badge-off"
+            } else {
+                "search-source-badge-on"
+            })),
             hit.icon
                 .unwrap_or_else(|| ui::search::system::icon_for_kind(&hit.kind)),
         ),
@@ -802,6 +886,150 @@ mod tests {
                 .any(|hit| hit.title == "Stop projecting"),
             "named exactly, it is offered, and running it says why not"
         );
+    }
+
+    /// A host's own source, named as a person knows it: the notes a notes
+    /// app holds.
+    struct Notes;
+
+    impl Source for Notes {
+        fn id(&self) -> &'static str {
+            "notes"
+        }
+
+        fn name(&self) -> String {
+            "Notes".into()
+        }
+
+        fn query(&self, needle: &str) -> Vec<Hit> {
+            if needle.trim().is_empty() {
+                return Vec::new();
+            }
+            vec![Hit {
+                kind: ResourceKind::Note,
+                provider: self.id().into(),
+                id: "groceries".into(),
+                title: format!("Groceries for {needle}"),
+                subtitle: None,
+                facts: Vec::new(),
+                score: ui::search::system::MAX_PROVIDER_SCORE,
+                icon: None,
+                target: Target::Window { tab: 7, app: None },
+            }]
+        }
+    }
+
+    /// A search over the desktop and what one host adds.
+    fn with_notes(reach: Reach) -> SearchData {
+        SearchData {
+            sources: vec![Box::new(Notes)],
+            reach,
+            ..data()
+        }
+    }
+
+    #[test]
+    fn switching_a_source_off_from_its_row_takes_its_rows_away_and_stays_open() {
+        let mut search = DesktopSearch::new();
+        search.open(with_notes(Reach::Workspace));
+        search.set_query("groceries tomatoes");
+        assert!(
+            search.results().iter().any(|hit| hit.provider == "notes"),
+            "{:?}",
+            search.results()
+        );
+
+        search.set_query("disable notes");
+        let at = search
+            .palette()
+            .visible_entries()
+            .iter()
+            .position(|entry| entry.label == "Disable Notes search")
+            .expect("the source's switch is offered");
+        let entries = search.palette().visible_entries();
+        assert_eq!(entries[at].badge.as_deref(), Some("ON"));
+        drop(entries);
+        search.palette_mut().set_cursor(at);
+        search.palette_mut().activate_selected();
+
+        assert!(
+            !search.observe(),
+            "a switch keeps search open on what it switched"
+        );
+        assert!(search.is_open());
+        assert_eq!(
+            search.take_choice(),
+            Some(Target::Prefer {
+                source: "notes".into(),
+                enabled: false
+            }),
+            "the host keeps the person's choice"
+        );
+
+        // The switch now offers to switch it back on...
+        let switched = |search: &DesktopSearch| {
+            search
+                .results()
+                .iter()
+                .find(|hit| matches!(hit.target, Target::Prefer { .. }))
+                .map(|hit| hit.title.clone())
+        };
+        assert_eq!(switched(&search).as_deref(), Some("Enable Notes search"));
+        // ...and what it switched off is gone.
+        search.set_query("groceries tomatoes");
+        assert!(
+            search.results().iter().all(|hit| hit.provider != "notes"),
+            "{:?}",
+            search.results()
+        );
+        // The desktop's own rows stay, whatever was switched: the app.
+        search.set_query("sheets");
+        assert!(search.results().iter().any(|hit| hit.title == "Sheets"));
+    }
+
+    #[test]
+    fn the_actions_stay_whatever_is_switched_off() {
+        let mut search = DesktopSearch::new();
+        search.open(with_notes(Reach::Workspace));
+        search.set_query("disable");
+        assert!(
+            !search.results().iter().any(|hit| matches!(
+                &hit.target,
+                Target::Prefer { source, .. } if source == "actions"
+            )),
+            "the actions are how anything is done from search: {:?}",
+            search.results()
+        );
+    }
+
+    #[test]
+    fn a_search_over_the_workspace_in_front_offers_to_widen_it() {
+        let mut search = DesktopSearch::new();
+        search.open(with_notes(Reach::Workspace));
+        assert_eq!(search.palette().scope_token(), Some("Workspace"));
+        assert_eq!(
+            search.palette().scope_token_action(),
+            Some("Search every workspace")
+        );
+
+        // Widened, the token is gone: there is nothing left to widen.
+        search.close();
+        search.open(with_notes(Reach::EveryWorkspace));
+        assert_eq!(search.palette().scope_token(), None);
+        assert_eq!(search.palette().scope_token_action(), None);
+    }
+
+    /// A search the desktop opens of its own (the apps a new tab may show)
+    /// is not narrowed to a workspace, and says nothing about one.
+    #[test]
+    fn a_search_of_the_desktops_own_names_no_scope() {
+        let mut search = DesktopSearch::new();
+        search.open(SearchData {
+            applications: data().applications,
+            ..SearchData::default()
+        });
+        assert_eq!(search.palette().scope_token(), None);
+        assert_eq!(search.palette().scope_token_action(), None);
     }
 
     #[test]

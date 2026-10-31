@@ -68,6 +68,10 @@ impl Source for Waiting {
         "waiting-on-you"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-kind-waiting")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         let browsing = needle.trim().is_empty();
         self.notifications

@@ -228,6 +228,10 @@ impl Source for Settings {
         "settings-pages"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-kind-settings")
+    }
+
     /// The pages and settings `needle` finds. A setting is offered only
     /// where it matches better than its page: "battery" is the Power page,
     /// "charge limit" the setting on it.

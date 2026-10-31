@@ -169,6 +169,10 @@ impl Source for Records {
         "records"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-records")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         // A blank query asks for the browse set, and a record's name is
         // what a person knows it by: there is nothing to browse here.

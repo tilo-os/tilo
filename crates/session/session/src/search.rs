@@ -27,6 +27,7 @@ use tilo_actions::remote::{
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::files_index::FilesIndex;
 use tilo_desktop_search::indexed::IndexedContent;
+use tilo_desktop_search::preferences;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::catalogue::StoreCatalogue;
 use tilo_desktop_search::providers::files::{FileNames, Files, file_uri};
@@ -39,6 +40,7 @@ use tilo_desktop_search::providers::waiting::Waiting;
 use tilo_desktop_search::{DESKTOP_APP, InvokeTarget, SearchPreferences, Source, Target, Usage};
 use tilo_desktop_surface::{SearchHost, SearchHostFeed};
 use ui::record::{RecordCheckout, RecordId, RecordKind};
+use ui::search::system::SearchScope;
 
 /// The action host as the session's search reaches it: what open apps
 /// publish and run, and running what is chosen by address.
@@ -112,7 +114,9 @@ struct Kept {
 /// The session's part in the desk's search.
 pub(crate) struct SessionSearch {
     lists: Lists,
-    preferences: SearchPreferences,
+    /// The sources the person switched off, as kept: what the next search
+    /// leaves out, and what a switch from search changes.
+    preferences: RefCell<SearchPreferences>,
     places: RefCell<RecentPlaces>,
     /// What the person chose before; `None` until they chose or it was
     /// restored.
@@ -131,6 +135,9 @@ pub(crate) struct SessionSearch {
     open_tabs: RefCell<Vec<u64>>,
     /// The live notifications the session publishes, as of the last frame.
     notifications: RefCell<Vec<tilo_actions::ResourceSpec>>,
+    /// The workspaces the desk shows, by room and the name it gives them:
+    /// what a row of another workspace says.
+    workspaces: RefCell<Vec<(String, String)>>,
 }
 
 /// The resource of the section keeping search's history.
@@ -171,7 +178,7 @@ impl SessionSearch {
         };
         Self {
             lists,
-            preferences,
+            preferences: RefCell::new(preferences),
             places: RefCell::new(places),
             usage: RefCell::new(None),
             unkept: Cell::new((false, false)),
@@ -181,6 +188,7 @@ impl SessionSearch {
             own: RefCell::default(),
             open_tabs: RefCell::default(),
             notifications: RefCell::default(),
+            workspaces: RefCell::default(),
         }
     }
 
@@ -213,7 +221,28 @@ impl SessionSearch {
     /// it: what a row says of a record the workspace in front does not hold.
     pub(crate) fn set_workspaces(&self, workspaces: Vec<(String, String)>) {
         if let Some(records) = &self.records {
-            records.set_workspaces(workspaces);
+            records.set_workspaces(workspaces.clone());
+        }
+        *self.workspaces.borrow_mut() = workspaces;
+    }
+
+    /// Search `source` from now on, or stop: the person's choice, kept in
+    /// the settings' `search` section so it holds whichever desktop searches
+    /// and outlasts this session.
+    fn prefer(&self, source: &str, enabled: bool) {
+        let mut preferences = self.preferences.borrow_mut();
+        if preferences.enabled(source) == enabled {
+            return;
+        }
+        preferences.set_enabled(source, enabled);
+        let next = preferences.clone();
+        drop(preferences);
+        // The machine's apps leave out what is switched off as they are
+        // built, so the search after this one reads that list again.
+        let read = self.lists.latest();
+        self.kept.borrow_mut().host_apps = Rc::new(HostApps::new(read.host_apps.clone(), &next));
+        if let Err(error) = settings_store::update_section(preferences::SECTION, next.to_values()) {
+            tracing::warn!(%error, "the search sources switched off are not kept");
         }
     }
 
@@ -272,7 +301,10 @@ impl SessionSearch {
         let latest = self.lists.latest();
         let mut kept = self.kept.borrow_mut();
         if !Arc::ptr_eq(&latest, &kept.lists) {
-            kept.host_apps = Rc::new(HostApps::new(latest.host_apps.clone(), &self.preferences));
+            kept.host_apps = Rc::new(HostApps::new(
+                latest.host_apps.clone(),
+                &self.preferences.borrow(),
+            ));
             kept.room = None;
             kept.lists = Arc::clone(&latest);
         }
@@ -354,6 +386,10 @@ impl SessionSearch {
                 Some(desktop_id) => apps.start_host_app(desktop_id),
                 None => apps.invoke(application_open_target(room, &app), serde_json::Map::new()),
             }),
+            Target::Prefer { source, enabled } => {
+                self.prefer(&source, enabled);
+                Ok(())
+            }
             Target::Cancel {
                 app,
                 room,
@@ -450,20 +486,32 @@ impl SessionSearch {
 }
 
 impl SearchHost for SessionSearch {
-    fn feed(&self, room: &str) -> SearchHostFeed {
+    fn feed(&self, room: &str, scope: SearchScope) -> SearchHostFeed {
         let (settings, catalogue) = self.for_room(room);
         let kept = self.kept.borrow();
+        // Every workspace's places name their workspace when the search is
+        // widened; the one in front needs no name.
+        let continue_places = match scope {
+            SearchScope::All => Continue::everywhere(
+                &self.places.borrow(),
+                room,
+                self.open_tabs.borrow().clone(),
+                self.workspaces.borrow().clone(),
+                app_name,
+            ),
+            SearchScope::ActiveApp | SearchScope::Workspace => Continue::new(
+                &self.places.borrow(),
+                room,
+                self.open_tabs.borrow().clone(),
+                app_name,
+            ),
+        };
         let mut sources: Vec<Box<dyn Source>> = vec![
             Box::new(settings),
             Box::new(catalogue),
             Box::new(Rc::clone(&kept.host_apps)),
             Box::new(Waiting::new(room, self.notifications.borrow().clone())),
-            Box::new(Continue::new(
-                &self.places.borrow(),
-                room,
-                self.open_tabs.borrow().clone(),
-                app_name,
-            )),
+            Box::new(continue_places),
         ];
         if let Some(content) = &kept.content {
             sources.push(Box::new(Rc::clone(content)));
@@ -490,7 +538,7 @@ impl SearchHost for SessionSearch {
             applications: kept.lists.applications.clone(),
             published,
             sources,
-            preferences: self.preferences.clone(),
+            preferences: self.preferences.borrow().clone(),
             now: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_secs()),
@@ -510,6 +558,9 @@ impl SearchHost for SessionSearch {
             Target::Launch { .. } | Target::Cancel { .. } | Target::Open { .. } => {
                 self.apps.is_some()
             }
+            // What the person switched off is kept with their settings,
+            // which only the session holds.
+            Target::Prefer { .. } => true,
             Target::Window { .. }
             | Target::Action(_)
             | Target::Command { .. }
@@ -603,7 +654,7 @@ mod tests {
     /// The installed apps and the host apps matching `needle` that a search
     /// opened now is fed.
     fn found(search: &SessionSearch, needle: &str) -> (Vec<String>, Vec<String>) {
-        let feed = search.feed("room");
+        let feed = search.feed("room", SearchScope::Workspace);
         let applications = feed.applications.into_iter().map(|app| app.title).collect();
         let host = feed
             .sources
@@ -775,11 +826,89 @@ mod tests {
         );
     }
 
+    /// The places the search over `scope` lists, each with the facts it
+    /// shows about it.
+    fn places_listed(
+        search: &SessionSearch,
+        room: &str,
+        scope: SearchScope,
+    ) -> Vec<(String, Vec<String>)> {
+        let feed = search.feed(room, scope);
+        feed.sources
+            .iter()
+            .find(|source| source.id() == "continue")
+            .map(|source| {
+                source
+                    .query("")
+                    .into_iter()
+                    .map(|hit| (hit.title, hit.facts))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn place(label: &str, room: &str) -> Place {
+        Place {
+            app: "so.tilo.notes".into(),
+            room: room.into(),
+            tab: 4,
+            label: label.into(),
+            value: String::new(),
+            anchor: Some(format!("n:{label}")),
+            at: 1,
+            device: None,
+        }
+    }
+
+    #[test]
+    fn widening_search_lists_other_workspaces_places_by_name() {
+        let mut recent = RecentPlaces::default();
+        recent.record(place("Groceries", "here"));
+        recent.record(place("Quarterly plan", "elsewhere"));
+        let search = SessionSearch::new(
+            SearchOptions {
+                places: recent,
+                ..SearchOptions::default()
+            },
+            None,
+        );
+        search.set_workspaces(vec![
+            ("here".into(), "Main".into()),
+            ("elsewhere".into(), "Lounge".into()),
+        ]);
+
+        // Narrowed to the workspace in front, its own places only.
+        assert_eq!(
+            places_listed(&search, "here", SearchScope::Workspace)
+                .into_iter()
+                .map(|(title, _)| title)
+                .collect::<Vec<_>>(),
+            ["Groceries"]
+        );
+
+        // Widened, another workspace's place is found beside its own, saying
+        // where it is.
+        let wide = places_listed(&search, "here", SearchScope::All);
+        let elsewhere = wide
+            .iter()
+            .find(|(title, _)| title == "Quarterly plan")
+            .expect("another workspace's place is found");
+        assert!(
+            elsewhere.1.iter().any(|fact| fact.contains("Lounge")),
+            "the row says which workspace holds it: {:?}",
+            elsewhere.1
+        );
+        assert!(
+            wide.iter().any(|(title, _)| title == "Groceries"),
+            "the workspace in front keeps its places: {wide:?}"
+        );
+    }
+
     #[test]
     fn fixed_lists_keep_what_search_built_from_them() {
         let search = SessionSearch::new(SearchOptions::default(), None);
         let before = Rc::clone(&search.kept.borrow().host_apps);
-        let _ = search.feed("room");
+        let _ = search.feed("room", SearchScope::Workspace);
         assert!(Rc::ptr_eq(&before, &search.kept.borrow().host_apps));
     }
 }

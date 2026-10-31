@@ -264,7 +264,9 @@ fn the_sessions_own_actions_are_found_and_run_on_its_published_surface() {
     );
 }
 
-/// A session with the settings service, over a home of its own.
+/// A session with the settings service, over a home of its own: its search
+/// leaves out what the person switched off, as the desk reads that when it
+/// starts.
 fn session_with_settings() -> Session {
     Session::headless(
         Options {
@@ -272,6 +274,12 @@ fn session_with_settings() -> Session {
             services: vec![Box::new(tilo_settings_service::SettingsService::new(
                 "person",
             ))],
+            search: SearchOptions {
+                preferences: tilo_desktop_search::SearchPreferences::from_values(
+                    &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
+                ),
+                ..SearchOptions::default()
+            },
             collab: false,
             ..Options::default()
         },
@@ -341,6 +349,116 @@ fn a_switch_and_a_choice_are_changed_from_search_and_the_choice_is_kept() {
             .as_str()
             .is_some_and(|chosen| !chosen.is_empty())
     });
+}
+
+/// What the person switched off, as their settings keep it.
+fn switched_off() -> Vec<String> {
+    settings_store::load_section(tilo_desktop_search::preferences::SECTION)
+        .get("disabled_providers")
+        .and_then(serde_json::Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Search for `query` and let what it shows settle: the published search
+/// names what is typed, and its rows follow.
+fn search_for(session: &mut Session, query: &str) {
+    invoke(
+        session,
+        DESK_RESOURCE,
+        "open-search",
+        serde_json::json!({ "query": query }),
+    );
+    for _ in 0..40 {
+        session.step(Duration::from_millis(1)).expect("step");
+        let searched = find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| {
+            search.label == query && (!search.children.is_empty() || query.is_empty())
+        });
+        if searched {
+            break;
+        }
+    }
+    session.step(Duration::from_millis(1)).expect("step");
+}
+
+/// The row whose label is exactly `title`.
+fn titled(session: &Session, title: &str) -> Option<ResourceSpec> {
+    rows(session)
+        .into_iter()
+        .find(|row| row.kind == SEARCH_ROW_KIND && row.label == title)
+}
+
+#[test]
+fn a_source_switched_off_from_search_leaves_search_and_stays_off() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with_settings();
+    session.step(Duration::from_millis(1)).unwrap();
+
+    // Settings' pages are one of the sources search asks: its Keyboard page
+    // is a row of its own.
+    search_for(&mut session, "keyboard layout");
+    assert!(titled(&session, "Keyboard").is_some());
+
+    // What finds a source is the row that switches it off, and it stays in
+    // view so it can be switched back on.
+    choose(
+        &mut session,
+        "disable settings search",
+        "Disable Settings search",
+    );
+    // The choice is the person's, kept with their settings.
+    until(&mut session, |_| {
+        switched_off()
+            .iter()
+            .any(|source| source == "settings-pages")
+    });
+    assert!(
+        find(&session.resources(), SEARCH_RESOURCE).is_some(),
+        "a switch stays in view"
+    );
+    search_for(&mut session, "keyboard layout");
+    assert!(
+        titled(&session, "Keyboard").is_none(),
+        "what the source found is gone: {:?}",
+        rows(&session)
+            .into_iter()
+            .map(|row| row.label)
+            .collect::<Vec<_>>()
+    );
+    drop(session);
+
+    // A session started anew reads the choice back, as the desk does.
+    let mut session = session_with_settings();
+    session.step(Duration::from_millis(1)).unwrap();
+    search_for(&mut session, "keyboard layout");
+    assert!(
+        titled(&session, "Keyboard").is_none(),
+        "it stays off across a restart"
+    );
+
+    // And what was switched off is switched back on where it was: the
+    // source's own row says what it is set to.
+    choose(
+        &mut session,
+        "enable settings search",
+        "Enable Settings search",
+    );
+    until(&mut session, |_| switched_off().is_empty());
+    search_for(&mut session, "keyboard layout");
+    assert!(
+        titled(&session, "Keyboard").is_some(),
+        "the source is back: {:?}",
+        rows(&session)
+            .into_iter()
+            .map(|row| row.label)
+            .collect::<Vec<_>>()
+    );
 }
 
 /// The app whose record index the record of this test is named in: any app of
