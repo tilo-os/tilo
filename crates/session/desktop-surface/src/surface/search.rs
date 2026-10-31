@@ -440,6 +440,15 @@ fn is_search_chord(
     }
 }
 
+/// Escape as a person presses it; a held key counts as each press it repeats,
+/// as the old launcher did: the first clears, the next closes.
+fn is_escape(event: &WindowEvent) -> bool {
+    let WindowEvent::KeyboardInput { event: key, .. } = event else {
+        return false;
+    };
+    key.state == ElementState::Pressed && matches!(&key.logical_key, Key::Named(NamedKey::Escape))
+}
+
 /// Every open window as search lists it: the app it shows (for its glyph),
 /// and where it is. Windows titled alike say what tells them apart: who
 /// holds the window, or else which of them it is, counted left to right.
@@ -1067,6 +1076,10 @@ impl DesktopSurface {
             .is_some_and(|palette| palette.get_rect().contains(self.search_pointer));
         if outside_press || is_search_chord(event, modifiers, self.platform) {
             self.close_search();
+        } else if is_escape(event) && self.search.escape() {
+            // Cleared the query, or closed an empty search: see
+            // [`DesktopSearch::escape`].
+            self.structure_dirty = true;
         } else {
             let path = ctx.path.clone();
             let node_id = ctx.node_id;

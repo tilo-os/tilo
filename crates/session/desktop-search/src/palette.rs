@@ -234,6 +234,28 @@ impl DesktopSearch {
         self.finish();
     }
 
+    /// What Escape does in the desk's search: a typed query is cleared first
+    /// and search stays open, so a slip of the finger never costs the whole
+    /// search; Escape on the empty field closes it. Returns whether the desk
+    /// did that.
+    ///
+    /// A step that asks for a value, a row's other actions, or a question a
+    /// window's control asked is the palette's own to back out of, before it
+    /// would close ([`ActionPalette::handle_event`]): then this answers
+    /// `false` and the key goes to the palette, which goes back a step and
+    /// closes only from the results.
+    pub fn escape(&mut self) -> bool {
+        if !self.is_open() || self.palette.in_argument_mode() {
+            return false;
+        }
+        if self.query().is_empty() {
+            self.close();
+        } else {
+            self.set_query("");
+        }
+        true
+    }
+
     pub fn set_query(&mut self, query: &str) {
         self.palette.set_query(query);
         self.refresh();
@@ -646,6 +668,29 @@ mod tests {
             crate::i18n::t("search-placeholder"),
             "Search apps, windows, documents and actions\u{2026}",
             "the empty field names those groups"
+        );
+    }
+
+    /// Escape clears what was typed before it closes the search: a slip of
+    /// the finger costs the query, not the search. A second Escape on the
+    /// empty field closes it, as the launcher's did.
+    #[test]
+    fn escape_clears_what_was_typed_before_it_closes() {
+        let mut search = DesktopSearch::new();
+        search.open(data());
+        search.set_query("notes");
+        assert!(search.escape(), "the desk's search clears its query");
+        assert!(search.is_open(), "the first Escape keeps search open");
+        assert_eq!(search.query(), "", "…and clears the query");
+        assert!(
+            search.results().iter().any(|hit| hit.title == "Sheets"),
+            "the empty field lists everything again"
+        );
+        assert!(search.escape());
+        assert!(!search.is_open(), "Escape on the empty field closes");
+        assert!(
+            !search.escape(),
+            "and Escape on a closed search is not the desk's to handle"
         );
     }
 

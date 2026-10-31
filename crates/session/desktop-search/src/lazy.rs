@@ -19,6 +19,7 @@ pub trait DesktopSearchApi {
     fn set_query(&mut self, query: &str);
     fn refresh(&mut self) -> bool;
     fn observe(&mut self) -> bool;
+    fn escape(&mut self) -> bool;
     fn take_choice(&mut self) -> Option<Target>;
     fn results(&self) -> &[Hit];
     fn query(&self) -> &str;
@@ -54,6 +55,9 @@ impl DesktopSearchApi for DesktopSearch {
     }
     fn observe(&mut self) -> bool {
         Self::observe(self)
+    }
+    fn escape(&mut self) -> bool {
+        Self::escape(self)
     }
     fn take_choice(&mut self) -> Option<Target> {
         Self::take_choice(self)
@@ -207,6 +211,13 @@ impl LazyDesktopSearch {
 
     pub fn observe(&mut self) -> bool {
         self.search.as_mut().is_some_and(|search| search.observe())
+    }
+
+    /// What Escape does in the desk's search
+    /// ([`DesktopSearch::escape`]): clear the typed query, or close an empty
+    /// search. `false` where the key is the palette's to handle.
+    pub fn escape(&mut self) -> bool {
+        self.search.as_mut().is_some_and(|search| search.escape())
     }
 
     pub fn take_choice(&mut self) -> Option<Target> {

@@ -1581,6 +1581,36 @@ fn search_from_navigation_focuses_an_open_window_and_escape_dismisses() {
     );
 }
 
+/// A slip of the finger on Escape costs the query, not the whole search: the
+/// first press clears what was typed and the rows list everything again, a
+/// second press on the empty field closes search.
+#[test]
+fn escape_clears_what_was_typed_before_it_closes_search() {
+    let (mut driver, handle, _) = mount();
+    handle.open_search(Some("sheets".into()));
+    driver.relayout();
+    assert!(handle.search_open());
+    assert_eq!(handle.search_rows().0, "sheets");
+
+    driver.key("Escape");
+    driver.relayout();
+    assert!(handle.search_open(), "the first Escape keeps search open");
+    assert_eq!(handle.search_rows().0, "", "…and clears the query");
+    assert!(
+        handle
+            .search_rows()
+            .1
+            .iter()
+            .any(|row| row.title == "Writer"),
+        "the empty field lists every app again: {:?}",
+        handle.search_rows().1
+    );
+
+    driver.key("Escape");
+    driver.relayout();
+    assert!(!handle.search_open(), "Escape on the empty field closes");
+}
+
 /// The open palette's result rows.
 fn result_rows(driver: &ui::headless::FrameHarness) -> Vec<ui::a11y::AccessNode> {
     let palette = find(&driver.inspection().root, "ActionPalette")
