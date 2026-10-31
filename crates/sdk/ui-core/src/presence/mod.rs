@@ -87,11 +87,19 @@ const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_mil
 
 pub use collab_types::presence::{PEER_PALETTE, assign_peer_colors, identity_rgb, user_color};
 
+/// A presence colour as the surfaces paint it: the `(r, g, b)` a person's
+/// colour travels as ([`user_color`], a colour they chose), in the colour a
+/// face or a row is drawn with.
+#[must_use]
+pub fn presence_colour((red, green, blue): (u8, u8, u8)) -> vello::peniko::Color {
+    vello::peniko::Color::from_rgb8(red, green, blue)
+}
+
 /// [`user_color`] as a colour: what a face of `user_id` wears when the room
 /// has not given them one ([`Face::colour`]).
+#[must_use]
 pub fn identity_colour(user_id: &str) -> vello::peniko::Color {
-    let (red, green, blue) = user_color(user_id);
-    vello::peniko::Color::from_rgb8(red, green, blue)
+    presence_colour(user_color(user_id))
 }
 
 /// The face of someone here whose colour the room has not settled yet:
