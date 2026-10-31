@@ -232,22 +232,31 @@ impl Pack {
     }
 }
 
+/// The pack writes `percent` as its limit, or says why it will not. Holds
+/// the pack's own lock only, never the record of writes.
+fn write_limit(
+    pack: &mut Option<ChargeCapCapability>,
+    percent: u32,
+) -> Result<ChargeCapCapability, String> {
+    let Some(limit) = pack.as_mut() else {
+        return Err("this machine's pack has no charge limit".into());
+    };
+    if !limit.choices.contains(&percent) {
+        return Err(format!("the pack offers no {percent}% limit"));
+    }
+    limit.current = percent;
+    Ok(limit.clone())
+}
+
 impl ChargePack for Pack {
     fn limit(&self) -> Option<ChargeCapCapability> {
         self.limit.lock().unwrap().clone()
     }
 
     fn set_limit(&self, percent: u32) -> Result<ChargeCapCapability, String> {
-        let mut limit = self.limit.lock().unwrap();
-        let Some(limit) = limit.as_mut() else {
-            return Err("this machine's pack has no charge limit".into());
-        };
-        if !limit.choices.contains(&percent) {
-            return Err(format!("the pack offers no {percent}% limit"));
-        }
+        let updated = write_limit(&mut self.limit.lock().unwrap(), percent)?;
         self.writes.lock().unwrap().push(percent);
-        limit.current = percent;
-        Ok(limit.clone())
+        Ok(updated)
     }
 }
 
