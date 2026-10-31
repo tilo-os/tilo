@@ -432,8 +432,8 @@ fn two_people_typing_one_rich_body_each_entry_shows_its_authors_change() {
     // Bo replaces a word of what Ada wrote, in her own replica of the room.
     let body = |text: &str| Value::Rich(tilolang_runtime::rich::RichValue::from_text(text));
     let page = view_id(&bo);
-    let mut editors = bo.host.open_resource(&at, Some(&page)).unwrap();
-    let input = rich_input(&mut editors);
+    let editors = bo.host.open_resource(&at, Some(&page)).unwrap();
+    let input = rich_input(&editors);
     editors
         .edit(&input, &body("Oat milk and sourdough"))
         .unwrap();
@@ -478,7 +478,7 @@ fn view_id(r: &Replica) -> String {
 }
 
 /// The key of the window's rich input.
-fn rich_input(view: &mut ViewInstance) -> String {
+fn rich_input(view: &ViewInstance) -> String {
     nodes(view.tree())
         .into_iter()
         .find(|n| n.kind == "ui.RichInput")
@@ -492,6 +492,7 @@ fn rich_input(view: &mut ViewInstance) -> String {
 /// The body is written before any window shows it: a window draws the whole body, which is
 /// the post's length, and that is not the entry's read.
 fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
+    use tilolang_runtime::store::Store as _;
     const RICHTEXT: &str = include_str!("../../../lang/tilolang/tests/fixtures/richtext.tl");
     const RICHTEXT_APP: &str = "so.tilo.lang.richtext";
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(RICHTEXT, "")]);
@@ -499,7 +500,7 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
     ada.commit();
     let board = target(&Value::resource(&ada.host.root_of(RICHTEXT_APP).unwrap()));
     let paragraph = "The quick brown fox jumps over the lazy dog and keeps on going. ";
-    let chars = paragraph.chars().count() * paragraphs;
+    let chars = paragraph.chars().count().saturating_mul(paragraphs);
     let spec = tilolang_runtime::store::FieldSpec {
         id: crate::fixtures::field_id(
             &ada.host.package(RICHTEXT_APP).unwrap().meta,
@@ -515,7 +516,7 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
         "say",
         vec![
             Value::resource(&board),
-            Value::text(&vec![paragraph; paragraphs].join("\n")),
+            Value::text(vec![paragraph; paragraphs].join("\n")),
         ],
     );
     ada.commit();
@@ -529,14 +530,13 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
         *first = &swift;
     }
     let page = view_id(&bo);
-    let mut editors = bo.host.open_resource(&at, Some(&page)).unwrap();
-    let input = rich_input(&mut editors);
+    let editors = bo.host.open_resource(&at, Some(&page)).unwrap();
+    let input = rich_input(&editors);
     editors.edit(&input, &body(&typed.join("\n"))).unwrap();
     bo.commit();
     drop(editors);
     ada.sync_with(&mut bo);
     // Reading the entry's diff: the change Bo made, as the history reads it.
-    use tilolang_runtime::store::Store as _;
     let change = bo
         .doc
         .get_changes(&[])
@@ -553,9 +553,11 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
     let after = ada.host.store().read_stats().doc;
     let done = automerge::work();
     assert_eq!(written.len(), 1, "the entry shows the body's change");
-    let reads = (after.fields - before.fields)
-        + (after.entries - before.entries)
-        + (after.listings - before.listings);
+    let reads = after
+        .fields
+        .saturating_sub(before.fields)
+        .saturating_add(after.entries.saturating_sub(before.entries))
+        .saturating_add(after.listings.saturating_sub(before.listings));
     // The change graph is walked for nothing either: no ancestor is visited.
     assert_eq!(
         done.visited_changes.saturating_sub(work.visited_changes),
