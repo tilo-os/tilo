@@ -38,6 +38,8 @@ type Arguments = serde_json::Map<String, serde_json::Value>;
 #[derive(Default)]
 struct Host {
     invoked: RefCell<Vec<(RemoteActionTarget, Arguments)>>,
+    /// The uris it was asked to open, by the room it was asked for.
+    opened: RefCell<Vec<(String, String)>>,
 }
 
 impl AppActions for Host {
@@ -58,7 +60,10 @@ impl AppActions for Host {
         Ok(())
     }
 
-    fn open_uri(&self, _: &str, _: &str) -> Result<(), DoorError> {
+    fn open_uri(&self, room: &str, uri: &str) -> Result<(), DoorError> {
+        self.opened
+            .borrow_mut()
+            .push((room.to_owned(), uri.to_owned()));
         Ok(())
     }
 
@@ -359,14 +364,20 @@ fn active_room(session: &Session) -> String {
         .expect("a workspace")
 }
 
-/// Save `rows` (`(id, kind)`) as `package`'s index of `room` holds them, and
-/// publish it in one rename: the index of a workspace that appears while the
-/// session runs appears as one directory, which is what the worker following
-/// the device's indexes is told about.
+/// Save `rows` (`(id, kind)`) as `package`'s index of `room` holds them —
+/// what it held before is what the workspace no longer names — and publish it
+/// in one rename: the index of a workspace that appears while the session
+/// runs appears as one directory, which is what the worker following the
+/// device's indexes is told about.
 fn write_index(home: &tilo_test_env::TestHome, package: &str, room: &str, rows: &[(&str, &str)]) {
     let directory =
         app_state::room_index_directory(home.data(), package, room).expect("an index directory");
     let staged = directory.with_file_name(format!("staging-{room}"));
+    for old in [&staged, &directory] {
+        if old.exists() {
+            std::fs::remove_dir_all(old).expect("the index it replaces");
+        }
+    }
     std::fs::create_dir_all(&staged).expect("the index's directory");
     let mut index = automerge::AutoCommit::new();
     for (id, kind) in rows {
@@ -411,6 +422,19 @@ fn within(mut done: impl FnMut() -> bool) -> bool {
     done()
 }
 
+/// Whether `done` never holds while something that would make it hold is
+/// given `window` to land.
+fn never(window: Duration, mut done: impl FnMut() -> bool) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() < window {
+        if done() {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    !done()
+}
+
 /// The row titled `title` for `query`, reopening search until the session has
 /// read the device's indexes again: a record another workspace holds is listed
 /// once the worker following them has read that workspace's index.
@@ -449,7 +473,8 @@ fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
         &[("file:/work/Receipts.odt", "document")],
     );
     let records = tilo_session::Records::of(home.data().to_path_buf());
-    let mut session = session_over(Rc::new(Host::default()), Some(records));
+    let host = Rc::new(Host::default());
+    let mut session = session_over(Rc::clone(&host), Some(records));
     session.step(Duration::from_millis(1)).unwrap();
 
     // A second workspace, so a record can be held somewhere else than here.
@@ -492,6 +517,69 @@ fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
             ui::record::RecordKind::new("document").as_str()
         ))),
         "this workspace holds the record: {:?}",
+        known_in(NOTES, &here)
+    );
+    // A record whose identity is a path is also opened, so bringing it here
+    // and opening it are one gesture; the file opens in the workspace the
+    // reference went into.
+    assert_eq!(
+        host.opened.borrow().clone(),
+        vec![(here, QUARTERLY.to_owned())],
+        "the file the record is opens in this workspace"
+    );
+}
+
+/// The record a row names after the workspace holding it stopped naming it.
+const STALE: &str = "file:/work/Stale plan.odt";
+
+/// The record the index names instead: search offers it only once the session
+/// has read the index again, which is also when [`STALE`] stopped being held.
+const FRESH: &str = "file:/work/Fresh plan.odt";
+
+#[test]
+fn a_row_for_a_record_no_workspace_holds_any_more_brings_nothing_here() {
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    write_index(&home, NOTES, "elsewhere", &[(STALE, "document")]);
+    let records = tilo_session::Records::of(home.data().to_path_buf());
+    let mut session = session_over(Rc::new(Host::default()), Some(records));
+    session.step(Duration::from_millis(1)).unwrap();
+    let here = active_room(&session);
+
+    // The row is collected now and chosen below.
+    let stale = find_row(&mut session, "stale", "Stale plan.odt");
+
+    // The workspace holding it stops naming it, in one write that names
+    // another record: search offering the record added is what says the
+    // session has read the index again.
+    write_index(&home, NOTES, "elsewhere", &[(FRESH, "document")]);
+    find_row(&mut session, "fresh", "Fresh plan.odt");
+    invoke(
+        &mut session,
+        DESK_RESOURCE,
+        "open-search",
+        serde_json::json!({ "query": "stale" }),
+    );
+    for _ in 0..10 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert!(
+        row(&session, "Stale plan.odt").is_none(),
+        "a record no workspace names any more is not offered"
+    );
+
+    // The row collected before it stopped being held brings nothing here. A
+    // chosen row is carried out for its effect rather than reported by an
+    // error, so what is checked is the effect: no reference is written, for
+    // as long as writing one takes. The refusal itself, for a row still shown
+    // by an open search, is the session's own to make and is proven in
+    // `search::tests::a_row_for_a_record_no_workspace_names_any_more_is_refused`.
+    let _ = session.invoke(stale.id.as_str(), "choose", &serde_json::Map::new());
+    assert!(
+        never(Duration::from_secs(1), || known_in(NOTES, &here)
+            .iter()
+            .any(|record| record.starts_with(STALE))),
+        "no reference is written: {:?}",
         known_in(NOTES, &here)
     );
 }

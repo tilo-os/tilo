@@ -160,6 +160,15 @@ impl Records {
             .collect()
     }
 
+    /// Whether any workspace on this device still names `record`. A row is
+    /// collected from one reading of the indexes and chosen later, and an app
+    /// may have stopped naming the record in between: naming it here would
+    /// hold a record no workspace has, so such a row is refused instead.
+    #[must_use]
+    pub(crate) fn holds(&self, record: &str) -> bool {
+        self.latest().iter().any(|held| held.id == record)
+    }
+
     /// Name `record` in the workspace of `room`, in the index of `package`:
     /// the reference it holds from then on, and the whole of what bringing a
     /// record here does. Written away from the loop, since the workspace may

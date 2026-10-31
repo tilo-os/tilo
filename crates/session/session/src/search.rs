@@ -371,6 +371,11 @@ impl SessionSearch {
     /// reference the workspace holds from then on. The record is named as the
     /// row carried it — its id and kind — so what arrives is the record, not
     /// a copy of it.
+    ///
+    /// A record kept as a file is also opened, so bringing it here and
+    /// opening it are one gesture. The reference is named first and the
+    /// launch reported after it: a record whose file is gone is still one
+    /// this workspace now holds, and a refusal to open leaves it held.
     fn bring_here(&self, room: &str, invoke: &InvokeTarget) -> Result<(), DoorError> {
         let Some(records) = &self.records else {
             return Err(DoorError::Unavailable {
@@ -399,12 +404,27 @@ impl SessionSearch {
                 "{id} is not a record id"
             )));
         };
+        // Rows are collected when search opens and chosen afterwards, and an
+        // app may have stopped naming the record in between: a row that names
+        // a record no workspace holds any more is refused rather than
+        // written, so search never brings a record that is gone into a
+        // workspace as if it were still there.
+        if !records.holds(id.as_str()) {
+            return Err(DoorError::Unavailable {
+                code: "record_not_held".into(),
+                reason: format!("No workspace holds {id} any more"),
+            });
+        }
+        let opened = id.file_path().is_some().then(|| id.as_str().to_owned());
         records.bring_here(
             room,
             &package,
             RecordCheckout::new(id, RecordKind::new(kind)),
         );
-        Ok(())
+        match opened {
+            Some(uri) => self.with_apps(|apps| apps.open_uri(room, &uri)),
+            None => Ok(()),
+        }
     }
 
     fn with_apps(
@@ -582,6 +602,55 @@ mod tests {
                 vec!["Calendar".to_owned()],
                 vec!["Calendar Viewer".to_owned()]
             )
+        );
+    }
+
+    /// A row is collected from one reading of the device's indexes and chosen
+    /// later, so the record it names may have been dropped from every index
+    /// in between: it is refused rather than named in a workspace as if it
+    /// were still there.
+    #[test]
+    fn a_row_for_a_record_no_workspace_names_any_more_is_refused() {
+        let home = tilo_test_env::TestHome::new().expect("a home");
+        // An index this device keeps, naming a record that is not the row's:
+        // the row names one no workspace holds.
+        let directory = app_state::room_index_directory(home.data(), "so.tilo.notes", "elsewhere")
+            .expect("an index directory");
+        std::fs::create_dir_all(&directory).expect("the index's directory");
+        let mut index = automerge::AutoCommit::new();
+        let kept = ui::record::RecordId::parse("file:/work/Kept.odt").expect("a record id");
+        assert!(ui::record::room::reference(
+            &mut index,
+            &kept,
+            &ui::record::RecordKind::new("document")
+        ));
+        std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
+
+        let search = SessionSearch::new(
+            SearchOptions {
+                records: Some(crate::records::Records::of(home.data().to_path_buf())),
+                ..SearchOptions::default()
+            },
+            None,
+        );
+        let row = Target::Invoke(Box::new(
+            InvokeTarget::action(
+                DESKTOP_APP,
+                "elsewhere",
+                record_rows::RECORDS_RESOURCE,
+                record_rows::BRING_HERE,
+            )
+            .with_argument(record_rows::RECORD_PARAM, "file:/work/Gone.odt")
+            .with_argument(record_rows::KIND_PARAM, "document")
+            .with_argument(record_rows::PACKAGE_PARAM, "so.tilo.notes"),
+        ));
+        let refused = search.perform_checked("here", row, &mut |_| Ok(()));
+        assert!(
+            matches!(
+                refused,
+                Err(DoorError::Unavailable { ref code, .. }) if code == "record_not_held"
+            ),
+            "a record no workspace names is refused: {refused:?}"
         );
     }
 
