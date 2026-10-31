@@ -460,6 +460,7 @@ fn build_meta(
                     scenario: true,
                     present: None,
                     toggles: None,
+                    key: None,
                 });
                 meta.scenarios.push(ScenarioMeta {
                     id: c.id.clone(),
@@ -536,6 +537,7 @@ fn build_meta(
                     scenario: false,
                     present: c.present.view.clone(),
                     toggles: toggled_field(env, a, &c.params),
+                    key: c.present.key.clone(),
                 });
                 if let Some(v) = env.callables.iter().find(|v| {
                     v.own && v.kind == CKind::View && Some(&v.id) == c.present.view.as_ref()
