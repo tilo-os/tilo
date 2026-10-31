@@ -39,6 +39,9 @@ pub fn to_peer(key: &PresenceKey, payload: &PresencePayload) -> Option<PeerPrese
             state: state.id().to_owned(),
             call: call.clone(),
         },
+        PresencePayload::Composing { composing } => PeerPresencePayload::Composing {
+            composing: *composing,
+        },
     };
     Some(PeerPresence { key, payload })
 }
@@ -94,6 +97,7 @@ pub fn decode_peer(
                 .ok_or_else(|| format!("availability {state:?} is unknown"))?,
             call,
         },
+        PeerPresencePayload::Composing { composing } => PresencePayload::Composing { composing },
         // Talking, greeting and waves beside a pointer are the desktop's to
         // show, never an app's.
         PeerPresencePayload::Chat { .. }
@@ -154,6 +158,8 @@ mod tests {
                 state: ui::Availability::Focusing,
                 call: Some("voice".into()),
             },
+            PresencePayload::Composing { composing: true },
+            PresencePayload::Composing { composing: false },
         ];
         for payload in variants {
             let wire = to_peer(&key, &payload).expect("encode typed presence");
