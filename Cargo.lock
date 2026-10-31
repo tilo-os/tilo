@@ -18302,7 +18302,6 @@ dependencies = [
  "settings-store",
  "tilo-ui",
  "tilo-vello",
- "tilo-wayland-ext",
  "workspace-hack",
 ]
 
@@ -22546,6 +22545,7 @@ dependencies = [
  "neighbour-wire",
  "settings-store",
  "smithay",
+ "tilo-color-pipeline",
  "wayland-protocols",
  "workspace-hack",
 ]
