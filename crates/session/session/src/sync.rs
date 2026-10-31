@@ -41,10 +41,11 @@ use tilo_device_fabric::DeviceId;
 use tilo_device_fabric::runtime::FabricRuntime;
 use tilo_endpoint_reachability::{Need, Reachability};
 use tilo_network_actor::{
-    HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, WorkspaceId, native_ingress,
-    room_topic_id,
+    HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, RosterDevice, WorkspaceId,
+    native_ingress, room_topic_id,
 };
 
+use crate::channels::ChannelLink;
 use crate::engine::Engine;
 
 /// The app id the desktop of a room says its own presence under, as the
@@ -472,6 +473,12 @@ pub(crate) enum Outgoing {
     },
     /// Ask for the lane this device's private texts travel on.
     PrivateMessages(tokio::sync::oneshot::Sender<tilo_network_actor::private_messages::Transport>),
+    /// Say which devices room `ws` admits, and until when each of their
+    /// certificates holds: they alone send and receive its window streams.
+    Roster {
+        ws: WorkspaceId,
+        devices: Vec<RosterDevice>,
+    },
     /// The session is going: stop the peer actor.
     Stop,
 }
@@ -519,6 +526,9 @@ pub struct Client {
     /// This device's rooms, which a join enrolls into: `None` when the
     /// session keeps no state to hold them in.
     engine: Option<Arc<Engine>>,
+    /// What the session's channels hear and say on this plane: the governance
+    /// of the rooms' sealed records, and the devices each room admits.
+    link: Arc<ChannelLink>,
     /// The person this device belongs to, by their root key, as its
     /// certificate names them.
     user: Option<[u8; 32]>,
@@ -585,6 +595,10 @@ impl Client {
     /// continuing on their other devices, kept current by the session's
     /// settings watch.
     ///
+    /// `link` is where the session's channels hear the rooms' governance and
+    /// tell which devices each room admits: what they say travels as this
+    /// plane's own messages.
+    ///
     /// # Errors
     /// The endpoint could not be bound.
     pub fn start(
@@ -594,6 +608,7 @@ impl Client {
         hosts: Vec<EndpointAddr>,
         media: MediaContinuity,
         wake: Arc<dyn Fn() + Send + Sync>,
+        link: Arc<ChannelLink>,
     ) -> std::io::Result<Self> {
         let (outgoing, commands) = tokio::sync::mpsc::unbounded_channel();
         let (arrivals, arrived) = std::sync::mpsc::channel();
@@ -624,6 +639,7 @@ impl Client {
             })
         });
         let enrolling = engine.clone();
+        let channels = Arc::clone(&link);
         let thread = std::thread::Builder::new()
             .name("tilo-sync".into())
             .spawn(move || {
@@ -635,12 +651,14 @@ impl Client {
                     enrollments,
                     ready,
                     wake,
+                    channels,
                 );
             })?;
         let (publisher, endpoint, reachability) = bound
             .recv()
             .map_err(std::io::Error::other)?
             .map_err(std::io::Error::other)?;
+        link.attach(outgoing.clone());
         let sync = Self {
             plane: RefCell::new(Plane {
                 publisher,
@@ -657,6 +675,7 @@ impl Client {
             arrived,
             enrolled,
             engine,
+            link,
             user,
             siblings: RefCell::new(std::collections::BTreeMap::new()),
             personal: RefCell::new(Vec::new()),
@@ -830,6 +849,11 @@ impl Client {
     /// actor hands it.
     pub fn hear(&self, event: NetEvent) {
         self.keep_personal(&event);
+        // What a room says of its channels' governance is the session's
+        // channels' to take in, wherever the message came from.
+        if let NetEvent::Msg { msg, .. } = &event {
+            self.link.heard(msg);
+        }
         if let Some(fabric) = &self.fabric {
             match &event {
                 NetEvent::Sibling {
@@ -1330,6 +1354,7 @@ impl Client {
                     enrolled
                 },
                 engine: None,
+                link: ChannelLink::new(),
                 user: None,
                 siblings: RefCell::new(std::collections::BTreeMap::new()),
                 personal: RefCell::new(Vec::new()),
@@ -1440,6 +1465,7 @@ fn run(
     enrollments: std::sync::mpsc::Sender<Enrolled>,
     ready: std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    link: Arc<ChannelLink>,
 ) {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -1493,7 +1519,8 @@ fn run(
             Arc::new(std::sync::Mutex::new(Vec::new())),
             reachability.clone(),
         );
-        let (events, carrying, attending) = heard(identity.clone(), arrivals, wake);
+        let (events, carrying, attending) =
+            heard(identity.clone(), arrivals, wake, Arc::clone(&link));
         if ready.send(Ok((publisher, addr, reachability))).is_err() {
             return;
         }
@@ -1516,8 +1543,10 @@ fn run(
                     };
                     let endpoint = endpoint.clone();
                     let plane = actor.clone();
+                    let channels = Arc::clone(&link);
                     tokio::spawn(async move {
-                        let result = redeem(endpoint, identity, engine, &plane, request).await;
+                        let result =
+                            redeem(endpoint, identity, engine, &plane, request, &channels).await;
                         let _ = landed.send(Enrolled {
                             workspace,
                             room,
@@ -1557,6 +1586,7 @@ fn heard(
     identity: Option<HostIdentity>,
     arrivals: std::sync::mpsc::Sender<NetEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    link: Arc<ChannelLink>,
 ) -> (
     tokio::sync::mpsc::Sender<NetEvent>,
     tokio::task::JoinHandle<()>,
@@ -1565,7 +1595,7 @@ fn heard(
     let (admissions, attending) = match identity {
         Some(identity) => {
             let (say, hear) = tokio::sync::mpsc::unbounded_channel();
-            let attending = tokio::spawn(async move { take_in(hear, &identity).await });
+            let attending = tokio::spawn(async move { take_in(hear, &identity, link).await });
             (Some(say), Some(attending))
         }
         None => (None, None),
@@ -1591,6 +1621,7 @@ fn heard(
 async fn take_in(
     mut replayed: tokio::sync::mpsc::UnboundedReceiver<native_ingress::Input>,
     identity: &HostIdentity,
+    link: Arc<ChannelLink>,
 ) {
     while let Some(input) = replayed.recv().await {
         let mut waiting = vec![input];
@@ -1603,17 +1634,17 @@ async fn take_in(
                 .first()
                 .is_some_and(|first: &native_ingress::Input| !first.same_session(&input))
             {
-                admit(run, identity).await;
+                admit(run, identity, &link).await;
                 run = Vec::new();
             }
             run.push(input);
         }
-        admit(run, identity).await;
+        admit(run, identity, &link).await;
     }
 }
 
 /// Admit one session's inputs, as one commit of the room they belong to.
-async fn admit(inputs: Vec<native_ingress::Input>, identity: &HostIdentity) {
+async fn admit(inputs: Vec<native_ingress::Input>, identity: &HostIdentity, link: &ChannelLink) {
     let Some(room) = inputs.first().map(native_ingress::Input::room) else {
         return;
     };
@@ -1633,6 +1664,11 @@ async fn admit(inputs: Vec<native_ingress::Input>, identity: &HostIdentity) {
         if let Err(error) = report {
             tracing::debug!(%error, %room, "a room's state was not taken in");
         }
+    }
+    if admitted.changed {
+        // The room's governance moved with it: its channels and the devices
+        // it admits are read again, and the plane told what it admits now.
+        link.room_changed(room);
     }
 }
 
@@ -1693,6 +1729,10 @@ async fn carry_out(
             };
             plane.send(command).await.is_ok()
         }
+        Outgoing::Roster { ws, devices } => plane
+            .send(NetCmd::SetRoomRoster { ws, devices })
+            .await
+            .is_ok(),
         // Redeemed beside this loop, which never waits on a host.
         Outgoing::Enroll(_) => true,
         Outgoing::PrivateMessages(reply) => plane
@@ -1716,6 +1756,7 @@ async fn redeem(
     engine: Arc<Engine>,
     plane: &tokio::sync::mpsc::Sender<NetCmd>,
     request: Enrolling,
+    link: &ChannelLink,
 ) -> Result<(), String> {
     let topic = room_topic_id(request.room);
     // The room is joined as this person, under the identity they keep for
@@ -1751,7 +1792,9 @@ async fn redeem(
     .map_err(|_| "the workspace's host did not answer".to_owned())??;
     owner.install(&enrollment, std::time::SystemTime::now())?;
     // The room is held here now: this device takes part in it, so what its
-    // people say and record reaches it as it happens.
+    // people say and record reaches it as it happens, and the devices it
+    // admits are told to the plane.
+    link.room_changed(request.room);
     let connect = tilo_network_actor::native_ingress::Connect::new(owner, request.room)
         .map_err(|error| format!("the room was not taken in: {error}"))?;
     plane

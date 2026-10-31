@@ -204,6 +204,7 @@ pub(crate) fn start_collaboration(
     options: &Options,
     media: fabric::MediaContinuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
+    link: std::sync::Arc<crate::channels::ChannelLink>,
 ) -> Option<Rc<sync::Client>> {
     if let Some(sync) = &options.sync {
         return Some(Rc::clone(sync));
@@ -226,6 +227,7 @@ pub(crate) fn start_collaboration(
         sync::configured_hosts(),
         media,
         options.wake.handle(),
+        link,
     ) {
         Ok(sync) => Some(Rc::new(sync)),
         Err(error) => {

@@ -37,6 +37,7 @@ mod calls;
 pub mod capture;
 mod capture_send;
 mod capture_studio;
+mod channels;
 mod chrome;
 mod config;
 pub mod controller_nav;
@@ -120,6 +121,7 @@ use ui::shortcut_table::ShortcutAction;
 
 pub use automation::FinishedShortcutRun;
 pub use bars::BarShown;
+pub use channels::ChannelLink;
 pub use config::SessionConfig;
 pub use controls::{
     CLIPBOARD_RESOURCE, DISPLAYS_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify,
@@ -307,6 +309,9 @@ struct Shared {
     /// This device's rooms: what every workspace of the desk shows, and what
     /// a join takes in.
     engine: Option<std::sync::Arc<engine::Engine>>,
+    /// This device's channels of those rooms' sealed records, and the devices
+    /// each room admits: kept for as long as the session runs.
+    _channels: Option<channels::Channels>,
     /// The person's own workspaces, as all their devices hold the list of
     /// them: `None` when this computer has no identity to keep it for.
     personal: Option<RefCell<workspaces::Personal>>,
@@ -1061,7 +1066,24 @@ impl Session {
         // The chrome above the windows: its own tree, beside the desk's.
         let intents = Rc::new(RefCell::new(Vec::new()));
         let engine = open_engine(&options, &handle);
-        let sync = start_collaboration(&options, media, engine.clone());
+        // This device's channels of its rooms' sealed records: its keys, and
+        // the devices each room admits, which its window streams carry
+        // between. The broker the apps reach is the one the channel service
+        // gates, so a sealed record opens before any of it reaches an app.
+        let channels_broker = std::sync::Arc::new(std::sync::Mutex::new(
+            tilo_action_broker::collab_core::BrokerChannels::default(),
+        ));
+        let channel_link = channels::ChannelLink::new();
+        let channels = engine.as_ref().and_then(|engine| {
+            channels::Channels::open(
+                engine,
+                std::sync::Arc::clone(&channel_link),
+                std::sync::Arc::clone(&channels_broker),
+            )
+            .map_err(|error| tracing::warn!(%error, "the channel service runs no threads"))
+            .ok()
+        });
+        let sync = start_collaboration(&options, media, engine.clone(), channel_link);
         // The person's private messages, carried by that same endpoint.
         let _messages = mount::services::mount_messages(&mut options, sync.as_deref());
         // The person's own workspaces, which their other devices hold with
@@ -1269,6 +1291,8 @@ impl Session {
             std::sync::Arc::clone(&agent_runs),
             std::sync::Arc::clone(&revocations),
             sync.as_deref(),
+            channels_broker,
+            engine.as_ref().map(|engine| engine.keys()),
         )?;
         // The agent door: a program of this login asks here to work in a
         // workspace as an agent, and the person answers on their sheets. It
@@ -1441,6 +1465,7 @@ impl Session {
             notice_view: RefCell::new(None),
             sync,
             engine,
+            _channels: channels,
             personal,
             clipboard: mount::clipboard::Clipboard::new(),
             settings: mount::settings_sync::SettingsSync::new(),

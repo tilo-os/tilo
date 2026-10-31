@@ -143,7 +143,8 @@ blake3.workspace = true
 os-actions = { path = "../../system/os-actions" }
 tilo-service = { path = "../service" }
 # The broker that serves the socket this session's apps speak on, and the
-# provider seam it asks for what the services publish.
+# provider seam it asks for what the services publish. Its channel encryption
+# service governs the sealed channels a workspace's content is carried in.
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The calls an app joins: which channel, who is in it, and this device's
 # own call as presence carries it.
@@ -151,8 +152,17 @@ tilo-native-media = { path = "../native-media" }
 # The shortcuts a person saved and the triggers that start them without
 # anyone invoking them.
 tilo-automation = { path = "../../collab/automation" }
+# The sealed channel state the channel encryption service keeps on this
+# device, and the key it is sealed with.
+channel-crypto = { path = "../../collab/channel-crypto" }
+# The MLS vault's master key: the Secret Service on Linux, the Keychain on
+# macOS, or the store a headless machine names with `TILO_SECRETS_DIR`.
+tilo-secrets.workspace = true
+# A fresh vault master key is drawn from getrandom's `SysRng`.
+getrandom.workspace = true
+rand_core.workspace = true
 # A schedule's fire time is claimed by one of the person's devices, ranked by
-# the same hash everywhere.
+# the same hash everywhere, and the vault derives its channel state key.
 sha2.workspace = true
 # The MCP projection of the action host, which the agent door serves a
 # program of this login through once the person admits it.
@@ -254,7 +264,6 @@ tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
 # The worker a host admits the records of its members through.
 tilo-automerge-isolate.workspace = true
-sha2.workspace = true
 # What `NetworkManager` says, fed in rather than read from a bus.
 tilo-nm = { path = "../../system/tilo-nm" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }

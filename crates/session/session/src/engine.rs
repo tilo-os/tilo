@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use tilo_action_broker::channel_encryption::ChannelKeyProvider;
 use tilo_desktop_model::{RoomId, WorkspaceId};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_lock::MutexRecover as _;
@@ -29,6 +30,7 @@ use tilo_peer_state::owner::{
 };
 use tilo_user_identity::RevocationList;
 
+use crate::channels;
 use crate::sync;
 
 /// The engine's record, under this device's state directory.
@@ -110,6 +112,10 @@ pub struct Engine {
     owner: NativeWorkspaceOwner,
     slots: Arc<Slots>,
     identity: HostIdentity,
+    /// Where the rooms' channels find this device's keys, once the channel
+    /// service is running: the session opens the rooms before it opens the
+    /// service, and every reader of a sealed record goes through this.
+    keys: ChannelKeyProvider,
 }
 
 impl std::fmt::Debug for Engine {
@@ -149,6 +155,7 @@ impl Engine {
             owner,
             slots,
             identity,
+            keys: ChannelKeyProvider::default(),
         })
     }
 
@@ -178,24 +185,50 @@ impl Engine {
     /// document as the room last admitted it, which is what the workspace
     /// shows of it — also what it held before this device joined.
     ///
+    /// A record the room keeps sealed opens with this device's channel keys,
+    /// so a room's history reads whole here: the keys a member holds reach
+    /// back past the membership it joined in.
+    ///
     /// # Errors
-    /// The room is not held here, this device may not read the record, or
-    /// the document cannot be read now.
+    /// The room is not held here, this device may not read the record, the
+    /// record is sealed and this device holds no keys of it, or the document
+    /// cannot be read now.
     pub fn record(&self, room: &str, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
         let room = RoomId::parse(room).ok_or("that is not a room")?;
         let reader = self.identity.device_cert.device_public_key;
+        let keys = &self.keys;
         self.owner.with_current(room, |view| {
-            match view.read_document(
+            match view.read_document_with_history(
                 reader,
-                app,
-                record,
+                (app, record),
                 None,
                 MAX_DOCUMENT_BYTES,
                 SystemTime::now(),
+                &mut |write| {
+                    keys.get()
+                        .ok_or("this session's channel service is not running")?
+                        .open_history_write(room, write)
+                },
             )? {
                 DocumentRead::Captured(document) => Ok(Some(document.bytes)),
                 DocumentRead::Unchanged(_) | DocumentRead::CheckpointPending => Ok(None),
             }
+        })
+    }
+
+    /// The devices the room `room` admits, by the publisher each of their
+    /// sessions is known by: the roster its window streams carry between
+    /// ([`channels::roster_of`]).
+    ///
+    /// # Errors
+    /// The room is not held here, or its governance cannot be read.
+    pub fn roster(&self, room: &str) -> Result<Vec<String>, String> {
+        let room = RoomId::parse(room).ok_or("that is not a room")?;
+        channels::roster_of(self, room).map(|roster| {
+            roster
+                .into_iter()
+                .map(|(device, _)| device.to_string())
+                .collect()
         })
     }
 
@@ -270,6 +303,18 @@ impl Engine {
     /// The engine's owner, for what holds the room's session.
     pub(crate) fn owner(&self) -> &NativeWorkspaceOwner {
         &self.owner
+    }
+
+    /// Where this session's channel service installs this device's keys: the
+    /// broker, the room host and every sealed read meet here.
+    pub(crate) fn keys(&self) -> ChannelKeyProvider {
+        self.keys.clone()
+    }
+
+    /// This device's collaboration identity: the key its endpoint and its
+    /// channels sign with, and the certificate that says whose it is.
+    pub(crate) fn identity(&self) -> &HostIdentity {
+        &self.identity
     }
 
     /// Name the workspace a join is installing into as the room's: an

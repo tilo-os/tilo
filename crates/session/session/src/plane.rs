@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use runtime_collab::wire::{Event, Receipt};
 use serde_json::Map;
+use tilo_action_broker::channel_encryption::ChannelKeyProvider;
 use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
 use tilo_action_broker::collab_outbound::PeerPublisher;
 use tilo_action_broker::services::TrackerRuns;
@@ -252,6 +253,12 @@ pub struct Hosted {
     pub shortcuts: std::sync::Arc<ShortcutLibrary>,
     pub activity: std::sync::Arc<ActivityWire>,
     pub agent_runs: Option<std::sync::Arc<tilo_agent_runs::AgentRuns>>,
+    /// The broker's side of the rooms' sealed records: the channel service
+    /// gates a sealed record crossing it.
+    pub channels: std::sync::Arc<Mutex<BrokerChannels>>,
+    /// Where an endpoint follows when a route's keys change, when this
+    /// session's channel service runs.
+    pub keys: Option<ChannelKeyProvider>,
 }
 
 /// Serve the session's published resources to the apps on `socket`: the
@@ -260,6 +267,10 @@ pub struct Hosted {
 /// of `fabric` when this session runs on one, and decides what an app may do
 /// in a room against `desk`. What apps publish of their own content lands in
 /// `content`, the index search reads.
+///
+/// `channels` is the broker's side of the rooms' sealed records: the channel
+/// service gates a sealed record crossing it, and `keys` is what an endpoint
+/// follows to hear when a route's keys change.
 ///
 /// # Errors
 ///
@@ -273,6 +284,7 @@ pub fn serve(
     hosted: Hosted,
 ) -> std::io::Result<BrokerHandle> {
     let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.desk) as _;
+    let channels = std::sync::Arc::clone(&hosted.channels);
     let services = host_services(link, launches, fabric, hosted);
     tilo_action_broker::collab_broker::spawn_with_services(
         socket,
@@ -280,7 +292,7 @@ pub fn serve(
         PeerPublisher::disabled(),
         None,
         services,
-        std::sync::Arc::new(Mutex::new(BrokerChannels::default())),
+        channels,
         std::sync::Arc::new(FanoutState::new()),
     )
 }
@@ -415,6 +427,8 @@ fn host_services(
         shortcuts,
         activity,
         agent_runs,
+        channels: _,
+        keys,
     } = hosted;
     let speakers: Option<std::sync::Arc<dyn SpeakerServices>> = fabric.map(|fabric| {
         std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
@@ -448,6 +462,10 @@ fn host_services(
             std::sync::Arc::new(media)
                 as std::sync::Arc<dyn tilo_action_broker::services::NativeMediaServices>
         }),
+        // This session's channel keys, when it holds rooms: a route's keys
+        // reach its apps through them, and an endpoint follows their changes
+        // here instead of asking again every second.
+        channel_keys: keys,
         ..HostServices::default()
     }
 }
@@ -687,6 +705,8 @@ mod tests {
             activity: crate::activity_provider::wire(requests()),
             agent_runs: None,
             native_media: None,
+            channels: std::sync::Arc::new(Mutex::new(BrokerChannels::default())),
+            keys: None,
         }
     }
 
