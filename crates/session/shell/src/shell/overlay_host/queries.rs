@@ -48,7 +48,7 @@ impl ShellOverlayHost {
                 .flatten()
         }) {
             const MAX_RESOURCE_PILL_CHARS: usize = 18;
-            let label = if resource_label.chars().count() > MAX_RESOURCE_PILL_CHARS {
+            return if resource_label.chars().count() > MAX_RESOURCE_PILL_CHARS {
                 let head: String = resource_label
                     .chars()
                     .take(MAX_RESOURCE_PILL_CHARS)
@@ -57,7 +57,6 @@ impl ShellOverlayHost {
             } else {
                 resource_label
             };
-            return format!("‹ {label}");
         }
         match scope {
             SearchScope::ActiveApp => {

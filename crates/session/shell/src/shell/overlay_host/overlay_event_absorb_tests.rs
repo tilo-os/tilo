@@ -617,7 +617,7 @@ fn app_search_lists_apps_under_one_kind_and_runs_the_selected_row() {
             .refresh_open_palette(&AutoCommit::new(), &automerge::ROOT);
         assert_eq!(
             h.host.search.scope_token(),
-            Some("‹ Book of Tilo"),
+            Some("Book of Tilo"),
             "the token doubles as a visible resource breadcrumb"
         );
         // Backspace in the launcher's field takes the token away.
