@@ -1373,14 +1373,25 @@ impl Session {
         })
         .map_err(|error| tracing::debug!(%error, "settings are not watched"))
         .ok();
+        let presentation = (options.presentation)();
+        let overview = mount::overview::Overview::new(
+            presentation.theme.motion(),
+            presentation.theme.reduce_motion,
+        );
+        // The desk's open card, which the keys fold on Escape and the
+        // overview folds as it comes over the desk: the desk is under the
+        // windows and hears neither itself.
+        let fold = tilo_desktop::desk_widgets::DeskFold::default();
         let (desktop, mut policy, asks) = desk::desk(
             &options,
             notices.clone(),
             std::sync::Arc::clone(&wallpapers),
             widget_prefs,
+            fold.clone(),
+            overview.open_flag(),
         );
         desktop.set_gestures(options.config.gestures);
-        desktop.set_theme((options.presentation)().theme);
+        desktop.set_theme(presentation.theme);
         let handle = desktop.with_policy(|policy| policy.handle().clone());
         // The desk as this device left it: its workspaces and the windows
         // they held.
@@ -1455,11 +1466,6 @@ impl Session {
                 (None, Some(own)) => Some(own),
                 (None, None) => None,
             };
-        let presentation = (options.presentation)();
-        let overview = mount::overview::Overview::new(
-            presentation.theme.motion(),
-            presentation.theme.reduce_motion,
-        );
         // The device's readings, which the bar's status cluster shows as the
         // battery, network and volume glyphs; the quick settings panel fills
         // them once it is mounted.
@@ -1569,6 +1575,7 @@ impl Session {
                 displays: display_seat
                     .as_ref()
                     .map(|seat| tilo_sheets::Seat::presentation(seat).clone()),
+                fold,
             },
             options.scale,
         );

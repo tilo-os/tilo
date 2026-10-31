@@ -82,6 +82,8 @@ pub(crate) struct KeyContext {
     pub(crate) controller: Rc<Cell<Option<ui::ControllerFamily>>>,
     pub(crate) controller_keys: Rc<Cell<bool>>,
     pub(crate) displays: Option<tilo_sheets::Presentation>,
+    /// Whether a desk widget has its card open, which Escape folds.
+    pub(crate) fold: tilo_desktop::desk_widgets::DeskFold,
 }
 
 /// The hardware keys' readout above the apps, and the session's own
@@ -97,6 +99,7 @@ pub(crate) fn mount_controls(
         controller,
         controller_keys,
         displays,
+        fold,
     }: KeyContext,
     scale: f64,
 ) -> (Rc<RefCell<Vec<SessionCommand>>>, Invocations) {
@@ -113,6 +116,7 @@ pub(crate) fn mount_controls(
         Rc::clone(&invocations),
         portal,
         guide,
+        fold,
         displays,
         controller,
         controller_keys,

@@ -16,10 +16,12 @@ use std::rc::Rc;
 
 use tilo_actions::ActionAddress;
 use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
+use tilo_desktop::desk_widgets::DeskFold;
 use tilo_desktop::desktop_actions::CHROME_RESOURCE;
 use tilo_desktop::osd::OsdKind;
 use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
 use xkeysym::key as keysyms;
+
 
 /// One published action to invoke, with its arguments.
 #[derive(Clone, Debug, PartialEq)]
@@ -291,6 +293,10 @@ pub(crate) struct SessionKeys {
     /// The shortcut guide's keys while it is up: what it holds back from
     /// the desktop behind it, and the chord it waits for.
     guide: GuideKeys,
+    /// Whether a desk widget has its card open, which Escape folds. The desk
+    /// is under the windows and hears no keys itself, so it says here what
+    /// its keys are worth.
+    fold: DeskFold,
     /// The shortcut resources whose chords are held down, by key.
     held: RefCell<BTreeMap<u32, String>>,
     /// The controller the person last drove the desktop with, which a press
@@ -307,6 +313,7 @@ impl SessionKeys {
         invocations: Invocations,
         portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
         guide: GuideKeys,
+        fold: DeskFold,
         displays: Option<tilo_sheets::Presentation>,
         controller: Rc<Cell<Option<ui::ControllerFamily>>>,
         controller_keys: Rc<Cell<bool>>,
@@ -317,10 +324,17 @@ impl SessionKeys {
             invocations,
             portal,
             guide,
+            fold,
             held: RefCell::new(BTreeMap::new()),
             controller,
             controller_keys,
         }
+    }
+
+    /// Whether `key` is the desk's own: Escape folds the card a desk widget
+    /// has open, and what sits behind the desk does not hear it.
+    fn folds_the_desk(&self, key: &HostKey) -> bool {
+        key.unmodified_keysym == keysyms::Escape && self.fold.is_open()
     }
 
     /// Whether `key` is the display sheet's chord, which puts the sheet up:
@@ -496,6 +510,9 @@ impl SurfaceHost for SessionKeys {
                     .map_or(KeyClaim::Pass, |(_, claim)| claim);
             }
         }
+        if self.folds_the_desk(key) {
+            return KeyClaim::Take;
+        }
         self.resolve(key, locked, inhibited)
             .map_or(KeyClaim::Pass, |(_, claim)| claim)
     }
@@ -519,6 +536,10 @@ impl SurfaceHost for SessionKeys {
         }
         if self.guide.up() {
             self.guide_key(key);
+            return;
+        }
+        if self.folds_the_desk(key) {
+            self.fold.ask();
             return;
         }
         // A repeat of a key taken once is not run again (only a level key
@@ -559,6 +580,7 @@ mod tests {
             Invocations::default(),
             None,
             GuideKeys::default(),
+            DeskFold::default(),
             None,
             Rc::new(Cell::new(None)),
             Rc::new(Cell::new(false)),
@@ -575,6 +597,7 @@ mod tests {
             Invocations::default(),
             None,
             guide.clone(),
+            DeskFold::default(),
             None,
             Rc::new(Cell::new(None)),
             Rc::new(Cell::new(false)),
@@ -793,5 +816,33 @@ mod tests {
             keys.claim_key(&volume, false, true),
             KeyClaim::TakeRepeating
         );
+    }
+
+    #[test]
+    fn escape_folds_the_card_a_widget_has_open_and_nothing_behind_it_hears_it() {
+        let fold = DeskFold::default();
+        let mut keys = SessionKeys::new(
+            Rc::new(RefCell::new(ShortcutConfig::default())),
+            Invocations::default(),
+            None,
+            GuideKeys::default(),
+            fold.clone(),
+            None,
+            Rc::new(Cell::new(None)),
+            Rc::new(Cell::new(false)),
+        );
+        let escape = key(keysyms::Escape, None, KeyModifiers::default());
+        // Folded cards want no key: Escape goes on to whatever is up.
+        assert_eq!(keys.claim_key(&escape, false, false), KeyClaim::Pass);
+
+        fold.set_open(true);
+        assert_eq!(
+            keys.claim_key(&escape, false, false),
+            KeyClaim::Take,
+            "an open card folds on Escape before anything else hears it"
+        );
+        keys.key(&escape);
+        assert!(fold.take_asked(), "the key asks the desk to fold");
+        assert!(!fold.take_asked(), "and asks once");
     }
 }

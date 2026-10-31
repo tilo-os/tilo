@@ -10,11 +10,12 @@
 //! and keeps them current from the settings watch, so a frame draws from
 //! memory and never reads the settings file.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
+use tilo_desktop::desk_widgets::DeskFold;
 use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk};
 use tilo_desktop::launchpad::CollaborationLaunchpad;
 use tilo_lock::MutexRecover as _;
@@ -43,21 +44,30 @@ pub(crate) fn follow_prefs(prefs: &Prefs, document: &Map<String, Value>) {
 /// The desk of this session's workspace and the policy placing its windows,
 /// with what its tree asks of the session. The chrome above it asks through
 /// the same list.
+///
+/// The widgets share `fold` with the session's keys, which fold an open card
+/// on Escape, and read `overview` to fold it while the overview is over the
+/// desk.
 pub(crate) fn desk(
     options: &Options,
     notices: tilo_desktop_surface::DesktopNotifications,
     pictures: Arc<Wallpapers>,
     widgets: Prefs,
+    fold: DeskFold,
+    overview: Rc<Cell<bool>>,
 ) -> (DesktopHost, StripPolicy, Rc<RefCell<Vec<DesktopAsk>>>) {
     let asks = Rc::new(RefCell::new(Vec::new()));
     let (desktop, policy) = desktop_with(options.salt, options.scale, |mut surface, handle| {
         surface.set_notifications(notices);
-        let beneath = vec![Box::new(tilo_desktop::desk_widgets::DeskWidgets::new(
+        let layer = tilo_desktop::desk_widgets::DeskWidgets::new(
             handle.clone(),
             options.person.clone(),
             Rc::clone(&asks),
             widgets,
-        )) as Box<dyn ui::widget::Widget>];
+        )
+        .with_fold(fold)
+        .with_overview(overview);
+        let beneath = vec![Box::new(layer) as Box<dyn ui::widget::Widget>];
         Box::new(
             DeskLayer::new(
                 Box::new(surface),

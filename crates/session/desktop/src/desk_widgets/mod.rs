@@ -43,11 +43,56 @@ mod widgets;
 
 pub use widgets::DeskWidgets;
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use ui::desk_widgets::{DeskWidgetPrefs, ShowMode, WidgetId};
 use vello::kurbo::{Point, Rect};
+
+/// Whether a desk card is open, and the keys asking it to fold.
+///
+/// The desk is under the windows, so it is the session's key surface that
+/// hears a press before the focused window does; this is what it and the
+/// widget layer share. The layer says whether a card is open ([`Self::is_open`],
+/// written every frame); the keys ask for a fold ([`Self::ask`]) and the
+/// layer folds its card on its next pass, as a press on the desk beside the
+/// card does.
+#[derive(Clone, Default)]
+pub struct DeskFold {
+    open: Rc<Cell<bool>>,
+    asked: Rc<Cell<bool>>,
+}
+
+impl DeskFold {
+    /// Tell the keys whether a card is open on the desk now.
+    pub fn set_open(&self, open: bool) {
+        self.open.set(open);
+    }
+
+    /// Whether a card is open on the desk now.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.open.get()
+    }
+
+    /// Ask the desk to fold the card it has open.
+    pub fn ask(&self) {
+        self.asked.set(true);
+    }
+
+    /// Whether a fold was asked and the desk has not taken it yet.
+    #[must_use]
+    pub fn asked(&self) -> bool {
+        self.asked.get()
+    }
+
+    /// Whether the desk was asked to fold since the last call.
+    pub fn take_asked(&self) -> bool {
+        self.asked.replace(false)
+    }
+}
 
 /// How long the person must stop typing before widgets come back to their
 /// glance form.

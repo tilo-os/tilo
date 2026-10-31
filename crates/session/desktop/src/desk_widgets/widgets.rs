@@ -12,7 +12,7 @@
     reason = "widget geometry is finite logical-pixel kurbo arithmetic"
 )]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -124,6 +124,11 @@ pub struct DeskWidgets {
     painted: Option<Painted>,
     dirty: bool,
     rect: Rect,
+    /// Whether a card is open, for the keys that fold it, and their ask.
+    fold: super::DeskFold,
+    /// Whether the overview is up over the desk: a card the person opened
+    /// goes with it.
+    overview: Rc<Cell<bool>>,
 }
 
 /// One widget as laid out: where it is, and which display that is.
@@ -188,7 +193,25 @@ impl DeskWidgets {
             painted: None,
             dirty: true,
             rect: Rect::ZERO,
+            fold: super::DeskFold::default(),
+            overview: Rc::default(),
         }
+    }
+
+    /// The same layer sharing `fold` with the session's keys, which fold
+    /// its open card on Escape.
+    #[must_use]
+    pub fn with_fold(mut self, fold: super::DeskFold) -> Self {
+        self.fold = fold;
+        self
+    }
+
+    /// The same layer folding what is open while the overview `up` is over
+    /// the desk.
+    #[must_use]
+    pub fn with_overview(mut self, up: Rc<Cell<bool>>) -> Self {
+        self.overview = up;
+        self
     }
 
     /// The same layer showing `prefs`, keeping what it is asked in memory:
@@ -426,6 +449,24 @@ impl DeskWidgets {
         // What a press on a row opens is the row as drawn.
         self.team_ids = people;
         changed
+    }
+
+    /// Whether a window of the shown strip covers the open card: the
+    /// widgets rest under the windows, so a card a window covers is out of
+    /// sight and folds, as it does when the person clicks the desk beside
+    /// it.
+    fn window_covers_card(&self) -> bool {
+        let Some(opened) = self.board.opened() else {
+            return false;
+        };
+        let Some(slot) = self.slot(opened) else {
+            return false;
+        };
+        let card = self.drawn(&slot).open;
+        self.handle
+            .shown_tabs()
+            .iter()
+            .any(|(_, window)| window.intersect(card).area() > 0.0)
     }
 
     /// The widget form under `p`, if one is showing there: the topmost, as
@@ -726,6 +767,17 @@ impl DeskWidgets {
             changed = true;
         }
         changed |= self.relayout();
+        // An open card folds under whatever takes the desk from the person:
+        // the overview over it, a window covering it, or Escape, which the
+        // session's keys send here because the desk is under the windows. An
+        // ask that finds no card open is spent here too, so it cannot fold
+        // the next card opened.
+        let asked = self.fold.take_asked();
+        if self.board.opened().is_some()
+            && (asked || self.overview.get() || self.window_covers_card())
+        {
+            self.board.close();
+        }
         let covered = false;
         let engaged = self
             .grab
@@ -780,6 +832,9 @@ impl DeskWidgets {
                     now,
                 );
         }
+        // Escape is the desk's while a card is open, and not a moment
+        // before or after.
+        self.fold.set_open(self.board.opened().is_some());
         if changed {
             self.dirty = true;
         }
@@ -1198,6 +1253,10 @@ impl Widget for DeskWidgets {
             // A choice from Settings arrives without an event: the frame it
             // asks for is what takes it up.
             || *shared(&self.changes) != self.prefs
+            // So does Escape, and the overview coming over an open card:
+            // both arrive without the desk being told anything itself.
+            || self.fold.asked()
+            || (self.overview.get() && self.board.opened().is_some())
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1302,8 +1361,8 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use tilo_desktop_model::{Collaborator, IdMinter, Tab, Workspace};
-    use tilo_desktop_surface::{DesktopSurface, TileSource, seed_tree};
+    use tilo_desktop_model::{Collaborator, IdMinter, Tab, WindowWidth, Workspace};
+    use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
     use tilo_system_stats::protocol::{CpuStats, MemoryStats, SystemStats, ThermalZone};
     use ui::synthetic_input::{cursor_moved, mouse_press, mouse_release};
     use ui::widget::{TileContent, TileHost};
@@ -1329,6 +1388,11 @@ mod tests {
         widgets: DeskWidgets,
         asks: Rc<RefCell<Vec<DesktopAsk>>>,
         changes: std::sync::Arc<std::sync::Mutex<DeskWidgetPrefs>>,
+        /// The desk's open card as the session's keys see it, which asks it
+        /// to fold.
+        fold: super::super::DeskFold,
+        /// Whether the overview is over the desk.
+        overview: Rc<Cell<bool>>,
     }
 
     /// A desk with `people` in its workspace, the calendar added, and the
@@ -1349,16 +1413,85 @@ mod tests {
             .map(|(id, name)| Collaborator::new(*id, *name))
             .collect();
         let handle = DesktopSurface::new(tree, 7, Box::new(Tiles)).1;
+        rig_over(handle, prefs, source)
+    }
+
+    /// The layer of the tests over `handle`, with the desk's choices `prefs`
+    /// and the monitor's readings from `source`.
+    fn rig_over(handle: DesktopHandle, prefs: DeskWidgetPrefs, source: Box<dyn Source>) -> Rig {
         let asks = Rc::new(RefCell::new(Vec::new()));
         let changes = std::sync::Arc::new(std::sync::Mutex::new(prefs.clone()));
-        let mut widgets = DeskWidgets::new(handle, "me".into(), Rc::clone(&asks), changes.clone());
+        let fold = super::super::DeskFold::default();
+        let overview: Rc<Cell<bool>> = Rc::default();
+        let mut widgets = DeskWidgets::new(handle, "me".into(), Rc::clone(&asks), changes.clone())
+            .with_fold(fold.clone())
+            .with_overview(Rc::clone(&overview));
         widgets = widgets.with_source(source).with_prefs(prefs);
         lay_out(&mut widgets, AREA);
         Rig {
             widgets,
             asks,
             changes,
+            fold,
+            overview,
         }
+    }
+
+    /// The desk with no window on it yet, the layer laid out over it, and
+    /// the frame laying the desk's windows out: what the desk is before the
+    /// person opens a window.
+    fn rig_before_a_window_arrives() -> (Rig, ui::headless::FrameHarness) {
+        let mut minter = IdMinter::new(7);
+        let tree = seed_tree(&mut minter, "Desk", Vec::new());
+        let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Tiles));
+        handle.set_viewport_width(AREA.width);
+        let mut frame = ui::headless::FrameHarness::new(
+            ui::state::State::new(),
+            Box::new(surface),
+            (1600, 900),
+        );
+        frame.relayout();
+        let mut prefs = DeskWidgetPrefs::default();
+        prefs.get_mut(WidgetId::Calendar).enabled = true;
+        let rig = rig_over(handle, prefs, Box::new(Service::default()));
+        (rig, frame)
+    }
+
+    /// A window spanning the whole strip showing on the desk `handle` draws,
+    /// laid out by `frame`. Returns the window's rect.
+    fn show_a_window(handle: &DesktopHandle, frame: &mut ui::headless::FrameHarness) -> Rect {
+        let tree = handle.read(|tree| {
+            let mut tree = tree.clone();
+            let strip = tree
+                .active_workspace_mut()
+                .and_then(|workspace| workspace.strips.first_mut())
+                .expect("the desk has a strip");
+            strip.window_groups.push(tilo_desktop_model::WindowGroup {
+                id: 4242,
+                active_tab: 4343,
+                tabs: vec![Tab {
+                    id: 4343,
+                    title: "Notes".into(),
+                    tile: tilo_desktop_model::TileContent::AppPlaceholder {
+                        kind: tilo_desktop_model::AppKind::Other("so.tilo.notes".into()),
+                        label: "Notes".into(),
+                    },
+                    app_title: None,
+                }],
+                width: WindowWidth::Fraction(1000),
+                maximized: false,
+                focus_history: Vec::new(),
+            });
+            tree
+        });
+        handle.replace_tree(tree);
+        frame.relayout();
+        handle
+            .shown_tabs()
+            .into_iter()
+            .next()
+            .expect("the window is shown")
+            .1
     }
 
     /// Lay the layer out over `area`, as the desk around it does.
@@ -1456,6 +1589,61 @@ mod tests {
             rig.form(WidgetId::Calendar),
             Form::Glance,
             "a click on the desk folds the card"
+        );
+    }
+
+    #[test]
+    fn an_open_card_folds_when_escape_asks_or_the_overview_comes_over_it() {
+        let mut rig = rig(&[("ada", "Ada")]);
+        rig.point_at(BARE);
+        let glance = rig.slot(WidgetId::Team).glance;
+        assert!(rig.click(centre(glance)));
+        assert_eq!(rig.form(WidgetId::Team), Form::Open);
+        assert!(rig.fold.is_open(), "the keys know a card is open");
+
+        // Escape, from the session's keys, folds the card.
+        rig.fold.ask();
+        rig.widgets.tick(Instant::now());
+        assert_eq!(rig.form(WidgetId::Team), Form::Glance, "Escape folds it");
+        assert!(!rig.fold.is_open());
+
+        // The ask is spent: the next card opened stays open.
+        assert!(rig.click(centre(glance)));
+        rig.widgets.tick(Instant::now());
+        assert_eq!(rig.form(WidgetId::Team), Form::Open);
+
+        // The overview comes over the desk: the card folds under it.
+        rig.overview.set(true);
+        rig.widgets.tick(Instant::now());
+        assert_eq!(
+            rig.form(WidgetId::Team),
+            Form::Glance,
+            "the overview covers the open card"
+        );
+    }
+
+    #[test]
+    fn a_window_coming_over_the_desk_folds_the_open_card() {
+        let (mut rig, mut frame) = rig_before_a_window_arrives();
+        rig.point_at(BARE);
+        let glance = rig.slot(WidgetId::Calendar).glance;
+        assert!(rig.click(centre(glance)), "the person opened the card");
+        assert_eq!(rig.form(WidgetId::Calendar), Form::Open);
+        assert!(
+            rig.widgets.handle.shown_tabs().is_empty(),
+            "nothing is over the desk yet"
+        );
+
+        let window = show_a_window(&rig.widgets.handle, &mut frame);
+        assert!(
+            window.intersect(rig.slot(WidgetId::Calendar).open).area() > 0.0,
+            "the window stands over the open card: {window:?}"
+        );
+        rig.widgets.tick(Instant::now());
+        assert_eq!(
+            rig.form(WidgetId::Calendar),
+            Form::Glance,
+            "a window over the desk folds the open card"
         );
     }
 
