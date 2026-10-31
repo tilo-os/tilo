@@ -208,6 +208,11 @@ fn tap(session: &mut Session, keycode: u32) {
     key(session, keycode, false);
 }
 
+/// Whether the window menu of the window in front is up.
+fn window_menu_up(session: &Session) -> bool {
+    !session.window_menu_rows().is_empty()
+}
+
 /// What the guide shows now.
 fn guide(session: &Session) -> Guide {
     session
@@ -718,4 +723,34 @@ fn a_controller_press_changes_a_shortcut_the_guide_waits_for() {
         Some(binding(&[], "right")),
         "the D-pad's right is the row's new chord"
     );
+}
+
+#[test]
+fn the_menu_button_opens_the_window_in_fronts_menu() {
+    let _settled = ui::motion::testing::settled();
+    let fake = Fake::new(ControllerFamily::Xbox);
+    let mut session = session_with(&fake);
+    let mut client = mapped(&mut session, "org.example.App");
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        clients[0].focused()
+    });
+    assert!(!window_menu_up(&session), "nothing is up before the press");
+
+    // X, west on an Xbox pad, is the menu of the window in front.
+    fake.press(GamepadButton::West);
+    until(&mut session, window_menu_up);
+    let rows = session.window_menu_rows();
+    for row in [
+        "Name this window…",
+        "Fill the strip",
+        "Wider",
+        "Narrower",
+        "Close",
+    ] {
+        assert!(rows.iter().any(|shown| shown == row), "{row}: {rows:?}");
+    }
+
+    // The same button closes it again.
+    fake.press(GamepadButton::West);
+    until(&mut session, |session| !window_menu_up(session));
 }

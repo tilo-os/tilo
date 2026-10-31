@@ -486,6 +486,23 @@ impl DesktopRules for SessionRules {
     }
 }
 
+impl crate::Session {
+    /// The rows of the window menu the chrome shows now, in order, as a
+    /// harness reads them: empty while it is closed.
+    #[must_use]
+    pub fn window_menu_rows(&self) -> Vec<String> {
+        self.with_chrome(|chrome| {
+            chrome
+                .window_menu()
+                .labels()
+                .into_iter()
+                .flatten()
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+}
+
 /// The chrome above the windows (the top bar, overview, menus) as the
 /// session hosts it: its own tree beside the desk's, covering the outputs.
 pub(crate) fn host(

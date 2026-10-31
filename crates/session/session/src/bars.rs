@@ -54,7 +54,7 @@ impl Session {
     }
 
     /// The chrome as the session hosts it.
-    fn with_chrome<T>(&self, read: impl FnOnce(&DesktopChrome) -> T) -> Option<T> {
+    pub(crate) fn with_chrome<T>(&self, read: impl FnOnce(&DesktopChrome) -> T) -> Option<T> {
         let mut host = self.shared.chrome.borrow_mut();
         let root = host.host_mut().root_widget_mut();
         Some(read(root.as_any_mut()?.downcast_ref::<DesktopChrome>()?))
