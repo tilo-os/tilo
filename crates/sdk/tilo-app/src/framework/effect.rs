@@ -1893,7 +1893,7 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
             return Ok(None);
         }
         op.check()?;
-        let effect = E::from_payload(request.payload)?;
+        let effect = E::from_payload(request.payload).map_err(|error| error.to_string())?;
         let id = effect.id();
         let declaration = E::declaration(id);
         let place = declaration

@@ -231,7 +231,14 @@ mod tests {
                     .unwrap(),
             )
             .unwrap_err();
-            assert!(error.contains("absolute"), "{id}: {error}");
+            assert!(
+                matches!(
+                    &error,
+                    ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                        if name == "path" && source.to_string().contains("absolute")
+                ),
+                "{id}: {error}"
+            );
         }
         for id in ["zoom-in", "problems"] {
             let spec = specs.iter().find(|spec| spec.id == id).unwrap();

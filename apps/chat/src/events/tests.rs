@@ -2951,5 +2951,12 @@ fn the_attach_action_refuses_a_relative_path() {
         ("path".to_owned(), serde_json::json!("plan.pdf")),
     ]);
     let refused = crate::effects::ChatEffect::decode("attach-file", &arguments).unwrap_err();
-    assert!(refused.contains("absolute"), "{refused}");
+    assert!(
+        matches!(
+            &refused,
+            ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                if name == "path" && source.to_string().contains("absolute")
+        ),
+        "{refused}"
+    );
 }

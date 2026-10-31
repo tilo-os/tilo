@@ -11206,7 +11206,14 @@ mod tests {
         let error =
             <InstallerPreviewEffect as Effect>::decode("export-prepared-belongings", &arguments)
                 .unwrap_err();
-        assert!(error.contains("absolute"), "{error}");
+        assert!(
+            matches!(
+                &error,
+                ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                    if name == "destination" && source.to_string().contains("absolute")
+            ),
+            "{error}"
+        );
         arguments.insert(
             "destination".into(),
             "/media/backup/preparation.sealed".into(),

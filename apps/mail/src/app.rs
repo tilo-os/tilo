@@ -4978,7 +4978,8 @@ impl Mailroom {
         payload: &[u8],
     ) -> Result<ui::framework::Effected, String> {
         let effect =
-            <crate::actions::MailEffect as ui::tilo_resource::Effect>::from_payload(payload)?;
+            <crate::actions::MailEffect as ui::tilo_resource::Effect>::from_payload(payload)
+                .map_err(|error| error.to_string())?;
         self.begin_effect(invocation, effect)
     }
 

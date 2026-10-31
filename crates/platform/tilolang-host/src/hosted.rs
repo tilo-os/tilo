@@ -679,7 +679,7 @@ impl Hosted {
             && encoded.type_id == <HostEffect as tilo_resource::Effect>::OPERATION
         {
             let effect = <HostEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
-                .map_err(|error| Refused::new("action_invalid_arguments", error))?;
+                .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
             let first = host.next_ticket();
             let output = host
                 .answer(effect, Some(&caller))
@@ -700,7 +700,7 @@ impl Hosted {
             // A search hit, or an agent's `open`: the window shows what it names.
             let OpenEffect::Open { anchor } =
                 <OpenEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
-                    .map_err(|error| Refused::new("action_invalid_arguments", error))?;
+                    .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
             self.instance.open_requests().borrow_mut().push(anchor);
             return Ok(tilo_actions::ActionOutput::default());
         }

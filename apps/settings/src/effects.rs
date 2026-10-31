@@ -38,8 +38,10 @@ pub struct EffectFamily {
 }
 
 /// [`EffectFamily::decode`].
-pub type DecodeEffect =
-    fn(&str, &serde_json::Map<String, serde_json::Value>) -> Result<Box<dyn AreaEffect>, String>;
+pub type DecodeEffect = fn(
+    &str,
+    &serde_json::Map<String, serde_json::Value>,
+) -> Result<Box<dyn AreaEffect>, tilo_resource::EffectDecodeError>;
 
 /// [`EffectFamily::answer`].
 pub type AnswerEffect =
@@ -216,13 +218,13 @@ impl Effect for SettingsEffect {
     fn decode(
         id: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, tilo_resource::EffectDecodeError> {
         for family in &crate::area::registry().families {
             if (family.declarations)().iter().any(|decl| decl.id == id) {
                 return (family.decode)(id, arguments).map(Self);
             }
         }
-        Err(format!("Settings has no effect `{id}`"))
+        Err(tilo_resource::EffectDecodeError::Unknown(id.to_owned()))
     }
 }
 
@@ -805,7 +807,7 @@ mod tests {
         fn decode(
             id: &str,
             arguments: &serde_json::Map<String, serde_json::Value>,
-        ) -> Result<Self, String> {
+        ) -> Result<Self, tilo_resource::EffectDecodeError> {
             SettingsEffect::decode(id, arguments).map(Self)
         }
     }
@@ -886,8 +888,8 @@ mod tests {
             pane: "appearance".into(),
         });
         assert_eq!(
-            SettingsEffect::decode(open.id(), &open.arguments()),
-            Ok(open)
+            SettingsEffect::decode(open.id(), &open.arguments()).ok(),
+            Some(open)
         );
         assert!(SettingsEffect::decode("no-such-effect", &serde_json::Map::new()).is_err());
     }

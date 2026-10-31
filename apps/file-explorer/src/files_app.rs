@@ -10115,10 +10115,9 @@ pub(crate) mod published {
     ) -> Result<Option<Started>, String> {
         if type_id == FilesEffect::OPERATION {
             return Ok(Some(
-                match files
-                    .state()
-                    .run_effect(FilesEffect::from_payload(payload)?)?
-                {
+                match files.state().run_effect(
+                    FilesEffect::from_payload(payload).map_err(|error| error.to_string())?,
+                )? {
                     super::Ran::Done(value) => Started::Done(ui::tilo_actions::ActionOutput {
                         value,
                         ..ui::tilo_actions::ActionOutput::default()

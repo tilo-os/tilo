@@ -1837,7 +1837,14 @@ mod tests {
                 .map(|(name, value)| ((*name).to_owned(), serde_json::Value::from(*value)))
                 .collect();
             let error = DiffmergeEffect::decode(id, &arguments).expect_err(id);
-            assert!(error.contains("absolute"), "{id}: {error}");
+            assert!(
+                matches!(
+                    &error,
+                    ui::tilo_resource::EffectDecodeError::Argument { source, .. }
+                        if source.to_string().contains("absolute")
+                ),
+                "{id}: {error}"
+            );
         }
     }
 

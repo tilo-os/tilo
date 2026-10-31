@@ -318,7 +318,7 @@ mod tests {
         )
         .err()
         .unwrap();
-        assert!(!refused.contains("hunter2"), "{refused}");
+        assert!(!format!("{refused:?}").contains("hunter2"), "{refused}");
     }
 
     #[test]

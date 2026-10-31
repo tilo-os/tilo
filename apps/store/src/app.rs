@@ -3124,7 +3124,14 @@ mod tests {
         let relative =
             <StoreEffect as ui::tilo_resource::Effect>::decode("import-package", &arguments)
                 .unwrap_err();
-        assert!(relative.contains("absolute"), "{relative}");
+        assert!(
+            matches!(
+                &relative,
+                ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                    if name == "path" && source.to_string().contains("absolute")
+            ),
+            "{relative}"
+        );
         let size_refused = ui::i18n!("store-package-size-refused");
         app.apply_worker_snapshot(crate::worker::Snapshot {
             items: Vec::new(),

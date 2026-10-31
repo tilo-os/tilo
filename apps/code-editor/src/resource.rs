@@ -386,7 +386,14 @@ mod tests {
             arguments.insert("column".into(), 0.into());
             arguments.insert("results".into(), false.into());
             let error = CodeEditorEffect::decode(id, &arguments).unwrap_err();
-            assert!(error.contains("absolute"), "{id}: {error}");
+            assert!(
+                matches!(
+                    &error,
+                    ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                        if name == "path" && source.to_string().contains("absolute")
+                ),
+                "{id}: {error}"
+            );
         }
     }
 

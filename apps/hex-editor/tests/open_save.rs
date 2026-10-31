@@ -174,7 +174,14 @@ fn agents_edit_the_bytes_through_the_published_actions() {
         let mut arguments = serde_json::Map::new();
         arguments.insert("path".into(), "relative-copy.bin".into());
         let error = HexEffect::decode(id, &arguments).expect_err(id);
-        assert!(error.contains("absolute"), "{id}: {error}");
+        assert!(
+            matches!(
+                &error,
+                ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                    if name == "path" && source.to_string().contains("absolute")
+            ),
+            "{id}: {error}"
+        );
     }
 }
 

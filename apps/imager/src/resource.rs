@@ -467,7 +467,14 @@ mod tests {
         for (image, psk) in [("disk.raw", "/a/psk.txt"), ("/a/disk.raw", "psk.txt")] {
             let error =
                 ImagerEffect::decode("customize-image", &arguments(image, psk)).unwrap_err();
-            assert!(error.contains("absolute"), "{error}");
+            assert!(
+                matches!(
+                    &error,
+                    ui::tilo_resource::EffectDecodeError::Argument { source, .. }
+                        if source.to_string().contains("absolute")
+                ),
+                "{error}"
+            );
         }
         assert!(
             ImagerEffect::decode("customize-image", &arguments("/a/disk.raw", "/a/psk.txt"))
