@@ -14,6 +14,23 @@ pub fn dispatch<W: Widget + ?Sized>(widget: &mut W, event: &WindowEvent) -> bool
     Dispatch::new().send(widget, event).handled
 }
 
+/// Answer the controls `widget`'s subtree queued, the way a host answers the
+/// action a press published: a person's click on a
+/// [`Button::on_view`](crate::widget::Button::on_view) reaches its handler
+/// here, not at the press. Answers how many ran.
+///
+/// For a tree that keeps no resource host of its own: the control that
+/// published the action is the one that answers it, exactly as
+/// [`crate::widget::controls::start_pending_control_invocations`] does for
+/// the shell. A test that presses a published control and then asserts what
+/// it did calls this between the two; one that only asserts the press was
+/// handled need not.
+pub fn answer_controls(widget: &mut dyn Widget) -> usize {
+    let mut doc = AutoCommit::new();
+    let mut state = Edits::lend(&mut doc);
+    crate::widget::controls::start_pending_control_invocations(widget, &mut state, &automerge::ROOT)
+}
+
 /// The context [`Dispatch::send`] lends a widget, scratch unless set.
 pub struct Dispatch<'a> {
     scale_factor: f64,
@@ -133,5 +150,35 @@ impl<'a> Dispatch<'a> {
             handled,
             focus_target,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::Button;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[test]
+    fn answer_controls_runs_the_action_a_press_published() {
+        let fired = Rc::new(Cell::new(0_u32));
+        let count = Rc::clone(&fired);
+        let mut button = Button::new("answer", "Answer").on_view(move || {
+            count.set(count.get() + 1);
+        });
+        let mut doc = AutoCommit::new();
+        let activated = Widget::perform_action(
+            &mut button,
+            &crate::a11y::Action::Activate,
+            &[],
+            &mut Edits::lend(&mut doc),
+            &automerge::ROOT,
+        );
+        assert!(activated, "the button takes the activation");
+        assert_eq!(fired.get(), 0, "a published press runs when it is answered");
+        assert_eq!(answer_controls(&mut button), 1);
+        assert_eq!(fired.get(), 1);
+        assert_eq!(answer_controls(&mut button), 0, "answered once");
     }
 }
