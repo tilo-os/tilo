@@ -2358,7 +2358,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // A path naming the app means what the app publishes on its
         // resources: its root's, and those of the resources one level down
         // in the containers it lists (a notebook's notes are the app's), as
-        // far as one listing reads, never a walk of the app.
+        // far as one listing reads, never a walk of the app. The target's own
+        // actions are asked first: they need no listing.
+        if let Ok(action) = pick_action(name, &resolved.actions, &resolved.path) {
+            return Ok((resolved.path.clone(), action.clone()));
+        }
         let mut levels = resolved.levels.clone();
         let mut published: Vec<(String, ActionDescriptor)> = Vec::new();
         if resolved.node.is_none() {
