@@ -459,8 +459,13 @@ fn opening_the_directory_lists_the_community_sites_public_workspaces() {
     );
     assert_eq!(community.here_count, 2, "and how many in all");
     assert_eq!(
-        community.activity, "2 here now · 34 members",
-        "how lively it is and how many belong"
+        community.activity, "2 here now",
+        "how lively it is, on the row's own line"
+    );
+    assert_eq!(
+        community.members.as_deref(),
+        Some("34 members"),
+        "and how many belong, in its own column"
     );
     assert_eq!(
         community.joins_as, "You join as an editor",
@@ -472,8 +477,13 @@ fn opening_the_directory_lists_the_community_sites_public_workspaces() {
         "a workspace that says nothing of itself is named by its host"
     );
     assert_eq!(
-        club.activity, "Active this week · 5 members",
+        club.activity, "Active this week",
         "and says when it last had something new"
+    );
+    assert_eq!(
+        club.members.as_deref(),
+        Some("5 members"),
+        "how many belong to it"
     );
     assert_eq!(
         club.joins_as, "You join as a viewer",
