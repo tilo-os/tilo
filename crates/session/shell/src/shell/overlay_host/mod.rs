@@ -1006,6 +1006,9 @@ pub struct ShellOverlayHost {
     topbar: Box<topbar_host::TopBarHost>,
     /// The ask-agent chord's progress and the apps that answer it.
     selection_requests: crate::shell::selection_agent::SelectionRequests,
+    /// Work the chrome handed to agents that waits for its room's identity
+    /// on this device to settle, or for the broker.
+    held_agent_asks: ask_agent::HeldAgentAsks,
     /// Agent door connections whose run waits for this device's identity in
     /// their workspace to settle, and when it does: asked then.
     door_runs_unsettled: Vec<(Instant, crate::shell::agent_admission::DoorRunAsk)>,

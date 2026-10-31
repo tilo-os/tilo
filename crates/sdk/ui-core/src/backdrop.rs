@@ -150,7 +150,7 @@ fn fill_finish(
             ),
         }
         if let Some(body) = body {
-            crate::surface::sheen(scene, transform, &body, optics.specular);
+            crate::surface::sheen(scene, transform, &body, optics);
         }
         settle(scene, transform, shape, theme, ground);
         scene.fill(
@@ -161,14 +161,14 @@ fn fill_finish(
             shape,
         );
         if let Some(body) = body {
-            crate::surface::rim_light(scene, transform, &body, optics.edge_highlight);
+            crate::surface::rim_light(scene, transform, &body, optics);
         }
         return;
     }
     scene.fill(Fill::NonZero, transform, ground, None, shape);
     if let Some(body) = body {
-        crate::surface::sheen(scene, transform, &body, optics.specular);
-        crate::surface::rim_light(scene, transform, &body, optics.edge_highlight);
+        crate::surface::sheen(scene, transform, &body, optics);
+        crate::surface::rim_light(scene, transform, &body, optics);
     }
 }
 
@@ -218,6 +218,55 @@ fn refract(
             &shape,
         );
     }
+}
+
+/// Fill `path` with what lies below it, for a painter's backdrop brush
+/// (`crate::part_paint`): under an active [`BackdropRecording`] the
+/// backdrop blurred by `blur` logical pixels, bent by `refraction` at the
+/// rim of the `radius`-rounded box around it, and held in the material's
+/// band around `tint` (the colour the painter lays over it), so ink keeps
+/// its contrast whatever the painter draws next. `fallback` where nothing
+/// may be translucent or nothing records.
+pub(crate) fn fill_painted_backdrop(
+    scene: &mut Scene,
+    transform: Affine,
+    path: &vello::kurbo::BezPath,
+    (blur, refraction, radius): (f32, f32, f64),
+    theme: &Theme,
+    (tint, fallback): (Color, Color),
+) {
+    let translucent = !(theme.reduce_transparency || theme.forced_colors) && blur > 0.0;
+    let recorded = translucent
+        .then(|| record(scene, transform, path, blur, tint))
+        .flatten();
+    let Some((image, brush_transform)) = recorded else {
+        scene.fill(Fill::NonZero, transform, fallback, None, path);
+        return;
+    };
+    let brush = ImageBrush::new(image)
+        .with_extend(Extend::Pad)
+        .with_quality(ImageQuality::Medium);
+    if refraction > 0.0 {
+        let body = RoundedRect::from_rect(path.bounding_box(), radius);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            path,
+        );
+        refract(scene, transform, &body, &brush, brush_transform, refraction);
+        scene.pop_layer();
+    } else {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            &brush,
+            Some(brush_transform),
+            path,
+        );
+    }
+    settle(scene, transform, path, theme, tint);
 }
 
 /// Fill `shape` with `material`: under an active [`BackdropRecording`] the

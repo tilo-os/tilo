@@ -117,16 +117,34 @@ impl CapnpBrokerState {
     /// invocation answers `Accepted` at once and records the outcome when
     /// the host's step ends, which for a pairing approval may be minutes
     /// later.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered admission of a host step: room confinement, policy, confirmation and the host's own decision"
-    )]
     pub(super) fn invoke_host_step(
         self: &Arc<Self>,
         caller: &Caller,
         origin: Option<&super::published_invocation::InvocationCaller>,
         steps: &dyn HostStepServices,
         request: &InvokeRequest,
+    ) -> Result<InvocationReceipt, ActionHostError> {
+        self.invoke_host_step_in_run(caller, origin, steps, request, None)
+    }
+
+    /// As [`Self::invoke_host_step`], taken in a task's run `run` when it is
+    /// one of a run's steps; the step is handed the run
+    /// ([`HostStepRequest::task_run`]).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered admission of a host step: room confinement, policy, confirmation and the host's own decision"
+    )]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the step borrows the run it is taken in until the host started it"
+    )]
+    pub(super) fn invoke_host_step_in_run(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        steps: &dyn HostStepServices,
+        request: &InvokeRequest,
+        run: Option<&super::TaskRunHost>,
     ) -> Result<InvocationReceipt, ActionHostError> {
         let abandon = |error: ActionHostError| {
             if let Ok(mut ledger) = self.remote_invocations.lock() {
@@ -227,6 +245,7 @@ impl CapnpBrokerState {
             actor: &policy,
             address,
             argument: argument.as_deref(),
+            task_run: run,
         };
         if descriptor.contract.is_live() {
             let view = match steps.watch(&step) {

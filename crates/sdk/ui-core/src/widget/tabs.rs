@@ -3404,6 +3404,7 @@ impl TabBar {
             return colors.text_dim;
         }
         let grounds = crate::tokens::SelectorFinish::frosted_extremes(
+            colors,
             self.ground(theme),
             colors.surfaces.material_opacity,
         );
@@ -10451,6 +10452,7 @@ mod tests {
                 continue;
             }
             for ground in crate::tokens::SelectorFinish::frosted_extremes(
+                &theme.tokens.colors,
                 crate::chrome::strip_ground(&theme),
                 theme.tokens.colors.surfaces.material_opacity,
             ) {

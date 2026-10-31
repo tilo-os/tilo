@@ -113,6 +113,9 @@ pub(crate) fn fill(
         }
     }
     scene.pop_layer();
+    // Held in the material's band, as every blurred material is, so ink
+    // measured against the band's ends holds over any desktop.
+    super::settle(scene, transform, shape, theme, ground);
     scene.fill(
         Fill::NonZero,
         transform,
