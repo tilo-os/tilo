@@ -3809,6 +3809,40 @@ impl ControlRow {
         self.selected
     }
 
+    /// A row that is chosen by its press alone, as a component places one: a press its own
+    /// controls did not take runs `chosen`.
+    #[must_use]
+    pub fn on_choose(mut self, mut chosen: Box<dyn FnMut()>) -> Self {
+        self.choice = Some(RowChoice {
+            is_chosen: Box::new(|| false),
+            choose: Box::new(move || {
+                chosen();
+            }),
+        });
+        self
+    }
+
+    /// Whether a press chooses it, as a component's event says.
+    #[must_use]
+    pub fn has_choose(&self) -> bool {
+        self.choice.is_some()
+    }
+
+    /// Show it chosen (or not) in place, without telling what choosing it does.
+    pub fn set_selected(&mut self, selected: bool) {
+        if self.selected != selected {
+            self.selected = selected;
+            self.dirty = true;
+        }
+    }
+
+    /// Show it chosen from the start, as a view says.
+    #[must_use]
+    pub fn with_selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
     fn choose(&mut self) -> bool {
         let Some(choice) = self.choice.as_mut() else {
             return false;
@@ -3938,6 +3972,14 @@ impl crate::widget::Decorator for ControlRow {
     }
 }
 
+#[cfg(test)]
+#[path = "control_row_tests.rs"]
+mod control_row_tests;
+
+#[path = "control_row_component.rs"]
+mod control_row;
+pub use control_row::ControlRowProps;
+
 #[path = "list_row_shape.rs"]
 mod shape;
 pub use shape::{RowLeadingShape, RowShape};
@@ -3945,54 +3987,6 @@ pub use shape::{RowLeadingShape, RowShape};
 #[cfg(test)]
 #[path = "list_row_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-mod control_row_tests {
-    use super::*;
-
-    #[test]
-    fn control_rows_follow_one_shared_choice() {
-        let chosen = crate::LocalState::new("ink".to_owned());
-        let mut ink = ControlRow::new(crate::widget::Row::new())
-            .choosing(&chosen, "ink".to_owned())
-            .with_accessible_name("Ink");
-        let mut oil = ControlRow::new(crate::widget::Row::new())
-            .choosing_any(&chosen, vec!["oil".to_owned(), "oil-mask".to_owned()]);
-        assert!(ink.is_selected() && !oil.is_selected());
-
-        // Activating a row chooses it; the other follows on sync.
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        assert!(Widget::perform_action(
-            &mut oil,
-            &crate::a11y::Action::Activate,
-            &[],
-            &mut crate::widget::Edits::lend(&mut doc),
-            &root
-        ));
-        assert_eq!(chosen.with(Clone::clone), "oil");
-        Widget::sync(&mut ink, &doc, &root);
-        assert!(!ink.is_selected() && oil.is_selected());
-
-        // A part of the row (its mask) keeps the row chosen, and choosing
-        // the row again does not take the part's place.
-        chosen.set("oil-mask".to_owned());
-        Widget::sync(&mut oil, &doc, &root);
-        assert!(oil.is_selected());
-        Widget::perform_action(
-            &mut oil,
-            &crate::a11y::Action::Activate,
-            &[],
-            &mut crate::widget::Edits::lend(&mut doc),
-            &root,
-        );
-        assert_eq!(chosen.with(Clone::clone), "oil-mask");
-
-        let node = Widget::accessibility(&ink).expect("a list item");
-        assert_eq!(node.role, Role::ListItem);
-        assert_eq!(node.name.as_deref(), Some("Ink"));
-    }
-}
 
 mod component;
 pub use component::{ListRowProps, SwipeActionProps};

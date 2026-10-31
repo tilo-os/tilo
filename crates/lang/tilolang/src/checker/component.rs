@@ -203,6 +203,13 @@ impl Checker<'_> {
                 Type::Bool => vec![Ty::Bool],
                 Type::Int => vec![Ty::Int],
                 Type::Float => vec![Ty::Float],
+                // A moment is a Date, a Time, or one that may be none.
+                Type::Time => vec![
+                    Ty::Date,
+                    Ty::Time,
+                    Ty::Option(Box::new(Ty::Date)),
+                    Ty::Option(Box::new(Ty::Time)),
+                ],
                 Type::RichText => vec![Ty::RichText],
                 _ => Vec::new(),
             };

@@ -114,6 +114,8 @@ pub struct Reconciler {
     sink: EventSink,
     texts: HashMap<String, LocalState<String>>,
     flags: HashMap<String, LocalState<bool>>,
+    counts: HashMap<String, LocalState<i64>>,
+    numbers: HashMap<String, LocalState<f64>>,
     riches: HashMap<String, LocalState<tilo_render_protocol::patch::rich::RichText>>,
     /// The handle on the split that collapses to navigate, the last one built.
     navigation: Option<Navigation>,
@@ -441,6 +443,8 @@ impl Reconciler {
             sink,
             texts: HashMap::new(),
             flags: HashMap::new(),
+            counts: HashMap::new(),
+            numbers: HashMap::new(),
             riches: HashMap::new(),
             navigation: None,
             adapter,
@@ -457,6 +461,8 @@ impl Reconciler {
             sink: Rc::clone(&other.sink),
             texts: HashMap::new(),
             flags: HashMap::new(),
+            counts: HashMap::new(),
+            numbers: HashMap::new(),
             riches: HashMap::new(),
             navigation: None,
             adapter: other.adapter.clone(),
@@ -516,6 +522,40 @@ impl Reconciler {
             .entry(key.to_owned())
             .or_insert_with(|| LocalState::new(false))
             .clone()
+    }
+
+    /// The whole number the control `key` shows, kept in step with what it is bound to.
+    pub fn count_state(&mut self, key: &str) -> LocalState<i64> {
+        self.counts
+            .entry(key.to_owned())
+            .or_insert_with(|| LocalState::new(0))
+            .clone()
+    }
+
+    /// The number the control `key` shows, kept in step with what it is bound to.
+    pub fn number_state(&mut self, key: &str) -> LocalState<f64> {
+        self.numbers
+            .entry(key.to_owned())
+            .or_insert_with(|| LocalState::new(0.0))
+            .clone()
+    }
+
+    /// Show `number` in the control `key`.
+    pub fn set_count(&self, key: &str, number: i64) {
+        if let Some(state) = self.counts.get(key)
+            && state.get() != number
+        {
+            state.set(number);
+        }
+    }
+
+    /// Show `number` in the control `key`.
+    pub fn set_number(&self, key: &str, number: f64) {
+        if let Some(state) = self.numbers.get(key)
+            && state.get().total_cmp(&number).is_ne()
+        {
+            state.set(number);
+        }
     }
 
     /// The rich text the rich input `key` shows, kept in step with what it is bound to.

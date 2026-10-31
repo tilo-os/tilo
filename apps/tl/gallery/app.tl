@@ -4,7 +4,6 @@ app so.tilo.lang.gallery "Gallery" (icon: .layout_grid, category: .system)
 /// in the groups people meet them in, with the values an app would give it. Each group is a
 /// file of its own (`controls.tl`, `charts.tl`, ...) with its own window and scenario, and a
 /// test fails while a component of the toolkit is shown in none of them.
-
 /// A piece of work on the team's board, in its list, and talked about.
 type Item {
     title: Text (title)
@@ -42,6 +41,7 @@ type Gallery {
     backlogs: Collection<Backlog>
     releases: Collection<Release>
     feedback: Collection<Feedback>
+    controls: Collection<Controls>
 }
 
 root Gallery
@@ -69,6 +69,9 @@ view gallery(g: Gallery) {
             }
             for x in g.feedback {
                 ui.ListRow(x.title, item: x, icon: .eye)
+            }
+            for x in g.controls {
+                ui.ListRow(x.title, item: x, icon: .settings)
             }
         }
     }

@@ -385,14 +385,25 @@ impl PropType for Moment {
         Type::Time
     }
 
+    /// A moment is an instant (`YYYY-MM-DDTHH:MM:SSZ`), or the day it falls on (`YYYY-MM-DD`,
+    /// its midnight): that is what a day's field binds.
     fn from_value(value: &Value) -> Result<Self, String> {
         match value {
-            Value::Text(at) => chrono::DateTime::parse_from_rfc3339(at)
-                .map(|at| Self(at.timestamp()))
-                .map_err(|_| format!("is no moment: {at}")),
+            Value::Text(at) => moment_of(at).ok_or_else(|| format!("is no moment: {at}")),
             other => Err(wrong(&Self::ty(), other)),
         }
     }
+}
+
+/// The instant `at` is, in seconds since the Unix epoch: its instant, or the midnight of the
+/// day it names.
+fn moment_of(at: &str) -> Option<Moment> {
+    if let Ok(instant) = chrono::DateTime::parse_from_rfc3339(at) {
+        return Some(Moment(instant.timestamp()));
+    }
+    let day = chrono::NaiveDate::parse_from_str(at.get(..10)?, "%Y-%m-%d").ok()?;
+    day.and_hms_opt(0, 0, 0)
+        .map(|midnight| Moment(midnight.and_utc().timestamp()))
 }
 
 /// The id of a resource a component presents.
@@ -693,6 +704,8 @@ impl<T: Clone + 'static> Bound<T> {
 pub enum BoundValue {
     Text(Bound<String>),
     Bool(Bound<bool>),
+    Int(Bound<i64>),
+    Float(Bound<f64>),
     /// Rich text, edited by its paragraphs and marks.
     Rich(Bound<tilo_ui_graph::rich::RichText>),
 }
@@ -714,9 +727,7 @@ impl BindType for Bound<String> {
     fn from_bound(bound: BoundValue) -> Result<Self, String> {
         match bound {
             BoundValue::Text(bound) => Ok(bound),
-            BoundValue::Bool(_) | BoundValue::Rich(_) => {
-                Err("binds Text, not a Bool or RichText".to_owned())
-            }
+            other => Err(other.not_text()),
         }
     }
 }
@@ -729,9 +740,33 @@ impl BindType for Bound<bool> {
     fn from_bound(bound: BoundValue) -> Result<Self, String> {
         match bound {
             BoundValue::Bool(bound) => Ok(bound),
-            BoundValue::Text(_) | BoundValue::Rich(_) => {
-                Err("binds a Bool, not Text or RichText".to_owned())
-            }
+            other => Err(other.not_bool()),
+        }
+    }
+}
+
+impl BindType for Bound<i64> {
+    fn ty() -> Type {
+        Type::Int
+    }
+
+    fn from_bound(bound: BoundValue) -> Result<Self, String> {
+        match bound {
+            BoundValue::Int(bound) => Ok(bound),
+            other => Err(other.not_int()),
+        }
+    }
+}
+
+impl BindType for Bound<f64> {
+    fn ty() -> Type {
+        Type::Float
+    }
+
+    fn from_bound(bound: BoundValue) -> Result<Self, String> {
+        match bound {
+            BoundValue::Float(bound) => Ok(bound),
+            other => Err(other.not_float()),
         }
     }
 }
@@ -744,10 +779,41 @@ impl BindType for Bound<tilo_ui_graph::rich::RichText> {
     fn from_bound(bound: BoundValue) -> Result<Self, String> {
         match bound {
             BoundValue::Rich(bound) => Ok(bound),
-            BoundValue::Text(_) | BoundValue::Bool(_) => {
-                Err("binds RichText, not Text or a Bool".to_owned())
-            }
+            other => Err(other.not_rich()),
         }
+    }
+}
+
+/// What a binding of another type is, for the message saying it fits neither.
+impl BoundValue {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Text(_) => "Text",
+            Self::Bool(_) => "Bool",
+            Self::Int(_) => "Int",
+            Self::Float(_) => "Float",
+            Self::Rich(_) => "RichText",
+        }
+    }
+
+    fn not_text(&self) -> String {
+        format!("binds Text, not {}", self.kind())
+    }
+
+    fn not_bool(&self) -> String {
+        format!("binds a Bool, not {}", self.kind())
+    }
+
+    fn not_int(&self) -> String {
+        format!("binds an Int, not {}", self.kind())
+    }
+
+    fn not_float(&self) -> String {
+        format!("binds a Float, not {}", self.kind())
+    }
+
+    fn not_rich(&self) -> String {
+        format!("binds RichText, not {}", self.kind())
     }
 }
 
@@ -1115,3 +1181,6 @@ mod coverage_tests;
 
 #[cfg(test)]
 mod feedback_tests;
+
+#[cfg(test)]
+mod controls_tests;
