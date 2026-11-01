@@ -325,8 +325,9 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         RoomsReply::Refused(_)
     ));
 
-    // An editor cannot change roles or remove a member. Both
-    // requests go through the production HTTPS administration endpoint.
+    // An editor changes no role and removes nobody else: the owner stays.
+    // Each request goes through the production HTTPS administration
+    // endpoint.
     for request in [
         RoomsRequest::SetRole {
             room: created.room.clone(),
@@ -337,7 +338,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         RoomsRequest::Remove {
             room: created.room.clone(),
             request_id: [11; 32],
-            user_public_key: bob.cert.user_public_key,
+            user_public_key: alice.verifying_key().to_bytes(),
         },
         RoomsRequest::Invite {
             room: created.room.clone(),
@@ -361,13 +362,100 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         ));
     }
 
+    // Removing himself he may: leaving is the one membership change no
+    // grant decides. The host answers with the workspace, which keeps his
+    // entry marked removed, and stops admitting him.
+    let left = workspace(
+        workspaces(
+            &member,
+            RoomsRequest::Remove {
+                room: created.room.clone(),
+                request_id: [13; 32],
+                user_public_key: bob.cert.user_public_key,
+            },
+        )
+        .await,
+    );
+    assert_eq!(left.room, created.room);
+    assert_eq!(left.workspace_id, created.workspace_id);
+    assert!(
+        left.members
+            .iter()
+            .any(|entry| entry.user_public_key == bob.cert.user_public_key && entry.removed),
+        "{left:?}"
+    );
+    assert!(
+        !left
+            .members
+            .iter()
+            .any(|entry| entry.user_public_key == bob.cert.user_public_key && !entry.removed)
+    );
+    assert_eq!(
+        status(https.as_ref(), &bob, bob_request).await,
+        JoinReply::Declined
+    );
+    assert!(
+        subscribe(&mut member, created.workspace_id).await.is_err(),
+        "a person who left is not admitted"
+    );
+    drop(member);
+
+    // Alice invites him back: a person who left has no way in left, so
+    // returning takes a new invitation and her admission.
+    let RoomsReply::Invitation {
+        signed_invitation: again,
+        ..
+    } = workspaces(
+        &owner,
+        RoomsRequest::Invite {
+            room: created.room.clone(),
+            request_id: [14; 32],
+            role: RoomRole::Editor,
+            expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+            inviter_name: None,
+            wait_list_entry: None,
+        },
+    )
+    .await
+    else {
+        panic!("no invitation");
+    };
+    let bob_again = [15; 32];
+    assert_eq!(
+        ask_to_join(
+            https.as_ref(),
+            &again,
+            &bob.cert,
+            &bob.key,
+            bob_again,
+            "Bob"
+        )
+        .await
+        .unwrap(),
+        JoinReply::Waiting
+    );
+    let readmitted = workspace(
+        workspaces(
+            &owner,
+            RoomsRequest::Admit {
+                room: created.room.clone(),
+                request_id: bob_again,
+            },
+        )
+        .await,
+    );
+    assert!(readmitted.members.iter().any(|entry| {
+        entry.user_public_key == bob.cert.user_public_key
+            && !entry.removed
+            && entry.role == RoomRole::Editor
+    }));
+
     // A page reload opens a new session with Bob's same certificate and
     // root, and rejoins the admitted workspace without owner certification.
-    drop(member);
     let mut member = connect(bob.cert.clone(), bob.key.clone()).await.unwrap();
     subscribe(&mut member, created.workspace_id).await.unwrap();
     assert!(matches!(
-        status(https.as_ref(), &bob, bob_request).await,
+        status(https.as_ref(), &bob, bob_again).await,
         JoinReply::Admitted {
             role: RoomRole::Editor,
             ..
@@ -478,7 +566,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
     // Status after a reload reports current governance, not the role in
     // the original admission receipt.
     assert!(matches!(
-        status(https.as_ref(), &bob, bob_request).await,
+        status(https.as_ref(), &bob, bob_again).await,
         JoinReply::Admitted {
             role: RoomRole::Viewer,
             ..
@@ -514,7 +602,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
             .any(|member| { member.user_public_key == bob.cert.user_public_key && member.removed })
     );
     assert_eq!(
-        status(https.as_ref(), &bob, bob_request).await,
+        status(https.as_ref(), &bob, bob_again).await,
         JoinReply::Declined
     );
     assert!(
@@ -716,18 +804,48 @@ async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reloa
     restored.join(created.workspace_id).unwrap();
     joined(&restored, created.workspace_id).await;
     assert_eq!(store.load().unwrap().cert.as_ref(), Some(&bob.cert));
-    assert!(matches!(
+    // He leaves: the host answers with the workspace, keeping his entry
+    // marked removed and admitting him no more.
+    let left = workspace(
         peer_workspaces(
             &restored,
             RoomsRequest::Remove {
-                room: created.room,
+                room: created.room.clone(),
                 request_id: [22; 32],
                 user_public_key: bob.cert.user_public_key,
-            }
+            },
         )
         .await,
-        RoomsReply::Refused(_)
-    ));
+    );
+    assert_eq!(left.workspace_id, created.workspace_id);
+    assert!(
+        left.members
+            .iter()
+            .any(|entry| entry.user_public_key == bob.cert.user_public_key && entry.removed),
+        "{left:?}"
+    );
+    assert!(
+        !left
+            .members
+            .iter()
+            .any(|entry| entry.user_public_key == bob.cert.user_public_key && !entry.removed)
+    );
+    assert_eq!(
+        status(running.https().as_ref(), &bob, request).await,
+        JoinReply::Declined
+    );
+    assert!(
+        HttpsLink::connect(
+            running.https(),
+            &bob.cert,
+            host.cert.device_public_key,
+            &RevocationList::new(),
+            &bob.key,
+        )
+        .await
+        .is_err(),
+        "a person who left has no session to resume"
+    );
     restored.close();
     drop(running.web);
     running.relay.shutdown().await;
