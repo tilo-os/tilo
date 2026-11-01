@@ -14,8 +14,8 @@ use tilo_compositor::gestures::{
     GestureAction, GestureConfig, GestureTracker, SWIPE_THRESHOLD, claims,
 };
 use tilo_compositor::{
-    Arrangement, GestureEvent, HostLayer, LayoutPoint, LayoutRect, SurfaceHost, TouchSample,
-    WindowInfo, WindowPolicy, WindowRequest,
+    Arrangement, GestureEvent, HostKey, HostLayer, LayoutPoint, LayoutRect, SurfaceHost,
+    TouchSample, WindowInfo, WindowPolicy, WindowRequest,
 };
 use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::floating::centred;
@@ -228,15 +228,20 @@ pub fn desktop_with(
     root: impl FnOnce(DesktopSurface, &DesktopHandle) -> Box<dyn ui::Widget>,
 ) -> (DesktopHost, StripPolicy) {
     let (policy, surface) = DesktopPolicy::new(salt);
+    let handle = policy.handle().clone();
     let root = root(surface, policy.handle());
     let placement = Placement {
         origin: (0, 0),
         size: (1, 1),
         scale,
     };
+    // What the desk itself types into (its search, its notification centre)
+    // takes the keys; everything else on it passes them on to the window the
+    // person is in.
+    let keyboard = Rc::new(move || handle.wants_keyboard());
     let desk = Rc::new(RefCell::new(Desk {
         policy,
-        host: WidgetHost::new(root, placement, true),
+        host: WidgetHost::new(root, placement, true).with_keyboard(keyboard),
         gestures: Vec::new(),
         gesture_config: Some(GestureConfig::default()),
         monitors: Vec::new(),
@@ -381,6 +386,14 @@ impl SurfaceHost for DesktopHost {
             .borrow_mut()
             .host
             .pointer_axis(horizontal, vertical);
+    }
+
+    fn wants_keyboard(&self) -> bool {
+        self.desk.borrow().host.wants_keyboard()
+    }
+
+    fn key(&mut self, key: &HostKey) {
+        self.desk.borrow_mut().host.key(key);
     }
 
     fn prepare_frame(&mut self) -> bool {

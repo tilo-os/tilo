@@ -23,7 +23,7 @@ use tilo_actions::remote::{
     RemoteActionTarget, application_action_target, application_open_target,
 };
 use tilo_actions::{DoorError, ResourceSpec};
-use tilo_compositor::OutputConfig;
+use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::providers::AppEntry;
@@ -154,6 +154,48 @@ fn invoke(session: &mut Session, resource: &str, action: &str, arguments: serde_
     session
         .invoke(resource, action, &arguments)
         .unwrap_or_else(|error| panic!("{resource} {action}: {error:?}"));
+}
+
+/// Type one key of the keyboard, as the compositor takes it from the seat.
+fn type_key(session: &mut Session, keycode: u32) {
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::Key { keycode, pressed })
+            .expect("input");
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+}
+
+/// Keys typed while the desk's search is open go into its query field: the
+/// desk takes the keyboard while its own search shows, rather than leaving
+/// the letters to the window behind it.
+#[test]
+fn typing_into_the_open_search_reaches_its_query() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session(Rc::new(Host::default()));
+    // A held key repeats; these keys are tapped, and a step of a headless
+    // session can take longer than a repeat waits.
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(60),
+        rate: 0,
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+    invoke(
+        &mut session,
+        DESK_RESOURCE,
+        "open-search",
+        serde_json::json!({}),
+    );
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some()
+    });
+    for keycode in [46, 30, 38] {
+        type_key(&mut session, keycode);
+    }
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| search.label == "cal")
+    });
 }
 
 #[test]

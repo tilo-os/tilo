@@ -339,6 +339,19 @@ impl DesktopHandle {
         self.shared.borrow().search_open
     }
 
+    /// Whether the desk itself takes the keys the person types: its search
+    /// or its notification centre is open, and what they type goes into it
+    /// rather than to the window behind.
+    pub fn wants_keyboard(&self) -> bool {
+        let shared = self.shared.borrow();
+        let centre = shared
+            .presentation
+            .notifications
+            .as_ref()
+            .is_some_and(|notifications| notifications.center_open);
+        shared.search_open || centre
+    }
+
     /// Search from now on also over what `host` adds, and hand it what is
     /// chosen that it carries out ([`SearchHost::performs`]).
     pub fn set_search_host(&self, host: std::rc::Rc<dyn SearchHost>) {
