@@ -129,8 +129,10 @@ view rows<T>(
 
 /// A header's controls, as native headers place them: the sort menu and search first, then
 /// `extra`, then each action with an icon as an icon button (drawn on while the state it
-/// toggles is), a More menu of those without one, and the primary action last as the labelled
-/// Primary button.
+/// toggles is), and the primary action last as the labelled Primary button. An action with no
+/// icon has no control here: it stands under the name the app gave it in the top bar's window
+/// menu (the traditional desktop's) and in a row's menu, never in a "More" list made up for the
+/// header.
 view header<S>(
     offered: List<host.Action>,
     sort: Option<State<S>> = .none,
@@ -151,16 +153,6 @@ view header<S>(
         if not a.primary and a.icon != .none {
             ui.Button(a.label, icon: a.icon, icon_only: true, toggled: a.on == .some(true), key: a.key) {
                 on press: a.run
-            }
-        }
-    }
-    let more = offered.filter(a -> not a.primary and a.icon == .none)
-    if not more.is_empty() {
-        ui.MenuButton(phrase("tilolang-more"), icon: .more_horizontal, icon_only: true) {
-            for a in more {
-                ui.MenuItem(a.label, destructive: a.destructive, key: a.key) {
-                    on choose: a.run
-                }
             }
         }
     }
