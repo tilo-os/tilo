@@ -8,7 +8,7 @@ use tilo_user_identity::DeviceCert;
 use tilo_workspace_join::delegation::Delegation;
 
 /// A bot's device: its capability-free certificate and its installer's
-/// delegation naming it the installation in this room.
+/// delegation naming it the installation in this workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BotDevice {
     /// The bot device's certificate, signed by its installer's root.
@@ -22,7 +22,7 @@ pub struct BotDevice {
 pub struct BotInstall {
     /// The row to install, or the updated row.
     pub installation: Installation,
-    /// The program's canonical bytes, as text. The room keeps them so every
+    /// The program's canonical bytes, as text. The workspace keeps them so every
     /// member can read exactly what runs.
     pub program: String,
     /// Required for a new installation, absent for an update.
@@ -48,7 +48,7 @@ pub struct BotRenewal {
     pub device: BotDevice,
 }
 
-/// A bot from the registry's directory that the room asks its host to run:
+/// A bot from the registry's directory that the workspace asks its host to run:
 /// the host installs it as itself and keeps it a governed member for as
 /// long as the request stands.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,11 +61,11 @@ pub struct BotRequest {
     /// The bot's inputs the request gives its host (a bridge's
     /// `guild=<server id>` and `server=<name>`): settings every member may
     /// read, never a secret. A secret reaches the host on its own, through
-    /// the room's `set-connector-secret` action.
+    /// the workspace's `set-connector-secret` action.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub inputs: std::collections::BTreeMap<String, String>,
     /// A developer's own program for the entry, canonical text, run instead
-    /// of the listed one: the room keeps it with the request, so every
+    /// of the listed one: the workspace keeps it with the request, so every
     /// member reads exactly what runs, and `version` names the build. The
     /// person asking must hold every grant the program asks for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -123,7 +123,7 @@ impl BotRequest {
     }
 }
 
-/// The version of an app a room runs. Every member's desktop runs this
+/// The version of an app a workspace runs. Every member's desktop runs this
 /// version, and a change made with another version waits until its author
 /// runs this one: mixed versions never write each other's data unseen.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,8 +141,8 @@ pub struct AppRelease {
     pub package: String,
     /// The publisher key that signed the package, hex.
     pub publisher: String,
-    /// The BLAKE3 hash of the `.tapp` file, hex, when the room's host keeps
-    /// it: members fetch it from the room by this hash and install it,
+    /// The BLAKE3 hash of the `.tapp` file, hex, when the workspace's host keeps
+    /// it: members fetch it from the workspace by this hash and install it,
     /// bound to `package` and `publisher`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
@@ -197,8 +197,8 @@ impl AppRelease {
     }
 
     /// The package file a device that runs `installed` (the package root it
-    /// has of this app, hex, if any) fetches from the room to run this
-    /// release: `None` when it already runs it or the room's host keeps no
+    /// has of this app, hex, if any) fetches from the workspace to run this
+    /// release: `None` when it already runs it or the workspace's host keeps no
     /// file of it.
     #[must_use]
     pub fn file_to_fetch(&self, installed: Option<&str>) -> Option<&str> {
@@ -208,7 +208,7 @@ impl AppRelease {
         self.file.as_deref()
     }
 
-    /// Check `bytes` fetched from the room are this release's package file.
+    /// Check `bytes` fetched from the workspace are this release's package file.
     /// The install that follows binds them to `package` and `publisher`.
     ///
     /// # Errors
@@ -217,11 +217,11 @@ impl AppRelease {
         let file = self
             .file
             .as_deref()
-            .ok_or("the room's host keeps no package file of this version")?;
+            .ok_or("the workspace's host keeps no package file of this version")?;
         if blake3::hash(bytes).to_hex().as_str() == file {
             Ok(())
         } else {
-            Err("the fetched package does not hash to the room's version".into())
+            Err("the fetched package does not hash to the workspace's version".into())
         }
     }
 }
@@ -271,9 +271,9 @@ pub enum WorkspaceMembershipCommand {
     GrantAppAuthorship {
         app: String,
     },
-    /// Retired with room tasks: an issue's grants are ordinary grants. It
+    /// Retired with workspace tasks: an issue's grants are ordinary grants. It
     /// keeps the commands after it at their encoded positions, still reads
-    /// where rooms hold it, and is refused.
+    /// where workspaces hold it, and is refused.
     #[serde(rename = "GrantForTask")]
     RetiredGrantForTask {
         task: String,
@@ -281,18 +281,18 @@ pub enum WorkspaceMembershipCommand {
         kinds: KindSet,
         answer: Answer,
     },
-    /// Retired with room tasks, as [`Self::RetiredGrantForTask`].
+    /// Retired with workspace tasks, as [`Self::RetiredGrantForTask`].
     #[serde(rename = "RevokeForTask")]
     RetiredRevokeForTask {
         task: String,
         grant: GrantId,
     },
-    /// Record `grant` in the room, as the caller gives it: they must hold the
-    /// room's grant action and may give no more than they hold.
+    /// Record `grant` in the workspace, as the caller gives it: they must hold the
+    /// workspace's grant action and may give no more than they hold.
     Grant {
         grant: Grant,
     },
-    /// Take back the grant `grant`, as the caller: they must hold the room's
+    /// Take back the grant `grant`, as the caller: they must hold the workspace's
     /// revoke action.
     Revoke {
         grant: GrantId,
@@ -320,14 +320,14 @@ pub enum WorkspaceMembershipCommand {
     },
     /// Become a bot's installer ([`BotAdoption`]).
     AdoptBot(Box<BotAdoption>),
-    /// Ask the room's host to run a bot from the directory ([`BotRequest`]).
+    /// Ask the workspace's host to run a bot from the directory ([`BotRequest`]).
     RequestBot(BotRequest),
     /// Take back the request for directory entry `entry`: its host
     /// uninstalls the bot it installed for it.
     WithdrawBotRequest {
         entry: String,
     },
-    /// Run this release of its app in the room, for every member
+    /// Run this release of its app in the workspace, for every member
     /// ([`AppRelease`]).
     InstallApp(AppRelease),
     /// Stop choosing a version of `app`: each member runs the one they
@@ -335,38 +335,38 @@ pub enum WorkspaceMembershipCommand {
     UninstallApp {
         app: String,
     },
-    /// A change to the room's members, as the caller makes it: a role, a
+    /// A change to the workspace's members, as the caller makes it: a role, a
     /// removal, a ban or a restriction, or a grant given or taken back. The
-    /// room's admission decides it against the caller's own grants where
+    /// workspace's admission decides it against the caller's own grants where
     /// they made it, on every device that receives it.
     Member {
         change: tilo_action_policy::Change,
     },
-    /// A change to the room's own settings, as the caller makes it
+    /// A change to the workspace's own settings, as the caller makes it
     /// ([`SettingsChange`]): decided against the caller's own grants where
     /// they made it, on every device that receives it.
     Settings(SettingsChange),
-    /// Share `node`, one record or one item of it, with the room's members
+    /// Share `node`, one record or one item of it, with the workspace's members
     /// as `access` gives, under the share id `share`: grants the caller
-    /// gives of what they hold ([`crate::room::share`]).
+    /// gives of what they hold ([`crate::workspace::share`]).
     Share {
         share: String,
         node: TreePath,
         access: tilo_action_policy::share::ShareAccess,
     },
     /// End the share `share`: the grants of it the caller gave, or all of
-    /// them when they may revoke in the room.
+    /// them when they may revoke in the workspace.
     Unshare {
         share: String,
     },
 }
 
-/// A change to the room's own settings: its name, its saved grant sets and
+/// A change to the workspace's own settings: its name, its saved grant sets and
 /// their assignment, the actions its apps may use of each other and its
 /// apps' sandbox capabilities.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SettingsChange {
-    /// Name the room `name`.
+    /// Name the workspace `name`.
     Rename { name: String },
     /// Save a named grant set, replacing the one with the same name.
     SavePreset { preset: tilo_action_policy::Preset },
@@ -381,7 +381,7 @@ pub enum SettingsChange {
     GrantAppAction(AppAction),
     /// Take back every grant letting an app use that action.
     RevokeAppAction(AppAction),
-    /// Record a sandbox capability for the room's apps.
+    /// Record a sandbox capability for the workspace's apps.
     GrantSandbox {
         capability: collab_types::caps::CapOverride,
     },
@@ -424,10 +424,10 @@ impl AppAction {
         Ok(named)
     }
 
-    /// The node the grant names, inside `room`'s node.
+    /// The node the grant names, inside `workspace`'s node.
     #[must_use]
-    pub fn node(&self, room: &TreePath) -> TreePath {
-        room.join(
+    pub fn node(&self, workspace: &TreePath) -> TreePath {
+        workspace.join(
             &TreePath::root()
                 .app(self.target_app.as_str())
                 .rest()
@@ -441,24 +441,24 @@ impl AppAction {
 /// How long an app-action grant lasts, from the word a person picked.
 ///
 /// # Errors
-/// A `session` grant, which a room has no session to end with, and any
+/// A `session` grant, which a workspace has no session to end with, and any
 /// other word but `always`.
 pub fn app_action_lifetime(lifetime: &str) -> Result<tilo_action_policy::Lifetime, String> {
     match lifetime.trim().to_ascii_lowercase().as_str() {
         "always" => Ok(tilo_action_policy::Lifetime::UntilRevoked),
         "session" => {
-            Err("a room has no session to end a session grant with: grant it always".into())
+            Err("a workspace has no session to end a session grant with: grant it always".into())
         }
         _ => Err("lifetime must be always".into()),
     }
 }
 
-/// The room's name, trimmed, when it is 1 to 80 characters and no control
+/// The workspace's name, trimmed, when it is 1 to 80 characters and no control
 /// characters.
 ///
 /// # Errors
 /// It is not.
-pub fn valid_room_name(name: &str) -> Result<&str, String> {
+pub fn valid_workspace_name(name: &str) -> Result<&str, String> {
     let name = name.trim();
     if !(1..=80).contains(&name.chars().count()) || name.chars().any(char::is_control) {
         return Err("workspace name must contain 1–80 characters".into());
@@ -550,7 +550,7 @@ impl WorkspaceMembershipCommand {
         }
         if let Self::Settings(change) = self {
             return match change {
-                SettingsChange::Rename { name } => valid_room_name(name).map(drop),
+                SettingsChange::Rename { name } => valid_workspace_name(name).map(drop),
                 SettingsChange::SavePreset { preset } => {
                     preset.validate().map_err(|error| error.to_string())
                 }
@@ -624,9 +624,9 @@ mod tests {
 
     #[test]
     fn presets_are_closed_admission_markers_without_admin_authority() {
-        use tilo_action_policy::{ActionKind, Authority, Context, Party, RoomPolicy};
-        let room = RoomPolicy::new("room", "owner");
-        let content = TreePath::room("room").app("notes").resource("page");
+        use tilo_action_policy::{ActionKind, Authority, Context, Party, WorkspacePolicy};
+        let workspace = WorkspacePolicy::new("room", "owner");
+        let content = TreePath::workspace("room").app("notes").resource("page");
         let comment = content.clone().field(roles::COMMENTS_FIELD).action("add");
         let invite = roles::governance_action("room", roles::governance::INVITE);
         for (id, read, undoable, comments, outside) in [
@@ -662,7 +662,7 @@ mod tests {
             let preset = AgentPreset::parse(id).unwrap();
             assert_eq!(preset.id(), id);
             let grants = preset.grants("room", "scribe", &Subject::person("owner"));
-            let authority = Authority::person(room.party("owner"))
+            let authority = Authority::person(workspace.party("owner"))
                 .bounded_by(Party::new(vec![Subject::agent("scribe")], &grants));
             let at = |node: &TreePath, kind| authority.decide(node, kind, &Context::at(0)).answer;
             assert_eq!(at(&content, ActionKind::Read), read, "{id}");
@@ -762,7 +762,7 @@ mod tests {
         .unwrap();
     }
 
-    /// Postcard names a variant by its position; rooms keep these commands,
+    /// Postcard names a variant by its position; workspaces keep these commands,
     /// and the digests of their administration requests, in those bytes.
     #[test]
     fn a_membership_command_keeps_its_bytes_around_the_retired_task_grants() {
@@ -778,13 +778,13 @@ mod tests {
             (
                 WorkspaceMembershipCommand::RetiredGrantForTask {
                     task: "t".into(),
-                    node: TreePath::room("r"),
+                    node: TreePath::workspace("r"),
                     kinds: KindSet::READ,
                     answer: Answer::Allow,
                 },
                 [
-                    &[0x03, 0x01, b't', 0x06][..],
-                    b"room:r",
+                    &[0x03, 0x01, b't', 0x0b][..],
+                    b"workspace:r",
                     &[0x01, 0x00, 0x02],
                 ]
                 .concat(),
@@ -818,6 +818,25 @@ mod tests {
                 command
             );
         }
+    }
+
+    /// A grant command stored while the level was named `room` still reads, and
+    /// reads as the grant it was: the node it names is the workspace's.
+    #[test]
+    fn a_grant_command_stored_under_the_old_path_name_still_reads() {
+        let held = [
+            0x03, 0x01, b't', 0x06, b'r', b'o', b'o', b'm', b':', b'r', 0x01, 0x00, 0x02,
+        ];
+        let command = postcard::from_bytes::<WorkspaceMembershipCommand>(&held).unwrap();
+        assert_eq!(
+            command,
+            WorkspaceMembershipCommand::RetiredGrantForTask {
+                task: "t".into(),
+                node: TreePath::workspace("r"),
+                kinds: KindSet::READ,
+                answer: Answer::Allow,
+            }
+        );
     }
 
     #[test]

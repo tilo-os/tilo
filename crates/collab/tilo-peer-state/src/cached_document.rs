@@ -31,18 +31,18 @@ pub(crate) struct PolicyData {
     pub identities: std::collections::BTreeMap<String, Vec<u8>>,
 }
 impl PolicyData {
-    /// The room's authority as recorded: owner, members and the grants on
-    /// `room`'s nodes.
-    pub(crate) fn room_policy(&self, room: &str) -> tilo_action_policy::RoomPolicy {
-        tilo_action_policy::RoomPolicy {
-            room: room.to_owned(),
+    /// The workspace's authority as recorded: owner, members and the grants on
+    /// `workspace`'s nodes.
+    pub(crate) fn workspace_policy(&self, workspace: &str) -> tilo_action_policy::WorkspacePolicy {
+        tilo_action_policy::WorkspacePolicy {
+            workspace: workspace.to_owned(),
             owner: self.owner.clone(),
             members: self.members.clone(),
             joined: self.joined.clone(),
             grants: self
                 .grants
                 .iter()
-                .filter(|grant| grant.node.room_id() == Some(room))
+                .filter(|grant| grant.node.workspace_id() == Some(workspace))
                 .cloned()
                 .collect(),
         }
@@ -84,7 +84,7 @@ impl CachedDocument {
     /// decisions must still be evaluated against the caller's current inputs.
     pub(crate) fn policy(&self) -> &PolicyData {
         self.policy
-            .get_or_init(|| crate::room::policy::legacy(&self.doc))
+            .get_or_init(|| crate::workspace::policy::legacy(&self.doc))
     }
     /// The governed identity rows of [`Self::policy`], each decoded once per
     /// document state rather than on every membership lookup. Data only, like

@@ -394,17 +394,7 @@ pub(super) fn edit_of(prefix: &[Segment], m: &Mutation) -> Result<Edit<DynRecord
         Mutation::SetText { field, text } => (field, EditOp::Replace { text: text.clone() }),
         // A rich text is brought to read as the value by splices and marks of the paragraphs
         // that differ, the edit native rich text takes.
-        Mutation::SetRich { field, value } => {
-            let action = tilo_document::RichTextAction::SyncClips {
-                blocks: value
-                    .blocks
-                    .iter()
-                    .map(tilo_document::ClipBlock::from_view)
-                    .collect(),
-            };
-            let rich = serde_json::to_value(&action).map_err(backend)?;
-            (field, EditOp::Rich { rich })
-        }
+        Mutation::SetRich { field, value } => (field, rich_edit(value).map_err(backend)?),
         Mutation::SetAdd { field, key } => (
             field,
             EditOp::Insert {
@@ -431,9 +421,30 @@ pub(super) fn edit_of(prefix: &[Segment], m: &Mutation) -> Result<Edit<DynRecord
         }
         Mutation::OutboxPush { .. } | Mutation::OutboxWithdraw => {
             return Err(invalid(
-                "outside effects are not stored in the room record yet",
+                "outside effects are not stored in the workspace record yet",
             ));
         }
     };
     Ok(Edit::new(path_to(prefix, field), op))
+}
+
+/// The edit that brings a rich text field to read as `value`: splices and marks of the
+/// paragraphs that differ, the edit native rich text takes. One form for every writer of a
+/// rich text: a view of the package's own, and a view of another app's sent to its door.
+///
+/// # Errors
+/// The rich text action does not serialize.
+pub(crate) fn rich_edit(
+    value: &tilolang_runtime::rich::RichValue,
+) -> Result<EditOp, serde_json::Error> {
+    let action = tilo_document::RichTextAction::SyncClips {
+        blocks: value
+            .blocks
+            .iter()
+            .map(tilo_document::ClipBlock::from_view)
+            .collect(),
+    };
+    Ok(EditOp::Rich {
+        rich: serde_json::to_value(&action)?,
+    })
 }

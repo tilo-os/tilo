@@ -4,12 +4,12 @@
 //!
 //! The route is configured by the device's home-peer registry, the
 //! person's always-on relays this device enrolled: the one that retains the
-//! invoking room places its compute jobs. The registry is read again for
+//! invoking workspace places its compute jobs. The registry is read again for
 //! every offloadable invocation (from memory while the file is unchanged),
-//! so a room the session creates or joins after it started, or a relay the
+//! so a workspace the session creates or joins after it started, or a relay the
 //! person registers meanwhile, is routed from the next invocation on
-//! ([`tilo_relay::offload::RoomOffload`]); the session's rooms at start get
-//! their route at once ([`tilo_relay::offload::home_relay`]). A room no
+//! ([`tilo_relay::offload::RoomOffload`]); the session's workspaces at start get
+//! their route at once ([`tilo_relay::offload::home_relay`]). A workspace no
 //! registered relay retains runs its offloadable actions through the app's
 //! own handler, and the door is told why; [`OFFLOAD_ENV`] set to `off`
 //! means no route at all. Each route starts in the background on the
@@ -23,10 +23,10 @@
 //! device's trust reads: a revoked relay gets no route, and one revoked
 //! while the route is up tears it down.
 //!
-//! The route reads and keeps only the rooms' own document media, in the
+//! The route reads and keeps only the workspaces' own document media, in the
 //! same content store the apps' blob socket serves, through the invoking
-//! app's scope in its room, so the inputs it may send are exactly what the
-//! invoking room's apps could read, and the outputs are read back by the
+//! app's scope in its workspace, so the inputs it may send are exactly what the
+//! invoking workspace's apps could read, and the outputs are read back by the
 //! same `tilo.content` addresses a local run returns. A session that owns
 //! that store holds it in process ([`crate::profile::MediaHost::store`],
 //! [`action_offload`]); the desktop session's apps keep theirs in the
@@ -61,37 +61,40 @@ pub const HOME_PEERS_ENV: &str = "TILO_HOME_PEERS_PATH";
 const MAX_REGISTRY_BYTES: u64 = 1024 * 1024;
 
 /// The route for offloadable invocations on this device, over `store`, the
-/// content store the rooms' apps keep their document media in: for `rooms`
+/// content store the workspaces' apps keep their document media in: for `workspaces`
 /// (the broker's cluster ids at start), whose route starts at once, and for
-/// every room the session has later, resolved when its actions are invoked.
+/// every workspace the session has later, resolved when its actions are invoked.
 /// `None` — every offloadable action runs here, exactly as without offload —
 /// only when offload is turned off or there is no app runtime. Never blocks
 /// on the network.
 #[must_use]
 pub fn action_offload(
-    rooms: &[&str],
+    workspaces: &[&str],
     store: Arc<tilo_fs::ContentStore>,
 ) -> Option<Arc<dyn ActionOffload>> {
-    action_offload_over(rooms, tilo_fs::document_media::DocumentMedia::new(store))
+    action_offload_over(
+        workspaces,
+        tilo_fs::document_media::DocumentMedia::new(store),
+    )
 }
 
 /// [`action_offload`] for the desktop session, whose apps keep their
 /// document media in the filesystem daemon at `blob_socket`: the route
 /// reads its inputs and keeps its outputs there, connected as the desktop
-/// session, through the invoking app's scope in its room — the same door
+/// session, through the invoking app's scope in its workspace — the same door
 /// and the same authority the session opens app content with. Never
 /// connects before an offloadable action is invoked.
 #[must_use]
 pub fn session_action_offload(
-    rooms: &[&str],
+    workspaces: &[&str],
     blob_socket: &Path,
 ) -> Option<Arc<dyn ActionOffload>> {
-    action_offload_over(rooms, Arc::new(SessionMedia::new(blob_socket)))
+    action_offload_over(workspaces, Arc::new(SessionMedia::new(blob_socket)))
 }
 
-/// The route for `rooms` over `media`, as [`action_offload`] describes.
+/// The route for `workspaces` over `media`, as [`action_offload`] describes.
 fn action_offload_over(
-    rooms: &[&str],
+    workspaces: &[&str],
     media: Arc<dyn RoomMedia>,
 ) -> Option<Arc<dyn ActionOffload>> {
     if disabled(std::env::var(OFFLOAD_ENV).ok().as_deref()) {
@@ -115,15 +118,15 @@ fn action_offload_over(
         Box::new(move |config| DeviceOffload::start(config, Arc::clone(&media), &starting)),
         runtime,
     );
-    match configured(rooms, &placements) {
+    match configured(workspaces, &placements) {
         Ok(Some(config)) => offload.hold(config),
         Ok(None) => tracing::info!(
-            "no home relay retains the session's rooms: their offloadable actions run on this \
+            "no home relay retains the session's workspaces: their offloadable actions run on this \
              device until one is registered"
         ),
         Err(error) => tracing::warn!(
             %error,
-            "the session's rooms get no offload route at start; each invocation tries again"
+            "the session's workspaces get no offload route at start; each invocation tries again"
         ),
     }
     Some(Arc::new(offload))
@@ -139,14 +142,14 @@ fn disabled(value: Option<&str>) -> bool {
     })
 }
 
-/// The start route's configuration for `rooms`, from the registry and this
-/// device's identity in the first room; `Ok(None)` when no home relay
+/// The start route's configuration for `workspaces`, from the registry and this
+/// device's identity in the first workspace; `Ok(None)` when no home relay
 /// retains any of them.
 fn configured(
-    rooms: &[&str],
+    workspaces: &[&str],
     placements: &RegistryPlacements,
 ) -> io::Result<Option<DeviceOffloadConfig>> {
-    let Some(&first) = rooms.first() else {
+    let Some(&first) = workspaces.first() else {
         return Ok(None);
     };
     let registrations = placements.registrations()?;
@@ -157,16 +160,16 @@ fn configured(
     Ok(home_relay(
         &registrations,
         identity.user_public_key,
-        rooms.iter().copied(),
+        workspaces.iter().copied(),
     )
-    .map(|(relay, rooms)| DeviceOffloadConfig {
+    .map(|(relay, workspaces)| DeviceOffloadConfig {
         relay,
         identity,
-        rooms,
+        rooms: workspaces,
     }))
 }
 
-/// How this device authenticates in a room: its trusted certificate and
+/// How this device authenticates in a workspace: its trusted certificate and
 /// key, and whose device fleet carries the person's revocations.
 struct RoomIdentity {
     device_signing_key: ed25519_dalek::SigningKey,
@@ -177,11 +180,11 @@ struct RoomIdentity {
     fleets: DeviceFleetStore,
 }
 
-/// This device's identity in `room`, as the rest of its trust reads it.
-fn session_identity(room: &str) -> io::Result<RoomIdentity> {
+/// This device's identity in `workspace`, as the rest of its trust reads it.
+fn session_identity(workspace: &str) -> io::Result<RoomIdentity> {
     let (device_signing_key, device_cert) =
-        tilo_identity_host::broker::trusted_current_device(room)?;
-    let profile = tilo_identity_host::registry::selected_identity_profile(room)?
+        tilo_identity_host::broker::trusted_current_device(workspace)?;
+    let profile = tilo_identity_host::registry::selected_identity_profile(workspace)?
         .ok_or_else(|| io::Error::other("no identity is selected for this workspace"))?;
     Ok(RoomIdentity {
         device_signing_key,
@@ -191,7 +194,7 @@ fn session_identity(room: &str) -> io::Result<RoomIdentity> {
     })
 }
 
-/// Reads this device's identity in a room: [`session_identity`] in a
+/// Reads this device's identity in a workspace: [`session_identity`] in a
 /// session.
 type IdentitySource = dyn Fn(&str) -> io::Result<RoomIdentity> + Send + Sync;
 
@@ -201,8 +204,8 @@ type RevocationsByIdentity = HashMap<(String, [u8; 32]), Arc<FleetRevocations>>;
 /// The registry file's identity: its length and modification time.
 type RegistryStamp = (u64, Option<SystemTime>);
 
-/// Where the device's rooms are placed: the home-peer registry, read again
-/// whenever its file changed, and this device's identity in each room.
+/// Where the device's workspaces are placed: the home-peer registry, read again
+/// whenever its file changed, and this device's identity in each workspace.
 struct RegistryPlacements {
     path: PathBuf,
     identity: Box<IdentitySource>,
@@ -242,14 +245,14 @@ impl RegistryPlacements {
         Ok(registrations)
     }
 
-    /// This device as it authenticates in `room`.
-    fn identity(&self, room: &str) -> io::Result<OffloadIdentity> {
+    /// This device as it authenticates in `workspace`.
+    fn identity(&self, workspace: &str) -> io::Result<OffloadIdentity> {
         let RoomIdentity {
             device_signing_key,
             device_cert,
             identity_id,
             fleets,
-        } = (self.identity)(room)?;
+        } = (self.identity)(workspace)?;
         let user_public_key = device_cert.user_public_key;
         let revocations = Arc::clone(
             self.revocations
@@ -269,7 +272,7 @@ impl RegistryPlacements {
 }
 
 impl RoomPlacements for RegistryPlacements {
-    fn resolve(&self, room: &str) -> Result<Option<RoomRelays>, String> {
+    fn resolve(&self, workspace: &str) -> Result<Option<RoomRelays>, String> {
         let registrations = self
             .registrations()
             .map_err(|error| format!("the home-peer registry is unreadable: {error}"))?;
@@ -277,10 +280,10 @@ impl RoomPlacements for RegistryPlacements {
             return Ok(None);
         }
         let identity = self
-            .identity(room)
-            .map_err(|error| format!("no trusted identity in the room: {error}"))?;
+            .identity(workspace)
+            .map_err(|error| format!("no trusted identity in the workspace: {error}"))?;
         Ok(
-            room_relays(&registrations, identity.user_public_key, room).map(
+            room_relays(&registrations, identity.user_public_key, workspace).map(
                 |(workspace_id, relays)| RoomRelays {
                     identity,
                     workspace_id,

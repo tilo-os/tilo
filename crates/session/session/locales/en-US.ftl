@@ -86,6 +86,12 @@ session-display-builtin = Built-in display
 session-clipboard = Clipboard
 session-clipboard-paste-files = Paste files here
 session-param-paste-destination = The folder the copied files are pasted into
+session-devices = Devices
+session-notifications = Notification centre
+session-notifications-dismiss = Dismiss the notification
+session-notifications-act = Run the notification's action
+session-notifications-clear = Clear the notification centre
+session-notifications-undo-clear = Bring back the cleared notifications
 session-apps = Apps
 session-apps-uninstall = Uninstall an app
 session-param-app = The app's name
@@ -126,3 +132,15 @@ device-wake-failed-body = No wake-up signal could be sent on its network.
 ## What a screen reader says about a pointer: whose it is, and the
 ## window they are over.
 people-pointer-where = { $who } is in { $where }
+
+## What the status cluster says of the machine in a line, for a reader
+## that hears it rather than sees its glyphs.
+status-battery = Battery { $percent }%
+status-battery-charging = Battery { $percent }%, charging
+status-muted = Muted
+status-offline = Offline
+status-volume = Volume { $percent }%
+status-wifi = Wi-Fi
+status-wifi-named = Wi-Fi: { $name }
+status-wired = Wired
+status-wired-named = Wired: { $name }

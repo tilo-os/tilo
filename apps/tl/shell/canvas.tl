@@ -48,21 +48,22 @@ view spaces_canvas(a: Arrangement) {
     }
 }
 
-/// A place on the framed canvas: the shell's frame around it, and the well its window shows in
-/// (shell.md §8). The toolbar stands outside the well, so the window fills the rest.
+/// A place on the framed canvas: the shell's frame around it, and its resource's view composed
+/// inside, or the well its window shows in (shell.md §8). The toolbar stands outside it.
 view framed_place(a: Arrangement, p: ArrangementPlace) {
     ui.Card(title: if p.title == "" { p.shows } else { p.title }) {
         place_content(a, p)
     }
 }
 
-/// A place on the frameless canvas: its window's well, with a line naming what it is rather
-/// than a frame around it. The controls stand outside the well.
+/// A place on the frameless canvas: its resource's view standing as content (or its window's
+/// well), with a line naming what it is rather than a frame around it. The controls stand
+/// outside it.
 view space_content(a: Arrangement, p: ArrangementPlace) {
     stack(gap: .related) {
         place_controls(a, p)
         ui.Text(if p.title == "" { p.shows } else { p.title }, role: .label, secondary: true)
-        ui.WindowWell(place: p.key, min: 12rem)
+        place_view(p)
     }
 }
 

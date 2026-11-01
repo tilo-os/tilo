@@ -12,18 +12,18 @@ pub struct CurrentHost {
     pub certificate: Mutex<Option<DeviceCert>>,
     pub additional_certificates: Mutex<Vec<DeviceCert>>,
     pub checks: AtomicUsize,
-    pub time: Option<crate::peer_actions::PolicyTime>,
-    /// Whether this host governs its room, as a standalone runtime governs its
+    pub time: Option<crate::policy_clock::PolicyTime>,
+    /// Whether this host governs its workspace, as a standalone runtime governs its
     /// own: then only its own device (or this host itself) escapes the
     /// foreign-device cap there.
-    pub governs_room: std::sync::atomic::AtomicBool,
+    pub governs_workspace: std::sync::atomic::AtomicBool,
 }
 
 impl CurrentHost {
     pub fn new(
         route: &CrdtRoute,
         cert: &DeviceCert,
-        time: Option<crate::peer_actions::PolicyTime>,
+        time: Option<crate::policy_clock::PolicyTime>,
     ) -> Arc<Self> {
         Arc::new(Self {
             route: route.clone(),
@@ -31,18 +31,18 @@ impl CurrentHost {
             additional_certificates: Mutex::new(vec![]),
             checks: AtomicUsize::new(0),
             time,
-            governs_room: std::sync::atomic::AtomicBool::new(false),
+            governs_workspace: std::sync::atomic::AtomicBool::new(false),
         })
     }
 }
 
-impl crate::peer_actions::CertificateAuthority for CurrentHost {
-    fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
+impl crate::certificate_authority::CertificateAuthority for CurrentHost {
+    fn policy_time(&self) -> Result<Option<crate::policy_clock::PolicyTime>, String> {
         Ok(self.time.clone())
     }
-    fn governs(&self, room: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
-        self.governs_room.load(Ordering::SeqCst)
-            && room.to_string() == self.route.cluster_id
+    fn governs(&self, workspace: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
+        self.governs_workspace.load(Ordering::SeqCst)
+            && workspace.to_string() == self.route.cluster_id
             && device.is_none_or(|device| {
                 self.certificate
                     .lock()
@@ -51,8 +51,8 @@ impl crate::peer_actions::CertificateAuthority for CurrentHost {
                     .is_some_and(|cert| &cert.device_public_key == device)
             })
     }
-    fn authorize(&self, room: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
-        if room.to_string() != self.route.cluster_id
+    fn authorize(&self, workspace: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
+        if workspace.to_string() != self.route.cluster_id
             || (self.certificate.lock().unwrap().as_ref() != Some(cert)
                 && !self.additional_certificates.lock().unwrap().contains(cert))
         {
@@ -61,8 +61,8 @@ impl crate::peer_actions::CertificateAuthority for CurrentHost {
         Ok(())
     }
     // A permissive ordinary provider still cannot create descriptor provenance.
-    fn authorize_join(&self, room: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
-        self.authorize(room, cert)
+    fn authorize_join(&self, workspace: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
+        self.authorize(workspace, cert)
     }
     fn authorize_host_worker(&self, route: &CrdtRoute, cert: &DeviceCert) -> Result<(), String> {
         self.checks.fetch_add(1, Ordering::SeqCst);
@@ -200,13 +200,15 @@ pub fn empty_directories() -> Rc<LocalActionDirectoryRegistry> {
     Rc::new(LocalActionDirectoryRegistry::new(rx))
 }
 
-/// The certified join presentation `cert`/`key` sign for `room`.
-pub fn presentation(room: &str, cert: &DeviceCert, key: &SigningKey) -> Vec<u8> {
+/// The certified join presentation `cert`/`key` sign for `workspace`.
+pub fn presentation(workspace: &str, cert: &DeviceCert, key: &SigningKey) -> Vec<u8> {
     runtime_collab::CertifiedJoinIdentity {
-        workspace_id: room.into(),
+        workspace_id: workspace.into(),
         device_certificate: serde_json::to_vec(cert).unwrap(),
         proof: key
-            .sign(&runtime_identity::collaboration_join_signing_bytes(room))
+            .sign(&runtime_identity::collaboration_join_signing_bytes(
+                workspace,
+            ))
             .to_bytes()
             .to_vec(),
     }
@@ -322,24 +324,24 @@ pub fn signed_device(
 
 /// A broker whose only workspace grants the signed original worker capabilities
 /// that expire at 100s, under a test policy clock starting at 50s.
-pub struct OriginalRoom {
+pub struct OriginalWorkspace {
     pub key: SigningKey,
     pub cert: DeviceCert,
-    pub origin: crate::peer_actions::PolicyOrigin,
-    pub time_control: crate::peer_actions::PolicyClockTestControl,
+    pub origin: crate::policy_clock::PolicyOrigin,
+    pub time_control: crate::policy_clock::PolicyClockTestControl,
     pub route: CrdtRoute,
     pub membership: WorkspaceTreeHandle,
     pub state: Arc<AppBrokerState>,
     pub authority: Arc<CurrentHost>,
     pub directories: Rc<LocalActionDirectoryRegistry>,
-    _clock: crate::peer_actions::OwnerPolicyClock,
+    _clock: crate::policy_clock::OwnerPolicyClock,
     _owner_mailbox: crate::test_owner::owner_commit::OwnerCommitMailbox,
     // Restore the environment before removing the identity and journal files.
     _identity_env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
 }
 
-impl OriginalRoom {
+impl OriginalWorkspace {
     pub fn new(
         capabilities: DeviceCapabilities,
         expires_at_ns: Option<u64>,
@@ -353,17 +355,17 @@ impl OriginalRoom {
         Self::hosting(DeviceCapabilities::primary(), None, None, None, true)
     }
 
-    /// The room on a host that keeps record content through `content`:
-    /// `room` when it is the same room another host holds.
+    /// The workspace on a host that keeps record content through `content`:
+    /// `workspace` when it is the same workspace another host holds.
     pub fn with_record_content(
         content: Arc<crate::record_content::RouteContent>,
-        room: Option<tilo_desktop_model::RoomId>,
+        workspace: Option<tilo_desktop_model::RoomId>,
     ) -> Self {
         Self::hosting(
             DeviceCapabilities::host(),
             None,
             None,
-            Some((content, room)),
+            Some((content, workspace)),
             false,
         )
     }
@@ -381,7 +383,7 @@ impl OriginalRoom {
         let fixture_root =
             tempfile::tempdir().expect("private host identity and journal directory");
         // ScopedEnv's lock is reentrant on this thread: record-content tests
-        // keep two rooms alive together. Keep the scopes in nesting order.
+        // keep two workspaces alive together. Keep the scopes in nesting order.
         let mut identity_env = tilo_test_env::ScopedEnv::new();
         identity_env
             .set("XDG_CONFIG_HOME", fixture_root.path().join("config"))
@@ -393,7 +395,7 @@ impl OriginalRoom {
             tilo_identity_host::provisioning::IdentityStorage::Files,
         )
         .expect("provision real host receipt signer");
-        let (record_content, room) = record_content.unzip();
+        let (record_content, workspace) = record_content.unzip();
         let root = SigningKey::from_bytes(&[83; 32]);
         let key = SigningKey::from_bytes(&[84; 32]);
         let (key, cert, start) = if current_native {
@@ -410,20 +412,20 @@ impl OriginalRoom {
                 50_000_000_000,
             )
         };
-        let (clock, time_control) = crate::peer_actions::OwnerPolicyClock::for_test(start);
+        let (clock, time_control) = crate::policy_clock::OwnerPolicyClock::for_test(start);
         let origin = clock.new_origin();
-        let mut workspace = match room.flatten() {
-            Some(room) => crate::test_support::Workspace::in_room(
+        let mut workspace = match workspace.flatten() {
+            Some(workspace) => crate::test_support::Workspace::in_room(
                 crate::test_support::WorkspaceId(83),
-                room,
-                "Original room",
+                workspace,
+                "Original workspace",
             ),
             None => crate::test_support::Workspace::new(
                 crate::test_support::WorkspaceId(83),
-                "Original room",
+                "Original workspace",
             ),
         };
-        // Someone the room grants everything until 100s, and nothing after.
+        // Someone the workspace grants everything until 100s, and nothing after.
         let principal = principal_id_for_root(cert.user_public_key);
         let changes = tilo_action_policy::Grant::new(
             "changes-for-a-while",
@@ -579,10 +581,10 @@ pub async fn cancel(
 }
 
 /// The native seat of the host `0` serves: it vouches for that host's own
-/// person in its room, while its certificate lasts.
+/// person in its workspace, while its certificate lasts.
 pub struct NativePerson(pub Arc<CurrentHost>);
 impl crate::services::LocalPersonServices for NativePerson {
-    fn certificate(&self, room: &str, person: &str) -> Result<DeviceCert, String> {
+    fn certificate(&self, workspace: &str, person: &str) -> Result<DeviceCert, String> {
         let certificate = self
             .0
             .certificate
@@ -590,7 +592,7 @@ impl crate::services::LocalPersonServices for NativePerson {
             .unwrap()
             .clone()
             .ok_or("native identity retired")?;
-        if room != self.0.route.cluster_id
+        if workspace != self.0.route.cluster_id
             || person != principal_id_for_root(certificate.user_public_key)
         {
             return Err("native person mismatch".into());
@@ -600,7 +602,7 @@ impl crate::services::LocalPersonServices for NativePerson {
 }
 
 /// The host's own person, invoking through its native seat.
-pub fn native_person(room: &CrdtRoute, cert: &DeviceCert) -> tilo_actions::remote::Caller {
+pub fn native_person(workspace: &CrdtRoute, cert: &DeviceCert) -> tilo_actions::remote::Caller {
     tilo_actions::remote::Caller::local_person(principal_id_for_root(cert.user_public_key))
-        .in_room(room.cluster_id.clone())
+        .in_workspace(workspace.cluster_id.clone())
 }

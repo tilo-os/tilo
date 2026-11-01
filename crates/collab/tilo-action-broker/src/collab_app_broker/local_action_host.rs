@@ -1,4 +1,4 @@
-//! A host-local door retaining an existing signed room admission, never a new grant.
+//! A host-local door retaining an existing signed workspace admission, never a new grant.
 use super::{AppBrokerState, Arc, VerifiedActionCaller, published_invocation::InvocationCaller};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
@@ -37,7 +37,7 @@ impl AppBrokerState {
             || admitted.agent_id.is_some()
             || admitted.verified.capped
             || admitted.host_scope.is_some()
-            || draft.workspace != checked.admission.room
+            || draft.workspace != checked.admission.workspace
             || certificate.capabilities.foreign
         {
             return Err("private drafts require the original certified person".into());
@@ -93,12 +93,12 @@ impl AppBrokerState {
         let CallerPrincipal::Person(person) = caller.principal() else {
             return Err("native person required".into());
         };
-        let room = caller.room().ok_or("native person room required")?;
-        let certificate = service.certificate(room, person)?;
+        let workspace = caller.room().ok_or("native personal cluster required")?;
+        let certificate = service.certificate(workspace, person)?;
         if super::principal_id_for_root(certificate.user_public_key) != *person {
             return Err("native person certificate mismatch".into());
         }
-        self.current_native_person(room, &certificate)?;
+        self.current_native_person(workspace, &certificate)?;
         Ok(Some(certificate))
     }
 
@@ -133,13 +133,13 @@ impl AppBrokerState {
             let CallerPrincipal::Person(person) = caller.principal() else {
                 return Err(ActionHostError::NotPermitted);
             };
-            let room = caller.room().ok_or(ActionHostError::NotPermitted)?;
+            let workspace = caller.room().ok_or(ActionHostError::NotPermitted)?;
             let certificate = self
                 .services
                 .local_person
                 .as_ref()
                 .ok_or(ActionHostError::NotPermitted)?
-                .certificate(room, person)
+                .certificate(workspace, person)
                 .map_err(|_| ActionHostError::NotPermitted)?;
             if caller
                 .user_public_key()
@@ -150,7 +150,7 @@ impl AppBrokerState {
             {
                 return Err(ActionHostError::NotPermitted);
             }
-            self.current_native_person(room, &certificate)
+            self.current_native_person(workspace, &certificate)
                 .map_err(|_| ActionHostError::NotPermitted)?;
             if super::principal_id_for_root(certificate.user_public_key) != *person {
                 return Err(ActionHostError::NotPermitted);
@@ -161,7 +161,7 @@ impl AppBrokerState {
                 .ok_or(ActionHostError::NotPermitted)?;
             Ok(InvocationCaller::NativePerson {
                 invocation: request.invocation,
-                room: room.into(),
+                workspace: workspace.into(),
                 certificate,
                 time,
             })
@@ -174,10 +174,12 @@ impl AppBrokerState {
                     Ok(None) => {}
                 }
                 if let InvocationCaller::NativePerson {
-                    room, certificate, ..
+                    workspace,
+                    certificate,
+                    ..
                 } = &origin
                 {
-                    match self.checkpoint_replay(room, certificate, caller, request) {
+                    match self.checkpoint_replay(workspace, certificate, caller, request) {
                         Ok(Some(receipt)) => return Pending::ready(Ok(receipt)),
                         Err(reason) => {
                             return Pending::ready(Err(ActionHostError::Unavailable { reason }));
@@ -193,7 +195,7 @@ impl AppBrokerState {
 
     pub(super) fn current_native_person(
         &self,
-        room: &str,
+        workspace: &str,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
         if !self.is_accepting() {
@@ -213,7 +215,7 @@ impl AppBrokerState {
             .as_ref()
             .ok_or("native person authority unavailable")?
             .certificate(
-                room,
+                workspace,
                 &super::principal_id_for_root(certificate.user_public_key),
             )?;
         if current != *certificate {
@@ -222,13 +224,13 @@ impl AppBrokerState {
         Ok(())
     }
 
-    /// Bind one host-issued execution to an existing signed, room-bound presentation.
+    /// Bind one host-issued execution to an existing signed, workspace-bound presentation.
     /// The verifier, not the caller's labels or UUID, establishes authority.
     ///
     /// # Errors
     ///
     /// Refuses missing clocks, ended sessions, invalid/currently unadmitted evidence,
-    /// and any caller principal, room or device mismatch. Does not enroll a device.
+    /// and any caller principal, workspace or device mismatch. Does not enroll a device.
     pub fn certified_local_action_host(
         self: &Arc<Self>,
         caller: &Caller,
@@ -258,7 +260,8 @@ impl AppBrokerState {
         let CallerPrincipal::Person(person) = caller.principal() else {
             return Err("native action requires a person".into());
         };
-        let mut projection = Caller::local_person(person).in_room(&checked.admission.room);
+        let mut projection =
+            Caller::local_person(person).in_workspace(&checked.admission.workspace);
         if let Some(lease) = caller.execution_lease() {
             projection = projection.in_execution(lease);
         }
@@ -329,8 +332,10 @@ impl AppBrokerState {
         // This door never falls back to the legacy wall clock during verification.
         self.registered_policy_time()?
             .ok_or("original policy clock unavailable")?;
-        let room = caller.room().ok_or("an exact admitted room is required")?;
-        let admission = self.verify_action_caller(room, presentation)?;
+        let workspace = caller
+            .room()
+            .ok_or("an exact admitted workspace is required")?;
+        let admission = self.verify_action_caller(workspace, presentation)?;
         if admission.policy_time.is_none() {
             return Err("original policy clock unavailable".into());
         }
@@ -343,7 +348,7 @@ impl AppBrokerState {
             || caller.user_public_key() != Some(&certificate.user_public_key)
             || caller.device_public_key() != Some(&certificate.device_public_key)
         {
-            return Err("caller does not match the certified room admission".into());
+            return Err("caller does not match the certified workspace admission".into());
         }
         // Never remove a caller's existing foreign-device restriction, and never
         // let an omitted caller flag erase the signed certificate's restriction.
@@ -436,7 +441,7 @@ impl CertifiedActionLifecycle {
         };
         let key = super::InvocationKey {
             host: journal.host(),
-            room: self.0.admission.room.clone(),
+            workspace: self.0.admission.workspace.clone(),
             owner,
             invocation,
         };
@@ -451,7 +456,7 @@ impl CertifiedActionLifecycle {
                 .0
                 .state
                 .authorize_checkpoint_job(
-                    &self.0.admission.room,
+                    &self.0.admission.workspace,
                     admitted
                         .certificate
                         .as_ref()
@@ -492,7 +497,7 @@ impl AppBrokerState {
     /// Project only an already admitted person's own room on a non-foreign
     /// device. This does not delegate account credentials or mint permissions.
     /// # Errors
-    /// Refuses forged labels, agents/apps, other rooms/devices, expired or
+    /// Refuses forged labels, agents/apps, other workspaces/devices, expired or
     /// revoked certificate/admission, ended execution and missing policy clocks.
     pub fn certified_person_context(
         self: &Arc<Self>,
@@ -506,14 +511,16 @@ impl AppBrokerState {
             .certificate
             .as_ref()
             .ok_or("personal device certificate unavailable")?;
-        let room = uuid::Uuid::parse_str(&checked.admission.room)
-            .map_err(|_| "personal room unavailable")?;
-        if !collab_types::is_person_room(&certificate.user_public_key, &room)
+        let workspace = uuid::Uuid::parse_str(&checked.admission.workspace)
+            .map_err(|_| "personal cluster unavailable")?;
+        if !collab_types::is_personal_cluster(&certificate.user_public_key, &workspace)
             || checked.effective.is_foreign_device()
             || checked.admission.admitted.agent_id.is_some()
             || checked.admission.admitted.host_scope.is_some()
         {
-            return Err("native credentials require this person's own admitted device room".into());
+            return Err(
+                "native credentials require this person's own admitted device workspace".into(),
+            );
         }
         let principal = checked.admission.admitted.principal_id.clone();
         let device = hex::encode(certificate.device_public_key);
@@ -675,7 +682,7 @@ impl ActionHost for CertifiedLocalActionHost {
             .filter(|_| admitted.agent_id.is_none());
         if let Some(certificate) = person_certificate {
             match self.state.checkpoint_replay(
-                &self.admission.room,
+                &self.admission.workspace,
                 certificate,
                 &self.effective,
                 &request,
@@ -686,9 +693,11 @@ impl ActionHost for CertifiedLocalActionHost {
             }
         }
         if let Some(job) = self.state.remote_job(&self.effective, &request.invocation)
-            && let Err(reason) =
-                self.state
-                    .authorize_checkpoint_job(&self.admission.room, person_certificate, job)
+            && let Err(reason) = self.state.authorize_checkpoint_job(
+                &self.admission.workspace,
+                person_certificate,
+                job,
+            )
         {
             return Pending::ready(Err(ActionHostError::Unavailable { reason }));
         }
@@ -729,7 +738,7 @@ impl ActionHost for CertifiedLocalActionHost {
         let job = self.state.remote_job(&self.effective, id)?;
         self.state
             .authorize_checkpoint_job(
-                &self.admission.room,
+                &self.admission.workspace,
                 admitted
                     .certificate
                     .as_ref()
@@ -830,7 +839,7 @@ mod tests {
 
     #[test]
     fn workspace_requests_leave_descriptor_resolution_to_the_live_dispatcher() {
-        let provider = workspace_provider("room");
+        let provider = workspace_provider("workspace");
         assert!(certified_provider(&provider));
         let (allowed, blocked) = workspace_targets();
         for address in allowed {
@@ -873,7 +882,7 @@ mod tests {
 
     #[test]
     fn workspace_page_keeps_registered_service_actions_and_resource_rows() {
-        let provider = workspace_provider("room");
+        let provider = workspace_provider("workspace");
         let (allowed, blocked) = workspace_targets();
         let mut rows: Vec<_> = allowed
             .iter()
@@ -891,7 +900,7 @@ mod tests {
             .map(|provider| CatalogueProvider {
                 provider: provider.into(),
                 app_id: "test-app".into(),
-                room: "room".into(),
+                room: "workspace".into(),
                 record_id: String::new(),
                 browsable: true,
             })

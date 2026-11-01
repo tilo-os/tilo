@@ -3964,7 +3964,8 @@ mod tests {
             app.harness().set_session_door(
                 ui::RemoteActions::with_host(
                     session.clone(),
-                    ui::tilo_actions::remote::Caller::local_app("so.tilo.camera").in_room("room"),
+                    ui::tilo_actions::remote::Caller::local_app("so.tilo.camera")
+                        .in_workspace("room"),
                 ),
                 Some("room".into()),
             );
@@ -4095,7 +4096,7 @@ mod tests {
             let (app_end, host_end) = std::os::unix::net::UnixDatagram::pair().unwrap();
             let policy: Arc<dyn Policy> = Arc::new(GrantPolicy {
                 grants,
-                room: "r".into(),
+                workspace: "r".into(),
                 app: "so.tilo.camera".into(),
                 declared: vec![tilo_capture::DeviceKind::Camera],
                 consent: move |_| {
@@ -5141,7 +5142,7 @@ mod tests {
         app.harness().set_session_door(
             ui::RemoteActions::with_host(
                 session.clone(),
-                ui::tilo_actions::remote::Caller::local_app("so.tilo.camera").in_room("room"),
+                ui::tilo_actions::remote::Caller::local_app("so.tilo.camera").in_workspace("room"),
             ),
             Some("room".into()),
         );

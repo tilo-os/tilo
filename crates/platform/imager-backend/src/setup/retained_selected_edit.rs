@@ -104,7 +104,9 @@ impl RootSelectedEditor {
             || selected.resource_record != self.request.resource_record()
             || self.binding.shell_context_sha256 != selected.context_sha256
             || self.binding.room
-                != runtime_collab::retained_person::personal_room(&self.input.person_public_key())
+                != runtime_collab::retained_person::personal_cluster(
+                    &self.input.person_public_key(),
+                )
         {
             return Err(refused());
         }

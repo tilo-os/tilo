@@ -25,7 +25,7 @@ use tilolang_host::hosted::{Hosted as HostedInstance, Spec};
 use tilolang_host::phrases::Phrases;
 use tilolang_tilo::DynValue;
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::instance::room::RoomRecord;
+use tilolang_tilo::instance::record::InstanceRecord;
 use ui::headless::FrameHarness;
 use ui::tilo_actions::{ActionContext, ActionInvoker, ActorKind};
 
@@ -367,7 +367,7 @@ impl Hosted {
             handle: Some("ada".to_owned()),
         }));
         let _ = manager.poll();
-        let record = RoomRecord::new(automerge::AutoCommit::new(), manager, route.clone(), "ada");
+        let record = InstanceRecord::new(automerge::AutoCommit::new(), manager, route.clone(), "ada");
         let wake: tilolang_tilo::background::Waker = Arc::new(|| {});
         let mut host = TilolangHost::new(None, Arc::clone(&wake));
         let kept = host.kept(TASKS).unwrap();
@@ -375,7 +375,7 @@ impl Hosted {
         let hosted = HostedInstance::with_record(
             Spec {
                 app: TASKS.to_owned(),
-                room: route.cluster_id.to_string(),
+                workspace: route.cluster_id.to_string(),
                 instance: 1,
                 person: "ada".to_owned(),
             },

@@ -57,7 +57,7 @@ impl Enrollment {
         }
         let room = destination.room.clone();
         let caller = |identity: &Identity| {
-            Caller::authenticated(identity.user, identity.device).in_room(room.clone())
+            Caller::authenticated(identity.user, identity.device).in_workspace(room.clone())
         };
         Ok(Self {
             destination: Destination {
@@ -68,7 +68,7 @@ impl Enrollment {
             owner: caller(owner),
             reporter: caller(reporter),
             permissions: PermissionContext::new(
-                Actor::person(standing.person.clone()).in_room(room),
+                Actor::person(standing.person.clone()).in_workspace(room),
                 serde_json::from_value(admission.sandbox.clone())?,
                 standing,
             )

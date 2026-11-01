@@ -134,7 +134,12 @@ fn capabilities(chrome: &Chrome) -> Vec<CapOverride> {
 }
 
 /// The active workspace's whole authority: its policy and its sandbox.
-fn authority(chrome: &Chrome) -> (Option<tilo_action_policy::RoomPolicy>, Vec<CapOverride>) {
+fn authority(
+    chrome: &Chrome,
+) -> (
+    Option<tilo_action_policy::WorkspacePolicy>,
+    Vec<CapOverride>,
+) {
     let st = chrome.borrow();
     let tree = st.tree();
     (

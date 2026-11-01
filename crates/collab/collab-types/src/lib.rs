@@ -60,7 +60,7 @@ pub mod mls_governance;
 pub mod op;
 pub mod ownership_transfer;
 pub mod peer;
-pub mod person_room;
+pub mod personal;
 pub mod presence;
 pub mod realtime;
 pub mod receipt;
@@ -87,7 +87,7 @@ pub const RECORD_URI_SCHEME: &str = "tilo-record";
 pub use canonical::{CanonicalError, canonical_bytes};
 pub use caps::{
     Access, Actor, CapDecision, CapOverride, Effect, Expiry, FsAuthority, LaunchGrants, Principal,
-    ResourceRef, RoomMember, Scope, Subject, decide_capability, host_covers, path_covers,
+    ResourceRef, Scope, Subject, WorkspaceMember, decide_capability, host_covers, path_covers,
 };
 pub use channel::{
     Artifact, ArtifactId, ArtifactRef, Channel, ChannelId, ChannelRef, ChannelSettingsDelta,
@@ -129,8 +129,9 @@ pub use ownership_transfer::{
     OwnershipTransferCancellationV1, OwnershipTransferError, OwnershipTransferProposalV1,
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
-pub use person_room::{
-    is_person_room, person_record_id, person_record_kind, person_room, person_room_of,
+pub use personal::{
+    is_personal_cluster, person_record_id, person_record_kind, personal_cluster,
+    personal_cluster_of, retired_person_workspace,
 };
 pub use receipt::{
     Receipt, ReceiptRefusal, ReceiptSurface, Record, SurfaceSource, Surfaces, check_appearances,

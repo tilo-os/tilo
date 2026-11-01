@@ -74,7 +74,7 @@ fn broker_with_tree(
     let mut workspace = Workspace::new(WorkspaceId(95), "Owner import");
     workspace.set_owner("owner");
     workspace.admit_agent("limited", KindSet::ALL);
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let tree = tree.shared();
@@ -97,7 +97,7 @@ fn broker_with_tree(
     let request = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
-            provider: tilo_actions::remote::workspace_provider(&room),
+            provider: tilo_actions::remote::workspace_provider(&workspace_id),
             address: tilo_actions::ActionAddress::new(RESOURCE, ACTION),
         },
         argument: InvokeArgument::Json(
@@ -113,7 +113,7 @@ fn broker_with_tree(
     (
         state,
         service,
-        Caller::local_person("owner").in_room(room),
+        Caller::local_person("owner").in_workspace(&workspace_id),
         request,
         tree,
     )
@@ -147,12 +147,18 @@ fn witness(state: &AppBrokerState, actor: &str, request: &InvokeRequest) -> Conf
 
 #[test]
 fn owner_governance_rejects_witness_from_other_original_contexts() {
-    for changed in ["provider", "room", "revision", "invocation", "publication"] {
+    for changed in [
+        "provider",
+        "workspace",
+        "revision",
+        "invocation",
+        "publication",
+    ] {
         let (state, service, owner, mut request) = broker(true);
         let mut binding = state.witness_binding("owner", owner.room().unwrap(), &request);
         match changed {
             "provider" => binding.provider = "another-provider".into(),
-            "room" => binding.room = "another-workspace".into(),
+            "workspace" => binding.workspace = "another-workspace".into(),
             "revision" => binding.revision = Some("previous-publication".into()),
             "invocation" => binding.invocation = tilo_actions::InvocationId::new(),
             "publication" => binding.publication.0 = binding.publication.0.wrapping_add(1),
@@ -249,14 +255,14 @@ fn owner_governance_witness_does_not_replace_current_policy_or_custody() {
         invoke(&state, &owner, &request),
         Err(ActionHostError::ConfirmationRequired)
     );
-    let agent = Caller::local_agent("limited").in_room(owner.room().unwrap());
+    let agent = Caller::local_agent("limited").in_workspace(owner.room().unwrap());
     request.confirmation = Some(witness(&state, "agent:limited", &request));
     assert_eq!(
         invoke(&state, &agent, &request),
         Err(ActionHostError::NotPermitted),
         "even a grant and exact witness cannot confer direct owner custody"
     );
-    let other = Caller::local_person("other").in_room(owner.room().unwrap());
+    let other = Caller::local_person("other").in_workspace(owner.room().unwrap());
     request.confirmation = Some(witness(&state, "other", &request));
     assert!(invoke(&state, &other, &request).is_err());
     request.target.address.resource = "not-published".into();
@@ -276,7 +282,7 @@ fn canonical_governance_rechecks_ask_and_deny_after_witness_issuance() {
         let (state, service, owner, mut request, tree) = broker_with_tree(true);
         // Structural owners are unrestricted by grants. Use a direct person
         // governed by grants to exercise current policy, not owner override.
-        let person = Caller::local_person("guest").in_room(owner.room().unwrap());
+        let person = Caller::local_person("guest").in_workspace(owner.room().unwrap());
         let path = TreePath::root()
             .app("so.tilo.workspace")
             .any(tilo_action_policy::Level::Kind)

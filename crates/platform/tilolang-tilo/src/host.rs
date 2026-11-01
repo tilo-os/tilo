@@ -2,7 +2,7 @@
 //!
 //! A host owns one [`Runtime`] over a [`TiloStore`] and the platform's [`TiloAuthority`]. It
 //! compiles and loads packages, keeps their record schemas registered, opens a package's root
-//! resource (`root T`, one per room) through the default view of its type, and plans door
+//! resource (`root T`, one per workspace) through the default view of its type, and plans door
 //! invocations into [`DynAction`]s. The
 //! window widget in `apps/tilolang` drives it; so do the collaboration tests, with no window.
 //!
@@ -160,7 +160,7 @@ pub struct Host {
 /// How a host opens: over which record, keeping its indexes where.
 #[derive(Default)]
 pub struct Opening<'a> {
-    /// The room record; `None` to open over the indexes alone and take it later.
+    /// The workspace record; `None` to open over the indexes alone and take it later.
     pub record: Option<&'a tilo_resource::Doc>,
     /// Where each package's index is kept; `None` keeps them in memory.
     pub index_dir: Option<std::path::PathBuf>,
@@ -251,7 +251,7 @@ pub(crate) fn value_of(
 fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Value, String> {
     match (ty, json) {
         (Ty::Record(key), _) => {
-            // A parameter may be a type of another app of the room.
+            // A parameter may be a type of another app of the workspace.
             let owner = if key.app == meta.app {
                 meta.clone()
             } else {
@@ -513,7 +513,7 @@ impl HostInner {
 
     fn plan(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         // Planning is a trial run: whatever it wrote into the mirror is taken back, so asking
-        // for an action (to describe it, to offer it) never changes the room.
+        // for an action (to describe it, to offer it) never changes the workspace.
         let checkpoint = self.store.checkpoint();
         let planned = self.plan_in_mirror(request);
         self.store.rewind(checkpoint);
@@ -659,8 +659,8 @@ impl HostInner {
 }
 
 impl Host {
-    /// A host over the room record `record`, for `viewer`, whose standing in the room `standing`
-    /// reads: what the runtime invokes is decided by the room's policy ([`TiloAuthority`]).
+    /// A host over the workspace record `record`, for `viewer`, whose standing in the workspace `standing`
+    /// reads: what the runtime invokes is decided by the workspace's policy ([`TiloAuthority`]).
     ///
     /// # Errors
     /// The runtime cannot be set up, which is a bug.
@@ -694,7 +694,7 @@ impl Host {
         )
     }
 
-    /// A host as `opening` says: over the room record, or (without it) over the indexes kept
+    /// A host as `opening` says: over the workspace record, or (without it) over the indexes kept
     /// in its index directory alone, taking the record when it is had (see
     /// [`TiloStore::detached`]).
     ///
@@ -725,7 +725,7 @@ impl Host {
         let _schemas = schemas.enter();
         host_meta.register_schemas();
         store.open_index(&host_meta.app, &host_meta.schema_text());
-        // What the runtime invokes is decided by the room's one policy: the person's standing,
+        // What the runtime invokes is decided by the workspace's one policy: the person's standing,
         // an agent's delegation and the answers the person gave it, and the code's authors.
         let authority = TiloAuthority::new(viewer.clone(), standing);
         let runtime = Runtime::new(store.clone(), authority.clone())?;
@@ -773,7 +773,7 @@ impl Host {
         self.inner.store.persist_index();
     }
 
-    /// How the host gets the room record when it opened without it: for a write, or a field
+    /// How the host gets the workspace record when it opened without it: for a write, or a field
     /// no index holds.
     pub fn set_record_loader(&self, loader: crate::store::Loader) {
         self.inner.store.set_loader(loader);
@@ -804,7 +804,7 @@ impl Host {
     }
 
     /// Admit `caller` as software acting for a person: a task. It acts with that person's
-    /// authority bounded by its delegation and the answers the person gave it in the room; its
+    /// authority bounded by its delegation and the answers the person gave it in the workspace; its
     /// code is trusted as far as that goes.
     pub fn admit_agent(&self, caller: &Caller) {
         self.inner.admit_agent(caller);
@@ -983,6 +983,23 @@ impl Host {
         Ok(package)
     }
 
+    /// Load the package of an app this host does not run, trusted: its views draw resources of
+    /// that app from the readings the session hands in ([`tilolang_runtime::Runtime::set_reading`]),
+    /// and what they change is sent to those resources' doors through the runtime's invoker.
+    /// The store keeps none of its records, so the package is not among [`Self::packages`];
+    /// its code is decided by the host's authority as the app's own, as a loaded package's is.
+    ///
+    /// # Errors
+    /// The module does not link.
+    pub fn load_foreign_package(&self, wasm: &[u8], meta: &Meta) -> Result<(), HostError> {
+        let id = self
+            .inner
+            .runtime
+            .load_foreign_package(wasm, meta.clone())?;
+        self.inner.authority.load(&id, meta);
+        Ok(())
+    }
+
     /// Every loaded package.
     #[must_use]
     pub fn packages(&self) -> Vec<Package> {
@@ -1002,12 +1019,12 @@ impl Host {
         self.inner.packages.borrow().iter().find_map(find)
     }
 
-    /// Bring the runtime's view of the room record up to date; see [`TiloStore::sync_from`].
+    /// Bring the runtime's view of the workspace record up to date; see [`TiloStore::sync_from`].
     pub fn sync_from(&self, record: &tilo_resource::Doc) -> bool {
         self.inner.store.sync_from(record)
     }
 
-    /// Whether the runtime reads exactly what the room record `record` holds; see
+    /// Whether the runtime reads exactly what the workspace record `record` holds; see
     /// [`TiloStore::is_at`].
     #[must_use]
     pub fn is_at(&self, record: &tilo_resource::Doc) -> bool {
@@ -1032,7 +1049,7 @@ impl Host {
         self.inner.store.take_committed()
     }
 
-    /// The package's root resource: the one per-room resource of its root type, created the
+    /// The package's root resource: the one per-workspace resource of its root type, created the
     /// first time it is wanted: its first root type with a default view, as the launcher opens
     /// an app.
     ///
@@ -1105,7 +1122,7 @@ impl Host {
     /// ([`crate::authority::migration_principal`]), which records in the same change that it
     /// ran. A field the new build keeps as `RichText` where the old one kept `Text` has its
     /// text carried into rich text first, the same words ([`crate::store`]'s
-    /// `upgrade_plain_text`). Only the room's origin calls it (`Instance::set_origin`). Returns
+    /// `upgrade_plain_text`). Only the workspace's origin calls it (`Instance::set_origin`). Returns
     /// how many migrations ran. A migration that is refused or fails leaves its resource as it
     /// was, to be tried again the next time.
     pub fn migrate(&self) -> usize {
@@ -1256,7 +1273,7 @@ impl Host {
         self.inner.plan(request)
     }
 
-    /// The published records of the room: each resource of a loaded package with its type name.
+    /// The published records of the workspace: each resource of a loaded package with its type name.
     #[must_use]
     pub fn records(&self) -> Vec<(Package, String, String)> {
         let mut out = Vec::new();

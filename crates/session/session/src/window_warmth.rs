@@ -127,7 +127,7 @@ fn workspace_sync(
         .or_insert_with(|| crate::identity::person_in(&room.to_string(), person))
         .clone();
     tilo_network_actor::workspace_sync::told(
-        tilo_network_actor::room_topic_id(room),
+        tilo_network_actor::workspace_topic_id(room),
         &workspace.name,
         workspace.app_writes_at(&person, app, tilo_clock::unix_now()),
     )
@@ -158,22 +158,15 @@ fn desk_theme(document: &Map<String, Value>) -> Theme {
 }
 
 /// What this device reads of the network, as an app window may be told it:
-/// whether it is on one, and nothing of which. `None` until the panel read
-/// the device; the panel does not read whether the link is metered.
-pub(crate) fn network_status(
-    readings: &RefCell<Option<tilo_quick_settings::host::Feed>>,
-) -> HostNetworkStatus {
-    let feed = readings.borrow().clone();
-    let Some(feed) = feed else {
+/// whether it is on one, and nothing of which. `None` until a service read
+/// the connection; it does not read whether the link is metered.
+pub(crate) fn network_status(readings: &crate::status::Shared) -> HostNetworkStatus {
+    let link = readings.borrow().link();
+    let Some(link) = link else {
         return HostNetworkStatus::default();
     };
-    let state = feed.current();
     HostNetworkStatus {
-        available: state
-            .status
-            .link
-            .as_ref()
-            .map(|link| link.kind != os_actions::LinkKind::Offline),
+        available: Some(link.kind != tilo_desktop::chrome::LinkKind::Offline),
         metered: None,
     }
 }

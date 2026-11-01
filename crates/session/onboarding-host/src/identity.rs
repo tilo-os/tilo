@@ -452,7 +452,7 @@ pub fn canonical_native_identity_ready(minted: &MintedIdentity) -> bool {
     let Ok(person) = <[u8; 32]>::try_from(bytes) else {
         return false;
     };
-    let room = collab_types::person_room(&person);
+    let room = collab_types::personal_cluster(&person);
     tilo_identity_host::broker::trusted_current_device(&room.to_string()).is_ok_and(
         |(_, certificate)| {
             certificate.user_public_key == person && !certificate.capabilities.foreign

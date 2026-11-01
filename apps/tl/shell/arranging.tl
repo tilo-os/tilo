@@ -35,6 +35,16 @@ action place_found(a: Arrangement, text: Text, x: Int, y: Int, shown_as: Text = 
     outside("session.arrange", "place-found \{\"text\":\"{text}\",\"x\":{x},\"y\":{y},\"view\":\"{shown_as}\"\}")
 }
 
+/// Puts the resource `resource` (its id, as a step printed it) on the canvas of the workspace in
+/// front as its primary view (or `shown_as`), standing at the canvas point `(x, y)` in a strip of
+/// its own: what activating a reference does (shell.md §3, §8.1). The session takes the
+/// workspace, the row and the new ids from the surface in front, so the record holds them as for
+/// any other place.
+action place(a: Arrangement, resource: Text, x: Int, y: Int, shown_as: Text = "") (icon: .map_pin, label: "Place on the canvas") {
+    require resource != "" "Name the resource to place"
+    outside("session.arrange", "place \{\"resource\":\"{resource}\",\"x\":{x},\"y\":{y},\"view\":\"{shown_as}\"\}")
+}
+
 /// Moves the place `place` into the row `row`, before the place `before` or last: within a row,
 /// or to another row, which is how a line of work moves whole (§3).
 action move_place(a: Arrangement, place: Text, row: Text, before: Text = "") (icon: .navigation, label: "Move", group: "Arrange") {

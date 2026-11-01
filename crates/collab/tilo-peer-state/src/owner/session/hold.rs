@@ -1,4 +1,4 @@
-//! Holding an enrolled room's session for as long as the room is held:
+//! Holding an enrolled workspace's session for as long as the workspace is held:
 //! dialling the governor its enrollment pins, standing in with another
 //! host its governance names while the governor is out of reach, renewing
 //! this device's membership once custody renewed its certificate, and
@@ -23,16 +23,16 @@ const FIRST_PAUSE: Duration = Duration::from_secs(1);
 /// The longest pause between dials.
 const LONGEST_PAUSE: Duration = Duration::from_secs(60);
 
-/// Whoever holds a room's session: what [`hold`] asks of it.
+/// Whoever holds a workspace's session: what [`hold`] asks of it.
 pub trait Holder: Send + Sync {
-    /// How the room's host is reached now.
+    /// How the workspace's host is reached now.
     fn reach(&self) -> Reach;
     /// Whether [`hold`] dials again on its own after a pause; otherwise it
     /// dials only once told to ([`Link::retry`]).
     fn paces_itself(&self) -> bool {
         true
     }
-    /// Dialling `via`, the room's `governor` or a host standing in for it,
+    /// Dialling `via`, the workspace's `governor` or a host standing in for it,
     /// failed with `error`. The hold no longer counts as establishing a
     /// session unless it goes on to another host.
     fn dial_failed(
@@ -89,8 +89,8 @@ enum Outcome {
     Wait,
 }
 
-/// Hold `connect`'s room's session for `holder`, as `identity`, until the
-/// room is no longer held here. Without custody there is nothing to dial.
+/// Hold `connect`'s workspace's session for `holder`, as `identity`, until the
+/// workspace is no longer held here. Without custody there is nothing to dial.
 pub async fn hold(
     connect: Connect,
     identity: Option<HostIdentity>,
@@ -105,7 +105,7 @@ pub async fn hold(
     let paced = holder.paces_itself();
     let mut pause = FIRST_PAUSE;
     let mut unanswered = 0;
-    while Connect::new(connect.owner().clone(), connect.room()).is_ok() {
+    while Connect::new(connect.owner().clone(), connect.workspace()).is_ok() {
         let outcome = Box::pin(once(&connect, holder, link, &identity, &mut unanswered)).await;
         link.settled();
         match outcome {
@@ -148,19 +148,19 @@ async fn once(
     identity: &HostIdentity,
     unanswered: &mut u32,
 ) -> Outcome {
-    let room = connect.room();
+    let workspace = connect.workspace();
     let Ok((hint, cert, revocations, _)) = connect.material(identity) else {
         return renew(connect, holder, link, identity).await;
     };
     let reach = holder.reach();
     let own = cert.device_public_key;
-    // A room placed on this device waits for its host to run.
+    // A workspace placed on this device waits for its host to run.
     if super::hosted_by(&hint, &own) && reach.own_host.is_none() {
         return Outcome::Wait;
     }
     let Ok(ws) = connect
         .owner()
-        .with_current(room, |view| Ok(view.workspace()))
+        .with_current(workspace, |view| Ok(view.workspace_id()))
     else {
         return Outcome::Wait;
     };
@@ -191,7 +191,7 @@ async fn once(
         Ok(dialled) => dialled,
         Err(error) => {
             // A host that did not answer stands for one out of reach: the
-            // room goes on through the next host its governance names.
+            // workspace goes on through the next host its governance names.
             let next = match error {
                 DialError::NoAnswer(_) | DialError::Failed(_) => {
                     connect.next_host(&own, None).ok().flatten()
@@ -216,7 +216,7 @@ async fn once(
     };
     let mut current = dialled;
     loop {
-        // The room's security may have moved on while dialling (another
+        // The workspace's security may have moved on while dialling (another
         // member joined): the session is still this device's as long as
         // its host and certificate are, and its standing checks out now.
         let Some(continuity) =
@@ -259,7 +259,7 @@ async fn once(
     }
 }
 
-/// Custody no longer matches the room's record: once it renewed the
+/// Custody no longer matches the workspace's record: once it renewed the
 /// certificate, this device proves its membership with the renewal.
 async fn renew(
     connect: &Connect,
@@ -270,21 +270,21 @@ async fn renew(
     if !matches!(connect.renewal(identity), Ok(Some(_))) {
         return Outcome::Failed;
     }
-    let room = connect.room();
+    let workspace = connect.workspace();
     link.establishing.store(true, Ordering::Release);
     match holder.reach().renew(connect, identity).await {
         Ok(_) => {
-            tracing::info!(%room, "renewed this device's certificate in the room");
+            tracing::info!(%workspace, "renewed this device's certificate in the workspace");
             Outcome::Again
         }
         Err(error) => {
-            tracing::warn!(%room, %error, "this device's renewed certificate was not taken");
+            tracing::warn!(%workspace, %error, "this device's renewed certificate was not taken");
             Outcome::Failed
         }
     }
 }
 
-/// Dial `next` and each host the room names after it until one answers.
+/// Dial `next` and each host the workspace names after it until one answers.
 async fn fail_over<F, D>(
     connect: &Connect,
     holder: &dyn Holder,
@@ -299,9 +299,9 @@ where
     loop {
         let via = next?;
         tracing::info!(
-            room = %connect.room(),
+            workspace = %connect.workspace(),
             host = %hex::encode(via.host.device_public_key),
-            "the room's governor is out of reach; dialling another of its hosts"
+            "the workspace's governor is out of reach; dialling another of its hosts"
         );
         match dial(via.clone()).await {
             Ok(dialled) => return Some(dialled),

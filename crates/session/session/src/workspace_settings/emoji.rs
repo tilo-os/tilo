@@ -85,7 +85,7 @@ struct Open {
     person: ui::permissions::UserId,
     /// The grants it was opened with: they decide its actions, so a
     /// workspace whose grants changed opens the record again.
-    policy: tilo_action_policy::RoomPolicy,
+    policy: tilo_action_policy::WorkspacePolicy,
     /// `None` where the record could not be opened here.
     record: Option<WorkspaceRecord<Record>>,
 }
@@ -260,7 +260,8 @@ impl Emoji {
             Standing::person(workspace.policy.clone(), person.clone()),
         )
         .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
-        let records = WorkspaceRecords::in_room(self.owners.clone(), room.clone(), author.clone());
+        let records =
+            WorkspaceRecords::in_workspace(self.owners.clone(), room.clone(), author.clone());
         let record = WorkspaceRecord::<Record>::open(
             &records,
             OWNER,

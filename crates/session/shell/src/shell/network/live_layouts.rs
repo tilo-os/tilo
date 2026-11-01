@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use tilo_relay_protocol::live::{LiveLayout, LiveRecord};
 
-use super::{RoomId, ShellNetwork, room_topic_id};
+use super::{RoomId, ShellNetwork, workspace_topic_id};
 
 /// Each live member's layout, per room and handle.
 pub(super) type LiveLayouts = Mutex<HashMap<String, BTreeMap<u64, LiveLayout>>>;
@@ -26,7 +26,7 @@ impl ShellNetwork {
             return false;
         };
         let layout = layout.filter(|_| self.presence_visibility(cluster_id).shows_where());
-        let ws = room_topic_id(room);
+        let ws = workspace_topic_id(room);
         let desktop = LiveRecord {
             app: tilo_desktop_model::ownership::DESKTOP_APP.into(),
             record: tilo_desktop_model::ownership::DESKTOP_RECORD.into(),

@@ -245,6 +245,28 @@ scenario "a person's menu" {
     d.agents.insert(Agent(key: "fieldwork", name: "Fieldwork", state: "running", doing: "Sorting the inbox", mark: "3 threads filed", unseen: 3))
 }
 
+/// A conversation with the session's agent: what Ada asked, the agent's words between its
+/// steps, a program it ran that printed two notes, one that changed a note, one of Ada's own
+/// that did not compile, and the agent's answer.
+scenario "a conversation with the agent" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "10:42 AM"
+    d.workspace = "Studio"
+    d.here = "conversation"
+    d.runs.insert(Run(key: "r1", title: "Tidy the launch notes", agent: "claude", phase: "done", active: false))
+    d.run_entries.insert(RunEntry(key: "r1/1", run: "r1", seq: 1, author: "ada", text: "Tidy the launch notes: pin the checklist and drop the old draft title."))
+    d.run_entries.insert(RunEntry(key: "r1/2", run: "r1", seq: 2, author: "agent:claude", by_agent: true, text: "I will look for the launch notes first."))
+    d.run_entries.insert(RunEntry(key: "r1/3", run: "r1", seq: 3, author: "agent:claude", by_agent: true, step: true, text: "find(notes.Note, \"launch\")", outcome: "done", answer: "n1 \"Launch checklist\"\nn2 \"Launch day (old draft)\""))
+    d.entry_refs.insert(EntryRef(key: "r1/3/0", entry: "r1/3", resource: "tl:so.tilo.lang.notes:n1", app_id: "so.tilo.lang.notes", type_kind: "notes.Note", label: "Launch checklist"))
+    d.entry_refs.insert(EntryRef(key: "r1/3/1", entry: "r1/3", resource: "tl:so.tilo.lang.notes:n2", app_id: "so.tilo.lang.notes", type_kind: "notes.Note", label: "Launch day (old draft)"))
+    d.run_entries.insert(RunEntry(key: "r1/4", run: "r1", seq: 4, author: "agent:claude", by_agent: true, step: true, text: "notes.pin(n1)\nn2.title = \"Launch day\"", outcome: "done", answer: "n1 \"Launch checklist\" pinned\nn2 \"Launch day\""))
+    d.entry_refs.insert(EntryRef(key: "r1/4/0", entry: "r1/4", changed: true, resource: "tl:so.tilo.lang.notes:n1", app_id: "so.tilo.lang.notes", type_kind: "notes.Note", label: "Launch checklist", change: "Pin"))
+    d.entry_refs.insert(EntryRef(key: "r1/4/1", entry: "r1/4", changed: true, resource: "tl:so.tilo.lang.notes:n2", app_id: "so.tilo.lang.notes", type_kind: "notes.Note", label: "Launch day", change: "Rename"))
+    d.run_entries.insert(RunEntry(key: "r1/5", run: "r1", seq: 5, author: "ada", step: true, text: "notes.Note.count(", outcome: "rejected", answer: "// line 1: expected an argument or `)` after `(`"))
+    d.run_entries.insert(RunEntry(key: "r1/6", run: "r1", seq: 6, author: "agent:claude", by_agent: true, text: "The checklist is pinned and the old draft is called Launch day now."))
+}
+
 /// The desk's notices a scenario starts from: what apps and an agent said today.
 action seed_notices(d: Desk) -> Int {
     d.notices.insert(Notice(key: "n1", title: "Mia mentioned you in Release planning", body: "Can you check the launch date?", origin_app: "Notes", group: "Notes", kind: "info", read: false, wants_reply: true))
@@ -343,7 +365,8 @@ scenario "a reference lands beside its place" -> Arrangement {
 }
 
 /// Six places in two clusters on the framed canvas: one space per task, at three zoom levels as
-/// the person looks closer or further out.
+/// the person looks closer or further out. Each note is its app's editor composed in its frame;
+/// the terminal beside them is a window, shown in its well.
 scenario "a canvas of spaces" -> Arrangement {
     let v = viewing
     v.showing = .frames
@@ -360,25 +383,36 @@ scenario "a canvas of spaces" -> Arrangement {
     }
     let i = 0
     for n in notes.notes.take(6) {
-        let p = a.places.insert(ArrangementPlace(key: "c-{i}", strip: s, shows: "so.tilo.lang.notes", record: n.id(), title: n.title, shell: "so.tilo.shell.strips"))
+        let p = a.places.insert(ArrangementPlace(key: "c-{i}", strip: s, shows: "so.tilo.lang.notes", shown_as: "note_editor", record: n.id(), title: n.title, shell: "so.tilo.shell.strips"))
         i += 1
     }
+    a.places.insert(ArrangementPlace(key: "c-terminal", strip: s, shows: "so.tilo.terminal", title: "A terminal", shell: "so.tilo.shell.strips"))
     a
 }
 
 /// The spaces canvas: the same places with no frame around them, so a resource's view stands as
-/// content and nearness groups it.
+/// content and nearness groups it. Each note is its app's editor composed in place; the terminal
+/// beside them is a window, shown in its well.
 scenario "resources standing as content" -> Arrangement {
     let v = viewing
     v.showing = .spaces
     let a = root Arrangement
     let row = a_workspace(a, "Desk")
     let s = a_strip(a, row, "Spaces", 667)
+    let strip = a.strips.find(st -> st.key == s)
+    if let held = strip {
+        held.canvas_x = 0
+        held.canvas_y = 0
+        held.canvas_width = 1100
+        held.canvas_height = 1200
+        held.placed = true
+    }
     let i = 0
     for n in notes.notes.take(4) {
-        a.places.insert(ArrangementPlace(key: "x-{i}", strip: s, shows: "so.tilo.lang.notes", record: n.id(), title: n.title, shell: "so.tilo.shell.strips"))
+        a.places.insert(ArrangementPlace(key: "x-{i}", strip: s, shows: "so.tilo.lang.notes", shown_as: "note_editor", record: n.id(), title: n.title, shell: "so.tilo.shell.strips"))
         i += 1
     }
+    a.places.insert(ArrangementPlace(key: "x-terminal", strip: s, shows: "so.tilo.terminal", title: "A terminal", shell: "so.tilo.shell.strips"))
     a
 }
 

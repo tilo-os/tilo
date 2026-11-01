@@ -1,15 +1,15 @@
 //! Environment records, opened where Terminal keeps its own.
 //!
 //! An environment is a Terminal record (`#[resource(kind = "environment")]`,
-//! see `tilo-environment`), so it lives in Terminal's personal room and syncs
-//! with Terminal's records: `<data home>/tilo-rooms/personal/so.tilo.terminal`
-//! is the directory the launcher gives Terminal, and its `.local/share` is the
+//! see `tilo-environment`), so it lives in Terminal's own records and syncs
+//! with them: `<data home>/tilo-rooms/personal/so.tilo.terminal` is the
+//! directory the launcher gives Terminal, and its `.local/share` is the
 //! data home Terminal's own record store writes under. The supervisor joins
 //! the record's shared writers there, applies actions through the record
 //! layer — so every change carries history and an author — and appends.
 //!
 //! An app names a record by key only ([`tilo_environment::is_record_key`]);
-//! the room and the owning app are fixed here, never taken from a request.
+//! the scope and the owning app are fixed here, never taken from a request.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -75,7 +75,7 @@ impl Records {
     /// Returns [`RecordError::BadKey`] for a key that is not a record key.
     pub fn record_dir(&self, key: &str) -> Result<PathBuf, RecordError> {
         check_key(key)?;
-        DocStore::room_record_dir_at(&self.root, OWNER_APP_ID, ROOM, key)
+        DocStore::workspace_record_dir_at(&self.root, OWNER_APP_ID, ROOM, key)
             .map_err(|e| RecordError::Store(e.to_string()))
     }
 

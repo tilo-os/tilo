@@ -48,6 +48,17 @@ view traditional_desktop(a: Arrangement) {
     }
 }
 
+/// The window in front alone, filling the room it is given: what a compact output shows of the
+/// desktop (`desk`), where windows standing where they were left would show their corners cut
+/// off and the window the person is in could stand behind another.
+view front_window(a: Arrangement) {
+    if let s = focused_strip(a) {
+        if let p = active_place(a, s) {
+            frame_classic(a, p, true, fill)
+        }
+    }
+}
+
 /// One frame on the desktop, at its strip's canvas point and size.
 view desktop_frame(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace, focused: Bool) {
     ui.MapPin(name: .some(p.key), x: s.canvas_x, y: s.canvas_y, width: if s.canvas_width > 0 { s.canvas_width } else { 720 }, height: if s.canvas_height > 0 { s.canvas_height } else { 480 }) {

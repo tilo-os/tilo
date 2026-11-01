@@ -4,7 +4,7 @@
 //! caller-supplied value, and it is current only while the host that wrote
 //! it holds it (`tilo_files::native::held`): it carries no lifetime of its own.
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::{Authority, RoomPolicy, TreePath, roles};
+use tilo_action_policy::{Authority, TreePath, WorkspacePolicy, roles};
 
 pub const PROJECTION_PATH: &str = "/run/tilo/action-authority/current.json";
 pub const MAX_PROJECTION_BYTES: usize = 64 * 1024;
@@ -20,7 +20,7 @@ pub struct AppActionAuthorityProjection {
     pub person: String,
     /// The room's owner and members, and the grants that can reach this app:
     /// those on the room itself and on the app's subtree.
-    pub policy: RoomPolicy,
+    pub policy: WorkspacePolicy,
     /// The person works from a device that is not theirs, in a room they do
     /// not govern.
     #[serde(default)]
@@ -37,23 +37,27 @@ struct StoredProjection {
     room: String,
     app_id: String,
     person: String,
-    policy: RoomPolicy,
+    policy: WorkspacePolicy,
     #[serde(default)]
     foreign: bool,
 }
 
 impl From<StoredProjection> for AppActionAuthorityProjection {
-    /// The built-in roles' grants are the code's, so they are narrowed to the
-    /// app here as [`AppActionAuthorityProjection::project`] narrowed them:
-    /// a projection reads back as the projection of the current policy.
-    /// Grants given in the room stay as written, for
+    /// The grants the code makes — the built-in roles' and the session's own
+    /// app and device panel — are narrowed to the app here as
+    /// [`AppActionAuthorityProjection::project`] narrowed them, so a
+    /// projection reads back as the projection of the current policy. Grants
+    /// given in the room stay as written, for
     /// [`AppActionAuthorityProjection::validate`] to judge.
     fn from(stored: StoredProjection) -> Self {
         let mut policy = stored.policy;
         let app = policy.node().app(&stored.app_id);
-        policy
-            .grants
-            .retain(|grant| !roles::is_role_grant(grant) || grant.node.overlaps(&app));
+        policy.grants.retain(|grant| {
+            let code_made = roles::is_role_grant(grant)
+                || roles::is_session_app(grant)
+                || roles::is_device_panel(grant);
+            !code_made || grant.node.overlaps(&app)
+        });
         Self {
             schema_version: stored.schema_version,
             room: stored.room,
@@ -69,13 +73,13 @@ impl AppActionAuthorityProjection {
     /// The projection for `app_id` of `person`'s authority in `policy`: the
     /// grants are narrowed to those that can decide one of the app's actions.
     #[must_use]
-    pub fn project(policy: &RoomPolicy, app_id: &str, person: &str, foreign: bool) -> Self {
+    pub fn project(policy: &WorkspacePolicy, app_id: &str, person: &str, foreign: bool) -> Self {
         let app = policy.node().app(app_id);
         let mut narrowed = policy.clone();
         narrowed.grants.retain(|grant| grant.node.overlaps(&app));
         Self {
             schema_version: SCHEMA_VERSION,
-            room: policy.room.clone(),
+            room: policy.workspace.clone(),
             app_id: app_id.to_owned(),
             person: person.to_owned(),
             policy: narrowed,
@@ -96,7 +100,7 @@ impl AppActionAuthorityProjection {
             || !valid_name(&self.room)
             || !valid_name(&self.app_id)
             || !valid_name(&self.person)
-            || self.policy.room != self.room
+            || self.policy.workspace != self.room
             || self
                 .policy
                 .owner
@@ -108,7 +112,7 @@ impl AppActionAuthorityProjection {
         }
         let app = self.policy.node().app(&self.app_id);
         for grant in &self.policy.grants {
-            if !grant.node.overlaps(&app) || grant.node.room_id() != Some(self.room.as_str()) {
+            if !grant.node.overlaps(&app) || grant.node.workspace_id() != Some(self.room.as_str()) {
                 return Err("invalid host action policy projection");
             }
         }
@@ -148,7 +152,7 @@ mod tests {
     use tilo_action_policy::{ActionKind, Answer, Context, Grant, KindSet, Role, Subject};
 
     fn policy() -> AppActionAuthorityProjection {
-        let mut room = RoomPolicy::new("room-a", "person-a");
+        let mut room = WorkspacePolicy::new("room-a", "person-a");
         room.members.insert("person-b".into(), Role::Editor);
         AppActionAuthorityProjection::project(&room, "so.tilo.store", "person-b", false)
     }
@@ -161,8 +165,8 @@ mod tests {
         invalid.schema_version = 2;
         assert!(invalid.validate().is_err(), "another schema is refused");
         for node in [
-            TreePath::room("room-a").app("so.tilo.settings"),
-            TreePath::room("room-b"),
+            TreePath::workspace("room-a").app("so.tilo.settings"),
+            TreePath::workspace("room-b"),
             TreePath::root(),
         ] {
             let mut invalid = original.clone();
@@ -185,13 +189,43 @@ mod tests {
     fn a_projection_reads_back_as_written() {
         let original = policy();
         assert!(
-            original.policy.grants.len() < RoomPolicy::new("room-a", "person-a").grants.len(),
+            original.policy.grants.len() < WorkspacePolicy::new("room-a", "person-a").grants.len(),
             "the room holds role grants that reach no action of the app"
         );
         let read: AppActionAuthorityProjection =
             serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
         read.validate().unwrap();
         assert_eq!(read, original);
+    }
+
+    /// A projection written while its policy named the workspace `room`
+    /// still reads.
+    #[test]
+    fn a_projection_written_with_a_room_policy_still_reads() {
+        let written = serde_json::to_string(&policy()).unwrap();
+        assert!(written.contains("\"workspace\":\"room-a\""), "{written}");
+        let stored = written.replace("\"workspace\":", "\"room\":");
+        assert_eq!(stored.matches("\"room\":\"room-a\"").count(), 2, "{stored}");
+        let read: AppActionAuthorityProjection = serde_json::from_str(&stored).unwrap();
+        read.validate().unwrap();
+        assert_eq!(read, policy());
+    }
+
+    /// The grants the code makes for the session's own app reach it, so a
+    /// projection of that app keeps them and reads back as it was written,
+    /// in the order it wrote them.
+    #[test]
+    fn a_projection_of_the_sessions_own_app_reads_back_as_written() {
+        let projection = AppActionAuthorityProjection::project(
+            &WorkspacePolicy::new("room-a", "person-a"),
+            tilo_action_policy::roles::SESSION_APP,
+            "person-a",
+            false,
+        );
+        let read: AppActionAuthorityProjection =
+            serde_json::from_slice(&serde_json::to_vec(&projection).unwrap()).unwrap();
+        read.validate().unwrap();
+        assert_eq!(read, projection);
     }
 
     /// A grant the room gave that reaches beyond the app is still refused
@@ -202,7 +236,7 @@ mod tests {
         written.policy.grants.push(Grant::new(
             "foreign",
             Subject::person("person-b"),
-            TreePath::room("room-a").app("so.tilo.settings"),
+            TreePath::workspace("room-a").app("so.tilo.settings"),
             KindSet::ALL,
             Answer::Allow,
             Subject::person("person-a"),
@@ -214,13 +248,13 @@ mod tests {
 
     #[test]
     fn projection_keeps_only_grants_that_reach_the_app() {
-        let mut room = RoomPolicy::new("room-a", "person-a");
+        let mut room = WorkspacePolicy::new("room-a", "person-a");
         room.members.insert("person-b".into(), Role::Viewer);
         for (id, app) in [("store", "so.tilo.store"), ("settings", "so.tilo.settings")] {
             room.grants.push(Grant::new(
                 id,
                 Subject::person("person-b"),
-                TreePath::room("room-a").app(app),
+                TreePath::workspace("room-a").app(app),
                 KindSet::UNDOABLE,
                 Answer::Allow,
                 Subject::person("person-a"),
@@ -264,13 +298,13 @@ mod tests {
 
     #[test]
     fn a_foreign_device_never_governs() {
-        let room = RoomPolicy::new("room-a", "person-a");
+        let room = WorkspacePolicy::new("room-a", "person-a");
         let mut projection =
             AppActionAuthorityProjection::project(&room, "so.tilo.store", "person-a", true);
         projection.policy.grants.push(Grant::new(
             "governance",
             Subject::person("person-a"),
-            roles::room_resource("room-a"),
+            roles::workspace_resource("room-a"),
             KindSet::ALL,
             Answer::Allow,
             Subject::person("person-a"),

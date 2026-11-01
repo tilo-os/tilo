@@ -109,13 +109,13 @@ fn run<S: RuntimeServices>() -> io::Result<()> {
         daemon::Mode::Join { invitation } => daemon::join(&args.profile, &invitation),
         daemon::Mode::RunApp {
             app_id,
-            room,
+            workspace,
             executable,
             args: app_args,
         } => daemon::run_app(
             &args.profile,
             &app_id,
-            room.as_deref(),
+            workspace.as_deref(),
             &executable,
             &app_args,
         ),
@@ -141,7 +141,7 @@ pub(crate) fn owner_action<S: RuntimeServices>(
     let request: InvokeRequest = serde_json::from_str(json).map_err(io::Error::other)?;
     let session = S::start_reporting(profile, &mut |_| {})?;
     let host = session.action_host()?;
-    let caller = Caller::local_person(session.actor()).in_room(session.room());
+    let caller = Caller::local_person(session.actor()).in_workspace(session.workspace());
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     let _entered = runtime.handle().enter();
     let timeout = std::time::Duration::from_secs(125);

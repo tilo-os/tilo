@@ -31,8 +31,8 @@ async fn interrupted_publication_is_durably_spent_and_does_not_release_legacy_ro
     let hash = source.store(&old, b"keep me".to_vec()).await.unwrap();
     let request = LegacyImportRequest {
         source_store: "host".into(),
-        source_room: "old".into(),
-        destination_room: "new".into(),
+        source_workspace: "old".into(),
+        destination_workspace: "new".into(),
         hashes: vec![hash.to_hex()],
         max_bytes: 7,
     };

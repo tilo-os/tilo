@@ -31,7 +31,7 @@ pub(super) struct DesktopControlChip {
 
 /// The bar's "Dev build by …" mark: the windows running a developer's own
 /// build of their app, which the room they are in runs, by who installed
-/// it there. Only a label: what the build is, the room says.
+/// it there. Only a label: what the build is, the workspace says.
 #[derive(Debug, Default)]
 pub(super) struct DevBuildChip {
     installers: std::collections::HashMap<u64, String>,

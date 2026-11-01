@@ -193,6 +193,17 @@ impl NotificationHost for NoticeState {
                 notification: Box::new(notification),
                 action: Some(key.to_owned()),
             });
+            return;
+        }
+        // A retained row's action answers its sender the same way, and the
+        // row leaves the centre: the person has dealt with it.
+        let retained = self.log.borrow_mut().take_history(id);
+        if let Some(notification) = retained {
+            self.outcome(NotificationOutcome::Activated {
+                notification: Box::new(notification),
+                action: Some(key.to_owned()),
+            });
+            self.touch();
         }
     }
 }
@@ -1564,6 +1575,27 @@ mod tests {
             [NotificationOutcome::Activated { action: Some(action), .. }]
                 if action == "host:keep-identity"
         ));
+    }
+
+    #[test]
+    fn a_retained_rows_action_answers_its_sender_and_leaves_the_centre() {
+        let notifications = DesktopNotifications::default();
+        let ask = notifications.post(ask());
+        notifications.host().invoke_action(ask, "not-now");
+        let tea = notifications.post(Notification::new("Tea", "Ready"));
+        notifications.host().dismiss(tea);
+        notifications.take_outcomes();
+        assert_eq!(notifications.counts(), (0, 2));
+        notifications
+            .host()
+            .invoke_action(ask, "host:keep-identity");
+        assert!(matches!(
+            &notifications.take_outcomes()[..],
+            [NotificationOutcome::Activated { action: Some(action), .. }]
+                if action == "host:keep-identity"
+        ));
+        let left: Vec<u64> = notifications.log().history().iter().map(|n| n.id).collect();
+        assert_eq!(left, [tea], "the answered row is gone, the other stays");
     }
 
     #[test]

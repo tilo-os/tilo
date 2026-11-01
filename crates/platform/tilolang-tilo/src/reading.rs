@@ -4,7 +4,7 @@
 //! rich text becomes plain text here (what names a resource, what search finds and shows, a
 //! row's excerpt, what an agent reads) each reference is read for the reader instead
 //! ([`tilolang_runtime::rich::Reading`]): a resource they hold by what it is called now, one
-//! they do not hold as only being there, in the chip's wording. A room's store holds only the
+//! they do not hold as only being there, in the chip's wording. A workspace's store holds only the
 //! records its reader was sent, so what the store holds is what they may read.
 //!
 //! The store ([`crate::store::TiloStore`]) and a snapshot of it read rich text this one way

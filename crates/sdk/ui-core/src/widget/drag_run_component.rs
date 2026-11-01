@@ -127,7 +127,10 @@ impl Described for DragRun {
             let view = body
                 .into_iter()
                 .next()
-                .unwrap_or_else(|| Box::new(crate::widget::Spacer::fixed(0.0)));
+                // An item with no view of its own takes no room.
+                .unwrap_or_else(|| {
+                    Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0))
+                });
             activates.push((key.clone(), activate));
             run = run.push(RunItem {
                 key,

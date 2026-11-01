@@ -89,6 +89,12 @@ session-display-builtin = Eingebauter Bildschirm
 session-clipboard = Zwischenablage
 session-clipboard-paste-files = Dateien hier einfügen
 session-param-paste-destination = Der Ordner, in den die kopierten Dateien eingefügt werden
+session-devices = Geräte
+session-notifications = Benachrichtigungszentrum
+session-notifications-dismiss = Die Benachrichtigung verwerfen
+session-notifications-act = Die Aktion der Benachrichtigung ausführen
+session-notifications-clear = Das Benachrichtigungszentrum leeren
+session-notifications-undo-clear = Die verworfenen Benachrichtigungen zurückholen
 session-apps = Apps
 session-apps-uninstall = Eine App deinstallieren
 session-param-app = Der Name der App
@@ -129,3 +135,15 @@ device-wake-failed-body = In seinem Netzwerk konnte kein Aufwecksignal gesendet 
 ## Was ein Screenreader über einen Zeiger sagt: wem er gehört und über
 ## welchem Fenster er steht.
 people-pointer-where = { $who } ist in { $where }
+
+## Was die Statusanzeige über die Maschine in einer Zeile sagt, für einen
+## Reader, der sie hört statt ihre Symbole zu sehen.
+status-battery = Akku { $percent } %
+status-battery-charging = Akku { $percent } %, wird geladen
+status-muted = Stummgeschaltet
+status-offline = Offline
+status-volume = Lautstärke { $percent } %
+status-wifi = WLAN
+status-wifi-named = WLAN: { $name }
+status-wired = Kabelgebunden
+status-wired-named = Kabelgebunden: { $name }

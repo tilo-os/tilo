@@ -1,7 +1,7 @@
-//! One current-member algorithm over actual admitted room data.
+//! One current-member algorithm over actual admitted workspace data.
 use super::{GovernedIdentity, PeerCore, Role, SystemTime};
-use crate::room::key_hex::KeyHex;
 use crate::state::MembershipError;
+use crate::workspace::key_hex::KeyHex;
 use std::collections::BTreeMap;
 use tilo_action_policy::{Bound, Grant, Subject};
 use tilo_workspace_join::delegation::Delegate;
@@ -11,15 +11,15 @@ trait Policy {
     fn members(&self) -> &BTreeMap<String, Role>;
     fn grants(&self) -> &[Grant];
     fn identity(&self) -> &GovernedIdentity;
-    /// The role `person` acts with in `room`: none for a stranger or a
+    /// The role `person` acts with in `workspace`: none for a stranger or a
     /// blocked member.
-    fn role(&self, room: &str, person: &str) -> Option<Role> {
+    fn role(&self, workspace: &str, person: &str) -> Option<Role> {
         if self.owner() == Some(person) {
             return Some(Role::Owner);
         }
         let role = self.members().get(person).copied()?;
         let subject = Subject::Person(person.to_owned());
-        let node = tilo_action_policy::TreePath::room(room);
+        let node = tilo_action_policy::TreePath::workspace(workspace);
         let blocked = self.grants().iter().any(|grant| {
             grant.subject == subject
                 && grant.node == node
@@ -43,11 +43,11 @@ fn current<'peer, P: Policy>(
     let cert = peer
         .certificate_typed(source, now)
         .map_err(MembershipError::from)?;
-    let room = peer
-        .room_doc
+    let workspace = peer
+        .workspace_doc
         .as_ref()
         .ok_or(MembershipError::GovernanceMissing)?;
-    let policy = collect(room)?;
+    let policy = collect(workspace)?;
     let identity = policy.identity();
     if identity.device_cert != *cert {
         return Err(MembershipError::CertificateMismatch);
@@ -67,22 +67,24 @@ fn current<'peer, P: Policy>(
         return Err(MembershipError::Revoked);
     }
     identity
-        .delegate_acting(&peer.room, crate::state::now_ns(now))
+        .delegate_acting(&peer.workspace, crate::state::now_ns(now))
         .map_err(MembershipError::Delegate)?;
     let person = key_text(&cert.user_public_key);
     let role = policy
-        .role(&peer.room, person.as_str())
+        .role(&peer.workspace, person.as_str())
         .ok_or(MembershipError::NoMembership)?;
     // A delegate acts with its person's authority bounded by its own: an
-    // agent by the agent preset, a bot by its derived grant in the room's
-    // policy. Neither governs the room, and neither rises above an Editor.
+    // agent by the agent preset, a bot by its derived grant in the workspace's
+    // policy. Neither governs the workspace, and neither rises above an Editor.
     let delegate = identity
         .delegate
         .as_ref()
         .map(|row| match &row.delegation.delegate {
-            Delegate::Agent { agent_id } => {
-                tilo_action_policy::roles::agent_delegation(&peer.room, agent_id, person.as_str())
-            }
+            Delegate::Agent { agent_id } => tilo_action_policy::roles::agent_delegation(
+                &peer.workspace,
+                agent_id,
+                person.as_str(),
+            ),
             Delegate::Bot { installation } => tilo_action_policy::bot::bound(installation),
         });
     let role = if delegate.is_some() {
@@ -121,11 +123,11 @@ pub(in crate::state) fn legacy(
     source: &[u8; 32],
     now: SystemTime,
 ) -> Result<(Role, Option<Bound>), MembershipError> {
-    current(peer, source, now, |room| {
-        let data = room.policy();
+    current(peer, source, now, |workspace| {
+        let data = workspace.policy();
         let key = key_text(source);
         // Decoded once per document state, not on every lookup.
-        let identity = room
+        let identity = workspace
             .identities()
             .get(key.as_str())
             .ok_or(MembershipError::Absent)?

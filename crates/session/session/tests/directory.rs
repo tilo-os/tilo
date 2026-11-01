@@ -111,9 +111,9 @@ fn open_directory(session: &mut Session) {
         .invoke(CHROME_RESOURCE, "join-workspace", &serde_json::Map::new())
         .expect("the session opens the directory");
     session.step(Duration::from_millis(1)).unwrap();
-    let deadline = std::time::Instant::now()
-        .checked_add(Duration::from_secs(20))
-        .expect("a deadline");
+    // The site's directories are answered by other runtimes, and a busy
+    // machine takes as long at that as the suite allows, not a second count.
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let standing = session
             .workspace_directory()
@@ -368,9 +368,9 @@ fn ask_to_join(session: &mut Session, key: &str) {
 /// Run the session until `done` holds, or fail saying what never happened.
 #[track_caller]
 fn wait_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool) {
-    let deadline = std::time::Instant::now()
-        .checked_add(Duration::from_secs(20))
-        .expect("a deadline");
+    // What this waits for is other runtimes' work (the site's answer, the
+    // record arriving), so the bound is the suite's, not a second count.
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         session.step(Duration::from_millis(10)).unwrap();
         if done(session) {
@@ -967,9 +967,9 @@ impl LoungeHost {
         }
         // The line is the lounge's before anyone joins: the test proves a
         // join brings it, not that a write lands.
-        let deadline = std::time::Instant::now()
-            .checked_add(Duration::from_secs(60))
-            .expect("a deadline");
+        // The page's writes reach the host through other runtimes' work, so the
+        // bound is the suite's, not a second count.
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             for event in page.drain() {
                 if let PeerEvent::CompactionRequested {
@@ -1141,18 +1141,7 @@ fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
         "the lounge's workspace is listed to join"
     );
     ask_to_join(&mut session, &lounge.room);
-    wait_until(
-        &mut session,
-        "the lounge's workspace is held here",
-        |session| {
-            session.held_rooms().iter().any(|room| room == &lounge.room)
-                && session.people(&lounge.room).is_ok_and(|people| {
-                    people
-                        .iter()
-                        .any(|member| member.person == hex::encode(person))
-                })
-        },
-    );
+    wait_until_the_lounge_is_here(&mut session, &lounge);
     let people = session
         .people(&lounge.room)
         .expect("the lounge's people are known here");
@@ -1268,14 +1257,33 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
 fn join_the_lounge(session: &mut Session, lounge: &Lounge) {
     open_directory(session);
     ask_to_join(session, &lounge.room);
-    wait_until(session, "the lounge's workspace is held here", |session| {
-        session.held_rooms().iter().any(|room| room == &lounge.room)
-            && session.people(&lounge.room).is_ok_and(|people| {
+    wait_until_the_lounge_is_here(session, lounge);
+}
+
+/// Wait until the lounge's room and its people reached this computer, saying
+/// which of the two is still missing when they do not.
+fn wait_until_the_lounge_is_here(session: &mut Session, lounge: &Lounge) {
+    // The join is the site's door, the room's keys and its roster arriving
+    // from other runtimes, so the bound is the suite's, not a second count.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        session.step(Duration::from_millis(10)).unwrap();
+        let held = session.held_rooms();
+        let people = session.people(&lounge.room);
+        if held.iter().any(|room| room == &lounge.room)
+            && people.as_ref().is_ok_and(|people| {
                 people
                     .iter()
                     .any(|member| member.person == hex::encode(lounge.person))
             })
-    });
+        {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the lounge's workspace is held here: held {held:?}, people {people:?}"
+        );
+    }
 }
 
 /// The line the lounge's chat holds here, as the person reads it: `None`

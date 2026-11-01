@@ -7,7 +7,7 @@ fn admitted_runtime_factory_preserves_exact_caller_and_ignores_client_identity_l
     let actor = "04".repeat(32);
     let endpoint = Arc::new(Endpoint::new(
         host.clone(),
-        "room".into(),
+        "workspace".into(),
         actor,
         Some("secret".into()),
         None,
@@ -17,7 +17,7 @@ fn admitted_runtime_factory_preserves_exact_caller_and_ignores_client_identity_l
     endpoint
         .serve_sessions(Arc::new(move || {
             let caller = Caller::authenticated([4; 32], [5; 32])
-                .in_room("room")
+                .in_workspace("workspace")
                 .in_new_execution();
             seen.lock().unwrap().push(caller.clone());
             McpServer::admitted(host.clone(), caller)
@@ -51,7 +51,7 @@ fn admitted_runtime_factory_failure_or_wrong_audience_never_falls_back_to_keyles
         let called = host.callers.clone();
         let endpoint = Arc::new(Endpoint::new(
             host.clone(),
-            "room".into(),
+            "workspace".into(),
             "04".repeat(32),
             Some("secret".into()),
             None,
@@ -64,7 +64,7 @@ fn admitted_runtime_factory_failure_or_wrong_audience_never_falls_back_to_keyles
                 McpServer::admitted(
                     host.clone(),
                     Caller::authenticated([4; 32], [5; 32])
-                        .in_room("other-room")
+                        .in_workspace("other-workspace")
                         .in_new_execution(),
                 )
             }))
@@ -87,14 +87,14 @@ fn admitted_runtime_factory_failure_or_wrong_audience_never_falls_back_to_keyles
 
 /// A desktop's agent door serves each connection as the agent the person
 /// admitted, acting for that person, never as the person: every call reaches the host as that agent,
-/// confined to the admitted room, in a fresh execution per connection, and
+/// confined to the admitted workspace, in a fresh execution per connection, and
 /// an agent session is offered no pixel tools.
 #[test]
 fn an_agent_session_acts_as_its_admitted_agent_in_its_own_execution() {
     let host = StubHost::default();
     let callers = host.callers.clone();
-    let first = McpServer::for_agent(host.clone(), "room".into(), "claude-terminal", "ada");
-    let second = McpServer::for_agent(host, "room".into(), "claude-terminal", "ada");
+    let first = McpServer::for_agent(host.clone(), "workspace".into(), "claude-terminal", "ada");
+    let second = McpServer::for_agent(host, "workspace".into(), "claude-terminal", "ada");
     let call = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tilo_do","arguments":{"path":"test/Note#apply"}}});
     run(async {
         for server in [&first, &second] {
@@ -131,7 +131,7 @@ fn an_agent_session_acts_as_its_admitted_agent_in_its_own_execution() {
             caller.principal(),
             &tilo_actions::remote::CallerPrincipal::Agent("claude-terminal".into())
         );
-        assert_eq!(caller.room(), Some("room"));
+        assert_eq!(caller.room(), Some("workspace"));
         assert!(caller.execution_is_live());
         // It acts for the person who admitted it, as a member: the agent stays
         // the principal and carries no device delegation of the person's.
@@ -143,6 +143,6 @@ fn an_agent_session_acts_as_its_admitted_agent_in_its_own_execution() {
         callers.last().map(Caller::execution_id)
     );
     drop(callers);
-    assert!(first.audience_matches("room", "agent:claude-terminal"));
+    assert!(first.audience_matches("workspace", "agent:claude-terminal"));
     drop(first);
 }

@@ -45,7 +45,7 @@ pub(crate) struct LayoutJudge {
     room: String,
     decides: bool,
     /// The room's policy, once its governance is here.
-    policy: Option<tilo_action_policy::RoomPolicy>,
+    policy: Option<tilo_action_policy::WorkspacePolicy>,
     members: Option<BTreeSet<String>>,
     /// The person each device the room knows acts for.
     persons: HashMap<[u8; 32], String>,
@@ -143,7 +143,7 @@ impl WorkspaceTree {
             .iter()
             .map(super::Workspace::room)
             .filter(|room| {
-                !room.is_nil() && !super::is_local_person_room(*room) && self.holds_room(*room)
+                !room.is_nil() && !super::is_local_personal_cluster(*room) && self.holds_room(*room)
             })
             .collect()
     }

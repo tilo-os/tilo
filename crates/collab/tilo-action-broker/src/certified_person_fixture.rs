@@ -6,28 +6,28 @@ pub struct CertifiedPersonFixture {
     pub context: CertifiedPersonContext,
     pub caller: tilo_actions::remote::Caller,
     pub host: tilo_identity_host::custody::HostIdentity,
-    pub origin: crate::peer_actions::PolicyOrigin,
+    pub origin: crate::policy_clock::PolicyOrigin,
     pub current: Arc<std::sync::atomic::AtomicBool>,
     _evidence_env: tilo_test_env::ScopedEnv,
     _evidence_home: tilo_test_env::TestHome,
 }
 struct FixturePersonAuthority {
     certificate: tilo_user_identity::DeviceCert,
-    room: uuid::Uuid,
-    time: crate::peer_actions::PolicyTime,
+    workspace: uuid::Uuid,
+    time: crate::policy_clock::PolicyTime,
     current: Arc<std::sync::atomic::AtomicBool>,
 }
-impl crate::peer_actions::CertificateAuthority for FixturePersonAuthority {
-    fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
+impl crate::certificate_authority::CertificateAuthority for FixturePersonAuthority {
+    fn policy_time(&self) -> Result<Option<crate::policy_clock::PolicyTime>, String> {
         Ok(Some(self.time.clone()))
     }
     fn authorize(
         &self,
-        room: uuid::Uuid,
+        workspace: uuid::Uuid,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
         if self.current.load(Ordering::Acquire)
-            && room == self.room
+            && workspace == self.workspace
             && certificate == &self.certificate
         {
             Ok(())
@@ -62,7 +62,7 @@ pub fn certified_person_fixture_for_seeds(
     .unwrap();
     let root = ed25519_dalek::SigningKey::from_bytes(&[root_seed; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[device_seed; 32]);
-    let clock = crate::peer_actions::OwnerPolicyClock::new().unwrap();
+    let clock = crate::policy_clock::OwnerPolicyClock::new().unwrap();
     let origin = clock.new_origin();
     let mut certificate = tilo_user_identity::DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
@@ -74,11 +74,11 @@ pub fn certified_person_fixture_for_seeds(
         signature: [0; 64],
     };
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
-    let room = collab_types::person_room(&certificate.user_public_key);
+    let workspace_id = collab_types::personal_cluster(&certificate.user_public_key);
     let mut workspace = crate::test_support::Workspace::in_room(
         crate::test_support::WorkspaceId(71),
-        tilo_desktop_model::RoomId::parse(&room.to_string()).unwrap(),
-        "Synthetic personal room",
+        tilo_desktop_model::RoomId::parse(&workspace_id.to_string()).unwrap(),
+        "Synthetic personal cluster",
     );
     workspace.set_owner(hex::encode(certificate.user_public_key));
     let mut tree = crate::test_support::WorkspaceTree::default();
@@ -99,7 +99,7 @@ pub fn certified_person_fixture_for_seeds(
             .certificate_authority
             .set(Arc::new(FixturePersonAuthority {
                 certificate: certificate.clone(),
-                room,
+                workspace: workspace_id,
                 time: origin.capture().unwrap(),
                 current: current.clone(),
             }))
@@ -109,14 +109,14 @@ pub fn certified_person_fixture_for_seeds(
         certificate.user_public_key,
         certificate.device_public_key,
     )
-    .in_room(room.to_string())
+    .in_workspace(workspace_id.to_string())
     .in_new_execution();
     let presentation = runtime_collab::CertifiedJoinIdentity {
-        workspace_id: room.to_string(),
+        workspace_id: workspace_id.to_string(),
         device_certificate: serde_json::to_vec(&certificate).unwrap(),
         proof: ed25519_dalek::Signer::sign(
             &device,
-            &runtime_identity::collaboration_join_signing_bytes(&room.to_string()),
+            &runtime_identity::collaboration_join_signing_bytes(&workspace_id.to_string()),
         )
         .to_bytes()
         .to_vec(),

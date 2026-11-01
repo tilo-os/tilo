@@ -899,13 +899,13 @@ mod tests {
 
     #[test]
     fn the_workspace_temperature_tints_a_chromatic_palette_until_accessibility() {
-        let in_warm_room = WindowAppearance {
+        let warm_window = WindowAppearance {
             workspace_hue: Some(40.0),
             your_colour: None,
             corner_radius: None,
         };
         let warm = resolve_theme_layers(&ThemeLayerStack {
-            window: in_warm_room,
+            window: warm_window,
             ..light_stack()
         });
         assert_eq!(warm.name, Theme::light().name);
@@ -917,23 +917,23 @@ mod tests {
         assert!(audit(&warm.tokens.colors).is_empty());
 
         let neutral = resolve_theme_layers(&ThemeLayerStack {
-            window: in_warm_room,
+            window: warm_window,
             ..ThemeLayerStack::default()
         });
-        // The stock dark material takes the room's hue at its own lightness
+        // The stock dark material takes the workspace's hue at its own lightness
         // and chroma (design language, "Workspace temperature").
-        let (room, stock) = (
+        let (tinted, stock) = (
             crate::color::Oklch::from_color(neutral.tokens.colors.surfaces.content),
             crate::color::Oklch::from_color(Theme::dark().tokens.colors.surfaces.content),
         );
         assert!(
-            (room.l - stock.l).abs() <= 0.005,
+            (tinted.l - stock.l).abs() <= 0.005,
             "the temperature moves no lightness"
         );
-        assert!(room.c <= 0.014, "nor adds chroma: {}", room.c);
+        assert!(tinted.c <= 0.014, "nor adds chroma: {}", tinted.c);
 
         let forced = resolve_theme_layers(&ThemeLayerStack {
-            window: in_warm_room,
+            window: warm_window,
             accessibility: AccessibilityLayer {
                 high_contrast: true,
                 ..AccessibilityLayer::default()

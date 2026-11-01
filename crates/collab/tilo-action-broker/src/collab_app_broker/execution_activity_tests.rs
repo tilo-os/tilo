@@ -37,8 +37,8 @@ fn fixture_with(
     fixture_granting(tags, params, |_| Vec::new())
 }
 
-/// [`fixture_tagged`], the action taking `params`, the room holding the
-/// grants `grants` gives for its room.
+/// [`fixture_tagged`], the action taking `params`, the workspace holding the
+/// grants `grants` gives for its workspace.
 fn fixture_granting(
     tags: Vec<String>,
     params: Vec<tilo_actions::ActionParam>,
@@ -50,8 +50,8 @@ fn fixture_granting(
 ) {
     let mut workspace = Workspace::new(WorkspaceId(52), "Synthetic execution presence");
     workspace.set_owner("a1".repeat(32));
-    let room = workspace.room().to_string();
-    workspace.policy.grants.extend(grants(&room));
+    let workspace_id = workspace.room().to_string();
+    workspace.policy.grants.extend(grants(&workspace_id));
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
@@ -63,7 +63,7 @@ fn fixture_granting(
         app_id: "so.tilo.test".into(),
         route: CrdtRoute {
             app_id: "so.tilo.test".into(),
-            cluster_id: room.clone(),
+            cluster_id: workspace_id.clone(),
             record_id: "record-a".into(),
         },
         actions: vec![PublishedAction {
@@ -98,7 +98,7 @@ fn fixture_granting(
         .unwrap()
         .insert(7);
     let caller = Caller::local_person("a1".repeat(32))
-        .in_room(room)
+        .in_workspace(workspace_id)
         .in_new_execution();
     (state, caller, receiver)
 }
@@ -230,9 +230,9 @@ async fn an_untrusted_contract_marks_every_observation_of_its_invocation() {
 #[test]
 fn an_attended_action_waits_for_the_persons_confirmation_before_an_agent_runs_it() {
     let (state, person, mut app) = fixture_tagged(vec![tilo_actions::ATTENDED_TAG.to_owned()]);
-    let room = person.room().unwrap().to_owned();
+    let workspace = person.room().unwrap().to_owned();
     let agent = Caller::local_person("a1".repeat(32))
-        .in_room(room)
+        .in_workspace(workspace)
         .in_new_execution()
         .delegated_to("scribe");
     let asked = state
@@ -291,7 +291,7 @@ async fn an_agents_ask_shows_its_person_the_draft_of_what_would_run() {
     let (sheet, mut asked) = tokio::sync::mpsc::unbounded_channel();
     state.set_app_action_consent(Arc::new(Sheet(sheet)));
     let agent = Caller::local_person("a1".repeat(32))
-        .in_room(person.room().unwrap().to_owned())
+        .in_workspace(person.room().unwrap().to_owned())
         .in_new_execution()
         .delegated_to("scribe");
     let mut invoke = request();
@@ -351,7 +351,7 @@ fn ask_to_update(
     let (sheet, asked) = tokio::sync::mpsc::unbounded_channel();
     state.set_app_action_consent(Arc::new(Sheet(sheet)));
     let agent = Caller::local_person("a1".repeat(32))
-        .in_room(person.room().unwrap().to_owned())
+        .in_workspace(person.room().unwrap().to_owned())
         .in_new_execution()
         .delegated_to("scribe");
     let mut invoke = request();
@@ -571,7 +571,7 @@ async fn wrong_peer_stale_progress_and_post_terminal_updates_emit_nothing() {
 #[test]
 fn actions_without_a_host_minted_run_do_not_invent_execution_presence() {
     let (state, caller, mut app) = fixture();
-    let ordinary = Caller::local_person("a1".repeat(32)).in_room(caller.room().unwrap());
+    let ordinary = Caller::local_person("a1".repeat(32)).in_workspace(caller.room().unwrap());
     let mut events = state.subscribe_execution_activity();
     assert!(matches!(
         state
@@ -828,7 +828,7 @@ async fn failed_terminal_journal_barrier_cannot_publish_success() {
         let mut registry = state.pending_invocations.lock().unwrap();
         let pending = registry.get_mut(&delivered.id).unwrap();
         let key = InvocationKey {
-            room: pending.cluster_id.clone(),
+            workspace: pending.cluster_id.clone(),
             host: journal.host(),
             invocation: delivered.invocation,
             owner: pending.owner.clone(),
@@ -881,7 +881,7 @@ fn continuation_fixture() -> (
     use crate::test_support::{Grants as _, KindSet, Role, Subject, TreePath};
     let mut workspace = Workspace::new(WorkspaceId(53), "Effect continuation");
     workspace.set_owner("a1".repeat(32));
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
     workspace.admit_agent("scribe", KindSet::READ);
     workspace.allow_app(Subject::agent("scribe"), "so.tilo.test", KindSet::ALL);
     workspace.admit("b2".repeat(32), Role::Editor);
@@ -926,7 +926,7 @@ fn continuation_fixture() -> (
         app_id: "so.tilo.test".into(),
         route: CrdtRoute {
             app_id: "so.tilo.test".into(),
-            cluster_id: room.clone(),
+            cluster_id: workspace_id.clone(),
             record_id: "record-a".into(),
         },
         actions: vec![
@@ -937,7 +937,7 @@ fn continuation_fixture() -> (
         live: true,
     }]);
     let app = state.capture_invocations_for_test(7);
-    let agent = Caller::local_agent("scribe").in_room(room);
+    let agent = Caller::local_agent("scribe").in_workspace(workspace_id);
     (state, agent, app)
 }
 
@@ -992,7 +992,8 @@ async fn an_effects_edit_is_admitted_for_its_invoker_with_their_grants() {
         "the denied edit was refused"
     );
     assert!(app.try_recv().is_err(), "the denied edit reaches no app");
-    let owner = Caller::local_person("a1".repeat(32)).in_room(continued.room().unwrap().to_owned());
+    let owner =
+        Caller::local_person("a1".repeat(32)).in_workspace(continued.room().unwrap().to_owned());
     assert!(matches!(
         state
             .action_invoke(&owner, Some(7), None, &invoke("erase"))
@@ -1024,7 +1025,7 @@ async fn an_effects_edit_is_admitted_for_its_invoker_with_their_grants() {
 #[test]
 fn an_invocation_id_two_callers_share_continues_neither() {
     let (state, agent, _app) = continuation_fixture();
-    let room = agent.room().unwrap().to_owned();
+    let workspace = agent.room().unwrap().to_owned();
     let other = "b2".repeat(32);
     state
         .stable_invocation_subscribers
@@ -1034,7 +1035,7 @@ fn an_invocation_id_two_callers_share_continues_neither() {
     let shared = tilo_actions::InvocationId::new();
     let start = |person: &str| {
         let caller = Caller::local_person(person)
-            .in_room(room.clone())
+            .in_workspace(workspace.clone())
             .in_new_execution();
         state
             .start_invocation_confirmed_for_origin(
@@ -1160,7 +1161,7 @@ fn retired_execution_cannot_query_observe_or_cancel_but_legacy_callers_can() {
         "retirement and refused cancellation must not cancel an admitted job"
     );
 
-    let legacy = Caller::local_person("a1".repeat(32)).in_room(caller.room().unwrap());
+    let legacy = Caller::local_person("a1".repeat(32)).in_workspace(caller.room().unwrap());
     legacy.retire_execution();
     assert!(matches!(
         state
@@ -1271,7 +1272,7 @@ fn export_shortcut() -> tilo_automation::Shortcut {
         output: None,
         grant: vec![policy::Rule::new(
             policy::TreePath::root()
-                .any(policy::Level::Room)
+                .any(policy::Level::Workspace)
                 .app("so.tilo.test"),
             policy::KindSet::ALL,
             policy::Answer::Allow,
@@ -1431,7 +1432,7 @@ async fn retiring_a_run_clears_only_its_presence_without_cancelling_work() {
 }
 
 /// What the broker answers agent `scribe`'s change through `door` (the
-/// caller it is in the room) when its person's answer for the app's changes
+/// caller it is in the workspace) when its person's answer for the app's changes
 /// is `answer`, and whether the app heard of it.
 fn agent_answered(
     answer: tilo_action_policy::Answer,
@@ -1442,11 +1443,11 @@ fn agent_answered(
 ) {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
     let person = tilo_action_policy::Subject::person("a1".repeat(32));
-    let (state, person_caller, mut app) = fixture_granting(Vec::new(), Vec::new(), |room| {
+    let (state, person_caller, mut app) = fixture_granting(Vec::new(), Vec::new(), |workspace| {
         let mut grants =
-            tilo_action_policy::roles::AgentPreset::Operator.grants(room, "scribe", &person);
+            tilo_action_policy::roles::AgentPreset::Operator.grants(workspace, "scribe", &person);
         grants.push(agent_answers::grant(
-            room,
+            workspace,
             "scribe",
             (
                 &AnswerScope::app("so.tilo.test"),
@@ -1457,9 +1458,12 @@ fn agent_answered(
         ));
         grants
     });
-    let room = person_caller.room().expect("the fixture's room").to_owned();
+    let workspace = person_caller
+        .room()
+        .expect("the fixture's workspace")
+        .to_owned();
     let answered = state
-        .action_invoke(&door(&room), None, None, &request())
+        .action_invoke(&door(&workspace), None, None, &request())
         .poll_ready();
     (answered, app.try_recv().is_ok())
 }
@@ -1469,20 +1473,20 @@ fn agent_answered(
 /// who admitted it, and one the person's own device handed its session.
 fn agent_doors() -> [fn(&str) -> Caller; 3] {
     [
-        |room| {
+        |workspace| {
             Caller::local_agent("scribe")
-                .in_room(room.to_owned())
+                .in_workspace(workspace.to_owned())
                 .in_new_execution()
         },
-        |room| {
+        |workspace| {
             Caller::local_agent("scribe")
                 .acting_for("a1".repeat(32))
-                .in_room(room.to_owned())
+                .in_workspace(workspace.to_owned())
                 .in_new_execution()
         },
-        |room| {
+        |workspace| {
             Caller::local_person("a1".repeat(32))
-                .in_room(room.to_owned())
+                .in_workspace(workspace.to_owned())
                 .in_new_execution()
                 .delegated_to("scribe")
         },
@@ -1537,7 +1541,7 @@ fn an_agents_change_the_person_allowed_runs() {
 }
 
 /// An agent the desktop's door admitted as an observer member acts for the
-/// person who admitted it, yet may do no more than the room grants it: the
+/// person who admitted it, yet may do no more than the workspace grants it: the
 /// owner's authority does not widen it, and it carries none of the
 /// delegation the person's own device gives the agents it hands a session
 /// to. That device-handed session, with the same member grants, does carry
@@ -1546,13 +1550,16 @@ fn an_agents_change_the_person_allowed_runs() {
 fn an_admitted_agent_acting_for_its_person_holds_only_its_own_grants() {
     let owner = "a1".repeat(32);
     let person = tilo_action_policy::Subject::person(owner.clone());
-    let (state, owner_caller, mut app) = fixture_granting(Vec::new(), Vec::new(), |room| {
-        tilo_action_policy::roles::AgentPreset::Observer.grants(room, "scribe", &person)
+    let (state, owner_caller, mut app) = fixture_granting(Vec::new(), Vec::new(), |workspace| {
+        tilo_action_policy::roles::AgentPreset::Observer.grants(workspace, "scribe", &person)
     });
-    let room = owner_caller.room().expect("the fixture's room").to_owned();
+    let workspace = owner_caller
+        .room()
+        .expect("the fixture's workspace")
+        .to_owned();
     let member = Caller::local_agent("scribe")
         .acting_for(owner.clone())
-        .in_room(room.clone())
+        .in_workspace(workspace.clone())
         .in_new_execution();
     assert_eq!(member.acting_for_person(), Some(owner.as_str()));
     assert!(!member.is_session_delegated());
@@ -1569,7 +1576,7 @@ fn an_admitted_agent_acting_for_its_person_holds_only_its_own_grants() {
     assert!(app.try_recv().is_err(), "the app never hears of it");
 
     let handed = Caller::local_person(owner)
-        .in_room(room)
+        .in_workspace(workspace)
         .in_new_execution()
         .delegated_to("scribe");
     assert!(handed.is_session_delegated());
@@ -1590,7 +1597,7 @@ fn an_admitted_agent_acting_for_its_person_holds_only_its_own_grants() {
 #[test]
 fn a_store_disclosure_with_a_malformed_operation_is_refused_with_the_reason() {
     let (state, person, _app) = fixture();
-    let room = person.room().unwrap().to_owned();
+    let workspace = person.room().unwrap().to_owned();
     let mut surfaces = state.published_surfaces();
     let surface = surfaces.first_mut().unwrap();
     surface.app_id = "so.tilo.store".into();
@@ -1600,7 +1607,7 @@ fn a_store_disclosure_with_a_malformed_operation_is_refused_with_the_reason() {
     action.action = "submit-report".into();
     state.replace_published_surfaces_for_test(surfaces);
     let caller = Caller::authenticated([0xa1; 32], [2; 32])
-        .in_room(room)
+        .in_workspace(workspace)
         .in_new_execution();
     let mut invoke = request();
     invoke.target.address = tilo_actions::ActionAddress::new("store:moderation", "submit-report");

@@ -55,50 +55,35 @@ pub(crate) struct NativeOwnerCommitService {
     sealed_writes: Option<SealedWrites>,
     /// The channels a pending read of a sealed record waits on for keys.
     key_watches: Arc<std::sync::Mutex<std::collections::HashSet<collab_types::ChannelId>>>,
-    writes: OwnerWrites,
+    /// The broker's commits into the owner, through this session's tree and
+    /// network ([`NativeOwnerCustody`]).
+    commits: tilo_action_broker::owner_commits::NativeOwnerCommits,
 }
 
 /// The collaboration broker's admitted ops and durable history.
 type SealedWrites = Arc<std::sync::Mutex<tilo_action_broker::collab_core::BrokerChannels>>;
 
-/// Where the owner's commits run. A commit waits for the disk (opening the
-/// owner, the state file's data and directory syncs), which on a loaded disk
-/// takes seconds, and its future is awaited on the broker's single-threaded
-/// loop, which answers every peer action, catalogue and liveness probe. So a
-/// commit runs on a blocking thread instead, and the loop goes on answering
-/// while it waits. Commits still run one at a time, in the order they were
-/// asked for: the turn is held until the write is done, also when the future
-/// awaiting it is dropped (a dropped wait never cancels a started commit).
-#[derive(Clone, Default)]
-struct OwnerWrites(Arc<tokio::sync::Mutex<()>>);
-impl OwnerWrites {
-    async fn run<T: Send + 'static>(
-        self,
-        write: impl FnOnce() -> Result<T, String> + Send + 'static,
-    ) -> Result<T, String> {
-        let turn = self.0.lock_owned().await;
-        tokio::task::spawn_blocking(move || {
-            let written = write();
-            drop(turn);
-            written
-        })
-        .await
-        .map_err(|_| "native owner commit ended without an outcome".to_string())?
-    }
-}
 impl NativeOwnerCommitService {
     pub(crate) fn new(
         tree: WorkspaceTreeHandle,
         network: Option<Arc<super::network::ShellNetwork>>,
     ) -> Self {
+        let owner = owner_source::OwnerSource::new(&tree, network.as_ref());
+        let commits = tilo_action_broker::owner_commits::NativeOwnerCommits::new(Arc::new(
+            NativeOwnerCustody {
+                tree: tree.clone(),
+                owner: owner.clone(),
+                network: network.clone(),
+            },
+        ));
         Self {
-            owner: owner_source::OwnerSource::new(&tree, network.as_ref()),
+            owner,
             tree,
             network,
             history_keys: None,
             sealed_writes: None,
             key_watches: Arc::default(),
-            writes: OwnerWrites::default(),
+            commits,
         }
     }
     /// The owner, waiting for its open: for a worker thread, never the loop.
@@ -118,63 +103,82 @@ impl NativeOwnerCommitService {
     }
 }
 impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
-    fn requires_room(&self, room: &str) -> bool {
-        super::state::RoomId::parse(room)
-            .is_some_and(|room| self.tree.read().commits_native_documents(room))
+    fn requires_workspace(&self, room: &str) -> bool {
+        self.commits.requires_workspace(room)
     }
-    /// A held room's effect receipts are this device's own to record in it,
-    /// whichever model its records follow.
     fn records_effects(&self, room: &str) -> bool {
-        super::state::RoomId::parse(room).is_some_and(|room| self.tree.read().projects_room(room))
+        self.commits.records_effects(room)
     }
     fn health(&self) -> Result<(), String> {
-        self.opened_owner("native durable owner unavailable")?
-            .health()
+        self.commits.health()
     }
     fn commit(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
     ) -> tilo_peer_state::owner_commit::CommitFuture {
-        let owner = self.owner.clone();
-        let network = self.network.clone();
-        let writes = self.writes.clone();
-        Box::pin(writes.run(move || {
-            let owner = owner
-                .resolve()
-                .map_err(|error| format!("native durable owner unavailable: {error}"))?;
-            let room = super::state::RoomId::parse(&request.room).ok_or("invalid native room")?;
-            let now = std::time::SystemTime::now();
-            if !matches!(
-                request.operation,
-                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt { .. }
-            ) {
-                if let Some(network) = network.as_ref() {
-                    network.check_native_custody(&owner, room)?;
-                }
-                return owner.commit_document(request, now);
-            }
-            // A receipt is this device's own, recorded in its person's slice
-            // of the room with its own key and published as its own change.
-            let key = match network.as_ref() {
-                Some(network) => network.native_signing_key_of(&owner, room)?,
-                None => {
-                    tilo_identity_host::broker::trusted_current_device(&request.room)
-                        .map_err(|error| format!("this device's key is unavailable: {error}"))?
-                        .0
-                }
-            };
-            let receipt = owner.commit_effect_receipt(&request, &key, now)?;
-            if let Some(network) = network {
-                network.schedule_native_owner_publication(room);
-            }
-            Ok(receipt)
-        }))
+        self.commits.commit(request)
+    }
+}
+
+/// What the owner's commits ask of this session: its tree says which rooms
+/// it commits, its network holds custody and publishes. Without a network,
+/// the device's own trusted key signs and nothing is published.
+struct NativeOwnerCustody {
+    tree: WorkspaceTreeHandle,
+    owner: owner_source::OwnerSource,
+    network: Option<Arc<super::network::ShellNetwork>>,
+}
+
+impl tilo_action_broker::owner_commits::OwnerCustody for NativeOwnerCustody {
+    fn commits_documents(&self, room: super::state::RoomId) -> bool {
+        self.tree.read().commits_native_documents(room)
+    }
+    fn projects_room(&self, room: super::state::RoomId) -> bool {
+        self.tree.read().projects_room(room)
+    }
+    fn opened_owner(
+        &self,
+        unavailable: &str,
+    ) -> Result<super::native_workspace_owner::NativeWorkspaceOwner, String> {
+        self.owner.opened(unavailable)
+    }
+    fn resolve_owner(&self) -> Result<super::native_workspace_owner::NativeWorkspaceOwner, String> {
+        self.owner.resolve()
+    }
+    fn check_custody(
+        &self,
+        owner: &super::native_workspace_owner::NativeWorkspaceOwner,
+        room: super::state::RoomId,
+    ) -> Result<(), String> {
+        match self.network.as_ref() {
+            Some(network) => network.check_native_custody(owner, room),
+            None => Ok(()),
+        }
+    }
+    fn signing_key(
+        &self,
+        owner: &super::native_workspace_owner::NativeWorkspaceOwner,
+        room: super::state::RoomId,
+    ) -> Result<ed25519_dalek::SigningKey, String> {
+        match self.network.as_ref() {
+            Some(network) => network.native_signing_key_of(owner, room),
+            None => Ok(
+                tilo_identity_host::broker::trusted_current_device(&room.to_string())
+                    .map_err(|error| format!("this device's key is unavailable: {error}"))?
+                    .0,
+            ),
+        }
+    }
+    fn schedule_publication(&self, room: super::state::RoomId) {
+        if let Some(network) = self.network.as_ref() {
+            network.schedule_native_owner_publication(room);
+        }
     }
 }
 
 impl NativeOwnerCommitService {
-    /// The rooms' status, as this service's tree and network tell it.
-    fn rooms(&self) -> RoomStatusSource {
+    /// The workspaces' status, as this service's tree and network tell it.
+    fn workspaces(&self) -> RoomStatusSource {
         RoomStatusSource::new(self.tree.clone(), self.network.clone())
     }
 }
@@ -206,7 +210,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             .map_err(|error| format!("checkpoint governor custody unavailable: {error}"))?;
         let now = std::time::SystemTime::now();
         owner.with_current(room_id, |view| {
-            if !view.hosted_here() || view.room_host() != &governor {
+            if !view.hosted_here() || view.workspace_host() != &governor {
                 return Err("checkpoint governor custody changed".into());
             }
             view.peer().workspace().check_checkpoint_writer(&key, now)?;
@@ -233,7 +237,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 .map_err(|error| format!("native checkpoint governor unavailable: {error}"))?;
             owner.health()?;
             let room =
-                super::state::RoomId::parse(&request.room).ok_or("invalid checkpoint room")?;
+                super::state::RoomId::parse(&request.workspace).ok_or("invalid checkpoint room")?;
             if let Some(network) = network.as_ref() {
                 network.check_native_custody(&owner, room)?;
                 if network.governed_elsewhere(room) {
@@ -246,10 +250,11 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 }
                 Ok(())
             })?;
-            let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
-                .map_err(|error| format!("checkpoint governor custody unavailable: {error}"))?;
+            let (key, governor) =
+                tilo_identity_host::broker::trusted_current_device(&request.workspace)
+                    .map_err(|error| format!("checkpoint governor custody unavailable: {error}"))?;
             owner.with_current(room, |view| {
-                if view.room_host() != &governor {
+                if view.workspace_host() != &governor {
                     return Err("checkpoint governor custody changed".into());
                 }
                 Ok(())
@@ -264,24 +269,24 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         })
     }
 
-    fn room_status(&self, room: &str) -> runtime_collab::RoomStatus {
+    fn workspace_status(&self, room: &str) -> runtime_collab::RoomStatus {
         super::state::RoomId::parse(room).map_or_else(runtime_collab::RoomStatus::default, |room| {
-            self.rooms().status(room)
+            self.workspaces().status(room)
         })
     }
 
-    fn room_status_change(
+    fn workspace_status_change(
         &self,
         room: &str,
         seen: runtime_collab::RoomStatus,
-    ) -> tilo_action_broker::services::RoomStatusFuture {
+    ) -> tilo_action_broker::services::WorkspaceStatusFuture {
         match super::state::RoomId::parse(room) {
-            Some(room) => Box::pin(self.rooms().change(room, seen)),
+            Some(room) => Box::pin(self.workspaces().change(room, seen)),
             None => Box::pin(std::future::ready(runtime_collab::RoomStatus::default())),
         }
     }
-    fn requires_room(&self, room: &str) -> bool {
-        tilo_peer_state::owner_commit::OwnerCommitService::requires_room(self, room)
+    fn requires_workspace(&self, workspace: &str) -> bool {
+        tilo_peer_state::owner_commit::OwnerCommitService::requires_workspace(self, workspace)
     }
 
     /// The one app-access decision every opening of an app takes
@@ -368,7 +373,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             let owner = owner
                 .resolve()
                 .map_err(|error| format!("native membership owner unavailable: {error}"))?;
-            let room = super::state::RoomId::parse(&request.room)
+            let room = super::state::RoomId::parse(&request.workspace)
                 .ok_or("invalid native membership room")?;
             if let Some(network) = network.as_ref() {
                 network.check_native_custody(&owner, room)?;
@@ -388,7 +393,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             let key = match network.as_ref() {
                 Some(network) => network.native_signing_key_of(&owner, room)?,
                 None => {
-                    tilo_identity_host::broker::trusted_current_device(&request.room)
+                    tilo_identity_host::broker::trusted_current_device(&request.workspace)
                         .map_err(|error| format!("this device's key is unavailable: {error}"))?
                         .0
                 }
@@ -438,7 +443,7 @@ impl WorkspaceAuthority for NativeWorkspaceAuthority {
             .map(|room| self.0.read().verified_agents(room))
             .unwrap_or_default()
     }
-    fn room_revocations(&self, room: &str) -> Option<tilo_user_identity::RevocationList> {
+    fn workspace_revocations(&self, room: &str) -> Option<tilo_user_identity::RevocationList> {
         super::state::RoomId::parse(room).and_then(|room| self.0.read().room_revocations(room))
     }
 }
@@ -583,7 +588,7 @@ impl tilo_action_broker::services::ContentSink for SessionContentSink {
     }
 }
 
-/// Decide every change this session's rooms receive by its claim against
+/// Decide every change this session's workspaces receive by its claim against
 /// the app surface its op names: the one the installed app ships, or one
 /// read from the session's content store in the record's room and app; name,
 /// in the changes the session signs for an app it hosts, the surface that
@@ -1252,7 +1257,7 @@ impl NativeShortcutLibrary {
         change: tilo_action_broker::automation::ShortcutChange,
     ) -> Result<(), String> {
         use tilo_action_broker::automation::ShortcutChange;
-        use tilo_network_actor::room_governance::trace;
+        use tilo_network_actor::workspace_governance::trace;
         trace::note(|| format!("shortcut commit in {room} by {actor}"));
         let unavailable = tree.read().documents_unavailable(room);
         if let Some(reason) = unavailable {
@@ -1272,7 +1277,7 @@ impl NativeShortcutLibrary {
                 {
                     return Err("a shortcut is saved from its saver's own device".into());
                 }
-                tilo_peer_state::room::sign_saved_shortcut(
+                tilo_peer_state::workspace::sign_saved_shortcut(
                     &room.to_string(),
                     &mut shortcut,
                     &device,
@@ -1286,7 +1291,7 @@ impl NativeShortcutLibrary {
             network.check_native_custody(&owner, room)?;
         }
         let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
-            room: room.to_string(),
+            workspace: room.to_string(),
             operation: tilo_peer_state::owner_commit::CommitOperation::ShortcutChange {
                 invocation: uuid::Uuid::new_v4(),
                 caller: device.clone(),
@@ -1316,7 +1321,7 @@ impl ShortcutLibraryServices for NativeShortcutLibrary {
         let network = self.1.clone();
         Box::pin(async move {
             let room =
-                super::state::RoomId::parse(&request.room).ok_or("invalid workspace room")?;
+                super::state::RoomId::parse(&request.workspace).ok_or("invalid workspace room")?;
             let committed = Self::commit(
                 tree.clone(),
                 network,
@@ -1325,7 +1330,7 @@ impl ShortcutLibraryServices for NativeShortcutLibrary {
                 request.change,
             )
             .await;
-            tilo_network_actor::room_governance::trace::note(|| {
+            tilo_network_actor::workspace_governance::trace::note(|| {
                 format!(
                     "shortcut store {:?} in {room}: {committed:?}",
                     request.invocation
@@ -1460,13 +1465,13 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             .direct_person()
             .ok_or_else(|| "only a person governs a workspace".to_string())?
             .to_owned();
-        let governor = self.governor_of(request.room);
+        let governor = self.governor_of(request.workspace);
         let mut tree = self.0.write();
         let workspace_index = tree
             .desktop
             .workspaces
             .iter()
-            .position(|workspace| workspace.room().to_string() == request.room)
+            .position(|workspace| workspace.room().to_string() == request.workspace)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
         let workspace = tree
             .desktop
@@ -1587,7 +1592,7 @@ fn decode_governance_operation(
 /// given for waits until then ([`super::network::ShellNetwork::put_grant_in_force`]).
 pub struct NativeAppActionGrants {
     tree: WorkspaceTreeHandle,
-    /// The way to the rooms' hosts; without one nothing is granted.
+    /// The way to the workspaces' hosts; without one nothing is granted.
     network: Option<Arc<super::network::ShellNetwork>>,
 }
 
@@ -1616,7 +1621,7 @@ impl NativeAppActionGrants {
             .as_ref()
             .map_or_else(|| label(&request.app_id), |scope| format!("“{scope}”"));
         let context = tilo_desktop_model::grants::app_action_grant_context(
-            &request.room,
+            &request.workspace,
             &grantee,
             &label(&request.target_app),
             &format!("{} · {}", request.resource_label, request.action_label),
@@ -1681,7 +1686,7 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
         grant: tilo_action_policy::Grant,
         answer: tilo_action_broker::app_actions::AppActionConsent,
     ) -> tilo_action_broker::services::GrantRecording {
-        let Some(room) = super::state::RoomId::parse(&request.room) else {
+        let Some(room) = super::state::RoomId::parse(&request.workspace) else {
             return Box::pin(std::future::ready(Err("no such workspace".into())));
         };
         let receipt = Self::receipt(request, answer);
@@ -1821,20 +1826,20 @@ impl ContinuationServices for NativeContinuations {
 /// The native identity selector and fleet remain native service dependencies.
 pub struct NativeCertificates {
     origin: Result<
-        tilo_action_broker::peer_actions::PolicyOrigin,
-        tilo_action_broker::peer_actions::PolicyClockError,
+        tilo_action_broker::policy_clock::PolicyOrigin,
+        tilo_action_broker::policy_clock::PolicyClockError,
     >,
 }
 impl Default for NativeCertificates {
     fn default() -> Self {
         Self {
-            origin: tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+            origin: tilo_action_broker::policy_clock::OwnerPolicyClock::new()
                 .map(|clock| clock.new_origin()),
         }
     }
 }
-impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificates {
-    fn policy_time(&self) -> Result<Option<tilo_action_broker::peer_actions::PolicyTime>, String> {
+impl tilo_action_broker::certificate_authority::CertificateAuthority for NativeCertificates {
+    fn policy_time(&self) -> Result<Option<tilo_action_broker::policy_clock::PolicyTime>, String> {
         self.origin
             .as_ref()
             .map_err(ToString::to_string)?
@@ -1846,7 +1851,7 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificat
         &self,
         room: uuid::Uuid,
         certificate: &tilo_user_identity::DeviceCert,
-        time: &tilo_action_broker::peer_actions::PolicyTime,
+        time: &tilo_action_broker::policy_clock::PolicyTime,
     ) -> Result<(), String> {
         let origin = self.origin.as_ref().map_err(ToString::to_string)?;
         if !origin.owns(time) {
@@ -2079,7 +2084,7 @@ pub fn native_services(
         }),
         nearby_transfer,
         own_device: NativeOwnDevice::service(network.as_ref()),
-        room_nodes: room_nodes::NativeRoomNodes::service(network.as_ref()),
+        workspace_nodes: room_nodes::NativeRoomNodes::service(network.as_ref()),
         workspace_control: network.map(|network| {
             Arc::new(NativeWorkspaceControl(network)) as Arc<dyn WorkspaceControlServices>
         }),
@@ -2317,7 +2322,7 @@ impl WorkspaceControlServices for NativeWorkspaceControl {
             .map_err(|_| "invalid target device identity".to_owned())?;
         let session = self
             .0
-            .open_workspace_control(tilo_network_actor::room_topic_id(room), target)?;
+            .open_workspace_control(tilo_network_actor::workspace_topic_id(room), target)?;
         let initial_route = match session.route() {
             tilo_network_actor::WorkspaceControlRoute::Direct { .. } => {
                 runtime_collab::WorkspaceControlRoute::Direct
@@ -2542,7 +2547,7 @@ mod tests {
 
     #[test]
     fn native_certificate_policy_time_is_retained_and_retires_with_its_service() {
-        use tilo_action_broker::peer_actions::CertificateAuthority;
+        use tilo_action_broker::certificate_authority::CertificateAuthority;
 
         let authority = NativeCertificates::default();
         let first = authority.policy_time().unwrap().unwrap();
@@ -2560,17 +2565,17 @@ mod tests {
 
     #[test]
     fn native_certificate_policy_clock_failure_never_falls_back_to_wall_time() {
-        use tilo_action_broker::peer_actions::CertificateAuthority;
+        use tilo_action_broker::certificate_authority::CertificateAuthority;
 
         let authority = NativeCertificates {
-            origin: Err(tilo_action_broker::peer_actions::PolicyClockError),
+            origin: Err(tilo_action_broker::policy_clock::PolicyClockError),
         };
         assert!(authority.policy_time().is_err());
     }
 
     #[test]
     fn native_certificate_policy_refuses_another_services_retained_origin() {
-        use tilo_action_broker::peer_actions::CertificateAuthority;
+        use tilo_action_broker::certificate_authority::CertificateAuthority;
 
         let authority = NativeCertificates::default();
         let other = NativeCertificates::default();
@@ -2579,7 +2584,7 @@ mod tests {
         let device = ed25519_dalek::SigningKey::from_bytes(&[74; 32]);
         let certificate =
             tilo_peer_state::owner::testing::certificate(&root, &device, "clock test");
-        let room_id = uuid::Uuid::parse_str(tilo_peer_state::owner::testing::ROOM).unwrap();
+        let room_id = uuid::Uuid::parse_str(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
         assert_eq!(
             authority
                 .authorize_with_policy_time(room_id, &certificate, &foreign_time)
@@ -2598,13 +2603,13 @@ mod tests {
 
     #[test]
     fn native_certificate_policy_time_never_replaces_an_unavailable_origin() {
-        use tilo_action_broker::peer_actions::CertificateAuthority as _;
+        use tilo_action_broker::certificate_authority::CertificateAuthority as _;
         let certificates = NativeCertificates {
-            origin: Err(tilo_action_broker::peer_actions::PolicyClockError),
+            origin: Err(tilo_action_broker::policy_clock::PolicyClockError),
         };
         for _ in 0..2 {
             assert!(matches!(certificates.policy_time(), Err(error)
-                if error == tilo_action_broker::peer_actions::PolicyClockError.to_string()));
+                if error == tilo_action_broker::policy_clock::PolicyClockError.to_string()));
         }
         let certificates = NativeCertificates::default();
         let captured = certificates.policy_time().unwrap().unwrap();

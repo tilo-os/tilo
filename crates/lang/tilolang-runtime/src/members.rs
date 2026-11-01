@@ -159,6 +159,11 @@ impl Core {
             }
             Imp::Speakers => {
                 let target = self.ref_arg(a.h(0)?)?;
+                // Who wrote a resource of an app this runtime does not run is in its history,
+                // kept where that app runs: none of it is held here.
+                if crate::foreign::is_foreign(&target.target) {
+                    return self.ret_h(Value::List(Vec::new()));
+                }
                 let said = self
                     .store
                     .borrow()

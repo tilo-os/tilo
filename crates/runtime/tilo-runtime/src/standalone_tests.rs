@@ -49,7 +49,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     );
     let mut workspace = Workspace::in_room(WorkspaceId(41), placed, "Execution isolation");
     workspace.set_owner(actor.clone());
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
     let mut tree = WorkspaceTree {
         persist_path: Some(directory.path().join("workspace.json")),
         ..WorkspaceTree::default()
@@ -57,10 +57,10 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
     let (_origin, time) = execution_policy_clock().unwrap();
-    let admission = joined.admit_mcp_execution(&room, &actor).unwrap();
+    let admission = joined.admit_mcp_execution(&workspace_id, &actor).unwrap();
     let mut services = membership.services();
     services.native_certificates = Some(Arc::new(joined::admission_tests::FixtureAuthority {
-        room: uuid::Uuid::parse_str(&room).unwrap(),
+        workspace: uuid::Uuid::parse_str(&workspace_id).unwrap(),
         cert: admission.certificate().clone(),
         time: time.clone(),
     }));
@@ -74,7 +74,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     broker.replace_published_surfaces_for_test(vec![PublishedSurface {
         peer_id: 7,
         app_id: "so.tilo.files".into(),
-        route: CrdtRoute::app("so.tilo.files", room.clone()),
+        route: CrdtRoute::app("so.tilo.files", workspace_id.clone()),
         actions: vec![PublishedAction {
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
@@ -100,11 +100,11 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     }]);
     let mut invocations = broker.capture_invocations_for_test(7);
     let owner = Caller::local_person(actor)
-        .in_room(&room)
+        .in_workspace(&workspace_id)
         .in_new_execution();
     let host = RuntimeActionHost {
         broker,
-        room: room.clone(),
+        workspace: workspace_id.clone(),
         joined,
         session: Some(Arc::new(AdmittedRuntimeSession {
             policy_time: time,
@@ -316,7 +316,7 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
     let listed = tilo_rt::try_app()
         .unwrap()
         .block_on(async {
-            let server = session.mcp_session_factory(session.room()).unwrap()().unwrap();
+            let server = session.mcp_session_factory(session.workspace()).unwrap()().unwrap();
             server
                 .handle(json!({
                     "jsonrpc": "2.0",
@@ -351,25 +351,25 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
     drop(session);
     // The profile is released and served again with the same workspace.
     let reopened = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
-    assert_eq!(reopened.room(), listed_room(&root));
+    assert_eq!(reopened.workspace(), listed_workspace(&root));
 }
 
-const WRITER_TEST: &str = "standalone::tests::an_sdk_apps_sealed_write_in_the_runtimes_own_room_is_durable_across_restart";
+const WRITER_TEST: &str = "standalone::tests::an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_restart";
 const WRITER_HELPER: &str = "TILO_STANDALONE_WRITER_HELPER";
 const WRITER_APP: &str = "dev.tilo.writer";
 const WRITER_KIND: &str = "dev.tilo.writer.note";
 const WRITER_RECORD: &str = "0b7d9a3e-5c1f-4a8e-9d2b-7f6e5a4c3b21";
 const WRITTEN: &str = "written by an SDK app";
 
-/// What the room host this session runs keeps of the writer's record in the
-/// profile's own room, opened with the channel's keys.
+/// What the workspace host this session runs keeps of the writer's record in the
+/// profile's own workspace, opened with the channel's keys.
 fn written(session: &Standalone) -> Option<String> {
     use automerge::ReadDoc as _;
-    let room = RoomId::parse(session.room())?;
+    let workspace = RoomId::parse(session.workspace())?;
     let record = ui::record::RecordId::for_file_record(uuid::Uuid::parse_str(WRITER_RECORD).ok()?);
     let bytes = session
         .joined
-        .test_kept_document(room, WRITER_APP, record.as_str())?;
+        .test_kept_document(workspace, WRITER_APP, record.as_str())?;
     let doc = automerge::AutoCommit::load(&bytes).ok()?;
     doc.get(automerge::ROOT, "text")
         .ok()?
@@ -381,9 +381,9 @@ fn written(session: &Standalone) -> Option<String> {
     clippy::significant_drop_tightening,
     reason = "the session holds the profile and brokers for the whole scenario on purpose"
 )]
-fn an_sdk_apps_sealed_write_in_the_runtimes_own_room_is_durable_across_restart() {
+fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_restart() {
     // Helper role: an ordinary SDK app joins one record of the runtime's
-    // room and writes it once. The SDK holds the write until the runtime's
+    // workspace and writes it once. The SDK holds the write until the runtime's
     // identity service hands out the route's keys, then seals and sends it.
     if std::env::var_os(WRITER_HELPER).is_some() {
         use automerge::transaction::Transactable as _;
@@ -438,10 +438,10 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_room_is_durable_across_restart()
     assert_eq!(
         stored.as_deref(),
         Some(WRITTEN),
-        "the sealed write reaches the room's host: {logs}"
+        "the sealed write reaches the workspace's host: {logs}"
     );
     drop(session);
-    // Served again, the profile's room host still keeps the write.
+    // Served again, the profile's workspace host still keeps the write.
     let reopened = Standalone::start_in_dev_mode(&root, &mut |_| {}).unwrap();
     assert_eq!(written(&reopened).as_deref(), Some(WRITTEN));
 }
@@ -450,11 +450,11 @@ const OFFLOAD_TEST: &str =
     "standalone::tests::the_session_hands_its_broker_the_route_its_home_relay_configures";
 
 /// The person's always-on relay at `address`, registered as retaining
-/// `room`, as enrollment writes it beside the identity.
+/// `workspace`, as enrollment writes it beside the identity.
 fn register_home_relay(
     identity_dir: &Path,
     user: [u8; 32],
-    room: &str,
+    workspace: &str,
     address: iroh::EndpointAddr,
 ) {
     let relay_device = *address.id.as_bytes();
@@ -466,7 +466,7 @@ fn register_home_relay(
         label: "home".into(),
         user_public_key: hex::encode(user),
         device_cert: None,
-        relay_workspace_ids: vec![tilo_relay_protocol::room_workspace_id(room).unwrap()],
+        relay_workspace_ids: vec![tilo_relay_protocol::room_workspace_id(workspace).unwrap()],
         environments: tilo_relay_protocol::RelayEnvironments::default(),
     };
     let path = tilo_relay::home_peer_registry_path(identity_dir);
@@ -483,8 +483,8 @@ fn the_session_hands_its_broker_the_route_its_home_relay_configures() {
     let Some(root) = isolated_root(OFFLOAD_TEST) else {
         return;
     };
-    let request = |room: &str| tilo_actions::offload::OffloadRequest {
-        room: room.to_owned(),
+    let request = |workspace: &str| tilo_actions::offload::OffloadRequest {
+        room: workspace.to_owned(),
         app_id: "so.tilo.photos".into(),
         address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
         offload: tilo_actions::Offload {
@@ -497,10 +497,10 @@ fn the_session_hands_its_broker_the_route_its_home_relay_configures() {
         },
         inputs: vec![hex::encode([1; 32])],
     };
-    let run_here = |route: &Arc<dyn tilo_actions::offload::ActionOffload>, room: &str| {
+    let run_here = |route: &Arc<dyn tilo_actions::offload::ActionOffload>, workspace: &str| {
         let answer = tilo_rt::app()
             .handle()
-            .block_on(route.offload(request(room)));
+            .block_on(route.offload(request(workspace)));
         let tilo_actions::offload::Offloaded::RunHere { reason } = answer else {
             panic!("nothing here can run elsewhere: {answer:?}");
         };
@@ -513,43 +513,43 @@ fn the_session_hands_its_broker_the_route_its_home_relay_configures() {
     let state = Arc::clone(session.broker.app_action_broker().unwrap().state());
     let route = state
         .action_offload()
-        .expect("the session routes its rooms' offloadable actions")
+        .expect("the session routes its workspaces' offloadable actions")
         .clone();
-    let session_room = session.room().to_owned();
+    let session_workspace = session.workspace().to_owned();
     assert_eq!(
-        run_here(&route, &session_room),
+        run_here(&route, &session_workspace),
         "no home relay of this device retains the room"
     );
 
-    // The person registers their home relay as retaining the room while the
+    // The person registers their home relay as retaining the workspace while the
     // session runs: the same session's route reaches it from the next
     // invocation on. This relay never answers, so the route cannot place
     // anything elsewhere, and says so: the door runs the app's handler.
-    let (_, cert) = tilo_identity_host::broker::trusted_current_device(&session_room).unwrap();
+    let (_, cert) = tilo_identity_host::broker::trusted_current_device(&session_workspace).unwrap();
     let identity_root = std::path::PathBuf::from(std::env::var_os("TILO_IDENTITY_ROOT").unwrap());
     let unreachable = iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[5; 32]).public())
         .with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 9)));
     register_home_relay(
         &identity_root,
         cert.user_public_key,
-        &session_room,
+        &session_workspace,
         unreachable,
     );
-    let reason = run_here(&route, &session_room);
+    let reason = run_here(&route, &session_workspace);
     assert!(reason.contains("offload route"), "{reason}");
     drop(route);
     drop(state);
     drop(session);
 
-    // A session started with the relay registered holds the room's route
+    // A session started with the relay registered holds the workspace's route
     // from the start.
     let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
     let state = Arc::clone(session.broker.app_action_broker().unwrap().state());
     let route = state
         .action_offload()
-        .expect("the configured home relay routes the room's offloadable actions")
+        .expect("the configured home relay routes the workspace's offloadable actions")
         .clone();
-    let reason = run_here(&route, &session_room);
+    let reason = run_here(&route, &session_workspace);
     assert!(reason.contains("offload route"), "{reason}");
     drop(route);
     drop(state);
@@ -565,17 +565,50 @@ fn the_session_hands_its_broker_the_route_its_home_relay_configures() {
     drop(session);
 }
 
-fn listed_room(root: &Path) -> String {
+fn listed_workspace(root: &Path) -> String {
     let tree = read_tree(&root.join(STANDALONE_WORKSPACE)).unwrap();
     tree.workspaces[0].room().to_string()
+}
+
+const PERSONAL_STORE_TEST: &str =
+    "standalone::tests::a_running_host_holds_the_persons_own_documents_store";
+
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the session holds the profile and brokers for the whole scenario on purpose"
+)]
+fn a_running_host_holds_the_persons_own_documents_store() {
+    let Some(root) = isolated_root(PERSONAL_STORE_TEST) else {
+        return;
+    };
+    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    let identity = tilo_identity_host::registry::selected_identity_profile(session.workspace())
+        .unwrap()
+        .unwrap();
+    let personal = session.personal();
+    // The store opens on the identity the profile acts as, so every device of
+    // this person finds the same documents without naming a workspace.
+    assert_eq!(
+        personal.read(tilo_peer_state::PersonalStore::root),
+        identity.user_public_key
+    );
+    // Its key is the cluster every record of the person's own is routed
+    // under: what an app's own record names, and the only thing two devices
+    // of theirs need agree on.
+    assert_eq!(
+        personal.store_key(),
+        collab_types::personal_cluster(&identity.user_public_key).to_string()
+    );
+    assert!(personal.rows().is_empty(), "nothing is written yet");
 }
 
 #[test]
 fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
     let temp = tempfile::tempdir().unwrap();
     let workspace = ProfileWorkspace::open(temp.path()).unwrap();
-    let room = workspace.room();
-    assert!(!room.is_empty());
+    let workspace_id = workspace.workspace();
+    assert!(!workspace_id.is_empty());
     workspace.adopt("person-1").unwrap();
     let path = temp.path().join(STANDALONE_WORKSPACE);
     {
@@ -584,7 +617,7 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
         assert_eq!(mode, 0o600);
     }
     let reopened = ProfileWorkspace::open(temp.path()).unwrap();
-    assert_eq!(reopened.room(), room);
+    assert_eq!(reopened.workspace(), workspace_id);
     let tree = reopened.snapshot().unwrap();
     assert_eq!(tree.workspaces.len(), 1);
     assert_eq!(
@@ -603,18 +636,20 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
         Some("person-1")
     );
     let mut seen = None;
-    reopened.with_workspace(&tree.workspaces[0].room(), &mut |workspace| {
+    WorkspaceMembership::with_workspace(&reopened, &tree.workspaces[0].room(), &mut |workspace| {
         seen = Some(workspace.name.clone());
     });
     assert_eq!(seen.as_deref(), Some("Home"));
-    reopened.with_workspace(&RoomId::new(), &mut |_| panic!("no such room"));
+    WorkspaceMembership::with_workspace(&reopened, &RoomId::new(), &mut |_| {
+        panic!("no such workspace");
+    });
 }
 
 #[test]
 fn effect_records_persist_in_the_profile() {
     let temp = tempfile::tempdir().unwrap();
     let tree = bootstrap();
-    let room = tree.workspaces[0].room().to_string();
+    let workspace_id = tree.workspaces[0].room().to_string();
     std::fs::write(
         temp.path().join(STANDALONE_WORKSPACE),
         serde_json::to_vec_pretty(&tree).unwrap(),
@@ -633,7 +668,7 @@ fn effect_records_persist_in_the_profile() {
     for _ in 0..2 {
         workspace
             .record_effect(
-                &room,
+                &workspace_id,
                 invocation,
                 "agent-1",
                 context.clone(),
@@ -665,7 +700,7 @@ fn the_desktop_sessions_workspace_refuses_records() {
     let temp = tempfile::tempdir().unwrap();
     let mut tree = bootstrap();
     tree.workspaces[0].set_owner("desktop-owner".to_owned());
-    let room = tree.workspaces[0].room().to_string();
+    let workspace_id = tree.workspaces[0].room().to_string();
     let bytes = serde_json::to_vec_pretty(&tree).unwrap();
     let desktop = temp.path().join(DESKTOP_WORKSPACE);
     std::fs::write(&desktop, &bytes).unwrap();
@@ -676,7 +711,7 @@ fn the_desktop_sessions_workspace_refuses_records() {
     assert!(
         workspace
             .record_effect(
-                &room,
+                &workspace_id,
                 invocation,
                 "agent-1",
                 tilo_actions::ActionContext::default(),
@@ -703,7 +738,7 @@ fn the_desktop_sessions_workspace_is_served_read_only() {
     let desktop = temp.path().join(DESKTOP_WORKSPACE);
     std::fs::write(&desktop, &bytes).unwrap();
     let workspace = ProfileWorkspace::open(temp.path()).unwrap();
-    assert_eq!(workspace.room(), tree.workspaces[0].room().to_string());
+    assert_eq!(workspace.workspace(), tree.workspaces[0].room().to_string());
     workspace.adopt("someone-else").unwrap();
     assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
     assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
@@ -731,10 +766,13 @@ fn the_desktop_sessions_workspace_is_served_read_only() {
     );
 }
 
-fn consent(room: &str, person: &str) -> tilo_action_broker::app_actions::AppActionConsentRequest {
+fn consent(
+    workspace: &str,
+    person: &str,
+) -> tilo_action_broker::app_actions::AppActionConsentRequest {
     tilo_action_broker::app_actions::AppActionConsentRequest {
         handle: "question-1".into(),
-        room: room.into(),
+        workspace: workspace.into(),
         person: person.into(),
         app_id: "so.tilo.caller".into(),
         target_app: "so.tilo.target-app".into(),
@@ -752,11 +790,11 @@ fn consent(room: &str, person: &str) -> tilo_action_broker::app_actions::AppActi
     }
 }
 
-fn app_grant(room: &str) -> tilo_action_policy::Grant {
+fn app_grant(workspace: &str) -> tilo_action_policy::Grant {
     tilo_action_policy::Grant::new(
         "caller-opens-target",
         tilo_action_policy::Subject::App("so.tilo.caller".into()),
-        tilo_action_policy::TreePath::room(room)
+        tilo_action_policy::TreePath::workspace(workspace)
             .app("so.tilo.target-app")
             .any(tilo_action_policy::Level::Kind)
             .resource("target.document")
@@ -780,16 +818,16 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
     let temp = tempfile::tempdir().unwrap();
     let workspace = ProfileWorkspace::open(temp.path()).unwrap();
     workspace.adopt("owner").unwrap();
-    let room = workspace.room();
+    let workspace_id = workspace.workspace();
     let grants = grants(workspace, temp.path());
 
-    assert!(grants.may_grant(&room, "owner"));
-    assert!(!grants.may_grant(&room, "stranger"));
+    assert!(grants.may_grant(&workspace_id, "owner"));
+    assert!(!grants.may_grant(&workspace_id, "stranger"));
     assert!(!grants.may_grant(&RoomId::new().to_string(), "owner"));
     let recorded = |person: &str| {
         tilo_rt::app().handle().block_on(grants.record(
-            &consent(&room, person),
-            app_grant(&room),
+            &consent(&workspace_id, person),
+            app_grant(&workspace_id),
             AppActionConsent::Always,
         ))
     };
@@ -814,7 +852,7 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
     assert_eq!(verb.args["target"].as_str(), Some("Target App"));
     assert_eq!(verb.args["lifetime"].as_str(), Some("workspace"));
 
-    grants.revoke(&room, &id);
+    grants.revoke(&workspace_id, &id);
     let saved = read_tree(&temp.path().join(STANDALONE_WORKSPACE)).unwrap();
     assert!(
         saved.workspaces[0]
@@ -831,24 +869,24 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
     let temp = tempfile::tempdir().unwrap();
     let mut tree = bootstrap();
     tree.workspaces[0].set_owner("owner".to_owned());
-    let room = tree.workspaces[0].room().to_string();
+    let workspace_id = tree.workspaces[0].room().to_string();
     let bytes = serde_json::to_vec_pretty(&tree).unwrap();
     let desktop = temp.path().join(DESKTOP_WORKSPACE);
     std::fs::write(&desktop, &bytes).unwrap();
     let grants = grants(ProfileWorkspace::open(temp.path()).unwrap(), temp.path());
 
-    assert!(!grants.may_grant(&room, "owner"));
+    assert!(!grants.may_grant(&workspace_id, "owner"));
     assert!(
         tilo_rt::app()
             .handle()
             .block_on(grants.record(
-                &consent(&room, "owner"),
-                app_grant(&room),
+                &consent(&workspace_id, "owner"),
+                app_grant(&workspace_id),
                 AppActionConsent::Always
             ))
             .is_err()
     );
-    grants.revoke(&room, "owner-1");
+    grants.revoke(&workspace_id, "owner-1");
     assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
     assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
     assert!(
@@ -862,37 +900,37 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
 }
 
 #[test]
-fn the_runtime_governs_only_its_own_room_from_its_own_device() {
-    use tilo_action_broker::peer_actions::CertificateAuthority as _;
-    let room = uuid::Uuid::from_u128(7);
+fn the_runtime_governs_only_its_own_workspace_from_its_own_device() {
+    use tilo_action_broker::certificate_authority::CertificateAuthority as _;
+    let workspace = uuid::Uuid::from_u128(7);
     let origin = Arc::new(
-        tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+        tilo_action_broker::policy_clock::OwnerPolicyClock::new()
             .unwrap()
             .new_origin(),
     );
     let certificates = Certificates {
-        room: room.to_string(),
+        workspace: workspace.to_string(),
         device: [2; 32],
         policy_time: origin.capture().unwrap(),
         joined: std::sync::Weak::new(),
     };
-    assert!(certificates.governs(room, Some(&[2; 32])));
-    assert!(certificates.governs(room, None));
-    assert!(!certificates.governs(room, Some(&[3; 32])));
+    assert!(certificates.governs(workspace, Some(&[2; 32])));
+    assert!(certificates.governs(workspace, None));
+    assert!(!certificates.governs(workspace, Some(&[3; 32])));
     assert!(!certificates.governs(uuid::Uuid::from_u128(8), None));
     drop(certificates);
 }
 
 #[test]
 fn runtime_original_policy_time_cannot_survive_origin_retirement() {
-    use tilo_action_broker::peer_actions::CertificateAuthority as _;
+    use tilo_action_broker::certificate_authority::CertificateAuthority as _;
     let origin = Arc::new(
-        tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+        tilo_action_broker::policy_clock::OwnerPolicyClock::new()
             .unwrap()
             .new_origin(),
     );
     let certificates = Certificates {
-        room: uuid::Uuid::from_u128(7).to_string(),
+        workspace: uuid::Uuid::from_u128(7).to_string(),
         device: [2; 32],
         policy_time: origin.capture().unwrap(),
         joined: std::sync::Weak::new(),
@@ -902,7 +940,7 @@ fn runtime_original_policy_time_cannot_survive_origin_retirement() {
     assert!(certificates.policy_time().is_err());
     drop(certificates);
     assert!(retained.now_ns().is_err());
-    let replacement = tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+    let replacement = tilo_action_broker::policy_clock::OwnerPolicyClock::new()
         .unwrap()
         .new_origin();
     assert!(!retained.same_origin(&replacement.capture().unwrap()));

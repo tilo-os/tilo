@@ -13,24 +13,24 @@ use collab_types::{
 };
 use neighbour_wire::NeighbourMsg;
 
-/// One document route: application, room (cluster) and record.
+/// One document route: application, workspace (cluster) and record.
 #[derive(
     Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 pub struct DocumentRoute {
     /// Application id.
     pub app_id: String,
-    /// Room uuid, as text.
+    /// Workspace uuid, as text.
     pub cluster_id: String,
     /// Record wire name; empty when the app announced none.
     pub record: String,
 }
 
 impl DocumentRoute {
-    /// Relay workspace that carries this route's room.
+    /// The relay workspace that carries this route's workspace.
     pub fn workspace_id(&self) -> Result<u64, DocumentError> {
         tilo_relay_protocol::room_workspace_id(&self.cluster_id)
-            .map_err(|_| DocumentError::Route("room is not a uuid".into()))
+            .map_err(|_| DocumentError::Route("workspace is not a uuid".into()))
     }
 
     /// The artifact every frame of this route is signed for.
@@ -280,7 +280,7 @@ impl Reassembly {
         {
             return Ok(None);
         }
-        self.make_room(len, &key);
+        self.make_workspace(len, &key);
         let transfer = self.transfers.entry(key).or_insert_with(|| Transfer {
             kind: segment.kind,
             total_len: segment.total_len,
@@ -326,7 +326,7 @@ impl Reassembly {
         self.buffered
     }
 
-    fn make_room(&mut self, extra: usize, keep: &TransferKey) {
+    fn make_workspace(&mut self, extra: usize, keep: &TransferKey) {
         loop {
             let slot = !self.transfers.contains_key(keep)
                 && self.transfers.len()
@@ -387,7 +387,7 @@ pub fn claimed_changes(body: &[u8]) -> Vec<[u8; 32]> {
     }
 }
 
-/// Open one inbound host delta, a document its room's governance admitted
+/// Open one inbound host delta, a document its workspace's governance admitted
 /// from `author`, the device the host stamped from its authenticated
 /// connection. Returns `Ok(None)` for traffic that is not an application
 /// document (shell tree, governance, continuity).
@@ -486,7 +486,7 @@ mod tests {
         );
     }
 
-    /// A key holder (a room's governing node) compacts a record's sealed
+    /// A key holder (a workspace's governing node) compacts a record's sealed
     /// history into one sealed snapshot wrapped in a compaction; the page
     /// opens it as that snapshot.
     #[test]

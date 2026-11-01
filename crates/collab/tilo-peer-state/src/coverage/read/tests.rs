@@ -1,18 +1,18 @@
 use super::*;
 use crate::coverage::Coverage;
-use crate::room::read::LegacyRead;
+use crate::workspace::read::LegacyRead;
 use automerge::{AutoCommit, ObjType, ROOT, ScalarValue, transaction::Transactable};
 use std::collections::BTreeMap;
 
 fn stored() -> (AutoCommit, Vec<u8>) {
     let (peer, _, _, _, _) = crate::admission_tests::seeded();
     let snapshot = peer.document("test.app", "tab:1").unwrap();
-    let mut room = peer.admitted_room().unwrap().clone();
+    let mut workspace = peer.admitted_workspace().unwrap().clone();
     let payload = collab_types::DocumentMutation::Snapshot(snapshot.clone())
         .encode()
         .unwrap();
     let coverage = Coverage {
-        room: peer.room().into(),
+        workspace: peer.workspace_id().into(),
         app: "test.app".into(),
         record: "tab:1".into(),
         payload_hash: *blake3::hash(&payload).as_bytes(),
@@ -21,8 +21,8 @@ fn stored() -> (AutoCommit, Vec<u8>) {
         sequence: 1,
         watermarks: BTreeMap::new(),
     };
-    super::super::put(&mut room, coverage).unwrap();
-    (room, snapshot)
+    super::super::put(&mut workspace, coverage).unwrap();
+    (workspace, snapshot)
 }
 /// A document that admitted the checkpoint `stored` covers.
 fn admitted() -> BTreeMap<String, u64> {
@@ -35,9 +35,9 @@ fn admitted() -> BTreeMap<String, u64> {
 
 #[test]
 fn coverage_reader_accepts_the_governed_checkpoint() {
-    let (room, snapshot) = stored();
+    let (workspace, snapshot) = stored();
     let legacy = governed_snapshot_matches(
-        Some(&LegacyRead(&room)),
+        Some(&LegacyRead(&workspace)),
         ("test.app", "tab:1"),
         &admitted(),
         Some(&snapshot),
@@ -48,39 +48,40 @@ fn coverage_reader_accepts_the_governed_checkpoint() {
 
 #[test]
 fn coverage_reader_preserves_absence_wrong_shape_decode_and_unmatched_checkpoint_semantics() {
-    let (mut room, snapshot) = stored();
+    let (mut workspace, snapshot) = stored();
     let route = super::super::route_key("test.app", "tab:1");
     let route = route.as_str();
     for mode in 0..4 {
         match mode {
             0 => {
-                room.delete(ROOT, super::super::FIELD_V2).unwrap();
+                workspace.delete(ROOT, super::super::FIELD_V2).unwrap();
             }
             1 => {
-                let routes = room
+                let routes = workspace
                     .put_object(ROOT, super::super::FIELD_V2, ObjType::Map)
                     .unwrap();
-                room.put(&routes, route, "wrong shape").unwrap();
+                workspace.put(&routes, route, "wrong shape").unwrap();
             }
             2 => {
-                let routes = room
+                let routes = workspace
                     .put_object(ROOT, super::super::FIELD_V2, ObjType::Map)
                     .unwrap();
-                room.put(&routes, route, ScalarValue::Bytes(vec![0xff]))
+                workspace
+                    .put(&routes, route, ScalarValue::Bytes(vec![0xff]))
                     .unwrap();
             }
             _ => {
-                room = stored().0;
+                workspace = stored().0;
             }
         }
-        room.commit();
+        workspace.commit();
         let payload = if mode == 3 {
             b"different snapshot".as_slice()
         } else {
             &snapshot
         };
         let legacy = governed_snapshot_matches(
-            Some(&LegacyRead(&room)),
+            Some(&LegacyRead(&workspace)),
             ("test.app", "tab:1"),
             &admitted(),
             Some(payload),
@@ -102,10 +103,10 @@ fn coverage_reader_preserves_absence_wrong_shape_decode_and_unmatched_checkpoint
 
 #[test]
 fn coverage_reader_passes_a_route_it_does_not_cover() {
-    let (room, snapshot) = stored();
+    let (workspace, snapshot) = stored();
     assert_eq!(
         governed_snapshot_matches(
-            Some(&LegacyRead(&room)),
+            Some(&LegacyRead(&workspace)),
             ("test.app", "tab:1"),
             &admitted(),
             None,
@@ -115,7 +116,7 @@ fn coverage_reader_passes_a_route_it_does_not_cover() {
     );
     assert_eq!(
         governed_snapshot_matches(
-            Some(&LegacyRead(&room)),
+            Some(&LegacyRead(&workspace)),
             ("test.app", "unknown"),
             &admitted(),
             Some(&snapshot),
@@ -127,12 +128,12 @@ fn coverage_reader_passes_a_route_it_does_not_cover() {
 
 #[test]
 fn coverage_reader_reports_a_checkpoint_whose_body_has_not_been_admitted_as_arriving() {
-    let (room, _) = stored();
+    let (workspace, _) = stored();
     let older = b"older checkpoint".as_slice();
     let arriving = BTreeMap::new();
     assert_eq!(
         governed_snapshot_matches(
-            Some(&LegacyRead(&room)),
+            Some(&LegacyRead(&workspace)),
             ("test.app", "tab:1"),
             &arriving,
             Some(older),

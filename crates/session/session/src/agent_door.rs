@@ -19,7 +19,7 @@
 //! list and revoke, so removing it there ends what the client may do.
 //!
 //! **The broker**: an admitted connection is served as
-//! `Caller::local_agent(agent).in_room(room)`, so discovery and invocation
+//! `Caller::local_agent(agent).in_workspace(room)`, so discovery and invocation
 //! pass the same gate as every other caller.
 //!
 //! "Allow for this session" and "Always allow" remember that this client is
@@ -382,7 +382,7 @@ impl Loop {
             // What the person said to remember: this client is this agent,
             // let in wherever that agent is already a member.
             let _ = decide.send(Consent::Admit {
-                room,
+                workspace: room,
                 agent: agent.clone(),
                 person: person.to_owned(),
             });
@@ -481,7 +481,7 @@ impl Loop {
             }
         }
         Consent::Admit {
-            room: waiting.room.clone(),
+            workspace: waiting.room.clone(),
             agent: waiting.proposed.clone(),
             person: person.to_owned(),
         }

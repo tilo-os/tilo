@@ -12,6 +12,7 @@
 //! [`DisplayCapabilities::sdr_default`].
 
 use neighbour_wire::colorimetry::{ColorPrimaries, TransferCharacteristics};
+use serde::{Deserialize, Serialize};
 
 /// The bits of a display's EDID that matter for color-management-v1.
 ///
@@ -69,7 +70,7 @@ impl HdrDisplayInfo {
 /// What the compositor can deliver to one output. Consumed by
 /// the shell's peer view (`PeerView::new_for_stream`) to pick between
 /// tone-map and passthrough.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DisplayCapabilities {
     /// Peak sustainable luminance in cd/m² (SDR 100, HDR400 400, HDR1000
     /// 1000+); sets the tone-map target.

@@ -14,8 +14,8 @@ use tilo_compositor::gestures::{
     GestureAction, GestureConfig, GestureTracker, SWIPE_THRESHOLD, claims,
 };
 use tilo_compositor::{
-    Arrangement, GestureEvent, HostLayer, LayoutPoint, LayoutRect, SurfaceHost, WindowInfo,
-    WindowPolicy, WindowRequest,
+    Arrangement, GestureEvent, HostLayer, LayoutPoint, LayoutRect, SurfaceHost, TouchSample,
+    WindowInfo, WindowPolicy, WindowRequest,
 };
 use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::floating::centred;
@@ -193,6 +193,25 @@ pub struct StripPolicy {
     observer: Option<std::sync::Arc<dyn WindowObserver>>,
     /// The windows it was told about, so none is told of twice.
     announced: std::collections::HashSet<u64>,
+    /// Where the pointer and fingers go as well as to the windows: the
+    /// chrome that follows them beyond where it draws.
+    samples: Option<Rc<RefCell<dyn PointerSamples>>>,
+}
+
+/// What the desk's chrome follows beyond the pixels it draws: the pointer
+/// wherever it goes and fingers on the screen, which reach a hosted surface
+/// only while it is what the pointer is over. The chrome hides parts of
+/// itself and brings them back when the person reaches for them, so it
+/// reads every sample, not only the ones it is the target of.
+pub trait PointerSamples {
+    /// The pointer moved to this point in the logical layout.
+    fn moved(&mut self, x: f64, y: f64);
+    /// A pointer button went down at this point in the logical layout.
+    fn pressed(&mut self, x: f64, y: f64);
+    /// A finger touched down at this point, over anything: whether the
+    /// desk takes the contact, so nothing under it sees it. A taken
+    /// contact's motion and lift come here too.
+    fn touch(&mut self, touch: TouchSample) -> bool;
 }
 
 /// A desktop of one workspace with one empty strip (`salt` seeds its ids),
@@ -240,6 +259,7 @@ pub fn desktop_with(
             map_observer: None,
             observer: None,
             announced: std::collections::HashSet::new(),
+            samples: None,
         },
     )
 }
@@ -350,6 +370,10 @@ impl SurfaceHost for DesktopHost {
         self.desk.borrow_mut().host.prepare_frame()
     }
 
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.desk.borrow().host.next_deadline()
+    }
+
     fn window_pictures(&self) -> Vec<tilo_compositor::WindowPicture> {
         self.desk.borrow().host.window_pictures()
     }
@@ -374,6 +398,12 @@ impl StripPolicy {
     /// how a session learns which programs the person runs.
     pub fn observe_windows(&mut self, observer: std::sync::Arc<dyn WindowObserver>) {
         self.observer = Some(observer);
+    }
+
+    /// Send every pointer sample and touch to `samples` too, wherever they
+    /// go: the chrome that keeps out of the way until reached for.
+    pub fn with_samples(&mut self, samples: Rc<RefCell<dyn PointerSamples>>) {
+        self.samples = Some(samples);
     }
 
     /// Tell the observer about `window`, once.
@@ -432,6 +462,9 @@ impl WindowPolicy for StripPolicy {
     /// Focus follows the pointer onto another display: to the window last
     /// focused there, else to none, so the next window opens there.
     fn pointer_moved(&mut self, x: f64, y: f64) {
+        if let Some(samples) = &self.samples {
+            samples.borrow_mut().moved(x, y);
+        }
         let mut desk = self.desk.borrow_mut();
         let (ox, oy) = desk.host.placement().origin;
         let (x, y) = (x - f64::from(ox), y - f64::from(oy));
@@ -452,6 +485,18 @@ impl WindowPolicy for StripPolicy {
         {
             desk.host.relayout();
         }
+    }
+
+    fn pointer_pressed(&mut self, x: f64, y: f64) {
+        if let Some(samples) = &self.samples {
+            samples.borrow_mut().pressed(x, y);
+        }
+    }
+
+    fn touch(&mut self, touch: TouchSample) -> bool {
+        self.samples
+            .as_ref()
+            .is_some_and(|samples| samples.borrow_mut().touch(touch))
     }
 
     fn monitors(&mut self, monitors: &[(LayoutRect, String)], primary: Option<&str>) {

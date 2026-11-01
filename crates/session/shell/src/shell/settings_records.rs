@@ -13,9 +13,10 @@
 //! Their accounts and contacts are held here too, in the records Settings
 //! and Contacts keep them in: the apps the session shows open them here,
 //! one copy in the process; the session's messaging changes the accounts
-//! through their actions; and they sync to the person's other devices. So
-//! are the models their provider settings offer for an agent's run, which
-//! the session keeps from those settings for every app's model picker.
+//! through their actions; and their personal store carries them to the
+//! person's other devices. So are the models their provider settings offer
+//! for an agent's run, which the session keeps from those settings for
+//! every app's model picker.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -44,9 +45,8 @@ const UNAVAILABLE: &str = "the person's records are unavailable";
 
 /// The surface Settings' package ships: the session keeps Settings'
 /// records in its own process, so it runs them with Settings' surface, as
-/// a host runs a built-in app's. Its person records (the accounts, the
-/// contacts) are what Settings' routes to the person's room may carry, read
-/// from the surface the session runs Settings with.
+/// a host runs a built-in app's. Its person-record kinds are read from the
+/// surface the session runs Settings with.
 const SETTINGS_SURFACE: &[u8] = include_bytes!("../../../../../apps/settings/surface.toml");
 
 /// The person's records the session keeps — Settings' sections, their
@@ -125,7 +125,8 @@ struct Held {
     /// person's records of other apps in.
     person: PersonRecords,
     jobs: mpsc::Receiver<Job>,
-    /// Their routes to the person's other devices, when they have a room.
+    /// Their routes to the person's other devices, where they have a room
+    /// to carry them: a record in the person's own scope has none yet.
     routes: RefCell<Option<ui::app::record_routes::RecordRouteParticipant>>,
 }
 
@@ -387,7 +388,7 @@ fn hold((dir, person): HeldFor, former: &Path) -> Result<Holder, String> {
     ui::app_surface::register_built_in(settings_sections::APP_ID, SETTINGS_SURFACE);
     // Without a root identity there is no person room: the records are
     // this device's alone.
-    let room = collab_types::person_room_of(&person);
+    let room = collab_types::personal_cluster_of(&person);
     let (records, person) = open(&dir, person)?;
     // Held from the start, so what the person's other devices change
     // reaches them.
@@ -434,7 +435,7 @@ fn take_in<P: SharedRecord>(former: &Path, dir: &Path, person: &str) -> Result<b
     let kept = Rc::new(app_state::FsStore::new(former.to_path_buf()));
     let key = durable_store::StorageKey::record(
         P::OWNER,
-        ui::record::person::scope_of(&author),
+        ui::record::person::PERSONAL_SCOPE,
         ui::record::person::record_id(&kind).storage_key(),
     );
     let Some(stored) = durable_store::DurableStore::local_path(kept.as_ref(), &key)
@@ -821,7 +822,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-        let agent = Caller::local_agent("scribe").in_room(room);
+        let agent = Caller::local_agent("scribe").in_workspace(room);
         let invoke = |request: &InvokeRequest| {
             broker
                 .state()

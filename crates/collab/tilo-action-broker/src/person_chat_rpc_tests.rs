@@ -1,28 +1,28 @@
-// Registered native RPC exercised against a real joined-room private owner.
+// Registered native RPC exercised against a real joined-workspace private owner.
 struct PrivatePersonOwner(tilo_peer_state::owner::NativeWorkspaceOwner);
 impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
     fn command(
         &self,
-        room: &str,
+        workspace: &str,
         caller: &tilo_user_identity::DeviceCert,
         bytes: &[u8],
     ) -> Result<Vec<u8>, String> {
         use crate::services::person_chat::PersonChatCommand;
         let command: PersonChatCommand =
             serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-        let room = tilo_desktop_model::RoomId::parse(room).ok_or("invalid room")?;
+        let workspace = tilo_desktop_model::RoomId::parse(workspace).ok_or("invalid workspace")?;
         let authority = tilo_peer_state::caller_authority::CallerAuthority::Person {
             caller: caller.clone(),
         };
         let now = std::time::SystemTime::now();
         let peer = match command {
             PersonChatCommand::Contacts => {
-                let contacts = self.0.direct_contacts(room, &authority, now)?;
+                let contacts = self.0.direct_contacts(workspace, &authority, now)?;
                 return serde_json::to_vec(&contacts).map_err(|error| error.to_string());
             }
             PersonChatCommand::Open { public_key } => {
                 self.0
-                    .open_direct_conversation(room, &public_key, &authority, now)?;
+                    .open_direct_conversation(workspace, &public_key, &authority, now)?;
                 public_key
             }
             PersonChatCommand::Read { public_key } => public_key,
@@ -32,7 +32,7 @@ impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
                 invocation,
             } => {
                 self.0.send_direct_message(
-                    room,
+                    workspace,
                     &public_key,
                     &authority,
                     tilo_peer_state::owner::DirectMessageSend { invocation, text },
@@ -42,7 +42,7 @@ impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
             }
         };
         let conversation = self.0.read_direct_conversation(
-            room,
+            workspace,
             &peer,
             &authority,
             tilo_peer_state::owner::DirectConversationPage::default(),
@@ -74,18 +74,19 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
                 &owner, &env.key, &env.cert,
             )
             .unwrap();
-            let room =
-                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
+            let workspace_id =
+                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE)
+                    .unwrap();
             env.route.app_id = "so.tilo.chat".into();
-            env.route.cluster_id = room.to_string();
+            env.route.cluster_id = workspace_id.to_string();
             {
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
                 let mut workspace =
-                    tilo_desktop_model::Workspace::in_room(before.id, room, before.name);
+                    tilo_desktop_model::Workspace::in_room(before.id, workspace_id, before.name);
                 workspace.strips = before.strips;
                 workspace.policy = before.policy;
-                workspace.policy.rehome(room.to_string());
+                workspace.policy.rehome(workspace_id.to_string());
                 membership.workspaces[0] = workspace;
             }
             env.authority =
@@ -117,7 +118,7 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
                     .unwrap();
             let expected = owner
                 .direct_contacts(
-                    room,
+                    workspace_id,
                     &tilo_peer_state::caller_authority::CallerAuthority::Person {
                         caller: env.cert.clone(),
                     },
@@ -171,12 +172,12 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
         .await;
 }
 
-/// A second certified person joined through the room's host, so the owner has
+/// A second certified person joined through the workspace's host, so the owner has
 /// a private conversation peer that is a real member and not a bare label.
 fn enroll_contact(
     owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     governor: &mut tilo_peer_state::owner::testing::governor::TestGovernor,
-    room: tilo_desktop_model::RoomId,
+    workspace: tilo_desktop_model::RoomId,
 ) -> String {
     use tilo_peer_state::join;
     let now = std::time::SystemTime::now();
@@ -188,7 +189,7 @@ fn enroll_contact(
     );
     let ns = tilo_peer_state::owner::testing::ns(now).unwrap();
     let hint = governor.hint(iroh::EndpointAddr::new(
-        iroh::EndpointId::from_bytes(&governor.room_host().device_public_key).unwrap(),
+        iroh::EndpointId::from_bytes(&governor.workspace_host().device_public_key).unwrap(),
     ));
     let invitation = governor.issue(
         vec![hint],
@@ -221,9 +222,9 @@ fn enroll_contact(
         let message: neighbour_wire::NeighbourMsg = postcard::from_bytes(bytes).unwrap();
         owner
             .receive(
-                room,
+                workspace,
                 tilo_peer_state::TransportOrigin::RetainedRelayDelta(
-                    governor.room_host().device_public_key,
+                    governor.workspace_host().device_public_key,
                 ),
                 message,
                 now,
@@ -234,9 +235,9 @@ fn enroll_contact(
     assert!(
         owner
             .direct_contacts(
-                room,
+                workspace,
                 &tilo_peer_state::caller_authority::CallerAuthority::Person {
-                    caller: governor.room_host().clone(),
+                    caller: governor.workspace_host().clone(),
                 },
                 now,
             )
@@ -248,13 +249,13 @@ fn enroll_contact(
     peer
 }
 
-/// Everything the room publishes about `owner`'s state, as peers can read it.
+/// Everything the workspace publishes about `owner`'s state, as peers can read it.
 fn public_owner_bytes(
     owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
-    room: tilo_desktop_model::RoomId,
+    workspace: tilo_desktop_model::RoomId,
 ) -> Vec<Vec<u8>> {
     owner
-        .with_current(room, |view| {
+        .with_current(workspace, |view| {
             let mut bytes = vec![tilo_peer_state::owner::testing::durable_peer(view).to_vec()];
             bytes.extend(tilo_peer_state::owner::testing::entries(view)?);
             bytes.extend(tilo_peer_state::owner::testing::projection(view)?);
@@ -288,24 +289,25 @@ async fn person_chat_open_send_read_stays_in_the_private_owner() {
                 &owner, &env.key, &env.cert,
             )
             .unwrap();
-            let room =
-                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
-            let peer = enroll_contact(&owner, &mut governor, room);
+            let workspace_id =
+                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE)
+                    .unwrap();
+            let peer = enroll_contact(&owner, &mut governor, workspace_id);
             env.route.app_id = "so.tilo.chat".into();
-            env.route.cluster_id = room.to_string();
+            env.route.cluster_id = workspace_id.to_string();
             {
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
                 let mut workspace =
-                    tilo_desktop_model::Workspace::in_room(before.id, room, before.name);
+                    tilo_desktop_model::Workspace::in_room(before.id, workspace_id, before.name);
                 workspace.strips = before.strips;
                 workspace.policy = before.policy;
-                workspace.policy.rehome(room.to_string());
+                workspace.policy.rehome(workspace_id.to_string());
                 membership.workspaces[0] = workspace;
             }
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
-            let public_before = public_owner_bytes(&owner, room);
+            let public_before = public_owner_bytes(&owner, workspace_id);
             let mut services = env.membership.services();
             services.person_chat = Some(Arc::new(PrivatePersonOwner(owner.clone())));
             let fanout = Arc::new(FanoutState::new());
@@ -365,11 +367,11 @@ async fn person_chat_open_send_read_stays_in_the_private_owner() {
                 hex::encode(env.cert.user_public_key)
             );
             assert_eq!(
-                public_owner_bytes(&owner, room),
+                public_owner_bytes(&owner, workspace_id),
                 public_before,
-                "a private conversation writes nothing to the public room"
+                "a private conversation writes nothing to the public workspace"
             );
-            for bytes in public_owner_bytes(&owner, room) {
+            for bytes in public_owner_bytes(&owner, workspace_id) {
                 assert!(
                     !bytes
                         .windows(marker.len())
@@ -379,7 +381,7 @@ async fn person_chat_open_send_read_stays_in_the_private_owner() {
             }
             let saved = owner
                 .read_direct_conversation(
-                    room,
+                    workspace_id,
                     &peer,
                     &tilo_peer_state::caller_authority::CallerAuthority::Person {
                         caller: env.cert.clone(),
@@ -404,7 +406,7 @@ async fn person_chat_open_send_read_stays_in_the_private_owner() {
             let reopened = tilo_peer_state::owner::open_file(&path).unwrap();
             let persisted = reopened
                 .read_direct_conversation(
-                    room,
+                    workspace_id,
                     &peer,
                     &tilo_peer_state::caller_authority::CallerAuthority::Person {
                         caller: env.cert.clone(),

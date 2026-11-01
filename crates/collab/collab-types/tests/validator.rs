@@ -179,7 +179,7 @@ fn grant_clearance(f: &mut Fixture, level: Clearance, trusted: bool) -> Ed25519P
 }
 
 fn presets() -> Vec<Grant> {
-    roles::room_role_grants(DEFAULT_ROOM, &Subject::Role(Role::Owner))
+    roles::workspace_role_grants(DEFAULT_ROOM, &Subject::Role(Role::Owner))
 }
 
 fn party(grants: &[Grant], role: Role) -> Authority<'_> {
@@ -651,11 +651,11 @@ fn a_grant_naming_a_record_names_its_channel_and_a_pattern_does_not() {
     );
     let others = [
         grant(
-            TreePath::room("room")
+            TreePath::workspace("room")
                 .app("so.tilo.sheets")
                 .any(Level::Resource),
         ),
-        grant(TreePath::room("room").app("so.tilo.sheets")),
+        grant(TreePath::workspace("room").app("so.tilo.sheets")),
         grant(document_node("other", "so.tilo.sheets", "payroll")),
         grant(document_node("room", "so.tilo.notes", "payroll")),
         grant(document_node("room", "so.tilo.sheets", "budget")),

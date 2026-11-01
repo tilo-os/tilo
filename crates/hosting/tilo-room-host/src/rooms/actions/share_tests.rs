@@ -1,6 +1,6 @@
 //! A member's share of one record or item with a room this host governs,
 //! as a page asks it (`crate::rooms::shares`): the same rule every receiver
-//! holds a device's own share to (`tilo_peer_state::room::share`).
+//! holds a device's own share to (`tilo_peer_state::workspace::share`).
 
 #![expect(
     clippy::significant_drop_tightening,
@@ -76,7 +76,7 @@ async fn invoke(rooms: &Rooms, device: &DeviceCert, ask: Ask) -> Result<Value, S
 
 /// An item of Notes' own record of `room`, by its id.
 fn note(room: &str, id: &str) -> String {
-    tilo_action_policy::TreePath::room(room)
+    tilo_action_policy::TreePath::workspace(room)
         .app("so.tilo.notes")
         .kind("notes.notebook")
         .any(tilo_action_policy::Level::Resource)
@@ -195,7 +195,7 @@ async fn a_share_grants_the_room_one_item_until_its_sharer_ends_it() {
         .await;
     assert_eq!(shared, RoomsReply::Shared(4));
     assert!(bo_writes(&p1).await);
-    let every = tilo_action_policy::TreePath::room(&room)
+    let every = tilo_action_policy::TreePath::workspace(&room)
         .app("so.tilo.notes")
         .kind("notes.notebook")
         .any(tilo_action_policy::Level::Resource)
@@ -371,7 +371,7 @@ async fn only_the_device_a_window_runs_on_shares_it() {
     let held_salts = {
         let state = rooms.room(&room).await.unwrap();
         let held = state.lock().await;
-        tilo_desktop_model::window_share::device_salts(held.peer().admitted_room().unwrap())
+        tilo_desktop_model::window_share::device_salts(held.peer().admitted_workspace().unwrap())
     };
     assert_eq!(
         held_salts.get(&salt),
@@ -500,7 +500,7 @@ async fn shared_windows(
 ) -> std::collections::BTreeMap<u64, tilo_desktop_model::window_share::WindowShare> {
     let state = rooms.room(room).await.unwrap();
     let held = state.lock().await;
-    let doc = held.peer().admitted_room().unwrap();
+    let doc = held.peer().admitted_workspace().unwrap();
     let shared = tilo_desktop_model::window_share::window_shares(
         &tilo_desktop_model::projection::room_policy_of(doc, room),
         &tilo_desktop_model::window_share::device_salts(doc),
@@ -514,12 +514,14 @@ async fn shared_windows(
 async fn grants_of_share(rooms: &crate::rooms::Rooms, room: &str, share: &str) -> usize {
     let state = rooms.room(room).await.unwrap();
     let held = state.lock().await;
-    let grants =
-        tilo_desktop_model::projection::room_policy_of(held.peer().admitted_room().unwrap(), room)
-            .grants
-            .iter()
-            .filter(|grant| tilo_action_policy::share::is_of_share(grant, share))
-            .count();
+    let grants = tilo_desktop_model::projection::room_policy_of(
+        held.peer().admitted_workspace().unwrap(),
+        room,
+    )
+    .grants
+    .iter()
+    .filter(|grant| tilo_action_policy::share::is_of_share(grant, share))
+    .count();
     drop(held);
     grants
 }

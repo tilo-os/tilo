@@ -55,7 +55,7 @@ use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_relay_protocol::live::{LiveFrame, ParticipantKind, PresenceFrame};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
-use support::{ROOM, enrol, ready, start_host, start_peer, wait_for, workspace};
+use support::{ROOM as WORKSPACE, enrol, ready, start_host, start_peer, wait_for, workspace};
 
 const ATTEMPTS: usize = 40;
 
@@ -144,7 +144,7 @@ fn page(
     route: &DocumentRoute,
     changes: &[Vec<u8>],
 ) -> String {
-    // The room's own record (Chat's) is not mounted from a copy: its
+    // The workspace's own record (Chat's) is not mounted from a copy: its
     // document is what the browser holds.
     let Some(record) = ui::record::RecordId::parse(&route.record) else {
         use tilo_automerge::ApplyIncoming as _;
@@ -157,7 +157,7 @@ fn page(
     let app = Replica::open(
         catalogue,
         &route.app_id,
-        ROOM,
+        WORKSPACE,
         "ada",
         tilo_agent_participant::ReplicaActor::Owner,
         Seed::Existing {
@@ -200,7 +200,7 @@ async fn every_web_app_over_the_session() {
     let catalogue = catalogue();
 
     // The agent: its own device under the root with no capabilities, and a
-    // delegation covering this room and every web app.
+    // delegation covering this workspace and every web app.
     let agent_device = enrol(
         &root,
         "Agent: Coverage",
@@ -216,7 +216,7 @@ async fn every_web_app_over_the_session() {
         "Coverage agent",
         [0x7c, 0x3a, 0xed],
         DelegateScope {
-            rooms: vec![ROOM.into()],
+            rooms: vec![WORKSPACE.into()],
             apps: catalogue.iter().map(|d| d.app_id().to_owned()).collect(),
         },
         now,
@@ -233,7 +233,7 @@ async fn every_web_app_over_the_session() {
         ParticipantConfig {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
-            room: ROOM.into(),
+            workspace: WORKSPACE.into(),
             content: tilo_content::ContentStore::memory(),
         },
         AgentIdentity {
@@ -256,7 +256,7 @@ async fn every_web_app_over_the_session() {
         browser_device.key.clone(),
     );
     let browser_events = browser.events();
-    browser.join_placed(ROOM, "Workspace").unwrap();
+    browser.join_placed(WORKSPACE, "Workspace").unwrap();
     ready(&[&browser]).await;
     wait_for("the agent to be admitted", || {
         agent.pump();
@@ -316,12 +316,12 @@ async fn every_web_app_over_the_session() {
             agent.pump();
             for event in browser_events.drain() {
                 if let PeerEvent::Document(document) = event {
-                    // The governed room's host takes part too: it checkpoints
+                    // The governed workspace's host takes part too: it checkpoints
                     // what the agent wrote.
                     assert!(
                         document.author == agent_key
                             || document.author == host_device.cert.device_public_key,
-                        "only the agent and the room's host write here"
+                        "only the agent and the workspace's host write here"
                     );
                     if let Some(
                         collab_types::DocumentMutation::Snapshot(bytes)
@@ -587,7 +587,7 @@ async fn every_web_app_over_the_session() {
             error: ActionHostError::InvocationConflict
         }
     );
-    // The room's provider opens an app on a new record.
+    // The workspace's provider opens an app on a new record.
     let RemoteActionMessage::Receipt(opened) = ask(
         &browser,
         &browser_events,
@@ -596,7 +596,7 @@ async fn every_web_app_over_the_session() {
         RemoteActionMessage::Invoke(InvokeRequest {
             on_behalf_of: None,
             invocation: InvocationId::new(),
-            target: application_open_target(ROOM, "so.tilo.notes"),
+            target: application_open_target(WORKSPACE, "so.tilo.notes"),
             argument: InvokeArgument::None,
             context: None,
             confirmation: None,
@@ -680,7 +680,7 @@ const CANVAS: &str = "so.tilo.canvas";
 const SHEETS: &str = "so.tilo.sheets";
 const VIDEO: &str = "so.tilo.video-editor";
 
-/// An agent granted `apps`, planning with `planner`, admitted to the room
+/// An agent granted `apps`, planning with `planner`, admitted to the workspace
 /// on `host`, its records lent `store`.
 async fn planning_agent(
     root: &ed25519_dalek::SigningKey,
@@ -733,7 +733,7 @@ async fn planning_agent_labelled(
         label,
         [0x0f, 0x4c, 0x5c],
         DelegateScope {
-            rooms: vec![ROOM.into()],
+            rooms: vec![WORKSPACE.into()],
             apps: apps.iter().map(|app| (*app).to_owned()).collect(),
         },
         now,
@@ -749,7 +749,7 @@ async fn planning_agent_labelled(
         ParticipantConfig {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
-            room: ROOM.into(),
+            workspace: WORKSPACE.into(),
             content: store,
         },
         AgentIdentity {
@@ -791,7 +791,7 @@ fn model_endpoint(answers: Vec<serde_json::Value>) -> (String, std::sync::mpsc::
 }
 
 /// [`model_endpoint`], an answer with a gate held back until the gate is
-/// opened (or dropped): a request in flight while the room changes.
+/// opened (or dropped): a request in flight while the workspace changes.
 fn gated_model_endpoint(
     answers: Vec<(serde_json::Value, Option<std::sync::mpsc::Receiver<()>>)>,
 ) -> (String, std::sync::mpsc::Receiver<String>) {
@@ -939,7 +939,7 @@ fn run_task(
 }
 
 /// The offline measure of model calls per task: a one-app task over an app
-/// the room has no record of is planned in ONE model request — the record
+/// the workspace has no record of is planned in ONE model request — the record
 /// is made before the plan, and the first turn shows what it publishes with
 /// its parameters in full.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -985,7 +985,7 @@ async fn a_one_app_task_is_planned_in_one_model_request() {
     assert_eq!(requests.len(), 1, "one model request for the task");
     let first: serde_json::Value = serde_json::from_str(&requests[0]).unwrap();
     let turn = first_turn(&first);
-    // The task names Sheets, which the room has no record of: one is made
+    // The task names Sheets, which the workspace has no record of: one is made
     // before the plan, so its operations are listed and nothing is opened.
     assert!(offers(&turn, set_cells), "{turn}");
     assert!(!turn.contains("app.so.tilo.sheets#open"), "{turn}");
@@ -1083,7 +1083,7 @@ async fn a_view_is_read_in_the_planning_conversation() {
 }
 
 /// Steps written out run as written: a look renders the artwork as content
-/// the room keeps, and the task's reply names it. A step that takes what
+/// the workspace keeps, and the task's reply names it. A step that takes what
 /// the step before it produced, after one that produced nothing, is refused
 /// before it runs, saying why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1150,7 +1150,7 @@ async fn a_task_reports_the_content_its_steps_produced() {
         .and_then(|rest| rest.strip_suffix('.'))
         .unwrap_or_else(|| panic!("the reply names what was produced: {reply}"));
     let hash = tilo_actions::content_hash(produced).expect("a content address");
-    let png = store.read(hash).expect("the room keeps the look");
+    let png = store.read(hash).expect("the workspace keeps the look");
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     // Each step's record names the content it produced: the look's
     // picture, and nothing for the draw.
@@ -1158,7 +1158,7 @@ async fn a_task_reports_the_content_its_steps_produced() {
     assert!(looked.steps[0].content.is_empty(), "{looked:?}");
     assert_eq!(looked.steps[1].content, vec![produced.to_owned()]);
 
-    // An export the room keeps (no `path`) is a read: the agent runs it
+    // An export the workspace keeps (no `path`) is a read: the agent runs it
     // without asking its person, and its step names the picture.
     let exported = run_task(
         &mut agent,
@@ -1171,7 +1171,7 @@ async fn a_task_reports_the_content_its_steps_produced() {
     };
     let picture = store
         .read(tilo_actions::content_hash(address).unwrap())
-        .expect("the room keeps the export");
+        .expect("the workspace keeps the export");
     assert_eq!(&picture[..8], b"\x89PNG\r\n\x1a\n");
 
     let mut carried = step("draw", serde_json::json!({"marks": []}));
@@ -1199,7 +1199,7 @@ async fn a_task_reports_the_content_its_steps_produced() {
 }
 
 /// A video still an agent asks for in a task is drawn by its host's render
-/// service, not the record's worker, and kept as room content its step
+/// service, not the record's worker, and kept as workspace content its step
 /// names. Needs the render helper (`cargo build -p tilo-video-render --bin
 /// tilo-video-render`); without it the test says so and returns, unless
 /// `TILO_REQUIRE_MEDIA=1`.
@@ -1291,7 +1291,7 @@ async fn a_task_s_video_still_is_drawn_by_the_hosts_render_service() {
     };
     let png = store
         .read(tilo_actions::content_hash(address).unwrap())
-        .expect("the room keeps the still");
+        .expect("the workspace keeps the still");
     assert_eq!(png.get(..4), Some(&b"\x89PNG"[..]));
 
     agent.close();
@@ -2172,7 +2172,7 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
     assert!(news.contains("LR-2041 code entered"), "{news}");
     assert!(
         !news.contains("LR-2041 code requested"),
-        "what the room held before the plan is not news: {news}"
+        "what the workspace held before the plan is not news: {news}"
     );
 
     // The re-plan waits for the second code; Rae posts it meanwhile.
@@ -2242,7 +2242,7 @@ async fn pump_for(agents: &mut [&mut AgentParticipant], long: Duration) {
 /// Three agents in one chat, as a sign-in relay runs: Ana (planned by the
 /// model at `url`) waits for Rae's post; Rae made the chat; Ben is a third
 /// agent who has not opened it yet.
-struct RelayRoom {
+struct RelayWorkspace {
     host: support::TestHost,
     _laptop: participant::Participant,
     ana: (AgentParticipant, std::sync::Arc<AgentControl>),
@@ -2251,7 +2251,7 @@ struct RelayRoom {
     _state: tempfile::TempDir,
 }
 
-impl RelayRoom {
+impl RelayWorkspace {
     async fn start(url: &str) -> Self {
         Box::pin(Self::granting(url, &[CHAT])).await
     }
@@ -2266,7 +2266,7 @@ impl RelayRoom {
         .await
     }
 
-    /// [`Self::granting`], Ana keeping the room's content in `content`.
+    /// [`Self::granting`], Ana keeping the workspace's content in `content`.
     async fn granting_with(url: &str, apps: &[&str], content: tilo_content::ContentStore) -> Self {
         Box::pin(Self::planned_by(endpoint_planner(url), apps, content)).await
     }
@@ -2329,7 +2329,7 @@ impl RelayRoom {
             )
             .unwrap();
         post_in_chat(&mut rae.0, &rae.1, "LR-2041 code requested");
-        let mut room = Self {
+        let mut workspace = Self {
             host,
             _laptop: laptop,
             ana,
@@ -2338,9 +2338,9 @@ impl RelayRoom {
             _state: state,
         };
         wait_for("Ana to see the chat", || {
-            room.ana.0.pump();
-            room.rae.0.pump();
-            let seen = room
+            workspace.ana.0.pump();
+            workspace.rae.0.pump();
+            let seen = workspace
                 .ana
                 .0
                 .known_records()
@@ -2349,15 +2349,15 @@ impl RelayRoom {
             async move { seen.then_some(()) }
         })
         .await;
-        let ours = room.ana.0.open(CHAT, None).unwrap();
+        let ours = workspace.ana.0.open(CHAT, None).unwrap();
         wait_for("Ana to hold the first post", || {
-            room.ana.0.pump();
-            room.rae.0.pump();
-            let held = chat_parts_text(&room.ana.0, &ours).contains("LR-2041 code requested");
+            workspace.ana.0.pump();
+            workspace.rae.0.pump();
+            let held = chat_parts_text(&workspace.ana.0, &ours).contains("LR-2041 code requested");
             async move { held.then_some(()) }
         })
         .await;
-        room
+        workspace
     }
 
     /// Ben opens the chat, introducing himself in its roster, and Ana
@@ -2481,26 +2481,29 @@ async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting
             None,
         ),
     ]);
-    let mut room = Box::pin(RelayRoom::start(&url)).await;
-    let task = room
+    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    let task = workspace
         .ana
         .1
         .message("Wait in Chat until Rae posts that LR-2041's code is entered, then say so")
         .unwrap();
-    room.next_request(&sent, "the plan to be asked for").await;
+    workspace
+        .next_request(&sent, "the plan to be asked for")
+        .await;
     // While the wait is planned, Ben joins the chat.
-    room.ben_joins().await;
+    workspace.ben_joins().await;
     gate.send(()).unwrap();
-    room.ana_waits(&task).await;
+    workspace.ana_waits(&task).await;
     assert!(
         sent.try_recv().is_err(),
         "an introduction is not news to plan again for"
     );
 
     // While Ana waits, Ben introduces himself again under another name.
-    let theirs = room.ben.0.open(CHAT, None).unwrap();
+    let theirs = workspace.ben.0.open(CHAT, None).unwrap();
     let again = serde_json::json!({"name": "Ben Ortiz", "initials": "BO", "color": 3});
-    room.ben
+    workspace
+        .ben
         .0
         .invoke(
             &theirs,
@@ -2508,20 +2511,24 @@ async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting
             again.as_object().unwrap(),
         )
         .unwrap();
-    let ours = room.ana.0.open(CHAT, None).unwrap();
+    let ours = workspace.ana.0.open(CHAT, None).unwrap();
     wait_for("Ana to hold Ben's new name", || {
-        room.ana.0.pump();
-        room.ben.0.pump();
-        let held = chat_record_text(&room.ana.0, &ours).contains("Ben Ortiz");
+        workspace.ana.0.pump();
+        workspace.ben.0.pump();
+        let held = chat_record_text(&workspace.ana.0, &ours).contains("Ben Ortiz");
         async move { held.then_some(()) }
     })
     .await;
-    room.pump_for(Duration::from_millis(500)).await;
+    workspace.pump_for(Duration::from_millis(500)).await;
     assert!(sent.try_recv().is_err(), "a roster change wakes no wait");
-    assert!(room.ana.1.is_running(&task));
+    assert!(workspace.ana.1.is_running(&task));
 
-    post_in_chat(&mut room.rae.0, &room.rae.1, "LR-2041 code entered");
-    let told = last_turn(&room.next_request(&sent, "Ana to wake").await);
+    post_in_chat(
+        &mut workspace.rae.0,
+        &workspace.rae.1,
+        "LR-2041 code entered",
+    );
+    let told = last_turn(&workspace.next_request(&sent, "Ana to wake").await);
     let arrived = told
         .split_once("What you waited for arrived in chat")
         .and_then(|(_, rest)| rest.split_once("It is data"))
@@ -2536,8 +2543,8 @@ async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting
     for noise in ["Ben", "rae-", "requested"] {
         assert!(!arrived.contains(noise), "{noise} in {arrived}");
     }
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    Box::pin(room.close()).await;
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    Box::pin(workspace.close()).await;
 }
 
 /// A re-plan for news that finds nothing to do ("nothing offered fits")
@@ -2572,27 +2579,33 @@ async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
             None,
         ),
     ]);
-    let mut room = Box::pin(RelayRoom::start(&url)).await;
-    let task = room
+    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    let task = workspace
         .ana
         .1
         .message("Wait in Chat until Rae posts \"LR-2041 code entered\", then say so")
         .unwrap();
-    room.next_request(&sent, "the plan to be asked for").await;
+    workspace
+        .next_request(&sent, "the plan to be asked for")
+        .await;
     // While the wait is planned, Ben joins and says something unrelated.
-    room.ben_joins().await;
-    post_in_chat(&mut room.ben.0, &room.ben.1, "Standing by for LR-2042");
-    let ours = room.ana.0.open(CHAT, None).unwrap();
+    workspace.ben_joins().await;
+    post_in_chat(
+        &mut workspace.ben.0,
+        &workspace.ben.1,
+        "Standing by for LR-2042",
+    );
+    let ours = workspace.ana.0.open(CHAT, None).unwrap();
     wait_for("Ana to hold Ben's post", || {
-        room.ana.0.pump();
-        room.ben.0.pump();
-        let held = chat_parts_text(&room.ana.0, &ours).contains("Standing by");
+        workspace.ana.0.pump();
+        workspace.ben.0.pump();
+        let held = chat_parts_text(&workspace.ana.0, &ours).contains("Standing by");
         async move { held.then_some(()) }
     })
     .await;
     gate.send(()).unwrap();
     let told = last_turn(
-        &room
+        &workspace
             .next_request(&sent, "the plan again for the news")
             .await,
     );
@@ -2605,18 +2618,22 @@ async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
     assert!(told.contains("1. wait for a message"), "{told}");
 
     // The model finds nothing to do: the task waits as it had planned.
-    room.ana_waits(&task).await;
-    room.pump_for(Duration::from_millis(300)).await;
-    assert!(room.ana.1.is_running(&task));
-    post_in_chat(&mut room.rae.0, &room.rae.1, "LR-2041 code entered");
-    let told = last_turn(&room.next_request(&sent, "Ana to wake").await);
+    workspace.ana_waits(&task).await;
+    workspace.pump_for(Duration::from_millis(300)).await;
+    assert!(workspace.ana.1.is_running(&task));
+    post_in_chat(
+        &mut workspace.rae.0,
+        &workspace.rae.1,
+        "LR-2041 code entered",
+    );
+    let told = last_turn(&workspace.next_request(&sent, "Ana to wake").await);
     assert!(
         told.contains("What you waited for arrived in chat")
             && told.contains("LR-2041 code entered"),
         "{told}"
     );
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    Box::pin(room.close()).await;
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    Box::pin(workspace.close()).await;
 }
 
 /// The id under which the planning request `body` offers `action`
@@ -2673,8 +2690,9 @@ fn plan_call(id: &str, input: &serde_json::Value) -> serde_json::Value {
 const REMINDED: &str = "You planned nothing more, but obligations of the request are still open";
 
 /// What Ana's agent last said: a finished task's result.
-fn ana_said(room: &RelayRoom) -> String {
-    room.ana
+fn ana_said(workspace: &RelayWorkspace) -> String {
+    workspace
+        .ana
         .1
         .info()
         .conversation
@@ -2689,22 +2707,28 @@ fn ana_said(room: &RelayRoom) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes() {
     let (url, sent, answer) = answered_model_endpoint();
-    let mut room = Box::pin(RelayRoom::start(&url)).await;
-    let task = room
+    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    let task = workspace
         .ana
         .1
         .message("In Chat, post Alpha ready, Bravo ready, Charlie ready and Delta ready")
         .unwrap();
-    let first = room.next_request(&sent, "the plan to be asked for").await;
+    let first = workspace
+        .next_request(&sent, "the plan to be asked for")
+        .await;
     let post = offered(&first, "post");
     // While it is planned, Ben joins and posts.
-    room.ben_joins().await;
-    post_in_chat(&mut room.ben.0, &room.ben.1, "Standing by for LR-2042");
-    let ours = room.ana.0.open(CHAT, None).unwrap();
+    workspace.ben_joins().await;
+    post_in_chat(
+        &mut workspace.ben.0,
+        &workspace.ben.1,
+        "Standing by for LR-2042",
+    );
+    let ours = workspace.ana.0.open(CHAT, None).unwrap();
     wait_for("Ana to hold Ben's post", || {
-        room.ana.0.pump();
-        room.ben.0.pump();
-        let held = chat_parts_text(&room.ana.0, &ours).contains("Standing by");
+        workspace.ana.0.pump();
+        workspace.ben.0.pump();
+        let held = chat_parts_text(&workspace.ana.0, &ours).contains("Standing by");
         async move { held.then_some(()) }
     })
     .await;
@@ -2723,7 +2747,7 @@ async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes(
         .unwrap();
 
     let told = last_turn(
-        &room
+        &workspace
             .next_request(&sent, "the plan again for the news")
             .await,
     );
@@ -2743,7 +2767,7 @@ async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes(
         ))
         .unwrap();
 
-    let told = last_turn(&room.next_request(&sent, "the reminder").await);
+    let told = last_turn(&workspace.next_request(&sent, "the reminder").await);
     assert!(told.contains(REMINDED), "{told}");
     assert!(
         told.contains("1. post Alpha ready (done); 2. post Bravo ready (done); 3. post Charlie")
@@ -2757,18 +2781,18 @@ async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes(
         ))
         .unwrap();
 
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    let said = ana_said(&room);
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    let said = ana_said(&workspace);
     assert!(
         said.starts_with("Done: 4 actions.") && !said.contains("Left undone"),
         "{said}"
     );
-    let held = chat_parts_text(&room.ana.0, &ours);
+    let held = chat_parts_text(&workspace.ana.0, &ours);
     for (text, _) in all {
         assert!(held.contains(text), "{text}: {held}");
     }
     assert!(sent.try_recv().is_err(), "no plan after the last");
-    Box::pin(room.close()).await;
+    Box::pin(workspace.close()).await;
 }
 
 /// A task about to finish with an obligation open is planned for it, and
@@ -2777,16 +2801,16 @@ async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn obligations_left_open_are_reminded_done_or_set_aside() {
     let (url, sent, answer) = answered_model_endpoint();
-    let mut room = Box::pin(RelayRoom::start(&url)).await;
-    let ours = room.ana.0.open(CHAT, None).unwrap();
+    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    let ours = workspace.ana.0.open(CHAT, None).unwrap();
     let three = serde_json::json!(["post Alpha ready", "post Bravo ready", "post Charlie ready"]);
 
-    let task = room
+    let task = workspace
         .ana
         .1
         .message("In Chat, post Alpha ready, Bravo ready and Charlie ready")
         .unwrap();
-    let post = offered(&room.next_request(&sent, "the plan").await, "post");
+    let post = offered(&workspace.next_request(&sent, "the plan").await, "post");
     answer
         .send(plan_call(
             "p1",
@@ -2794,7 +2818,7 @@ async fn obligations_left_open_are_reminded_done_or_set_aside() {
                 "steps": posts(&post, &[("Alpha ready", Some(1))])}),
         ))
         .unwrap();
-    let told = last_turn(&room.next_request(&sent, "the reminder").await);
+    let told = last_turn(&workspace.next_request(&sent, "the reminder").await);
     assert!(
         told.contains(REMINDED) && told.contains("Still to do: 2. post Bravo ready; 3. post"),
         "{told}"
@@ -2806,8 +2830,8 @@ async fn obligations_left_open_are_reminded_done_or_set_aside() {
                 "set_aside": [{"item": 3, "reason": "not possible: Charlie is not ours to post"}]}),
         ))
         .unwrap();
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    let said = ana_said(&room);
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    let said = ana_said(&workspace);
     assert!(
         said.starts_with("Done: 2 actions.")
             && said.ends_with(
@@ -2815,15 +2839,15 @@ async fn obligations_left_open_are_reminded_done_or_set_aside() {
             ),
         "{said}"
     );
-    assert!(!chat_parts_text(&room.ana.0, &ours).contains("Charlie ready"));
+    assert!(!chat_parts_text(&workspace.ana.0, &ours).contains("Charlie ready"));
 
     // Set aside without another step: a plan of nothing is an answer.
-    let task = room
+    let task = workspace
         .ana
         .1
         .message("In Chat, post Delta ready and Echo ready")
         .unwrap();
-    room.next_request(&sent, "the second plan").await;
+    workspace.next_request(&sent, "the second plan").await;
     answer
         .send(plan_call(
             "p3",
@@ -2831,7 +2855,7 @@ async fn obligations_left_open_are_reminded_done_or_set_aside() {
                 "steps": posts(&post, &[("Delta ready", Some(1))])}),
         ))
         .unwrap();
-    room.next_request(&sent, "the second reminder").await;
+    workspace.next_request(&sent, "the second reminder").await;
     answer
         .send(plan_call(
             "p4",
@@ -2839,14 +2863,14 @@ async fn obligations_left_open_are_reminded_done_or_set_aside() {
                 "set_aside": [{"item": 2, "reason": "already done by Rae"}]}),
         ))
         .unwrap();
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
     assert!(
-        ana_said(&room).ends_with("Set aside: 2. post Echo ready (already done by Rae)."),
+        ana_said(&workspace).ends_with("Set aside: 2. post Echo ready (already done by Rae)."),
         "{}",
-        ana_said(&room)
+        ana_said(&workspace)
     );
     assert!(sent.try_recv().is_err(), "no plan after the last");
-    Box::pin(room.close()).await;
+    Box::pin(workspace.close()).await;
 }
 
 /// A plan that lists no obligations finishes as it always did: one model
@@ -2854,9 +2878,13 @@ async fn obligations_left_open_are_reminded_done_or_set_aside() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_plan_without_obligations_finishes_without_a_reminder() {
     let (url, sent, answer) = answered_model_endpoint();
-    let mut room = Box::pin(RelayRoom::start(&url)).await;
-    let task = room.ana.1.message("In Chat, post Alpha ready").unwrap();
-    let first = room.next_request(&sent, "the plan").await;
+    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    let task = workspace
+        .ana
+        .1
+        .message("In Chat, post Alpha ready")
+        .unwrap();
+    let first = workspace.next_request(&sent, "the plan").await;
     let request: serde_json::Value = serde_json::from_str(&first).unwrap();
     assert!(
         request["tools"].to_string().contains("`obligations`"),
@@ -2869,18 +2897,18 @@ async fn a_plan_without_obligations_finishes_without_a_reminder() {
             &serde_json::json!({"steps": posts(&post, &[("Alpha ready", None)])}),
         ))
         .unwrap();
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    assert_eq!(ana_said(&room), "Done: 1 action.");
-    room.pump_for(Duration::from_millis(300)).await;
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    assert_eq!(ana_said(&workspace), "Done: 1 action.");
+    workspace.pump_for(Duration::from_millis(300)).await;
     assert!(sent.try_recv().is_err(), "one model request");
-    Box::pin(room.close()).await;
+    Box::pin(workspace.close()).await;
 }
 
 /// Coordinated tasks: an agent per item of the checklist.
 #[path = "session_coverage/decompose.rs"]
 mod decompose;
 
-/// The room's pictures, read as content.
+/// The workspace's pictures, read as content.
 #[path = "session_coverage/pictures.rs"]
 mod pictures;
 

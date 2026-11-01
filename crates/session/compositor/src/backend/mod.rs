@@ -68,6 +68,17 @@ pub trait Backend {
         None
     }
 
+    /// What `output`'s panel shows: what its sink accepts and the signal it
+    /// is being driven with, from the sink's EDID and whether it is sent
+    /// HDR. A session tone-maps another device's shared window to it.
+    /// Backends that know nothing of their panels' colour say SDR.
+    fn output_colour(
+        &self,
+        _output: &smithay::output::Output,
+    ) -> tilo_color_pipeline::hdr_display::DisplayCapabilities {
+        tilo_color_pipeline::hdr_display::DisplayCapabilities::sdr_default()
+    }
+
     /// How this backend drives its outputs (`drm-kms`, `headless`), as
     /// Settings names it when it explains a display.
     fn describe(&self) -> &'static str {

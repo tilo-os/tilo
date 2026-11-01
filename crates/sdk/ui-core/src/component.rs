@@ -357,7 +357,7 @@ impl PropType for Icon {
     }
 }
 
-/// A participant, as a component shows one: their identity and what the room calls them.
+/// A participant, as a component shows one: their identity and what the workspace calls them.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Person {
     pub identity: String,

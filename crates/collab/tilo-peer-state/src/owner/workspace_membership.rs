@@ -1,5 +1,5 @@
 //! Membership changes this device writes itself: its people, their roles,
-//! the room's grants and its agents.
+//! the workspace's grants and its agents.
 use crate::owner::{NativeWorkspaceOwner, RoomId};
 use crate::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use ed25519_dalek::SigningKey;
@@ -15,9 +15,9 @@ pub(crate) struct StoredMembershipReceipt {
 
 impl NativeWorkspaceOwner {
     /// Commit a typed membership command as this device, signed with its
-    /// own `key`: the room's admission decides it against the caller's
+    /// own `key`: the workspace's admission decides it against the caller's
     /// grants, here and on every device that receives it. A device of the
-    /// room's owner publishes the governance as a checkpoint; any other
+    /// workspace's owner publishes the governance as a checkpoint; any other
     /// member publishes the changes it made, which every participant admits
     /// as it admits every member's. Exact retries converge; changed
     /// invocation reuse never changes policy.
@@ -32,7 +32,8 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<OwnerCommitReceipt, String> {
         let binding = request.binding()?;
-        let room = RoomId::parse(&request.room).ok_or("invalid native membership room")?;
+        let workspace =
+            RoomId::parse(&request.workspace).ok_or("invalid native membership workspace")?;
         let CommitOperation::WorkspaceMembershipCommand {
             invocation,
             caller,
@@ -42,13 +43,13 @@ impl NativeWorkspaceOwner {
             return Err("unsupported native membership owner commit family".into());
         };
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
         if key.verifying_key().to_bytes() != candidate.device().device_public_key {
             return Err("membership mutation is not signed by this device".into());
         }
         let id = serde_json::to_string(&(caller.device_public_key, invocation))
             .map_err(|error| error.to_string())?;
-        let before = candidate.peer.room_heads().unwrap_or_default();
+        let before = candidate.peer.workspace_heads().unwrap_or_default();
         // Always revalidate current authority, including retries. Apply to a
         // clone so retry validation cannot publish another mutation.
         let mut peer = candidate.peer.clone();
@@ -67,7 +68,7 @@ impl NativeWorkspaceOwner {
             .generation()
             .checked_add(1)
             .ok_or("native membership generation exhausted")?;
-        // What this device signs, it publishes: a device of the room's owner
+        // What this device signs, it publishes: a device of the workspace's owner
         // its governance as a checkpoint, carrying its durable state; any
         // other member the changes it made, which every participant admits.
         let writes_checkpoint = candidate
@@ -91,7 +92,7 @@ impl NativeWorkspaceOwner {
             }
             Vec::new()
         } else {
-            peer.room_changes_since(&before)
+            peer.workspace_changes_since(&before)
         };
         candidate.peer = peer;
         candidate.record.peer = candidate.peer.durable()?;
@@ -121,7 +122,7 @@ impl NativeWorkspaceOwner {
                 now,
             )?;
         }
-        self.publish_room(room, candidate, None)?;
+        self.publish_workspace(workspace, candidate, None)?;
         Ok(receipt)
     }
 }
@@ -141,7 +142,7 @@ mod tests {
 
     fn request(fixture: &Fixture, command: WorkspaceMembershipCommand) -> OwnerCommitRequest {
         OwnerCommitRequest {
-            room: crate::owner::testing::ROOM.into(),
+            workspace: crate::owner::testing::WORKSPACE.into(),
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: fixture.certificate.clone(),
@@ -156,7 +157,7 @@ mod tests {
     ) -> Vec<tilo_action_policy::Grant> {
         owner
             .with_current(
-                RoomId::parse(crate::owner::testing::ROOM).unwrap(),
+                RoomId::parse(crate::owner::testing::WORKSPACE).unwrap(),
                 |view| {
                     let authority = view
                         .peer()
@@ -192,10 +193,10 @@ mod tests {
             .unwrap();
         receipt.validate_for(&request).unwrap();
         let caps = agent_caps(&fixture.owner, &fixture);
-        assert_eq!(caps.len(), 2, "reading the room, and no governing it");
+        assert_eq!(caps.len(), 2, "reading the workspace, and no governing it");
         assert_eq!(
             caps[0].node,
-            tilo_action_policy::TreePath::room(crate::owner::testing::ROOM)
+            tilo_action_policy::TreePath::workspace(crate::owner::testing::WORKSPACE)
         );
         assert_eq!(caps[0].kinds, tilo_action_policy::KindSet::READ);
         assert_eq!(caps[0].answer, tilo_action_policy::Answer::Allow);
@@ -293,7 +294,7 @@ mod tests {
     #[test]
     fn durable_membership_reconciles_to_a_reopenable_governor_checkpoint() {
         let mut fixture = fixture();
-        let room = RoomId::parse(crate::owner::testing::ROOM).unwrap();
+        let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
         let add = request(
             &fixture,
             WorkspaceMembershipCommand::AddAgent {
@@ -307,13 +308,13 @@ mod tests {
             .unwrap();
         fixture
             .owner
-            .reconcile_outgoing(room, &fixture.key, fixture.now)
+            .reconcile_outgoing(workspace, &fixture.key, fixture.now)
             .unwrap();
 
         let reopened =
             crate::owner::open_file(&fixture.directory.path().join("owner.json")).unwrap();
         let frames = reopened
-            .with_outgoing(room, fixture.now, |_, outgoing| {
+            .with_outgoing(workspace, fixture.now, |_, outgoing| {
                 Ok(outgoing
                     .entries()
                     .map(|entry| entry.bytes().to_vec())
@@ -348,10 +349,10 @@ mod tests {
     #[test]
     fn a_device_that_does_not_govern_publishes_its_own_changes_until_governance_carries_them() {
         let mut fixture = crate::owner::application_record::tests::member_device_fixture();
-        let room = RoomId::parse(crate::owner::testing::ROOM).unwrap();
+        let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
         let outgoing = |owner: &NativeWorkspaceOwner| {
             owner
-                .with_outgoing(room, fixture.now, |_, outgoing| {
+                .with_outgoing(workspace, fixture.now, |_, outgoing| {
                     Ok(outgoing
                         .entries()
                         .map(|entry| entry.bytes().to_vec())
@@ -373,7 +374,7 @@ mod tests {
         let caps = agent_caps(&fixture.owner, &fixture);
         assert_eq!(caps.len(), 2, "written here at once");
         let frames = outgoing(&fixture.owner);
-        assert_eq!(frames.len(), 1, "one room delta to publish");
+        assert_eq!(frames.len(), 1, "one workspace delta to publish");
         let message: NeighbourMsg = postcard::from_bytes(&frames[0]).unwrap();
         assert!(matches!(message, NeighbourMsg::SyncResp { .. }));
         fixture
@@ -392,18 +393,18 @@ mod tests {
         held.sort();
         assert_eq!(
             granted, held,
-            "the room's host admits what the device wrote"
+            "the workspace's host admits what the device wrote"
         );
 
         let reopened =
             crate::owner::open_file(&fixture.directory.path().join("owner.json")).unwrap();
         assert_eq!(outgoing(&reopened).len(), 1, "kept until it is admitted");
         fixture.governor.refresh_checkpoint().unwrap();
-        let governor = fixture.governor.room_host().device_public_key;
+        let governor = fixture.governor.workspace_host().device_public_key;
         for (bytes, _) in fixture.governor.outgoing() {
             reopened
                 .receive(
-                    room,
+                    workspace,
                     TransportOrigin::RetainedRelayDelta(governor),
                     postcard::from_bytes(bytes).unwrap(),
                     fixture.now,
@@ -412,7 +413,7 @@ mod tests {
         }
         assert!(
             outgoing(&reopened).is_empty(),
-            "the room's governance carries it"
+            "the workspace's governance carries it"
         );
         assert_eq!(agent_caps(&reopened, &fixture), caps);
     }

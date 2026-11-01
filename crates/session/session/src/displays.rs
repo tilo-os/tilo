@@ -24,6 +24,7 @@ use os_actions::{BrightnessKind, step_together};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
+use tilo_color_pipeline::hdr_display::DisplayCapabilities;
 use tilo_compositor::{OutputChange, OutputInfo};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_resource::Effect;
@@ -323,6 +324,9 @@ pub struct Display {
     /// Whether its brightness is its own hardware — a backlight or DDC/CI —
     /// rather than the compositor darkening what it shows.
     pub backlight: bool,
+    /// The colour it shows: what its sink accepts and the signal it is
+    /// driven with, so what is shown on it is prepared for it.
+    pub colour: DisplayCapabilities,
 }
 
 /// The session's displays, as the session holds them.
@@ -360,6 +364,7 @@ struct Shown {
     /// The monitor on it, as the desk follows it between ports.
     monitor: String,
     name: String,
+    colour: DisplayCapabilities,
 }
 
 impl Inner {
@@ -381,6 +386,7 @@ impl Inner {
                         brightness: level.map(|level| level.level),
                         backlight: level
                             .is_some_and(|level| level.kind != BrightnessKind::Software),
+                        colour: shown.colour,
                     }
                 })
                 .collect(),
@@ -448,6 +454,7 @@ impl Displays {
                 } else {
                     output.label.clone()
                 },
+                colour: output.colour,
             })
             .collect();
         let focused = handle
@@ -471,6 +478,29 @@ impl Displays {
         }
         inner.shown = shown;
         inner.focused = focused;
+    }
+
+    /// The colour of the display on `monitor`: what a picture shown there
+    /// is prepared for. A tile the desk gives no display of its own — one
+    /// picture on every output — is shown on all of them, so it is only
+    /// prepared for HDR while every one of them is driven with it, and no
+    /// brighter than the dimmest.
+    #[must_use]
+    pub fn colour(&self, monitor: Option<&str>) -> DisplayCapabilities {
+        let inner = self.inner.borrow();
+        if let Some(monitor) = monitor {
+            return inner
+                .shown
+                .iter()
+                .find(|shown| shown.monitor == monitor)
+                .map_or_else(DisplayCapabilities::sdr_default, |shown| shown.colour);
+        }
+        inner
+            .shown
+            .iter()
+            .map(|shown| shown.colour)
+            .reduce(shared_colour)
+            .unwrap_or_else(DisplayCapabilities::sdr_default)
     }
 
     /// The display a level or step without one named is about: the one the
@@ -534,6 +564,21 @@ impl Displays {
                 reason: format!("{connector} cannot be dimmed here"),
             })
         }
+    }
+}
+
+/// The colour that suits a picture shown on a display showing `one` and on
+/// one showing `other`: HDR only while both are driven with it, and no
+/// brighter than the dimmer of them.
+fn shared_colour(one: DisplayCapabilities, other: DisplayCapabilities) -> DisplayCapabilities {
+    if !(one.supports_pq_output && other.supports_pq_output) {
+        return DisplayCapabilities::sdr_default();
+    }
+    DisplayCapabilities {
+        max_luminance_nits: one.max_luminance_nits.min(other.max_luminance_nits),
+        supports_pq_output: true,
+        supports_hlg_output: one.supports_hlg_output && other.supports_hlg_output,
+        bt2020_gamut: one.bt2020_gamut && other.bt2020_gamut,
     }
 }
 
@@ -644,6 +689,7 @@ mod tests {
             enabled: true,
             rect: Some((x, 0, 1280, 800)),
             description: None,
+            colour: DisplayCapabilities::sdr_default(),
         }
     }
 
@@ -747,6 +793,7 @@ mod tests {
                 connector: (*connector).into(),
                 monitor: (*connector).into(),
                 name: (*name).into(),
+                colour: DisplayCapabilities::sdr_default(),
             })
             .collect();
         inner.told = shown
@@ -755,6 +802,74 @@ mod tests {
             .collect();
         drop(inner);
         displays
+    }
+
+    /// The display on `connector` showing `colour`, as its sink and the
+    /// signal it is sent would say.
+    fn showing_colour(displays: &Displays, connector: &str, colour: DisplayCapabilities) {
+        let mut inner = displays.inner.borrow_mut();
+        if let Some(shown) = inner
+            .shown
+            .iter_mut()
+            .find(|shown| shown.connector == connector)
+        {
+            shown.colour = colour;
+        }
+    }
+
+    #[test]
+    fn a_display_reports_the_colour_its_sink_and_signal_give_it() {
+        let displays = showing(None, &[("eDP-1", "Built-in"), ("HDMI-A-1", "Dell")]);
+        showing_colour(&displays, "HDMI-A-1", DisplayCapabilities::hdr10_baseline());
+        assert_eq!(
+            displays.colour(Some("eDP-1")),
+            DisplayCapabilities::sdr_default()
+        );
+        assert_eq!(
+            displays.colour(Some("HDMI-A-1")),
+            DisplayCapabilities::hdr10_baseline(),
+            "a display driven with HDR says so"
+        );
+        assert_eq!(
+            displays.colour(Some("DP-9")),
+            DisplayCapabilities::sdr_default(),
+            "a monitor nothing is shown on is prepared for no more than SDR"
+        );
+        assert_eq!(
+            reading(&displays).displays[1].colour,
+            DisplayCapabilities::hdr10_baseline(),
+            "the published reading carries it"
+        );
+    }
+
+    #[test]
+    fn a_picture_on_every_display_is_prepared_for_what_they_all_show() {
+        let displays = showing(None, &[("eDP-1", "Built-in"), ("HDMI-A-1", "Dell")]);
+        assert_eq!(displays.colour(None), DisplayCapabilities::sdr_default());
+        showing_colour(&displays, "HDMI-A-1", DisplayCapabilities::hdr10_baseline());
+        assert_eq!(
+            displays.colour(None),
+            DisplayCapabilities::sdr_default(),
+            "one display showing SDR takes HDR away from a picture on all of them"
+        );
+        showing_colour(
+            &displays,
+            "eDP-1",
+            DisplayCapabilities {
+                max_luminance_nits: 400.0,
+                ..DisplayCapabilities::hdr10_baseline()
+            },
+        );
+        let common = displays.colour(None);
+        assert!(
+            common.supports_pq_output,
+            "every display showing HDR prepares the picture for HDR"
+        );
+        assert!(
+            (common.max_luminance_nits - 400.0).abs() < f32::EPSILON,
+            "no brighter than the dimmest display, got {}",
+            common.max_luminance_nits
+        );
     }
 
     /// What the resource publishes now.

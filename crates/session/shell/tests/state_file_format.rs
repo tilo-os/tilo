@@ -270,21 +270,21 @@ fn a_commenter_reacts_in_a_room_saved_before_reactions() {
     let mut tree: WorkspaceTree = serde_json::from_value(old).expect("an older file loads");
 
     let ws = &mut tree.desktop.workspaces[0];
-    let room = ws.policy.room.clone();
+    let room = ws.policy.workspace.clone();
     ws.policy
         .members
         .insert("commenter".into(), Role::Commenter);
-    let reactions = TreePath::room(&room)
+    let reactions = TreePath::workspace(&room)
         .app("notes")
         .kind("note")
         .resource("n1")
         .field("reactions");
-    let comments = TreePath::room(&room)
+    let comments = TreePath::workspace(&room)
         .app("notes")
         .kind("note")
         .resource("n1")
         .field("comments");
-    let body = TreePath::room(&room)
+    let body = TreePath::workspace(&room)
         .app("notes")
         .kind("note")
         .resource("n1")

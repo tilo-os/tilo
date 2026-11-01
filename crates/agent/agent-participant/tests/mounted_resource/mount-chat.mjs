@@ -62,7 +62,7 @@ export async function mountChat(tab) {
       }}, onReport: report => voiceEvidence.reports.push(report.type)};
     }
     window.peer = await withCustody(custody, () => connectPeer({origin:fixture.origin,
-      room:fixture.room, userPublicKey:selected.userPublicKey, profile:selected.profile,
+      workspace:fixture.workspace, userPublicKey:selected.userPublicKey, profile:selected.profile,
       device:selected.device, custody, runtime, desktop, voice:voiceOptions, live:false, requireExistingCertificate:true}));
     await peer.whenReady();
     window.catalogueDiagnostic = {calls:0, replies:0};

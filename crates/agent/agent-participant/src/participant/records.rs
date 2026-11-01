@@ -1,6 +1,6 @@
 //! Which record a step lands in when it names none, or names one an
 //! import cannot go to: a blank record the task made, the latest it acted
-//! on, the room's one written record of the app, else a new one; never a
+//! on, the workspace's one written record of the app, else a new one; never a
 //! document another agent is writing ([`super::authors`]).
 
 use automerge::ReadDoc as _;
@@ -16,7 +16,7 @@ impl AgentParticipant {
     pub(super) fn written(&mut self, app: &str, record: &str) -> bool {
         let route = DocumentRoute {
             app_id: app.to_owned(),
-            cluster_id: self.room.clone(),
+            cluster_id: self.workspace.clone(),
             record: record.to_owned(),
         };
         let Some(genesis) = self.genesis_changes(app) else {
@@ -57,7 +57,7 @@ impl AgentParticipant {
 
     /// The record `step`, which names none, acts on
     /// ([`Running::record_for`]): one open, else (unless it imports) the
-    /// room's only record of its app that holds anything, else a new one
+    /// workspace's only record of its app that holds anything, else a new one
     /// the task made. A blank record the agent merely holds gives way to
     /// that written one: it is what another agent filled (the workbook it
     /// imported), where a new record would hold none of it.
@@ -74,7 +74,7 @@ impl AgentParticipant {
         Ok(route)
     }
 
-    /// The record of the room [`Self::unnamed_record`] finds for `step`
+    /// The record of the workspace [`Self::unnamed_record`] finds for `step`
     /// without making one: `None` where it would open a new record.
     pub(super) fn existing_record(&mut self, step: &Step) -> Result<Option<DocumentRoute>, String> {
         let open: Vec<DocumentRoute> = self

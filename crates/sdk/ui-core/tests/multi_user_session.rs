@@ -109,15 +109,15 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
         );
     }
 
-    // Case `status_crosses_the_same_authenticated_room_presence_path`.
+    // Case `status_crosses_the_same_authenticated_workspace_presence_path`.
     {
         let mut relay = MemoryRelay::new();
         let alice_peer = relay.attach("alice");
         let bob_peer = relay.attach("bob");
         let (mut alice_app, _) = headless_app("alice", alice_peer.clone());
         let (mut bob_app, _) = headless_app("bob", bob_peer.clone());
-        let room = PresenceKey::Workspace {
-            id: "finance-room".into(),
+        let workspace = PresenceKey::Workspace {
+            id: "finance-workspace".into(),
         };
         let status = tilo_ui::LiveStatus {
             text: "Reconciling forecast against actuals".into(),
@@ -126,9 +126,9 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
             },
             updated_at: SystemTime::now(),
         };
-        assert!(alice_app.broadcast_status(room.clone(), Some(&status)));
+        assert!(alice_app.broadcast_status(workspace.clone(), Some(&status)));
         alice_peer.send(CollabRequest::Presence {
-            key: room,
+            key: workspace,
             payload: PresencePayload::Status {
                 text: status.text,
                 automatic: true,
@@ -142,7 +142,7 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
         let received = bob_app
             .presence_ctx()
             .status_for(&UserId("alice".into()), SystemTime::now())
-            .expect("remote status reaches the room presence context");
+            .expect("remote status reaches the workspace presence context");
         assert_eq!(received.text, "Reconciling forecast against actuals");
         assert!(matches!(
             received.origin,
@@ -388,7 +388,7 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
     }
 }
 
-/// Roles carry base authority over the room and its apps, so a Viewer
+/// Roles carry base authority over the workspace and its apps, so a Viewer
 /// reads the terminal surface and an Editor writes it — no individual
 /// capabilities needed.
 fn member_ctx(user: &str, role: Role) -> PermissionContext {

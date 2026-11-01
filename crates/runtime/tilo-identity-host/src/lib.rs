@@ -7,8 +7,8 @@
 //! [`certificates`]). [`enrollment`] is the one place a token admits another
 //! device; [`certification_ceremony`] gathers the identity key's signature
 //! for it from the person's devices that hold the key. [`provisioning`] creates that chain, [`custody`]
-//! selects the certificate this device presents to the hosts of each room,
-//! and [`join_proof`] keeps the signed proof it presents there.
+//! selects the certificate this device presents to the hosts of each
+//! workspace, and [`join_proof`] keeps the signed proof it presents there.
 //!
 //! Hosts supply their committed workspaces and channel service through
 //! [`broker::WorkspaceMembership`] and [`broker::ChannelKeySource`].

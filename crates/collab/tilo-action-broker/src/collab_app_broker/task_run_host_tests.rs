@@ -90,7 +90,7 @@ fn door_agent(f: &Fixture) -> DoorAgent {
         device.user_public_key,
         key.verifying_key().to_bytes(),
         DOOR_ISSUE,
-        room().to_string(),
+        workspace_id().to_string(),
         now.saturating_sub(1),
         now.saturating_add(HOUR_NS),
     )
@@ -104,14 +104,16 @@ fn door_agent(f: &Fixture) -> DoorAgent {
 
 impl DoorAgent {
     fn presentation(&self) -> Vec<u8> {
-        let room = room().to_string();
+        let workspace = workspace_id().to_string();
         runtime_collab::TaskAgentJoinIdentity {
-            workspace_id: room.clone(),
+            workspace_id: workspace.clone(),
             device_certificate: serde_json::to_vec(&self.device).unwrap(),
             delegation: self.delegation.encode(),
             proof: self
                 .key
-                .sign(&runtime_identity::collaboration_join_signing_bytes(&room))
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    &workspace,
+                ))
                 .to_bytes()
                 .to_vec(),
         }
@@ -174,7 +176,7 @@ fn list_windows_request(invocation: u128) -> InvokeRequest {
 /// The connection's own caller, as the door's MCP server makes it.
 fn connection(host: &TaskRunHost) -> Caller {
     Caller::local_agent(host.agent())
-        .in_room(host.room())
+        .in_workspace(host.workspace())
         .acting_for(host.person())
         .in_new_execution()
 }
@@ -320,7 +322,7 @@ async fn a_launched_task_agent_takes_its_task_steps_in_its_run() {
             });
             let f = Fixture::with_services(None, vec![steps.clone()]);
             let agent = admit(&f);
-            let route = CrdtRoute::record(TASK_AGENT_APP, room().to_string(), "");
+            let route = CrdtRoute::record(TASK_AGENT_APP, workspace_id().to_string(), "");
             let admitted = verify_join_identity(
                 &route,
                 &agent.presentation(),
@@ -332,7 +334,7 @@ async fn a_launched_task_agent_takes_its_task_steps_in_its_run() {
             let actor = admitted.broker_actor();
             let catalogue: serde_json::Value = serde_json::from_str(
                 &f.state
-                    .action_catalogue_json_for(&room().to_string(), &actor, None)
+                    .action_catalogue_json_for(&workspace_id().to_string(), &actor)
                     .unwrap(),
             )
             .unwrap();
@@ -399,7 +401,7 @@ async fn a_launched_task_agent_takes_its_task_steps_in_its_run() {
         .await;
 }
 
-/// The origin of the room's records, as a test sees what reaches it.
+/// The origin of the workspace's records, as a test sees what reaches it.
 #[derive(Default)]
 struct Origin {
     applied: Mutex<Vec<(String, String)>>,
@@ -408,7 +410,7 @@ struct Origin {
 impl crate::services::RecordChangeServices for Origin {
     fn apply(
         &self,
-        _room: &str,
+        _workspace: &str,
         change: &tilo_actions::remote::RecordChange,
         invoker: &tilo_actions::ActionInvoker,
     ) -> Result<serde_json::Value, String> {

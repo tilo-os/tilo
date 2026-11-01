@@ -61,7 +61,7 @@ GUEST_USER = "fedora"
 GUEST_PASSWORD = "tilo-e2e-password"
 # What the session's first-login import must make of the GNOME settings
 # guest.sh seeds (sources [('xkb', 'de+nodeadkeys')], xkb-options
-# ['compose:ralt']): crates/session/shell/src/firstboot.rs.
+# ['compose:ralt']): crates/session/onboarding-host/src/firstboot.rs.
 IMPORTED_INPUT = {"keyboard_layout": "de:nodeadkeys", "keyboard_layouts": ["de:nodeadkeys"],
                   "compose_key": "ralt"}
 # The login session the packaged tilo-session entry adds, and the one the

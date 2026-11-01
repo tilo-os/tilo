@@ -16,9 +16,9 @@ fn owner_id() -> String {
 /// What reached the fake store.
 #[derive(Default)]
 struct Shelf {
-    /// The room of each upload begun.
+    /// The workspace of each upload begun.
     begun: Vec<String>,
-    /// Each stored upload's room, hash and bytes.
+    /// Each stored upload's workspace, hash and bytes.
     stored: Vec<(String, String, Vec<u8>)>,
     /// Uploads dropped unfinished.
     aborted: usize,
@@ -31,31 +31,33 @@ impl ContentStoreServices for FakeStore {
         1024
     }
 
-    fn begin(&self, room: &str) -> Result<Box<dyn ContentSink>, String> {
-        self.0.lock().unwrap().begun.push(room.to_owned());
+    fn begin(&self, workspace: &str) -> Result<Box<dyn ContentSink>, String> {
+        self.0.lock().unwrap().begun.push(workspace.to_owned());
         Ok(Box::new(FakeSink {
             shelf: Arc::clone(&self.0),
-            room: room.to_owned(),
+            workspace: workspace.to_owned(),
             bytes: Vec::new(),
             done: false,
         }))
     }
 
-    /// The room holds the puts nobody dropped: what the fixture's shelf has
+    /// The workspace holds the puts nobody dropped: what the fixture's shelf has
     /// stored for it.
-    fn holds(&self, room: &str, hash: &str) -> bool {
+    fn holds(&self, workspace: &str, hash: &str) -> bool {
         self.0
             .lock()
             .unwrap()
             .stored
             .iter()
-            .any(|(stored_room, stored_hash, _)| stored_room == room && stored_hash == hash)
+            .any(|(stored_workspace, stored_hash, _)| {
+                stored_workspace == workspace && stored_hash == hash
+            })
     }
 }
 
 struct FakeSink {
     shelf: Arc<Mutex<Shelf>>,
-    room: String,
+    workspace: String,
     bytes: Vec<u8>,
     done: bool,
 }
@@ -71,7 +73,7 @@ impl ContentSink for FakeSink {
         let hash = blake3::hash(&self.bytes).to_hex().to_string();
         let len = self.bytes.len() as u64;
         self.shelf.lock().unwrap().stored.push((
-            self.room.clone(),
+            self.workspace.clone(),
             hash.clone(),
             std::mem::take(&mut self.bytes),
         ));
@@ -93,18 +95,18 @@ struct Fixture {
     _state: Arc<AppBrokerState>,
     puts: Arc<dyn ContentPuts>,
     shelf: Arc<Mutex<Shelf>>,
-    room: String,
+    workspace: String,
     journal: std::path::PathBuf,
     _home: tempfile::TempDir,
 }
 
-/// A room its owner governs, with agent `scribe` that may author only in
-/// Notes, and agent `porter` that may upload content to the room.
+/// A workspace its owner governs, with agent `scribe` that may author only in
+/// Notes, and agent `porter` that may upload content to the workspace.
 fn fixture() -> Fixture {
     let home = tempfile::tempdir().unwrap();
     let mut workspace = Workspace::new(WorkspaceId(61), "Content puts");
     workspace.set_owner(owner_id());
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
     workspace.admit_agent("scribe", KindSet::READ);
     workspace.allow_app(Subject::agent("scribe"), "so.tilo.notes", KindSet::ALL);
     workspace.admit_agent("porter", KindSet::READ);
@@ -125,20 +127,22 @@ fn fixture() -> Fixture {
         _state: state,
         puts,
         shelf,
-        room,
+        workspace: workspace_id,
         journal: home.path().join("state.json.invocations"),
         _home: home,
     }
 }
 
-fn owner(room: &str) -> Caller {
+fn owner(workspace: &str) -> Caller {
     Caller::local_person(owner_id())
-        .in_room(room)
+        .in_workspace(workspace)
         .in_new_execution()
 }
 
-fn agent(id: &str, room: &str) -> Caller {
-    Caller::local_agent(id).in_room(room).in_new_execution()
+fn agent(id: &str, workspace: &str) -> Caller {
+    Caller::local_agent(id)
+        .in_workspace(workspace)
+        .in_new_execution()
 }
 
 fn reason(error: &ActionHostError) -> &str {
@@ -151,10 +155,10 @@ fn reason(error: &ActionHostError) -> &str {
 }
 
 #[test]
-fn a_chunked_put_stores_the_bytes_in_the_callers_room_and_answers_their_reference() {
+fn a_chunked_put_stores_the_bytes_in_the_callers_workspace_and_answers_their_reference() {
     let fixture = fixture();
     let bytes: Vec<u8> = (0..700_u32).map(|n| (n % 251) as u8).collect();
-    let mut upload = fixture.puts.begin(&owner(&fixture.room), 700).unwrap();
+    let mut upload = fixture.puts.begin(&owner(&fixture.workspace), 700).unwrap();
     let mut offset = 0;
     for chunk in bytes.chunks(256) {
         offset = upload.append(offset, chunk).unwrap();
@@ -164,14 +168,17 @@ fn a_chunked_put_stores_the_bytes_in_the_callers_room_and_answers_their_referenc
     let hash = blake3::hash(&bytes).to_hex().to_string();
     assert_eq!(reference, format!("tilo.content:{hash}"));
     let shelf = fixture.shelf.lock().unwrap();
-    assert_eq!(shelf.begun, std::slice::from_ref(&fixture.room));
-    assert_eq!(shelf.stored, [(fixture.room.clone(), hash.clone(), bytes)]);
+    assert_eq!(shelf.begun, std::slice::from_ref(&fixture.workspace));
+    assert_eq!(
+        shelf.stored,
+        [(fixture.workspace.clone(), hash.clone(), bytes)]
+    );
     assert_eq!(shelf.aborted, 0);
     // Who put it is kept, without the bytes.
     let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
     assert_eq!(records.len(), 1, "{records:?}");
     assert_eq!(records[0].actor, owner_id());
-    assert_eq!(records[0].room, fixture.room);
+    assert_eq!(records[0].workspace, fixture.workspace);
     assert_eq!(records[0].hash, hash);
     assert_eq!(records[0].len, 700);
 }
@@ -181,7 +188,7 @@ fn an_agent_allowed_content_uploads_puts_content() {
     let fixture = fixture();
     let mut upload = fixture
         .puts
-        .begin(&agent("porter", &fixture.room), 3)
+        .begin(&agent("porter", &fixture.workspace), 3)
         .unwrap();
     upload.append(0, b"abc").unwrap();
     upload.finish().unwrap();
@@ -191,7 +198,7 @@ fn an_agent_allowed_content_uploads_puts_content() {
 #[test]
 fn a_chunk_at_the_wrong_offset_is_refused_with_where_to_resume() {
     let fixture = fixture();
-    let mut upload = fixture.puts.begin(&owner(&fixture.room), 6).unwrap();
+    let mut upload = fixture.puts.begin(&owner(&fixture.workspace), 6).unwrap();
     assert_eq!(upload.append(0, b"abc").unwrap(), 3);
     // The same chunk again: refused, not stored twice.
     let again = upload.append(0, b"abc").unwrap_err();
@@ -208,7 +215,7 @@ fn a_chunk_at_the_wrong_offset_is_refused_with_where_to_resume() {
 #[test]
 fn a_finish_short_of_the_size_stores_nothing() {
     let fixture = fixture();
-    let mut upload = fixture.puts.begin(&owner(&fixture.room), 6).unwrap();
+    let mut upload = fixture.puts.begin(&owner(&fixture.workspace), 6).unwrap();
     upload.append(0, b"abc").unwrap();
     let short = upload.finish().unwrap_err();
     assert_eq!(reason(&short), "the upload has 3 of 6 bytes");
@@ -220,7 +227,7 @@ fn a_finish_short_of_the_size_stores_nothing() {
 #[test]
 fn a_dropped_upload_stores_nothing() {
     let fixture = fixture();
-    let mut upload = fixture.puts.begin(&owner(&fixture.room), 6).unwrap();
+    let mut upload = fixture.puts.begin(&owner(&fixture.workspace), 6).unwrap();
     upload.append(0, b"abc").unwrap();
     drop(upload);
     let shelf = fixture.shelf.lock().unwrap();
@@ -234,7 +241,7 @@ fn sizes_the_store_does_not_take_are_refused_before_anything_opens() {
     for size in [0, 1025] {
         let refused = fixture
             .puts
-            .begin(&owner(&fixture.room), size)
+            .begin(&owner(&fixture.workspace), size)
             .err()
             .unwrap();
         assert_eq!(
@@ -245,34 +252,34 @@ fn sizes_the_store_does_not_take_are_refused_before_anything_opens() {
     assert!(fixture.shelf.lock().unwrap().begun.is_empty());
 }
 
-/// An agent that may author only in Notes may not add content to the room:
-/// authoring in an app is no authority over the room's content store. It is
+/// An agent that may author only in Notes may not add content to the workspace:
+/// authoring in an app is no authority over the workspace's content store. It is
 /// told the one rule that would let it, and nothing is opened or stored.
 #[test]
 fn an_agent_authoring_only_in_notes_is_refused_a_put_with_the_rule_that_would_allow_it() {
     let fixture = fixture();
     let refused = fixture
         .puts
-        .begin(&agent("scribe", &fixture.room), 3)
+        .begin(&agent("scribe", &fixture.workspace), 3)
         .err()
         .unwrap();
     assert_eq!(
         refused,
         ActionHostError::Refused {
-            reason: "not allowed to add content to this room: allow content uploads in this room to let it".into()
+            reason: "not allowed to add content to this workspace: allow content uploads in this workspace to let it".into()
         }
     );
     let shelf = fixture.shelf.lock().unwrap();
     assert!(shelf.begun.is_empty() && shelf.stored.is_empty());
 }
 
-/// A caller who is not in the room at all stores nothing there.
+/// A caller who is not in the workspace at all stores nothing there.
 #[test]
-fn a_caller_outside_the_room_is_refused_and_nothing_is_stored() {
+fn a_caller_outside_the_workspace_is_refused_and_nothing_is_stored() {
     let fixture = fixture();
     let refused = fixture
         .puts
-        .begin(&agent("stranger", &fixture.room), 3)
+        .begin(&agent("stranger", &fixture.workspace), 3)
         .err()
         .unwrap();
     assert_eq!(refused, ActionHostError::NotPermitted);
@@ -285,7 +292,7 @@ fn a_caller_outside_the_room_is_refused_and_nothing_is_stored() {
 #[test]
 fn a_put_whose_session_ended_before_finish_stores_nothing() {
     let fixture = fixture();
-    let caller = agent("porter", &fixture.room);
+    let caller = agent("porter", &fixture.workspace);
     let mut upload = fixture.puts.begin(&caller, 3).unwrap();
     upload.append(0, b"abc").unwrap();
     caller.retire_execution();
@@ -295,8 +302,8 @@ fn a_put_whose_session_ended_before_finish_stores_nothing() {
     assert_eq!(shelf.aborted, 1);
 }
 
-/// The put is recorded before the room references its content: when the
-/// record cannot be written, the put is refused and the room holds nothing.
+/// The put is recorded before the workspace references its content: when the
+/// record cannot be written, the put is refused and the workspace holds nothing.
 #[test]
 fn a_put_whose_attribution_cannot_be_written_is_refused_and_tags_nothing() {
     let fixture = fixture();
@@ -307,7 +314,7 @@ fn a_put_whose_attribution_cannot_be_written_is_refused_and_tags_nothing() {
             .join(super::super::invocation_journal::CONTENT_PUTS_FILE),
     )
     .unwrap();
-    let mut upload = fixture.puts.begin(&owner(&fixture.room), 3).unwrap();
+    let mut upload = fixture.puts.begin(&owner(&fixture.workspace), 3).unwrap();
     upload.append(0, b"abc").unwrap();
     let refused = upload.finish().expect_err("an unrecorded put is refused");
     assert!(
@@ -319,11 +326,11 @@ fn a_put_whose_attribution_cannot_be_written_is_refused_and_tags_nothing() {
     assert_eq!(shelf.aborted, 1, "the store's upload is dropped");
 }
 
-/// Put `bytes` into the fixture's room and answer its hash.
+/// Put `bytes` into the fixture's workspace and answer its hash.
 fn put(fixture: &Fixture, bytes: &[u8]) -> String {
     let mut upload = fixture
         .puts
-        .begin(&owner(&fixture.room), bytes.len() as u64)
+        .begin(&owner(&fixture.workspace), bytes.len() as u64)
         .unwrap();
     upload.append(0, bytes).unwrap();
     let reference = upload.finish().unwrap();
@@ -331,17 +338,17 @@ fn put(fixture: &Fixture, bytes: &[u8]) -> String {
 }
 
 /// Each put appends one line beside the file's first, and the file stays as
-/// long as the content the room holds, not as many puts as the device ever
+/// long as the content the workspace holds, not as many puts as the device ever
 /// made: once the appended lines reach the size of the snapshot, the next put
-/// rewrites the file whole, dropping the attributions of content the room no
+/// rewrites the file whole, dropping the attributions of content the workspace no
 /// longer holds on the way.
 #[test]
-fn the_attribution_log_stays_bounded_by_what_rooms_hold() {
+fn the_attribution_log_stays_bounded_by_what_workspaces_hold() {
     let fixture = fixture();
     let path = fixture
         .journal
         .join(super::super::invocation_journal::CONTENT_PUTS_FILE);
-    // Content the room keeps dropping, as an app discards what it uploaded.
+    // Content the workspace keeps dropping, as an app discards what it uploaded.
     let mut longest = 0;
     for n in 0..256_u32 {
         let hash = put(&fixture, &n.to_le_bytes().repeat(16));
@@ -355,12 +362,12 @@ fn the_attribution_log_stays_bounded_by_what_rooms_hold() {
     }
     assert!(
         longest < 4096,
-        "the attribution log grew with the puts made, not with what rooms hold: {longest} bytes"
+        "the attribution log grew with the puts made, not with what workspaces hold: {longest} bytes"
     );
     // A compaction only happens on the put after the appended lines outgrew
     // the snapshot, so the file still holds the attributions of the few puts
     // made since. That backlog is bounded too: it never outgrows the snapshot
-    // line, so the log is bounded by the content rooms hold plus that backlog,
+    // line, so the log is bounded by the content workspaces hold plus that backlog,
     // never by every put the device ever made.
     let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
     assert!(
@@ -370,10 +377,10 @@ fn the_attribution_log_stays_bounded_by_what_rooms_hold() {
     );
 }
 
-/// However many puts a room keeps, each one stays attributed: a compaction
+/// However many puts a workspace keeps, each one stays attributed: a compaction
 /// folds the appended lines into its snapshot instead of dropping them.
 #[test]
-fn every_put_a_room_holds_keeps_its_attribution_through_a_compaction() {
+fn every_put_a_workspace_holds_keeps_its_attribution_through_a_compaction() {
     let fixture = fixture();
     let mut hashes = Vec::new();
     for n in 0..64_u32 {
@@ -384,19 +391,19 @@ fn every_put_a_room_holds_keeps_its_attribution_through_a_compaction() {
     for hash in &hashes {
         assert!(
             stored.contains(hash),
-            "a put the room holds lost its attribution: {hash}"
+            "a put the workspace holds lost its attribution: {hash}"
         );
     }
 }
 
-/// An attribution whose content the room no longer holds is dropped by a
+/// An attribution whose content the workspace no longer holds is dropped by a
 /// compaction, so the file stays as long as the content it describes is
 /// worth attributing.
 #[test]
-fn a_compaction_drops_the_attributions_of_content_no_room_holds() {
+fn a_compaction_drops_the_attributions_of_content_no_workspace_holds() {
     let fixture = fixture();
     let dropped = put(&fixture, b"gone before the next compaction");
-    // The room drops the content: no put left it, so nothing holds it.
+    // The workspace drops the content: no put left it, so nothing holds it.
     fixture
         .shelf
         .lock()
@@ -416,7 +423,7 @@ fn a_compaction_drops_the_attributions_of_content_no_room_holds() {
     let stored: Vec<String> = records.iter().map(|record| record.hash.clone()).collect();
     assert!(
         !stored.contains(&dropped),
-        "an attribution of content no room holds is dropped: {stored:?}"
+        "an attribution of content no workspace holds is dropped: {stored:?}"
     );
     assert!(stored.contains(&kept), "the held put survives: {stored:?}");
 }

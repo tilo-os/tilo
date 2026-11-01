@@ -195,7 +195,7 @@ fn withdraw(sheet: &Sheet, ids: impl Iterator<Item = [u8; 32]>) {
 fn request(question: &PendingConfirmation, person: &str) -> AppActionConsentRequest {
     AppActionConsentRequest {
         handle: handle(&question.id),
-        room: question.room.clone(),
+        workspace: question.room.clone(),
         person: person.to_owned(),
         app_id: question.agent_label.clone(),
         target_app: String::new(),
@@ -224,7 +224,7 @@ pub(crate) fn request_for_foreign(
 ) -> AppActionConsentRequest {
     AppActionConsentRequest {
         handle: format!("foreign-question:{}", hex::encode(question.id)),
-        room: question.room.clone(),
+        workspace: question.room.clone(),
         person: person.to_owned(),
         app_id: question.device_label.clone(),
         target_app: String::new(),

@@ -30,46 +30,46 @@ impl App {
             // does not makes the reader read the document whole.
             let mut lacks_base = false;
             let result = read.with_mutation(|mutation| {
-                let room_route = self
+                let workspace_route = self
                     .collaboration
-                    .room_manager
+                    .workspace_manager
                     .as_ref()
                     .and_then(|manager| manager.primary_route())
                     .or_else(|| {
                         (self.persistence.records.is_some()
-                            && self.collaboration.room_manager.is_none())
+                            && self.collaboration.workspace_manager.is_none())
                         .then(|| self.collaboration.manager.primary_route())
                         .flatten()
                     });
-                if self.native_room_route.as_ref() == Some(&route)
-                    || room_route.is_some_and(|witness| *witness.route() == route)
+                if self.native_workspace_route.as_ref() == Some(&route)
+                    || workspace_route.is_some_and(|witness| *witness.route() == route)
                 {
-                    let room = self
+                    let workspace = self
                         .persistence
                         .room_index
                         .as_mut()
-                        .ok_or("committed room owner unavailable".to_string())?;
-                    if room.document().pending_ops() != 0 {
+                        .ok_or("committed workspace owner unavailable".to_string())?;
+                    if workspace.document().pending_ops() != 0 {
                         return Ok(None);
                     }
-                    if !read.applies_to(room.document()) {
+                    if !read.applies_to(workspace.document()) {
                         lacks_base = true;
                         return Ok(None);
                     }
-                    let before = room.document().base_heads();
+                    let before = workspace.document().base_heads();
                     match mutation {
                         collab_types::DocumentMutation::Snapshot(bytes) => {
-                            room.merge_snapshot(bytes)
+                            workspace.merge_snapshot(bytes)
                         }
                         collab_types::DocumentMutation::Incremental(bytes) => {
-                            room.load_incremental(bytes).map(|_| ())
+                            workspace.load_incremental(bytes).map(|_| ())
                         }
                     }
                     .map_err(|e| e.to_string())?;
                     if let Some(records) = self.persistence.records.as_mut() {
-                        records.discover_room(room.document());
+                        records.discover_workspace(workspace.document());
                     }
-                    return Ok(Some(room.document().base_heads() != before));
+                    return Ok(Some(workspace.document().base_heads() != before));
                 }
                 if let Some(entry) = self
                     .document_routes

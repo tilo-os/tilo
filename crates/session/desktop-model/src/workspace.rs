@@ -12,7 +12,7 @@ use collab_types::caps::{
 };
 use tilo_action_policy::{
     ActionKind, Answer, Authority, Change, Context, Grant, GrantId, KindSet, Lifetime, Preset,
-    PresetError, Refusal, Role, RoomPolicy, Subject, TreePath, roles,
+    PresetError, Refusal, Role, Subject, TreePath, WorkspacePolicy, roles,
 };
 
 use crate::app::AppId;
@@ -66,7 +66,7 @@ pub struct Workspace {
     /// Who may do what in this workspace: its owner (structural, `None` until the
     /// local user adopts it on load), each member's role preset, and every
     /// grant on the workspace's tree. Changed only through governance actions.
-    pub policy: RoomPolicy,
+    pub policy: WorkspacePolicy,
     /// What apps' code may reach outside their documents in this workspace:
     /// filesystem paths, file records, devices and network hosts granted
     /// through portals. Never what a person grants an agent.
@@ -138,7 +138,7 @@ struct StoredWorkspace {
     #[serde(default)]
     ownership_transfer_cancellations: Vec<collab_types::OwnershipTransferCancellationV1>,
     #[serde(default)]
-    policy: Option<RoomPolicy>,
+    policy: Option<WorkspacePolicy>,
     #[serde(default)]
     sandbox: Vec<CapOverride>,
     #[serde(default)]
@@ -170,7 +170,7 @@ impl From<StoredWorkspace> for Workspace {
                 policy.rehome(room.to_string());
                 policy
             }
-            None => RoomPolicy::unowned(room.to_string(), &Subject::Role(Role::Owner)),
+            None => WorkspacePolicy::unowned(room.to_string(), &Subject::Role(Role::Owner)),
         };
         Self {
             id: stored.id,
@@ -617,7 +617,7 @@ impl Workspace {
     pub fn may_govern_at(&self, user: &str, action: &str, now: u64) -> bool {
         self.answer_at(
             user,
-            &roles::governance_action(&self.policy.room, action),
+            &roles::governance_action(&self.policy.workspace, action),
             roles::GOVERNANCE_KIND,
             now,
         ) == Answer::Allow
@@ -626,7 +626,7 @@ impl Workspace {
     /// Apply a governance change made by `actor` as themselves.
     ///
     /// # Errors
-    /// See [`RoomPolicy::apply`].
+    /// See [`WorkspacePolicy::apply`].
     pub fn govern_as_at(&mut self, actor: &str, change: Change, now: u64) -> Result<(), Refusal> {
         let policy = self.policy.clone();
         let authority = Authority::person(policy.party(actor));
@@ -644,7 +644,7 @@ impl Workspace {
         granted_by: &Subject,
     ) -> Vec<GrantId> {
         preset
-            .grants(&self.policy.room, agent, granted_by)
+            .grants(&self.policy.workspace, agent, granted_by)
             .into_iter()
             .map(|grant| self.grant(grant))
             .collect()
@@ -761,7 +761,7 @@ impl Workspace {
     /// so this machine answers for nothing it does not own.
     pub fn surrender_governance(&mut self) -> bool {
         let had_owner = self.policy.owner.take().is_some();
-        let governance = roles::room_resource(&self.policy.room);
+        let governance = roles::workspace_resource(&self.policy.workspace);
         let dropped = self.revoke_grants_matching(|grant| {
             matches!(grant.subject, Subject::Person(_))
                 && grant.answer != Answer::Deny
@@ -938,7 +938,7 @@ impl Workspace {
         };
         Some(if changes(&room) {
             Role::Editor
-        } else if changes(&roles::comments(&self.policy.room)) {
+        } else if changes(&roles::comments(&self.policy.workspace)) {
             Role::Commenter
         } else {
             Role::Viewer
@@ -988,7 +988,7 @@ impl Workspace {
         // A grant set is kept below no workspace in particular: assigning it
         // places it in this one.
         for rule in &mut preset.rules {
-            rule.node = rule.node.within_room();
+            rule.node = rule.node.within_workspace();
         }
         if let Some(existing) = self
             .presets
@@ -1060,7 +1060,7 @@ impl Workspace {
             .iter()
             .find(|preset| preset.name.eq_ignore_ascii_case(name.trim()))
             .cloned();
-        let room = self.policy.room.clone();
+        let room = self.policy.workspace.clone();
         let may = |node: &TreePath| {
             authority.decide(node, roles::GOVERNANCE_KIND, &cx).answer == Answer::Allow
         };
@@ -1096,10 +1096,10 @@ impl Workspace {
             })
             .collect();
         for grant in &grants {
-            if grant.node.room_id() != Some(room.as_str()) {
-                return Err(Refusal::OutsideRoom(grant.node.clone()).into());
+            if grant.node.workspace_id() != Some(room.as_str()) {
+                return Err(Refusal::OutsideWorkspace(grant.node.clone()).into());
             }
-            RoomPolicy::check_within(authority, grant, &cx)?;
+            WorkspacePolicy::check_within(authority, grant, &cx)?;
         }
         let ids = grants.iter().map(|grant| grant.id.clone()).collect();
         self.policy.grants.extend(grants);
@@ -1111,7 +1111,7 @@ impl Workspace {
 /// lets someone assign that one set.
 #[must_use]
 pub fn preset_assign_node(room: &str, name: &str) -> TreePath {
-    roles::room_resource(room)
+    roles::workspace_resource(room)
         .field("presets")
         .item(name.trim().to_lowercase())
         .action("assign")
@@ -1145,7 +1145,7 @@ impl Workspace {
             pending_ownership_transfer: None,
             ownership_transfer_audit: Vec::new(),
             ownership_transfer_cancellations: Vec::new(),
-            policy: RoomPolicy::unowned(room.to_string(), &Subject::Role(Role::Owner)),
+            policy: WorkspacePolicy::unowned(room.to_string(), &Subject::Role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
@@ -1264,7 +1264,7 @@ impl Default for Workspace {
             pending_ownership_transfer: None,
             ownership_transfer_audit: Vec::new(),
             ownership_transfer_cancellations: Vec::new(),
-            policy: RoomPolicy::unowned(room.to_string(), &Subject::Role(Role::Owner)),
+            policy: WorkspacePolicy::unowned(room.to_string(), &Subject::Role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),

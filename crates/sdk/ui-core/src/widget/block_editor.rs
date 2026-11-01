@@ -709,13 +709,13 @@ pub struct BlockEditor {
     /// before it paints instead of guessing from a line edge.
     slash_anchor_caret: Option<(usize, usize)>,
     link_anchor_caret: Option<(usize, usize)>,
-    /// The `@` picker: the room's participants under the caret while a
+    /// The `@` picker: the workspace's participants under the caret while a
     /// name is typed after an `@`.
     mention_picker: crate::widget::mention_picker::MentionPicker,
-    /// Who the picker offers: the room's roster as the last draw saw it,
+    /// Who the picker offers: the workspace's roster as the last draw saw it,
     /// with what the owner added ([`Self::set_mention_people`]).
     mention_roster: Vec<crate::widget::MentionCandidate>,
-    /// Participants the owner knows of beyond the room's roster.
+    /// Participants the owner knows of beyond the workspace's roster.
     mention_extra: Vec<crate::widget::MentionCandidate>,
     /// Whether the owner painted the popovers itself this frame
     /// ([`Self::draw_overlay`]), so the window's overlay pass leaves them.
@@ -1755,7 +1755,7 @@ impl BlockEditor {
         self.popover_bounds = bounds;
     }
 
-    /// Participants the owner's record knows of beyond the room's roster
+    /// Participants the owner's record knows of beyond the workspace's roster
     /// (someone who wrote here and has since left), offered at `@` too.
     pub fn set_mention_people(&mut self, people: Vec<crate::widget::MentionCandidate>) {
         self.mention_extra = people;
@@ -9114,7 +9114,7 @@ impl Widget for BlockEditor {
         self.popovers_painted = false;
         if self.is_focused && !self.read_only {
             // Who `@` offers: the room as it is now, read where the editor
-            // meets the room's presence.
+            // meets the workspace's presence.
             let roster =
                 crate::widget::mention_picker::merged_roster(presence, &self.mention_extra);
             if roster != self.mention_roster {

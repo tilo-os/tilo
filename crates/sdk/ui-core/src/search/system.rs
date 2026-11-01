@@ -56,7 +56,7 @@ pub enum ResourceKind {
     /// A note document (title + body). Enter opens/focuses the note tab.
     Note,
     /// A record an app made, collected or imported. Enter brings it into
-    /// the current room (a reference, not a copy) and opens it if openable.
+    /// the current workspace (a reference, not a copy) and opens it if openable.
     Record,
     File,
     Folder,
@@ -834,7 +834,7 @@ pub fn icon_for_kind(kind: &ResourceKind) -> crate::icons::Icon {
         K::Action => Icon::Settings2,
         K::Application => Icon::LayoutGrid,
         K::Note => Icon::FileText,
-        // A record is one document several rooms can reach — the stacked
+        // A record is one document several workspaces can reach — the stacked
         // plates say "this is the same thing in more than one place",
         // which is exactly what a reference is.
         K::Record => Icon::Layers,

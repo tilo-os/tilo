@@ -28,6 +28,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use smithay::input::keyboard::xkb::keysyms;
@@ -505,7 +506,7 @@ impl Compositor {
             .env_remove("DISPLAY")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .expect("spawn the compositor under test")
     }
 
@@ -3991,7 +3992,7 @@ fn private_x11_activation_facts(compositor: &Compositor) -> Vec<(u32, bool, bool
             .env("DISPLAY", &display)
             .env("XAUTHORITY", &authority)
             .env("PATH", "/usr/bin:/bin")
-            .output()
+            .output_locked()
             .ok()
             .filter(|output| output.status.success())
             .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
@@ -4136,7 +4137,9 @@ fn spawn_isolated_chatgpt_x11(
         .env("XDG_CACHE_HOME", profile.join("cache"))
         .env("XDG_STATE_HOME", profile.join("state"))
         .env("XDG_RUNTIME_DIR", &compositor.runtime_dir);
-    let preflight = preflight.output().expect("run host-launch preflight");
+    let preflight = preflight
+        .output_locked()
+        .expect("run host-launch preflight");
     assert!(
         preflight.status.success(),
         "private host-entry fixture must resolve through tilo-launcher before Electron starts: {}",
@@ -4179,7 +4182,7 @@ fn spawn_isolated_chatgpt_x11(
         command.env("TILO_HOST_ACTIVATION_TOKEN", token);
     }
     let mut child = command
-        .spawn()
+        .spawn_locked()
         .expect("spawn isolated ChatGPT Electron client");
     let log = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&log);
@@ -4235,7 +4238,7 @@ fn spawn_isolated_x11_probe(
         });
     }
     command
-        .spawn()
+        .spawn_locked()
         .ok()
         .map(|child| KillProcessGroup::new(child, true))
 }
@@ -6036,7 +6039,7 @@ fn spawn_word_processor(
         .env_remove("DISPLAY")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .expect("spawn the word processor");
     let app_log = Arc::new(Mutex::new(Vec::<String>::new()));
     let stderr = app.stderr.take().expect("app stderr");

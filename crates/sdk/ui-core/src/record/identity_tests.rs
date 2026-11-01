@@ -152,9 +152,9 @@ fn markup_checkouts(path: &str, file: &RecordId) -> (RecordCheckout, RecordCheck
     (old, new)
 }
 
-fn stored_bytes(root: &Path, package: &str, room: &str, id: &RecordId) -> Vec<u8> {
+fn stored_bytes(root: &Path, package: &str, workspace: &str, id: &RecordId) -> Vec<u8> {
     app_state::FsStore::new(root)
-        .read(&StorageKey::record(package, room, id.storage_key()))
+        .read(&StorageKey::record(package, workspace, id.storage_key()))
         .unwrap()
         .unwrap()
         .bytes
@@ -185,14 +185,14 @@ fn former_records_are_validated_and_adopted_exactly_once() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let package = "so.tilo.migration";
-        let room = "migration-room";
+        let workspace = "migration-workspace";
         let path = "/home/ada/papers/draft.pdf";
         let file = RecordId::for_file_record(uuid::Uuid::new_v4());
         let (old, new) = markup_checkouts(path, &file);
 
         {
             let mut owners = RecordOwners::new(root.clone());
-            let store = owners.open(package, room).unwrap();
+            let store = owners.open(package, workspace).unwrap();
             store.create_record(&old).unwrap();
             store
                 .with(&old.id, |doc| {
@@ -202,11 +202,11 @@ fn former_records_are_validated_and_adopted_exactly_once() {
                 .unwrap();
             store.try_flush().unwrap();
         }
-        let old_bytes = stored_bytes(&root, package, room, &old.id);
+        let old_bytes = stored_bytes(&root, package, workspace, &old.id);
 
         {
             let mut owners = RecordOwners::new(root.clone());
-            let store = owners.open(package, room).unwrap();
+            let store = owners.open(package, workspace).unwrap();
             assert!(matches!(
                 store.try_open_record(&new),
                 Ok(RecordOpenOutcome::Loaded)
@@ -230,7 +230,7 @@ fn former_records_are_validated_and_adopted_exactly_once() {
             store.try_flush().unwrap();
         }
         assert_eq!(
-            stored_bytes(&root, package, room, &old.id),
+            stored_bytes(&root, package, workspace, &old.id),
             old_bytes,
             "the former record is only read"
         );
@@ -239,7 +239,7 @@ fn former_records_are_validated_and_adopted_exactly_once() {
         // the same path names the same former record, and the first successor
         // keeps custody of it.
         let mut owners = RecordOwners::new(root);
-        let store = owners.open(package, room).unwrap();
+        let store = owners.open(package, workspace).unwrap();
         assert!(matches!(
             store.try_open_record(&new),
             Ok(RecordOpenOutcome::Loaded)
@@ -261,32 +261,36 @@ fn former_records_are_validated_and_adopted_exactly_once() {
         let temp = tempfile::tempdir().unwrap();
         let documents = native(temp.path());
         let package = "so.tilo.migration-launch";
-        let room = "22222222-2222-4222-8222-222222222222";
+        let workspace = "22222222-2222-4222-8222-222222222222";
         let path = "/home/ada/papers/draft.pdf";
         let file = RecordId::for_file_record(uuid::Uuid::new_v4());
         let (old, new) = markup_checkouts(path, &file);
         {
-            let mut set = RecordSet::open_in(Rc::clone(&documents), package, room);
+            let mut set = RecordSet::open_in(Rc::clone(&documents), package, workspace);
             let mut state = State::new();
             assert!(set.checkout(&mut state, None, &old));
             put_text(&mut state.doc, "note", "made before files had ids");
             set.flush(&mut state.doc).unwrap();
         }
         {
-            let mut set = RecordSet::open_in(Rc::clone(&documents), package, room);
+            let mut set = RecordSet::open_in(Rc::clone(&documents), package, workspace);
             let mut state = State::new();
-            let mut room_doc = AutoCommit::new();
-            assert!(set.checkout(&mut state, Some(&mut room_doc), &new));
+            let mut workspace_doc = AutoCommit::new();
+            assert!(set.checkout(&mut state, Some(&mut workspace_doc), &new));
             assert_eq!(
                 text(&state.doc, "note").as_deref(),
                 Some("made before files had ids")
             );
             assert_eq!(identity(&state.doc).unwrap().id, new.id);
-            assert!(index::holds(&room_doc, &file));
-            assert!(!index::holds(&room_doc, &RecordId::for_file(path)));
+            assert!(index::holds(&workspace_doc, &file));
+            assert!(!index::holds(&workspace_doc, &RecordId::for_file(path)));
             set.flush(&mut state.doc).unwrap();
         }
-        let store = RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
+        let store = RecordStore::new(RecordSet::open_in(
+            Rc::clone(&documents),
+            package,
+            workspace,
+        ));
         store.open_existing_record_checked(&new).unwrap();
         store
             .read(&new.id, |doc| {
@@ -308,18 +312,26 @@ fn former_records_are_validated_and_adopted_exactly_once() {
         let temp = tempfile::tempdir().unwrap();
         let documents = native(temp.path());
         let package = "so.tilo.migration-existing";
-        let room = "33333333-3333-4333-8333-333333333333";
+        let workspace = "33333333-3333-4333-8333-333333333333";
         let file = RecordId::for_file_record(uuid::Uuid::new_v4());
         let (old, new) = markup_checkouts("/srv/notes/plan.pdf", &file);
         {
-            let store = RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
+            let store = RecordStore::new(RecordSet::open_in(
+                Rc::clone(&documents),
+                package,
+                workspace,
+            ));
             store.open_record(&old);
             store
                 .with(&old.id, |doc| put_text(doc, "note", "adopt me"))
                 .unwrap();
             store.flush().unwrap();
         }
-        let store = RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
+        let store = RecordStore::new(RecordSet::open_in(
+            Rc::clone(&documents),
+            package,
+            workspace,
+        ));
         store.open_existing_record_checked(&new).unwrap();
         store
             .read(&new.id, |doc| {

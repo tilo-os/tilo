@@ -127,10 +127,10 @@ async fn invoke(
     provider: u8,
 ) -> Result<(), runtime_portal::NotAvailable> {
     let provider = match provider {
-        1 => format!("launch:{}:{STORE}:main", room()),
+        1 => format!("launch:{}:{STORE}:main", workspace_id()),
         2 => {
             tilo_actions::remote::application_action_target(
-                &room().to_string(),
+                &workspace_id().to_string(),
                 STORE,
                 RESOURCE,
                 action,
@@ -193,7 +193,7 @@ async fn native_store_host_sheet_uses_final_task_edits_and_rechecks_authority() 
                     let f = Fixture::new();
                     put_grant(&f, tilo_action_policy::Grant::new(
                         "store-allow", tilo_action_policy::Subject::agent("scribe"),
-                        tilo_action_policy::TreePath::room(room().to_string()).app(STORE),
+                        tilo_action_policy::TreePath::workspace(workspace_id().to_string()).app(STORE),
                         tilo_action_policy::KindSet::ALL, tilo_action_policy::Answer::Allow,
                         tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
                     ));
@@ -268,12 +268,12 @@ impl crate::services::LauncherServices for StoreLauncher {
         _place: &crate::services::LaunchPlace,
     ) -> Result<(), String> {
         assert_eq!(app, STORE);
-        assert_eq!(workspace.room(), room());
+        assert_eq!(workspace.room(), workspace_id());
         assert!(record.is_none() || record == Some("main"));
         self.0.send(app.into()).map_err(|error| error.to_string())
     }
 
-    fn attest_process(&self, _pid: u32, _app: &str, _room: &str) -> bool {
+    fn attest_process(&self, _pid: u32, _app: &str, _workspace: &str) -> bool {
         false
     }
 }
@@ -293,7 +293,7 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
             let f = Fixture::with_launcher(Some(Arc::new(StoreLauncher(launch))));
             put_grant(&f, tilo_action_policy::Grant::new(
                 "store-allow", tilo_action_policy::Subject::agent("scribe"),
-                tilo_action_policy::TreePath::room(room().to_string()).app(STORE),
+                tilo_action_policy::TreePath::workspace(workspace_id().to_string()).app(STORE),
                 tilo_action_policy::KindSet::ALL, tilo_action_policy::Answer::Allow,
                 tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
             ));
@@ -337,7 +337,7 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
                 "operation": operation(action, "Reviewed while Store was closed"),
             }).to_string();
             let edited_request = serde_json::json!({
-                "provider": format!("launch:{}:{STORE}:main", room()),
+                "provider": format!("launch:{}:{STORE}:main", workspace_id()),
                 "resource": RESOURCE,
                 "action": action,
                 "argument": edited_argument,

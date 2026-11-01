@@ -6,9 +6,9 @@ use automerge::{ObjType, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use collab_types::{Role, SignedOp};
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::room::{self, media};
+use tilo_peer_state::workspace::{self, media};
 use tilo_peer_state::{
-    SeedDocument, SeedState, StatePeer, TransportOrigin, peer_handle, seed_room,
+    SeedDocument, SeedState, StatePeer, TransportOrigin, peer_handle, seed_workspace,
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
@@ -57,7 +57,7 @@ fn fixture() -> (StatePeer, SigningKey, SystemTime) {
     chat.put(&channel, "workspace", "home").unwrap();
     peer.install_seed(
         SeedState {
-            room_changes: seed_room(ROOM, &certificate, &[certificate.clone()]).unwrap(),
+            workspace_changes: seed_workspace(ROOM, &certificate, &[certificate.clone()]).unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
                 record_id: String::new(),
@@ -82,18 +82,19 @@ fn message(doc: &mut AutoCommit) -> NeighbourMsg {
             .collect(),
     }
 }
-fn policy(peer: &StatePeer) -> media::RoomMediaV1 {
+fn policy(peer: &StatePeer) -> media::WorkspaceMediaV1 {
     let chat = AutoCommit::load(&peer.document(APP, "").unwrap()).unwrap();
     let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
     let object = {
         let entry = chat.get(&channels, "voice").unwrap().unwrap().1;
         chat.get(&entry, "v").unwrap().unwrap().1
     };
-    media::RoomMediaV1 {
+    media::WorkspaceMediaV1 {
         version: 1,
-        room: *uuid::Uuid::parse_str(ROOM).unwrap().as_bytes(),
+        workspace: *uuid::Uuid::parse_str(ROOM).unwrap().as_bytes(),
         authorization_revision: 1,
-        authorization_basis: media::security_basis(peer.admitted_room().unwrap(), &[]).unwrap(),
+        authorization_basis: media::security_basis(peer.admitted_workspace().unwrap(), &[])
+            .unwrap(),
         calls: BTreeMap::from([(
             [7; 32],
             media::CallV1 {
@@ -117,7 +118,7 @@ fn policy(peer: &StatePeer) -> media::RoomMediaV1 {
 }
 fn install_policy(peer: &mut StatePeer, key: &SigningKey, now: SystemTime) {
     let value = policy(peer);
-    let mut doc = peer.admitted_room().unwrap().clone();
+    let mut doc = peer.admitted_workspace().unwrap().clone();
     doc.put(
         ROOT,
         media::FIELD,
@@ -154,7 +155,7 @@ fn shell_channel() -> [u8; 32] {
 #[test]
 fn retained_room_rejects_malformed_present_media_policy() {
     let (peer, key, _) = fixture();
-    let mut room = peer.admitted_room().unwrap().clone();
+    let mut room = peer.admitted_workspace().unwrap().clone();
     room.put(ROOT, media::FIELD, "not policy bytes").unwrap();
     let body = postcard::to_allocvec(&message(&mut room)).unwrap();
     let authority = RetentionAuthority::new(ROOM, own_device(&peer, &key)).unwrap();
@@ -201,7 +202,7 @@ fn signed_snapshot(
     let mut watermarks = prior.watermarks.clone();
     watermarks.insert(hex::encode(author), seq);
     let coverage = Coverage {
-        room: ROOM.into(),
+        workspace: ROOM.into(),
         app: APP.into(),
         record: String::new(),
         payload_hash: *blake3::hash(&envelope.payload).as_bytes(),
@@ -259,7 +260,7 @@ fn retained_snapshot_rejects_mismatched_exact_channel() {
     // A room that pairs `snapshot` exactly, so only the binding can refuse it.
     let paired = |snapshot: Vec<u8>| {
         let (signed, coverage) = signed_snapshot(&key, now, &prior, snapshot);
-        let mut document = peer.admitted_room().unwrap().clone();
+        let mut document = peer.admitted_workspace().unwrap().clone();
         tilo_peer_state::coverage::put(&mut document, coverage.clone()).unwrap();
         tilo_peer_state::durability::put(
             &mut document,
@@ -315,9 +316,9 @@ fn members() -> (StatePeer, SigningKey, SystemTime) {
     let roster = std::iter::once(original.owner_certificates()[0].clone())
         .chain(members.iter().cloned())
         .collect::<Vec<_>>();
-    let mut room = room::candidate(
+    let mut room = workspace::candidate(
         None,
-        &seed_room(ROOM, &original.owner_certificates()[0], &roster).unwrap(),
+        &seed_workspace(ROOM, &original.owner_certificates()[0], &roster).unwrap(),
     )
     .unwrap();
     let caps = room.get(ROOT, "members").unwrap().unwrap().1;
@@ -342,7 +343,7 @@ fn members() -> (StatePeer, SigningKey, SystemTime) {
     };
     peer.install_seed(
         SeedState {
-            room_changes: changes,
+            workspace_changes: changes,
             documents: vec![SeedDocument {
                 app_id: APP.into(),
                 record_id: String::new(),
@@ -374,7 +375,7 @@ fn retained_room_governed_revocation_fence_cannot_be_removed_by_higher_revision(
     peer.governance_mut()
         .publish_governed_revocations(&[revocation], &key, now)
         .unwrap();
-    let before = peer.admitted_room().unwrap().clone();
+    let before = peer.admitted_workspace().unwrap().clone();
     let authority = RetentionAuthority::new(ROOM, own_device(&peer, &key)).unwrap();
     let mut current = before;
     let proof = verify_room(
@@ -391,7 +392,8 @@ fn retained_room_governed_revocation_fence_cannot_be_removed_by_higher_revision(
     for cert in peer.owner_certificates() {
         let id = hex::encode(cert.device_public_key);
         let mut row: serde_json::Value =
-            serde_json::from_slice(&room::governance_of(Some(&current)).identities[&id]).unwrap();
+            serde_json::from_slice(&workspace::governance_of(Some(&current)).identities[&id])
+                .unwrap();
         assert!(
             !row["revocations"].as_array().unwrap().is_empty(),
             "the fence is published before it is stripped"

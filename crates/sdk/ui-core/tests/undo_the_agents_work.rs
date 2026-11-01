@@ -399,7 +399,7 @@ fn undo_keeps_later_human_edits_and_is_idempotent() {
 
     // Case `a_field_somebody_overwrote_afterwards_is_kept`.
     {
-        let (_room, mut photo, _report, run) = one_instruction_two_apps();
+        let (_workspace, mut photo, _report, run) = one_instruction_two_apps();
 
         photo.set_actor(ActorId::from(PERSON.as_bytes()));
         let (_, img) = photo.get(ROOT, "image").unwrap().unwrap();
@@ -479,7 +479,7 @@ fn runs_span_applications_and_are_refused_whole_when_unresolvable() {
 
     // Case `one_instruction_across_two_applications_is_one_undo`.
     {
-        let (_room, mut photo, mut report, run) = one_instruction_two_apps();
+        let (_workspace, mut photo, mut report, run) = one_instruction_two_apps();
 
         assert_eq!(crop(&photo), (1200, 900), "the agent did crop it");
         assert!(report.body().contains("Figure 1"), "and did place it");
@@ -531,7 +531,7 @@ fn runs_span_applications_and_are_refused_whole_when_unresolvable() {
 
     // Case `a_run_is_refused_whole_when_one_application_is_not_open`.
     {
-        let (_room, photo, mut report, run) = one_instruction_two_apps();
+        let (_workspace, photo, mut report, run) = one_instruction_two_apps();
         let untouched = report.body();
         let photo_before = crop(&photo);
 
@@ -560,7 +560,7 @@ fn runs_span_applications_and_are_refused_whole_when_unresolvable() {
 
     // Case `a_pre_flight_names_every_missing_application_before_anything_is_written`.
     {
-        let (_room, _photo, _report, run) = one_instruction_two_apps();
+        let (_workspace, _photo, _report, run) = one_instruction_two_apps();
         let missing = unreachable_steps(&run, |_| false);
         assert_eq!(missing.len(), 2, "nothing is open");
         let refused = refuse_run(&run, &missing);
@@ -622,8 +622,8 @@ fn agent_crops(doc: &mut AutoCommit) {
     tilo_resource::history::commit_stamped_at(doc, 1_780_000_200);
 }
 
-/// The room document — the compositor's, the only one that sees both apps.
-fn room() -> AutoCommit {
+/// The workspace document — the compositor's, the only one that sees both apps.
+fn workspace() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(ActorId::from("compositor".as_bytes()));
     doc.put(ROOT, "workspaces", "seed").unwrap();
@@ -646,7 +646,7 @@ fn one_instruction_two_apps() -> (AutoCommit, AutoCommit, Report, AgentRun) {
     let photo_run = latest_run_by(&mut photo, &actor_hex(AGENT)).expect("the agent cropped");
     let report_run = agents_run(&mut report.doc);
 
-    let mut room = room();
+    let mut workspace = workspace();
     let steps = vec![
         RunStep {
             app: PHOTO_EDITOR.into(),
@@ -668,29 +668,31 @@ fn one_instruction_two_apps() -> (AutoCommit, AutoCommit, Report, AgentRun) {
         },
     ];
     record_run(
-        &mut room,
+        &mut workspace,
         "Crop the photograph and put it in the report",
         Some(&actor_hex(AGENT)),
         &steps,
     )
     .expect("a run with steps is recorded");
-    tilo_resource::history::commit_stamped_at(&mut room, 1_780_000_400);
+    tilo_resource::history::commit_stamped_at(&mut workspace, 1_780_000_400);
 
-    let run = read_runs(&room).pop().expect("the run reads back");
-    (room, photo, report, run)
+    let run = read_runs(&workspace).pop().expect("the run reads back");
+    (workspace, photo, report, run)
 }
 
 #[test]
 fn run_records_replicate_without_polluting_history() {
     // Case `the_recorded_run_replicates_and_names_the_same_work_on_another_peer`.
     {
-        let (mut room, mut photo, mut report, _run) = one_instruction_two_apps();
+        let (mut workspace, mut photo, mut report, _run) = one_instruction_two_apps();
 
-        let mut peer_room = room.fork();
-        peer_room.set_actor(ActorId::from("bob".as_bytes()));
-        peer_room.merge(&mut room).expect("rooms merge");
+        let mut peer_workspace = workspace.fork();
+        peer_workspace.set_actor(ActorId::from("bob".as_bytes()));
+        peer_workspace
+            .merge(&mut workspace)
+            .expect("workspaces merge");
 
-        let there = read_runs(&peer_room);
+        let there = read_runs(&peer_workspace);
         assert_eq!(there.len(), 1, "the run crossed to the peer");
         let run = &there[0];
         assert_eq!(run.label, "Crop the photograph and put it in the report");
@@ -723,9 +725,9 @@ fn run_records_replicate_without_polluting_history() {
     {
         // The band is already on screen as the run; a "1 field" row under it would
         // be noise, and would invite undoing the bookkeeping instead of the work.
-        let (mut room, _photo, _report, _run) = one_instruction_two_apps();
-        let rows = HistorySource::new().entries(&mut room);
-        // One row: the room's own seed change. The run record is not a row.
+        let (mut workspace, _photo, _report, _run) = one_instruction_two_apps();
+        let rows = HistorySource::new().entries(&mut workspace);
+        // One row: the workspace's own seed change. The run record is not a row.
         assert_eq!(
             rows.len(),
             1,
@@ -743,7 +745,7 @@ fn run_records_replicate_without_polluting_history() {
     {
         // An instruction that changed nothing has nothing to undo, and a record
         // claiming otherwise would put an affordance on screen that can only fail.
-        let mut r = room();
+        let mut r = workspace();
         assert!(record_run(&mut r, "did nothing", None, &[]).is_none());
         r.commit();
         assert!(read_runs(&r).is_empty());

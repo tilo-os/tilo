@@ -3,7 +3,8 @@
     reason = "the broker's Rc-backed channel handles stay on the test LocalSet"
 )]
 use super::super::*;
-use crate::peer_actions::{CertificateAuthority, OwnerPolicyClock, PolicyOrigin};
+use crate::certificate_authority::CertificateAuthority;
+use crate::policy_clock::{OwnerPolicyClock, PolicyOrigin};
 use crate::services::{
     NativeTaskActionRequirement, TrackerDirection, TrackerRun, TrackerRuns, WorkspaceAuthority,
     WorkspaceMemberships,
@@ -40,7 +41,7 @@ struct Native {
     runs: Mutex<Vec<TrackerRun>>,
     /// The grants recorded as given by the person, while they may grant.
     granted: Mutex<Option<Vec<tilo_action_policy::Grant>>>,
-    /// The room's governor records no effect receipt: one it is asked for
+    /// The workspace's governor records no effect receipt: one it is asked for
     /// is refused, as a governor out of reach refuses it.
     receipts_refused: std::sync::atomic::AtomicBool,
     /// The owner is still opening, as a session's is at its start: health
@@ -50,8 +51,8 @@ struct Native {
 
 /// The issue the fixture's agent runs.
 const ISSUE: &str = "tasks.tracker/issues/release";
-fn room() -> tilo_desktop_model::RoomId {
-    tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap()
+fn workspace_id() -> tilo_desktop_model::RoomId {
+    tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap()
 }
 impl WorkspaceAuthority for Native {
     fn with_tree(
@@ -68,18 +69,18 @@ impl WorkspaceAuthority for Native {
         if let Some(cached) = cached {
             return Ok(cached);
         }
-        self.owner.with_current(room(), |view| {
+        self.owner.with_current(workspace_id(), |view| {
             let doc = view
                 .peer()
-                .admitted_room()
+                .admitted_workspace()
                 .ok_or("native document unavailable")?;
             let mut workspace = tilo_desktop_model::Workspace::in_room(
                 tilo_desktop_model::WorkspaceId(1),
-                room(),
+                workspace_id(),
                 "Native execution",
             );
             workspace.policy =
-                tilo_desktop_model::projection::room_policy_of(doc, &room().to_string());
+                tilo_desktop_model::projection::room_policy_of(doc, &workspace_id().to_string());
             workspace
                 .policy
                 .grants
@@ -94,7 +95,7 @@ impl WorkspaceAuthority for Native {
     }
 }
 impl CertificateAuthority for Native {
-    fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
+    fn policy_time(&self) -> Result<Option<crate::policy_clock::PolicyTime>, String> {
         self.origin
             .capture()
             .map(Some)
@@ -105,10 +106,10 @@ impl CertificateAuthority for Native {
         requested: uuid::Uuid,
         cert: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        if requested.to_string() != room().to_string() {
-            return Err("foreign room".into());
+        if requested.to_string() != workspace_id().to_string() {
+            return Err("foreign workspace".into());
         }
-        self.owner.with_current(room(), |view| {
+        self.owner.with_current(workspace_id(), |view| {
             if !view.peer().certificates().contains(cert) {
                 return Err("certificate removed".into());
             }
@@ -119,7 +120,7 @@ impl CertificateAuthority for Native {
         })
     }
     fn governs(&self, requested: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
-        requested.to_string() == room().to_string()
+        requested.to_string() == workspace_id().to_string()
             && !(self
                 .capped_connection
                 .load(std::sync::atomic::Ordering::SeqCst)
@@ -128,8 +129,8 @@ impl CertificateAuthority for Native {
     }
 }
 impl OwnerCommitService for Native {
-    fn requires_room(&self, requested: &str) -> bool {
-        requested == room().to_string()
+    fn requires_workspace(&self, requested: &str) -> bool {
+        requested == workspace_id().to_string()
     }
     fn health(&self) -> Result<(), String> {
         if self.opening.load(std::sync::atomic::Ordering::SeqCst) {
@@ -149,7 +150,7 @@ impl OwnerCommitService for Native {
             tokio::task::yield_now().await;
             let receipt = match request.operation {
                 CommitOperation::EffectReceipt { .. } if receipts_refused => {
-                    Err("the room's governor records no receipt".into())
+                    Err("the workspace's governor records no receipt".into())
                 }
                 CommitOperation::EffectReceipt { .. } => {
                     owner.commit_effect_receipt(&request, &key, std::time::SystemTime::now())
@@ -168,7 +169,7 @@ impl OwnerCommitService for Native {
     }
 }
 impl crate::services::AppActionGrants for Native {
-    fn may_grant(&self, _room: &str, _person: &str) -> bool {
+    fn may_grant(&self, _workspace: &str, _person: &str) -> bool {
         self.granted.lock().unwrap().is_some()
     }
     fn record(
@@ -189,7 +190,7 @@ impl crate::services::AppActionGrants for Native {
         Box::pin(std::future::ready(recorded))
     }
     fn revoke(&self, requested: &str, grant: &str) {
-        assert_eq!(requested, room().to_string());
+        assert_eq!(requested, workspace_id().to_string());
         // Like the shell's grant service, update the broker's live policy
         // projection synchronously without re-entering the task mutation turn.
         self.spent_grants
@@ -200,8 +201,8 @@ impl crate::services::AppActionGrants for Native {
 }
 
 impl WorkspaceMemberships for Native {
-    fn requires_room(&self, requested: &str) -> bool {
-        OwnerCommitService::requires_room(self, requested)
+    fn requires_workspace(&self, requested: &str) -> bool {
+        OwnerCommitService::requires_workspace(self, requested)
     }
     fn health(&self) -> Result<(), String> {
         self.owner.health()
@@ -211,20 +212,20 @@ impl WorkspaceMemberships for Native {
     }
 }
 impl TrackerRuns for Native {
-    fn requires_room(&self, requested: &str) -> bool {
-        OwnerCommitService::requires_room(self, requested)
+    fn requires_workspace(&self, requested: &str) -> bool {
+        OwnerCommitService::requires_workspace(self, requested)
     }
     fn runs(&self, requested: &str) -> Result<Vec<TrackerRun>, String> {
-        if !OwnerCommitService::requires_room(self, requested) {
-            return Err("foreign tracker room".into());
+        if !OwnerCommitService::requires_workspace(self, requested) {
+            return Err("foreign tracker workspace".into());
         }
         Ok(self.runs.lock().unwrap().clone())
     }
     fn check_agent(&self, requested: &str, run: &TrackerRun) -> Result<(), String> {
-        if !OwnerCommitService::requires_room(self, requested) {
-            return Err("foreign tracker room".into());
+        if !OwnerCommitService::requires_workspace(self, requested) {
+            return Err("foreign tracker workspace".into());
         }
-        self.owner.with_current(room(), |view| {
+        self.owner.with_current(workspace_id(), |view| {
             view.peer().workspace().check_admitted_agent(
                 &run.agent,
                 run.delegation()?,
@@ -238,10 +239,10 @@ impl TrackerRuns for Native {
         run: &TrackerRun,
         requirement: &NativeTaskActionRequirement,
     ) -> Result<(), String> {
-        if !OwnerCommitService::requires_room(self, requested) {
-            return Err("foreign tracker room".into());
+        if !OwnerCommitService::requires_workspace(self, requested) {
+            return Err("foreign tracker workspace".into());
         }
-        self.owner.with_current(room(), |view| {
+        self.owner.with_current(workspace_id(), |view| {
             let now = std::time::SystemTime::now();
             view.peer()
                 .workspace()
@@ -278,7 +279,7 @@ impl Fixture {
         Self::with_origin(launcher, host_steps, None)
     }
     /// As [`Self::with_services`], with `record_changes` the origin of the
-    /// room's records.
+    /// workspace's records.
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario, end to end, reads as one test"
@@ -329,7 +330,7 @@ impl Fixture {
             opening: std::sync::atomic::AtomicBool::new(false),
         });
         let membership = OwnerCommitRequest {
-            room: room().to_string(),
+            workspace: workspace_id().to_string(),
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: native.certificate.clone(),
@@ -351,7 +352,7 @@ impl Fixture {
             .unwrap();
         let task = ISSUE.to_owned();
         let fanout = Arc::new(FanoutState::new());
-        let config = crate::peer_actions::NativePeerBrokerConfig {
+        let config = crate::NativePeerBrokerConfig {
             journal_root: directory.path().join("journal"),
             certificate_authority: native.clone(),
         };
@@ -390,14 +391,14 @@ impl Fixture {
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let current = self
             .state
-            .verify_action_caller(&room().to_string(), &self.signed_presentation())
+            .verify_action_caller(&workspace_id().to_string(), &self.signed_presentation())
             .unwrap();
         assert!(current.admitted.verified.capped);
         assert!(self.native.certificate.capabilities.foreign);
-        assert!(
-            self.native
-                .governs(uuid::Uuid::parse_str(&room().to_string()).unwrap(), None)
-        );
+        assert!(self.native.governs(
+            uuid::Uuid::parse_str(&workspace_id().to_string()).unwrap(),
+            None
+        ));
     }
     /// Change the issue's run as the person does on the issue's page, and
     /// let the broker read it.
@@ -431,7 +432,7 @@ impl Fixture {
     }
     fn remove_agent(&self) {
         let removal = OwnerCommitRequest {
-            room: room().to_string(),
+            workspace: workspace_id().to_string(),
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: self.native.certificate.clone(),
@@ -494,14 +495,16 @@ impl Fixture {
         )
     }
     fn signed_presentation(&self) -> Vec<u8> {
-        let room = room().to_string();
+        let workspace = workspace_id().to_string();
         runtime_collab::CertifiedJoinIdentity {
-            workspace_id: room.clone(),
+            workspace_id: workspace.clone(),
             device_certificate: serde_json::to_vec(&self.native.certificate).unwrap(),
             proof: self
                 .native
                 .key
-                .sign(&runtime_identity::collaboration_join_signing_bytes(&room))
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    &workspace,
+                ))
                 .to_bytes()
                 .to_vec(),
         }
@@ -512,13 +515,13 @@ impl Fixture {
         wire_channel(self.app_handle(peer, app, agent))
     }
     fn app_handle(&self, peer: u64, app: &str, agent: bool) -> JoinedChannel {
-        let room = room().to_string();
+        let workspace = workspace_id().to_string();
         let mut admitted = self
             .state
-            .verify_action_caller(&room, &self.signed_presentation())
+            .verify_action_caller(&workspace, &self.signed_presentation())
             .unwrap()
             .admitted;
-        let route = CrdtRoute::record(app, room, "main");
+        let route = CrdtRoute::record(app, workspace, "main");
         if agent {
             admit_agent_delegation(
                 &WorkspaceAuthority::snapshot(self.native.as_ref()).unwrap(),
@@ -622,9 +625,9 @@ fn grant_notes(f: &Fixture) {
 }
 fn set_notes_permission(f: &Fixture, may_write: bool) {
     use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
-    let room_id = room().to_string();
+    let workspace_id = workspace_id().to_string();
     let append = tilo_actions::action_node(
-        &TreePath::room(&room_id),
+        &TreePath::workspace(&workspace_id),
         "so.tilo.notes",
         "document",
         "notes:release",
@@ -662,7 +665,7 @@ fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
     let messages = f
         .native
         .owner
-        .with_current(room(), |view| {
+        .with_current(workspace_id(), |view| {
             let before = view.peer().clone();
             let mut next = before.clone();
             next.governance_mut()
@@ -679,7 +682,7 @@ fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
         f.native
             .owner
             .receive(
-                room(),
+                workspace_id(),
                 tilo_peer_state::TransportOrigin::RetainedRelayDelta(
                     f.native.key.verifying_key().to_bytes(),
                 ),
@@ -733,7 +736,7 @@ async fn authenticated_native_action_ignores_another_running_tasks_ceiling() {
                 Grant::new(
                     "other-task-denies-append",
                     Subject::Task(other.clone()),
-                    TreePath::room(room().to_string()).app("so.tilo.notes"),
+                    TreePath::workspace(workspace_id().to_string()).app("so.tilo.notes"),
                     KindSet::UNDOABLE,
                     Answer::Deny,
                     Subject::person(hex::encode(f.native.certificate.user_public_key)),
@@ -766,7 +769,7 @@ async fn ordinary_native_agent_invocation_cannot_escape_task_resource_scope() {
             grant_notes(&f);
             let append = |resource: &str| {
                 tilo_actions::action_node(
-                    &TreePath::room(room().to_string()),
+                    &TreePath::workspace(workspace_id().to_string()),
                     "so.tilo.notes",
                     "document",
                     resource,
@@ -903,7 +906,7 @@ async fn a_native_run_is_held_to_its_issues_grants() {
                     "task-no-append",
                     Subject::Task(f.task.clone()),
                     tilo_actions::action_node(
-                        &TreePath::room(room().to_string()),
+                        &TreePath::workspace(workspace_id().to_string()),
                         "so.tilo.notes",
                         "document",
                         "notes:release",
@@ -1014,7 +1017,7 @@ async fn a_started_run_acts_as_its_starter_and_deleted_targets_fail_closed() {
             // The person tells the agent it may not change Notes.
             let answer = |answer| {
                 tilo_action_policy::agent_answers::grant(
-                    &room().to_string(),
+                    &workspace_id().to_string(),
                     "scribe",
                     (
                         &tilo_action_policy::agent_answers::AnswerScope::app("so.tilo.notes"),
@@ -1211,9 +1214,9 @@ async fn native_task_tool_effect_is_attributed_and_duplicate_reconnect_does_not_
             );
             f.native
                 .owner
-                .with_current(room(), |view| {
+                .with_current(workspace_id(), |view| {
                     let effects = tilo_desktop_model::projection::workspace_effect_receipts_of(
-                        view.peer().admitted_room().unwrap(),
+                        view.peer().admitted_workspace().unwrap(),
                     );
                     assert_eq!(effects.len(), 1);
                     assert_eq!(effects[0].actor, "agent:scribe");
@@ -1227,7 +1230,7 @@ async fn native_task_tool_effect_is_attributed_and_duplicate_reconnect_does_not_
 
 /// Nothing runs until the person approves; a message to the run stays
 /// pending until its agent took it in, also across a reconnect, and an agent
-/// removed from the room reads its run no more.
+/// removed from the workspace reads its run no more.
 #[tokio::test(flavor = "current_thread")]
 async fn native_approved_run_reconnects_and_steering_stays_pending_until_applied() {
     tokio::task::LocalSet::new()
@@ -1456,7 +1459,7 @@ async fn a_held_native_reask_ends_when_the_run_is_cancelled() {
 /// A membership change whose outcome the broker cannot record (its effect
 /// receipt is refused) does not leave whoever asked for it waiting, as an
 /// opening app's authorship was left: the asker hears at once that no
-/// outcome was recorded, and the room's membership service goes on serving.
+/// outcome was recorded, and the workspace's membership service goes on serving.
 /// The receipt prepared for the change admits only the owner's own
 /// terminal, so the journal keeps the change for recovery to answer.
 #[tokio::test(flavor = "current_thread")]
@@ -1467,16 +1470,16 @@ async fn a_membership_change_whose_receipt_is_refused_does_not_leave_its_asker_w
             f.native
                 .receipts_refused
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            let room = room().to_string();
+            let workspace = workspace_id().to_string();
             f.state.refresh_workspace_membership_services().unwrap();
             assert!(
-                f.state.membership_published(&room),
-                "the room's membership actions are offered"
+                f.state.membership_published(&workspace),
+                "the workspace's membership actions are offered"
             );
             let job = f
                 .state
                 .invoke_workspace_membership(
-                    &room,
+                    &workspace,
                     &WorkspaceMembershipCommand::GrantAppAuthorship {
                         app: "so.tilo.terminal".into(),
                     },
@@ -1503,8 +1506,8 @@ async fn a_membership_change_whose_receipt_is_refused_does_not_leave_its_asker_w
             }
             tokio::task::yield_now().await;
             assert!(
-                f.state.membership_published(&room),
-                "one change's unrecorded outcome does not take the room's membership service away"
+                f.state.membership_published(&workspace),
+                "one change's unrecorded outcome does not take the workspace's membership service away"
             );
             drop(f);
         })
@@ -1512,7 +1515,7 @@ async fn a_membership_change_whose_receipt_is_refused_does_not_leave_its_asker_w
 }
 
 /// Apps opened together at a session's start each ask that they may author
-/// the room, and their grants queue on the room's membership service. The
+/// the workspace, and their grants queue on the workspace's membership service. The
 /// first grant's outcome cannot be recorded while the native owner is still
 /// opening; that grant is told why, and every grant behind it still
 /// completes on the same service: none hears that its outcome is unknown
@@ -1523,13 +1526,13 @@ async fn grants_in_flight_survive_an_unrecorded_one_while_the_owner_opens() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
-            let room = room().to_string();
+            let workspace = workspace_id().to_string();
             f.state.refresh_workspace_membership_services().unwrap();
-            assert!(f.state.membership_published(&room));
+            assert!(f.state.membership_published(&workspace));
             let grant = |app: &str| {
                 f.state
                     .invoke_workspace_membership(
-                        &room,
+                        &workspace,
                         &WorkspaceMembershipCommand::GrantAppAuthorship { app: app.into() },
                         &f.native.certificate,
                     )
@@ -1569,7 +1572,7 @@ async fn grants_in_flight_survive_an_unrecorded_one_while_the_owner_opens() {
                 first.code,
                 first.message
             );
-            assert!(f.state.membership_published(&room));
+            assert!(f.state.membership_published(&workspace));
             drop(f);
         })
         .await;
@@ -1588,7 +1591,7 @@ async fn answer_of(job: &super::super::InvocationJob) -> InvocationCompletion {
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "an asker was left waiting on the room's membership service"
+            "an asker was left waiting on the workspace's membership service"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }

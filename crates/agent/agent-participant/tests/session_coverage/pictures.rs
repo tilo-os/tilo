@@ -1,5 +1,5 @@
-//! A scan the room keeps, read as content by an agent: its model, which
-//! sees, is shown the picture where the agent may show the room's pictures,
+//! A scan the workspace keeps, read as content by an agent: its model, which
+//! sees, is shown the picture where the agent may show the workspace's pictures,
 //! and is told plainly why not where it may not.
 
 use tilo_agent_participant::{ModelPlanner, OpenAiModel};
@@ -44,7 +44,7 @@ fn png(width: u32, height: u32) -> Vec<u8> {
 
 /// Run a task whose plan runs Writer's `action` (`read-content`, an
 /// import) on the scan, then plans the rest, on an agent that may show the
-/// room's pictures or not (`allowed`): the task as it ended and the bodies
+/// workspace's pictures or not (`allowed`): the task as it ended and the bodies
 /// of the requests its model was sent.
 async fn on_the_scan(
     action: &str,
@@ -87,7 +87,7 @@ async fn on_the_scan(
         store,
     )
     .await;
-    agent.allow_room_pictures(allowed);
+    agent.allow_workspace_pictures(allowed);
     agent.open(WRITER, None).unwrap();
 
     let info = run_task(
@@ -134,7 +134,7 @@ async fn a_scan_read_as_content_is_shown_to_a_model_that_sees() {
     );
 }
 
-/// Where the agent may not show the room's pictures, the read is refused
+/// Where the agent may not show the workspace's pictures, the read is refused
 /// saying so, the repair is told why, and no request carries the scan.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_scan_read_as_content_is_refused_plainly_where_pictures_are_off() {
@@ -148,7 +148,7 @@ async fn a_scan_read_as_content_is_refused_plainly_where_pictures_are_off() {
     assert!(
         refused.starts_with("passport.png (tilo.content:")
             && refused.ends_with(
-                "is a picture, and this agent is not shown the room's pictures: plan with what \
+                "is a picture, and this agent is not shown the workspace's pictures: plan with what \
                  the request and the reads say of it"
             ),
         "{refused}"
@@ -157,7 +157,7 @@ async fn a_scan_read_as_content_is_refused_plainly_where_pictures_are_off() {
     let repair: serde_json::Value = serde_json::from_str(&requests[1]).unwrap();
     let repair = first_turn(&repair);
     assert!(
-        repair.contains("this agent is not shown the room's pictures"),
+        repair.contains("this agent is not shown the workspace's pictures"),
         "{repair}"
     );
     assert!(!requests.iter().any(|body| shows_a_picture(body)));
@@ -176,7 +176,7 @@ async fn an_import_of_a_scan_says_it_is_a_picture() {
         .unwrap_or_else(|| panic!("{info:?}"));
     assert!(
         failed.contains(
-            "is a picture, not a document, and this agent is not shown the room's pictures"
+            "is a picture, not a document, and this agent is not shown the workspace's pictures"
         ),
         "{failed}"
     );

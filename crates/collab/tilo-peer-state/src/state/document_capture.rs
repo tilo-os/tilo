@@ -15,7 +15,7 @@ pub type OpenSealed<'a> = &'a mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String
 /// owner authenticates caller and time.
 #[derive(Debug)]
 pub enum PeerDocumentReadError {
-    /// The reader is no current member of the room.
+    /// The reader is no current member of the workspace.
     Membership(crate::state::MembershipError),
     Denied,
     Missing,
@@ -126,7 +126,7 @@ impl StatePeer {
         let bound = tilo_action_policy::roles::foreign_device_bound();
         if !super::backend::access::document_read(
             &member.authority(&bound),
-            &self.core.room,
+            &self.core.workspace,
             app,
             record,
             now,

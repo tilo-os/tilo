@@ -83,11 +83,11 @@ fn local_projection_full_original_queue_repeated_expiry_stays_bounded_and_conver
                 key.verifying_key().to_bytes(),
             )
             .unwrap();
-        let room = member.room().to_owned();
+        let workspace = member.workspace_id().to_owned();
         let authority = member.owner_certificates()[0].clone();
         member = StatePeer::restore(
             &member.durable().unwrap(),
-            &room,
+            &workspace,
             authority,
             vec![cert.clone()],
             RevocationList::new(),
@@ -190,11 +190,11 @@ fn local_projection_reserved_floor_survives_restore_and_next_original_cannot_reu
     else {
         panic!()
     };
-    let room = member.room().to_owned();
+    let workspace = member.workspace_id().to_owned();
     let authority = member.owner_certificates()[0].clone();
     member = StatePeer::restore(
         &member.durable().unwrap(),
-        &room,
+        &workspace,
         authority,
         vec![cert],
         RevocationList::new(),
@@ -405,24 +405,24 @@ fn local_projection_current_document_restriction_blocks_sign_and_send_but_preser
             later,
         )
         .unwrap();
-    let NeighbourMsg::SyncResp { changes, room } = governor.room_message() else {
+    let NeighbourMsg::SyncResp { changes, room } = governor.workspace_message() else {
         panic!()
     };
-    let mut room_doc = crate::room::candidate(None, &changes).unwrap();
-    let before = room_doc.get_heads();
-    room_doc.set_actor(automerge::ActorId::from(
+    let mut workspace_doc = crate::workspace::candidate(None, &changes).unwrap();
+    let before = workspace_doc.get_heads();
+    workspace_doc.set_actor(automerge::ActorId::from(
         governor_key.verifying_key().to_bytes().to_vec(),
     ));
-    let caps = room_doc.get(ROOT, "grants").unwrap().unwrap().1;
+    let caps = workspace_doc.get(ROOT, "grants").unwrap().unwrap().1;
     let person = member
         .permissions(key.verifying_key().to_bytes(), later)
         .unwrap()
         .person;
-    // The structural owner cannot be restricted: hand the room to someone
+    // The structural owner cannot be restricted: hand the workspace to someone
     // else and keep this person as an editor, then restrict them.
-    room_doc.put(ROOT, "owner", "another-person").unwrap();
-    let members = room_doc.get(ROOT, "members").unwrap().unwrap().1;
-    room_doc
+    workspace_doc.put(ROOT, "owner", "another-person").unwrap();
+    let members = workspace_doc.get(ROOT, "members").unwrap().unwrap().1;
+    workspace_doc
         .put(
             &members,
             person.as_str(),
@@ -432,19 +432,19 @@ fn local_projection_current_document_restriction_blocks_sign_and_send_but_preser
     let restriction = tilo_action_policy::Grant::new(
         "projection-write-denial",
         tilo_action_policy::Subject::Person(person.clone()),
-        tilo_action_policy::TreePath::room(member.room()).app("test.app"),
+        tilo_action_policy::TreePath::workspace(member.workspace_id()).app("test.app"),
         tilo_action_policy::KindSet::UNDOABLE.union(tilo_action_policy::KindSet::OUTSIDE),
         tilo_action_policy::Answer::Deny,
         tilo_action_policy::Subject::Role(collab_types::Role::Owner),
     );
-    room_doc
+    workspace_doc
         .put(
             &caps,
             "projection-write-denial",
             automerge::ScalarValue::Bytes(serde_json::to_vec(&restriction).unwrap()),
         )
         .unwrap();
-    let changes = room_doc
+    let changes = workspace_doc
         .get_changes(&before)
         .into_iter()
         .map(|c| c.raw_bytes().to_vec())
@@ -459,7 +459,7 @@ fn local_projection_current_document_restriction_blocks_sign_and_send_but_preser
     member
         .receive_from_report(
             TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
-            governor.room_message(),
+            governor.workspace_message(),
             later,
         )
         .unwrap();

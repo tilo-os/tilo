@@ -97,7 +97,7 @@ impl DocumentFrontier {
 
 /// A CRDT document paired with the explicit frontier for one collaboration
 /// route. This is the small, undo-free replica used by metadata documents such
-/// as room indexes; application documents add history through [`State`].
+/// as the workspace index; application documents add history through [`State`].
 pub struct DocumentReplica {
     doc: AutoCommit,
     outbound: DocumentFrontier,
@@ -509,7 +509,7 @@ mod tests {
     #[test]
     fn a_payload_that_stops_parsing_part_way_is_refused_whole() {
         let mut peer = AutoCommit::new();
-        peer.put(ROOT, "title", "room").unwrap();
+        peer.put(ROOT, "title", "workspace").unwrap();
         peer.commit();
         let base = peer.get_heads();
         let mut state = State::new();

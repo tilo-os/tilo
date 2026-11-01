@@ -1,22 +1,22 @@
-//! Sharing one resource with a room: the grants a share is.
+//! Sharing one resource with a workspace: the grants a share is.
 //!
 //! A person who shares something they work on (a note shown live in a chat
-//! channel) lets the room's members see it, or also change it. That is not
+//! channel) lets the workspace's members see it, or also change it. That is not
 //! a promise kept by the sharing app: a share is grants on the shared
 //! resource's own node, decided by [`crate::decide`] at every door and by
 //! every receiver like any other grant, and revoked when the share ends.
 //!
 //! - **One resource.** A share names one record
-//!   (`room › app › kind › resource`) or one item of it
-//!   (`… › resource › item`). An app's own record of the room travels under
+//!   (`workspace › app › kind › resource`) or one item of it
+//!   (`… › resource › item`). An app's own record of the workspace travels under
 //!   an empty route that a node cannot name, so an item of it is named under
 //!   `resource:*`: item ids are unique, so the node stays one item. A bare
 //!   `resource:*` would be every record of the kind and is refused.
-//! - **Everyone in the room below the owner.** A grant per role preset,
+//! - **Everyone in the workspace below the owner.** A grant per role preset,
 //!   Viewer to Moderator: Read for a view share, Read and Undoable for an
 //!   edit share. A grant covers only the kinds it names, so a view share
 //!   strips no one: an Editor's Undoable on the shared item is still decided
-//!   by their role's grant on the room.
+//!   by their role's grant on the workspace.
 //! - **Never more than the sharer holds.** Each grant is bounded by the
 //!   sharer's own holdings on its node ([`check_held`]), so a Viewer cannot
 //!   hand out edit.
@@ -30,11 +30,11 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActionKind, Answer, Authority, Context, Grant, KindSet, Level, Role, RoomPolicy, Segment,
-    Subject, TreePath,
+    ActionKind, Answer, Authority, Context, Grant, KindSet, Level, Role, Segment, Subject,
+    TreePath, WorkspacePolicy,
 };
 
-/// What a share lets the room do with the resource.
+/// What a share lets the workspace do with the resource.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ShareAccess {
@@ -80,7 +80,7 @@ impl FromStr for ShareAccess {
 pub enum ShareRefusal {
     /// The share's id is empty, too long or has characters ids may not.
     Id,
-    /// The node is not one record or one item of a record of this room.
+    /// The node is not one record or one item of a record of this workspace.
     Node(String),
     /// The access is neither `view` nor `edit`.
     Access(String),
@@ -120,15 +120,15 @@ pub fn is_of_share(grant: &Grant, share: &str) -> bool {
     grant.id.as_str().starts_with(&share_id_prefix(share))
 }
 
-/// The grants `sharer` gives the room `room` by sharing `node` with
+/// The grants `sharer` gives the workspace `workspace` by sharing `node` with
 /// `access`, under the share id `share` (unique per share, such as the id of
 /// the message that shares it).
 ///
 /// # Errors
 /// [`ShareRefusal::Id`] for a malformed id and [`ShareRefusal::Node`] for a
-/// node that is not one record or one item of it in `room`.
+/// node that is not one record or one item of it in `workspace`.
 pub fn share_grants(
-    room: &str,
+    workspace: &str,
     sharer: &str,
     share: &str,
     node: &TreePath,
@@ -142,7 +142,7 @@ pub fn share_grants(
     {
         return Err(ShareRefusal::Id);
     }
-    check_node(room, node)?;
+    check_node(workspace, node)?;
     Ok(SHARED_WITH
         .into_iter()
         .map(|role| {
@@ -162,14 +162,14 @@ pub fn share_grants(
         .collect())
 }
 
-/// Whether `node` names one record of `room`, or one item of a record.
-fn check_node(room: &str, node: &TreePath) -> Result<(), ShareRefusal> {
+/// Whether `node` names one record of `workspace`, or one item of a record.
+fn check_node(workspace: &str, node: &TreePath) -> Result<(), ShareRefusal> {
     let named = |segment: Option<&Segment>, level: Level| matches!(segment, Some(Segment::Name(at, id)) if *at == level && !id.is_empty());
     let segments = node.segments();
-    if node.room_id() != Some(room) {
-        return Err(ShareRefusal::Node("it is not in this room".into()));
+    if node.workspace_id() != Some(workspace) {
+        return Err(ShareRefusal::Node("it is not in this workspace".into()));
     }
-    if !(named(segments.first(), Level::Room)
+    if !(named(segments.first(), Level::Workspace)
         && named(segments.get(1), Level::App)
         && named(segments.get(2), Level::Kind))
     {
@@ -202,7 +202,7 @@ pub fn check_held(
 ) -> Result<(), ShareRefusal> {
     grants
         .iter()
-        .try_for_each(|grant| RoomPolicy::check_within(actor, grant, cx))
+        .try_for_each(|grant| WorkspacePolicy::check_within(actor, grant, cx))
         .map_err(ShareRefusal::NotHeld)
 }
 
@@ -210,10 +210,10 @@ pub fn check_held(
 mod tests {
     use super::*;
 
-    const ROOM: &str = "r1";
+    const WORKSPACE: &str = "r1";
 
     fn item(id: &str) -> TreePath {
-        TreePath::room(ROOM)
+        TreePath::workspace(WORKSPACE)
             .app("so.tilo.notes")
             .kind("notes.notebook")
             .any(Level::Resource)
@@ -224,24 +224,24 @@ mod tests {
         node.clone().field("body").action("field-edit")
     }
 
-    /// A room owned by `ada` with `bo` as a Viewer and `cy` as an Editor.
-    fn room() -> RoomPolicy {
-        let mut policy = RoomPolicy::new(ROOM, "ada");
+    /// A workspace owned by `ada` with `bo` as a Viewer and `cy` as an Editor.
+    fn workspace() -> WorkspacePolicy {
+        let mut policy = WorkspacePolicy::new(WORKSPACE, "ada");
         policy.members.insert("bo".into(), Role::Viewer);
         policy.members.insert("cy".into(), Role::Editor);
         policy
     }
 
-    fn may(policy: &RoomPolicy, person: &str, node: &TreePath, kind: ActionKind) -> bool {
+    fn may(policy: &WorkspacePolicy, person: &str, node: &TreePath, kind: ActionKind) -> bool {
         Authority::person(policy.party(person))
             .decide(node, kind, &Context::at(0))
             .answer
             == Answer::Allow
     }
 
-    fn shared(access: ShareAccess) -> RoomPolicy {
-        let mut policy = room();
-        let grants = share_grants(ROOM, "ada", "m1", &item("p1"), access).unwrap();
+    fn shared(access: ShareAccess) -> WorkspacePolicy {
+        let mut policy = workspace();
+        let grants = share_grants(WORKSPACE, "ada", "m1", &item("p1"), access).unwrap();
         check_held(
             &Authority::person(policy.party("ada")),
             &grants,
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn an_edit_share_lets_a_viewer_change_that_item_only() {
-        let before = room();
+        let before = workspace();
         assert!(!may(
             &before,
             "bo",
@@ -295,7 +295,7 @@ mod tests {
     fn a_share_lifts_no_ban_or_restriction() {
         let mut edit = shared(ShareAccess::Edit);
         edit.grants.push(crate::roles::restriction_grant(
-            ROOM,
+            WORKSPACE,
             "bo",
             1_000,
             Subject::Person("ada".into()),
@@ -324,14 +324,14 @@ mod tests {
             .push(edit.block("cy", Subject::Person("ada".into())));
         assert!(
             !may(&edit, "cy", &edit_at(&item("p1")), ActionKind::Read),
-            "a ban keeps the person out of what the room shares too"
+            "a ban keeps the person out of what the workspace shares too"
         );
     }
 
     #[test]
     fn a_share_gives_no_more_than_its_sharer_holds() {
-        let policy = room();
-        let grants = share_grants(ROOM, "bo", "m1", &item("p1"), ShareAccess::Edit).unwrap();
+        let policy = workspace();
+        let grants = share_grants(WORKSPACE, "bo", "m1", &item("p1"), ShareAccess::Edit).unwrap();
         assert!(matches!(
             check_held(
                 &Authority::person(policy.party("bo")),
@@ -340,7 +340,7 @@ mod tests {
             ),
             Err(ShareRefusal::NotHeld(_))
         ));
-        let grants = share_grants(ROOM, "bo", "m1", &item("p1"), ShareAccess::View).unwrap();
+        let grants = share_grants(WORKSPACE, "bo", "m1", &item("p1"), ShareAccess::View).unwrap();
         assert!(
             check_held(
                 &Authority::person(policy.party("bo")),
@@ -352,28 +352,28 @@ mod tests {
     }
 
     #[test]
-    fn a_share_is_one_record_or_one_item_of_this_room() {
-        let record = TreePath::room(ROOM)
+    fn a_share_is_one_record_or_one_item_of_this_workspace() {
+        let record = TreePath::workspace(WORKSPACE)
             .app("so.tilo.notes")
             .kind("notes.notebook")
             .resource("plan");
-        let ok = |node: &TreePath| share_grants(ROOM, "ada", "m1", node, ShareAccess::View);
+        let ok = |node: &TreePath| share_grants(WORKSPACE, "ada", "m1", node, ShareAccess::View);
         assert_eq!(ok(&record).unwrap().len(), 4);
         assert!(ok(&record.clone().item("p1")).is_ok());
         assert!(ok(&item("p1")).is_ok());
-        let every = TreePath::room(ROOM)
+        let every = TreePath::workspace(WORKSPACE)
             .app("so.tilo.notes")
             .kind("notes.notebook")
             .any(Level::Resource);
         for refused in [
             every,
-            TreePath::room(ROOM).app("so.tilo.notes"),
-            TreePath::room("r2")
+            TreePath::workspace(WORKSPACE).app("so.tilo.notes"),
+            TreePath::workspace("r2")
                 .app("so.tilo.notes")
                 .kind("notes.notebook")
                 .resource("plan"),
             record.clone().item("p1").field("body"),
-            TreePath::room(ROOM).rest(),
+            TreePath::workspace(WORKSPACE).rest(),
         ] {
             assert!(
                 matches!(ok(&refused), Err(ShareRefusal::Node(_))),
@@ -381,11 +381,11 @@ mod tests {
             );
         }
         assert_eq!(
-            share_grants(ROOM, "ada", "", &record, ShareAccess::View),
+            share_grants(WORKSPACE, "ada", "", &record, ShareAccess::View),
             Err(ShareRefusal::Id)
         );
         assert_eq!(
-            share_grants(ROOM, "ada", "a/b", &record, ShareAccess::View),
+            share_grants(WORKSPACE, "ada", "a/b", &record, ShareAccess::View),
             Err(ShareRefusal::Id)
         );
         let grants = ok(&record).unwrap();

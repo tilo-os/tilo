@@ -286,6 +286,20 @@ pub struct ActionNeed {
     pub privileged: bool,
 }
 
+/// The node of the resource `resource` (of kind `resource_kind`) the app
+/// `app` publishes, below `base` (a room, or the root for a path relative to
+/// one): where a reading of it is decided, as an action of it is at
+/// [`action_node`].
+#[must_use]
+pub fn resource_node(
+    base: &tilo_action_policy::TreePath,
+    app: &str,
+    resource_kind: &str,
+    resource: &str,
+) -> tilo_action_policy::TreePath {
+    base.clone().app(app).kind(resource_kind).resource(resource)
+}
+
 /// The node of the action `action` on the resource `resource` (of kind
 /// `resource_kind`) the app `app` publishes, below `base` (a room, or the
 /// root for a path relative to one), and below the one `field` it writes if
@@ -299,7 +313,7 @@ pub fn action_node(
     field: Option<&str>,
     action: &str,
 ) -> tilo_action_policy::TreePath {
-    let node = base.clone().app(app).kind(resource_kind).resource(resource);
+    let node = resource_node(base, app, resource_kind, resource);
     match field {
         Some(field) => node.field(field),
         None => node,

@@ -1,10 +1,10 @@
-//! Who publishes in the caller's room: every provider the broker lists,
+//! Who publishes in the caller's workspace: every provider the broker lists,
 //! apps' windows and the host's own services alike.
 
 use super::{ActionHost, McpServer, Value, instances_query, json};
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
-    /// Every publisher this caller may use in its room, each by its provider
+    /// Every publisher this caller may use in its workspace, each by its provider
     /// id with what it is: an application's window (a numeric peer, with
     /// its record) or one of the host's own services (`tilo.desktop`), by
     /// the app id it answers for. Host services first, then windows oldest
@@ -14,7 +14,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let mut listed = page
             .providers
             .into_iter()
-            .filter(|provider| provider.browsable && provider.room == self.room)
+            .filter(|provider| provider.browsable && provider.room == self.workspace)
             .map(|provider| {
                 let peer = provider.provider.parse::<u64>().ok();
                 let mut entry = json!({

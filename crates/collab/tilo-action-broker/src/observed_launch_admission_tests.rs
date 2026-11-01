@@ -113,7 +113,7 @@ async fn installed_launch_requires_signed_admission_and_durable_terminal() {
                     let guard = rig.state.journal.lock().unwrap();
                     let journal = guard.as_ref().unwrap().as_ref().unwrap();
                     let key = InvocationKey {
-                        room: env.route.cluster_id.clone(),
+                        workspace: env.route.cluster_id.clone(),
                         host: journal.host(),
                         owner: InvocationOwner::AuthenticatedLocal {
                             root: env.cert.user_public_key,

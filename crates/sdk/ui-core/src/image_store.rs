@@ -557,7 +557,7 @@ impl ImageStore {
     /// Serve the image stores `window` builds through `factory` for as long
     /// as its wake scope is open: every store built while that scope is
     /// entered comes from the host, whether the window builds it as it is
-    /// constructed or later (a view part built once the window's room
+    /// constructed or later (a view part built once the window's workspace
     /// arrived, a part built again). A store the window built on its own
     /// would load through the toolkit's decoders on its background, which
     /// a browser page leaves to the host: its pictures would never show.

@@ -14,7 +14,7 @@ use tilo_actions::remote::RemoteActionTarget;
 
 use super::*;
 
-const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 type Invoked = Arc<Mutex<Vec<(ActionInvoker, ActionContext, ActionAddress)>>>;
 
@@ -32,14 +32,14 @@ struct FakeParticipant {
 fn route(app: &str, record: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: app.into(),
-        cluster_id: ROOM.into(),
+        cluster_id: WORKSPACE.into(),
         record: record.into(),
     }
 }
 
 impl DoorParticipant for FakeParticipant {
-    fn room(&self) -> &str {
-        ROOM
+    fn workspace(&self) -> &str {
+        WORKSPACE
     }
 
     fn offered(&self) -> Vec<(DocumentRoute, Vec<tilo_actions::door::ActionDescriptor>)> {
@@ -175,7 +175,7 @@ fn send() -> InvokeRequest {
 }
 
 fn bot() -> Caller {
-    Caller::bot("b1", [1; 32], [2; 32]).in_room(ROOM)
+    Caller::bot("b1", [1; 32], [2; 32]).in_workspace(WORKSPACE)
 }
 
 fn block<T>(pending: Pending<T>) -> T {
@@ -192,12 +192,12 @@ fn block<T>(pending: Pending<T>) -> T {
 #[test]
 fn a_caller_that_is_not_this_bot_is_refused() {
     let door = door(FakeParticipant::default(), vec![]);
-    let person = Caller::local_person("ada").in_room(ROOM);
+    let person = Caller::local_person("ada").in_workspace(WORKSPACE);
     assert!(matches!(
         block(door.invoke(&person, post())),
         Err(ActionHostError::NotPermitted)
     ));
-    let other = Caller::bot("b2", [1; 32], [3; 32]).in_room(ROOM);
+    let other = Caller::bot("b2", [1; 32], [3; 32]).in_workspace(WORKSPACE);
     assert!(matches!(
         block(door.invoke(&other, post())),
         Err(ActionHostError::NotPermitted)

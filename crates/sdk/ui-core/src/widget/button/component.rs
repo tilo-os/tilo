@@ -5,6 +5,16 @@ use crate::icons::Icon;
 use crate::widget::{ButtonRole, ControlSize};
 
 use super::Button;
+use crate::widget::{BadgeContent, ChipStyle, Tone};
+
+/// What stands on the icon: the count, else the dot, else nothing.
+fn count_content(count: Option<i64>, dot: bool) -> Option<BadgeContent> {
+    match count {
+        Some(n) if n > 0 => Some(BadgeContent::Count(u32::try_from(n).unwrap_or(u32::MAX))),
+        _ if dot => Some(BadgeContent::Dot),
+        _ => None,
+    }
+}
 
 /// A button: pressing it does one thing. Its role says what kind of thing, which decides its
 /// whole look: the window's one primary action, a destructive one, or an ordinary one.
@@ -32,6 +42,15 @@ pub struct ButtonProps {
     /// beside the pressed control's own event. Never drawn here; the header shows it at the
     /// action's menu row.
     pub key: Option<String>,
+    /// How many new things wait behind it (unread notifications, new mail), on an icon-only
+    /// button: a count standing on its icon's top-trailing corner, as an app icon's does, and
+    /// nothing at 0. The button keeps room for it, so it never covers the control beside it.
+    /// The label says the count to assistive technology.
+    pub count: Option<i64>,
+    /// Something new behind it without a number: a dot on its icon's corner.
+    pub dot: bool,
+    /// It needs the person: the count or the dot in the warning tone, not in your colour.
+    pub alert: bool,
     /// It was pressed (a click, Enter or Space, an assistive technology).
     #[component(event)]
     pub press: Event,
@@ -48,6 +67,9 @@ impl Default for ButtonProps {
             size: ControlSize::default(),
             enabled: true,
             key: None,
+            count: None,
+            dot: false,
+            alert: false,
             press: Event::None,
         }
     }
@@ -66,6 +88,9 @@ impl Described for Button {
             size,
             enabled,
             key: _,
+            count,
+            dot,
+            alert,
             press,
         } = props;
         let enabled = enabled && !press.is_none();
@@ -82,6 +107,14 @@ impl Described for Button {
         }
         if size != ControlSize::default() {
             button = button.control_size(size);
+        }
+        if let Some(content) = count_content(count, dot) {
+            let style = if alert {
+                ChipStyle::Tinted(Tone::Warning)
+            } else {
+                ChipStyle::Live
+            };
+            button = button.with_count(content, style);
         }
         let button = button.with_enabled(enabled);
         match press {
@@ -110,6 +143,7 @@ impl Described for Button {
             && role == self.role
             && size == self.control_size
             && props.toggled.is_some() == self.toggled.is_some()
+            && self.shows_count(count_content(props.count, props.dot).as_ref(), props.alert)
             && props.press.is_none() == (self.action.is_none() && self.on_click.is_none());
         if !same_face || matches!(props.press, Event::Action(_)) {
             return false;

@@ -2,9 +2,9 @@
 //! shared copy detaches it (`Arc::make_mut`).
 //!
 //! Every admission decides in a copy of the whole peer and installs the copy
-//! only once every check passed. A long-running room holds hundreds of
+//! only once every check passed. A long-running workspace holds hundreds of
 //! certificates and records, each record with its channel state: copying
-//! all of that per write made every write cost the size of the room. Behind
+//! all of that per write made every write cost the size of the workspace. Behind
 //! `Shared`, a copy costs a pointer per part, and a write copies only the
 //! parts it changes.
 use std::ops::{Deref, DerefMut};

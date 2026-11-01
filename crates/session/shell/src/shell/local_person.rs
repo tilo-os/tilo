@@ -211,7 +211,7 @@ mod tests {
         // owner entered, governed by the person this device's protected
         // identity names.
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let room = RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
+        let room = RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
         let active = tree.desktop.active;
         assert!(tree.stand_in_room(active, room));
         tree.desktop.workspaces[0].set_owner(&person);
@@ -234,14 +234,16 @@ mod tests {
         // The exact maintained BrokerActionHost used by the palette/admin
         // socket acquires this protected identity, not a supplied certificate.
         let (host, turn, mut invocations) = native_host(&tree, room);
-        let caller = tilo_actions::remote::Caller::local_person(&person).in_room(room.to_string());
+        let caller =
+            tilo_actions::remote::Caller::local_person(&person).in_workspace(room.to_string());
         let invoke = |caller: &tilo_actions::remote::Caller, request| {
             invoke_native(&host, &turn, caller, &request)
         };
         let applied = invoke(&caller, request("apply"));
         assert!(applied.is_ok(), "{applied:?}");
         assert_eq!(invocations.try_recv().unwrap().actor, person);
-        let agent = tilo_actions::remote::Caller::local_agent("agent").in_room(room.to_string());
+        let agent =
+            tilo_actions::remote::Caller::local_agent("agent").in_workspace(room.to_string());
         assert!(invoke(&agent, request("apply")).is_err());
         let mut continuation = request("apply");
         continuation.on_behalf_of = Some(tilo_actions::InvocationId::new());

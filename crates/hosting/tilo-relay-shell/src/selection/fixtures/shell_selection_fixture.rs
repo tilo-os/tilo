@@ -163,7 +163,7 @@ pub(super) fn generate() -> ShellSelectionFixture {
     owner
         .install_seed(
             tilo_peer_state::SeedState {
-                room_changes: tilo_peer_state::seed_room(
+                workspace_changes: tilo_peer_state::seed_workspace(
                     ROOM,
                     &authority,
                     std::slice::from_ref(&authority),
@@ -232,7 +232,7 @@ pub(super) fn generate() -> ShellSelectionFixture {
 
     // A room-only rename: one more room delta.
     let before = owner.clone();
-    let mut room = owner.admitted_room().unwrap().clone();
+    let mut room = owner.admitted_workspace().unwrap().clone();
     let heads = room.get_heads();
     room.put(ROOT, "name", "selectively renamed room").unwrap();
     room.commit();

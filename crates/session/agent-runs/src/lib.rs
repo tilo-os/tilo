@@ -62,6 +62,10 @@ const SHOWN_STEPS: usize = 4;
 /// How many of a run's programs a follower is shown: enough to follow a
 /// task's work, bounded so a long task does not grow the follower without end.
 const SHOWN_PROGRAMS: usize = 24;
+/// How many entries of its conversation a run keeps: its programs and what
+/// was said between them. What an older entry did stays in the records it
+/// changed.
+const KEPT_ENTRIES: usize = 64;
 /// How many of the messages sent to a run a follower is shown.
 const SHOWN_DIRECTIONS: usize = 8;
 /// How many messages a run keeps: its agent asks for the rest as it goes.
@@ -92,15 +96,59 @@ struct Run {
     /// What it is about, when it was asked about a selection: where to act,
     /// granting nothing.
     subject: Option<SelectionSubject>,
-    /// The messages sent to it, oldest first.
+    /// The messages sent to it, oldest first: what the run channel delivers
+    /// to its agent, each with whether the agent took it in.
     directions: Vec<TrackerDirection>,
-    /// What its agent said in it so far, oldest first, the last
-    /// [`SHOWN_STEPS`] of them.
-    said: Vec<String>,
-    programs: Vec<ProgramStep>,
+    /// Its conversation, oldest first, the last [`KEPT_ENTRIES`] of it: what
+    /// was said in it and every program run in it, in the order they
+    /// happened. What its agent said last and the programs it ran are read
+    /// out of it, so the order is kept in one place.
+    transcript: Vec<Entry>,
+    /// The number the next entry of the transcript takes, less one.
+    entries: u64,
     answer: Option<ResourceAt>,
     /// The model turn it streams now, while it goes.
     live: Option<runtime_collab::TaskPresentation>,
+}
+
+/// One entry of a run's conversation, as the session keeps it.
+struct Entry {
+    seq: u64,
+    /// The person by their id, or the agent as `agent:<id>`.
+    author: String,
+    at_ms: i64,
+    said: Said,
+}
+
+/// What an entry is: words, or a program and what came of it.
+enum Said {
+    Prose(String),
+    Step(ProgramStep),
+}
+
+impl Entry {
+    /// What a follower reads of it.
+    fn reading(&self) -> Option<wire::Entry> {
+        let said = match &self.said {
+            Said::Prose(text) => wire::Said::Prose { text: text.clone() },
+            Said::Step(step) => wire::Said::Step {
+                step: serde_json::to_value(step).ok()?,
+            },
+        };
+        Some(wire::Entry {
+            seq: self.seq,
+            author: self.author.clone(),
+            at_ms: self.at_ms,
+            said,
+        })
+    }
+}
+
+/// The last `most` of `items`.
+fn last<T>(items: &[T], most: usize) -> &[T] {
+    items
+        .get(items.len().saturating_sub(most)..)
+        .unwrap_or_default()
 }
 
 impl Run {
@@ -140,10 +188,12 @@ impl Run {
                 .collect(),
             messages: u64::try_from(self.directions.len()).unwrap_or(u64::MAX),
             incorporated: u64::try_from(incorporated).unwrap_or(u64::MAX),
-            said: self.said.last().cloned(),
-            steps: self.said.clone(),
-            programs: self
-                .programs
+            said: self.agent_said().last().map(|said| (*said).to_owned()),
+            steps: last(&self.agent_said(), SHOWN_STEPS)
+                .iter()
+                .map(|said| (*said).to_owned())
+                .collect(),
+            programs: last(&self.programs(), SHOWN_PROGRAMS)
                 .iter()
                 .filter_map(|program| serde_json::to_value(program).ok())
                 .collect(),
@@ -151,6 +201,7 @@ impl Run {
                 .answer
                 .as_ref()
                 .and_then(|answer| serde_json::to_value(answer).ok()),
+            transcript: self.transcript.iter().filter_map(Entry::reading).collect(),
             live: self.live.as_ref().map(|live| wire::Live {
                 run: live.run.clone(),
                 sequence: live.sequence,
@@ -168,14 +219,55 @@ impl Run {
         }
     }
 
-    /// Take in what its agent said, keeping the last few things it said.
+    /// What its agent said in it, oldest first, of what the transcript keeps.
+    fn agent_said(&self) -> Vec<&str> {
+        self.transcript
+            .iter()
+            .filter(|entry| entry.author.starts_with(wire::AGENT_PREFIX))
+            .filter_map(|entry| match &entry.said {
+                Said::Prose(text) => Some(text.as_str()),
+                Said::Step(_) => None,
+            })
+            .collect()
+    }
+
+    /// The programs run in it, oldest first, of what the transcript keeps.
+    fn programs(&self) -> Vec<&ProgramStep> {
+        self.transcript
+            .iter()
+            .filter_map(|entry| match &entry.said {
+                Said::Step(step) => Some(step),
+                Said::Prose(_) => None,
+            })
+            .collect()
+    }
+
+    /// The agent, as the transcript names it.
+    fn agent_author(&self) -> String {
+        format!("{}{}", wire::AGENT_PREFIX, self.agent)
+    }
+
+    /// Take in what its agent said.
     fn note_said(&mut self, said: &str) {
         let Some(said) = message_text(said) else {
             return;
         };
-        self.said.push(said);
-        let over = self.said.len().saturating_sub(SHOWN_STEPS);
-        self.said.drain(..over);
+        let agent = self.agent_author();
+        self.note(agent, Said::Prose(said));
+    }
+
+    /// Add `said` by `author` to the transcript, letting go of the oldest
+    /// entry past what it keeps.
+    fn note(&mut self, author: String, said: Said) {
+        self.entries = self.entries.saturating_add(1);
+        self.transcript.push(Entry {
+            seq: self.entries,
+            author,
+            at_ms: unix_now_ms_i64(),
+            said,
+        });
+        let over = self.transcript.len().saturating_sub(KEPT_ENTRIES);
+        self.transcript.drain(..over);
     }
 
     /// Take in the model turn it streams now, or forget the one it stopped
@@ -254,7 +346,7 @@ pub struct RoomFacts {
     /// The agents it admits now, by their bare id.
     pub agents: Vec<String>,
     /// Its grants: a run's child actions are admitted by these.
-    pub policy: Option<tilo_action_policy::RoomPolicy>,
+    pub policy: Option<tilo_action_policy::WorkspacePolicy>,
 }
 
 impl RoomFacts {
@@ -263,7 +355,7 @@ impl RoomFacts {
     pub fn new(
         room: &str,
         agents: Vec<String>,
-        policy: Option<tilo_action_policy::RoomPolicy>,
+        policy: Option<tilo_action_policy::WorkspacePolicy>,
     ) -> Self {
         Self {
             room: room.to_owned(),
@@ -291,9 +383,19 @@ struct Held {
     /// Whether anything landed since the loop last took it in: what makes the
     /// readings of the runs be read again.
     landed: bool,
+    /// Moves whenever anything lands: what a reader that keeps its own copy
+    /// of the readings (the shell's desk) compares before reading again.
+    revision: u64,
 }
 
 impl Held {
+    /// Something landed: the loop reads the runs again, and so does every
+    /// reader that compares [`AgentRuns::revision`].
+    fn land(&mut self) {
+        self.landed = true;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     /// `room` as the desk holds it, or why this session cannot speak for it.
     fn room(&self, room: &str) -> Result<&RoomFacts, String> {
         self.here
@@ -328,13 +430,20 @@ impl AgentRuns {
             let moved = held.here != here;
             if moved {
                 held.here = here;
-                held.landed = true;
+                held.land();
             }
             moved
         };
         if moved {
             self.wake();
         }
+    }
+
+    /// A number that moves whenever any run's reading may have moved: a
+    /// reader keeping its own copy reads [`Self::readings`] again only then.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.held.lock_recover().revision
     }
 
     /// What the runs read now, every one of them.
@@ -421,6 +530,13 @@ impl AgentRuns {
                     "the ask {id} was made already"
                 )));
             }
+            // The conversation starts with what the person asked.
+            let first = message_text(&instruction).map(|asked| Entry {
+                seq: 1,
+                author: person.clone(),
+                at_ms: unix_now_ms_i64(),
+                said: Said::Prose(asked),
+            });
             held.runs.push(Run {
                 id,
                 room,
@@ -438,14 +554,14 @@ impl AgentRuns {
                 }),
                 subject,
                 directions: Vec::new(),
-                said: Vec::new(),
-                programs: Vec::new(),
+                entries: u64::from(first.is_some()),
+                transcript: first.into_iter().collect(),
                 answer: None,
                 live: None,
             });
             let over = held.runs.len().saturating_sub(KEPT_RUNS);
             held.runs.drain(..over);
-            held.landed = true;
+            held.land();
         }
         self.wake();
         Ok(asked)
@@ -478,12 +594,13 @@ impl AgentRuns {
             }
             run.directions.push(TrackerDirection {
                 id: format!("{id}/{}", run.directions.len()),
-                author,
-                text,
+                author: author.clone(),
+                text: text.clone(),
                 at_ms: unix_now_ms_i64(),
                 incorporated: false,
             });
-            held.landed = true;
+            run.note(author, Said::Prose(text));
+            held.land();
         }
         self.wake();
         Ok(())
@@ -500,7 +617,7 @@ impl AgentRuns {
             let run = run_of(&mut held.runs, id)?;
             if run.phase.active() {
                 run.phase = wire::Phase::Stopped;
-                held.landed = true;
+                held.land();
                 true
             } else {
                 false
@@ -528,10 +645,9 @@ impl AgentRuns {
             if !run.phase.active() {
                 return Err(ended(run));
             }
-            run.programs.push(step.bounded());
-            let over = run.programs.len().saturating_sub(SHOWN_PROGRAMS);
-            run.programs.drain(..over);
-            held.landed = true;
+            let agent = run.agent_author();
+            run.note(agent, Said::Step(step.bounded()));
+            held.land();
         }
         self.wake();
         Ok(())
@@ -554,7 +670,7 @@ impl AgentRuns {
                 return Err(ended(run));
             }
             run.answer = Some(answer);
-            held.landed = true;
+            held.land();
         }
         self.wake();
         Ok(())
@@ -618,7 +734,7 @@ impl AgentRuns {
                 run.live = None;
             }
         }
-        held.landed = true;
+        held.land();
         drop(held);
         self.wake();
     }
@@ -642,7 +758,7 @@ impl AgentRuns {
             .find(|run| run.id == id && run.room == room && run.epoch == epoch);
         let changed = found.is_some_and(|run| run.absorb(presentation));
         if changed {
-            held.landed = true;
+            held.land();
         }
         drop(held);
         if changed {
@@ -687,7 +803,7 @@ impl AgentRuns {
     /// `room`'s grants, as the desk holds them: what a run's child actions are
     /// decided by, and nothing when its workspace is not open.
     #[must_use]
-    pub fn room_policy(&self, room: &str) -> Option<tilo_action_policy::RoomPolicy> {
+    pub fn room_policy(&self, room: &str) -> Option<tilo_action_policy::WorkspacePolicy> {
         self.held
             .lock_recover()
             .room(room)

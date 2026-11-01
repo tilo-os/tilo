@@ -282,19 +282,20 @@ mod identity_fs_tests {
         let bob_id = hex::encode(bob.as_bytes());
         let mut room_a = Workspace::new(WorkspaceId(1), "A");
         let mut room_b = Workspace::new(WorkspaceId(2), "B");
-        let primary_relay_scope = tilo_network_actor::room_topic_id(room_a.room()).to_string();
-        let secondary_relay_scope = tilo_network_actor::room_topic_id(room_b.room()).to_string();
+        let primary_relay_scope = tilo_network_actor::workspace_topic_id(room_a.room()).to_string();
+        let secondary_relay_scope =
+            tilo_network_actor::workspace_topic_id(room_b.room()).to_string();
         let reader = |id: &str, person: &str, room: &str| {
             Grant::new(
                 id,
                 PolicySubject::Person(person.to_owned()),
-                TreePath::room(room),
+                TreePath::workspace(room),
                 KindSet::READ,
                 Answer::Allow,
                 PolicySubject::Person("owner".into()),
             )
         };
-        let first_room = room_a.policy.room.clone();
+        let first_room = room_a.policy.workspace.clone();
         room_a.grant(reader("alice-reads", &alice_id, &first_room));
         // A Files share remains Files authority, not an implicit relay
         // membership on either room.
@@ -305,7 +306,7 @@ mod identity_fs_tests {
             Access::Read,
         ));
         let until_ms = (tilo_clock::unix_now() + 3600) * 1000;
-        let second_room = room_b.policy.room.clone();
+        let second_room = room_b.policy.workspace.clone();
         room_b.grant(
             reader("bob-reads", &bob_id, &second_room).with_lifetime(Lifetime::Until(until_ms)),
         );
@@ -326,19 +327,19 @@ mod identity_fs_tests {
         let exported = read(&output);
         let members_of = |authority: &collab_types::FsAuthority, scope: &str| {
             authority
-                .room_members
+                .workspace_members
                 .get(scope)
                 .cloned()
                 .unwrap_or_default()
         };
-        assert!(
-            members_of(&exported, &primary_relay_scope).contains(&collab_types::RoomMember {
+        assert!(members_of(&exported, &primary_relay_scope).contains(
+            &collab_types::WorkspaceMember {
                 user: alice,
                 until: None,
-            })
-        );
+            }
+        ));
         assert!(members_of(&exported, &secondary_relay_scope).contains(
-            &collab_types::RoomMember {
+            &collab_types::WorkspaceMember {
                 user: bob,
                 until: Some(until_ms / 1000),
             }
@@ -357,7 +358,7 @@ mod identity_fs_tests {
         tree.desktop.workspaces[0].grant(Grant::new(
             "alice-denied",
             PolicySubject::Person(alice_id),
-            TreePath::room(&first_room),
+            TreePath::workspace(&first_room),
             KindSet::READ,
             Answer::Deny,
             PolicySubject::Person("owner".into()),
@@ -671,8 +672,8 @@ pub fn read_local_presence_hue() -> collab_types::presence::PresenceHue {
 /// it has no roster to invite anyone into, and its records travel only
 /// between that person's devices, so no invite or enrollment may turn it
 /// into a room collaborators share.
-pub fn is_local_person_room(room: RoomId) -> bool {
-    collab_types::person_room_of(&local_user_id()) == Some(room.as_uuid())
+pub fn is_local_personal_cluster(room: RoomId) -> bool {
+    collab_types::personal_cluster_of(&local_user_id()) == Some(room.as_uuid())
 }
 
 /// Identity acting in a specific durable room.
@@ -1277,7 +1278,7 @@ impl WorkspaceTree {
         peer: &tilo_peer_state::StatePeer,
         host: &tilo_user_identity::DeviceCert,
     ) {
-        let Some(document) = peer.admitted_room() else {
+        let Some(document) = peer.admitted_workspace() else {
             return;
         };
         // Whoever hosts the room, a person's device or a relay, its host
@@ -2077,9 +2078,12 @@ impl WorkspaceTree {
     /// shard. The relay authenticates public keys, not display names: a
     /// person whose id is not a canonical hex key cannot be made a network
     /// principal and is omitted fail-closed.
-    fn relay_room_member(person: &str, until: Option<u64>) -> Option<collab_types::RoomMember> {
+    fn relay_room_member(
+        person: &str,
+        until: Option<u64>,
+    ) -> Option<collab_types::WorkspaceMember> {
         let bytes: [u8; 32] = hex::decode(person).ok()?.try_into().ok()?;
-        Some(collab_types::RoomMember {
+        Some(collab_types::WorkspaceMember {
             user: collab_types::Ed25519PublicKey::from_bytes(bytes),
             until,
         })
@@ -2187,7 +2191,7 @@ impl WorkspaceTree {
             // Signed room membership is a separate projection from Files
             // access: who the room's policy lets read it, per relay shard.
             room_members.insert(
-                tilo_network_actor::room_topic_id(workspace.room).to_string(),
+                tilo_network_actor::workspace_topic_id(workspace.room).to_string(),
                 workspace
                     .members
                     .iter()
@@ -2197,7 +2201,7 @@ impl WorkspaceTree {
         }
         let authority = collab_types::FsAuthority {
             capabilities: caps,
-            room_members,
+            workspace_members: room_members,
         };
         let Ok(json) = serde_json::to_vec_pretty(&authority) else {
             return;
@@ -2242,7 +2246,7 @@ impl WorkspaceTree {
     /// room refuses every governance change rather than trusting whoever
     /// answers.
     pub fn join_room(&mut self, name: &str, room: RoomId) -> Option<WorkspaceId> {
-        if room.is_nil() || is_local_person_room(room) {
+        if room.is_nil() || is_local_personal_cluster(room) {
             return None;
         }
         if let Some(held) = self.desktop.workspaces.iter().find(|w| w.room() == room) {
@@ -2263,7 +2267,7 @@ impl WorkspaceTree {
     /// this. Made through the stored form, as a file from before would be.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn stand_in_room(&mut self, id: WorkspaceId, room: RoomId) -> bool {
-        if room.is_nil() || is_local_person_room(room) {
+        if room.is_nil() || is_local_personal_cluster(room) {
             return false;
         }
         let joining = !self.desktop.workspaces.iter().any(|w| w.room() == room);
@@ -2500,13 +2504,13 @@ impl WorkspaceTree {
 
     /// The device revocations the room document of `room` records, against
     /// which a saved shortcut's proof is judged each time it arms
-    /// ([`tilo_peer_state::room::proven_saver`]). `None` when this device
+    /// ([`tilo_peer_state::workspace::proven_saver`]). `None` when this device
     /// holds no document of the room: nothing saved there arms.
     #[must_use]
     pub fn room_revocations(&self, room: RoomId) -> Option<tilo_user_identity::RevocationList> {
         self.room_docs
             .get(&room)
-            .map(tilo_peer_state::room::room_revocations)
+            .map(tilo_peer_state::workspace::workspace_revocations)
     }
 
     /// Record that `claim.device` takes a fire time of one of the shortcuts
@@ -3353,7 +3357,7 @@ impl WorkspaceTree {
     /// owns and governs the room is the room's own governance, projected
     /// with its replica. Returns whether the tree changed.
     pub fn adopt_personal_room(&mut self, room: RoomId, name: &str) -> bool {
-        if room.is_nil() || is_local_person_room(room) {
+        if room.is_nil() || is_local_personal_cluster(room) {
             return false;
         }
         if let Some(index) = self
@@ -5702,12 +5706,12 @@ mod workspace_tree_lifecycle_tests {
     fn relay_authority_never_turns_session_grants_into_timeless_nas_access() {
         use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
         let mut workspace = Workspace::new(WorkspaceId(1), "A");
-        let room = workspace.policy.room.clone();
+        let room = workspace.policy.workspace.clone();
         let reach = |id: &str, person: &str, lifetime: Lifetime| {
             Grant::new(
                 id,
                 Subject::Person(person.to_owned()),
-                TreePath::room(&room),
+                TreePath::workspace(&room),
                 KindSet::READ,
                 Answer::Allow,
                 Subject::Person("owner".into()),

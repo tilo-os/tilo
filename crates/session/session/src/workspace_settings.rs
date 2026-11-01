@@ -24,6 +24,7 @@ use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::FilePickerSeat;
 use tilo_sheets::workspace_settings as sheet;
 
+use crate::engine::Engine;
 use crate::keys::{Invocation, Invocations};
 use crate::lists::AppLists;
 use crate::workspaces::{DeviceChoice, Personal};
@@ -46,6 +47,10 @@ pub(crate) struct Feeding<'a> {
     /// The session's file chooser, where a picture to add is chosen.
     picker: Option<&'a FilePickerSeat>,
     personal: Option<&'a RefCell<Personal>>,
+    /// This device's engine, where the workspace's own governance is written:
+    /// what the person changes of the workspace's people goes there, so every
+    /// member admits it.
+    engine: Option<&'a Engine>,
 }
 
 impl<'a> Feeding<'a> {
@@ -57,6 +62,7 @@ impl<'a> Feeding<'a> {
         emoji: &'a EmojiTab,
         picker: Option<&'a FilePickerSeat>,
         personal: Option<&'a RefCell<Personal>>,
+        engine: Option<&'a Engine>,
     ) -> Self {
         Self {
             handle,
@@ -66,6 +72,7 @@ impl<'a> Feeding<'a> {
             emoji,
             picker,
             personal,
+            engine,
         }
     }
 }
@@ -243,12 +250,12 @@ pub(crate) fn follow(
                     tracing::debug!(%role, "no such role: nothing changed");
                     continue;
                 };
-                edit(handle, person, |ws, actor| {
+                govern(handle, person, fed, |ws, actor| {
                     domain::set_member_role(ws, actor, &member, role)
                 });
             }
             sheet::WorkspaceSettingsEffect::RemoveMember { member } => {
-                edit(handle, person, |ws, actor| {
+                govern(handle, person, fed, |ws, actor| {
                     domain::remove_member(ws, actor, &member)
                 });
             }
@@ -256,7 +263,7 @@ pub(crate) fn follow(
                 subject,
                 permission,
                 expiry,
-            } => edit(handle, person, |ws, actor| {
+            } => govern(handle, person, fed, |ws, actor| {
                 domain::draft_for(ws, &subject, &permission, &expiry).map_or_else(
                     || {
                         tracing::debug!(%subject, %permission, "no such grant: nothing changed");
@@ -266,7 +273,7 @@ pub(crate) fn follow(
                 )
             }),
             sheet::WorkspaceSettingsEffect::Revoke { grant } => {
-                edit(handle, person, |ws, actor| {
+                govern(handle, person, fed, |ws, actor| {
                     domain::apply_revoke(ws, actor, &grant)
                 });
             }
@@ -327,6 +334,37 @@ fn edit(
     edit_changed(handle, person, |workspace, actor| {
         !edit(workspace, actor).is_empty()
     });
+}
+
+/// [`edit`] a change to the workspace's people, and write it into the
+/// workspace's own governance too: what the person changes here is a change
+/// every member admits, made at this device and signed with its key.
+fn govern(
+    handle: &DesktopHandle,
+    person: &UserId,
+    fed: &Feeding<'_>,
+    edit: impl FnOnce(&mut Workspace, &UserId) -> domain::PolicyEdit,
+) {
+    let mut tree = handle.read(Clone::clone);
+    let Some(workspace) = tree.active_workspace_mut() else {
+        return;
+    };
+    let changed = edit(workspace, person);
+    if changed.is_empty() {
+        return;
+    }
+    let room = workspace.room();
+    let membership = fed
+        .engine
+        .map(|engine| crate::membership::Membership::of(engine, room));
+    let writes = membership
+        .as_ref()
+        .map(|writes| writes.changes(workspace, &changed))
+        .unwrap_or_default();
+    handle.replace_tree(tree);
+    if let Some(membership) = membership {
+        membership.write(&writes);
+    }
 }
 
 /// Apply `change` to the workspace in front as `person`, and keep the tree

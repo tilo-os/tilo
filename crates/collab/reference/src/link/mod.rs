@@ -295,7 +295,7 @@ impl Slug {
 /// Which room a link opens in.
 #[derive(Clone, Debug, Eq)]
 pub enum Scope {
-    /// The person's own room (`/me`).
+    /// The workspace the person is in (`/me`).
     Own,
     /// A workspace room on `host`.
     Room {

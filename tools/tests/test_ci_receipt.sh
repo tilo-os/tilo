@@ -84,8 +84,9 @@ git -C "$work/writer-a" fetch -q origin +refs/notes/tilo-check-ci:refs/notes/til
 [[ $(git -C "$work/writer-a" notes --ref=tilo-check-ci show "$sha") == *'run=46'* ]]
 [[ $(git -C "$work/writer-a" notes --ref=tilo-check-ci show "$new_sha") == *'run=47'* ]]
 
-# A forge-side failure that is not a lost race (observed: "remote unpack
-# failed") must be retried too, and the receipt must still land.
+# A push the forge refuses for another reason (observed: "remote unpack
+# failed") is not a lost race: retrying it would wait out a race that never
+# was and hide the outage behind a receipt that never lands.
 cat > "$work/wrapper/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -100,14 +101,18 @@ fi
 exec "$CI_RECEIPT_TEST_REAL_GIT" "$@"
 EOF
 echo 3 > "$work/failures"
-CI_RECEIPT_TEST_FAILURES="$work/failures" \
-CI_RECEIPT_TEST_REAL_GIT="$(command -v git)" \
-PATH="$work/wrapper:$PATH" \
-  bash -c 'cd "$1" && "$2" record "$3" 48 success success success origin >/dev/null 2>&1' \
-  _ "$work/writer-a" "$tool" "$new_sha"
-[[ $(cat "$work/failures") == 0 ]]
+if CI_RECEIPT_TEST_FAILURES="$work/failures" \
+   CI_RECEIPT_TEST_REAL_GIT="$(command -v git)" \
+   PATH="$work/wrapper:$PATH" \
+     bash -c 'cd "$1" && "$2" record "$3" 48 success success success origin' \
+     _ "$work/writer-a" "$tool" "$new_sha" 2>"$work/refused.log"; then
+  echo 'receipt tool retried a push the forge refused' >&2
+  exit 1
+fi
+[[ $(cat "$work/failures") == 2 ]]
+grep -q 'remote unpack failed' "$work/refused.log"
 git -C "$work/writer-b" fetch -q origin +refs/notes/tilo-check-ci:refs/notes/tilo-check-ci
-[[ $(git -C "$work/writer-b" notes --ref=tilo-check-ci show "$new_sha") == *'run=48'* ]]
+[[ $(git -C "$work/writer-b" notes --ref=tilo-check-ci show "$new_sha") == *'run=47'* ]]
 
 # The main aggregate records from a depth-one sparse checkout. Notes have
 # their own history: recording must neither require nor fetch source ancestry,

@@ -54,7 +54,7 @@ impl Access {
 #[derive(
     Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, tilo_resource::Model,
 )]
-#[serde(deny_unknown_fields)]
+#[serde(from = "PrincipalWire", into = "PrincipalWire")]
 pub enum Principal {
     /// A human, by stable id. When the person has a signing key the id is its
     /// lowercase hex, so a `Person` principal and a matching [`Subject::User`]
@@ -66,8 +66,51 @@ pub enum Principal {
     Agent(String),
     /// A bearer token: whoever presents this token id holds the capability.
     Token(String),
-    /// A room (workspace): held by everyone in it.
-    Room(String),
+    /// A workspace: held by everyone in it.
+    Workspace(String),
+}
+
+/// [`Principal`] as it is written and read.
+///
+/// A workspace principal was called a room before, and grants already stored
+/// name it that way. The variant keeps its place — postcard, which encoded
+/// capability lists are written in, names a variant by position, and a signed
+/// authority revision verifies over the bytes it was signed with — so every
+/// stored grant and revision still reads and verifies; it writes the
+/// workspace's name and still reads the one grants were stored under.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+enum PrincipalWire {
+    Person(String),
+    App(String),
+    Agent(String),
+    Token(String),
+    #[serde(alias = "Room")]
+    Workspace(String),
+}
+
+impl From<PrincipalWire> for Principal {
+    fn from(wire: PrincipalWire) -> Self {
+        match wire {
+            PrincipalWire::Person(id) => Principal::Person(id),
+            PrincipalWire::App(id) => Principal::App(id),
+            PrincipalWire::Agent(id) => Principal::Agent(id),
+            PrincipalWire::Token(id) => Principal::Token(id),
+            PrincipalWire::Workspace(id) => Principal::Workspace(id),
+        }
+    }
+}
+
+impl From<Principal> for PrincipalWire {
+    fn from(principal: Principal) -> Self {
+        match principal {
+            Principal::Person(id) => PrincipalWire::Person(id),
+            Principal::App(id) => PrincipalWire::App(id),
+            Principal::Agent(id) => PrincipalWire::Agent(id),
+            Principal::Token(id) => PrincipalWire::Token(id),
+            Principal::Workspace(id) => PrincipalWire::Workspace(id),
+        }
+    }
 }
 
 impl Principal {
@@ -88,7 +131,7 @@ impl Principal {
             | Principal::App(s)
             | Principal::Agent(s)
             | Principal::Token(s)
-            | Principal::Room(s) => s.as_str(),
+            | Principal::Workspace(s) => s.as_str(),
         }
     }
 }
@@ -138,8 +181,8 @@ impl Subject {
         Subject::Principal(Principal::Token(token_id.into()))
     }
 
-    pub fn room(room_id: impl Into<String>) -> Self {
-        Subject::Principal(Principal::Room(room_id.into()))
+    pub fn workspace(workspace_id: impl Into<String>) -> Self {
+        Subject::Principal(Principal::Workspace(workspace_id.into()))
     }
 
     /// Is this subject a person?
@@ -194,7 +237,7 @@ impl Actor {
         }
     }
 
-    /// Add a principal (a room the actor is in, a token it presented,
+    /// Add a principal (a workspace the actor is in, a token it presented,
     /// the app it is running as).
     #[must_use]
     pub fn with_principal(mut self, p: Principal) -> Self {
@@ -204,10 +247,10 @@ impl Actor {
         self
     }
 
-    /// Add room membership.
+    /// Add workspace membership.
     #[must_use]
-    pub fn in_room(self, room: impl Into<String>) -> Self {
-        self.with_principal(Principal::Room(room.into()))
+    pub fn in_workspace(self, workspace: impl Into<String>) -> Self {
+        self.with_principal(Principal::Workspace(workspace.into()))
     }
 
     /// The person this actor is, if it presents one.
@@ -254,9 +297,9 @@ impl Scope {
 }
 
 /// What a governor exports to its filesystem and the relays that carry its
-/// rooms: the sandbox capabilities people hold over shared files, and who
-/// may reach each room a relay carries (keyed by the relay's room id) — the
-/// room's members, as its policy names them.
+/// workspaces: the sandbox capabilities people hold over shared files, and who
+/// may reach each workspace a relay carries (keyed by the relay's workspace
+/// id) — the workspace's members, as its policy names them.
 ///
 /// Written as an object. It also reads the bare capability array that
 /// preceded it (`fs_authority_v1`): that file persists on a machine across
@@ -264,7 +307,10 @@ impl Scope {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct FsAuthority {
     pub capabilities: Vec<CapOverride>,
-    pub room_members: std::collections::BTreeMap<String, Vec<RoomMember>>,
+    /// The file it is in outlives an image update, so the key it was written
+    /// under before the name changed still reads (see [`FsAuthorityV2`]).
+    #[serde(rename = "workspace_members")]
+    pub workspace_members: std::collections::BTreeMap<String, Vec<WorkspaceMember>>,
 }
 
 /// The current, object form of [`FsAuthority`].
@@ -273,8 +319,8 @@ pub struct FsAuthority {
 struct FsAuthorityV2 {
     #[serde(default)]
     capabilities: Vec<CapOverride>,
-    #[serde(default)]
-    room_members: std::collections::BTreeMap<String, Vec<RoomMember>>,
+    #[serde(default, rename = "workspace_members", alias = "room_members")]
+    workspace_members: std::collections::BTreeMap<String, Vec<WorkspaceMember>>,
 }
 
 impl<'de> Deserialize<'de> for FsAuthority {
@@ -301,11 +347,11 @@ impl<'de> Deserialize<'de> for FsAuthority {
             ) -> Result<FsAuthority, A::Error> {
                 let FsAuthorityV2 {
                     capabilities,
-                    room_members,
+                    workspace_members,
                 } = FsAuthorityV2::deserialize(MapAccessDeserializer::new(map))?;
                 Ok(FsAuthority {
                     capabilities,
-                    room_members,
+                    workspace_members,
                 })
             }
 
@@ -322,18 +368,18 @@ impl<'de> Deserialize<'de> for FsAuthority {
     }
 }
 
-/// A person a relay admits to one room: until `until` (Unix seconds,
+/// A person a relay admits to one workspace: until `until` (Unix seconds,
 /// exclusive) when their membership lapses, or for as long as they stay a
 /// member.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RoomMember {
+pub struct WorkspaceMember {
     pub user: crate::crypto::Ed25519PublicKey,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<u64>,
 }
 
-impl RoomMember {
+impl WorkspaceMember {
     /// Whether the membership holds at `now` (Unix seconds).
     #[must_use]
     pub fn is_live_at(&self, now: u64) -> bool {
@@ -345,14 +391,14 @@ impl From<Vec<CapOverride>> for FsAuthority {
     fn from(capabilities: Vec<CapOverride>) -> Self {
         Self {
             capabilities,
-            room_members: std::collections::BTreeMap::new(),
+            workspace_members: std::collections::BTreeMap::new(),
         }
     }
 }
 
-/// What a launch hands the apps of a room: which of them author the room
-/// (the room's grants let them change it; see
-/// `tilo_action_policy::roles::app_authorship`), and the room's sandbox
+/// What a launch hands the apps of a workspace: which of them author it
+/// (its grants let them change it; see
+/// `tilo_action_policy::roles::app_authorship`), and its sandbox
 /// capabilities. An app that is not an author opens as a viewer.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -386,7 +432,7 @@ impl LaunchGrants {
         }
     }
 
-    /// Whether `app` authors the room.
+    /// Whether `app` authors the workspace.
     #[must_use]
     pub fn authors(&self, app: &str) -> bool {
         self.authors.iter().any(|author| author == app)
@@ -629,6 +675,45 @@ pub fn decide_capability(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A grant written when a workspace principal was called a room still
+    /// reads as the same grant, and a new one is written under the workspace's
+    /// name: the variant keeps its place on the wire, so the bytes a signature
+    /// was made over verify unchanged.
+    #[test]
+    fn a_subject_stored_under_the_old_name_still_reads() {
+        let old = r#"{"Principal":{"Room":"ws-design"}}"#;
+        let subject: Subject = serde_json::from_str(old).unwrap();
+        assert_eq!(subject, Subject::workspace("ws-design"));
+        assert_eq!(
+            serde_json::to_string(&Subject::workspace("ws-design")).unwrap(),
+            r#"{"Principal":{"Workspace":"ws-design"}}"#,
+            "the name is written as a workspace; the old one still reads"
+        );
+
+        // Postcard names a variant by its place: `Subject::Principal` (1) then
+        // the workspace principal (4), the place a room kept.
+        let bytes = postcard::to_allocvec(&Subject::workspace("ws-design")).unwrap();
+        assert_eq!(bytes.get(..2), Some([1, 4].as_slice()));
+        assert_eq!(
+            postcard::from_bytes::<Subject>(&bytes).unwrap(),
+            Subject::workspace("ws-design")
+        );
+    }
+
+    /// The file a mount's authority is written in outlives an image update:
+    /// one written under the members' old key still reads, and a new one is
+    /// written under the workspace's.
+    #[test]
+    fn an_authority_stored_under_the_old_key_still_reads() {
+        let old = r#"{"capabilities":[],"room_members":{}}"#;
+        let authority: FsAuthority = serde_json::from_str(old).unwrap();
+        assert_eq!(authority, FsAuthority::default());
+        assert_eq!(
+            serde_json::to_string(&authority).unwrap(),
+            r#"{"capabilities":[],"workspace_members":{}}"#
+        );
+    }
 
     #[test]
     fn a_grant_reaches_its_scope_and_a_restriction_caps_it() {

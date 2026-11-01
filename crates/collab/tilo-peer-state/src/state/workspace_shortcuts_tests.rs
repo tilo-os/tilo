@@ -17,27 +17,27 @@ fn shortcut(id: &str) -> Shortcut {
 }
 
 fn signed(
-    room: &str,
+    workspace: &str,
     id: &str,
     cert: &tilo_user_identity::DeviceCert,
     key: &SigningKey,
 ) -> Shortcut {
     let mut shortcut = shortcut(id);
-    crate::room::sign_saved_shortcut(room, &mut shortcut, cert, key).unwrap();
+    crate::workspace::sign_saved_shortcut(workspace, &mut shortcut, cert, key).unwrap();
     shortcut
 }
 
 fn saved(peer: &crate::StatePeer) -> Vec<Shortcut> {
     tilo_automation::decode_saved(&tilo_desktop_model::projection::workspace_shortcuts_of(
-        peer.admitted_room().unwrap(),
+        peer.admitted_workspace().unwrap(),
     ))
 }
 
 #[test]
-fn a_members_own_device_saves_and_removes_its_shortcut_in_the_room() {
+fn a_members_own_device_saves_and_removes_its_shortcut_in_the_workspace() {
     let (mut governor, _, device, cert, now) = crate::admission_tests::seeded();
-    let room = governor.core.room.clone();
-    let water = signed(&room, "water", &cert, &device);
+    let workspace = governor.core.workspace.clone();
+    let water = signed(&workspace, "water", &cert, &device);
     let save = ShortcutChange::Save(Box::new(water.clone()));
     assert_eq!(
         governor
@@ -73,8 +73,8 @@ fn a_members_own_device_saves_and_removes_its_shortcut_in_the_room() {
 #[test]
 fn a_shortcut_change_is_signed_by_its_callers_own_device() {
     let (mut governor, authority, device, cert, now) = crate::admission_tests::seeded();
-    let room = governor.core.room.clone();
-    let water = signed(&room, "water", &cert, &device);
+    let workspace = governor.core.workspace.clone();
+    let water = signed(&workspace, "water", &cert, &device);
     assert!(
         governor
             .workspace_mut()
@@ -93,14 +93,14 @@ fn a_shortcut_change_is_signed_by_its_callers_own_device() {
 #[test]
 fn a_member_saves_only_as_themselves() {
     let (mut governor, authority, device, cert, now) = crate::admission_tests::seeded();
-    let room = governor.core.room.clone();
+    let workspace = governor.core.workspace.clone();
     let (editor, _) = crate::admission_tests::add_editor(&mut governor, &authority, now);
     let editor_key = SigningKey::from_bytes(&[6; 32]);
 
     // The editor names the owner's person, under either device's proof.
-    let mut forged = signed(&room, "water", &editor, &editor_key);
+    let mut forged = signed(&workspace, "water", &editor, &editor_key);
     forged.saved_by = Some(hex::encode(cert.user_public_key));
-    for shortcut in [forged, signed(&room, "water", &cert, &device)] {
+    for shortcut in [forged, signed(&workspace, "water", &cert, &device)] {
         assert!(
             governor
                 .workspace_mut()
@@ -129,7 +129,7 @@ fn a_member_saves_only_as_themselves() {
     );
     assert!(saved(&governor).is_empty());
 
-    let own = signed(&room, "water", &editor, &editor_key);
+    let own = signed(&workspace, "water", &editor, &editor_key);
     assert_eq!(
         governor.workspace_mut().apply_shortcut_change(
             &editor,
@@ -145,7 +145,7 @@ fn a_member_saves_only_as_themselves() {
 #[test]
 fn a_member_sees_a_saved_shortcut_and_never_the_governors_forgery() {
     let (mut governor, authority, _, _, now) = crate::admission_tests::seeded();
-    let room = governor.core.room.clone();
+    let workspace = governor.core.workspace.clone();
     let (editor, _) = crate::admission_tests::add_editor(&mut governor, &authority, now);
     let editor_key = SigningKey::from_bytes(&[6; 32]);
     let governor_device = authority.verifying_key().to_bytes();
@@ -153,7 +153,7 @@ fn a_member_sees_a_saved_shortcut_and_never_the_governors_forgery() {
 
     // The editor's save, relayed by the owner's device, reaches the member.
     let before = governor.clone();
-    let own = signed(&room, "water", &editor, &editor_key);
+    let own = signed(&workspace, "water", &editor, &editor_key);
     governor
         .workspace_mut()
         .apply_shortcut_change(
@@ -177,7 +177,7 @@ fn a_member_sees_a_saved_shortcut_and_never_the_governors_forgery() {
     let before = governor.clone();
     let mut forged = shortcut("ferns");
     forged.saved_by = Some(hex::encode(editor.user_public_key));
-    let mut document = governor.admitted_room().unwrap().clone();
+    let mut document = governor.admitted_workspace().unwrap().clone();
     tilo_desktop_model::projection::project_workspace_shortcuts(
         &mut document,
         &[
@@ -187,7 +187,7 @@ fn a_member_sees_a_saved_shortcut_and_never_the_governors_forgery() {
     )
     .unwrap();
     document.commit();
-    governor.core.room_doc = Some(document.into());
+    governor.core.workspace_doc = Some(document.into());
     for message in governor
         .publication_mut()
         .durable_mutation_messages(&before, &authority, now, 3)

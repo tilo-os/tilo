@@ -31,6 +31,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// Resolve an existing reviewed shell golden; update mode writes a local candidate.
 /// The cache is verified even when a source-directory candidate also exists.
@@ -44,7 +45,7 @@ pub fn pinned_golden_path(candidate: PathBuf) -> PathBuf {
         .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../tools/test-assets.py"))
         .arg(root.join("tests/snapshots/artifacts.json"))
         .args(["--file", filename])
-        .output()
+        .output_locked()
         .expect("run pinned shell golden resolver");
     assert!(
         result.status.success(),

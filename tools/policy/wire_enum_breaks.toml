@@ -9,6 +9,11 @@
 # reason = "why no stored or sent bytes depend on its variant positions"
 
 [[break]]
+file = "crates/collab/collab-types/src/caps.rs"
+enum = "PrincipalWire"
+reason = "the workspace principal changes name in place, from `Room` to `Workspace`: its postcard position (4) and every byte written before stay the same, a stored subject and a signed authority revision over it still read and verify, and JSON written before under the old name still reads it"
+
+[[break]]
 file = "crates/collab/tilo-peer-state/src/workspace_membership.rs"
 enum = "WorkspaceMembershipCommand"
 reason = "puts the retired task grant commands back at their places: rooms and relays hold these commands, and the digests of their administration requests, in the encoding from before their removal"
@@ -72,3 +77,13 @@ reason = "read and written through a JSON name (`read_through_json_value!`, `ren
 file = "apps/osk/src/actions.rs"
 enum = "SetPreference"
 reason = "the keyboard hands a preference change to its own host in process, and the change is applied at once; no byte of it is kept or sent to another version"
+
+[[break]]
+file = "crates/runtime/runtime-collab/src/wire.rs"
+enum = "Operation"
+reason = "postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection; the variant carrying the workspace question is renamed in place, so its place and the bytes that name it do not move"
+
+[[break]]
+file = "crates/runtime/runtime-collab/src/wire.rs"
+enum = "Reply"
+reason = "postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection; the variant carrying the workspace answer is renamed in place, so its place and the bytes that name it do not move"

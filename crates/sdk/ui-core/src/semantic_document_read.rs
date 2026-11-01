@@ -89,8 +89,8 @@ pub fn result_schema(content: serde_json::Value, paged: bool) -> serde_json::Val
     };
     serde_json::json!({"type":"object","required":["version","record","basis","content","nextCursor"],"additionalProperties":false,"properties":{
         "version":{"type":"integer","enum":[1]},
-        "record":{"type":"object","required":["roomId","appId","recordId"],"additionalProperties":false,"properties":{
-            "roomId":{"type":["string","null"],"format":"uuid"},"appId":{"type":"string","minLength":1,"maxLength":256},"recordId":{"type":"string","maxLength":512}
+        "record":{"type":"object","required":["workspaceId","appId","recordId"],"additionalProperties":false,"properties":{
+            "workspaceId":{"type":["string","null"],"format":"uuid"},"appId":{"type":"string","minLength":1,"maxLength":256},"recordId":{"type":"string","maxLength":512}
         }},
         "basis":{"type":"object","required":["heads"],"additionalProperties":false,"properties":{
             "heads":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","pattern":"^[0-9a-f]{64}$"}}
@@ -328,7 +328,7 @@ impl SelectedSemanticRead<'_> {
         let result = serde_json::json!({
             "version": 1,
             "record": {
-                "roomId": record.room.map(|room| room.to_string()),
+                "workspaceId": record.workspace.map(|workspace| workspace.to_string()),
                 "appId": record.app_id,
                 "recordId": record.record_id,
             },

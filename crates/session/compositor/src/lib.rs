@@ -128,8 +128,8 @@ impl Underway {
     }
 }
 pub use policy::{
-    Arrangement, LayoutPoint, LayoutRect, ResizeEdges, StackPolicy, WindowInfo, WindowPolicy,
-    WindowRequest,
+    Arrangement, LayoutPoint, LayoutRect, ResizeEdges, StackPolicy, TouchSample, WindowInfo,
+    WindowPolicy, WindowRequest,
 };
 pub use selection::{Selection, TEXT_MIME};
 pub use share_stream::ShareStream;
@@ -412,6 +412,13 @@ impl Compositor {
             .then(|| now.checked_add(a11y::FLASH_STEP).unwrap_or(now));
         backend
             .into_iter()
+            .chain(
+                self.data
+                    .state
+                    .hosts
+                    .iter()
+                    .filter_map(|host| host.next_deadline()),
+            )
             .chain(self.keys.next_deadline())
             .chain(alert)
             .min()
@@ -1231,9 +1238,12 @@ impl Compositor {
         self.configure_from_clients();
     }
 
-    /// Every known output, on or off.
+    /// Every known output, on or off, with the colour each shows.
     pub fn outputs(&self) -> Vec<output::OutputInfo> {
-        self.data.state.output_infos()
+        let backend = &*self.data.backend;
+        self.data
+            .state
+            .output_infos(|output| backend.output_colour(output))
     }
 
     /// The monitors of the displays a fullscreen window owns: the bar there

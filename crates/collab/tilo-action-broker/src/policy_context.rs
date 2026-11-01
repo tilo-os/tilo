@@ -1,5 +1,5 @@
 //! One runtime registration and the original request's retained time identity.
-use crate::peer_actions::PolicyTime;
+use crate::policy_clock::PolicyTime;
 
 pub(super) fn sample(
     registered: Option<PolicyTime>,
@@ -26,7 +26,7 @@ pub(super) fn sample(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::peer_actions::OwnerPolicyClock;
+    use crate::policy_clock::OwnerPolicyClock;
     #[test]
     fn retained_policy_context_requires_original_clock_and_origin() {
         let clock = OwnerPolicyClock::new().unwrap();

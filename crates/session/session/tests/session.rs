@@ -511,8 +511,9 @@ fn take_size(session: &mut Session, client: &mut TestClient, app: &str, size: (i
     });
 }
 
-/// A window taken across the display covers it, the bar's room included,
-/// and the bar draws again once the window gives the display back.
+/// A window taken across the display covers it, the bar's room included:
+/// the bar shows over it for a moment, then goes, and draws again once the
+/// window gives the display back.
 #[test]
 fn a_full_screen_window_covers_the_display_and_the_bar_comes_back() {
     const APP: &str = "org.example.Cinema";
@@ -547,11 +548,10 @@ fn a_full_screen_window_covers_the_display_and_the_bar_comes_back() {
         Some((id, (0, 0, WIDTH, HEIGHT))),
         "the display from its top edge to its bottom"
     );
-    assert_eq!(
-        band_colour(&mut session),
-        RED,
-        "the bar stepped aside: its band is the window"
-    );
+    until(&mut session, &mut client, |session| {
+        (band_colour(session) == RED).then_some(())
+    })
+    .expect("left alone, the bar goes and the window has its band");
 
     assert!(
         session
@@ -1073,50 +1073,6 @@ fn the_play_key_reaches_whatever_publishes_the_player() {
     assert!(publishes(&session, tilo_session::MEDIA, "play-pause"));
     tap(&mut session, keys::PLAY_PAUSE);
     assert_eq!(*asked.borrow(), ["play-pause"]);
-}
-
-/// The player, as a system service the session hosts: it publishes what
-/// plays and records what it was asked.
-struct PlayerService {
-    asked: Rc<RefCell<Vec<String>>>,
-}
-
-impl tilo_session::Service for PlayerService {
-    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
-        let spec = |id: &'static str| {
-            tilo_actions::ActionSpec::typed_operation(
-                id,
-                id,
-                String::new(),
-                tilo_actions::OperationKind::Effect,
-                "test.player",
-                Vec::new(),
-                move |_| tilo_actions::EncodedAction::encode_operation("test.player", &id).unwrap(),
-            )
-        };
-        vec![
-            tilo_actions::ResourceSpec::new(tilo_session::MEDIA, "media", "Player")
-                .with_action(spec("play-pause"))
-                .with_action(spec("next"))
-                .with_action(spec("previous")),
-        ]
-    }
-
-    fn read(&self, _resource: &str) -> Option<serde_json::Value> {
-        None
-    }
-
-    fn invoke(
-        &mut self,
-        _resource: &str,
-        action: &str,
-        _arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
-        self.asked.borrow_mut().push(action.to_owned());
-        Ok(tilo_service::Started::Done(
-            tilo_actions::ActionOutput::default(),
-        ))
-    }
 }
 
 #[test]
@@ -2100,6 +2056,8 @@ mod portal_capture;
 #[path = "session/secret_captures.rs"]
 mod secret_captures;
 
+#[path = "session/idle_frames.rs"]
+mod idle_frames;
 #[path = "session/window_warmth.rs"]
 mod window_warmth;
 

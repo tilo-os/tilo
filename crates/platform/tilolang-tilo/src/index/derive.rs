@@ -1,4 +1,4 @@
-//! What the index holds, derived from the room record: a package's records whole, or what a
+//! What the index holds, derived from the workspace record: a package's records whole, or what a
 //! set of changes reached, field by field.
 //!
 //! The same derivation keeps the index on disk ([`super::Writer`]) and the store's open writes
@@ -362,7 +362,7 @@ impl DocReads {
 /// Derivation over one record.
 pub struct Derive<'d> {
     doc: &'d Doc,
-    /// Every record of the room: its app and type.
+    /// Every record of the workspace: its app and type.
     docs: &'d BTreeMap<DocId, (AppId, TypeId)>,
     /// Where the items of records written before items were flat are.
     nested: &'d Nested,

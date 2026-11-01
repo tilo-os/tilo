@@ -32,10 +32,10 @@ pub struct Surface {
     pub label: String,
     /// The storage version (`#[resource(version = N)]`).
     pub version: u32,
-    /// A record of the person's own, kept in their room rather than the
-    /// room of the window showing it: one the app opens beside its own
+    /// A record of the person's own, kept in their store rather than the
+    /// workspace of the window showing it: one the app opens beside its own
     /// record (its `ResourceApp::records`). Only the kinds an app's surface
-    /// marks so may it keep in, or read from, the person's room.
+    /// marks so may it keep in, or read from, the person's store.
     #[serde(default, skip_serializing_if = "is_false")]
     pub person: bool,
     /// Absent from a surface file that lists none.

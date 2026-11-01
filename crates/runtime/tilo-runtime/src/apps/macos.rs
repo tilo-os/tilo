@@ -32,7 +32,7 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
     }
     let container = launcher_macos::policy::prepare_container(
         &apps.data_home,
-        Some(&apps.room),
+        Some(&apps.workspace),
         &app.package_id,
     )
     .map_err(|error| {
@@ -43,7 +43,7 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
     })?;
     let services = ServiceConnections::connect(
         &app.package_id,
-        &apps.room,
+        &apps.workspace,
         &ServiceSockets {
             collab: &sockets.collab,
             identity: &sockets.identity,
@@ -68,7 +68,7 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
     inherit_fds.push(chooser.app_end.as_raw_fd());
     inherit_fds.push(capture.app_end.as_raw_fd());
     let mut env: Vec<(OsString, OsString)> = services
-        .env(&app.package_id, &apps.room)
+        .env(&app.package_id, &apps.workspace)
         .into_iter()
         .map(|(key, value)| (OsString::from(key), OsString::from(value)))
         .collect();
@@ -173,7 +173,7 @@ impl Capture {
         let policy: std::sync::Arc<dyn Policy> =
             std::sync::Arc::new(tilo_capture::grants::GrantPolicy {
                 grants: apps.device_grants()?,
-                room: apps.room.clone(),
+                workspace: apps.workspace.clone(),
                 app: app.package_id.clone(),
                 declared,
                 consent: move |device: DeviceKind| {

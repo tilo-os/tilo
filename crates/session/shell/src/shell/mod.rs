@@ -293,11 +293,13 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
         tab: &tab,
     };
     match mount_in_process(&request, &inputs) {
-        Some(tilo_desktop::resolver::TileResolution::App(..)) => return "App",
         // A packaged first-party app is its own window (71408ea066d): the
-        // tab waits for the app's process, and resolves to the app, never to
-        // a placeholder card.
-        Some(tilo_desktop::resolver::TileResolution::Opening) => return "App",
+        // tab waits for the app's process (`Opening`), and resolves to the
+        // app, never to a placeholder card.
+        Some(
+            tilo_desktop::resolver::TileResolution::App(..)
+            | tilo_desktop::resolver::TileResolution::Opening,
+        ) => return "App",
         Some(_) => return "Notice",
         None => {}
     }
@@ -706,7 +708,11 @@ pub(crate) fn workspace_surface_chrome(
     let standing = chrome.clone();
     let topbar = tilo_desktop::topbar::BarSpace::new(std::rc::Rc::new(move || {
         let state = standing.borrow();
-        (state.fullscreen_covers_primary(), state.top_bar_presence())
+        if state.fullscreen_covers_primary() {
+            tilo_desktop::chrome::TopBarPresence::Hidden
+        } else {
+            state.top_bar_presence()
+        }
     }));
     // Full-screen layer under the translucent top bar, so the bar picks up
     // the gradient tint behind it.

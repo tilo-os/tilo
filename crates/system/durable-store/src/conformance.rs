@@ -236,7 +236,7 @@ fn keys_never_alias(subject: &Subject<'_>) {
         StorageKey::record("so.tilo.conformance", "room", record.clone()),
         StorageKey::record("so.tilo.conformance", "other-room", record.clone()),
         StorageKey::record("so.tilo.other", "room", record.clone()),
-        StorageKey::room_index("so.tilo.conformance", record.clone()),
+        StorageKey::workspace_index("so.tilo.conformance", record.clone()),
         StorageKey::package(format!("so.tilo.alias-{record}")),
     ];
     let leases: Vec<_> = keys.iter().map(|key| store.lease(key).unwrap()).collect();

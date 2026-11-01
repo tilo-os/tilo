@@ -40,7 +40,7 @@ fn registered_services_recheck_original_certificate_after_signed_admission() {
         };
         let directory = tempfile::tempdir().unwrap();
         let (_, _, _, _, mut request) = fixture(directory.path());
-        request.target.provider = tilo_actions::remote::workspace_provider(&f.room);
+        request.target.provider = tilo_actions::remote::workspace_provider(&f.workspace);
         request.target.address = match kind {
             0 => tilo_actions::ActionAddress::new("workspace", "inspect"),
             1 => tilo_actions::ActionAddress::new("keyboard-shortcuts", "rebind"),
@@ -58,7 +58,7 @@ fn registered_services_recheck_original_certificate_after_signed_admission() {
         });
         let (workspace, actor, now) = f
             .state
-            .decide_for(&f.caller, &f.room, |workspace, actor, now| {
+            .decide_for(&f.caller, &f.workspace, |workspace, actor, now| {
                 (workspace.clone(), actor.clone(), now)
             })
             .unwrap();
@@ -177,7 +177,7 @@ fn keyboard_rechecks_live_policy_and_execution_after_custody() {
         request.target.address = tilo_actions::ActionAddress::new("keyboard-shortcuts", "rebind");
         let current = tree.clone();
         let execution = caller.clone();
-        let room = workspace.room().to_string();
+        let workspace_id = workspace.room().to_string();
         EFFECT_BARRIER.with(|hook| {
             *hook.borrow_mut() = Some(Box::new(move || match change {
                 "execution" => execution.retire_execution(),
@@ -191,7 +191,8 @@ fn keyboard_rechecks_live_policy_and_execution_after_custody() {
                         .push(tilo_action_policy::Grant::new(
                             "keyboard-denied",
                             tilo_action_policy::Subject::person("owner"),
-                            tilo_action_policy::TreePath::room(room).app("so.tilo.settings"),
+                            tilo_action_policy::TreePath::workspace(workspace_id)
+                                .app("so.tilo.settings"),
                             tilo_action_policy::KindSet::READ,
                             tilo_action_policy::Answer::Deny,
                             tilo_action_policy::Subject::person("owner"),
@@ -251,10 +252,10 @@ fn lost_governance_answer_has_signed_uncertain_terminal() {
     });
     let directory = tempfile::tempdir().unwrap();
     let (_, _, _, _, mut request) = fixture(directory.path());
-    request.target.provider = tilo_actions::remote::workspace_provider(&f.room);
+    request.target.provider = tilo_actions::remote::workspace_provider(&f.workspace);
     let (workspace, actor, now) = f
         .state
-        .decide_for(&f.caller, &f.room, |workspace, actor, now| {
+        .decide_for(&f.caller, &f.workspace, |workspace, actor, now| {
             (workspace.clone(), actor.clone(), now)
         })
         .unwrap();
@@ -345,7 +346,7 @@ fn fixture(
     *state.journal.lock().unwrap() = Ok(Some(
         super::super::invocation_journal::InvocationJournal::open(&root.join("journal")).unwrap(),
     ));
-    let caller = Caller::local_person("owner").in_room(workspace.room().to_string());
+    let caller = Caller::local_person("owner").in_workspace(workspace.room().to_string());
     let request = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
@@ -424,7 +425,7 @@ fn registered_governance_keeps_original_uuid_context_and_terminal_owner() {
     let journal = guard.as_ref().unwrap().as_ref().unwrap();
     let record = journal
         .lookup(&super::super::InvocationKey {
-            room: workspace.room().to_string(),
+            workspace: workspace.room().to_string(),
             host: journal.host(),
             owner: owner.clone(),
             invocation: request.invocation,
@@ -455,7 +456,7 @@ fn registered_governance_keeps_original_uuid_context_and_terminal_owner() {
 fn registered_governance_does_not_upgrade_a_transport_label_into_custody() {
     let root = tempfile::tempdir().unwrap();
     let (state, service, workspace, _, request) = fixture(root.path());
-    let caller = Caller::authenticated([7; 32], [8; 32]).in_room(workspace.room().to_string());
+    let caller = Caller::authenticated([7; 32], [8; 32]).in_workspace(workspace.room().to_string());
     let actor = BrokerActor::for_caller(&caller);
     // Even a permission-bearing actor is not the caller's original certificate.
     let mut workspace = workspace;

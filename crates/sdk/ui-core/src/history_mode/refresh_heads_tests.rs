@@ -282,7 +282,7 @@ fn refresh_heads_host_and_unversioned_borrow_outer_committed_frontier() {
     let mut document = outer();
     let host_source = HistorySourceRegistration::HostDocument {
         scope: "document",
-        resource: HistoryResource::new("host", "room", APP, crate::RecordId::for_tab(942)),
+        resource: HistoryResource::new("host", "workspace", APP, crate::RecordId::for_tab(942)),
     };
     let unversioned = HistorySourceRegistration::Unversioned {
         scope: "document",
@@ -372,7 +372,7 @@ fn refresh_heads_allocation_growth_independent_of_real_graph_size_in_all_documen
                 }
                 "host" => HistorySourceRegistration::HostDocument {
                     scope: "document",
-                    resource: HistoryResource::new("host", "room", APP, checkout.id.clone()),
+                    resource: HistoryResource::new("host", "workspace", APP, checkout.id.clone()),
                 },
                 _ => HistorySourceRegistration::Unversioned {
                     scope: "document",

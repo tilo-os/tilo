@@ -6,7 +6,7 @@ use tilo_user_identity::DeviceCert;
 #[test]
 fn a_member_device_records_its_own_receipts_which_the_governor_admits_as_theirs() {
     let mut fixture = fixture();
-    let room = RoomId::parse(crate::owner::testing::ROOM).unwrap();
+    let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("member.json");
     let member = enroll_remote_history_member(&mut fixture, &path);
@@ -44,7 +44,7 @@ fn a_member_device_records_its_own_receipts_which_the_governor_admits_as_theirs(
     );
     assert_eq!(std::fs::read(&path).unwrap(), committed);
     let frames = reopened
-        .with_outgoing(room, fixture.now, |_, outgoing| {
+        .with_outgoing(workspace, fixture.now, |_, outgoing| {
             Ok(outgoing
                 .entries()
                 .map(|entry| entry.bytes().to_vec())
@@ -66,7 +66,7 @@ fn a_member_device_records_its_own_receipts_which_the_governor_admits_as_theirs(
     }
     assert!(
         tilo_desktop_model::projection::workspace_effect_receipts_of(
-            fixture.governor.peer().admitted_room().unwrap(),
+            fixture.governor.peer().admitted_workspace().unwrap(),
         )
         .contains(&decode(&operation).unwrap()),
         "the governor admits the member's own receipt"
@@ -76,7 +76,7 @@ fn a_member_device_records_its_own_receipts_which_the_governor_admits_as_theirs(
 /// A receipt of a new invocation by the person `by` is a device of.
 fn request(by: &DeviceCert, status: EffectReceiptStatus) -> OwnerCommitRequest {
     let invocation = InvocationId::new();
-    let mut context = ActionContext::for_resource("workspace", "workspace", "Room");
+    let mut context = ActionContext::for_resource("workspace", "workspace", "Workspace");
     context.facets = vec![
         ActionFacet::new("tilo.receipt", "effect"),
         ActionFacet::new("tilo.invocation", invocation.0.to_string()),
@@ -91,7 +91,7 @@ fn request(by: &DeviceCert, status: EffectReceiptStatus) -> OwnerCommitRequest {
         completed_at: 1,
     };
     OwnerCommitRequest {
-        room: crate::owner::testing::ROOM.into(),
+        workspace: crate::owner::testing::WORKSPACE.into(),
         operation: CommitOperation::EffectReceipt {
             invocation: invocation.0,
             redacted: serde_json::to_vec(&receipt).unwrap(),
@@ -177,7 +177,7 @@ fn enroll_remote_history_member(
 )]
 fn effect_archived_signed_history_admits_and_reopens_remote_member_without_governor_blobs() {
     let mut fixture = fixture();
-    let room = RoomId::parse(crate::owner::testing::ROOM).unwrap();
+    let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
     for _ in 0..130 {
         commit(
             &fixture,
@@ -187,7 +187,7 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
     }
     let frames = fixture
         .owner
-        .with_outgoing(room, fixture.now, |_, outgoing| {
+        .with_outgoing(workspace, fixture.now, |_, outgoing| {
             Ok(outgoing
                 .entries()
                 .map(|entry| entry.bytes().to_vec())
@@ -215,9 +215,9 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
     let member = enroll_remote_history_member(&mut fixture, &path);
     let reopened = crate::owner::open_file(&path).unwrap();
     reopened
-        .with_current(room, |view| {
+        .with_current(workspace, |view| {
             assert_eq!(view.device(), &member);
-            assert_ne!(view.device(), view.room_host());
+            assert_ne!(view.device(), view.workspace_host());
             assert_eq!(view.record.effect_history_root, None);
             assert_eq!(
                 view.peer()
@@ -229,12 +229,12 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
             assert_eq!(
                 view.peer()
                     .workspace()
-                    .workspace_effect_history_root(view.room_host())?,
+                    .workspace_effect_history_root(view.workspace_host())?,
                 signed_root
             );
             assert_eq!(
                 tilo_desktop_model::projection::workspace_effect_receipts_of(
-                    view.peer().admitted_room().unwrap(),
+                    view.peer().admitted_workspace().unwrap(),
                 )
                 .len(),
                 130
@@ -253,7 +253,7 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
         fixture
             .owner
             .receive(
-                room,
+                workspace,
                 crate::TransportOrigin::RetainedNativePublication {
                     publisher: fixture.certificate.device_public_key,
                 },
@@ -269,7 +269,7 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
     .unwrap();
     let frames = fixture
         .owner
-        .with_outgoing(room, fixture.now, |_, outgoing| {
+        .with_outgoing(workspace, fixture.now, |_, outgoing| {
             Ok(outgoing
                 .entries()
                 .map(|entry| entry.bytes().to_vec())
@@ -279,7 +279,7 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
     for frame in frames {
         reopened
             .receive(
-                room,
+                workspace,
                 crate::TransportOrigin::RetainedRelayDelta(fixture.certificate.device_public_key),
                 postcard::from_bytes(&frame).unwrap(),
                 fixture.now,
@@ -288,17 +288,17 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
     }
     crate::owner::open_file(&path)
         .unwrap()
-        .with_current(room, |view| {
+        .with_current(workspace, |view| {
             assert_eq!(view.record.effect_history_root, None);
             assert_ne!(
                 view.peer()
                     .workspace()
-                    .workspace_effect_history_root(view.room_host())?,
+                    .workspace_effect_history_root(view.workspace_host())?,
                 signed_root
             );
             assert_eq!(
                 tilo_desktop_model::projection::workspace_effect_receipts_of(
-                    view.peer().admitted_room().unwrap(),
+                    view.peer().admitted_workspace().unwrap(),
                 )
                 .len(),
                 131
@@ -325,7 +325,7 @@ fn commit(fixture: &Fixture, request: &OwnerCommitRequest) -> Result<OwnerCommit
 }
 
 #[test]
-fn effect_terminal_is_durable_exact_retry_and_signed_room_publication() {
+fn effect_terminal_is_durable_exact_retry_and_signed_workspace_publication() {
     let mut fixture = fixture();
     let failed = request(
         &fixture.certificate,
@@ -347,9 +347,9 @@ fn effect_terminal_is_durable_exact_retry_and_signed_room_publication() {
         assert_eq!(retry.generation, receipt.generation);
         assert_eq!(retry.aggregate_hash, receipt.aggregate_hash);
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
-        let room = RoomId::parse(crate::owner::testing::ROOM).unwrap();
+        let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
         let frames = reopened
-            .with_outgoing(room, fixture.now, |_, outgoing| {
+            .with_outgoing(workspace, fixture.now, |_, outgoing| {
                 Ok(outgoing
                     .entries()
                     .map(|entry| entry.bytes().to_vec())
@@ -369,7 +369,7 @@ fn effect_terminal_is_durable_exact_retry_and_signed_room_publication() {
                 .unwrap();
         }
         let effects = tilo_desktop_model::projection::workspace_effect_receipts_of(
-            fixture.governor.peer().admitted_room().unwrap(),
+            fixture.governor.peer().admitted_workspace().unwrap(),
         );
         let effect = decode(&operation).unwrap();
         assert!(effects.contains(&effect));
@@ -404,7 +404,7 @@ fn effect_wrong_key_and_failed_publish_never_ack_or_mutate() {
     fixture
         .owner
         .with_current(
-            RoomId::parse(crate::owner::testing::ROOM).unwrap(),
+            RoomId::parse(crate::owner::testing::WORKSPACE).unwrap(),
             |view| {
                 assert!(view.record.effect_receipts.is_empty());
                 assert_eq!(view.generation(), 1);
@@ -500,12 +500,12 @@ fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     reopened
         .with_current(
-            RoomId::parse(crate::owner::testing::ROOM).unwrap(),
+            RoomId::parse(crate::owner::testing::WORKSPACE).unwrap(),
             |view| {
                 assert_eq!(view.record.effect_receipts.len(), 128);
                 assert_eq!(
                     tilo_desktop_model::projection::workspace_effect_receipts_of(
-                        view.peer().admitted_room().unwrap()
+                        view.peer().admitted_workspace().unwrap()
                     )
                     .len(),
                     160
@@ -549,9 +549,9 @@ fn relay_to_governor_and_compare_roots(
     fixture: &mut Fixture,
     owner: &crate::owner::NativeWorkspaceOwner,
 ) {
-    let room = RoomId::parse(crate::owner::testing::ROOM).unwrap();
+    let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
     let frames = owner
-        .with_outgoing(room, fixture.now, |_, outgoing| {
+        .with_outgoing(workspace, fixture.now, |_, outgoing| {
             Ok(outgoing
                 .entries()
                 .map(|entry| entry.bytes().to_vec())
@@ -575,7 +575,7 @@ fn relay_to_governor_and_compare_roots(
         .workspace_effect_history_root(&fixture.certificate)
         .unwrap();
     let local_root = owner
-        .with_current(room, |view| Ok(view.record.effect_history_root))
+        .with_current(workspace, |view| Ok(view.record.effect_history_root))
         .unwrap();
     assert!(admitted_root.is_some());
     assert_eq!(admitted_root, local_root);
@@ -588,11 +588,11 @@ fn assert_archived_file_layout(path: &std::path::Path) {
     assert!(crate::owner::publication::validate_file_layout(5, &storage).is_ok());
     assert!(crate::owner::publication::validate_file_layout(3, &storage).is_err());
     let mut mismatched = storage.clone();
-    mismatched.rooms.values_mut().next().unwrap().version = 2;
+    mismatched.workspaces.values_mut().next().unwrap().version = 2;
     assert!(crate::owner::publication::validate_file_layout(4, &mismatched).is_err());
     let mut missing = storage;
     missing
-        .rooms
+        .workspaces
         .values_mut()
         .next()
         .unwrap()
@@ -642,10 +642,12 @@ fn missing_or_corrupt_effect_history_is_not_unknown_uuid_or_successful_restore()
         )
         .unwrap();
     }
-    let room = RoomId::parse(crate::owner::testing::ROOM).unwrap();
+    let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
     let hash = fixture
         .owner
-        .with_current(room, |view| Ok(view.record.effect_history_root.unwrap()))
+        .with_current(workspace, |view| {
+            Ok(view.record.effect_history_root.unwrap())
+        })
         .unwrap();
     let address = blake3::Hash::from_bytes(hash).to_hex().to_string();
     let block = fixture

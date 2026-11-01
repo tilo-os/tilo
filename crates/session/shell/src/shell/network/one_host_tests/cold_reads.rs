@@ -113,7 +113,7 @@ impl Device {
     pub(crate) fn retained_writes(&self, room: RoomId, app: &str) -> usize {
         let net = self.net();
         let records = net
-            .room_host()
+            .workspace_host()
             .expect("the device runs its host")
             .room_records();
         let workspace = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
@@ -487,7 +487,7 @@ fn open_in_fresh_profile(
                 )?;
                 // The records every app of the room opens, beside the app's
                 // own in the same owners, as the session's host gives them.
-                context.provide_workspace_records(WorkspaceRecords::in_room(
+                context.provide_workspace_records(WorkspaceRecords::in_workspace(
                     owners.clone(),
                     room.clone(),
                     UserId(author.to_owned()),

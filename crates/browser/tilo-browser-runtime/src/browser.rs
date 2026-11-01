@@ -525,7 +525,8 @@ struct Desktop {
 impl Desktop {
     /// Who the windows ask the session as: this page's person, in its room.
     fn caller(&self) -> tilo_actions::remote::Caller {
-        tilo_actions::remote::Caller::local_person(self.author.clone()).in_room(self.room.clone())
+        tilo_actions::remote::Caller::local_person(self.author.clone())
+            .in_workspace(self.room.clone())
     }
 
     /// Serve every action client a window makes on this thread from the
@@ -1224,7 +1225,7 @@ fn present_component(
     );
     let (checkout, named_new) = match &config.record {
         Some(existing)
-            if definition.keeps_room_record()
+            if definition.keeps_workspace_record()
                 && existing == RecordId::package_primary().as_str() =>
         {
             (
@@ -1241,7 +1242,7 @@ fn present_component(
             )),
             None,
         ),
-        None if config.new_document || definition.keeps_room_record() => (None, None),
+        None if config.new_document || definition.keeps_workspace_record() => (None, None),
         None => match record.try_open_record(&default) {
             Ok(_) => (Some(default), None),
             Err(ui::record::RecordOpenError::MissingRecord) => (None, Some(default.id)),

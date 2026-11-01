@@ -409,8 +409,8 @@ pub struct OwnHostedRoom {
 )]
 pub fn host_active_room(tree: &crate::shell::state::WorkspaceTreeHandle) -> OwnHostedRoom {
     let directory = tempfile::tempdir().expect("a directory for the state file");
-    let room =
-        crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::ROOM).expect("room");
+    let room = crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE)
+        .expect("room");
     {
         let mut tree = tree.write();
         let active = tree.desktop.active;

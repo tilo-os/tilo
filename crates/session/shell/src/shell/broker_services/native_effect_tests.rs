@@ -7,7 +7,7 @@ use crate::shell::{
     collab_broker, native_workspace_owner, state::WorkspaceTree,
 };
 use std::time::{Duration, Instant};
-use tilo_action_broker::peer_actions::CertificateAuthority;
+use tilo_action_broker::certificate_authority::CertificateAuthority;
 use tilo_actions::InvocationUpdate;
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
@@ -40,7 +40,7 @@ fn a_devices_own_terminal_audit_commits_here_and_a_retry_answers_the_original_re
         tilo_clock::unix_now_i64(),
     );
     let request = |effect: &tilo_desktop_model::WorkspaceEffectReceipt| OwnerCommitRequest {
-        room: fixture.room.to_string(),
+        workspace: fixture.room.to_string(),
         operation: CommitOperation::EffectReceipt {
             invocation: invocation.0,
             redacted: serde_json::to_vec(effect).unwrap(),
@@ -92,7 +92,7 @@ fn a_commit_waiting_for_a_slow_disk_leaves_the_broker_loop_answering() {
         tilo_clock::unix_now_i64(),
     );
     let request = OwnerCommitRequest {
-        room: fixture.room.to_string(),
+        workspace: fixture.room.to_string(),
         operation: CommitOperation::EffectReceipt {
             invocation: invocation.0,
             redacted: serde_json::to_vec(&effect).unwrap(),
@@ -290,7 +290,8 @@ fn an_apps_first_opening_commits_its_authorship_without_the_invocation_journal()
 /// first.
 #[test]
 fn an_app_opened_before_its_room_is_projected_opens_once_the_membership_surface_is_published() {
-    let room = crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
+    let room =
+        crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
     // Held, not projected yet: as a room is between the commit that installs
     // it in the owner and its projection onto the tree.
     let NativeFixture {
@@ -494,7 +495,7 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
     let surface = wait_for_membership_surface(&broker, fixture.room);
     let person = hex::encode(fixture.certificate.user_public_key);
     let caller = Caller::local_person(&person)
-        .in_room(fixture.room.to_string())
+        .in_workspace(fixture.room.to_string())
         .in_new_execution();
     let host = crate::shell::remote_actions::BrokerActionHost::new(broker.clone());
     let page = host
@@ -514,7 +515,7 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
         !page.rows.is_empty(),
         "the native facade lists after checking certified seat custody"
     );
-    let seat = Caller::local_person(&person).in_room(fixture.room.to_string());
+    let seat = Caller::local_person(&person).in_workspace(fixture.room.to_string());
     assert!(
         host.query(&seat, CatalogueQuery::default())
             .wait_timeout(tilo_test_env::hang_bound())
@@ -566,7 +567,7 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
     assert_eq!(retry.1.invocation, receipt.invocation);
     assert!(cloned.observe(&caller, &request.invocation).is_some());
     let separate = Caller::local_person(&person)
-        .in_room(fixture.room.to_string())
+        .in_workspace(fixture.room.to_string())
         .in_new_execution();
     assert!(cloned.observe(&separate, &request.invocation).is_none());
     // A separately opened certified owner sees this job. Actor-text admission
@@ -597,8 +598,8 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
     // identity; admission is where a displayed Person must be the seat's
     // certified one. Neither a forged label nor a Person without a room
     // acquires native custody.
-    let forged =
-        Caller::local_person("display-label-is-not-authority").in_room(fixture.room.to_string());
+    let forged = Caller::local_person("display-label-is-not-authority")
+        .in_workspace(fixture.room.to_string());
     assert!(
         host.invoke(&forged, forged_request)
             .wait_timeout(tilo_test_env::hang_bound())
@@ -632,7 +633,7 @@ fn native_facade_admits_workspace_actions_under_certified_ownership() {
     wait_for_membership_surface(&broker, fixture.room);
     let person = hex::encode(fixture.certificate.user_public_key);
     let caller = Caller::local_person(&person)
-        .in_room(fixture.room.to_string())
+        .in_workspace(fixture.room.to_string())
         .in_new_execution();
     let host = crate::shell::remote_actions::BrokerActionHost::new(broker.clone());
     // Native governance, the shortcut library and keyboard settings stay in
@@ -731,7 +732,8 @@ fn fixture_with(
         &crate::firstboot::collaboration_identity_paths(),
     )
     .unwrap();
-    let room = crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
+    let room =
+        crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
     let registry = tilo_identity_host::registry::IdentityRegistryStore::at(&identity);
     let selected = registry
         .load_reconciled()
@@ -838,7 +840,7 @@ fn native_certified_local_membership_retains_original_and_settles_failed_and_suc
             .with_current(room, |view| {
                 Ok(
                     tilo_desktop_model::projection::workspace_effect_receipts_of(
-                        view.peer().admitted_room().unwrap(),
+                        view.peer().admitted_workspace().unwrap(),
                     ),
                 )
             })
@@ -862,7 +864,7 @@ fn native_certified_local_membership_retains_original_and_settles_failed_and_suc
         .with_current(room, |view| {
             assert_eq!(
                 tilo_desktop_model::projection::workspace_effect_receipts_of(
-                    view.peer().admitted_room().unwrap()
+                    view.peer().admitted_workspace().unwrap()
                 )
                 .len(),
                 2
@@ -892,7 +894,7 @@ fn native_published_effects_cross_hot_boundary_and_restore_cold_exact_receipt() 
     let effect = owner
         .with_current(room, |view| {
             tilo_desktop_model::projection::workspace_effect_receipts_of(
-                view.peer().admitted_room().unwrap(),
+                view.peer().admitted_workspace().unwrap(),
             )
             .into_iter()
             .find(|receipt| receipt.invocation == first.invocation())
@@ -900,7 +902,7 @@ fn native_published_effects_cross_hot_boundary_and_restore_cold_exact_receipt() 
         })
         .unwrap();
     let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
-        room: room.to_string(),
+        workspace: room.to_string(),
         operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
             invocation: effect.invocation.0,
             redacted: serde_json::to_vec(&effect).unwrap(),
@@ -922,7 +924,7 @@ fn native_published_effects_cross_hot_boundary_and_restore_cold_exact_receipt() 
         .with_current(room, |view| {
             assert_eq!(
                 tilo_desktop_model::projection::workspace_effect_receipts_of(
-                    view.peer().admitted_room().unwrap()
+                    view.peer().admitted_workspace().unwrap()
                 )
                 .len(),
                 130
@@ -956,7 +958,7 @@ fn native_published_effects_cross_hot_boundary_and_restore_cold_exact_receipt() 
     reopened
         .with_current(room, |view| {
             let restored = tilo_desktop_model::projection::workspace_effect_receipts_of(
-                view.peer().admitted_room().unwrap(),
+                view.peer().admitted_workspace().unwrap(),
             )
             .into_iter()
             .find(|receipt| receipt.invocation == effect.invocation)
@@ -1009,7 +1011,7 @@ fn failed_effect(
     .encode()
     .unwrap();
     let caller = Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
-        .in_room(&room)
+        .in_workspace(&room)
         .in_new_execution();
     let host = actions
         .certified_local_action_host(&caller, &evidence)

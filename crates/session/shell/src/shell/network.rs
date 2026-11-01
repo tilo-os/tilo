@@ -107,7 +107,7 @@ mod room_gate_tests;
 mod room_shares;
 mod room_signer;
 #[cfg(test)]
-mod same_person_room_tests;
+mod same_personal_cluster_tests;
 mod site_join;
 #[cfg(test)]
 mod site_join_tests;
@@ -136,7 +136,7 @@ use tilo_network_actor::{PersonalFabricPayload, WorkspaceControlRoute};
 use crate::shell::collab_broker::CrdtRoute;
 pub use tilo_network_actor::PeerDepartureCause;
 
-use tilo_network_actor::{DEFAULT_WS_TOPIC, room_topic_id};
+use tilo_network_actor::{DEFAULT_WS_TOPIC, workspace_topic_id};
 
 /// The wake a channel queue rouses its drain with: a poke of `park`.
 fn poke(park: &Arc<crate::idle_wake::DrainPark>) -> tilo_network_actor::Wake {
@@ -575,7 +575,7 @@ fn needs_reachability(
     // is a peer. A native room's names are no reason: its document keeps a
     // removed member's devices as signed history, so who may still dial is
     // its membership, read below and in `ShellNetwork::hosts_other_members`.
-    let native: std::collections::BTreeSet<_> = tree.native_authority.rooms().collect();
+    let native: std::collections::BTreeSet<_> = tree.native_authority.workspaces().collect();
     let shared = tree
         .rooms()
         .into_iter()
@@ -589,7 +589,7 @@ fn needs_reachability(
         Some("a room shared with a peer")
     } else if tree
         .native_authority
-        .rooms()
+        .workspaces()
         .any(|room| !tree.native_authority.hosted_on(room, local_device))
     {
         // A room hosted on this device keeps it reachable only while
@@ -867,14 +867,14 @@ fn workspace_person_roots(identity: &HostIdentity) -> Vec<[u8; 32]> {
 /// The standing a device of the person acts with in their own room
 /// `cluster_id`: its owner, held to the foreign-device bound on a device that
 /// is not theirs.
-fn person_room_standing(
+fn personal_cluster_standing(
     cluster_id: &str,
     user_pubkey: &[u8; 32],
     foreign: bool,
 ) -> tilo_action_policy::Standing {
     let person = hex::encode(user_pubkey);
     let standing = tilo_action_policy::Standing::person(
-        tilo_action_policy::RoomPolicy::new(cluster_id, person.clone()),
+        tilo_action_policy::WorkspacePolicy::new(cluster_id, person.clone()),
         person,
     );
     if foreign {
@@ -2252,7 +2252,7 @@ impl ShellNetwork {
     pub fn room_devices(&self, room: crate::shell::state::RoomId) -> Vec<iroh::EndpointId> {
         // An enrolled room's devices are the members its governance admits;
         // its document names none.
-        if self.native_topic_required(room_topic_id(room))
+        if self.native_topic_required(workspace_topic_id(room))
             && let Some(devices) = self.governed_member_devices(room)
         {
             return devices;
@@ -2271,7 +2271,7 @@ impl ShellNetwork {
     /// own included when the room is hosted on someone's device; else the
     /// devices its document names.
     pub fn room_people_devices(&self, room: crate::shell::state::RoomId) -> Vec<iroh::EndpointId> {
-        if self.native_topic_required(room_topic_id(room))
+        if self.native_topic_required(workspace_topic_id(room))
             && let Some(devices) = self.governed_devices(room)
         {
             return devices;
@@ -2432,18 +2432,26 @@ impl ShellNetwork {
             .desktop
             .active_workspace()
             .map_or(DEFAULT_WS_TOPIC, |workspace| {
-                room_topic_id(workspace.room())
+                workspace_topic_id(workspace.room())
             })
     }
 
     fn explicit_topic_for_message(msg: &NeighbourMsg) -> Option<u64> {
         let room = match msg {
-            NeighbourMsg::IdentityAnnouncement { room, .. }
-            | NeighbourMsg::IdentityAnnouncementV2 { room, .. }
+            NeighbourMsg::IdentityAnnouncement {
+                workspace: room, ..
+            }
+            | NeighbourMsg::IdentityAnnouncementV2 {
+                workspace: room, ..
+            }
             | NeighbourMsg::SyncReq { room, .. }
             | NeighbourMsg::SyncResp { room, .. }
-            | NeighbourMsg::MlsGovernance { room, .. }
-            | NeighbourMsg::MlsAccessRequest { room, .. }
+            | NeighbourMsg::MlsGovernance {
+                workspace: room, ..
+            }
+            | NeighbourMsg::MlsAccessRequest {
+                workspace: room, ..
+            }
             | NeighbourMsg::MlsRoutedAccessRequest { room, .. } => Some(room.as_str()),
             NeighbourMsg::AppDocument { cluster_id, .. }
             | NeighbourMsg::AppPresenceV2 { cluster_id, .. }
@@ -2454,7 +2462,7 @@ impl ShellNetwork {
         };
         room.and_then(RoomId::parse)
             .filter(|room| !room.is_nil())
-            .map(room_topic_id)
+            .map(workspace_topic_id)
     }
 
     fn topic_for_message(&self, msg: &NeighbourMsg) -> u64 {
@@ -2862,16 +2870,16 @@ impl ShellNetwork {
         if test_withheld_records::withholds(record_id) {
             return;
         }
-        if self.is_local_person_room(&cluster_id) {
+        if self.is_local_personal_cluster(&cluster_id) {
             self.publish_person_document(app_id, &cluster_id, record_id, envelope);
             return;
         }
         if let Some(room) = RoomId::parse(&cluster_id)
-            && self.native_topic_required(room_topic_id(room))
+            && self.native_topic_required(workspace_topic_id(room))
             && !(envelope.encryption.is_some() && self.native_room_seals_records(room))
         {
             let _ = self.cmd_tx.try_send(NetCmd::NativePublish {
-                ws: room_topic_id(room),
+                ws: workspace_topic_id(room),
             });
             return;
         }
@@ -2891,14 +2899,14 @@ impl ShellNetwork {
     /// commit acknowledgement; heartbeat/reconnect retries a full queue.
     pub(crate) fn schedule_native_owner_publication(&self, room: RoomId) {
         let _ = self.cmd_tx.try_send(NetCmd::NativePublish {
-            ws: room_topic_id(room),
+            ws: workspace_topic_id(room),
         });
     }
 
     /// Remember that a local app holds `record_id`, so peers' traffic for
     /// its sealed wire name can be routed to it. Returns the wire name.
     pub fn register_local_record(&self, app_id: &str, cluster_id: &str, record_id: &str) -> String {
-        if self.is_local_person_room(cluster_id) {
+        if self.is_local_personal_cluster(cluster_id) {
             self.remember_person_artifact(collab_types::document_artifact_id(
                 app_id, cluster_id, record_id,
             ));
@@ -2911,9 +2919,9 @@ impl ShellNetwork {
 
     /// The person's own room: the room derived from the root that certified
     /// this device. Its records travel only between that root's devices.
-    pub fn local_person_room(&self) -> Option<RoomId> {
+    pub fn local_personal_cluster(&self) -> Option<RoomId> {
         self.local_person
-            .map(|user| RoomId::from(collab_types::person_room(&user)))
+            .map(|user| RoomId::from(collab_types::personal_cluster(&user)))
     }
 
     /// Every root this device acts for: the one that certified it, then its
@@ -2927,7 +2935,7 @@ impl ShellNetwork {
     /// The root of this device whose person room `room` is.
     fn person_root_of_room(&self, room: RoomId) -> Option<[u8; 32]> {
         self.person_roots()
-            .find(|root| RoomId::from(collab_types::person_room(root)) == room)
+            .find(|root| RoomId::from(collab_types::personal_cluster(root)) == room)
     }
 
     /// The root of this device whose person room `cluster_id` names.
@@ -2935,7 +2943,7 @@ impl ShellNetwork {
         RoomId::parse(cluster_id).and_then(|room| self.person_root_of_room(room))
     }
 
-    fn is_local_person_room(&self, cluster_id: &str) -> bool {
+    fn is_local_personal_cluster(&self, cluster_id: &str) -> bool {
         self.person_root_of(cluster_id).is_some()
     }
 
@@ -2944,7 +2952,7 @@ impl ShellNetwork {
     /// of its records for a snapshot to send that device. One room per call.
     pub fn take_person_snapshot_request(&self) -> Option<String> {
         let root = self.person_snapshots_wanted.lock().ok()?.pop_first()?;
-        Some(collab_types::person_room(&root).to_string())
+        Some(collab_types::personal_cluster(&root).to_string())
     }
 
     fn remember_person_artifact(&self, artifact: collab_types::ArtifactId) {
@@ -3084,7 +3092,7 @@ impl ShellNetwork {
         wire: &str,
         envelope: collab_types::SignedOp,
     ) {
-        let room = RoomId::from(collab_types::person_room(&sender.user_pubkey));
+        let room = RoomId::from(collab_types::personal_cluster(&sender.user_pubkey));
         if self.person_root_of_room(room).is_none() {
             tracing::warn!(peer = %peer, "person room document of a root this device does not act for; dropping");
             return;
@@ -3113,7 +3121,7 @@ impl ShellNetwork {
             return;
         }
         self.remember_person_artifact(envelope.artifact);
-        let author = person_room_standing(
+        let author = personal_cluster_standing(
             &cluster_id,
             &sender.user_pubkey,
             sender.capabilities.foreign,
@@ -3168,9 +3176,9 @@ impl ShellNetwork {
             return;
         };
         let person = self.person_in_room(room);
-        let author = if self.is_local_person_room(&cluster_id) {
+        let author = if self.is_local_personal_cluster(&cluster_id) {
             tilo_action_policy::Standing::person(
-                tilo_action_policy::RoomPolicy::new(cluster_id.clone(), person.clone()),
+                tilo_action_policy::WorkspacePolicy::new(cluster_id.clone(), person.clone()),
                 person,
             )
         } else if self.is_in_room(&cluster_id) {
@@ -3216,7 +3224,7 @@ impl ShellNetwork {
         mut presence: collab_types::PeerPresence,
     ) {
         let visibility = self.presence_visibility(&cluster_id);
-        if self.is_local_person_room(&cluster_id)
+        if self.is_local_personal_cluster(&cluster_id)
             || !visibility_allows(visibility, &app_id, &presence)
         {
             return;
@@ -3257,7 +3265,7 @@ impl ShellNetwork {
         }) else {
             return;
         };
-        let ws = room_topic_id(room);
+        let ws = workspace_topic_id(room);
         let focus = tilo_relay_protocol::live::LiveRecord {
             app: app_id.to_owned(),
             record: crate::network::wire_record::wire_record_id(cluster_id, app_id, record_id),
@@ -3346,7 +3354,7 @@ impl ShellNetwork {
     fn has_live_plane(&self, cluster_id: &str) -> bool {
         RoomId::parse(cluster_id)
             .filter(|room| !room.is_nil())
-            .is_some_and(|room| !self.workspace_hosts(room_topic_id(room)).is_empty())
+            .is_some_and(|room| !self.workspace_hosts(workspace_topic_id(room)).is_empty())
     }
 
     /// Say `payload` of this person, as the desktop, to the people in
@@ -3366,7 +3374,7 @@ impl ShellNetwork {
         };
         let presence = collab_types::PeerPresence { key, payload };
         if !shared
-            || self.is_local_person_room(cluster_id)
+            || self.is_local_personal_cluster(cluster_id)
             || !visibility_allows(
                 self.presence_visibility(cluster_id),
                 DESKTOP_PRESENCE_APP,
@@ -3406,7 +3414,7 @@ impl ShellNetwork {
         }) else {
             return false;
         };
-        let ws = room_topic_id(room);
+        let ws = workspace_topic_id(room);
         let focus = tilo_relay_protocol::live::LiveRecord {
             app: app_id.to_owned(),
             record: crate::network::wire_record::wire_record_id(cluster_id, app_id, record_id),
@@ -3492,7 +3500,7 @@ impl ShellNetwork {
                 .read()
                 .rooms()
                 .into_iter()
-                .find(|room| room_topic_id(*room) == ws)
+                .find(|room| workspace_topic_id(*room) == ws)
         }
     }
 
@@ -3640,7 +3648,7 @@ impl ShellNetwork {
         }
         if let Some(room) = RoomId::parse(cluster_id).filter(|room| !room.is_nil()) {
             let _ = self.cmd_tx.try_send(NetCmd::Replay {
-                ws: room_topic_id(room),
+                ws: workspace_topic_id(room),
             });
         }
     }
@@ -3808,7 +3816,7 @@ impl ShellNetwork {
         let endpoint = iroh::EndpointId::from_bytes(&device)
             .map_err(|_| "device is not an enrolled device id".to_string())?;
         let shared = self.online_enrolled_room(endpoint, named)?;
-        let topic = room_topic_id(shared);
+        let topic = workspace_topic_id(shared);
         if !self.join_topic(topic) {
             return Err("the shared workspace is not joined".into());
         }
@@ -3820,7 +3828,7 @@ impl ShellNetwork {
             .read()
             .rooms()
             .into_iter()
-            .find(|room| room_topic_id(*room) == topic)
+            .find(|room| workspace_topic_id(*room) == topic)
     }
 
     fn enrolled_room_candidates(&self) -> Vec<RoomId> {
@@ -3854,7 +3862,7 @@ impl ShellNetwork {
             .live_room_peers
             .lock()
             .map_err(|_| "workspace state is unavailable".to_string())?;
-        let online = |room: RoomId| live.contains(&(room_topic_id(room), endpoint));
+        let online = |room: RoomId| live.contains(&(workspace_topic_id(room), endpoint));
         let room = match named {
             Some(room) if candidates.contains(&room) => room,
             Some(_) => return Err("the enrolled device does not share that workspace".into()),
@@ -3917,7 +3925,7 @@ impl ShellNetwork {
             // Opening or closing an app is refused unless the transport
             // confined the caller to the room the frame arrived on.
             if let Some(room) = self.room_for_topic(workspace_topic) {
-                caller = caller.in_room(room.to_string());
+                caller = caller.in_workspace(room.to_string());
             }
             if let Ok(mut inbound) = self.inbound_remote_actions.lock() {
                 inbound.push(crate::shell::remote_action_link::InboundRemoteAction {
@@ -4048,7 +4056,7 @@ impl ShellNetwork {
             max,
             requester: self.local_peer_id_hash(),
         };
-        let ws = room_topic_id(room);
+        let ws = workspace_topic_id(room);
         let _ = self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok();
     }
 
@@ -4084,7 +4092,7 @@ impl ShellNetwork {
     pub fn scrollback_answer_allowed(&self, cluster_id: &str, workspace_topic: u64) -> bool {
         RoomId::parse(cluster_id)
             .filter(|room| !room.is_nil() && self.person_root_of_room(*room).is_none())
-            .is_some_and(|room| room_topic_id(room) == workspace_topic)
+            .is_some_and(|room| workspace_topic_id(room) == workspace_topic)
     }
 
     /// Queue a received `ScrollbackRequest` for the broker's drainer.
@@ -4135,7 +4143,7 @@ impl ShellNetwork {
             topics.extend(
                 topic_rooms(&self.tree.read())
                     .into_iter()
-                    .map(room_topic_id),
+                    .map(workspace_topic_id),
             );
         }
         topics.extend(
@@ -4299,7 +4307,7 @@ impl ShellNetwork {
             return false;
         };
         let mut queued = false;
-        for topic in rooms.into_iter().map(room_topic_id) {
+        for topic in rooms.into_iter().map(workspace_topic_id) {
             let new = self
                 .joined_topics
                 .lock()
@@ -4478,7 +4486,7 @@ impl ShellNetwork {
                 .filter(|(id, room)| {
                     tree.room_docs
                         .get(room)
-                        .is_some_and(|doc| tilo_peer_state::room::invitation_redeemed(doc, id))
+                        .is_some_and(|doc| tilo_peer_state::workspace::invitation_redeemed(doc, id))
                 })
                 .map(|(id, _)| id)
                 .collect()
@@ -4657,7 +4665,11 @@ impl ShellNetwork {
     fn person_in_room(&self, room: RoomId) -> crate::shell::state::UserId {
         self.host_identity
             .as_ref()
-            .and_then(|identity| identity.current_native_material(room_topic_id(room)).ok())
+            .and_then(|identity| {
+                identity
+                    .current_native_material(workspace_topic_id(room))
+                    .ok()
+            })
             .and_then(|(certificate, _)| {
                 crate::shell::state::person_id_of(certificate.user_public_key)
             })
@@ -6268,7 +6280,7 @@ impl ShellNetwork {
                         .workspaces
                         .iter()
                         .map(crate::shell::state::Workspace::room)
-                        .find(|room| room_topic_id(*room) == ws)
+                        .find(|room| workspace_topic_id(*room) == ws)
                 };
                 if let Some(room) = room {
                     self.room_not_admitted(room);
@@ -6706,7 +6718,7 @@ impl ShellNetwork {
                 .read()
                 .rooms()
                 .into_iter()
-                .find(|room| room_topic_id(*room) == ws)
+                .find(|room| workspace_topic_id(*room) == ws)
         }
         .map_or_else(
             || CrdtRoute::cluster(""),
@@ -6762,7 +6774,7 @@ impl ShellNetwork {
         // devices over the personal fabric, or kept by their always-on host
         // on their hosted topic; never as room traffic.
         if let NeighbourMsg::AppDocument { cluster_id, .. } = &msg
-            && self.is_local_person_room(cluster_id)
+            && self.is_local_personal_cluster(cluster_id)
         {
             self.dispatch_hosted_person_document(ws, peer, msg);
             return;
@@ -7095,7 +7107,7 @@ impl ShellNetwork {
         let mut matching = tree
             .rooms()
             .into_iter()
-            .filter(|room| room_topic_id(*room) == workspace_topic);
+            .filter(|room| workspace_topic_id(*room) == workspace_topic);
         let Some(room) = matching.next() else {
             drop(matching);
             drop(tree);
@@ -7237,7 +7249,7 @@ fn unauthenticated_editor(cluster_id: &str, peer: u64) -> tilo_action_policy::St
 
 /// `person` as an editor of `cluster_id`, and nothing more.
 fn editor_standing(cluster_id: &str, person: String) -> tilo_action_policy::Standing {
-    let mut policy = tilo_action_policy::RoomPolicy::unowned(
+    let mut policy = tilo_action_policy::WorkspacePolicy::unowned(
         cluster_id,
         &tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner),
     );
@@ -7321,12 +7333,12 @@ pub(crate) fn host_identity_for_key(
                 // person room for its devices, presents the same cert.
                 let continuity = personal_continuity_topic_id(&cert.user_public_key);
                 workspace_device_certs.insert(continuity, cert.clone());
-                workspace_device_certs.insert(room_topic_id(room_id), cert);
+                workspace_device_certs.insert(workspace_topic_id(room_id), cert);
                 if let Ok(fleet) = crate::device_fleet::DeviceFleetStore::from_env()
                     .and_then(|store| store.load(identity_id))
                 {
                     workspace_revocations.insert(continuity, fleet.revocations.clone());
-                    workspace_revocations.insert(room_topic_id(room_id), fleet.revocations);
+                    workspace_revocations.insert(workspace_topic_id(room_id), fleet.revocations);
                 }
             }
         }
@@ -7390,7 +7402,7 @@ pub(crate) fn shell_network_for_test(
     let keypair = iroh::SecretKey::generate();
     let local_peer_id = keypair.public();
     let mut joined_topics = std::collections::HashSet::from([DEFAULT_WS_TOPIC]);
-    joined_topics.extend(tree.read().rooms().into_iter().map(room_topic_id));
+    joined_topics.extend(tree.read().rooms().into_iter().map(workspace_topic_id));
     // As the desktop tells it on start for every workspace it is in: what
     // the person chose there, here "Where I am". A room added later takes
     // its default once its host answers whether it is public.
@@ -8191,7 +8203,7 @@ mod tests {
         tree.desktop.workspaces.push(workspace);
         let (mut net, _commands) = shell_network_for_test(tree.shared(), 1);
         net.require_peer_identity = true;
-        let topic = room_topic_id(enrolled);
+        let topic = workspace_topic_id(enrolled);
         identified_peer_on_topic(&net, &root, &device, topic);
         let frame = tilo_actions::remote::RemoteActionFrame::new(
             tilo_actions::remote::RemoteActionMessage::Invoke(
@@ -10267,7 +10279,7 @@ mod tests {
                     "relay_service_node_id": hex::encode(service.as_bytes()),
                     "label": "Home server",
                     "user_public_key": hex::encode(own_user),
-                    "relay_workspace_ids": [room_topic_id(room)],
+                    "relay_workspace_ids": [workspace_topic_id(room)],
                 }]))
                 .expect("registry"),
             )
@@ -10344,7 +10356,7 @@ mod tests {
 
             net.event_tx
                 .try_send(NetEvent::PeerLeft {
-                    ws: room_topic_id(room),
+                    ws: workspace_topic_id(room),
                     peer,
                     cause: PeerDepartureCause::HostSessionClosed,
                     membership_epoch: None,
@@ -10420,7 +10432,7 @@ mod tests {
         NetEvent::Msg {
             ws: RoomId::parse(cluster_id)
                 .filter(|room| !room.is_nil())
-                .map_or(DEFAULT_WS_TOPIC, room_topic_id),
+                .map_or(DEFAULT_WS_TOPIC, workspace_topic_id),
             peer,
             membership_epoch: None,
             replayed: false,
@@ -10440,7 +10452,7 @@ mod tests {
         record_id: &str,
         device: &ed25519_dalek::SigningKey,
     ) -> collab_types::SignedOp {
-        let cluster = collab_types::person_room(user).to_string();
+        let cluster = collab_types::personal_cluster(user).to_string();
         let mut envelope = collab_types::SignedOp::new_unsigned(
             collab_types::DocumentMutation::Snapshot(b"watched: one video".to_vec())
                 .encode()
@@ -10485,10 +10497,10 @@ mod tests {
     /// another over the authenticated personal fabric, never on a room topic,
     /// and reaches the other device's apps as the room owner's write.
     #[test]
-    fn person_room_documents_travel_only_between_one_persons_devices() {
+    fn personal_cluster_documents_travel_only_between_one_persons_devices() {
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xE1; 32]);
         let user = root.verifying_key().to_bytes();
-        let cluster = collab_types::person_room(&user).to_string();
+        let cluster = collab_types::personal_cluster(&user).to_string();
         let record = "file:/home/ada/.local/share/tube/history";
         let laptop = iroh::SecretKey::from_bytes(&[0xE2; 32]);
         let laptop_signing = ed25519_dalek::SigningKey::from_bytes(&[0xE2; 32]);
@@ -10589,33 +10601,33 @@ mod tests {
     /// person-room record written by `own_device` among it, and check none of
     /// it is `sent` to anyone but the person's devices and hosts. Returns the
     /// record's artifact.
-    fn person_room_stays_with_the_person(
+    fn personal_cluster_stays_with_the_person(
         net: &ShellNetwork,
         sent: &mut mpsc::Receiver<NetCmd>,
         user: [u8; 32],
         own_device: &ed25519_dalek::SigningKey,
     ) -> collab_types::ArtifactId {
-        let person_room = RoomId::from(collab_types::person_room(&user));
+        let personal_cluster = RoomId::from(collab_types::personal_cluster(&user));
         let record = "history";
         let envelope = person_document(&user, record, own_device);
         let artifact = envelope.artifact;
         net.publish_document(
             "so.tilo.tube".into(),
-            person_room.to_string(),
+            personal_cluster.to_string(),
             record,
             envelope,
         );
         net.publish_app_presence(
             "so.tilo.tube".into(),
-            person_room.to_string(),
+            personal_cluster.to_string(),
             collab_types::PeerPresence {
                 key: Vec::new(),
                 payload: collab_types::PeerPresencePayload::Arrived,
             },
         );
-        net.publish_scrollback_response(room_topic_id(person_room), artifact, Vec::new());
-        net.publish_scrollback_request(&person_room.to_string(), artifact, u64::MAX, 8);
-        net.request_room_replay(&person_room.to_string());
+        net.publish_scrollback_response(workspace_topic_id(personal_cluster), artifact, Vec::new());
+        net.publish_scrollback_request(&personal_cluster.to_string(), artifact, u64::MAX, 8);
+        net.request_room_replay(&personal_cluster.to_string());
         let leaked: Vec<_> = std::iter::from_fn(|| sent.try_recv().ok()).collect();
         assert!(
             leaked.iter().all(|command| matches!(
@@ -10632,10 +10644,10 @@ mod tests {
     /// published where they listen, and nothing naming it is accepted from
     /// them, on a room topic or on the personal fabric.
     #[test]
-    fn a_collaborator_never_sends_or_receives_person_room_records() {
+    fn a_collaborator_never_sends_or_receives_personal_cluster_records() {
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xE5; 32]);
         let user = root.verifying_key().to_bytes();
-        let person_room = RoomId::from(collab_types::person_room(&user));
+        let personal_cluster = RoomId::from(collab_types::personal_cluster(&user));
         let collaborator_root = ed25519_dalek::SigningKey::from_bytes(&[0xE6; 32]);
         let collaborator = iroh::SecretKey::from_bytes(&[0xE7; 32]);
         let collaborator_signing = ed25519_dalek::SigningKey::from_bytes(&[0xE7; 32]);
@@ -10653,7 +10665,7 @@ mod tests {
             .position(|workspace| workspace.id == held)
             .expect("workspace");
         tree.desktop.workspaces[index] =
-            crate::shell::state::rehomed(&tree.desktop.workspaces[index], person_room);
+            crate::shell::state::rehomed(&tree.desktop.workspaces[index], personal_cluster);
         let (mut net, mut sent) = shell_network_for_test(tree.shared(), 0xE8);
         net.local_person = Some(user);
         authenticated_personal_peer_at(
@@ -10666,15 +10678,21 @@ mod tests {
 
         let record = "history";
         let own_device = ed25519_dalek::SigningKey::from_bytes(&[0xE9; 32]);
-        let artifact = person_room_stays_with_the_person(&net, &mut sent, user, &own_device);
+        let artifact = personal_cluster_stays_with_the_person(&net, &mut sent, user, &own_device);
 
-        net.dispatch_scrollback_request(room_topic_id(person_room), 0xBEEF, artifact, u64::MAX, 8);
+        net.dispatch_scrollback_request(
+            workspace_topic_id(personal_cluster),
+            0xBEEF,
+            artifact,
+            u64::MAX,
+            8,
+        );
         assert!(
             net.inbound_scrollback_request.lock().unwrap().is_empty(),
             "a peer asking for a person-room record's history gets no page"
         );
 
-        for room in [person_room, shared_room] {
+        for room in [personal_cluster, shared_room] {
             net.event_tx
                 .try_send(app_document_event(
                     "so.tilo.tube",
@@ -10737,7 +10755,7 @@ mod tests {
 
         net.publish_document(
             "so.tilo.tube".into(),
-            collab_types::person_room(&user).to_string(),
+            collab_types::personal_cluster(&user).to_string(),
             "history",
             person_document(&user, "history", &laptop_signing),
         );
@@ -10752,7 +10770,7 @@ mod tests {
 
         let stranger = ed25519_dalek::SigningKey::from_bytes(&[0xEE; 32]);
         authenticated_personal_peer(&net, &stranger, &iroh::SecretKey::from_bytes(&[0xEF; 32]));
-        identified_peer_on_topic(&net, &root, &phone, room_topic_id(RoomId::new()));
+        identified_peer_on_topic(&net, &root, &phone, workspace_topic_id(RoomId::new()));
         assert_eq!(
             net.take_person_snapshot_request(),
             None,
@@ -10762,7 +10780,7 @@ mod tests {
         authenticated_personal_peer(&net, &root, &phone);
         assert_eq!(
             net.take_person_snapshot_request(),
-            Some(collab_types::person_room(&user).to_string()),
+            Some(collab_types::personal_cluster(&user).to_string()),
             "the phone's return asks the local apps for their snapshots"
         );
         assert_eq!(net.take_person_snapshot_request(), None, "once");
@@ -10776,7 +10794,7 @@ mod tests {
     fn a_person_record_kept_by_their_host_reaches_a_device_alone_online() {
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
         let user = root.verifying_key().to_bytes();
-        let cluster = collab_types::person_room(&user).to_string();
+        let cluster = collab_types::personal_cluster(&user).to_string();
         let continuity = personal_continuity_topic_id(&user);
         let record = "history";
         let laptop = iroh::SecretKey::from_bytes(&[0xD2; 32]);
@@ -10822,7 +10840,7 @@ mod tests {
         );
         let (author, msg) = kept(&laptop, &laptop_signing);
         phone.dispatch_neighbour_msg(
-            room_topic_id(RoomId::new()),
+            workspace_topic_id(RoomId::new()),
             author,
             None,
             true,
@@ -10852,7 +10870,7 @@ mod tests {
     fn a_person_record_larger_than_a_frame_travels_as_segments() {
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xC5; 32]);
         let user = root.verifying_key().to_bytes();
-        let cluster = collab_types::person_room(&user).to_string();
+        let cluster = collab_types::personal_cluster(&user).to_string();
         let laptop = iroh::SecretKey::from_bytes(&[0xC6; 32]);
         let laptop_signing = ed25519_dalek::SigningKey::from_bytes(&[0xC6; 32]);
         let phone = iroh::SecretKey::from_bytes(&[0xC7; 32]);
@@ -10962,7 +10980,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         for (root, other_device) in [(ada, ada_phone.public()), (work, work_laptop.public())] {
-            let cluster = collab_types::person_room(&root).to_string();
+            let cluster = collab_types::personal_cluster(&root).to_string();
             net.publish_document(
                 "so.tilo.tube".into(),
                 cluster,
@@ -10978,10 +10996,10 @@ mod tests {
 
         // The workspace identity's laptop writes its person's record here;
         // naming the device's own person's room instead, it is refused.
-        let workspace_identity_room = collab_types::person_room(&work).to_string();
-        let own_person_room = collab_types::person_room(&ada).to_string();
+        let workspace_identity_room = collab_types::personal_cluster(&work).to_string();
+        let own_personal_cluster = collab_types::personal_cluster(&ada).to_string();
         net.register_local_record("so.tilo.tube", &workspace_identity_room, "history");
-        net.register_local_record("so.tilo.tube", &own_person_room, "history");
+        net.register_local_record("so.tilo.tube", &own_personal_cluster, "history");
         let from_laptop = |cluster: &str, user: &[u8; 32]| PersonalFabricPayload::Document {
             app_id: "so.tilo.tube".into(),
             record_id: crate::network::wire_record::wire_record_id(
@@ -10995,13 +11013,13 @@ mod tests {
             work_laptop.public(),
             tilo_network_actor::MembershipEpoch::for_test(1),
             work,
-            from_laptop(&own_person_room, &ada),
+            from_laptop(&own_personal_cluster, &ada),
         );
         net.dispatch_personal_fabric(
             work_laptop.public(),
             tilo_network_actor::MembershipEpoch::for_test(1),
             ada,
-            from_laptop(&own_person_room, &ada),
+            from_laptop(&own_personal_cluster, &ada),
         );
         assert!(
             net.inbound_documents_handle().lock().unwrap().is_empty(),
@@ -11029,7 +11047,7 @@ mod tests {
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xC1; 32]);
         let user = root.verifying_key().to_bytes();
-        let cluster = collab_types::person_room(&user).to_string();
+        let cluster = collab_types::personal_cluster(&user).to_string();
         let continuity = personal_continuity_topic_id(&user);
         let tablet = iroh::SecretKey::from_bytes(&[0xC2; 32]);
         let tablet_signing = ed25519_dalek::SigningKey::from_bytes(&[0xC2; 32]);
@@ -11096,7 +11114,7 @@ mod tests {
     #[test]
     fn earlier_sessions_person_history_is_answered_to_nobody() {
         let user = [0xF0; 32];
-        let person_room = RoomId::from(collab_types::person_room(&user));
+        let personal_cluster = RoomId::from(collab_types::personal_cluster(&user));
         let shared_room = RoomId::new();
         let device = ed25519_dalek::SigningKey::from_bytes(&[0xF1; 32]);
         let sealed_op = |room: RoomId| {
@@ -11123,7 +11141,7 @@ mod tests {
             tilo_action_broker::collab_history::CollabHistoryStore::open(dir.path().join("history"))
                 .expect("history store")
         };
-        let person_op = sealed_op(person_room);
+        let person_op = sealed_op(personal_cluster);
         let shared_op = sealed_op(shared_room);
         {
             let mut earlier = crate::shell::collab_broker::BrokerChannels {
@@ -11138,7 +11156,7 @@ mod tests {
                 )
             };
             earlier
-                .record_history(&route(person_room), &person_op)
+                .record_history(&route(personal_cluster), &person_op)
                 .sync()
                 .expect("history synced");
             earlier
@@ -11158,7 +11176,7 @@ mod tests {
                 &net,
                 &channels,
                 &InboundScrollbackRequest {
-                    workspace_topic: room_topic_id(room),
+                    workspace_topic: workspace_topic_id(room),
                     requester: 0xBEEF,
                     artifact,
                     before_seq: u64::MAX,
@@ -11171,7 +11189,7 @@ mod tests {
             vec![shared_op.clone()]
         );
         assert!(answer(shared_op.artifact, RoomId::new()).is_empty());
-        assert!(answer(person_op.artifact, person_room).is_empty());
+        assert!(answer(person_op.artifact, personal_cluster).is_empty());
         assert!(answer(person_op.artifact, shared_room).is_empty());
     }
 
@@ -11179,22 +11197,22 @@ mod tests {
     /// into a workspace others could share.
     #[test]
     #[serial_test::serial(process_env)]
-    fn the_person_room_never_becomes_a_workspace() {
+    fn the_personal_cluster_never_becomes_a_workspace() {
         let user = [0xEA; 32];
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_USER_ID", hex::encode(user));
-        let person_room = RoomId::from(collab_types::person_room(&user));
+        let personal_cluster = RoomId::from(collab_types::personal_cluster(&user));
         let mut tree = WorkspaceTree::default();
         let local = tree.create_hosted_workspace("Mine").0;
         assert!(
-            !tree.stand_in_room(local, person_room),
+            !tree.stand_in_room(local, personal_cluster),
             "an invite cannot name it"
         );
         assert!(
-            tree.join_native_room("Mine", person_room).is_none(),
+            tree.join_native_room("Mine", personal_cluster).is_none(),
             "nor a join"
         );
-        assert!(!tree.rooms().contains(&person_room));
+        assert!(!tree.rooms().contains(&personal_cluster));
         let other = RoomId::new();
         assert!(
             tree.join_native_room("Other", other).is_some(),
@@ -11216,7 +11234,7 @@ mod tests {
         )
         .expect("signed request");
         let message = NeighbourMsg::MlsAccessRequest {
-            room: room.to_string(),
+            workspace: room.to_string(),
             request: Box::new(request),
             delivery: 1,
         };
@@ -11230,7 +11248,7 @@ mod tests {
         else {
             panic!("governance must be published");
         };
-        assert_eq!(ws, room_topic_id(room));
+        assert_eq!(ws, workspace_topic_id(room));
         assert!(matches!(msg, NeighbourMsg::MlsAccessRequest { .. }));
         assert!(!net.publish_channel_governance(NeighbourMsg::Heartbeat { peer: 1, ts: 1 }));
     }
@@ -11254,7 +11272,7 @@ mod tests {
             let phone = iroh::SecretKey::from_bytes(&[0xF2; 32]);
             authenticated_personal_peer(&net, &root, &phone);
             while cmd_rx.try_recv().is_ok() {}
-            let person_room = collab_types::person_room(&user).to_string();
+            let personal_cluster = collab_types::personal_cluster(&user).to_string();
             let author = ed25519_dalek::SigningKey::from_bytes(&[0xF3; 32]);
             let secret = "/home/alice/Secret Plans/merger-2026.odt";
             for record_id in [
@@ -11263,7 +11281,7 @@ mod tests {
             ] {
                 net.publish_document(
                     "so.tilo.tube".into(),
-                    person_room.clone(),
+                    personal_cluster.clone(),
                     &record_id,
                     person_document(&user, &record_id, &author),
                 );
@@ -11329,7 +11347,7 @@ mod tests {
             };
             net.event_tx
                 .try_send(NetEvent::Msg {
-                    ws: room_topic_id(room),
+                    ws: workspace_topic_id(room),
                     peer: iroh::SecretKey::from_bytes(&[72; 32]).public(),
                     membership_epoch: None,
                     replayed: true,
@@ -11341,7 +11359,7 @@ mod tests {
 
             net.event_tx
                 .try_send(NetEvent::OwnReplay {
-                    ws: room_topic_id(room),
+                    ws: workspace_topic_id(room),
                     msg,
                 })
                 .expect("queue the replay");
@@ -11510,7 +11528,7 @@ mod tests {
                 .room();
             let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
             let expected_topic = net.active_ws_for_publish();
-            assert_eq!(expected_topic, room_topic_id(room));
+            assert_eq!(expected_topic, workspace_topic_id(room));
             net.publish_document(
                 "notes".to_string(),
                 room.to_string(),
@@ -11556,7 +11574,8 @@ mod tests {
 
         fn active_ws_for_publish_returns_the_active_rooms_stable_topic() {
             let tree = WorkspaceTree::bootstrap_demo().shared();
-            let expected = room_topic_id(tree.read().desktop.active_workspace().unwrap().room());
+            let expected =
+                workspace_topic_id(tree.read().desktop.active_workspace().unwrap().room());
             let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
             assert_eq!(net.active_ws_for_publish(), expected);
         }
@@ -11566,7 +11585,7 @@ mod tests {
             let tree = WorkspaceTree::bootstrap_demo().shared();
             let room = tree.read().rooms()[0];
             let (net, mut cmd_rx) = shell_network_for_test(tree, 0xDEAD_u64);
-            let expected_topic = room_topic_id(room);
+            let expected_topic = workspace_topic_id(room);
             let artifact = ArtifactId::new();
             net.publish_scrollback_request(&room.to_string(), artifact, 100, 25);
             let cmd = cmd_rx

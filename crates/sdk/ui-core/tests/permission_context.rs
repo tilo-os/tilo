@@ -8,12 +8,12 @@ use tilo_ui::permissions::{
     PermissionScope, ResourceRef, Role, Scope, Subject, TreePath, UserId, policy,
 };
 
-/// A viewer in the room: role only, no individual capabilities.
+/// A viewer in the workspace: role only, no individual capabilities.
 fn viewer_ctx(user: &str) -> PermissionContext {
     PermissionContext::member(user, Role::Viewer)
 }
 
-/// An editor in the room, additionally shared one file.
+/// An editor in the workspace, additionally shared one file.
 ///
 /// The share is a capability, not a role property — roles carry no base
 /// authority over the filesystem, so even an Owner needs one of these
@@ -115,7 +115,7 @@ fn roles_and_scoped_shares_decide_each_permission_check() {
             false,
             denied,
         ),
-        // An Editor changes the room; governing it is another matter.
+        // An Editor changes the workspace; governing it is another matter.
         (
             "workspace_admin_requires_admin_authority: editor writes the room",
             editor_ctx("bob"),
@@ -268,7 +268,7 @@ fn grants_and_capabilities_are_inspectable_scoped_and_expire() {
         let ctx = PermissionContext::member("alice", Role::Editor).with_grant(policy::Grant::new(
             "terminal",
             policy::Subject::person("alice"),
-            TreePath::room(tilo_ui::permissions::LOCAL_ROOM).join(&terminal),
+            TreePath::workspace(tilo_ui::permissions::LOCAL_WORKSPACE).join(&terminal),
             policy::KindSet::ALL,
             Answer::Allow,
             policy::Subject::person("owner"),
@@ -296,7 +296,7 @@ fn grants_and_capabilities_are_inspectable_scoped_and_expire() {
         let grant = policy::Grant::new(
             "terminal",
             policy::Subject::person("alice"),
-            TreePath::room(tilo_ui::permissions::LOCAL_ROOM).join(&terminal),
+            TreePath::workspace(tilo_ui::permissions::LOCAL_WORKSPACE).join(&terminal),
             policy::KindSet::ALL,
             Answer::Allow,
             policy::Subject::person("owner"),

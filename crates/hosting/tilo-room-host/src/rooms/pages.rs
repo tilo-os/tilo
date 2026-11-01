@@ -405,7 +405,7 @@ impl Rooms {
             .map_err(|_| CollaborationError::new("not a node of the room's tree"))?;
         let state = self.room(room).await?;
         let governed = state.lock().await;
-        if node.room_id() != Some(governed.room()) {
+        if node.workspace_id() != Some(governed.room()) {
             return Err(CollaborationError::new("the node is not in this room"));
         }
         let workspace_id = governed.workspace_id();
@@ -1162,7 +1162,7 @@ impl Rooms {
         match step {
             JoinStep::Inspect { invitation } => {
                 let room = self
-                    .room(&tilo_peer_state::join_ledger::invitation_room(
+                    .room(&tilo_peer_state::join_ledger::invitation_workspace(
                         &invitation,
                         now,
                     )?)

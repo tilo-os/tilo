@@ -26,7 +26,7 @@ use tilo_agent_participant::apps::readable;
 use tilo_agent_participant::{AppCatalogue, ConfinedReplica, Replica, ReplicaActor, Seed};
 use tilo_content::ContentStore;
 
-const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const MAIL: &str = "so.tilo.mail";
 /// The resource every mailbox-level operation is addressed to.
 const MAILBOX: &str = "mail.mailbox";
@@ -76,8 +76,8 @@ fn read(record: &ConfinedReplica, args: Value) -> Value {
         .expect("read answers with what the mailbox holds")
 }
 
-/// The content an export's answer names, as `room` keeps it.
-fn produced(room: &ContentStore, output: &tilo_actions::ActionOutput) -> String {
+/// The content an export's answer names, as `workspace` keeps it.
+fn produced(workspace: &ContentStore, output: &tilo_actions::ActionOutput) -> String {
     let address = output
         .value
         .as_ref()
@@ -85,7 +85,12 @@ fn produced(room: &ContentStore, output: &tilo_actions::ActionOutput) -> String 
         .or_else(|| output.resources.first().cloned())
         .unwrap_or_else(|| panic!("an export names its content: {output:?}"));
     let hash = tilo_actions::content_hash(&address).expect("a content address");
-    String::from_utf8(room.read(hash).expect("the room keeps what was exported")).unwrap()
+    String::from_utf8(
+        workspace
+            .read(hash)
+            .expect("the workspace keeps what was exported"),
+    )
+    .unwrap()
 }
 
 fn subjects(listing: &Value) -> Vec<String> {
@@ -111,18 +116,18 @@ fn mail_is_in_the_agents_catalogue_but_not_the_browsers() {
 #[test]
 #[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
 fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() {
-    let room = ContentStore::memory();
+    let workspace = ContentStore::memory();
     let catalogue = AppCatalogue::native();
     let agent = ConfinedReplica::open(
         &catalogue,
         MAIL,
-        ROOM,
+        WORKSPACE,
         "assistant",
         &ReplicaActor::Agent,
         Seed::New,
     )
     .expect("a Mail record is held in a confined worker")
-    .lending(room.clone());
+    .lending(workspace.clone());
     assert_ne!(agent.worker_id(), Some(std::process::id()));
     let genesis = agent.take_mutation().unwrap().expect("a new record");
 
@@ -227,9 +232,9 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
     assert_eq!(reply["draft"]["subject"], "Re: Offsite venue", "{reply}");
     let drafted = agent.take_mutation().unwrap().expect("the draft");
 
-    // Exporting as content the room keeps, the draft with the mail.
+    // Exporting as content the workspace keeps, the draft with the mail.
     let exported = step(&agent, "export-content", json!({ "format": "md" }));
-    let markdown = produced(&room, &exported);
+    let markdown = produced(&workspace, &exported);
     for expected in [
         "## Offsite venue",
         "## Invoice 4411",
@@ -254,7 +259,7 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
     let mut page = Replica::open(
         &catalogue,
         MAIL,
-        ROOM,
+        WORKSPACE,
         "ada",
         ReplicaActor::Owner,
         Seed::Existing {

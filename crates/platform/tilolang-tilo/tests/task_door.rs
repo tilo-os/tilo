@@ -84,7 +84,7 @@ impl Apps {
     }
 
     /// From now on the door hands over `app`'s record as it is now, whatever its host applies
-    /// later: the room's copy lagging the record's origin.
+    /// later: the workspace's copy lagging the record's origin.
     pub fn lag(&self, app: &str) {
         let copy = self.replica(app).doc.save();
         self.lagging.borrow_mut().insert(app.to_owned(), copy);
@@ -134,7 +134,7 @@ impl RecordSource for Apps {
     fn record(&self, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
         if !record.is_empty() {
             return Err(format!(
-                "the test's apps keep their records in the room's record, not in {record}"
+                "the test's apps keep their records in the workspace's record, not in {record}"
             ));
         }
         if let Some((_, why)) = self.unreachable.iter().find(|(gone, _)| *gone == app) {

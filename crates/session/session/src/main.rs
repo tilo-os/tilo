@@ -434,7 +434,6 @@ fn desktop_services(
 /// carries out no session action: the window's machine is the host's.
 #[cfg(target_os = "linux")]
 fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
-    use tilo_quick_settings::device::PlayerLink;
     use tilo_session::{
         ActionPlane, DeviceHost, KillSwitch, Options, QuickSettings, SessionConfig,
         displays::{Backlights, Screens},
@@ -455,16 +454,7 @@ fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
         // to work in a workspace as an agent; a session in another
         // desktop's window serves none.
         agent_door: owned.then(tilo_session::agent_door::path).flatten(),
-        quick_settings: owned.then(|| {
-            QuickSettings::Device(Box::new(|wake| {
-                let device = DeviceHost::os(wake);
-                match PlayerLink::helper() {
-                    Ok(players) => device.follow_players(players),
-                    Err(error) => eprintln!("tilo-session: no media helper: {error}"),
-                }
-                device
-            }))
-        }),
+        quick_settings: owned.then(|| QuickSettings::Device(Box::new(DeviceHost::os))),
         // A session in another desktop's window dims none of the window's
         // machine: the display it draws in is that desktop's.
         backlights: owned.then(|| Box::new(Screens) as Box<dyn Backlights>),
@@ -477,7 +467,6 @@ fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
         } else {
             tilo_session::no_session_actions
         },
-        lock_power: owned,
         // The lock screen and the on-screen keyboard are the session's own
         // apps: the screen is started when the session locks, and the
         // keyboard whenever the person may want it, under the hands they

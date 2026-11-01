@@ -370,6 +370,11 @@ pub(super) struct ActionRuntime {
     )>,
     pub(super) action_directory_snapshot:
         Option<std::rc::Rc<super::action_directory_snapshot::ActionDirectorySnapshot>>,
+    /// The directory the last revision named, set aside when a pass made it
+    /// stale: re-derived to the same snapshot, it keeps that revision and
+    /// its cursors.
+    pub(super) action_directory_retired:
+        Option<super::action_directory_snapshot::ModelDirectoryCandidate>,
     pub(super) local_document_directory_pins:
         Vec<std::rc::Weak<super::action_directory_snapshot::LocalDocumentDirectoryPin>>,
     pub(super) bound_invocations: std::collections::HashMap<
@@ -476,6 +481,7 @@ impl ActionRuntime {
             bound_broker_route_for_test: None,
             action_directory_stamp: None,
             action_directory_snapshot: None,
+            action_directory_retired: None,
             local_document_directory_pins: Vec::new(),
             bound_invocations: std::collections::HashMap::new(),
             local_resource_cache: RefCell::new(None),
@@ -655,9 +661,9 @@ impl ContinuationRuntime {
 /// Collaboration transports and local authorship identity.
 pub(super) struct CollaborationRuntime {
     pub(super) manager: CollaborationManager,
-    /// Keeps the room record index subscribed while `manager` follows a
+    /// Keeps the workspace record index subscribed while `manager` follows a
     /// checked-out record route.
-    pub(super) room_manager: Option<CollaborationManager>,
+    pub(super) workspace_manager: Option<CollaborationManager>,
     pub(super) local_author: crate::permissions::UserId,
     /// A record checkout asks its new route for the current document once
     /// that route is acknowledged.
@@ -686,7 +692,7 @@ impl CollaborationRuntime {
         crate::history_source::authors::read_as(&local_author.0);
         Self {
             manager,
-            room_manager: None,
+            workspace_manager: None,
             local_author,
             snapshot_on_ready: false,
             history: crate::collaboration::DocumentHistory::default(),

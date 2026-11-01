@@ -3,7 +3,7 @@
 //! `os-actions`); a test lends one of its own.
 
 use crate::model::{
-    Accessory, Band, Bluetooth, Client, Connectivity, Metered, Mobile, MobileProfile, Nearby,
+    Accessory, Band, Bluetooth, Client, Connectivity, Link, Metered, Mobile, MobileProfile, Nearby,
     Network, SavedNetwork, Tethering, Vpn, VpnProfile, Wifi, WifiNetwork, Wired, ordered,
 };
 
@@ -205,6 +205,7 @@ impl Device for OsDevice {
             .map(|wired| Wired::from(&wired));
         let connectivity = read_or_log("connectivity", os_actions::get_connectivity())
             .map_or(Connectivity::Unknown, Connectivity::from);
+        let link = read_or_log("link", os_actions::get_link_status()).map(|link| Link::from(&link));
         let profiles = read_or_log("vpn profiles", os_actions::list_vpn_connections())
             .unwrap_or_default()
             .iter()
@@ -242,6 +243,7 @@ impl Device for OsDevice {
                         .map(|profile| MobileProfile::from(&profile)),
                 },
                 airplane_mode: radios.airplane_mode,
+                link,
                 connectivity,
                 saved: saved_networks(),
                 ..Network::default()

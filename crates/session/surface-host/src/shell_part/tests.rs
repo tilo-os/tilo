@@ -49,6 +49,28 @@ fn click(part: &mut ShellPart, name: &str) {
     }
 }
 
+/// The shell the session ships is every file of the package: a file added to `apps/tl/shell`
+/// and not listed here would compile in `tilolang check` and fail only in the session.
+#[test]
+fn the_shell_ships_every_file_of_its_package() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
+    // The files the package's compiler reads, in the order it reads them.
+    let on_disk: Vec<String> = tilolang_tilo::tilolang::source::source_paths(&dir)
+        .expect("the shell's package")
+        .iter()
+        .filter_map(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect();
+    let shipped: Vec<String> = SHELL_FILES
+        .iter()
+        .map(|(name, _)| (*name).to_owned())
+        .collect();
+    assert_eq!(
+        shipped, on_disk,
+        "SHELL_FILES lists the package's files in path order"
+    );
+}
+
 /// The centre up, with its search field, and nothing changing: the part draws no frame.
 /// The field reports itself dirty every frame, as a leaf does; that is no reason to draw.
 #[test]

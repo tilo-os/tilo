@@ -13,10 +13,13 @@ mod desktop;
 mod door;
 mod frames;
 pub mod shell_part;
+pub mod slot_view;
 mod well_policy;
 mod widget;
 
-pub use desktop::{DeskGesture, DesktopHost, StripPolicy, WindowObserver, desktop, desktop_with};
+pub use desktop::{
+    DeskGesture, DesktopHost, PointerSamples, StripPolicy, WindowObserver, desktop, desktop_with,
+};
 pub use door::{Doors, Published, Shared, through_door};
 pub use shell_part::{DeskReading, SessionLink, ShellPart, ShellWork};
 pub use well_policy::{DeskHost, WellPolicy, well_policy};
@@ -439,6 +442,15 @@ impl SurfaceHost for AppHost {
     /// compositor routes it anew, so the app hears it left.
     fn drag_ended(&mut self, _dropped: bool) {
         self.pointer_leave();
+    }
+
+    /// A wake the app took has not drawn yet, or it says a frame is due now
+    /// while something moves; else the earliest deadline its content sets.
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        if self.wants || self.app.wake_pending() {
+            return Some(std::time::Instant::now());
+        }
+        self.app.surface_next_frame()
     }
 
     fn prepare_frame(&mut self) -> bool {

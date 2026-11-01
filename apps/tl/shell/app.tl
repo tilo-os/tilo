@@ -58,6 +58,50 @@ type Desk (origin: session.desk) {
     windows: Collection<Win>
     /// The running applications' tray items, in the order they registered.
     tray: Collection<TrayItem>
+    /// The runs of what the person asked the session's agents, oldest first; each is a
+    /// conversation (`conversation.tl`).
+    runs: Collection<Run>
+    run_entries: Collection<RunEntry>
+    entry_refs: Collection<EntryRef>
+}
+
+/// A run of what the person asked one of the session's agents: the conversation they have in
+/// it.
+type Run (origin: session.run) {
+    key: Text merge register
+    title: Text merge register (title)
+    agent: Text merge register
+    phase: Text merge register
+    active: Bool
+    /// What the agent says now, as the model streams it; empty between turns.
+    live: Text merge register
+}
+
+/// One entry of a run's conversation: what the person or the agent said, or a program either
+/// of them ran.
+type RunEntry (origin: session.run_entry) {
+    key: Text merge register
+    run: Text merge register
+    seq: Int
+    author: Text merge register
+    by_agent: Bool
+    step: Bool
+    /// The words, or the program as it ran.
+    text: Text merge register (title)
+    outcome: Text merge register
+    answer: Text merge register
+}
+
+/// A resource a program in a conversation printed (a reference) or changed (a row to undo).
+type EntryRef (origin: session.entry_ref) {
+    key: Text merge register
+    entry: Text merge register
+    changed: Bool
+    resource: Text merge register
+    app_id: Text merge register
+    type_kind: Text merge register
+    label: Text merge register (title)
+    change: Text merge register
 }
 
 /// A workspace on this device.
@@ -245,9 +289,13 @@ action ask(d: Desk) (icon: .bot, label: "Ask an agent") {
 view desk_view(a: Arrangement) {
     let v = viewing
     if v.showing == .desktop {
-        layers(fill) {
-            traditional_desktop(a, fill)
-            desk(root Desk, fill)
+        if space.compact {
+            desk_around(root Desk, .some(a), fill)
+        } else {
+            layers(fill) {
+                traditional_desktop(a, fill)
+                desk(root Desk, fill)
+            }
         }
     } else {
         ui.NavShell(content_kind: .page) {
@@ -330,10 +378,7 @@ view bar_part(d: Desk, part: BarPart) {
     } else if part.slot == .workspace {
         workspace_menu(d)
     } else if part.slot == .app_menu {
-        ui.MenuButton("File", role: .bar) {
-            ui.MenuItem("Close window", icon: .x)
-            ui.MenuItem("Save", icon: .download)
-        }
+        action_bar(arrangement, BarRoom.menus)
     } else if part.slot == .strip {
         if d.strip != "" {
             ui.Button(d.strip, icon: .chevron_right, role: .bar) {
@@ -412,24 +457,17 @@ view workspace_menu(d: Desk) {
 }
 
 /// The device's status: an icon button named with what it shows — "Notifications", how many
-/// are unread, or that they are silenced — with the count above it as a badge, so the name
+/// are unread, or that they are silenced — with the count on the bell's corner, so the name
 /// assistive technology reads is the whole fact and the number is for the eye. Pressing it
 /// opens or closes the device's status: the quick settings, or the notifications.
 ///
-/// The count stands over the control's top trailing corner, in the button's own box: a badge
-/// anchored to what it counts, never a sibling that takes room in the bar. Beside it in a row
-/// the count pushed the bar's run past a narrow window and covered the button's own edge.
+/// The count is the button's own (`count:`): it stands centred on the bell's top trailing
+/// corner, and the button keeps room for it, so it covers neither the bell nor the control
+/// beside it.
 view bell(d: Desk) {
     let name = if d.quiet { "Notifications silenced" } else { "Notifications" }
     let label = if d.unread == 0 { name } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }
-    layers {
-        ui.Button(label, icon: if d.quiet { .bell_off } else { .bell }, icon_only: true, role: .bar) {
-            on press: status(d)
-        }
-        if d.unread > 0 {
-            row(at: .top_trailing) {
-                ui.Badge(count: d.unread)
-            }
-        }
+    ui.Button(label, icon: if d.quiet { .bell_off } else { .bell }, icon_only: true, role: .bar, count: d.unread) {
+        on press: status(d)
     }
 }

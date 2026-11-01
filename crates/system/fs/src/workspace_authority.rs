@@ -235,9 +235,11 @@ pub struct WorkspaceAuthorityEnvelope {
     pub workspace: uuid::Uuid,
     pub revision: u64,
     pub capabilities: Vec<CapOverride>,
-    /// Who may reach each room a relay carries, by its relay room id.
-    #[serde(default)]
-    pub room_members: std::collections::BTreeMap<String, Vec<collab_types::RoomMember>>,
+    /// Who may reach each workspace a relay carries, by its relay workspace
+    /// id. A revision signed and stored before the name changed wrote it
+    /// under the old key, which still reads.
+    #[serde(default, rename = "workspace_members", alias = "room_members")]
+    pub workspace_members: std::collections::BTreeMap<String, Vec<collab_types::WorkspaceMember>>,
     pub tombstoned: bool,
     pub governor: [u8; 32],
     #[serde(with = "serde_bytes")]
@@ -285,13 +287,13 @@ impl WorkspaceAuthorityEnvelope {
     ) -> anyhow::Result<Self> {
         let collab_types::FsAuthority {
             capabilities,
-            room_members,
+            workspace_members,
         } = authority.into();
         let mut envelope = Self {
             workspace,
             revision,
             capabilities,
-            room_members,
+            workspace_members,
             tombstoned,
             governor,
             signature: [0; 64],
@@ -318,7 +320,7 @@ impl WorkspaceAuthorityEnvelope {
             self.workspace,
             self.revision,
             &self.capabilities,
-            &self.room_members,
+            &self.workspace_members,
             self.tombstoned,
             self.governor,
         ))?)
@@ -1310,5 +1312,36 @@ mod tests {
             task.abort();
             endpoint.close().await;
         }
+    }
+
+    /// An authority stored while its members' map was called a room's still
+    /// reads, verifies and enforces: only the stored key changed, and the
+    /// signature is over the members themselves, not the key.
+    #[test]
+    fn an_envelope_stored_under_the_old_key_still_reads_and_verifies() {
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
+        let workspace = uuid::Uuid::new_v4();
+        let member = collab_types::Ed25519PublicKey([0x52; 32]);
+        let envelope = WorkspaceAuthorityEnvelope::sign(
+            workspace,
+            3,
+            vec![CapOverride::new(
+                Subject::User(member),
+                Scope::FsPath("/".into()),
+                Effect::Grant,
+                CapAccess::Read,
+            )],
+            false,
+            &governor,
+        )
+        .unwrap();
+
+        let written = serde_json::to_string(&envelope).unwrap();
+        assert!(written.contains("\"workspace_members\""), "{written}");
+        let stored = written.replace("\"workspace_members\"", "\"room_members\"");
+        let read: WorkspaceAuthorityEnvelope = serde_json::from_str(&stored).unwrap();
+        assert_eq!(read, envelope);
+        read.verify(workspace, governor.verifying_key().to_bytes())
+            .unwrap();
     }
 }

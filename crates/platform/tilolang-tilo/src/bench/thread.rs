@@ -20,12 +20,12 @@ use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_runtime::{Principal, UiNode, ViewInstance};
 
 use super::{
-    Changes, Doc, List, Nested, PAGE, Record, Room, SCROLL_STEP, Shape, Sized, Work,
+    Changes, Doc, List, Nested, PAGE, Record, SCROLL_STEP, Shape, Sized, Work, Workspace,
     composer_input, execute, frame_list, item_id, ms, root_id, text_input, typed, with_work,
 };
 use crate::action::{Authorship, DynAction, DynEdit};
 use crate::record::{DynRecord, DynValue};
-use crate::schema::{MergeKind, lookup};
+use crate::schema::MergeKind;
 
 /// The id of the one item of the root's list: the thread whose transcript the scenarios show.
 fn thread_id() -> String {
@@ -59,8 +59,8 @@ pub(super) fn filled(
     principals: &Principals,
     meta: &tilolang_runtime::meta::Meta,
 ) -> Result<DynRecord, String> {
-    let schema = lookup(ty).ok_or_else(|| format!("unregistered type {ty}"))?;
-    let mut record = DynRecord::empty(schema).map_err(|e| e.to_string())?;
+    let mut record = super::unwritten(ty, meta)?;
+    let schema = record.schema();
     let author = tilolang_runtime::value::to_json(&Value::Principal(Principal::new("bench")))?;
     // What a record says in rich text it says there alone: a message with a rich text body
     // has no parts.
@@ -95,13 +95,10 @@ pub(super) fn filled(
             _ => {}
         }
     }
-    // A register of a type with no default (a time, a date, an identifier) reads as an error
-    // until it holds a value: the seed gives it one.
-    super::fill_registers(&mut record, &super::register_fields(meta, ty));
     Ok(record)
 }
 
-/// A room whose root's list holds one item, holding `n` items of its own.
+/// A workspace whose root's list holds one item, holding `n` items of its own.
 ///
 /// # Errors
 /// A type of the package is not registered, or the seed does not apply.
@@ -114,8 +111,7 @@ pub(super) fn seeded(
 ) -> Result<Doc, String> {
     let principals = principals(packages);
     let meta = &packages.last().ok_or("no package")?.meta;
-    let root_schema = lookup(&shape.root_ty).ok_or("unregistered root type")?;
-    let mut root = DynRecord::empty(root_schema).map_err(|e| e.to_string())?;
+    let mut root = super::unwritten(&shape.root_ty, meta)?;
     let mut item = filled(
         (&thread_id(), &list.item_ty),
         "Item 0",
@@ -142,7 +138,7 @@ pub(super) fn seeded(
     }
     let mut items = Collection::default();
     items.push(Id::from_raw(thread_id()), item);
-    let items = super::with_holders(list, items)?;
+    let items = super::with_holders(list, items, meta)?;
     match root.get_mut(&super::top_field(list)) {
         Some(DynValue::Collection(slot)) => *slot = items,
         _ => return Err("the list field is not a collection".into()),
@@ -171,10 +167,10 @@ struct Thread {
 }
 
 impl Thread {
-    /// Open `item`'s window in `room` and render its transcript's last page of rows, as the
+    /// Open `item`'s window in `workspace` and render its transcript's last page of rows, as the
     /// transcript does when it opens at its end.
-    fn open(room: &Room, item: &ResourceRef) -> Result<Self, String> {
-        let mut view = room
+    fn open(workspace: &Workspace, item: &ResourceRef) -> Result<Self, String> {
+        let mut view = workspace
             .host
             .open_resource(item, None)
             .map_err(|e| e.to_string())?;
@@ -198,7 +194,7 @@ impl Thread {
     }
 }
 
-/// Run the transcript scenarios on `sized`, whose room [`seeded`] made.
+/// Run the transcript scenarios on `sized`, whose workspace [`seeded`] made.
 ///
 /// # Errors
 /// A scenario fails.
@@ -209,16 +205,16 @@ pub(super) fn run(sized: &Sized<'_>, list: &List, nested: &Nested) -> Result<Vec
     if sized.config.open_only {
         return Ok(out);
     }
-    let mut room = sized.open()?;
+    let mut workspace = sized.open()?;
     super::engines::settle(sized.packages.iter().map(|p| &p.wasm))?;
-    room.settle();
-    let mut thread = Thread::open(&room, &item)?;
-    room.frame(&mut [&mut thread.view])?;
-    room.phases.take();
-    out.push(keystroke(sized, &mut room, &mut thread)?);
-    out.push(post(sized, nested, &mut room, &mut thread)?);
-    out.extend(send(sized, &mut room, &mut thread)?);
-    out.push(scroll(sized, &room, &mut thread)?);
+    workspace.settle();
+    let mut thread = Thread::open(&workspace, &item)?;
+    workspace.frame(&mut [&mut thread.view])?;
+    workspace.phases.take();
+    out.push(keystroke(sized, &mut workspace, &mut thread)?);
+    out.push(post(sized, nested, &mut workspace, &mut thread)?);
+    out.extend(send(sized, &mut workspace, &mut thread)?);
+    out.push(scroll(sized, &workspace, &mut thread)?);
     Ok(out)
 }
 
@@ -228,14 +224,14 @@ fn open(sized: &Sized<'_>, item: &ResourceRef) -> Result<Record, String> {
     let mut nodes = 0;
     let mut work = None;
     for _ in 0..sized.config.open_samples() {
-        let room = sized.open()?;
-        let before = Work::of(&room, &[]);
+        let workspace = sized.open()?;
+        let before = Work::of(&workspace, &[]);
         let start = Instant::now();
-        let thread = Thread::open(&room, item)?;
+        let thread = Thread::open(&workspace, item)?;
         samples.push(ms(start.elapsed()));
         nodes = thread.view.tree().count();
-        let mut opened = Work::of(&room, &[&thread.view]).since(before);
-        // The window's own boundaries: the room's window rendered none of them.
+        let mut opened = Work::of(&workspace, &[&thread.view]).since(before);
+        // The window's own boundaries: the workspace's window rendered none of them.
         opened.renders = thread.view.stats().renders;
         work.get_or_insert(opened);
     }
@@ -249,27 +245,31 @@ fn open(sized: &Sized<'_>, item: &ResourceRef) -> Result<Record, String> {
 }
 
 /// Typing into the window's first text input, one letter a frame.
-fn keystroke(sized: &Sized<'_>, room: &mut Room, thread: &mut Thread) -> Result<Record, String> {
-    let (input, mut text) = text_input(&room.host, thread.view.tree())
+fn keystroke(
+    sized: &Sized<'_>,
+    workspace: &mut Workspace,
+    thread: &mut Thread,
+) -> Result<Record, String> {
+    let (input, mut text) = text_input(&workspace.host, thread.view.tree())
         .or_else(|| composer_input(&thread.view, thread.view.tree()))
         .ok_or("the item's window has no text input")?;
     let mut changes = Changes::default();
     for _ in 0..sized.config.samples {
         text.push('x');
         let value = typed(&thread.view, &input, &text);
-        let before = Work::of(room, &[&thread.view]);
+        let before = Work::of(workspace, &[&thread.view]);
         let start = Instant::now();
         thread
             .view
             .edit(&input, &value)
             .map_err(|e| e.to_string())?;
-        let patches = room.frame(&mut [&mut thread.view])?;
+        let patches = workspace.frame(&mut [&mut thread.view])?;
         let took = ms(start.elapsed());
-        let mut done = Work::of(room, &[&thread.view]).since(before);
+        let mut done = Work::of(workspace, &[&thread.view]).since(before);
         done.patches = patches as u64;
         changes.push(took, done);
     }
-    let (samples, extra) = changes.into_record(room.phases.take());
+    let (samples, extra) = changes.into_record(workspace.phases.take());
     Ok(sized.record("thread_keystroke", "ms", samples, extra))
 }
 
@@ -277,12 +277,12 @@ fn keystroke(sized: &Sized<'_>, room: &mut Room, thread: &mut Thread) -> Result<
 fn post(
     sized: &Sized<'_>,
     nested: &Nested,
-    room: &mut Room,
+    workspace: &mut Workspace,
     thread: &mut Thread,
 ) -> Result<Record, String> {
     let shape = sized.shape;
     let principals = principals(sized.packages);
-    let mut peer = room.doc.fork();
+    let mut peer = workspace.doc.fork();
     let mut changes = Changes::default();
     for sample in 0..sized.config.samples {
         let id = format!("peer-{sample:06}");
@@ -319,21 +319,22 @@ fn post(
             }],
         };
         execute(&mut peer, &action, "peer")?;
-        let before = Work::of(room, &[&thread.view]);
+        let before = Work::of(workspace, &[&thread.view]);
         let start = Instant::now();
-        room.doc
+        workspace
+            .doc
             .merge_incoming(&mut peer)
             .map_err(|e| e.to_string())?;
-        let patches = room.frame(&mut [&mut thread.view])?;
+        let patches = workspace.frame(&mut [&mut thread.view])?;
         // The transcript follows its end: the new last row comes into view.
         let len = thread.view.list_len(&thread.list).unwrap_or(0);
         thread.show(len.saturating_sub(PAGE)..len)?;
         let took = ms(start.elapsed());
-        let mut done = Work::of(room, &[&thread.view]).since(before);
+        let mut done = Work::of(workspace, &[&thread.view]).since(before);
         done.patches = patches as u64;
         changes.push(took, done);
     }
-    let (samples, extra) = changes.into_record(room.phases.take());
+    let (samples, extra) = changes.into_record(workspace.phases.take());
     Ok(sized.record("thread_post", "ms", samples, extra))
 }
 
@@ -354,7 +355,11 @@ fn button_beside(node: &UiNode, input: &str) -> Option<String> {
 /// Typing a message into the composer and sending it with the button beside it: the message
 /// is posted, and the transcript, following its end, shows it. Only for a window whose composer
 /// has a send button.
-fn send(sized: &Sized<'_>, room: &mut Room, thread: &mut Thread) -> Result<Option<Record>, String> {
+fn send(
+    sized: &Sized<'_>,
+    workspace: &mut Workspace,
+    thread: &mut Thread,
+) -> Result<Option<Record>, String> {
     let Some((input, _)) = composer_input(&thread.view, thread.view.tree()) else {
         return Ok(None);
     };
@@ -368,24 +373,24 @@ fn send(sized: &Sized<'_>, room: &mut Room, thread: &mut Thread) -> Result<Optio
             .view
             .edit(&input, &value)
             .map_err(|e| e.to_string())?;
-        room.frame(&mut [&mut thread.view])?;
-        let before = Work::of(room, &[&thread.view]);
+        workspace.frame(&mut [&mut thread.view])?;
+        let before = Work::of(workspace, &[&thread.view]);
         let start = Instant::now();
         thread.view.press(&button).map_err(|e| e.to_string())?;
-        let patches = room.frame(&mut [&mut thread.view])?;
+        let patches = workspace.frame(&mut [&mut thread.view])?;
         let len = thread.view.list_len(&thread.list).unwrap_or(0);
         thread.show(len.saturating_sub(PAGE)..len)?;
         let took = ms(start.elapsed());
-        let mut done = Work::of(room, &[&thread.view]).since(before);
+        let mut done = Work::of(workspace, &[&thread.view]).since(before);
         done.patches = patches as u64;
         changes.push(took, done);
     }
-    let (samples, extra) = changes.into_record(room.phases.take());
+    let (samples, extra) = changes.into_record(workspace.phases.take());
     Ok(Some(sized.record("thread_send", "ms", samples, extra)))
 }
 
 /// The transcript scrolled back a few rows a frame.
-fn scroll(sized: &Sized<'_>, room: &Room, thread: &mut Thread) -> Result<Record, String> {
+fn scroll(sized: &Sized<'_>, workspace: &Workspace, thread: &mut Thread) -> Result<Record, String> {
     let mut samples = Vec::new();
     let mut work = Work::default();
     for _ in 0..sized.config.samples {
@@ -393,11 +398,11 @@ fn scroll(sized: &Sized<'_>, room: &Room, thread: &mut Thread) -> Result<Record,
             Some(start) if start > 0 => thread.shown.end.saturating_sub(SCROLL_STEP),
             _ => thread.view.list_len(&thread.list).unwrap_or(0),
         };
-        let before = Work::of(room, &[&thread.view]);
+        let before = Work::of(workspace, &[&thread.view]);
         let start = Instant::now();
         thread.show(end.saturating_sub(PAGE)..end)?;
         samples.push(ms(start.elapsed()));
-        work = work.max(Work::of(room, &[&thread.view]).since(before));
+        work = work.max(Work::of(workspace, &[&thread.view]).since(before));
     }
     let extra = json!({"rows_per_frame": SCROLL_STEP, "shown": PAGE});
     Ok(sized.record("thread_scroll", "ms", samples, with_work(extra, work)))

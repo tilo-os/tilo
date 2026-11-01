@@ -98,7 +98,7 @@ fn theme_key(style: ChipStyle, theme: &Theme) -> ThemeKey {
 
 /// A badge's geometry in one theme.
 #[derive(Clone, Debug, PartialEq)]
-struct BadgeMetrics {
+pub(crate) struct BadgeMetrics {
     /// The caption line plus `spacing.s0` a side: a pill as tight as a
     /// badge can be and still hold its text at any text scale.
     height: f64,
@@ -108,7 +108,7 @@ struct BadgeMetrics {
 }
 
 impl BadgeMetrics {
-    fn of(theme: &Theme) -> Self {
+    pub(crate) fn of(theme: &Theme) -> Self {
         let line = f64::from(theme.text(TextRole::Caption).line_height_px());
         let height = (line + 2.0 * f64::from(theme.tokens.spacing.s0)).ceil();
         Self {
@@ -541,6 +541,48 @@ impl Badge {
     }
 }
 
+/// A count or dot standing on a control's icon ([`crate::widget::Button::with_count`]): the
+/// badge's own face, placed by the control rather than laid out beside it.
+#[derive(Clone, Debug)]
+pub(crate) struct CountBadge {
+    pub(crate) content: BadgeContent,
+    pub(crate) style: ChipStyle,
+    /// The theme's badge measures, from the control's last `build_layout`.
+    pub(crate) metrics: Option<BadgeMetrics>,
+}
+
+impl CountBadge {
+    /// How large it stands: the pill around its count, or the dot.
+    pub(crate) fn size(&self, text: &mut TextRenderer) -> vello::kurbo::Size {
+        let Some(metrics) = &self.metrics else {
+            return vello::kurbo::Size::ZERO;
+        };
+        match label_of(&self.content) {
+            Some(label) => vello::kurbo::Size::new(metrics.width(&label, text), metrics.height),
+            None => vello::kurbo::Size::new(metrics.dot, metrics.dot),
+        }
+    }
+
+    /// Paint it filling `rect`.
+    pub(crate) fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        match label_of(&self.content) {
+            Some(label) => BadgeFace::new(rect, &label)
+                .style(self.style)
+                .paint(scene, transform, text, theme),
+            None => BadgeFace::dot(rect)
+                .style(self.style)
+                .paint(scene, transform, text, theme),
+        }
+    }
+}
+
 /// The text `content` shows; `None` for a dot or nothing.
 fn label_of(content: &BadgeContent) -> Option<String> {
     match content {
@@ -552,7 +594,7 @@ fn label_of(content: &BadgeContent) -> Option<String> {
 }
 
 /// Whether `content` shows anything: a zero count is no badge.
-fn shows(content: &BadgeContent) -> bool {
+pub(crate) fn shows(content: &BadgeContent) -> bool {
     !matches!(content, BadgeContent::Count(0))
 }
 

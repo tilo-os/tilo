@@ -30,7 +30,7 @@ use tilo_actions::{
 };
 use tilo_automation::SHORTCUTS_APP_ID;
 
-/// A view action `action` on `resource`, offered to anyone the room lets
+/// A view action `action` on `resource`, offered to anyone the workspace lets
 /// read it.
 fn descriptor(resource: &str, action: &str) -> ActionDescriptor {
     ActionDescriptor {
@@ -191,7 +191,7 @@ struct Fixture {
     keys: Arc<Keys>,
     launcher: Arc<Launcher>,
     caller: Caller,
-    room: String,
+    workspace: String,
 }
 
 /// One workspace the owner may act in, holding the shortcut `tidy`, with
@@ -204,7 +204,7 @@ fn fixture(keys: Vec<CatalogueRow>) -> Fixture {
     workspace.shortcuts.push(
         serde_json::from_value(serde_json::json!({"id":"tidy","name":"Tidy","steps":[]})).unwrap(),
     );
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let governance = Arc::new(Governance::default());
@@ -228,14 +228,14 @@ fn fixture(keys: Vec<CatalogueRow>) -> Fixture {
             ..Default::default()
         },
     );
-    let caller = Caller::local_person(hex::encode(user)).in_room(room.clone());
+    let caller = Caller::local_person(hex::encode(user)).in_workspace(workspace_id.clone());
     Fixture {
         state,
         governance,
         keys,
         launcher,
         caller,
-        room,
+        workspace: workspace_id,
     }
 }
 
@@ -251,25 +251,29 @@ fn page(
     page
 }
 
-fn workspace_query(room: &str) -> CatalogueQuery {
+fn workspace_query(workspace: &str) -> CatalogueQuery {
     CatalogueQuery {
-        provider: Some(workspace_provider(room)),
+        provider: Some(workspace_provider(workspace)),
         max_results: MAX_CATALOGUE_PAGE,
         ..CatalogueQuery::default()
     }
 }
 
-fn scoped_query(room: &str, app_id: &str) -> CatalogueQuery {
+fn scoped_query(workspace: &str, app_id: &str) -> CatalogueQuery {
     CatalogueQuery {
         app_id: Some(app_id.into()),
-        ..workspace_query(room)
+        ..workspace_query(workspace)
     }
 }
 
 #[test]
 fn an_app_scoped_query_builds_only_that_apps_rows() {
     let fixture = fixture(vec![row("so.tilo.settings", "keyboard-shortcuts", "list")]);
-    let all = page(&fixture, &fixture.caller, &workspace_query(&fixture.room));
+    let all = page(
+        &fixture,
+        &fixture.caller,
+        &workspace_query(&fixture.workspace),
+    );
     assert_eq!(fixture.governance.0.load(Ordering::Relaxed), 1);
     assert_eq!(fixture.keys.calls.load(Ordering::Relaxed), 1);
     let expected: Vec<_> = all
@@ -296,7 +300,7 @@ fn an_app_scoped_query_builds_only_that_apps_rows() {
     let scoped = page(
         &fixture,
         &fixture.caller,
-        &scoped_query(&fixture.room, SHORTCUTS_APP_ID),
+        &scoped_query(&fixture.workspace, SHORTCUTS_APP_ID),
     );
     assert_eq!(fixture.launcher.enumerations.load(Ordering::Relaxed), 1);
     assert_eq!(fixture.launcher.lookups.load(Ordering::Relaxed), 1);
@@ -336,7 +340,7 @@ fn an_app_filter_applies_before_the_page_bound() {
     let scoped = page(
         &fixture,
         &fixture.caller,
-        &scoped_query(&fixture.room, "so.tilo.settings"),
+        &scoped_query(&fixture.workspace, "so.tilo.settings"),
     );
     assert_eq!(scoped.rows.len(), 1, "the wanted row is found, past a page");
     assert_eq!(
@@ -348,7 +352,11 @@ fn an_app_filter_applies_before_the_page_bound() {
     );
     assert!(scoped.exhausted);
 
-    let all = page(&fixture, &fixture.caller, &workspace_query(&fixture.room));
+    let all = page(
+        &fixture,
+        &fixture.caller,
+        &workspace_query(&fixture.workspace),
+    );
     drop(fixture);
     assert_eq!(
         all.rows.len(),
@@ -364,11 +372,12 @@ fn an_app_filter_applies_before_the_page_bound() {
 #[test]
 fn an_app_scoped_query_still_refuses_a_stranger() {
     let fixture = fixture(vec![row("so.tilo.settings", "keyboard-shortcuts", "list")]);
-    let stranger = Caller::authenticated([99; 32], [98; 32]).in_room(fixture.room.clone());
+    let stranger =
+        Caller::authenticated([99; 32], [98; 32]).in_workspace(fixture.workspace.clone());
     let page = page(
         &fixture,
         &stranger,
-        &scoped_query(&fixture.room, SHORTCUTS_APP_ID),
+        &scoped_query(&fixture.workspace, SHORTCUTS_APP_ID),
     );
     assert!(
         page.rows.is_empty(),
@@ -385,7 +394,7 @@ fn an_app_scoped_query_still_refuses_a_stranger() {
 /// One live directory row, `read` of `workspace:atlas`.
 fn directory_rows() -> Vec<runtime_collab::ActionDirectoryRow> {
     let mut contract = ActionContract::view();
-    // A participant view is disclosed to anyone the room lets read it, as the
+    // A participant view is disclosed to anyone the workspace lets read it, as the
     // production directory fixtures' Atlas row is. A plain view would be the
     // publishing person's private UI, which this fixture names no person for.
     contract
@@ -479,7 +488,7 @@ impl super::super::wire::DirectorySource for Directory {
     }
 }
 
-/// A room whose owner may browse one live directory publishing `app_id`'s
+/// A workspace whose owner may browse one live directory publishing `app_id`'s
 /// rows as peer `47`'s provider.
 struct DirectoryFixture {
     state: Arc<AppBrokerState>,
@@ -494,7 +503,7 @@ fn directory_fixture(app_id: &str) -> DirectoryFixture {
     let user = [43; 32];
     let mut workspace = Workspace::new(WorkspaceId(83), "Live directory");
     workspace.set_owner(hex::encode(user));
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let (state, bridge_rx) = AppBrokerState::new_configured(
@@ -516,7 +525,7 @@ fn directory_fixture(app_id: &str) -> DirectoryFixture {
             pagination: directory_pagination::DirectoryPagination::default(),
             publishing_person: None,
             app_id: app_id.into(),
-            route: CrdtRoute::record(app_id, room.clone(), "atlas"),
+            route: CrdtRoute::record(app_id, workspace_id.clone(), "atlas"),
             directory: Rc::new(Directory {
                 rows: directory_rows(),
                 asked: Rc::clone(&asked),
@@ -526,14 +535,14 @@ fn directory_fixture(app_id: &str) -> DirectoryFixture {
     state.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
         peer_id: provider,
         app_id: app_id.into(),
-        cluster_id: room.clone(),
+        cluster_id: workspace_id.clone(),
         record_id: "atlas".into(),
     }]);
     DirectoryFixture {
         state,
         directories,
         asked,
-        caller: Caller::local_person(hex::encode(user)).in_room(room),
+        caller: Caller::local_person(hex::encode(user)).in_workspace(workspace_id),
         provider: provider.to_string(),
         app_id: app_id.into(),
     }

@@ -1,15 +1,15 @@
-//! Bringing a whole document into a governed room: the proposals the
-//! governor keeps in the room and the actions that carry them.
+//! Bringing a whole document into a governed workspace: the proposals the
+//! governor keeps in the workspace and the actions that carry them.
 //!
 //! A member proposes ([`PROPOSE`]) with a signed
 //! [`DocumentImportProposalV1`] and the document itself. The governor
 //! checks that the proposer could create that record, validates the
-//! document, and records the proposal under [`ROOM_KEY`] in the room's
-//! governed state, where every member's desktop sees it. The room's owner
+//! document, and records the proposal under [`WORKSPACE_KEY`] in the workspace's
+//! governed state, where every member's desktop sees it. The workspace's owner
 //! answers ([`ACCEPT`] or [`DECLINE`]) with a signed [`DocumentImportDecisionV1`]. Only an
 //! accepted, unexpired proposal becomes a record, created by the governor
 //! with the rights an empty creation needs; a declined or expired one never
-//! creates anything. The map is governed: only the room's authority writes
+//! creates anything. The map is governed: only the workspace's authority writes
 //! it.
 pub use collab_types::document_import::{
     DOCUMENT_IMPORT_VERSION, DocumentImportDecisionV1, DocumentImportError,
@@ -29,13 +29,13 @@ use std::collections::BTreeMap;
 pub const APP_ID: &str = "so.tilo.document-imports";
 pub const RESOURCE: &str = "desktop:document-import";
 pub const PROPOSE: &str = "propose";
-/// Separate actions, so the room's activity says which answer was given.
+/// Separate actions, so the workspace's activity says which answer was given.
 pub const ACCEPT: &str = "accept";
 pub const DECLINE: &str = "decline";
-/// Governed room map: proposal id (hex) to its [`ImportEntry`] as JSON bytes.
-pub const ROOM_KEY: &str = "document_imports_v1";
-/// Most proposals a room keeps at once.
-pub const MAX_ROOM_IMPORTS: usize = 64;
+/// Governed workspace map: proposal id (hex) to its [`ImportEntry`] as JSON bytes.
+pub const WORKSPACE_KEY: &str = "document_imports_v1";
+/// Most proposals a workspace keeps at once.
+pub const MAX_WORKSPACE_IMPORTS: usize = 64;
 
 /// One proposal and, once given, the owner's answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,7 +50,7 @@ pub struct ImportEntry {
 pub enum ImportState {
     /// Waiting for the owner.
     Pending,
-    /// Accepted: the record exists in the room.
+    /// Accepted: the record exists in the workspace.
     Accepted,
     Declined,
     /// Nobody answered in time; nothing was created.
@@ -75,7 +75,8 @@ pub fn key(proposal_id: &[u8; 32]) -> String {
 }
 
 fn raw_entries(doc: &AutoCommit) -> BTreeMap<String, Vec<u8>> {
-    let Some((Value::Object(ObjType::Map), object)) = doc.get(ROOT, ROOM_KEY).ok().flatten() else {
+    let Some((Value::Object(ObjType::Map), object)) = doc.get(ROOT, WORKSPACE_KEY).ok().flatten()
+    else {
         return BTreeMap::new();
     };
     doc.keys(&object)
@@ -94,7 +95,7 @@ pub(crate) fn governed_bytes(doc: Option<&AutoCommit>) -> BTreeMap<String, Vec<u
     doc.map(raw_entries).unwrap_or_default()
 }
 
-/// Every well-formed proposal the room keeps, by key.
+/// Every well-formed proposal the workspace keeps, by key.
 #[must_use]
 pub fn entries(doc: &AutoCommit) -> BTreeMap<String, ImportEntry> {
     raw_entries(doc)
@@ -106,23 +107,23 @@ pub fn entries(doc: &AutoCommit) -> BTreeMap<String, ImportEntry> {
         .collect()
 }
 
-/// Write `entry` into the room's governed map; the authority's own change.
+/// Write `entry` into the workspace's governed map; the authority's own change.
 ///
 /// # Errors
-/// An automerge failure, or a room already keeping as many proposals as it may.
+/// An automerge failure, or a workspace already keeping as many proposals as it may.
 pub fn put_entry(doc: &mut AutoCommit, entry: &ImportEntry) -> Result<(), String> {
-    let object = match doc.get(ROOT, ROOM_KEY).map_err(|e| e.to_string())? {
+    let object = match doc.get(ROOT, WORKSPACE_KEY).map_err(|e| e.to_string())? {
         Some((Value::Object(ObjType::Map), object)) => object,
         Some(_) => return Err("governed import map is not a map".into()),
         None => doc
-            .put_object(ROOT, ROOM_KEY, ObjType::Map)
+            .put_object(ROOT, WORKSPACE_KEY, ObjType::Map)
             .map_err(|e| e.to_string())?,
     };
     let key = key(&entry.proposal.proposal_id);
     if doc.get(&object, &key).map_err(|e| e.to_string())?.is_none()
-        && doc.length(&object) >= MAX_ROOM_IMPORTS
+        && doc.length(&object) >= MAX_WORKSPACE_IMPORTS
     {
-        return Err("the room keeps too many document proposals".into());
+        return Err("the workspace keeps too many document proposals".into());
     }
     let bytes = serde_json::to_vec(entry).map_err(|e| e.to_string())?;
     doc.put(&object, key, ScalarValue::Bytes(bytes))
@@ -136,7 +137,7 @@ pub fn put_entry(doc: &mut AutoCommit, entry: &ImportEntry) -> Result<(), String
 /// An automerge failure.
 pub fn prune(doc: &mut AutoCommit, before_unix: u64) -> Result<usize, String> {
     let Some((Value::Object(ObjType::Map), object)) =
-        doc.get(ROOT, ROOM_KEY).map_err(|e| e.to_string())?
+        doc.get(ROOT, WORKSPACE_KEY).map_err(|e| e.to_string())?
     else {
         return Ok(0);
     };
@@ -264,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn the_room_keeps_proposals_by_id_and_prunes_settled_ones() {
+    fn the_workspace_keeps_proposals_by_id_and_prunes_settled_ones() {
         let mut doc = AutoCommit::new();
         put_entry(&mut doc, &entry(1, 100)).unwrap();
         put_entry(&mut doc, &entry(2, 1_000)).unwrap();
@@ -283,8 +284,11 @@ mod tests {
         let mut after = before.clone();
         put_entry(&mut after, &entry(4, 100)).unwrap();
         // So only the pinned governance writer may write one
-        // (`room::admit_room_changes`).
-        assert!(!crate::room::governance_unchanged(Some(&before), &after));
+        // (`workspace::admit_workspace_changes`).
+        assert!(!crate::workspace::governance_unchanged(
+            Some(&before),
+            &after
+        ));
     }
 
     #[test]

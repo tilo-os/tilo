@@ -15,6 +15,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// The restored Notes desktop (the one the idle-wakeup tests measure),
 /// serving the agent door where a client in the login looks for it.
@@ -275,7 +276,7 @@ impl McpClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
-            .spawn()
+            .spawn_locked()
             .expect("spawn tilo-runtime-mcp");
         let replies = BufReader::new(child.stdout.take().unwrap());
         Self {

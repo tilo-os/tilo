@@ -27,6 +27,10 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["app-files", "files.paths", "network.http", "threads"]
 
+# The tracker's issues, which a leased task's work is kept in.
+[resources]
+kinds = ["tasks.tracker"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""
@@ -58,8 +62,8 @@ mode = "off"
 [sandbox.services]
 # Required, not optional: with no broker there is no document to join
 # and the agent has nothing to do.
-collab = "required@12"
-model-gateway = "required@12"
+collab = "required@13"
+model-gateway = "required@13"
 
 [entrypoint]
 bin  = "bin/tilo-agent"

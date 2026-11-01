@@ -732,7 +732,7 @@ mod tests {
     fn request(draft: Draft) -> crate::shell::app_action_consent::AppActionConsentRequest {
         crate::shell::app_action_consent::AppActionConsentRequest {
             handle: "confirm:draft".into(),
-            room: uuid::Uuid::nil().to_string(),
+            workspace: uuid::Uuid::nil().to_string(),
             person: "person:ada".into(),
             app_id: "scribe".into(),
             target_app: "so.tilo.mail".into(),

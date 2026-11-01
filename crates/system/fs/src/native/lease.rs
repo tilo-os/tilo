@@ -21,7 +21,7 @@
 //!   shortly after the last write — never before the versions written
 //!   under it are published — which hands it to the next writer; a device
 //!   that goes offline loses it when it expires;
-//! - a free lease comes from the room's lease authority (its always-on
+//! - a free lease comes from the workspace's lease authority (its always-on
 //!   host) when one is reachable, so two devices asking at once get one
 //!   answer; unreachable, the writer takes it optimistically, and a granted
 //!   tenancy of the same epoch wins over it;
@@ -252,7 +252,7 @@ pub struct LeaseKeeper {
     notified: HashSet<(PathBuf, u64)>,
     /// The gates, shared with the projector.
     write_gates: Arc<WriteGates>,
-    /// This device arbitrates the room's leases.
+    /// This device arbitrates the workspace's leases.
     authority: bool,
     /// Lease requests already answered.
     answered: HashSet<(fs_protocol::FileRecordId, [u8; 32], u64)>,
@@ -293,7 +293,7 @@ impl LeaseKeeper {
         }
     }
 
-    /// Makes this device the room's lease authority.
+    /// Makes this device the workspace's lease authority.
     pub fn serve_as_authority(&mut self) {
         self.authority = true;
         self.fs.claim_lease_authority(self.me);

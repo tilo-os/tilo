@@ -8,10 +8,11 @@ impl crate::services::DisplayControlServices for DisplayDelegate {
         context: &crate::services::DisplayControlContext,
         _: &[u8],
     ) -> Result<Vec<u8>, String> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push((context.room().into(), context.root(), context.device()));
+        self.calls.lock().unwrap().push((
+            context.workspace().into(),
+            context.root(),
+            context.device(),
+        ));
         Ok(b"{}".to_vec())
     }
 }
@@ -247,7 +248,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
             let person = tilo_actions::remote::Caller::local_person(principal_id_for_root(
                 env.cert.user_public_key,
             ))
-            .in_room(env.route.cluster_id.clone());
+            .in_workspace(env.route.cluster_id.clone());
             let request = tilo_actions::remote::InvokeRequest {
                 invocation: tilo_actions::InvocationId::new(),
                 on_behalf_of: None,
@@ -316,7 +317,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
                     .is_err()
             );
             let agent = tilo_actions::remote::Caller::local_agent("native-origin-agent")
-                .in_room(env.route.cluster_id.clone());
+                .in_workspace(env.route.cluster_id.clone());
             assert!(
                 rig.state
                     .action_invoke_local_person(&agent, &request)
@@ -325,7 +326,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
                     .is_err()
             );
             let forged = tilo_actions::remote::Caller::local_person("other-person")
-                .in_room(env.route.cluster_id.clone());
+                .in_workspace(env.route.cluster_id.clone());
             assert!(
                 rig.state
                     .action_invoke_local_person(&forged, &request)

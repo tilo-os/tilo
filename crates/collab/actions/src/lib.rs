@@ -174,7 +174,7 @@ pub use contract::{
     MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES, MEMBER_OWN_TAG, MIN_OFFLOAD_MEMORY_BYTES,
     OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, OWN_DEVICE_SCOPE, OWN_RECORD_SCOPE, Offload,
     PEOPLE_AUDIENCE_TAG, REQUIRES_HOST_PREFIX, REQUIRES_NATIVE_PATHS_TAG, ResultSpec, RetryPolicy,
-    RiskLevel, UNTRUSTED_CONTENT_TAG, action_node, phrase_is_meaningful,
+    RiskLevel, UNTRUSTED_CONTENT_TAG, action_node, phrase_is_meaningful, resource_node,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use draft::{Draft, DraftEdit, DraftField, DraftLayout, DraftValue, MessageRole};
@@ -219,9 +219,9 @@ pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ActionState, ActionType,
     ArgsBuilder, Collects, ContinuationArguments, ContinuationEvidence, ContinuationKey,
     ContinuationQuery, ControlInvocation, FlatAction, KEY_SEP, ListedRow, NESTED_RESOURCE_FACET,
-    PROMPTED_PARAM, ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceSpec,
-    ResourceViewMountSpec, ResourceViewRangeSpec, ResourceViewSpec, RunBy, Target, flatten,
-    listed_row, listed_row_problems, sole_text_argument,
+    PROMPTED_PARAM, Readers, ResourceId, ResourcePresentation, ResourceSemanticIdentity,
+    ResourceSpec, ResourceViewMountSpec, ResourceViewRangeSpec, ResourceViewSpec, RunBy, Target,
+    flatten, listed_row, listed_row_problems, sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,

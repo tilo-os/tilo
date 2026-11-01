@@ -57,7 +57,7 @@ impl CheckpointDriver {
             certificate.user_public_key,
             certificate.device_public_key,
         )
-        .in_room(&room)
+        .in_workspace(&room)
         .in_new_execution();
         let host = actions
             .certified_local_action_host(&caller, &evidence)
@@ -613,15 +613,15 @@ struct CheckpointReaderAuthority {
     room: uuid::Uuid,
     member: tilo_user_identity::DeviceCert,
 }
-impl tilo_action_broker::peer_actions::CertificateAuthority for CheckpointReaderAuthority {
-    fn policy_time(&self) -> Result<Option<tilo_action_broker::peer_actions::PolicyTime>, String> {
+impl tilo_action_broker::certificate_authority::CertificateAuthority for CheckpointReaderAuthority {
+    fn policy_time(&self) -> Result<Option<tilo_action_broker::policy_clock::PolicyTime>, String> {
         self.native.policy_time()
     }
     fn authorize_with_policy_time(
         &self,
         room: uuid::Uuid,
         certificate: &tilo_user_identity::DeviceCert,
-        time: &tilo_action_broker::peer_actions::PolicyTime,
+        time: &tilo_action_broker::policy_clock::PolicyTime,
     ) -> Result<(), String> {
         if room == self.room && certificate == &self.member {
             tilo_user_identity::verify_device_cert_at(
@@ -697,7 +697,7 @@ fn checkpoint_revocation_grant(
     member: &tilo_user_identity::DeviceCert,
     revoke_write: bool,
 ) -> tilo_action_policy::Grant {
-    let path = tilo_action_policy::TreePath::room(room.to_string());
+    let path = tilo_action_policy::TreePath::workspace(room.to_string());
     tilo_action_policy::Grant::new(
         "checkpoint-broker-revoked",
         tilo_action_policy::Subject::person(hex::encode(member.user_public_key)),
@@ -827,7 +827,7 @@ fn native_checkpoint_service_rechecks_current_source_rights_for_reads_and_origin
     );
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let request = CheckpointRequest {
-        room: fixture.room.to_string(),
+        workspace: fixture.room.to_string(),
         invocation: uuid::Uuid::new_v4(),
         caller: member.clone(),
         command: CheckpointCommand::Capture {
@@ -846,21 +846,21 @@ fn native_checkpoint_service_rechecks_current_source_rights_for_reads_and_origin
         original
     );
     service
-        .checkpoint_result_access(&request.room, &member, request.invocation, true)
+        .checkpoint_result_access(&request.workspace, &member, request.invocation, true)
         .unwrap();
     let actions = fixture.broker.app_action_broker().unwrap();
     let person = tilo_action_policy::Subject::person(hex::encode(member.user_public_key));
     let deny = tilo_action_policy::Grant::new(
         "checkpoint-source-revoked",
         person,
-        tilo_action_policy::TreePath::room(fixture.room.to_string()).app("so.tilo.chat"),
+        tilo_action_policy::TreePath::workspace(fixture.room.to_string()).app("so.tilo.chat"),
         tilo_action_policy::KindSet::READ,
         tilo_action_policy::Answer::Deny,
         tilo_action_policy::Subject::person(hex::encode(fixture.certificate.user_public_key)),
     );
     let job = actions
         .change_workspace_membership(
-            &request.room,
+            &request.workspace,
             &WorkspaceMembershipCommand::Grant { grant: deny },
             &fixture.certificate,
         )
@@ -878,7 +878,7 @@ fn native_checkpoint_service_rechecks_current_source_rights_for_reads_and_origin
     );
     assert!(
         service
-            .checkpoint_result_access(&request.room, &member, request.invocation, true)
+            .checkpoint_result_access(&request.workspace, &member, request.invocation, true)
             .is_err()
     );
     for command in [
@@ -1100,7 +1100,7 @@ fn native_checkpoint_service_refuses_remote_governed_room_without_substituting_l
     let (_directory, owner, room, _, _) = native_workspace_owner::test_enrolled_owner();
     let certificate = owner
         .with_current(room, |view| {
-            assert_ne!(view.device(), view.room_host());
+            assert_ne!(view.device(), view.workspace_host());
             Ok(view.device().clone())
         })
         .unwrap();
@@ -1109,7 +1109,7 @@ fn native_checkpoint_service_refuses_remote_governed_room_without_substituting_l
         None,
     );
     let request = CheckpointRequest {
-        room: room.to_string(),
+        workspace: room.to_string(),
         invocation: uuid::Uuid::new_v4(),
         caller: certificate,
         command: CheckpointCommand::Find {
@@ -1134,7 +1134,7 @@ fn native_checkpoint_service_refuses_bad_sources_and_missing_custody() {
     );
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let request = CheckpointRequest {
-        room: fixture.room.to_string(),
+        workspace: fixture.room.to_string(),
         invocation: uuid::Uuid::new_v4(),
         caller: fixture.certificate.clone(),
         command: CheckpointCommand::Capture {

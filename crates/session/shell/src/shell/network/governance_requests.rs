@@ -339,7 +339,7 @@ impl ShellNetwork {
             return self.commit_membership_at_own_host(&host, owner, room, caller, command);
         }
         let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
-            room: room.to_string(),
+            workspace: room.to_string(),
             operation: tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller,

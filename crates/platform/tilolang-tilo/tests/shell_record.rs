@@ -16,38 +16,17 @@ use tilolang_tilo::record::DynValue;
 
 use crate::fixtures::Replica;
 
-const FILES: [&str; 21] = [
-    include_str!("../../../../apps/tl/shell/app.tl"),
-    include_str!("../../../../apps/tl/shell/arrangement.tl"),
-    include_str!("../../../../apps/tl/shell/arranging.tl"),
-    include_str!("../../../../apps/tl/shell/canvas.tl"),
-    include_str!("../../../../apps/tl/shell/chrome.tl"),
-    include_str!("../../../../apps/tl/shell/composer.tl"),
-    include_str!("../../../../apps/tl/shell/desk.tl"),
-    include_str!("../../../../apps/tl/shell/docks.tl"),
-    include_str!("../../../../apps/tl/shell/launcher.tl"),
-    include_str!("../../../../apps/tl/shell/layout.tl"),
-    include_str!("../../../../apps/tl/shell/notices.tl"),
-    include_str!("../../../../apps/tl/shell/overview.tl"),
-    include_str!("../../../../apps/tl/shell/parts.tl"),
-    include_str!("../../../../apps/tl/shell/people.tl"),
-    include_str!("../../../../apps/tl/shell/presets.tl"),
-    include_str!("../../../../apps/tl/shell/rooms.tl"),
-    include_str!("../../../../apps/tl/shell/scenarios.tl"),
-    include_str!("../../../../apps/tl/shell/session.tl"),
-    include_str!("../../../../apps/tl/shell/strips.tl"),
-    include_str!("../../../../apps/tl/shell/switcher.tl"),
-    include_str!("../../../../apps/tl/shell/system.tl"),
-];
 const IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
 const APP: &str = "so.tilo.shell";
 
 /// The shell package, as the session compiles it: every file of the package together, in path
-/// order.
+/// order, read from the package's directory: a list kept here goes stale as files are added
+/// (it once lacked `traditional.tl`), and the test then compiles a package nothing ships.
 fn source() -> String {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
     let mut joined = String::new();
-    for text in FILES {
-        joined.push_str(text);
+    for path in tilolang::source::source_paths(&dir).unwrap() {
+        joined.push_str(&std::fs::read_to_string(path).unwrap());
         joined.push('\n');
     }
     joined
@@ -264,21 +243,6 @@ fn applying_a_preset_changes_every_setting_it_names_and_undo_restores_them_all()
 
 // ----- What a person sees: the presets, and when the chrome shows ---------------------------
 
-/// The `Desk` record the shell's root view reads: the package's unnamed root.
-fn desk(r: &Replica) -> Value {
-    let root = r
-        .host
-        .root_of_layer(
-            APP,
-            &tilolang_tilo::host::RootView {
-                root: Some("Desk".to_owned()),
-                view: None,
-            },
-        )
-        .expect("the desk's root is made");
-    Value::resource(&root)
-}
-
 /// The person's shell record: the package's named root, `root shell: Shell`.
 fn shell_ref(r: &Replica) -> Value {
     let meta = r.host.package(APP).unwrap().meta;
@@ -359,16 +323,11 @@ fn choosing_a_preset_changes_the_layout_the_person_sees() {
         "the taskbar carries the time and the device's status beside its items: {windows}"
     );
 
-    // The macOS-like one: a bar with the app's menus and a dock, both translucent.
+    // The macOS-like one: a bar with the app's menus and a dock, both translucent (the menus
+    // themselves: `the_macos_bar_carries_the_focused_windows_own_menus`).
     use_preset(&mut r, "macos");
     assert!(is(&r, "bar_finish", "Finish", "translucent"));
     assert!(is(&r, "dock_showing", "Showing", "no_overlap"));
-    let macos = desk_view(&r);
-    assert!(
-        says(&macos, "File"),
-        "the macOS bar carries the app's menus: {}",
-        card(&macos)
-    );
 
     // The minimal one: the bar hides until reached for, and the dock is off.
     use_preset(&mut r, "minimal");
@@ -389,7 +348,72 @@ fn choosing_a_preset_changes_the_layout_the_person_sees() {
         says(&desk_view(&r), "Notifications"),
         "the bar is back at rest"
     );
-    assert!(runs.len() >= 1, "the dock and the bar are runs");
+    assert!(!runs.is_empty(), "the dock and the bar are runs");
+}
+
+/// The macOS bar's menus are the focused window's own: its resource's actions in the runs the
+/// app declared (the notes app's "Note" and "Tags"), each item running the app's action, never
+/// a menu the shell made up.
+#[test]
+fn the_macos_bar_carries_the_focused_windows_own_menus() {
+    fn under<'a>(node: &'a tilolang_runtime::UiNode, out: &mut Vec<&'a tilolang_runtime::UiNode>) {
+        for child in &node.children {
+            out.push(child);
+            under(child, out);
+        }
+    }
+    let mut r = room();
+    r.commit();
+    r.host.root_of("so.tilo.lang.notes").unwrap();
+    r.commit();
+    scenario(&r, "so.tilo.lang.notes", "a week of notes");
+    r.commit();
+    use_preset(&mut r, "macos");
+    // The arrangement is the session's: the scenario writes it in this host, and nothing of it
+    // goes to the room.
+    let arrangement = scenario(&r, APP, "a canvas of spaces");
+    let meta = r.host.package(APP).unwrap().meta;
+    let desk = meta
+        .views
+        .iter()
+        .find(|v| v.name == "desk_view")
+        .expect("the desk's view")
+        .id
+        .clone();
+    let mut macos = r
+        .host
+        .runtime()
+        .open_view(&Principal::new("ada"), &desk, vec![arrangement])
+        .unwrap();
+    // A desktop's output: 1280 by 800, where the bar has room for the window's menus.
+    macos.set_space("", tilolang_runtime::Space::from_rem(80.0, 50.0));
+    macos.poll_patches().unwrap();
+    let card = |view: &tilolang_runtime::ViewInstance| format!("{:?}", view.tree());
+    let menus = nodes(&macos, "ui.MenuButton");
+    let menu = |label: &str| {
+        menus
+            .iter()
+            .find(|m| m.props.get("label") == Some(&Value::Text(label.to_owned())))
+            .unwrap_or_else(|| panic!("the macOS bar has the {label} menu: {}", card(&macos)))
+    };
+    for (run, item) in [("Note", "Delete"), ("Tags", "Tag…")] {
+        let mut items = Vec::new();
+        under(menu(run), &mut items);
+        assert!(
+            items.iter().any(|i| {
+                i.kind == "ui.MenuItem"
+                    && i.props.get("label") == Some(&Value::Text(item.to_owned()))
+                    && i.events.contains_key("choose")
+            }),
+            "the {run} menu runs the app's {item}: {:#?}",
+            menu(run)
+        );
+    }
+    assert!(
+        !says(&macos, "\"File\""),
+        "no menu the shell made up: {}",
+        card(&macos)
+    );
 }
 
 #[test]
@@ -458,7 +482,7 @@ fn set_screen(r: &mut Replica, field: &str, on: bool) {
 fn undo(r: &mut Replica) {
     use collaboration::history_source::verbs::{EDIT_TYPE, HistoryEdit};
     use tilo_actions::{ActionContext, ActionInvoker, EncodedAction};
-    use tilolang_tilo::instance::room::HostHistoryEdit;
+    use tilolang_tilo::instance::record::HostHistoryEdit;
 
     let edit = HistoryEdit::Undo {
         steps: None,
@@ -484,4 +508,105 @@ fn undo(r: &mut Replica) {
     .expect("undo is never refused");
     r.doc.commit();
     r.host.sync_from(&r.doc);
+}
+
+/// Ada runs the scenario `name` of `app`, as a shot starts from it, and gets what it returns.
+fn scenario(r: &Replica, app: &str, name: &str) -> Value {
+    let meta = r.host.package(app).unwrap().meta;
+    let action = meta
+        .scenarios
+        .iter()
+        .find(|s| s.name == name)
+        .unwrap_or_else(|| panic!("{app} has no scenario {name:?}"))
+        .action
+        .clone();
+    match r
+        .host
+        .runtime()
+        .invoke_action(&Principal::new("ada"), (action.as_str(), vec![]))
+        .unwrap()
+    {
+        InvokeOutcome::Done(value) => value,
+        other => panic!("{name}: {other:?}"),
+    }
+}
+
+#[test]
+fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_keeps_its_well() {
+    let mut r = room();
+    r.host.root_of("so.tilo.lang.notes").unwrap();
+    r.commit();
+    scenario(&r, "so.tilo.lang.notes", "a week of notes");
+    r.commit();
+    let meta = r.host.package(APP).unwrap().meta;
+    // The arrangement is the session's (`origin: session.arrangement`): the scenario writes it
+    // in this host, as the session's reading would, and nothing of it goes to the room.
+    let arrangement = scenario(&r, APP, "a canvas of spaces");
+    let desk = meta
+        .views
+        .iter()
+        .find(|v| v.name == "desk_view")
+        .expect("the desk's view")
+        .id
+        .clone();
+    let view = r
+        .host
+        .runtime()
+        .open_view(&Principal::new("ada"), &desk, vec![arrangement])
+        .unwrap();
+    let tree = format!("{:?}", view.tree());
+    // Each note's place is the notes app's own editor, drawn inline (its body's input, which
+    // only the editor has, once per note), and no well stands for it.
+    assert_eq!(
+        tree.matches("Write something").count(),
+        6,
+        "the notes' editor is composed in each note's place: {tree}"
+    );
+    let wells = nodes(&view, "ui.WindowWell");
+    assert_eq!(
+        wells.len(),
+        1,
+        "only the terminal's place keeps a well: {wells:#?}"
+    );
+    assert_eq!(
+        wells[0].props.get("place"),
+        Some(&Value::Text("c-terminal".to_owned()))
+    );
+}
+
+#[test]
+fn resources_standing_as_content_stand_on_the_spaces_canvas() {
+    let mut r = room();
+    r.host.root_of("so.tilo.lang.notes").unwrap();
+    r.commit();
+    scenario(&r, "so.tilo.lang.notes", "a week of notes");
+    r.commit();
+    let meta = r.host.package(APP).unwrap().meta;
+    let arrangement = scenario(&r, APP, "resources standing as content");
+    let desk = meta
+        .views
+        .iter()
+        .find(|v| v.name == "desk_view")
+        .expect("the desk's view")
+        .id
+        .clone();
+    let view = r
+        .host
+        .runtime()
+        .open_view(&Principal::new("ada"), &desk, vec![arrangement])
+        .unwrap();
+    let tree = format!("{:?}", view.tree());
+    // The scenario's strip stands on the canvas, so its places do: four notes as their editor,
+    // and the terminal in its well.
+    assert_eq!(
+        tree.matches("Write something").count(),
+        4,
+        "each note stands as its editor: {tree}"
+    );
+    let wells = nodes(&view, "ui.WindowWell");
+    assert_eq!(wells.len(), 1, "{wells:#?}");
+    assert_eq!(
+        wells[0].props.get("place"),
+        Some(&Value::Text("x-terminal".to_owned()))
+    );
 }

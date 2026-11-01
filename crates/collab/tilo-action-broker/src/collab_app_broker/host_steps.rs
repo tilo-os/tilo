@@ -3,7 +3,7 @@
 //! trusted under them, and changing the person's settings.
 //!
 //! Each is answered under the host's own provider, offered only to a caller
-//! on this machine confined to a room, and admitted against that room's
+//! on this machine confined to a workspace, and admitted against that workspace's
 //! policy under the service's app id — the application whose controls reach
 //! the steps as the person using it. The door treats them alike; only the
 //! service that runs a step differs.
@@ -65,9 +65,8 @@ pub(super) fn is_local_host_caller(
     else {
         return false;
     };
-    original.network.is_none()
-        && !original.presentation.is_empty()
-        && caller.room() == Some(original.room.as_str())
+    !original.presentation.is_empty()
+        && caller.room() == Some(original.workspace.as_str())
         && original
             .admitted
             .certificate
@@ -109,7 +108,7 @@ impl AppBrokerState {
     /// person's identity) for `caller` and start it on the host.
     ///
     /// Host steps run on this machine, for the person at it: a remote device
-    /// is never offered them, and the caller must be confined to the room its
+    /// is never offered them, and the caller must be confined to the workspace its
     /// connection was admitted to, whose policy decides the step under the
     /// service's app id. A step whose contract asks first needs the
     /// person's own confirmation, or the answer they gave on their device.
@@ -132,7 +131,7 @@ impl AppBrokerState {
     /// ([`HostStepRequest::task_run`]).
     #[expect(
         clippy::too_many_lines,
-        reason = "one ordered admission of a host step: room confinement, policy, confirmation and the host's own decision"
+        reason = "one ordered admission of a host step: workspace confinement, policy, confirmation and the host's own decision"
     )]
     pub(super) fn invoke_host_step_in_run(
         self: &Arc<Self>,
@@ -158,7 +157,7 @@ impl AppBrokerState {
         if !is_local_host_caller(caller, origin) {
             return Err(abandon(ActionHostError::UnknownAction));
         }
-        let Some(room) = caller.room() else {
+        let Some(workspace_id) = caller.room() else {
             return Err(abandon(ActionHostError::NotPermitted));
         };
         let address = &request.target.address;
@@ -167,12 +166,12 @@ impl AppBrokerState {
             return Err(abandon(ActionHostError::UnknownAction));
         };
         let (workspace, policy, now) = self
-            .current_framework_authority(caller, origin, room)
+            .current_framework_authority(caller, origin, workspace_id)
             .map_err(abandon)?;
         // One answer covers both gates of this exact host invocation.
         let witnessed = self.consume_answer(
             request.confirmation.as_ref(),
-            &self.witness_binding(policy.id(), room, request),
+            &self.witness_binding(policy.id(), workspace_id, request),
         );
         self.framework_policy(
             (&workspace, &policy, now),
@@ -196,7 +195,7 @@ impl AppBrokerState {
                 caller,
                 origin,
                 super::host_action_admission::HostActionAdmission {
-                    room,
+                    workspace: workspace_id,
                     app_id: steps.app_id(),
                     descriptor: &descriptor,
                     request,
@@ -211,7 +210,7 @@ impl AppBrokerState {
         // committed policy again for the effect, not the pre-admission actor.
         let policy = self.framework_effect_ready(&admitted, || {
             let (workspace, policy, now) =
-                self.current_framework_authority(caller, origin, room)?;
+                self.current_framework_authority(caller, origin, workspace_id)?;
             if !Self::confirmed_as_asked(
                 &policy,
                 &descriptor,
@@ -231,7 +230,7 @@ impl AppBrokerState {
             Ok(policy)
         })?;
         let step = HostStepRequest {
-            room,
+            workspace: workspace_id,
             actor: &policy,
             address,
             argument: argument.as_deref(),
@@ -251,7 +250,7 @@ impl AppBrokerState {
             let following = super::live_views::Following {
                 caller: caller.clone(),
                 origin: origin.cloned(),
-                room: room.to_owned(),
+                workspace: workspace_id.to_owned(),
                 app_id: steps.app_id().to_owned(),
                 descriptor,
                 witnessed,
@@ -348,9 +347,10 @@ pub(crate) mod signed_test_support {
 
     impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerReceipts {
         fn health(&self) -> Result<(), String> {
-            let room =
-                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
-            self.owner.with_current(room, |_| Ok(()))
+            let workspace =
+                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE)
+                    .unwrap();
+            self.owner.with_current(workspace, |_| Ok(()))
         }
 
         fn commit(
@@ -369,28 +369,28 @@ pub(crate) mod signed_test_support {
         certificate: tilo_user_identity::DeviceCert,
         pub revoked: AtomicBool,
         pub device_governs: AtomicBool,
-        time: Mutex<crate::peer_actions::PolicyTime>,
-        replace_time_on_authorize: Mutex<Option<crate::peer_actions::PolicyTime>>,
+        time: Mutex<crate::policy_clock::PolicyTime>,
+        replace_time_on_authorize: Mutex<Option<crate::policy_clock::PolicyTime>>,
     }
 
     impl Authority {
-        pub fn replace_time_on_authorize(&self, time: crate::peer_actions::PolicyTime) {
+        pub fn replace_time_on_authorize(&self, time: crate::policy_clock::PolicyTime) {
             *self.replace_time_on_authorize.lock().unwrap() = Some(time);
         }
     }
 
-    impl crate::peer_actions::CertificateAuthority for Authority {
+    impl crate::certificate_authority::CertificateAuthority for Authority {
         fn governs(&self, _: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
             device.is_none() || self.device_governs.load(Ordering::SeqCst)
         }
 
-        fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
+        fn policy_time(&self) -> Result<Option<crate::policy_clock::PolicyTime>, String> {
             Ok(Some(self.time.lock().unwrap().clone()))
         }
 
         fn authorize(
             &self,
-            _room: uuid::Uuid,
+            _workspace: uuid::Uuid,
             certificate: &tilo_user_identity::DeviceCert,
         ) -> Result<(), String> {
             let replacement = self.replace_time_on_authorize.lock().unwrap().take();
@@ -409,18 +409,18 @@ pub(crate) mod signed_test_support {
         pub caller: Caller,
         pub origin: InvocationCaller,
         pub authority: Arc<Authority>,
-        pub room: String,
+        pub workspace: String,
         pub tree: crate::test_support::WorkspaceTreeHandle,
         certified_host: Option<Arc<dyn tilo_actions::remote::ActionHost>>,
         _fanout: Arc<FanoutState>,
         _environment: tilo_test_env::ScopedEnv,
         directory: tempfile::TempDir,
-        clock: crate::peer_actions::OwnerPolicyClock,
-        policy_origin: crate::peer_actions::PolicyOrigin,
+        clock: crate::policy_clock::OwnerPolicyClock,
+        policy_origin: crate::policy_clock::PolicyOrigin,
     }
 
     impl Fixture {
-        pub fn new_policy_origin(&self) -> crate::peer_actions::PolicyOrigin {
+        pub fn new_policy_origin(&self) -> crate::policy_clock::PolicyOrigin {
             self.clock.new_origin()
         }
 
@@ -443,12 +443,13 @@ pub(crate) mod signed_test_support {
             .expect("provision the production receipt signer");
             let mut workspace = Workspace::in_room(
                 WorkspaceId(9),
-                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap(),
+                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE)
+                    .unwrap(),
                 "Host actions",
             );
-            let room = workspace.room().to_string();
+            let workspace_id = workspace.room().to_string();
             let (key, certificate) =
-                tilo_identity_host::broker::trusted_current_device(&room).unwrap();
+                tilo_identity_host::broker::trusted_current_device(&workspace_id).unwrap();
             let owner = Arc::new(
                 tilo_peer_state::owner::open_file(&directory.path().join("native.json")).unwrap(),
             );
@@ -470,7 +471,7 @@ pub(crate) mod signed_test_support {
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
             let tree = tree.shared();
-            let clock = crate::peer_actions::OwnerPolicyClock::new().unwrap();
+            let clock = crate::policy_clock::OwnerPolicyClock::new().unwrap();
             let policy_origin = clock.new_origin();
             let authority = Arc::new(Authority {
                 certificate: certificate.clone(),
@@ -479,7 +480,7 @@ pub(crate) mod signed_test_support {
                 time: Mutex::new(policy_origin.capture().unwrap()),
                 replace_time_on_authorize: Mutex::new(None),
             });
-            let config = crate::peer_actions::NativePeerBrokerConfig {
+            let config = crate::NativePeerBrokerConfig {
                 journal_root: directory.path().join("journal"),
                 certificate_authority: authority.clone(),
             };
@@ -494,27 +495,31 @@ pub(crate) mod signed_test_support {
                 services,
             );
             let presentation = runtime_collab::CertifiedJoinIdentity {
-                workspace_id: room.clone(),
+                workspace_id: workspace_id.clone(),
                 device_certificate: serde_json::to_vec(&certificate).unwrap(),
                 proof: key
-                    .sign(&runtime_identity::collaboration_join_signing_bytes(&room))
+                    .sign(&runtime_identity::collaboration_join_signing_bytes(
+                        &workspace_id,
+                    ))
                     .to_bytes()
                     .to_vec(),
             }
             .encode()
             .unwrap();
-            let verified = state.verify_action_caller(&room, &presentation).unwrap();
+            let verified = state
+                .verify_action_caller(&workspace_id, &presentation)
+                .unwrap();
             let origin = InvocationCaller::Local {
-                route: super::super::CrdtRoute::cluster(&room),
+                route: super::super::CrdtRoute::cluster(&workspace_id),
                 admitted: Box::new(verified.admitted),
                 time: state.registered_policy_time().unwrap(),
             };
             Self {
                 state,
-                caller: Caller::local_person(person).in_room(room.clone()),
+                caller: Caller::local_person(person).in_workspace(workspace_id.clone()),
                 origin,
                 authority,
-                room,
+                workspace: workspace_id,
                 tree,
                 certified_host: None,
                 _fanout: fanout,
@@ -536,13 +541,13 @@ pub(crate) mod signed_test_support {
         fn certified(services: HostServices, foreign: bool) -> Self {
             let mut fixture = Self::new(services);
             let (key, certificate) =
-                tilo_identity_host::broker::trusted_current_device(&fixture.room).unwrap();
+                tilo_identity_host::broker::trusted_current_device(&fixture.workspace).unwrap();
             let presentation = runtime_collab::CertifiedJoinIdentity {
-                workspace_id: fixture.room.clone(),
+                workspace_id: fixture.workspace.clone(),
                 device_certificate: serde_json::to_vec(&certificate).unwrap(),
                 proof: key
                     .sign(&runtime_identity::collaboration_join_signing_bytes(
-                        &fixture.room,
+                        &fixture.workspace,
                     ))
                     .to_bytes()
                     .to_vec(),
@@ -551,7 +556,7 @@ pub(crate) mod signed_test_support {
             .unwrap();
             fixture.caller =
                 Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
-                    .in_room(&fixture.room)
+                    .in_workspace(&fixture.workspace)
                     .from_foreign_device(foreign)
                     .in_new_execution();
             fixture.certified_host = Some(
@@ -564,7 +569,7 @@ pub(crate) mod signed_test_support {
                 caller: Box::new(
                     fixture
                         .state
-                        .verify_action_caller(&fixture.room, &presentation)
+                        .verify_action_caller(&fixture.workspace, &presentation)
                         .unwrap(),
                 ),
                 foreign_restriction: foreign,
@@ -634,7 +639,7 @@ pub(crate) mod signed_test_support {
         )]
         pub fn admission_check(&self, request: &InvokeRequest) -> Box<dyn Fn() + Send> {
             let key = InvocationKey {
-                room: self.room.clone(),
+                workspace: self.workspace.clone(),
                 host: self.state.invocation_host().unwrap(),
                 owner: self.owner(),
                 invocation: request.invocation,
@@ -665,7 +670,7 @@ pub(crate) mod signed_test_support {
             let journal = guard.as_ref().unwrap().as_ref().unwrap();
             journal
                 .lookup(&InvocationKey {
-                    room: self.room.clone(),
+                    workspace: self.workspace.clone(),
                     host: journal.host(),
                     owner: self.owner(),
                     invocation: request.invocation,
@@ -701,7 +706,7 @@ pub(crate) mod signed_test_support {
             let receipt = admission.public_receipt();
             crate::action_evidence::verify(receipt, &receipt.facts).unwrap();
             assert_eq!(receipt.facts.invocation, request.invocation);
-            assert_eq!(receipt.facts.room, self.room);
+            assert_eq!(receipt.facts.workspace, self.workspace);
             assert_eq!(receipt.facts.resource, request.target.address.resource);
             assert_eq!(receipt.facts.action, request.target.address.action);
             assert!(record.admitted_request_is(&serde_json::to_value(request).unwrap()));
@@ -793,7 +798,7 @@ mod identity_admin_tests {
                 check();
             }
             self.started.lock().unwrap().push((
-                request.room.to_owned(),
+                request.workspace.to_owned(),
                 request.actor.id().to_owned(),
                 request.address.action.clone(),
             ));
@@ -807,7 +812,7 @@ mod identity_admin_tests {
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceId(9), "Identities");
         workspace.set_owner(owner.clone());
-        let room = workspace.room().to_string();
+        let workspace_id = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::new_configured(
@@ -822,7 +827,7 @@ mod identity_admin_tests {
                 ..Default::default()
             },
         );
-        (state, owner, room)
+        (state, owner, workspace_id)
     }
 
     /// A native host's seat, which never certifies anyone here.
@@ -831,7 +836,7 @@ mod identity_admin_tests {
     impl crate::services::LocalPersonServices for NoSeat {
         fn certificate(
             &self,
-            _room: &str,
+            _workspace: &str,
             _person: &str,
         ) -> Result<tilo_user_identity::DeviceCert, String> {
             Err("no seat in this test".into())
@@ -853,7 +858,7 @@ mod identity_admin_tests {
             tilo_action_policy::roles::AgentPreset::Observer,
             &tilo_action_policy::Subject::person(owner.clone()),
         );
-        let room = workspace.room().to_string();
+        let workspace_id = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::new_configured(
@@ -869,12 +874,12 @@ mod identity_admin_tests {
                 ..Default::default()
             },
         );
-        let agent = Caller::local_agent("planner").in_room(room.clone());
+        let agent = Caller::local_agent("planner").in_workspace(workspace_id.clone());
         assert!(
             invoked(&state, &agent, &request(identity_admin::LIST, None)).is_err(),
             "an agent outside any run takes no host step"
         );
-        let person = Caller::local_person(owner).in_room(room);
+        let person = Caller::local_person(owner).in_workspace(workspace_id);
         assert!(
             invoked(&state, &person, &request(identity_admin::LIST, None)).is_err(),
             "a person reaches a native host's steps only with the seat's custody"
@@ -951,8 +956,8 @@ mod identity_admin_tests {
     #[test]
     fn a_host_service_is_listed_when_only_publishers_are_asked() {
         let host = Arc::new(Host::default());
-        let (state, owner, room) = broker(host);
-        let caller = Caller::local_person(owner).in_room(room.clone());
+        let (state, owner, workspace) = broker(host);
+        let caller = Caller::local_person(owner).in_workspace(workspace.clone());
         let ask = |query: tilo_actions::remote::CatalogueQuery| {
             state
                 .action_query(&caller, &query)
@@ -960,7 +965,7 @@ mod identity_admin_tests {
                 .ok()
                 .flatten()
                 .expect("the catalogue answers at once")
-                .expect("the room's owner may ask")
+                .expect("the workspace's owner may ask")
         };
         let publishers = ask(tilo_actions::remote::CatalogueQuery {
             max_results: 0,
@@ -971,7 +976,7 @@ mod identity_admin_tests {
             publishers.providers.iter().any(|provider| {
                 provider.provider == identity_admin::PROVIDER
                     && provider.app_id == "so.tilo.settings"
-                    && provider.room == room
+                    && provider.room == workspace
                     && provider.browsable
             }),
             "{:?}",
@@ -1354,8 +1359,8 @@ mod identity_admin_tests {
     #[test]
     fn identity_admin_is_offered_to_settings_as_its_person_and_removal_asks_first() {
         let host = Arc::new(Host::default());
-        let (state, owner, room) = broker(Arc::clone(&host));
-        let person = Caller::local_person(owner.clone()).in_room(room.clone());
+        let (state, owner, workspace) = broker(Arc::clone(&host));
+        let person = Caller::local_person(owner.clone()).in_workspace(workspace.clone());
 
         let rows = state
             .eager_catalogue(&person, RowScope::Provider(identity_admin::PROVIDER))
@@ -1409,7 +1414,7 @@ mod identity_admin_tests {
         .expect("admitted");
         assert_eq!(
             *host.started.lock().unwrap(),
-            [(room, owner, identity_admin::REMOVE.to_owned())]
+            [(workspace, owner, identity_admin::REMOVE.to_owned())]
         );
         let job = state
             .remote_job(&person, &receipt.invocation)
@@ -1432,12 +1437,12 @@ mod identity_admin_tests {
     #[test]
     fn identity_admin_is_refused_to_strangers_remote_devices_and_unconfined_callers() {
         let host = Arc::new(Host::default());
-        let (state, owner, room) = broker(Arc::clone(&host));
+        let (state, owner, workspace) = broker(Arc::clone(&host));
 
-        // A person the room's policy grants nothing is offered no step that
+        // A person the workspace's policy grants nothing is offered no step that
         // changes the identity, and the broker refuses one before the host
         // hears of it.
-        let stranger = Caller::local_person(hex::encode([7; 32])).in_room(room.clone());
+        let stranger = Caller::local_person(hex::encode([7; 32])).in_workspace(workspace.clone());
         let offered = state
             .eager_catalogue(&stranger, RowScope::Provider(identity_admin::PROVIDER))
             .0;
@@ -1467,9 +1472,9 @@ mod identity_admin_tests {
             );
         }
 
-        // A remote device, or a caller confined to no room, is never offered
+        // A remote device, or a caller confined to no workspace, is never offered
         // this machine's identity store.
-        let remote = Caller::authenticated([41; 32], [42; 32]).in_room(room);
+        let remote = Caller::authenticated([41; 32], [42; 32]).in_workspace(workspace);
         assert!(
             state
                 .eager_catalogue(&remote, RowScope::Provider(identity_admin::PROVIDER))
@@ -1638,7 +1643,7 @@ mod settings_records_tests {
         workspace.set_owner(owner.clone());
         workspace.admit_agent("scribe", KindSet::READ);
         workspace.allow_app(Subject::agent("scribe"), APP, KindSet::ALL);
-        let room = workspace.room().to_string();
+        let workspace_id = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::new_configured(
@@ -1653,8 +1658,8 @@ mod settings_records_tests {
                 ..Default::default()
             },
         );
-        let person = Caller::local_person(owner).in_room(room.clone());
-        let agent = Caller::local_agent("scribe").in_room(room);
+        let person = Caller::local_person(owner).in_workspace(workspace_id.clone());
+        let agent = Caller::local_agent("scribe").in_workspace(workspace_id);
         let minutes = || *host.minutes.lock().unwrap();
 
         invoked(&state, &person, &lock_after(1, None)).expect("locking sooner asks nothing");

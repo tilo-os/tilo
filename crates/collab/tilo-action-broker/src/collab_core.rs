@@ -95,11 +95,11 @@ pub struct BrokerChannels {
     /// `before_seq` bound and when the request left. Answers are accepted
     /// only while a request is outstanding.
     pub peer_history_requests: HashMap<ArtifactId, (u64, std::time::Instant)>,
-    /// The route (app, room, record) each artifact's ops were validated on
-    /// this session. A history page is only ever answered to that room.
+    /// The route (app, workspace, record) each artifact's ops were validated on
+    /// this session. A history page is only ever answered to that workspace.
     pub routes: HashMap<ArtifactId, crate::route::CrdtRoute>,
     /// Peers' writes waiting on an earlier write of their author to the same
-    /// record, which the room's host replays
+    /// record, which the workspace's host replays
     /// ([`crate::collab_inbound::Behind`]).
     pub behind: HashMap<(ArtifactId, Ed25519PublicKey), crate::collab_inbound::Behind>,
 }
@@ -162,7 +162,7 @@ impl BrokerChannels {
     }
 
     /// Append an op validated on `route` to durable history when it belongs
-    /// there, bound to its record and room. Failure is logged, never fatal:
+    /// there, bound to its record and workspace. Failure is logged, never fatal:
     /// the op is still delivered live. The caller syncs what this wrote once
     /// it has released the channels' lock, and before it delivers the op
     /// ([`Unsynced`]).
@@ -246,7 +246,7 @@ impl BrokerChannels {
     /// Every sealed write of `artifact` this device holds, oldest first: the
     /// content-key ciphertext admitted here this session and kept on disk
     /// from earlier ones ([`Self::scrollback_page`]), the device's own
-    /// writes and those the room's host replayed or relayed. A redacted
+    /// writes and those the workspace's host replayed or relayed. A redacted
     /// write is left out: its marker opens to nothing.
     pub fn sealed_writes(&mut self, artifact: ArtifactId) -> Vec<SignedOp> {
         const PAGE: u16 = 256;
@@ -303,12 +303,12 @@ impl BrokerChannels {
 
     /// The records of trees ([`ui::record::RecordId::tree`]: a chain's
     /// parts, a container's children) of the app `subscriber` names in its
-    /// room that this device holds: ops of them were admitted here this
+    /// workspace that this device holds: ops of them were admitted here this
     /// session ([`Self::record_history`]), or their history is kept on disk
     /// from an earlier one. An app window that subscribes is told them, so
-    /// it holds what its room held before it ran, such as a chat's messages
+    /// it holds what its workspace held before it ran, such as a chat's messages
     /// a joining device was replayed before any Chat window was open. Empty
-    /// for a route that is not an app's in a room.
+    /// for a route that is not an app's in a workspace.
     pub fn tree_records_held(&mut self, subscriber: &crate::route::CrdtRoute) -> Vec<String> {
         if subscriber.app_id.is_empty()
             || !subscriber.record_id.is_empty()
@@ -316,16 +316,16 @@ impl BrokerChannels {
         {
             return Vec::new();
         }
-        let (app_id, room) = (&subscriber.app_id, &subscriber.cluster_id);
+        let (app_id, workspace) = (&subscriber.app_id, &subscriber.cluster_id);
         let admitted = self
             .routes
             .values()
-            .filter(|route| route.app_id == *app_id && route.cluster_id == *room)
+            .filter(|route| route.app_id == *app_id && route.cluster_id == *workspace)
             .map(|route| route.record_id.clone());
         let kept = self
             .history
             .as_mut()
-            .map(|history| history.records_in(app_id, room))
+            .map(|history| history.records_in(app_id, workspace))
             .unwrap_or_default();
         let mut held: Vec<String> = admitted
             .chain(kept)
@@ -340,17 +340,17 @@ impl BrokerChannels {
         held
     }
 
-    /// The room `artifact`'s ops were validated in, this session or, for
-    /// durable history, an earlier one. An artifact never bound has no room
+    /// The workspace `artifact`'s ops were validated in, this session or, for
+    /// durable history, an earlier one. An artifact never bound has no workspace
     /// whose members may page through it.
-    pub fn room_of(&self, artifact: ArtifactId) -> Option<String> {
+    pub fn workspace_of(&self, artifact: ArtifactId) -> Option<String> {
         self.routes
             .get(&artifact)
             .map(|route| route.cluster_id.clone())
             .or_else(|| {
                 self.history
                     .as_ref()
-                    .and_then(|history| history.room_of(artifact))
+                    .and_then(|history| history.workspace_of(artifact))
             })
     }
 
@@ -391,7 +391,7 @@ impl BrokerChannels {
             self.peer_history_requests.remove(&artifact);
             return (0, Unsynced::default());
         }
-        let room = self
+        let workspace = self
             .routes
             .get(&artifact)
             .map(|route| route.cluster_id.clone());
@@ -399,11 +399,11 @@ impl BrokerChannels {
             return (0, Unsynced::default());
         };
         let mut unsynced = Unsynced::default();
-        if let Some(room) = room {
-            match history.bind_room(artifact, &room) {
+        if let Some(workspace) = workspace {
+            match history.bind_workspace(artifact, &workspace) {
                 Ok(binding) => unsynced = binding,
                 Err(error) => {
-                    tracing::warn!(%error, ?artifact, "collab history: room binding failed");
+                    tracing::warn!(%error, ?artifact, "collab history: workspace binding failed");
                 }
             }
         }

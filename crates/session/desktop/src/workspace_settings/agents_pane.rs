@@ -87,7 +87,7 @@ pub fn admit_service_member(
     expires_at: Option<u64>,
 ) -> Option<tilo_action_policy::GrantId> {
     let grant = tilo_desktop_model::service_member::service_membership(
-        &ws.policy.room,
+        &ws.policy.workspace,
         device,
         purpose,
         kinds,
@@ -127,7 +127,7 @@ pub fn admit_agent(
     changes.extend(
         preset
             .grants(
-                &ws.policy.room,
+                &ws.policy.workspace,
                 &agent,
                 &tilo_action_policy::Subject::Person(actor.clone()),
             )

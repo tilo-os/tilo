@@ -34,14 +34,14 @@ fn runtime_dir() -> PathBuf {
 mod sandbox_revocation;
 
 #[derive(Clone)]
-struct RoomPolicy {
-    policy: tilo_action_policy::RoomPolicy,
+struct WorkspacePolicy {
+    policy: tilo_action_policy::WorkspacePolicy,
     sandbox: Vec<CapOverride>,
     runtime: crate::shell::native_workspace_owner::NativeStateWitness,
     authority: Arc<crate::shell::native_workspace_owner::NativeAuthorityStorage>,
 }
 
-impl RoomPolicy {
+impl WorkspacePolicy {
     /// Whether the record this policy was exported with is still the one its
     /// owner holds. A record the owner published after it, whose own export
     /// is taken but not yet published, does not make it stale: that export
@@ -72,7 +72,7 @@ struct BindingState {
 
 #[derive(Default)]
 struct Published {
-    rooms: BTreeMap<RoomId, RoomPolicy>,
+    rooms: BTreeMap<RoomId, WorkspacePolicy>,
     /// For each published room, the policy revision it was exported at.
     revisions: BTreeMap<RoomId, u64>,
     /// For a room whose newest save failed, the revision that save carried
@@ -252,7 +252,7 @@ static NEXT_EXPORT: AtomicU64 = AtomicU64::new(0);
 /// arrive out of order; each carries where its snapshot stands among the
 /// tree's snapshots, and the policy never goes back to an earlier one.
 pub(crate) struct Export(
-    BTreeMap<RoomId, RoomPolicy>,
+    BTreeMap<RoomId, WorkspacePolicy>,
     u64,
     Pending,
     Arc<Authority>,
@@ -299,7 +299,7 @@ impl Export {
                 .map(|workspace| {
                     (
                         workspace.room(),
-                        RoomPolicy {
+                        WorkspacePolicy {
                             policy: workspace.policy.clone(),
                             sandbox: workspace.sandbox.clone(),
                             runtime: runtime.clone(),
@@ -425,7 +425,7 @@ fn projection(published: &Published, binding: &Binding) -> AppActionAuthorityPro
     // A room whose accepted policy is not current names nobody: the app's
     // host decides every action against it, so it allows nothing.
     let policy = current.unwrap_or_else(|| {
-        tilo_action_policy::RoomPolicy::unowned(
+        tilo_action_policy::WorkspacePolicy::unowned(
             room,
             &tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner),
         )
@@ -850,7 +850,7 @@ mod tests {
             (
                 "a-foreign",
                 Subject::person("person-a"),
-                tilo_action_policy::TreePath::room("foreign-room"),
+                tilo_action_policy::TreePath::workspace("foreign-room"),
             ),
         ] {
             workspace.grant(tilo_action_policy::Grant::new(

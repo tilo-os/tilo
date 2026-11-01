@@ -17,8 +17,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{Datelike as _, Timelike as _};
+use serde_json::{Map, Value};
 use settings_store::notification_policy::{EffectiveNotificationPolicy, NotificationPolicy};
 use settings_store::system_sounds::{QuietState, SystemSoundEvent};
+use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
 use tilo_desktop_surface::notifications::{
     self, Addressed, BannerAsk, DEFAULT_DISMISS_AFTER, Notification, NotificationPerson,
     NotificationSeverity, PERSISTENT_DISMISS, QuietReason, ScheduledNotificationTarget,
@@ -27,9 +29,13 @@ use tilo_desktop_surface::{DesktopNotifications, NotificationOutcome};
 use tilo_lock::MutexRecover as _;
 use tilo_notification_banners::{Ask, Link};
 use tilo_notifications_service::{Arrival, Caller, Callers, CloseReason, Notifications, Sender};
+use tilo_quick_settings::hosted::{KeptNotification, NotificationCentre};
+use tilo_resource::Effect;
+use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_session_power::PowerLink;
 
 use crate::app_icons;
+use crate::i18n::t;
 use crate::portal_link::PortalSide;
 use crate::system_sounds::SystemSounds;
 
@@ -458,33 +464,42 @@ impl SessionNotifications {
         std::mem::take(&mut *self.opened.borrow_mut())
     }
 
-    /// The notification centre as the quick settings panel lists it, newest
-    /// first, with why banners are held and whether a Clear all can be
-    /// undone.
-    pub(crate) fn view(&self) -> tilo_quick_settings::NotificationsView {
+    /// The notification centre as the session publishes it: what it keeps,
+    /// newest first, why fresh banners are held and whether a Clear all can
+    /// be undone.
+    pub(crate) fn centre(&self) -> NotificationCentre {
         let now = ui::time::now();
+        let unix_ms = ui::time::unix_now_ms();
         let log = self.desktop.log();
-        let rows = log
+        let rows: Vec<KeptNotification> = log
             .history()
             .iter()
             .rev()
-            .map(|notification| tilo_quick_settings::NotificationRow {
+            .map(|notification| KeptNotification {
                 id: notification.id,
                 group: notifications::group_key(notification)
                     .unwrap_or_else(|| format!("notification-{}", notification.id)),
                 app: notifications::group_label(notification),
                 title: notification.title.clone(),
                 body: notification.body.clone(),
-                age: notifications::relative_time(notification, now),
-                actions: notification.actions.iter().take(2).cloned().collect(),
+                // When it arrived, as the clock the panel counts ages by
+                // reads it: the log keeps the instant it was posted.
+                created_ms: unix_ms.saturating_sub(
+                    u64::try_from(
+                        now.saturating_duration_since(notification.created_at)
+                            .as_millis(),
+                    )
+                    .unwrap_or(u64::MAX),
+                ),
+                actions: notification.actions.clone(),
                 // No agent is live on this desktop to hand one to.
-                agent: None,
                 opens: notification.app_id.is_some() || !notification.actions.is_empty(),
             })
             .collect();
         let can_undo = log.can_undo_clear();
         drop(log);
-        tilo_quick_settings::NotificationsView {
+        NotificationCentre {
+            count: rows.len(),
             rows,
             quiet: self.quiet_status(),
             can_undo,
@@ -766,6 +781,136 @@ impl SessionNotifications {
             .unwrap_or(u32::MAX)
             .min(MAX_BADGE);
         self.signals.set(unread, self.desktop.quiet(), badges);
+    }
+}
+
+/// The resource the notification centre is published under.
+pub const RESOURCE: &str = "session:notifications";
+
+/// What kind of resource [`RESOURCE`] is.
+pub const KIND: &str = "session.notifications";
+
+/// What the centre resource offers: what a notification kept there does.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.session.notifications")]
+pub enum CentreAction {
+    /// Dismiss a notification, or every one an app grouped
+    #[effect(own_device, idempotent)]
+    Dismiss {
+        /// The notification's id, as the rows carry it.
+        #[param("The notification")]
+        notification: Option<u64>,
+        /// The app group its rows are listed under.
+        #[param("The app group")]
+        group: Option<String>,
+    },
+    /// Run one of a notification's own actions
+    #[effect(own_device)]
+    Act {
+        /// The notification's id, as the rows carry it.
+        #[param("The notification")]
+        notification: u64,
+        /// The key of one of the actions it offers.
+        #[param("One of its actions")]
+        action: String,
+    },
+    /// Clear the centre, keeping what the person pinned
+    #[effect(own_device, idempotent)]
+    Clear,
+    /// Bring back what the last Clear all took
+    #[effect(own_device, idempotent)]
+    UndoClear,
+}
+
+/// The centre as the session's services publish it: what it keeps, why fresh
+/// banners are held, and the verbs that change it.
+pub(crate) struct Served {
+    notifications: Rc<RefCell<SessionNotifications>>,
+    /// The reading last reported, so a pass that changed nothing is no
+    /// revision.
+    published: RefCell<Option<NotificationCentre>>,
+}
+
+impl Served {
+    /// The service publishing what `notifications` keeps.
+    pub(crate) fn new(notifications: Rc<RefCell<SessionNotifications>>) -> Self {
+        Self {
+            notifications,
+            published: RefCell::new(None),
+        }
+    }
+}
+
+impl Service for Served {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        let mut resource = offer::<CentreAction>(ResourceSpec::new(
+            RESOURCE,
+            KIND,
+            t("session-notifications"),
+        ))
+        .with_granted_reading();
+        // The panel keeps the words the rest of the desktop names them by.
+        for spec in &mut resource.actions {
+            let label = match spec.id.as_str() {
+                "dismiss" => t("session-notifications-dismiss"),
+                "act" => t("session-notifications-act"),
+                "clear" => t("session-notifications-clear"),
+                "undo-clear" => t("session-notifications-undo-clear"),
+                _ => continue,
+            };
+            spec.type_mut().label = label;
+        }
+        vec![resource]
+    }
+
+    /// What the centre keeps, newest first: what people said to this person,
+    /// so only a grant the room gives reads it.
+    fn read(&self, resource: &str) -> Option<Value> {
+        (resource == RESOURCE).then(|| {
+            let published = self.published.borrow().clone();
+            let centre = published.unwrap_or_else(|| self.notifications.borrow().centre());
+            reading(&centre)
+        })
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, DoorError> {
+        if resource != RESOURCE {
+            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+        }
+        match decode::<CentreAction>(&self.resources(), resource, action, arguments)? {
+            CentreAction::Dismiss {
+                notification,
+                group,
+            } => self
+                .notifications
+                .borrow()
+                .dismiss(notification, group.as_deref()),
+            CentreAction::Act {
+                notification,
+                action,
+            } => self
+                .notifications
+                .borrow()
+                .run_action(notification, &action),
+            CentreAction::Clear => self.notifications.borrow().clear(),
+            CentreAction::UndoClear => self.notifications.borrow().undo_clear(),
+        }
+        Ok(Started::Done(ActionOutput::default()))
+    }
+
+    fn poll(&mut self) -> bool {
+        let now = self.notifications.borrow().centre();
+        let mut published = self.published.borrow_mut();
+        if published.as_ref() == Some(&now) {
+            return false;
+        }
+        *published = Some(now);
+        true
     }
 }
 

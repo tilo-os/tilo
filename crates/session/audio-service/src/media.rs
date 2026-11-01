@@ -2,8 +2,10 @@
 //! the `media` resource with one child per player and the actions its
 //! controls offer (play or pause, next, previous). The `media` resource
 //! itself controls the player in front (the one playing, else the first):
-//! what a media key runs. Quick settings, the desktop's search, a media key,
-//! a script and an agent all run the same actions by address.
+//! what a media key runs, where the playhead is, how long what plays is,
+//! where its sound can go and what another of the person's devices hands
+//! over. Quick settings, the desktop's search, a media key, a script and an
+//! agent all run the same actions by address.
 
 use std::collections::BTreeMap;
 
@@ -12,6 +14,8 @@ use serde_json::Value;
 use tilo_actions::{ResourcePresentation, ResourceSpec};
 use tilo_resource::Effect;
 use tilo_service::{offer, unavailable};
+
+use crate::{ArtworkImage, PlayerCommand};
 
 /// The resource the players are published under.
 pub const MEDIA: &str = "media";
@@ -22,12 +26,26 @@ pub const PLAYER_KIND: &str = "so.tilo.audio.player";
 const PLAYER_PREFIX: &str = "media-player:";
 
 /// What plays now.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Media {
     pub players: Vec<Player>,
+    /// Where the sound can go, as the audio service reads the graph: the
+    /// destinations the card offers.
+    pub outputs: Vec<Output>,
     /// Why the last control did not reach its player, until the next one.
     pub problem: Option<String>,
+}
+
+/// One place the sound can go.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct Output {
+    /// The output's continuity token, which choosing it names.
+    pub token: String,
+    pub label: String,
+    /// The one the sound plays through now.
+    pub current: bool,
 }
 
 /// One media player.
@@ -35,7 +53,7 @@ pub struct Media {
     clippy::struct_excessive_bools,
     reason = "what a player can do now, as MPRIS says it: independent flags"
 )]
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Player {
     /// Its stable name in what is published: the bus name says which app
@@ -48,10 +66,30 @@ pub struct Player {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub playing: bool,
+    /// Whether it stands paused rather than playing or stopped.
+    pub paused: bool,
     pub can_play: bool,
     pub can_pause: bool,
     pub can_next: bool,
     pub can_previous: bool,
+    /// Its cover, as the player names it, decoded and scaled down.
+    pub art: Option<ArtworkImage>,
+    /// Where the playhead was when this was read, in milliseconds.
+    pub position_ms: u64,
+    /// How fast the playhead advances while playing.
+    pub rate: f64,
+    /// How long what plays is, in milliseconds, when the player says.
+    pub duration_ms: Option<u64>,
+    /// Whether it can be taken to a point in what plays.
+    pub can_seek: bool,
+    /// The source it plays (`xesam:url`), which another device can
+    /// continue.
+    pub url: Option<String>,
+    /// The app behind it, when the launcher verified it.
+    pub app_id: Option<String>,
+    /// The session another of the person's devices continues, when what it
+    /// plays here can be handed over.
+    pub session_id: Option<String>,
 }
 
 impl Player {
@@ -73,12 +111,13 @@ impl Player {
 
 impl Media {
     /// The player the `media` resource's own controls reach: the one
-    /// playing, else the first.
+    /// playing, else the one paused, else the first.
     #[must_use]
     pub fn front(&self) -> Option<&Player> {
         self.players
             .iter()
             .find(|player| player.playing)
+            .or_else(|| self.players.iter().find(|player| player.paused))
             .or_else(|| self.players.first())
     }
 }
@@ -136,19 +175,19 @@ pub enum PlayerAction {
 }
 
 impl PlayerAction {
-    /// The MPRIS method it calls.
+    /// What it asks the player, once the player is the one it names.
     #[must_use]
-    pub const fn method(&self) -> &'static str {
+    pub const fn command(&self) -> PlayerCommand {
         match self {
-            Self::PlayPause => "PlayPause",
-            Self::Next => "Next",
-            Self::Previous => "Previous",
+            Self::PlayPause => PlayerCommand::PlayPause,
+            Self::Next => PlayerCommand::Next,
+            Self::Previous => PlayerCommand::Previous,
         }
     }
 }
 
 /// The controls of the player in front, on the `media` resource itself.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Effect)]
+#[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.audio.media")]
 pub enum MediaAction {
     /// Play when paused, pause when playing.
@@ -178,25 +217,53 @@ pub enum MediaAction {
     /// Stop playing.
     #[effect(own_device, label = "Stop", icon = "square", keywords = "halt")]
     Stop,
-}
-
-impl MediaAction {
-    /// The MPRIS method it calls.
-    #[must_use]
-    pub const fn method(self) -> &'static str {
-        match self {
-            Self::PlayPause => "PlayPause",
-            Self::Next => "Next",
-            Self::Previous => "Previous",
-            Self::Stop => "Stop",
-        }
-    }
+    /// Go to a point in what plays.
+    #[effect(
+        own_device,
+        idempotent,
+        label = "Go to",
+        icon = "skip-forward",
+        keywords = "seek, scrub, jump"
+    )]
+    Seek {
+        /// Where in what plays, from 0 to 1.
+        #[param("Where in the track, from 0 to 1")]
+        fraction: f64,
+    },
+    /// Continue here the session another of the person's devices hands
+    /// over.
+    #[effect(
+        own_device,
+        label = "Continue here",
+        icon = "play",
+        keywords = "handoff, continue, resume"
+    )]
+    Resume {
+        /// The handoff's request, 32 hex digits.
+        #[param("The handoff's request")]
+        request: String,
+        /// The app that plays it, by package id.
+        #[param("The app that plays it")]
+        app: String,
+        /// The stream it plays from.
+        #[param("The stream it plays from")]
+        url: Option<String>,
+        /// The file it plays.
+        #[param("The file it plays")]
+        path: Option<String>,
+        /// Where it stopped, in milliseconds.
+        #[param("Where it stopped, in milliseconds")]
+        position_ms: u64,
+        /// Whether it plays rather than stands paused.
+        #[param("Whether it plays")]
+        playing: bool,
+    },
 }
 
 /// The `media` resource's own controls, as the player in front allows them.
 fn front_controls(media: &Media, resource: &mut ResourceSpec) {
     let Some(front) = media.front() else {
-        for action in ["play-pause", "next", "previous", "stop"] {
+        for action in ["play-pause", "next", "previous", "stop", "seek"] {
             unavailable(resource, action, "no_player", "Nothing is playing");
         }
         return;
@@ -213,6 +280,14 @@ fn front_controls(media: &Media, resource: &mut ResourceSpec) {
             "previous",
             "no_previous",
             "The player cannot go back",
+        );
+    }
+    if !front.can_seek || front.duration_ms.is_none() {
+        unavailable(
+            resource,
+            "seek",
+            "no_seek",
+            "The player cannot go to a point",
         );
     }
 }
@@ -273,4 +348,4 @@ pub fn publish(readings: &BTreeMap<String, Value>) -> Vec<ResourceSpec> {
 #[cfg(feature = "service")]
 mod service;
 #[cfg(feature = "service")]
-pub use service::{MediaService, Mpris, Players, pause_playing};
+pub use service::MediaService;

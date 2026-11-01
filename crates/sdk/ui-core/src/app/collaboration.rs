@@ -30,7 +30,7 @@ impl App {
 
     /// [`Self::from_prepared_component_with_collaboration`] for a window as
     /// the live native launch prepares it (`ApplicationHost::prepare_default`):
-    /// a room record the room does not hold yet is new, and the component
+    /// a workspace record the workspace does not hold yet is new, and the component
     /// makes it, its seed included. For tests that launch an app the way the
     /// session does, without a process of its own.
     ///
@@ -232,6 +232,7 @@ impl App {
         self.actions.action_directory_snapshot = None;
         self.actions.action_directory_stamp = None;
         self.actions.action_directory_cursors.clear();
+        self.actions.action_directory_retired = None;
         self.actions.local_resource_cache.get_mut().take();
         self.actions.open_resource_search_cache.get_mut().take();
         self.actions.last_control_availability = None;
@@ -257,7 +258,7 @@ impl App {
             .send(CollabRequest::Presence { key, payload });
     }
 
-    /// Publish the collaboration rail's current status through the real room
+    /// Publish the collaboration rail's current status through the real workspace
     /// presence path. `None` is an explicit clear. Only workspace keys are
     /// accepted, preventing an intention from being accidentally scoped to a
     /// single widget and disappearing as the participant navigates.
@@ -344,43 +345,43 @@ impl App {
         self.broadcast_room_index_delta();
     }
 
-    /// The room index is a distinct document from the live record.  Keep its
+    /// The workspace index is a distinct document from the live record.  Keep its
     /// incremental cursor and route separate so an annotation/document delta
     /// can never be merged into the index (or vice versa).
     fn broadcast_room_index_delta(&mut self) {
         self.restore_failed_document_publications();
-        let connected = self.collaboration.room_manager.as_ref().map_or_else(
+        let connected = self.collaboration.workspace_manager.as_ref().map_or_else(
             || self.persistence.records.is_some() && self.collaboration.manager.is_connected(),
             CollaborationManager::is_connected,
         );
         if !connected {
             return;
         }
-        let Some(room) = self.persistence.room_index.as_mut() else {
+        let Some(workspace) = self.persistence.room_index.as_mut() else {
             return;
         };
-        let (delta, heads) = room.pending_outbound_delta();
+        let (delta, heads) = workspace.pending_outbound_delta();
         if delta.is_empty() {
             return;
         }
         let request = crate::collaboration::CollabRequest::document_incremental(delta);
-        let result = if let Some(route) = self.native_room_route.clone() {
+        let result = if let Some(route) = self.native_workspace_route.clone() {
             self.collaboration.manager.try_send_to_route(route, request)
-        } else if let Some(manager) = self.collaboration.room_manager.as_mut() {
+        } else if let Some(manager) = self.collaboration.workspace_manager.as_mut() {
             if !manager.is_connected() {
                 return;
             }
             manager.try_send(request)
         } else if self.persistence.records.is_some() && self.collaboration.manager.is_connected() {
             // Before the first record checkout the primary manager is the
-            // room route. It becomes `collaboration.room_manager` at that checkout.
+            // workspace route. It becomes `collaboration.workspace_manager` at that checkout.
             // Do not advance this cursor for ordinary (non-record) apps.
             self.collaboration.manager.try_send(request)
         } else {
             return;
         };
         if result.is_ok() {
-            room.advance_outbound(heads);
+            workspace.advance_outbound(heads);
         }
         self.note_document_send(&result);
     }
@@ -531,7 +532,7 @@ impl App {
         self.drain_local_input_capture();
     }
 
-    /// Apply a document envelope received on the unqualified room route.
+    /// Apply a document envelope received on the unqualified workspace route.
     /// The broker authenticated the route; discovery still validates and
     /// bounds its names before exposing them to the app.
     fn apply_room_index_document_envelope(
@@ -545,7 +546,9 @@ impl App {
             envelope,
             decrypted_payload,
         ) else {
-            tracing::warn!("collab: broker delivered a room-index op outside its joined route");
+            tracing::warn!(
+                "collab: broker delivered a workspace-index op outside its joined route"
+            );
             return false;
         };
         let mutation = match crate::app::document_routes::decode_routed_mutation(
@@ -555,36 +558,38 @@ impl App {
         ) {
             Ok(mutation) => mutation,
             Err(error) => {
-                tracing::warn!(%error, "collab: broker delivered an invalid room-index mutation");
+                tracing::warn!(%error, "collab: broker delivered an invalid workspace-index mutation");
                 return false;
             }
         };
-        let Some(room) = self.persistence.room_index.as_mut() else {
+        let Some(workspace) = self.persistence.room_index.as_mut() else {
             return false;
         };
         let applied = match mutation {
-            collab_types::DocumentMutation::Snapshot(data) => room.merge_snapshot(&data).is_ok(),
+            collab_types::DocumentMutation::Snapshot(data) => {
+                workspace.merge_snapshot(&data).is_ok()
+            }
             collab_types::DocumentMutation::Incremental(data) => {
-                room.load_incremental(&data).is_ok()
+                workspace.load_incremental(&data).is_ok()
             }
         };
         if applied
-            && let (Some(records), Some(room)) = (
+            && let (Some(records), Some(workspace)) = (
                 self.persistence.records.as_mut(),
                 self.persistence.room_index.as_ref(),
             )
         {
-            records.discover_room(room.document());
+            records.discover_workspace(workspace.document());
             self.invalidate_widget_resource_cache();
         }
         applied
     }
 
-    /// Drain only document traffic on the room-index route. Actions and
+    /// Drain only document traffic on the workspace-index route. Actions and
     /// presence are record scoped, so an index update cannot alter the app's
     /// resource/action namespace or presentation state.
     fn pump_room_index_events(&mut self) -> bool {
-        let Some(manager) = self.collaboration.room_manager.as_mut() else {
+        let Some(manager) = self.collaboration.workspace_manager.as_mut() else {
             return false;
         };
         let Some(route) = manager
@@ -627,15 +632,15 @@ impl App {
                     }
                 }
                 CollabEvent::DocumentSnapshotRequested { .. } => {
-                    if let (Some(manager), Some(room)) = (
-                        self.collaboration.room_manager.as_mut(),
+                    if let (Some(manager), Some(workspace)) = (
+                        self.collaboration.workspace_manager.as_mut(),
                         self.persistence.room_index.as_mut(),
                     ) {
-                        let snapshot = room.document_mut().save();
+                        let snapshot = workspace.document_mut().save();
                         if let Err(error) = manager.try_send(
                             crate::collaboration::CollabRequest::document_snapshot(snapshot),
                         ) {
-                            tracing::warn!(%error, "collab: room-index snapshot not sent");
+                            tracing::warn!(%error, "collab: workspace-index snapshot not sent");
                         }
                     }
                 }
@@ -751,13 +756,13 @@ impl App {
     /// publishes the current state once instead of waiting for the next
     /// unrelated change. Returns whether anything changed.
     fn observe_collaboration_state(&mut self) -> bool {
-        let room_ready = self
+        let workspace_ready = self
             .collaboration
-            .room_manager
+            .workspace_manager
             .as_mut()
             .and_then(CollaborationManager::take_state_change)
             .is_some_and(|state| state.is_ready());
-        if room_ready {
+        if workspace_ready {
             self.broadcast_room_index_delta();
         }
         // What holds a join up, and a join refused or lost, change what the
@@ -771,7 +776,7 @@ impl App {
             self.layout.layout_dirty = true;
         }
         let Some(state) = self.collaboration.manager.take_state_change() else {
-            return room_ready || restated;
+            return workspace_ready || restated;
         };
         tracing::debug!(
             target: "tilo.state",
@@ -942,7 +947,7 @@ impl App {
                 self.apply_collab_context(collaborators);
             }
             CollabEvent::HistoryAgents { cluster_id, agents } => {
-                crate::history_source::set_room_agents(&cluster_id, agents);
+                crate::history_source::set_workspace_agents(&cluster_id, agents);
             }
             CollabEvent::RecordsArrived { records } => self.records_arrived(&records),
             CollabEvent::RecordUnavailable { route } => self.record_unavailable(&route),
@@ -1262,7 +1267,7 @@ impl App {
     }
 
     /// The self row carries the address others use for this participant (so
-    /// a locally-derived id is recognised in a room-keyed roster) and the
+    /// a locally-derived id is recognised in a workspace-keyed roster) and the
     /// host-assigned name; it never enters the roster itself.
     fn apply_collab_context(&mut self, collaborators: Vec<crate::collaboration::Collaborator>) {
         let current = collaborators
@@ -1295,7 +1300,7 @@ impl App {
             // is, so it must not mint one at the origin.
             self.presence_ctx
                 .set_display_name(crate::permissions::UserId(c.id.clone()), c.name.clone());
-            // The colour they wear everywhere, once the room has heard it.
+            // The colour they wear everywhere, once the workspace has heard it.
             if let Some(hue) = c.colour {
                 self.presence_ctx
                     .set_presence_hue(crate::permissions::UserId(c.id.clone()), hue);
@@ -1377,7 +1382,7 @@ impl App {
                 self.apply_collab_context(collaborators);
             }
             CollabEvent::HistoryAgents { cluster_id, agents } => {
-                crate::history_source::set_room_agents(&cluster_id, agents);
+                crate::history_source::set_workspace_agents(&cluster_id, agents);
             }
             CollabEvent::RecordsArrived { records } => self.records_arrived(&records),
             CollabEvent::RecordUnavailable { route } => self.record_unavailable(&route),

@@ -25,7 +25,7 @@ fn member_device_evidence(
         .push(cert.clone());
     let caller =
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
-            .in_room(&env.route.cluster_id)
+            .in_workspace(&env.route.cluster_id)
             .in_new_execution();
     (caller, presentation(&env.route.cluster_id, &cert, &key))
 }
@@ -182,17 +182,19 @@ async fn certified_local_host_refuses_forged_or_rebound_admission() {
                     .certified_local_action_host(&caller, &vec![0; 16 * 1024 + 1])
                     .is_err()
             );
-            let other_room = caller.clone().in_room(uuid::Uuid::new_v4().to_string());
+            let other_workspace = caller
+                .clone()
+                .in_workspace(uuid::Uuid::new_v4().to_string());
             assert!(
                 facade
-                    .certified_local_action_host(&other_room, &evidence)
+                    .certified_local_action_host(&other_workspace, &evidence)
                     .is_err()
             );
             let other_device = tilo_actions::remote::Caller::authenticated(
                 env.cert.user_public_key,
                 env.cert.device_public_key,
             )
-            .in_room(&env.route.cluster_id)
+            .in_workspace(&env.route.cluster_id)
             .in_new_execution();
             assert!(
                 facade
@@ -202,7 +204,7 @@ async fn certified_local_host_refuses_forged_or_rebound_admission() {
             let keyless = tilo_actions::remote::Caller::local_person(principal_id_for_root(
                 env.cert.user_public_key,
             ))
-            .in_room(&env.route.cluster_id)
+            .in_workspace(&env.route.cluster_id)
             .in_new_execution();
             assert!(
                 facade
@@ -216,7 +218,7 @@ async fn certified_local_host_refuses_forged_or_rebound_admission() {
                     .is_err()
             );
             let other_person = tilo_actions::remote::Caller::authenticated([3; 32], [4; 32])
-                .in_room(&env.route.cluster_id)
+                .in_workspace(&env.route.cluster_id)
                 .in_new_execution();
             assert!(
                 facade
@@ -318,7 +320,7 @@ async fn execution_uuid_requires_stable_delivery_and_preserves_unscoped_requests
                 env.cert.user_public_key,
                 *caller.device_public_key().unwrap(),
             )
-            .in_room(&env.route.cluster_id);
+            .in_workspace(&env.route.cluster_id);
             let legacy_request = local_host_request(false);
             let legacy_receipt =
                 local_host_answer(
@@ -495,7 +497,7 @@ async fn certified_local_host_retains_stricter_foreign_restriction_in_actual_wor
         .await;
 }
 
-/// On a host that governs the room, a certified caller from another device
+/// On a host that governs the workspace, a certified caller from another device
 /// is held to the foreign-device cap in the edits its effect submits, just as
 /// in its own invocation, and so is a stricter restriction the host retained
 /// for it: continuing it never makes the caller look like the host itself.
@@ -507,12 +509,17 @@ async fn a_continuing_certified_caller_keeps_its_foreign_device_cap() {
                 ContinuingCaller, published_invocation::InvocationCaller,
             };
             let env = Environment::new();
-            env.authority.governs_room.store(true, Ordering::SeqCst);
+            env.authority
+                .governs_workspace
+                .store(true, Ordering::SeqCst);
             let rig = Rig::new(&env).await;
-            let room = env.route.cluster_id.clone();
+            let workspace = env.route.cluster_id.clone();
             for (seed, foreign, restricted) in [(94, true, false), (95, false, true)] {
                 let (_, evidence) = member_device_evidence(&env, seed, foreign);
-                let verified = rig.state.verify_action_caller(&room, &evidence).unwrap();
+                let verified = rig
+                    .state
+                    .verify_action_caller(&workspace, &evidence)
+                    .unwrap();
                 assert_eq!(verified.admitted.broker_actor().capped, foreign);
                 let continued = ContinuingCaller::from_origin(&InvocationCaller::Certified {
                     caller: Box::new(verified),
@@ -521,20 +528,23 @@ async fn a_continuing_certified_caller_keeps_its_foreign_device_cap() {
                 .current(&rig.state)
                 .expect("the caller still verifies");
                 assert!(
-                    rig.state.caller_actor(&continued, &room).capped,
+                    rig.state.caller_actor(&continued, &workspace).capped,
                     "a foreign device (certified {foreign}, restricted {restricted}) stays capped"
                 );
             }
             // The control: a device that is not foreign is not capped.
             let (_, evidence) = member_device_evidence(&env, 96, false);
-            let verified = rig.state.verify_action_caller(&room, &evidence).unwrap();
+            let verified = rig
+                .state
+                .verify_action_caller(&workspace, &evidence)
+                .unwrap();
             let continued = ContinuingCaller::from_origin(&InvocationCaller::Certified {
                 caller: Box::new(verified),
                 foreign_restriction: false,
             })
             .current(&rig.state)
             .unwrap();
-            assert!(!rig.state.caller_actor(&continued, &room).capped);
+            assert!(!rig.state.caller_actor(&continued, &workspace).capped);
             rig.stop().await;
         })
         .await;
@@ -592,16 +602,18 @@ async fn certified_person_context_uses_signed_owner_device_and_current_execution
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut env = Environment::new();
-            env.route.cluster_id = collab_types::person_room(&env.cert.user_public_key).to_string();
+            env.route.cluster_id =
+                collab_types::personal_cluster(&env.cert.user_public_key).to_string();
             {
-                let room = tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+                let workspace_id =
+                    tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
                 let mut workspace =
-                    tilo_desktop_model::Workspace::in_room(before.id, room, before.name);
+                    tilo_desktop_model::Workspace::in_room(before.id, workspace_id, before.name);
                 workspace.strips = before.strips;
                 workspace.policy = before.policy;
-                workspace.policy.rehome(room.to_string());
+                workspace.policy.rehome(workspace_id.to_string());
                 membership.workspaces[0] = workspace;
             }
             env.authority =
@@ -629,7 +641,7 @@ async fn certified_person_context_uses_signed_owner_device_and_current_execution
             );
             context.revalidate().unwrap();
             let forged = tilo_actions::remote::Caller::local_person(context.principal())
-                .in_room(&env.route.cluster_id)
+                .in_workspace(&env.route.cluster_id)
                 .in_new_execution();
             assert!(state.certified_person_context(&forged, &evidence).is_err());
             assert!(
@@ -653,20 +665,21 @@ async fn certified_person_context_uses_signed_owner_device_and_current_execution
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn certified_person_context_refuses_other_rooms_and_expired_original_policy() {
+async fn certified_person_context_refuses_other_workspaces_and_expired_original_policy() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut env = Environment::new();
             env.route.cluster_id = uuid::Uuid::new_v4().to_string();
             {
-                let room = tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+                let workspace_id =
+                    tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
                 let mut workspace =
-                    tilo_desktop_model::Workspace::in_room(before.id, room, before.name);
+                    tilo_desktop_model::Workspace::in_room(before.id, workspace_id, before.name);
                 workspace.strips = before.strips;
                 workspace.policy = before.policy;
-                workspace.policy.rehome(room.to_string());
+                workspace.policy.rehome(workspace_id.to_string());
                 membership.workspaces[0] = workspace;
             }
             env.authority =
@@ -695,16 +708,18 @@ async fn certified_person_context_refuses_other_rooms_and_expired_original_polic
                     .certified_person_context(&caller, &evidence)
                     .is_err()
             );
-            env.route.cluster_id = collab_types::person_room(&env.cert.user_public_key).to_string();
+            env.route.cluster_id =
+                collab_types::personal_cluster(&env.cert.user_public_key).to_string();
             {
-                let room = tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+                let workspace_id =
+                    tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
                 let mut workspace =
-                    tilo_desktop_model::Workspace::in_room(before.id, room, before.name);
+                    tilo_desktop_model::Workspace::in_room(before.id, workspace_id, before.name);
                 workspace.strips = before.strips;
                 workspace.policy = before.policy;
-                workspace.policy.rehome(room.to_string());
+                workspace.policy.rehome(workspace_id.to_string());
                 membership.workspaces[0] = workspace;
             }
             env.authority =
@@ -960,19 +975,19 @@ async fn certified_local_host_remembers_only_the_exact_verified_proof() {
                     "proof byte {byte} flipped"
                 );
             }
-            let mut other_room = presentation;
-            other_room.workspace_id = uuid::Uuid::new_v4().to_string();
+            let mut other_workspace = presentation;
+            other_workspace.workspace_id = uuid::Uuid::new_v4().to_string();
             assert!(
                 facade
                     .certified_local_action_host(
                         &caller
                             .clone()
-                            .in_room(&other_room.workspace_id)
+                            .in_workspace(&other_workspace.workspace_id)
                             .in_new_execution(),
-                        &other_room.encode().unwrap(),
+                        &other_workspace.encode().unwrap(),
                     )
                     .is_err(),
-                "a proof for one room never admits another"
+                "a proof for one workspace never admits another"
             );
             rig.stop().await;
         })

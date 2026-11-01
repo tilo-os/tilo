@@ -231,7 +231,7 @@ impl WorkspaceTree {
                 violations.push(format!("two workspaces are room {}", workspace.room()));
             }
         }
-        for room in self.native_authority.rooms() {
+        for room in self.native_authority.workspaces() {
             if !self.has_workspace(room) {
                 violations.push(format!("room {room} has no workspace"));
             }
@@ -283,7 +283,7 @@ pub(crate) fn room_holds_files(data_home: &std::path::Path, room: RoomId) -> boo
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             _ => {}
         }
-        if present(&entry.path().join(app_state::ROOMS_DIR).join(&name)) {
+        if present(&entry.path().join(app_state::WORKSPACES_DIR).join(&name)) {
             return true;
         }
     }

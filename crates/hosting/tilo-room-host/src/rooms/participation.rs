@@ -528,7 +528,7 @@ impl Participation {
             if let Some(request) = request {
                 self.delivery = self.delivery.saturating_add(1);
                 messages.push(NeighbourMsg::MlsAccessRequest {
-                    room: self.room.clone(),
+                    workspace: self.room.clone(),
                     request: Box::new(request),
                     delivery: self.delivery,
                 });
@@ -583,7 +583,7 @@ impl Participation {
         for frame in frames {
             self.delivery = self.delivery.saturating_add(1);
             messages.push(NeighbourMsg::MlsGovernance {
-                room: room.clone(),
+                workspace: room.clone(),
                 frame: Box::new(frame),
                 delivery: self.delivery,
             });

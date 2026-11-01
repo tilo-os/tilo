@@ -16,9 +16,9 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 use web_time::{Duration, SystemTime};
 
 use crate::join::{InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof};
-use crate::{NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin, seed_room};
+use crate::{NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin, seed_workspace};
 
-const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
 const KIND: &str = "test";
@@ -95,19 +95,19 @@ fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
     cert
 }
 
-/// A room whose record keeps its comments as units, and a member of
+/// A workspace whose record keeps its comments as units, and a member of
 /// another person holding `role` in it.
-fn room_with(role: MemberRole) -> (StatePeer, SigningKey, DeviceCert) {
-    room_keeping(role, &["comments/*"])
+fn workspace_with(role: MemberRole) -> (StatePeer, SigningKey, DeviceCert) {
+    workspace_keeping(role, &["comments/*"])
 }
 
-/// A room whose record keeps the units `units` (an index only when there
+/// A workspace whose record keeps the units `units` (an index only when there
 /// are any), and a member of another person holding `role` in it.
-fn room_keeping(role: MemberRole, units: &[&str]) -> (StatePeer, SigningKey, DeviceCert) {
+fn workspace_keeping(role: MemberRole, units: &[&str]) -> (StatePeer, SigningKey, DeviceCert) {
     let owner_key = SigningKey::from_bytes(&[2; 32]);
     let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
     let mut peer = StatePeer::new(
-        ROOM,
+        WORKSPACE,
         owner.clone(),
         vec![owner.clone()],
         RevocationList::new(),
@@ -135,7 +135,8 @@ fn room_keeping(role: MemberRole, units: &[&str]) -> (StatePeer, SigningKey, Dev
     );
     peer.install_seed(
         SeedState {
-            room_changes: seed_room(ROOM, &owner, std::slice::from_ref(&owner)).unwrap(),
+            workspace_changes: seed_workspace(WORKSPACE, &owner, std::slice::from_ref(&owner))
+                .unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
                 record_id: RECORD.into(),
@@ -155,7 +156,7 @@ fn room_keeping(role: MemberRole, units: &[&str]) -> (StatePeer, SigningKey, Dev
     let signed = issue_invitation(
         InviteGrant {
             workspace_id: 7,
-            room: ROOM.into(),
+            room: WORKSPACE.into(),
             issuer: owner,
             role,
             nonce: [43; 16],
@@ -278,9 +279,9 @@ fn signed_write(
     let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
     let mut envelope = collab_types::SignedOp::new_unsigned(
         mutation.encode().unwrap(),
-        collab_types::document_artifact_id(APP, ROOM, RECORD),
+        collab_types::document_artifact_id(APP, WORKSPACE, RECORD),
         author,
-        collab_types::document_attestation_id(APP, ROOM, RECORD),
+        collab_types::document_attestation_id(APP, WORKSPACE, RECORD),
         collab_types::OpKind::Change,
         now(),
         1,
@@ -290,7 +291,7 @@ fn signed_write(
     NeighbourMsg::AppDocument {
         peer: crate::peer_handle(author.as_bytes()),
         app_id: APP.into(),
-        cluster_id: ROOM.into(),
+        cluster_id: WORKSPACE.into(),
         record_id: RECORD.into(),
         envelope: Box::new(envelope),
     }
@@ -321,7 +322,7 @@ use automerge::ReadDoc as _;
 /// A commenter's comment is granted; their edit of the record is not.
 #[test]
 fn a_change_is_refused_when_its_action_is_not_granted_to_its_author() {
-    let (mut peer, key, guest) = room_with(MemberRole::Commenter);
+    let (mut peer, key, guest) = workspace_with(MemberRole::Commenter);
     let commented = guest_write(&peer, &key, comment_on("c1"), comment(), Some("c1"));
     receive(&mut peer, &guest, commented).expect("a commenter may comment");
     let edited = guest_write(
@@ -334,7 +335,7 @@ fn a_change_is_refused_when_its_action_is_not_granted_to_its_author() {
     let refused = receive(&mut peer, &guest, edited).unwrap_err();
     assert!(refused.contains("not granted"), "{refused}");
 
-    let (mut peer, key, guest) = room_with(MemberRole::Editor);
+    let (mut peer, key, guest) = workspace_with(MemberRole::Editor);
     let edited = guest_write(
         &peer,
         &key,
@@ -350,7 +351,7 @@ fn a_change_is_refused_when_its_action_is_not_granted_to_its_author() {
 /// unit it wrote or hides it.
 #[test]
 fn a_granted_action_writing_another_unit_is_refused() {
-    let (mut peer, key, guest) = room_with(MemberRole::Commenter);
+    let (mut peer, key, guest) = workspace_with(MemberRole::Commenter);
     // The change itself says what it wrote: c2, which commenting on c1 may
     // not write.
     let wrote_other = guest_write(&peer, &key, comment_on("c2"), comment(), Some("c1"));
@@ -405,7 +406,7 @@ fn a_granted_action_writing_another_unit_is_refused() {
 /// unit, not the whole record its claim could not name.
 #[test]
 fn changes_after_the_first_unit_index_are_read_by_it() {
-    let (mut peer, key, guest) = room_keeping(MemberRole::Editor, &[]);
+    let (mut peer, key, guest) = workspace_keeping(MemberRole::Editor, &[]);
     let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
     doc.set_actor(automerge::ActorId::from(
         key.verifying_key().to_bytes().to_vec(),
@@ -449,7 +450,7 @@ fn an_item_stored_as_its_order_key_writes_its_own_unit() {
             doc.put(&comments, id, "a0").unwrap();
         }
     };
-    let (mut peer, key, guest) = room_with(MemberRole::Commenter);
+    let (mut peer, key, guest) = workspace_with(MemberRole::Commenter);
     let own = guest_write(&peer, &key, order_key("c1"), comment(), Some("c1"));
     receive(&mut peer, &guest, own).expect("commenting on c1 may write c1");
     let other = guest_write(&peer, &key, order_key("c2"), comment(), Some("c1"));
@@ -461,7 +462,7 @@ fn an_item_stored_as_its_order_key_writes_its_own_unit() {
 /// decided once the surface is here.
 #[test]
 fn a_change_whose_app_surface_has_not_arrived_is_held_until_it_has() {
-    let (mut peer, key, guest) = room_with(MemberRole::Editor);
+    let (mut peer, key, guest) = workspace_with(MemberRole::Editor);
     peer.set_surfaces(Surfaces::from_source(Arc::new(Source(false))));
     let edited = guest_write(
         &peer,
@@ -497,7 +498,7 @@ fn a_change_whose_app_surface_has_not_arrived_is_held_until_it_has() {
 /// the change naming a newer one for the record is decided as an upgrade.
 #[test]
 fn an_op_naming_another_surface_than_its_record_is_refused() {
-    let (mut peer, key, guest) = room_with(MemberRole::Editor);
+    let (mut peer, key, guest) = workspace_with(MemberRole::Editor);
     let resurfaced = |message: NeighbourMsg| {
         let NeighbourMsg::AppDocument {
             peer: handle,
@@ -544,9 +545,9 @@ fn an_op_naming_another_surface_than_its_record_is_refused() {
     let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
     let mut envelope = collab_types::SignedOp::new_unsigned(
         mutation.encode().unwrap(),
-        collab_types::document_artifact_id(APP, ROOM, RECORD),
+        collab_types::document_artifact_id(APP, WORKSPACE, RECORD),
         author,
-        collab_types::document_attestation_id(APP, ROOM, RECORD),
+        collab_types::document_attestation_id(APP, WORKSPACE, RECORD),
         collab_types::OpKind::Change,
         now(),
         2,
@@ -559,7 +560,7 @@ fn an_op_naming_another_surface_than_its_record_is_refused() {
         NeighbourMsg::AppDocument {
             peer: crate::peer_handle(author.as_bytes()),
             app_id: APP.into(),
-            cluster_id: ROOM.into(),
+            cluster_id: WORKSPACE.into(),
             record_id: RECORD.into(),
             envelope: Box::new(envelope),
         },
@@ -571,7 +572,7 @@ fn an_op_naming_another_surface_than_its_record_is_refused() {
 /// bot allowed it may, is refused by every receiver.
 #[test]
 fn a_persons_change_showing_another_name_is_refused() {
-    let (mut peer, key, guest) = room_with(MemberRole::Editor);
+    let (mut peer, key, guest) = workspace_with(MemberRole::Editor);
     let impostor = tilo_actions::ActionInvoker::actor("person:guest").with_appearance(Some(
         tilo_actions::Appearance::new("Owner", None, None).unwrap(),
     ));
@@ -601,7 +602,7 @@ fn a_bot_allowed_personas_may_show_another_name_and_no_other_bot_may() {
     use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
     let edit = Rule::new(
         TreePath::root()
-            .any(Level::Room)
+            .any(Level::Workspace)
             .app(APP)
             .kind(KIND)
             .resource(RECORD)
@@ -618,7 +619,7 @@ fn a_bot_allowed_personas_may_show_another_name_and_no_other_bot_may() {
         (crate::AppearancePolicy::Personas, true),
         (crate::AppearancePolicy::Own, false),
     ] {
-        let (mut peer, _, _) = room_with(MemberRole::Viewer);
+        let (mut peer, _, _) = workspace_with(MemberRole::Viewer);
         let owner_key = SigningKey::from_bytes(&[2; 32]);
         let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
         let (key, device) = crate::state::bot_members_tests::installed_bot(
@@ -660,14 +661,14 @@ fn a_bot_allowed_personas_may_show_another_name_and_no_other_bot_may() {
     }
 }
 
-/// The room runs one version of an app: a change made with another is held,
-/// not merged, until its author runs the room's version and sends the same
+/// The workspace runs one version of an app: a change made with another is held,
+/// not merged, until its author runs the workspace's version and sends the same
 /// changes naming that version's surface, with the record upgraded to it.
 #[test]
-fn a_change_made_with_another_version_than_the_room_runs_waits_for_its_author_to_update() {
+fn a_change_made_with_another_version_than_the_workspace_runs_waits_for_its_author_to_update() {
     use crate::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
     const NEWER: [u8; 32] = [8; 32];
-    let (mut peer, key, guest) = room_with(MemberRole::Editor);
+    let (mut peer, key, guest) = workspace_with(MemberRole::Editor);
     let owner_key = SigningKey::from_bytes(&[2; 32]);
     let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
     let release = AppRelease {
@@ -697,7 +698,7 @@ fn a_change_made_with_another_version_than_the_room_runs_waits_for_its_author_to
     let installed = peer
         .governance()
         .app_version(APP)
-        .expect("the room runs v2");
+        .expect("the workspace runs v2");
     assert_eq!(installed.release, release);
     assert_eq!(installed.installed_by, hex::encode(owner.user_public_key));
 
@@ -769,9 +770,9 @@ fn upgraded_write(
     let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
     let mut envelope = collab_types::SignedOp::new_unsigned(
         mutation.encode().unwrap(),
-        collab_types::document_artifact_id(APP, ROOM, RECORD),
+        collab_types::document_artifact_id(APP, WORKSPACE, RECORD),
         author,
-        collab_types::document_attestation_id(APP, ROOM, RECORD),
+        collab_types::document_attestation_id(APP, WORKSPACE, RECORD),
         collab_types::OpKind::Change,
         now(),
         2,
@@ -781,7 +782,7 @@ fn upgraded_write(
     NeighbourMsg::AppDocument {
         peer: crate::peer_handle(author.as_bytes()),
         app_id: APP.into(),
-        cluster_id: ROOM.into(),
+        cluster_id: WORKSPACE.into(),
         record_id: RECORD.into(),
         envelope: Box::new(envelope),
     }

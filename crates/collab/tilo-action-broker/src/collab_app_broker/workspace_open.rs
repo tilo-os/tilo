@@ -27,11 +27,11 @@ pub(super) const PUBLISH_WAIT: Duration = Duration::from_secs(3);
 pub(super) const OPENED_PEER_FIELD: &str = "peer_id";
 
 /// An authenticated connection's launch: the ticket its host recorded, and
-/// the app and room the connection was admitted for.
+/// the app and workspace the connection was admitted for.
 pub(super) struct ConnectedLaunch {
     pub(super) ticket: u64,
     pub(super) app_id: String,
-    pub(super) room: String,
+    pub(super) workspace: String,
 }
 
 /// One `open` waiting for the instance it started.
@@ -39,7 +39,7 @@ struct Opening {
     admitted: AdmittedHostAction,
     ticket: u64,
     app_id: String,
-    room: String,
+    workspace: String,
     /// The instance, once it connected with the ticket.
     peer: Option<u64>,
     deadline: Instant,
@@ -106,13 +106,13 @@ impl WorkspaceOpens {
 }
 
 impl AppBrokerState {
-    /// Record job `job`'s `open` of `app_id` in `room`: done at once when
+    /// Record job `job`'s `open` of `app_id` in `workspace`: done at once when
     /// the host cannot say what it started, else accepted until the
     /// instance holding the launch's ticket connects and publishes.
     pub(super) fn record_launch(
         &self,
         admitted: AdmittedHostAction,
-        (app_id, room): (&str, &str),
+        (app_id, workspace): (&str, &str),
         launched: Launched,
     ) -> Result<(), tilo_actions::remote::ActionHostError> {
         let Launched::Started { ticket } = launched else {
@@ -132,7 +132,7 @@ impl AppBrokerState {
             admitted,
             ticket,
             app_id: app_id.to_owned(),
-            room: room.to_owned(),
+            workspace: workspace.to_owned(),
             peer: None,
             deadline,
         });
@@ -143,14 +143,14 @@ impl AppBrokerState {
     }
 
     /// Connection `peer` was authenticated as `launch`: the `open` holding
-    /// its ticket, for exactly its app and room, now waits for it to publish.
+    /// its ticket, for exactly its app and workspace, now waits for it to publish.
     pub(super) fn launch_connected(&self, peer: u64, launch: &ConnectedLaunch) {
         let mut openings = self.workspace_opens.lock();
         let Some(opening) = openings.iter_mut().find(|opening| {
             opening.peer.is_none()
                 && opening.ticket == launch.ticket
                 && opening.app_id == launch.app_id
-                && opening.room == launch.room
+                && opening.workspace == launch.workspace
         }) else {
             return;
         };
@@ -286,7 +286,7 @@ mod tests {
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceId(9), "Opens");
         workspace.set_owner(owner);
-        let room = workspace.room().to_string();
+        let workspace_id = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::new_configured(
@@ -301,14 +301,14 @@ mod tests {
                 ..Default::default()
             },
         );
-        (state, room)
+        (state, workspace_id)
     }
 
-    fn request(room: &str) -> InvokeRequest {
+    fn request(workspace: &str) -> InvokeRequest {
         InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
-                provider: tilo_actions::remote::workspace_provider(room),
+                provider: tilo_actions::remote::workspace_provider(workspace),
                 address: tilo_actions::ActionAddress::new(format!("app.{APP}"), "open"),
             },
             argument: InvokeArgument::None,
@@ -335,16 +335,16 @@ mod tests {
         Ok(state.remote_job(caller, &request.invocation).unwrap())
     }
 
-    fn open(state: &Arc<AppBrokerState>, room: &str) -> u64 {
-        let caller = Caller::local_person(hex::encode([41; 32])).in_room(room);
-        invoke(state, &caller, &request(room)).unwrap()
+    fn open(state: &Arc<AppBrokerState>, workspace: &str) -> u64 {
+        let caller = Caller::local_person(hex::encode([41; 32])).in_workspace(workspace);
+        invoke(state, &caller, &request(workspace)).unwrap()
     }
 
-    fn connected(ticket: u64, room: &str) -> ConnectedLaunch {
+    fn connected(ticket: u64, workspace: &str) -> ConnectedLaunch {
         ConnectedLaunch {
             ticket,
             app_id: APP.into(),
-            room: room.into(),
+            workspace: workspace.into(),
         }
     }
 
@@ -384,9 +384,9 @@ mod tests {
         }
     }
 
-    struct NativeClock(crate::peer_actions::PolicyTime);
-    impl crate::peer_actions::CertificateAuthority for NativeClock {
-        fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
+    struct NativeClock(crate::policy_clock::PolicyTime);
+    impl crate::certificate_authority::CertificateAuthority for NativeClock {
+        fn policy_time(&self) -> Result<Option<crate::policy_clock::PolicyTime>, String> {
             Ok(Some(self.0.clone()))
         }
         fn authorize(
@@ -420,8 +420,9 @@ mod tests {
         )
         .unwrap();
         let mut workspace = Workspace::new(WorkspaceId(9), "Signed opens");
-        let room = workspace.room().to_string();
-        let (_, certificate) = tilo_identity_host::broker::trusted_current_device(&room).unwrap();
+        let workspace_id = workspace.room().to_string();
+        let (_, certificate) =
+            tilo_identity_host::broker::trusted_current_device(&workspace_id).unwrap();
         let person = hex::encode(certificate.user_public_key);
         workspace.set_owner(person.clone());
         let mut tree = WorkspaceTree::default();
@@ -440,7 +441,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let clock = crate::peer_actions::OwnerPolicyClock::new().unwrap();
+        let clock = crate::policy_clock::OwnerPolicyClock::new().unwrap();
         let origin = clock.new_origin();
         assert!(
             state
@@ -454,7 +455,7 @@ mod tests {
             )
             .unwrap(),
         ));
-        let caller = Caller::local_person(person).in_room(&room);
+        let caller = Caller::local_person(person).in_workspace(&workspace_id);
         for step in 0..6 {
             match step {
                 4 => *launcher.outcome.lock().unwrap() = Some(Ok(Launched::Unconfirmed)),
@@ -464,7 +465,7 @@ mod tests {
                 }
                 _ => {}
             }
-            let mut request = request(&room);
+            let mut request = request(&workspace_id);
             if step == 3 {
                 request.target.address.action = "close".into();
             }
@@ -504,11 +505,11 @@ mod tests {
             let job = state.remote_job(&caller, &request.invocation).unwrap();
             match step {
                 0 => {
-                    state.launch_connected(80, &connected(1, &room));
+                    state.launch_connected(80, &connected(1, &workspace_id));
                     state.launch_published(80);
                 }
                 1 => {
-                    state.launch_connected(81, &connected(2, &room));
+                    state.launch_connected(81, &connected(2, &workspace_id));
                     state.launch_disconnected(81);
                 }
                 2 => {
@@ -526,7 +527,7 @@ mod tests {
             let journal = state.journal.lock().unwrap();
             let journal = journal.as_ref().unwrap().as_ref().unwrap();
             let key = super::super::InvocationKey {
-                room: room.clone(),
+                workspace: workspace_id.clone(),
                 host: journal.host(),
                 owner: super::super::InvocationOwner::AuthenticatedLocal {
                     root: certificate.user_public_key,
@@ -566,7 +567,7 @@ mod tests {
     )]
     #[test]
     fn launch_preserves_the_requested_uuid_through_the_terminal_journal_record() {
-        let (state, room) = broker();
+        let (state, workspace) = broker();
         let scratch = tempfile::tempdir().unwrap();
         *state.journal.lock().unwrap() = Ok(Some(
             super::super::invocation_journal::InvocationJournal::open(
@@ -574,8 +575,8 @@ mod tests {
             )
             .unwrap(),
         ));
-        let caller = Caller::local_person(hex::encode([41; 32])).in_room(&room);
-        let request = request(&room);
+        let caller = Caller::local_person(hex::encode([41; 32])).in_workspace(&workspace);
+        let request = request(&workspace);
         let job = invoke(&state, &caller, &request).unwrap();
         assert_ne!(request.invocation.0, uuid::Uuid::from_u128(u128::from(job)));
         assert_eq!(
@@ -584,7 +585,7 @@ mod tests {
                 invocation: request.invocation
             })
         );
-        state.launch_connected(77, &connected(1, &room));
+        state.launch_connected(77, &connected(1, &workspace));
         state.launch_published(77);
         let terminal = state.invocation_status(job).unwrap();
         assert_eq!(terminal.invocation(), request.invocation);
@@ -592,7 +593,7 @@ mod tests {
         let journal = state.journal.lock().unwrap();
         let journal = journal.as_ref().unwrap().as_ref().unwrap();
         let key = super::super::InvocationKey {
-            room,
+            workspace,
             host: journal.host(),
             owner: super::super::InvocationOwner::Local {
                 actor: hex::encode([41; 32]),
@@ -605,20 +606,20 @@ mod tests {
 
     #[test]
     fn missing_original_custody_cannot_launch_or_allocate_a_ticket() {
-        let (state, room) = broker();
-        let caller = Caller::authenticated([41; 32], [42; 32]).in_room(&room);
-        assert!(invoke(&state, &caller, &request(&room)).is_err());
+        let (state, workspace) = broker();
+        let caller = Caller::authenticated([41; 32], [42; 32]).in_workspace(&workspace);
+        assert!(invoke(&state, &caller, &request(&workspace)).is_err());
         assert!(state.workspace_opens.next_deadline().is_none());
         assert!(state.completed_invocations.lock().unwrap().is_empty());
-        let job = open(&state, &room);
-        state.launch_connected(78, &connected(1, &room));
+        let job = open(&state, &workspace);
+        state.launch_connected(78, &connected(1, &workspace));
         state.launch_published(78);
         assert_eq!(answered(&state, job), Some(naming(78)));
     }
 
     #[test]
     fn a_failed_admission_barrier_never_calls_the_launcher() {
-        let (state, room) = broker();
+        let (state, workspace) = broker();
         let scratch = tempfile::tempdir().unwrap();
         let mut journal = super::super::invocation_journal::InvocationJournal::open(
             &scratch.path().join("journal"),
@@ -626,58 +627,58 @@ mod tests {
         .unwrap();
         journal.fail_at = Some(super::super::invocation_journal::BarrierFailure::File);
         *state.journal.lock().unwrap() = Ok(Some(journal));
-        let caller = Caller::local_person(hex::encode([41; 32])).in_room(&room);
-        assert!(invoke(&state, &caller, &request(&room)).is_err());
+        let caller = Caller::local_person(hex::encode([41; 32])).in_workspace(&workspace);
+        assert!(invoke(&state, &caller, &request(&workspace)).is_err());
         assert!(state.workspace_opens.next_deadline().is_none());
         assert!(state.completed_invocations.lock().unwrap().is_empty());
         *state.journal.lock().unwrap() = Ok(None);
-        let job = open(&state, &room);
-        state.launch_connected(79, &connected(1, &room));
+        let job = open(&state, &workspace);
+        state.launch_connected(79, &connected(1, &workspace));
         state.launch_published(79);
         assert_eq!(answered(&state, job), Some(naming(79)));
     }
 
     #[test]
     fn an_open_completes_with_the_instance_holding_its_ticket() {
-        let (state, room) = broker();
-        let first = open(&state, &room);
-        let second = open(&state, &room);
+        let (state, workspace) = broker();
+        let first = open(&state, &workspace);
+        let second = open(&state, &workspace);
         assert!(accepted(&state, first) && accepted(&state, second));
 
         // The second launch's instance comes up first, as peer 5; another
-        // app of the room, not started by either, publishes too.
-        state.launch_connected(5, &connected(2, &room));
+        // app of the workspace, not started by either, publishes too.
+        state.launch_connected(5, &connected(2, &workspace));
         state.launch_published(4);
         assert!(accepted(&state, first) && accepted(&state, second));
         state.launch_published(5);
         assert_eq!(answered(&state, second), Some(naming(5)));
         assert!(accepted(&state, first), "peer 5 is not the first's");
 
-        // A connection naming the first's ticket for another app or room
+        // A connection naming the first's ticket for another app or workspace
         // is not its instance.
         state.launch_connected(
             6,
             &ConnectedLaunch {
                 app_id: "so.tilo.sheets".into(),
-                ..connected(1, &room)
+                ..connected(1, &workspace)
             },
         );
-        state.launch_connected(6, &connected(1, "another-room"));
+        state.launch_connected(6, &connected(1, "another-workspace"));
         state.launch_published(6);
         assert!(accepted(&state, first));
-        state.launch_connected(7, &connected(1, &room));
+        state.launch_connected(7, &connected(1, &workspace));
         state.launch_published(7);
         assert_eq!(answered(&state, first), Some(naming(7)));
     }
 
     #[test]
     fn an_open_never_names_an_instance_it_did_not_start() {
-        let (state, room) = broker();
-        let silent = open(&state, &room);
-        let quiet = open(&state, &room);
-        let exits = open(&state, &room);
-        state.launch_connected(8, &connected(2, &room));
-        state.launch_connected(9, &connected(3, &room));
+        let (state, workspace) = broker();
+        let silent = open(&state, &workspace);
+        let quiet = open(&state, &workspace);
+        let exits = open(&state, &workspace);
+        state.launch_connected(8, &connected(2, &workspace));
+        state.launch_connected(9, &connected(3, &workspace));
         state.launch_disconnected(9);
         assert!(matches!(
             state.invocation_status(exits),

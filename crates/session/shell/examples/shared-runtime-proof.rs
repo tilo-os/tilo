@@ -63,7 +63,7 @@ fn start_action(
     };
     let invocation = tilo_actions::InvocationId::new();
     let receipt = shell::shell::remote_actions::BrokerActionHost::new(actions.clone()).invoke(
-        &Caller::local_person(actor).in_room(&surface.route.cluster_id),
+        &Caller::local_person(actor).in_workspace(&surface.route.cluster_id),
         InvokeRequest {
             on_behalf_of: None,
             invocation,
@@ -106,7 +106,7 @@ fn wait_terminal(
 ) -> Result<tilo_actions::InvocationUpdate> {
     use tilo_actions::remote::{ActionHost as _, Caller};
     let host = shell::shell::remote_actions::BrokerActionHost::new(actions.clone());
-    let caller = Caller::local_person(actor).in_room(&surface.route.cluster_id);
+    let caller = Caller::local_person(actor).in_workspace(&surface.route.cluster_id);
     let start = Instant::now();
     while start.elapsed() < timeout {
         if let Some(state) = host.observe(&caller, &invocation)
@@ -187,7 +187,7 @@ fn main() -> Result<()> {
     );
     let captured = Arc::new(Mutex::new(Vec::new()));
     let received = captured.clone();
-    let subscription = session.broker.subscribe_rooms(
+    let subscription = session.broker.subscribe_workspaces(
         vec![session.room.clone()],
         Box::new(move |event, route| {
             if route.app_id == WRITER

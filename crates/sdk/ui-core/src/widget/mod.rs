@@ -1376,7 +1376,7 @@ pub trait Widget {
 
     /// Records this widget keeps open beside the document it shows, each
     /// synced on its own route: a framework app's records in the person's
-    /// own room ([`crate::record::person`]). They take no part in this
+    /// own workspace ([`crate::record::person`]). They take no part in this
     /// widget's history or controls.
     fn record_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
         Vec::new()

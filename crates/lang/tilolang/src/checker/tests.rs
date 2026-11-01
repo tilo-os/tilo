@@ -486,6 +486,28 @@ fn the_sort_is_a_menu_and_the_item_types_toggles_are_the_sidebars_places() {
 }
 
 #[test]
+fn only_a_control_that_draws_a_title_is_told_it_binds_one() {
+    // A field marked `(title)` bound by a text field is the document's title; bound by code to
+    // read, it is the text alone, and the code is never sent a prop it does not declare.
+    let (m, _) = lower(
+        "type Step {\n    program: Text (title)\n}\nroot Step\ndefault view step for Step\nview step(s: Step) {\n    ui.TextInput(value: s.program)\n    ui.CodeEditor(value: s.program, read_only: true)\n}",
+    );
+    let calls = ui_calls(func(&m, "step"));
+    let editor = calls
+        .iter()
+        .position(|c| c == "node ui.CodeEditor")
+        .expect("the code");
+    let titles: Vec<usize> = calls
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| *c == "prop title")
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(titles.len(), 1, "{calls:#?}");
+    assert!(titles.iter().all(|at| *at < editor), "{calls:#?}");
+}
+
+#[test]
 fn a_document_page_and_transcript_are_shells_of_the_library() {
     let (m, _) = lower(
         "type Person {\n    name: Text (title)\n    vip: Bool = false\n    owner: Principal\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    lens tab: Tab = .about\n    let who = p.name\n    std.document(p) {\n        choice(bind: tab)\n        avatar(p.owner)\n        section(\"About\") {\n            facts {\n                \"Name\": who\n                \"VIP\": p.vip\n            }\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            card(p) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",

@@ -357,7 +357,7 @@ impl MessagingService {
         let helper = helper()?;
         let mut person = [0; 32];
         hex::decode_to_slice(author, &mut person).ok()?;
-        let room = collab_types::person_room(&person).to_string();
+        let room = collab_types::personal_cluster(&person).to_string();
         let workspace = tilo_relay_protocol::room_workspace_id(&room).ok()?;
         let mut child = Command::new(&helper)
             .args([door::PRINCIPAL_ARG, author, door::DEVICE_ARG, device])

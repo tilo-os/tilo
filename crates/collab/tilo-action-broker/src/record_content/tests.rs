@@ -151,7 +151,7 @@ fn states(news: &mut mpsc::UnboundedReceiver<ContentNews>) -> Vec<ContentState> 
 }
 
 fn route() -> CrdtRoute {
-    CrdtRoute::record("so.tilo.slides", "room-1", "deck-1")
+    CrdtRoute::record("so.tilo.slides", "workspace-1", "deck-1")
 }
 
 fn picture(len: usize) -> Vec<u8> {
@@ -209,7 +209,7 @@ fn content_of_another_record_scope_is_not_served() {
     let bytes = picture(100);
     let hash = hash_bytes(&bytes);
     a.offer(
-        &CrdtRoute::record("so.tilo.slides", "another-room", "deck-1"),
+        &CrdtRoute::record("so.tilo.slides", "another-workspace", "deck-1"),
         &hash,
         &bytes,
     )
@@ -264,14 +264,14 @@ fn pieces_nobody_asked_for_are_dropped() {
     assert_eq!(b.shelf.read(&ContentScope::of(&route()), &hash), None);
 }
 
-/// A person record's content follows the record into the person's room,
-/// whichever room the window that stored it shows: a record of the window's
-/// room does not reach it.
+/// A person record's content follows the record into the person's workspace,
+/// whichever workspace the window that stored it shows: a record of the window's
+/// workspace does not reach it.
 #[test]
-fn a_person_record_s_content_lives_in_the_person_s_room() {
+fn a_person_record_s_content_lives_in_the_person_s_workspace() {
     let (a, b, _) = pair(true);
-    let person = CrdtRoute::record("so.tilo.tube", "person-room", "history");
-    let window = CrdtRoute::record("so.tilo.tube", "room-1", "");
+    let person = CrdtRoute::record("so.tilo.tube", "personal-cluster", "history");
+    let window = CrdtRoute::record("so.tilo.tube", "workspace-1", "");
     let poster = picture(PIECE_BYTES + 3);
     let hash = hash_bytes(&poster);
     a.offer(&person, &hash, &poster).unwrap();
@@ -280,7 +280,7 @@ fn a_person_record_s_content_lives_in_the_person_s_room() {
     b.want(&window, &hash);
     assert!(
         arrival(&mut in_window).is_none(),
-        "the window's room keeps none of it"
+        "the window's workspace keeps none of it"
     );
 
     let mut in_person = b.subscribe(&person);

@@ -22,7 +22,7 @@ fn incremental(
 fn restore(peer: &StatePeer, now: SystemTime) -> StatePeer {
     StatePeer::restore(
         &peer.durable().unwrap(),
-        peer.room(),
+        peer.workspace_id(),
         peer.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
@@ -213,12 +213,12 @@ fn delivery_admission_metadata_and_unsupported_families_have_no_operation_receip
     let (mut receiver, key, _, _, now) = seeded();
     receiver.select_admission_v5().unwrap();
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    let message = receiver.room_message();
+    let message = receiver.workspace_message();
     let report = receiver.receive_from_report(origin, message, now).unwrap();
     assert_eq!(report.primary(), &InputDisposition::MetadataOnly);
     let request = NeighbourMsg::SyncReq {
         since: vec![],
-        room: receiver.room().into(),
+        room: receiver.workspace_id().into(),
         invite_id: None,
         nonce: 0,
     };
@@ -358,10 +358,10 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
     });
     const ID: &str = include_str!("../tests/fixtures/delivery-admission/operation-id.hex");
     let (_, authority, key, _, now) = fixtures();
-    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let mut old = StatePeer::restore(
         V4.as_slice(),
-        room,
+        workspace,
         authority.clone(),
         vec![],
         RevocationList::new(),
@@ -378,7 +378,7 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
         // governance and writer, and be a fixed point under this backend.
         let reread = StatePeer::restore(
             &rewritten,
-            room,
+            workspace,
             authority.clone(),
             vec![],
             RevocationList::new(),
@@ -388,8 +388,11 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
         assert!(!reread.admission_v5_selected());
         assert_eq!(reread.rows(), old.rows(), "frozen v4 rows changed");
         assert_eq!(
-            reread.admitted_room().map(|room| room.clone().get_heads()),
-            old.admitted_room().map(|room| room.clone().get_heads()),
+            reread
+                .admitted_workspace()
+                .map(|workspace| workspace.clone().get_heads()),
+            old.admitted_workspace()
+                .map(|workspace| workspace.clone().get_heads()),
             "frozen v4 governance changed"
         );
         assert_eq!(
@@ -420,7 +423,7 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
     assert_eq!(hex::encode(admitted.operation_id()), ID.trim());
     let mut restored = StatePeer::restore(
         V5.as_slice(),
-        room,
+        workspace,
         authority.clone(),
         vec![],
         RevocationList::new(),
@@ -439,7 +442,7 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
         assert!(
             StatePeer::restore(
                 &V5.as_slice()[..cut],
-                room,
+                workspace,
                 authority.clone(),
                 vec![],
                 RevocationList::new(),
@@ -453,7 +456,7 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
     assert!(
         StatePeer::restore(
             &trailing,
-            room,
+            workspace,
             authority,
             vec![],
             RevocationList::new(),
@@ -522,11 +525,11 @@ fn delivery_admission_review_strict_drain_rechecks_retained_pending_freshness() 
     receiver = restore(&receiver, now);
     receiver.select_admission_v5().unwrap();
     let later = now + Duration::from_secs(301);
-    let room = receiver.room_message();
+    let workspace = receiver.workspace_message();
     let report = receiver
         .receive_from_report(
             TransportOrigin::RelayDelta(authority.verifying_key().to_bytes()),
-            room,
+            workspace,
             later,
         )
         .unwrap();

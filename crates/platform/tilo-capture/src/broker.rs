@@ -658,7 +658,7 @@ mod tests {
         let (app, runtime) = UnixDatagram::pair().unwrap();
         let policy: Arc<dyn Policy> = Arc::new(GrantPolicy {
             grants: Arc::clone(&grants),
-            room: "r".into(),
+            workspace: "r".into(),
             app: "so.tilo.video".into(),
             declared,
             consent: move |_| Ok(consent),
@@ -777,7 +777,7 @@ mod tests {
             let (app, runtime) = UnixDatagram::pair().unwrap();
             let policy: Arc<dyn Policy> = Arc::new(GrantPolicy {
                 grants,
-                room: "r".into(),
+                workspace: "r".into(),
                 app: "so.tilo.camera".into(),
                 declared: vec![DeviceKind::Camera],
                 consent: move |_| {

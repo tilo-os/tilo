@@ -6,7 +6,7 @@
 //! says only what it shows once the data is there; the framework decides
 //! every timing and placeholder ([`crate::widget::ArrivingView`]):
 //!
-//! - **Local data** (this device's files, rooms and store) normally answers
+//! - **Local data** (this device's files, workspaces and store) normally answers
 //!   within a frame or two. A window or a view opens complete: the frame
 //!   that would show it waits up to one frame budget for the answer
 //!   ([`frame_budget`]), and an answer inside that budget shows with no
@@ -56,7 +56,7 @@ pub const NAME_SOURCE_AFTER: Duration = Duration::from_secs(2);
 /// workspace's host says [`Self::Host`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Source {
-    /// This device: its files, its rooms, its store.
+    /// This device: its files, its workspaces, its store.
     Local,
     /// Another device, the person's own or a collaborator's, by the name the
     /// person knows it by ("Laptop").

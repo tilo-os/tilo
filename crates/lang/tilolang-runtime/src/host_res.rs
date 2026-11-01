@@ -339,7 +339,11 @@ impl Core {
         // A resource of an app this runtime does not run has no record here: what it shows is
         // its reading, as the session published it.
         if crate::foreign::is_foreign(target) {
-            return self.foreign.borrow().field(target, field, author);
+            let registry = self.registry.borrow();
+            return self
+                .foreign
+                .borrow_mut()
+                .field(target, field, author, &registry);
         }
         let fv = match self.store.borrow().read(target, &spec(field)) {
             Ok(fv) => fv,
@@ -376,6 +380,7 @@ impl Core {
         match (field.kind, fv) {
             (FieldKind::Register, FieldValue::Absent) => {
                 declared_default(&field.ty, field.default.as_ref())
+                    .map_err(|why| format!("`{}` of `{}`: {why}", field.name, target.id_string()))
             }
             (FieldKind::Register, FieldValue::Scalar(s)) => self.scalar_value(s, author),
             (FieldKind::Counter, FieldValue::Counter(c)) => Ok(if field.ty == Ty::Float {
@@ -981,7 +986,25 @@ impl Core {
         if target.ty.is_empty() {
             target.ty = self.stored_type(&target);
         }
+        // Another app's resource is known here by the reading its app published of it, which
+        // names its type.
+        if target.ty.is_empty()
+            && let Some(ty) = self.foreign.borrow().type_of(&id)
+        {
+            target.ty = ty;
+        }
         if target.ty.is_empty() {
+            // Another app's resource whose reading has not come in yet: the view runs again
+            // when a new one does.
+            let key = crate::foreign::known_key();
+            let (generation, seen) = {
+                let states = self.view_states.borrow();
+                (
+                    states.generation(&key),
+                    states.get(&key).cloned().unwrap_or_else(Value::none),
+                )
+            };
+            self.note_state_read(key, generation, &seen)?;
             // Gone, or not synced here yet: the place still stands, showing nothing.
             return self.ret_h(Value::none());
         }

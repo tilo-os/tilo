@@ -47,7 +47,7 @@ tilo-automation = { path = "../automation" }
 registry-types = { path = "../../packaging/registry-types" }
 # Document frames are sealed and opened with a route's channel content keys.
 channel-crypto = { path = "../channel-crypto" }
-# The relay workspace of a room and the retained entry id of a frame.
+# The relay's workspace a peer syncs through, and a frame's retained entry id.
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 parking_lot.workspace = true
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
@@ -57,7 +57,7 @@ iroh-base = { workspace = true, features = ["key"], optional = true }
 
 # The device's own transports and files: its enrollment and relay sessions,
 # its calls, the owner record on disk and the process's authorization
-# watchers. A page holds its rooms through the same owner over its own
+# watchers. A page holds its workspaces through the same owner over its own
 # storage and link, so the engine builds for wasm32 without them.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -73,7 +73,7 @@ rand_core.workspace = true
 # The device custody an enrollment presents to the issuing host.
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 # The join client an enrollment redeems its invitation over, and the relay
-# session a joined room syncs through.
+# session a joined workspace syncs through.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 # The HTTPS client seam of a host reached over its HTTPS routes.
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
@@ -89,8 +89,13 @@ tilo-actions = { path = "../actions", features = ["test-support"] }
 tilo-workspace-join = { path = "../workspace-join", features = ["test-support"] }
 # The sanctioned patch-log-free way to take changes into an AutoCommit (clippy.toml).
 tilo-automerge.workspace = true
+# The record API apps open their own records with: a person's record reaches
+# their other device through the store the same way an app writes it.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+# Where that record API keeps a device's records in the test: in memory.
+durable-store = { path = "../../system/durable-store" }
 tempfile.workspace = true
-# The governed-room acceptance test runs against a real relay.
+# The governed-workspace acceptance test runs against a real relay.
 tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 iroh-base = { workspace = true, features = ["key"] }

@@ -14,10 +14,10 @@ pub(super) struct LocalCaller {
     admitted: AdmittedJoinIdentity,
     /// Validated from `admitted` once, at capture.
     owner: InvocationOwner,
-    time: crate::peer_actions::PolicyTime,
+    time: crate::policy_clock::PolicyTime,
 }
 impl LocalCaller {
-    /// The room it acts in and who the host admitted on it.
+    /// The workspace it acts in and who the host admitted on it.
     pub(super) fn admitted_in(&self) -> (String, AdmittedJoinIdentity) {
         (self.route.cluster_id.clone(), self.admitted.clone())
     }
@@ -66,7 +66,7 @@ impl LocalCaller {
     pub(super) fn authorize_host_action(
         &self,
         state: &AppBrokerState,
-        room: &str,
+        workspace: &str,
         requirement: &crate::services::NativeTaskActionRequirement,
     ) -> Result<Vec<tilo_action_policy::GrantId>, String> {
         self.current(state)?;
@@ -77,7 +77,7 @@ impl LocalCaller {
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
-            .decide_in_room(room, |workspace| {
+            .decide_in_workspace(workspace, |workspace| {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
                 let (answer, spent) = actor.action_verdict_in(
                     workspace,
@@ -150,7 +150,7 @@ impl LocalCaller {
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
-            .decide_in_room(&self.route.cluster_id, |workspace| {
+            .decide_in_workspace(&self.route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
                 if actor.action_answer_in(
                     workspace,
@@ -227,6 +227,12 @@ impl LocalCaller {
 /// Borrowed, genuine caller evidence; never constructed from an actor string.
 #[derive(Clone, Copy)]
 pub(super) enum DurableContext<'a> {
+    /// Only the durable admission tests build this caller kind: the action
+    /// door admits a device's request on its own path.
+    #[allow(
+        dead_code,
+        reason = "driven by the durable admission tests, which reach it through a test-only entrypoint"
+    )]
     Peer(&'a VerifiedActionCaller, &'a CallerInvocation),
     Task {
         caller: &'a LocalCaller,
@@ -246,7 +252,7 @@ impl<'a> DurableContext<'a> {
             }),
         }
     }
-    pub(super) fn time(self) -> Option<&'a crate::peer_actions::PolicyTime> {
+    pub(super) fn time(self) -> Option<&'a crate::policy_clock::PolicyTime> {
         match self {
             Self::Peer(c, _) => c.policy_time.as_ref(),
             Self::Task { caller, .. } => Some(&caller.time),
@@ -272,12 +278,6 @@ impl<'a> DurableContext<'a> {
                 foreign_restriction: false,
             },
             Self::Task { caller, .. } => caller.origin(),
-        }
-    }
-    pub(super) fn network(self) -> Option<tilo_relay_session::client::CertifiedAction> {
-        match self {
-            Self::Peer(c, _) => c.network.clone(),
-            Self::Task { .. } => None,
         }
     }
     pub(super) fn before_admission(
@@ -311,7 +311,7 @@ impl<'a> DurableContext<'a> {
                 .membership
                 .as_ref()
                 .ok_or("workspace authority unavailable")?
-                .decide_in_room(&offered.0.route.cluster_id, |workspace| {
+                .decide_in_workspace(&offered.0.route.cluster_id, |workspace| {
                     let workspace = workspace.ok_or("workspace no longer hosted")?;
                     if actor.action_answer_in(
                         workspace,
@@ -340,7 +340,7 @@ impl<'a> DurableContext<'a> {
 }
 
 /// The action check of one admission, decided on the caller's borrowed
-/// sample of exactly that room's committed workspace.
+/// sample of exactly that workspace's committed workspace.
 pub(super) fn authorize_action_in(
     workspace: &tilo_desktop_model::Workspace,
     (app, resource_kind, resource, action): (&str, &str, &str, &str),
@@ -360,15 +360,15 @@ pub(super) fn authorize_action_in(
 }
 
 impl AppBrokerState {
-    /// Revoke the `Once` grants an admitted action spent in `room`
+    /// Revoke the `Once` grants an admitted action spent in `workspace`
     /// ([`tilo_action_policy::Verdict::spent`]), through the host that
-    /// records the room's grants.
-    pub(super) fn spend_once_grants(&self, room: &str, spent: &[tilo_action_policy::GrantId]) {
+    /// records the workspace's grants.
+    pub(super) fn spend_once_grants(&self, workspace: &str, spent: &[tilo_action_policy::GrantId]) {
         let Some(grants) = self.services.app_action_grants.as_ref() else {
             return;
         };
         for grant in spent {
-            grants.revoke(room, grant.as_str());
+            grants.revoke(workspace, grant.as_str());
         }
     }
 }
@@ -376,7 +376,7 @@ impl AppBrokerState {
 impl AppBrokerState {
     pub(super) fn authorize_invocation_permission(
         &self,
-        room: &str,
+        workspace: &str,
         (app, resource_kind, resource, action): (&str, &str, &str, &str),
         need: &tilo_actions::ActionNeed,
         actor: &BrokerActor,
@@ -385,7 +385,7 @@ impl AppBrokerState {
         self.membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
-            .decide_in_room(room, |workspace| {
+            .decide_in_workspace(workspace, |workspace| {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
                 authorize_action_in(
                     workspace,
@@ -430,13 +430,13 @@ fn unavailable(reason: impl Into<String>) -> tilo_actions::remote::ActionHostErr
 }
 
 impl AppBrokerState {
-    /// Who owns an invocation admitted for `actor` in `room` under `origin`:
+    /// Who owns an invocation admitted for `actor` in `workspace` under `origin`:
     /// exactly the owner its admission records, so an observation or a retry
     /// looks it up under the same key the admission wrote.
     pub(super) fn invocation_owner(
         &self,
         origin: Option<&InvocationCaller>,
-        room: &str,
+        workspace: &str,
         actor: &BrokerActor,
     ) -> Result<InvocationOwner, String> {
         Ok(match origin {
@@ -461,8 +461,8 @@ impl AppBrokerState {
                     .certificate
                     .as_ref()
                     .ok_or("original caller certificate missing")?;
-                if route.cluster_id != room {
-                    return Err("original local caller does not match invocation room".into());
+                if route.cluster_id != workspace {
+                    return Err("original local caller does not match invocation workspace".into());
                 }
                 let expected = current.agent_id.as_ref().map_or_else(
                     || super::principal_id_for_root(certificate.user_public_key),
@@ -497,14 +497,14 @@ impl AppBrokerState {
     pub(super) fn retained_invocation(
         &self,
         journal: &InvocationJournal,
-        room: &str,
+        workspace: &str,
         owner: &InvocationOwner,
         invocation: tilo_actions::InvocationId,
         actor: &BrokerActor,
         now: u64,
     ) -> Result<Option<DurableInvocation>, String> {
         let key = InvocationKey {
-            room: room.into(),
+            workspace: workspace.into(),
             host: journal.host(),
             owner: owner.clone(),
             invocation,
@@ -523,7 +523,7 @@ impl AppBrokerState {
                 .ok_or_else(|| "retained invocation intent invalid".to_string())
         };
         self.authorize_invocation_permission(
-            room,
+            workspace,
             (
                 field("app_id")?,
                 field("resource_kind")?,
@@ -551,20 +551,20 @@ impl AppBrokerState {
         invocation: tilo_actions::InvocationId,
     ) -> Result<Option<tilo_actions::remote::InvocationState>, tilo_actions::remote::ActionHostError>
     {
-        let room = caller
+        let workspace = caller
             .room()
-            .ok_or_else(|| unavailable("caller room unavailable"))?;
-        let actor = self.caller_actor(caller, room);
-        // Ordinary durable observations may reconcile effects too. Only a room
+            .ok_or_else(|| unavailable("caller workspace unavailable"))?;
+        let actor = self.caller_actor(caller, workspace);
+        // Ordinary durable observations may reconcile effects too. Only a workspace
         // that confines its agents to their runs keeps a task agent from
         // observing on a grant alone: that needs an authenticated admission.
-        if actor.is_agent && self.confines_agents_to_tasks(room) {
+        if actor.is_agent && self.confines_agents_to_tasks(workspace) {
             return Err(unavailable(
                 "native task agent requires authenticated task action admission",
             ));
         }
         let owner = self
-            .invocation_owner(Some(origin), room, &actor)
+            .invocation_owner(Some(origin), workspace, &actor)
             .map_err(unavailable)?;
         let now = self.policy_now_ns().map_err(unavailable)? / 1_000_000_000;
         let record = {
@@ -580,7 +580,7 @@ impl AppBrokerState {
                 return Ok(None);
             };
             let record = self
-                .retained_invocation(journal, room, &owner, invocation, &actor, now)
+                .retained_invocation(journal, workspace, &owner, invocation, &actor, now)
                 .map_err(unavailable)?;
             drop(guard);
             record

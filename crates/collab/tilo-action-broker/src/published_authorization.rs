@@ -32,7 +32,7 @@ mod tests {
     use tilo_action_policy::{Grant, KindSet, Lifetime, Role, Subject};
 
     const OWNER: &str = "owner-person";
-    const ROOM: &str = "room-7";
+    const WORKSPACE: &str = "workspace-7";
     const WRITER: &str = "so.tilo.word-processor";
 
     /// Admit `action` on `surface` for `person` at `now`: whether it asks.
@@ -51,7 +51,7 @@ mod tests {
     }
 
     fn workspace() -> Workspace {
-        let mut w = Workspace::new(WorkspaceId(7), "Room");
+        let mut w = Workspace::new(WorkspaceId(7), "Workspace");
         w.set_owner(OWNER.to_string());
         w
     }
@@ -59,7 +59,7 @@ mod tests {
         PublishedSurface {
             peer_id: 9,
             app_id: WRITER.into(),
-            route: CrdtRoute::record(WRITER, ROOM, record),
+            route: CrdtRoute::record(WRITER, WORKSPACE, record),
             actions,
             live: true,
         }
@@ -106,7 +106,7 @@ mod tests {
         );
     }
 
-    /// One room policy, one action: the broker admitting a member's
+    /// One workspace policy, one action: the broker admitting a member's
     /// invocation and a window checking its own person's admit it the same
     /// way, for every role and every kind of action, a person's own clicks
     /// on their own device and those reaching outside alike.
@@ -152,7 +152,7 @@ mod tests {
             }
             let person = if role == Role::Owner { OWNER } else { member };
             let window = ui::permissions::PermissionContext::from_standing(
-                &w.policy.room,
+                &w.policy.workspace,
                 tilo_action_policy::Standing::person(w.policy.clone(), person),
             )
             .at_unix_time(10);
@@ -274,7 +274,7 @@ mod tests {
         w.grant(Grant::new(
             "rec-1-read-only",
             Subject::person(member),
-            collab_types::validator::document_node(&w.policy.room, WRITER, "rec-1"),
+            collab_types::validator::document_node(&w.policy.workspace, WRITER, "rec-1"),
             KindSet::UNDOABLE,
             tilo_action_policy::Answer::Deny,
             Subject::person(OWNER),

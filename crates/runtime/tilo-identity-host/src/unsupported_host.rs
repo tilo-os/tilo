@@ -39,6 +39,8 @@ pub mod provisioning {
         pub local_identity_dir: &'a Path,
         pub local_system: &'a IdentityPaths,
         pub local_home_peers: &'a Path,
+        /// The setup machine's exported personal room list; the shell
+        /// publishes it under that name.
         pub local_rooms: &'a Path,
     }
 

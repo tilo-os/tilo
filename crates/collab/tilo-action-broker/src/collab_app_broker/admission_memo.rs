@@ -2,7 +2,7 @@
 //! answer differently, never the parts that can.
 //!
 //! * [`join_proof_verified`]: whether an ed25519 join proof verifies is a
-//!   pure function of (device key, room, signature). An exact triple that
+//!   pure function of (device key, workspace, signature). An exact triple that
 //!   verified once verifies again, so only successes are remembered, by the
 //!   exact bytes. Certificate validity, fleet authorization and membership
 //!   are still checked on every verification.
@@ -23,7 +23,7 @@ use super::{AdmittedJoinIdentity, VerifiedActionCaller};
 static VERIFIED_JOIN_PROOFS: LazyLock<Mutex<HashSet<Vec<u8>>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
-/// A desktop presents a handful of devices in a handful of rooms; the bound
+/// A desktop presents a handful of devices in a handful of workspaces; the bound
 /// only stops a stream of distinct proofs from growing the set.
 const VERIFIED_JOIN_PROOF_LIMIT: usize = 4096;
 
@@ -58,7 +58,7 @@ pub(super) fn join_proof_verified(
 /// The certified caller the synchronous call running on this thread has
 /// verified, and what that verification admitted.
 struct AdmittedNow {
-    room: String,
+    workspace: String,
     presentation: Vec<u8>,
     admitted: AdmittedJoinIdentity,
 }
@@ -82,12 +82,9 @@ pub(super) fn with_admitted_now<T>(
             ADMITTED_NOW.with(|slot| *slot.borrow_mut() = previous);
         }
     }
-    if caller.network.is_some() {
-        return run();
-    }
     let previous = ADMITTED_NOW.with(|slot| {
         slot.replace(Some(AdmittedNow {
-            room: caller.room.clone(),
+            workspace: caller.workspace.clone(),
             presentation: caller.presentation.clone(),
             admitted,
         }))
@@ -99,13 +96,12 @@ pub(super) fn with_admitted_now<T>(
 /// The admission [`with_admitted_now`] lends for exactly `caller`, if this
 /// thread is inside such a call.
 pub(super) fn admitted_now(caller: &VerifiedActionCaller) -> Option<AdmittedJoinIdentity> {
-    if caller.network.is_some() {
-        return None;
-    }
     ADMITTED_NOW.with(|slot| {
         slot.borrow()
             .as_ref()
-            .filter(|now| now.room == caller.room && now.presentation == caller.presentation)
+            .filter(|now| {
+                now.workspace == caller.workspace && now.presentation == caller.presentation
+            })
             .map(|now| now.admitted.clone())
     })
 }

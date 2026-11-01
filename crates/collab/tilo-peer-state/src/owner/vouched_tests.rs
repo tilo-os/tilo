@@ -1,4 +1,4 @@
-//! A room held on its host's word: installed from the membership answer,
+//! A workspace held on its host's word: installed from the membership answer,
 //! admitting the replay and members' certificates, and kept across a reopen.
 use super::*;
 use crate::join::JoinTransportResponse;
@@ -7,14 +7,14 @@ struct Vouched {
     _directory: tempfile::TempDir,
     path: PathBuf,
     owner: NativeWorkspaceOwner,
-    room: RoomId,
+    workspace: RoomId,
     now: SystemTime,
 }
 
-/// Hold the fixture's room on its membership answer and admit its replay.
+/// Hold the fixture's workspace on its membership answer and admit its replay.
 fn vouched() -> Vouched {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let path = directory.path().join("joined-rooms.json");
+    let path = directory.path().join("joined-workspaces.json");
     let owner = open_file(&path).unwrap();
     let (_, bootstrap, messages, governor, now) = raw_fixture();
     let device = bootstrap.device_cert.clone();
@@ -30,13 +30,13 @@ fn vouched() -> Vouched {
         !owner
             .install_vouched(workspace, &answer, &device, now)
             .unwrap(),
-        "a room held under the same authority stays as it is"
+        "a workspace held under the same authority stays as it is"
     );
-    let room = RoomId::parse(ROOM).unwrap();
+    let workspace = RoomId::parse(WORKSPACE).unwrap();
     for message in messages {
         owner
             .receive(
-                room,
+                workspace,
                 TransportOrigin::RetainedRelayDelta(governor),
                 message,
                 now,
@@ -47,17 +47,17 @@ fn vouched() -> Vouched {
         _directory: directory,
         path,
         owner,
-        room,
+        workspace,
         now,
     }
 }
 
 #[test]
-fn a_room_its_host_vouches_for_admits_its_replay_and_reopens() {
+fn a_workspace_its_host_vouches_for_admits_its_replay_and_reopens() {
     let held = vouched();
     let calls = |owner: &NativeWorkspaceOwner| {
         owner
-            .with_current(held.room, |view| {
+            .with_current(held.workspace, |view| {
                 Ok(view
                     .peer()
                     .validated_media_policy()?
@@ -70,21 +70,23 @@ fn a_room_its_host_vouches_for_admits_its_replay_and_reopens() {
     assert_eq!(calls(&held.owner), 1);
     assert!(
         held.owner
-            .with_current(held.room, |view| view.enrollment_invitation().map(drop))
+            .with_current(held.workspace, |view| view
+                .enrollment_invitation()
+                .map(drop))
             .is_err(),
-        "a vouched room has no enrollment of its own"
+        "a vouched workspace has no enrollment of its own"
     );
     drop(held.owner);
     let reopened = open_file(&held.path).unwrap();
-    assert_eq!(reopened.rooms(), vec![held.room]);
+    assert_eq!(reopened.workspaces(), vec![held.workspace]);
     assert_eq!(calls(&reopened), 1);
 }
 
 #[test]
-fn a_membership_answer_for_another_device_or_room_is_refused() {
+fn a_membership_answer_for_another_device_or_workspace_is_refused() {
     let (_, bootstrap, _, _, now) = raw_fixture();
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let owner = open_file(&directory.path().join("joined-rooms.json")).unwrap();
+    let owner = open_file(&directory.path().join("joined-workspaces.json")).unwrap();
     let workspace = bootstrap.workspace_id;
     let stranger = crate::owner::testing::certificate(
         &SigningKey::from_bytes(&[71; 32]),
@@ -119,7 +121,7 @@ fn a_membership_answer_for_another_device_or_room_is_refused() {
             )
             .is_err()
     );
-    assert!(owner.rooms().is_empty());
+    assert!(owner.workspaces().is_empty());
 }
 
 #[test]
@@ -132,7 +134,7 @@ fn a_member_introduces_itself_and_an_unlisted_device_does_not() {
     };
     let receive = |cert: &tilo_user_identity::DeviceCert| {
         held.owner.receive(
-            held.room,
+            held.workspace,
             TransportOrigin::RelayDelta(cert.device_public_key),
             hello(cert),
             held.now,
@@ -148,6 +150,6 @@ fn a_member_introduces_itself_and_an_unlisted_device_does_not() {
     );
     assert!(
         receive(&unlisted).is_err(),
-        "the room's roster lists who it admits"
+        "the workspace's roster lists who it admits"
     );
 }

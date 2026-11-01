@@ -62,7 +62,7 @@ pub(super) fn seed_draft_confirmation(driver: &mut ShellDriver, preset: &str) {
     let handle = format!("confirm:shots-{preset}");
     let request = shell::shell::app_action_consent::AppActionConsentRequest {
         handle: handle.clone(),
-        room: uuid::Uuid::nil().to_string(),
+        workspace: uuid::Uuid::nil().to_string(),
         person: "person:ada".into(),
         app_id: "Scribe".into(),
         target_app: "so.tilo.mail".into(),

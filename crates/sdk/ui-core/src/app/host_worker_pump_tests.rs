@@ -86,10 +86,10 @@ fn mount_worker(
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("state");
     let mut owners = crate::record::RecordOwners::new(root.clone());
-    let room = uuid::Uuid::new_v4().to_string();
-    let records = owners.open(APP, &room).unwrap();
+    let workspace = uuid::Uuid::new_v4().to_string();
+    let records = owners.open(APP, &workspace).unwrap();
     let views =
-        Rc::new(crate::application_view::InstanceViewStore::new(root, DEVICE, &room).unwrap());
+        Rc::new(crate::application_view::InstanceViewStore::new(root, DEVICE, &workspace).unwrap());
     let permissions = runner_permissions();
     let definition = definition(factory);
     let prepare = |target| {

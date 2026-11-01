@@ -786,7 +786,7 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
             .find(|step| request.address.resource == RESOURCE && request.address.action == *step)
             .ok_or("unknown pairing step")?;
         let args = bind_slot(params(step), request.argument)?;
-        self.authorize(request.room, person)?;
+        self.authorize(request.workspace, person)?;
         Ok(match self.pairing.start(step, &args)? {
             Started::Answered(value) => Pending::ready(outcome(Ok(value))),
             Started::Later(answer) => answer.map(outcome),

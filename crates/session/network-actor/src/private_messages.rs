@@ -1,5 +1,5 @@
 //! Direct private Messages traffic on the session's original Iroh endpoint.
-//! This lane carries no room id, shared record, account grant or sender choice.
+//! This lane carries no workspace id, shared record, account grant or sender choice.
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};

@@ -1,4 +1,4 @@
-//! An app's window as the UI host shows it, with nothing on screen: its instance over a room of
+//! An app's window as the UI host shows it, with nothing on screen: its instance over a workspace of
 //! its own, staged with a scenario, sending its views over the patch protocol to the UI host's
 //! half of the window (`tilo_ui_host::AppWindow`), which the toolkit's frame pipeline lays out
 //! (`ui::headless::FrameHarness`). Nothing is rasterised and no GPU is opened.
@@ -11,7 +11,6 @@ use tilo_render_protocol::patch::{ResourceRef, ToApp, Value};
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
-use tilolang_tilo::runtime::{NameHost, Principal};
 use tilolang_tilo::tilolang::Compiled;
 // `DynAction::apply` is the action protocol's.
 use ui::headless::FrameHarness;
@@ -46,15 +45,6 @@ impl Platform for Packages {
 
     fn waker(&self) -> tilolang_tilo::background::Waker {
         Arc::new(|| {})
-    }
-}
-
-/// A room nobody else is in.
-struct Alone;
-
-impl NameHost for Alone {
-    fn name(&self, who: &Principal) -> String {
-        who.0.clone()
     }
 }
 
@@ -99,7 +89,9 @@ impl Staged {
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
             },
             Rc::clone(packages) as Rc<dyn Platform>,
-            Rc::new(Alone),
+            // People are called as a window calls them when nobody told it their names: a
+            // scenario's sample person (`person("Leo")`) by that name, never by their id.
+            Rc::new(tilolang_tilo::names::Unnamed),
             Box::new(app_end),
         );
         let mut record = ui::automerge::AutoCommit::new();
@@ -211,7 +203,7 @@ impl Staged {
         &mut self.harness
     }
 
-    /// The room's records and the items of their collections, as references.
+    /// The workspace's records and the items of their collections, as references.
     fn records(&self) -> Vec<ResourceRef> {
         let mut out = Vec::new();
         let Some(host) = self.instance.host() else {
@@ -249,7 +241,7 @@ impl Staged {
         out
     }
 
-    /// Every resource the room holds, the window's views and the rows of their lists name.
+    /// Every resource the workspace holds, the window's views and the rows of their lists name.
     pub fn resources(&mut self) -> Vec<ResourceRef> {
         fn in_value(value: &Value, out: &mut Vec<ResourceRef>) {
             match value {
@@ -288,6 +280,13 @@ impl Staged {
             }
         }
         out
+    }
+
+    /// The tree the window composed from what the app sent, as sent: every view that ran is in
+    /// it, keyed by its view, even one that drew nothing (a bare `if let` whose value is
+    /// absent leaves an empty fragment), where the laid-out widgets keep no trace of it.
+    pub fn composed(&mut self) -> Option<tilo_ui_host::UiNode> {
+        self.window()?.composed().cloned()
     }
 
     /// The trees of the rows the window's lists show, by row key: a list draws each row as one

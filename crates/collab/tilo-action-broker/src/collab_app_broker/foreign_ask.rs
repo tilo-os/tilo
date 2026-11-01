@@ -2,7 +2,7 @@
 //!
 //! An action their grants leave to them asks first. At a device that is
 //! theirs, this host asks them itself ([`super::witness`]). At a foreign
-//! device the room is not their own and the person is not at this host's
+//! device the workspace is not their own and the person is not at this host's
 //! screen: the question is put to them on one of their own devices, which
 //! draws it and answers it with what only that device's person chose. The
 //! host then issues the confirmation for that one invocation.
@@ -58,7 +58,7 @@ impl AppBrokerState {
             // Nobody to ask is nobody's confirmation.
             return Pending::ready(Err(ActionHostError::ConfirmationRequired));
         };
-        let question = asked_there(self, caller, &binding.room, request);
+        let question = asked_there(self, caller, &binding.workspace, request);
         let asked = match service.ask_person(caller, &question) {
             Ok(asked) => asked,
             Err(error) => return Pending::ready(Err(error)),
@@ -136,14 +136,14 @@ impl AppBrokerState {
 
 /// The question as the person's other device draws it.
 ///
-/// The room is not the person's, so this host does not offer them its
+/// The workspace is not the person's, so this host does not offer them its
 /// catalogue: the action and the thing it acts on are named as this host
 /// describes them for the provider the invocation names, and by the
 /// invocation's own words when this host has no description.
 fn asked_there(
     state: &AppBrokerState,
     caller: &Caller,
-    room: &str,
+    workspace: &str,
     request: &InvokeRequest,
 ) -> ConfirmationQuestion {
     let mut id = [0u8; 32];
@@ -158,7 +158,7 @@ fn asked_there(
             || "another device".to_owned(),
             |device| hex::encode(&device[..8]),
         ),
-        room: room.to_owned(),
+        room: workspace.to_owned(),
         resource_label: described.as_ref().map_or_else(
             || request.target.address.resource.clone(),
             |(r, _)| r.clone(),
@@ -166,7 +166,7 @@ fn asked_there(
         action_label: described
             .as_ref()
             .map_or_else(|| request.target.address.action.clone(), |(_, a)| a.clone()),
-        // What it risks is not this host's to weigh for a room that is not
+        // What it risks is not this host's to weigh for a workspace that is not
         // the person's, so it is read as the gravest a sheet shows.
         risk: tilo_actions::RiskLevel::Destructive.name().to_owned(),
     }

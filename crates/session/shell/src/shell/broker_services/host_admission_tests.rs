@@ -26,7 +26,8 @@ fn a_room_this_devices_own_host_serves_admits_an_app_opening_there() {
     // This device is the room's host, and serves the room itself.
     let directory = tempfile::tempdir().expect("a directory for the state file");
     let state_file = directory.path().join("state.json");
-    let room = crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
+    let room =
+        crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
     {
         let mut tree = tree.write();
         let active = tree.desktop.active;

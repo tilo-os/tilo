@@ -483,20 +483,16 @@ fn install_app(home: &Path, package_id: &str, name: &str, exts: &[&str]) {
 /// `launched.log`. Like the real one it first waits on its registration
 /// gate (stdin).
 fn install_recording_launcher(home: &Path) {
-    use std::os::unix::fs::PermissionsExt as _;
     let bin = home.join("bin");
     std::fs::create_dir_all(&bin).expect("create the fixture tools");
-    let launcher = bin.join("tilo-launcher");
-    std::fs::write(
-        &launcher,
-        format!(
-            "#!/bin/sh\nhead -c 1 >/dev/null\nprintf '%s\\n' \"$*\" >> '{}'\n",
+    tilo_test_env::stand_in(
+        bin.join("tilo-launcher"),
+        &format!(
+            "head -c 1 >/dev/null\nprintf '%s\\n' \"$*\" >> '{}'\n",
             home.join("launched.log").display()
         ),
     )
     .expect("write the stand-in launcher");
-    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755))
-        .expect("make the stand-in launcher runnable");
 }
 
 /// Wait until the stand-in launcher recorded a launch with every one of

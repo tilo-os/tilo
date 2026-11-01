@@ -34,7 +34,7 @@ impl DesktopTree {
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)
-            .ok_or_else(|| Refusal::OutsideRoom(grant.node.clone()))?;
+            .ok_or_else(|| Refusal::OutsideWorkspace(grant.node.clone()))?;
         workspace.govern_as_at(grantor, Change::Grant(grant.clone()), now)?;
         Ok(workspace
             .policy
@@ -143,14 +143,14 @@ mod tests {
     fn a_grant_to_assign_one_role_assigns_that_role_only() {
         let (mut tree, _) = tree();
         let workspace = &mut tree.workspaces[0];
-        let room = workspace.policy.room.clone();
+        let room = workspace.policy.workspace.clone();
         for name in ["Reviewer", "Admin helper"] {
             let owner = workspace.person_authority("owner");
             let preset = Preset::new(
                 name,
                 "",
                 vec![Rule::new(
-                    TreePath::room(&room).app("so.tilo.notes"),
+                    TreePath::workspace(&room).app("so.tilo.notes"),
                     KindSet::READ,
                     Answer::Allow,
                 )],
@@ -171,7 +171,7 @@ mod tests {
         workspace.grant(Grant::new(
             "scribe-reads-notes",
             Subject::agent("scribe"),
-            TreePath::room(&room).app("so.tilo.notes"),
+            TreePath::workspace(&room).app("so.tilo.notes"),
             KindSet::READ,
             Answer::Allow,
             Subject::person("owner"),
@@ -201,7 +201,7 @@ mod tests {
             "another set is not"
         );
         let reading = TreePath::root()
-            .push(Level::Room, room.as_str())
+            .push(Level::Workspace, room.as_str())
             .app("so.tilo.notes");
         assert_eq!(
             workspace.answer_at("ada", &reading, tilo_action_policy::ActionKind::Read, 0),
@@ -213,7 +213,7 @@ mod tests {
         Grant::new(
             "app-open",
             Subject::app("so.tilo.caller"),
-            TreePath::room(room)
+            TreePath::workspace(room)
                 .app("so.tilo.target")
                 .resource("target.document")
                 .action("open"),
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn only_a_governor_grants_and_the_stored_grant_names_them() {
         let (mut tree, id) = tree();
-        let room = tree.workspaces[0].policy.room.clone();
+        let room = tree.workspaces[0].policy.workspace.clone();
         assert!(
             tree.grant_in_workspace_at(id, &"stranger".to_string(), app_grant(&room), 10)
                 .is_err()
@@ -461,8 +461,8 @@ impl PolicyEdit {
     /// What changed from `before` to `after`.
     #[must_use]
     pub fn between(
-        before: &tilo_action_policy::RoomPolicy,
-        after: &tilo_action_policy::RoomPolicy,
+        before: &tilo_action_policy::WorkspacePolicy,
+        after: &tilo_action_policy::WorkspacePolicy,
     ) -> Self {
         let mut members: Vec<UserId> = before
             .members

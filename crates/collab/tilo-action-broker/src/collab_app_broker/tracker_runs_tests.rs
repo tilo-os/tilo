@@ -162,5 +162,5 @@ fn only_a_tracker_verb_naming_the_runs_own_issue_is_its_report() {
         ("so.tilo.tasks", "mail.inbox"),
         Some(&own)
     ));
-    assert!(!reports_on_own_issue("room-task", tracker, Some(&own)));
+    assert!(!reports_on_own_issue("workspace-task", tracker, Some(&own)));
 }

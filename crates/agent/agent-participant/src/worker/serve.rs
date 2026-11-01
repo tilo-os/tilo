@@ -23,7 +23,7 @@ use super::proto::{
     Reply, Request, WireDoorError,
 };
 use crate::apps::{AppCatalogue, Replica, ReplicaActor, Seed};
-use crate::room_actions::ViewReadPolicy;
+use crate::workspace_actions::ViewReadPolicy;
 
 /// Serve as a worker in `mode` on the socket that is this process's stdin.
 /// Returns the exit code.
@@ -170,12 +170,12 @@ impl Worker {
             Request::TakeContent => self.content.take(),
             Request::Open {
                 app_id,
-                room,
+                workspace,
                 participant,
                 actor,
                 seed,
             } => match decode(&actor) {
-                Ok(actor) => self.open(&app_id, &room, &participant, actor, seed),
+                Ok(actor) => self.open(&app_id, &workspace, &participant, actor, seed),
                 Err(reason) => Reply::Failed(reason),
             },
             Request::ViewsLoad { app_id, doc } => self.load_views(app_id, &doc),
@@ -183,11 +183,11 @@ impl Worker {
             Request::Title { app_id, doc } => self.title(&app_id, &doc),
             Request::ReadPrepare {
                 app_id,
-                room,
+                workspace,
                 record,
                 source,
                 policy,
-            } => self.prepare_read(&app_id, &room, &record, source, &policy),
+            } => self.prepare_read(&app_id, &workspace, &record, source, &policy),
             Request::ReadPolicy { policy } => match (self.read.as_ref(), decode(&policy)) {
                 (Some(read), Ok(policy)) => {
                     read.set_policy(&policy);
@@ -309,7 +309,7 @@ impl Worker {
     fn open(
         &mut self,
         app_id: &str,
-        room: &str,
+        workspace: &str,
         participant: &str,
         actor: ReplicaActor,
         seed: Option<(String, Vec<Vec<u8>>)>,
@@ -328,7 +328,7 @@ impl Worker {
         match Replica::open_lending(
             &self.catalogue,
             app_id,
-            room,
+            workspace,
             participant,
             actor,
             seed,
@@ -387,7 +387,7 @@ impl Worker {
     fn prepare_read(
         &mut self,
         app_id: &str,
-        room: &str,
+        workspace: &str,
         record: &str,
         source: Vec<u8>,
         policy: &str,
@@ -400,7 +400,7 @@ impl Worker {
         };
         let source = ReadSource {
             app_id,
-            room,
+            workspace,
             record,
             bytes: source,
         };
@@ -489,11 +489,11 @@ fn probe(path: &str) -> ProbeReport {
     }
 }
 
-/// The record a reader mounts: its app, room and id, and the retained
+/// The record a reader mounts: its app, workspace and id, and the retained
 /// source the host replayed.
 struct ReadSource<'a> {
     app_id: &'a str,
-    room: &'a str,
+    workspace: &'a str,
     record: RecordId,
     bytes: Vec<u8>,
 }
@@ -516,7 +516,7 @@ impl ReadSession {
     ) -> Result<Self, String> {
         let definition = catalogue.get(source.app_id).ok_or("unknown source app")?;
         let checkout = RecordCheckout::new(source.record, definition.record_kind.clone());
-        if definition.keeps_room_record() != checkout.id.is_package_primary() {
+        if definition.keeps_workspace_record() != checkout.id.is_package_primary() {
             return Err("source record scope mismatch".into());
         }
         // Hydrate existing history; a new-record initializer must never
@@ -525,12 +525,12 @@ impl ReadSession {
         let key = if checkout.id.is_package_primary() {
             StorageKey::Primary {
                 package: definition.app_id().into(),
-                workspace: source.room.to_owned(),
+                workspace: source.workspace.to_owned(),
             }
         } else {
             StorageKey::Record {
                 package: definition.app_id().into(),
-                workspace: source.room.to_owned(),
+                workspace: source.workspace.to_owned(),
                 record: checkout.id.as_str().into(),
             }
         };
@@ -540,10 +540,11 @@ impl ReadSession {
             Some(automerge::ActorId::random().to_bytes().to_vec()),
         )?;
         let records = RecordOwners::portable(cache.clone())
-            .open(definition.app_id(), source.room)
+            .open(definition.app_id(), source.workspace)
             .map_err(|error| error.to_string())?;
         let views = Rc::new(
-            InstanceViewStore::portable(cache, source.room).map_err(|error| error.to_string())?,
+            InstanceViewStore::portable(cache, source.workspace)
+                .map_err(|error| error.to_string())?,
         );
         let permissions = SharedPermissions::new(policy.permissions());
         let target = LaunchTarget::Record {

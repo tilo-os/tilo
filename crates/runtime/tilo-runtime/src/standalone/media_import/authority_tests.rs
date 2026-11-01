@@ -11,7 +11,7 @@ fn issued_owner_permits_recheck_execution_and_device_revocation() {
         return;
     };
     let session = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
-    let room = session.room();
+    let workspace = session.workspace();
     let runtime = session.media_host().handle().unwrap();
     let store = session.media_host().store();
     let media = DocumentMedia::new(store.clone());
@@ -22,14 +22,14 @@ fn issued_owner_permits_recheck_execution_and_device_revocation() {
         runtime.clone(),
     );
     let caller = Caller::local_person(session.actor())
-        .in_room(room)
+        .in_workspace(workspace)
         .in_new_execution();
     let actor = BrokerActor::person(session.actor());
     let argument = format!(
         "{}{}",
         tilo_actions::ARGUMENTS_JSON_PREFIX,
         serde_json::json!({
-            "source_store": SOURCE, "source_room": "unscoped", "destination_room": room,
+            "source_store": SOURCE, "source_workspace": "unscoped", "destination_workspace": workspace,
             "hashes": [hash.to_hex()], "max_bytes": 100
         })
     );
@@ -37,7 +37,7 @@ fn issued_owner_permits_recheck_execution_and_device_revocation() {
     let invocation = WorkspaceGovernanceRequest {
         local_device: true,
         execution_lease: caller.execution_lease(),
-        room,
+        workspace,
         actor: &actor,
         resource: RESOURCE,
         action: ACTION,
@@ -49,7 +49,7 @@ fn issued_owner_permits_recheck_execution_and_device_revocation() {
     caller.retire_execution();
     assert!(runtime.block_on(host.import(permit)).is_err());
     let live = Caller::local_person(session.actor())
-        .in_room(room)
+        .in_workspace(workspace)
         .in_new_execution();
     let invocation = WorkspaceGovernanceRequest {
         execution_lease: live.execution_lease(),
@@ -57,10 +57,10 @@ fn issued_owner_permits_recheck_execution_and_device_revocation() {
         ..invocation
     };
     let (host, permit) = service.prepare(&invocation).unwrap();
-    let selected = tilo_identity_host::registry::selected_identity_profile(room)
+    let selected = tilo_identity_host::registry::selected_identity_profile(workspace)
         .unwrap()
         .unwrap();
-    let (_, cert) = tilo_identity_host::broker::trusted_current_device(room).unwrap();
+    let (_, cert) = tilo_identity_host::broker::trusted_current_device(workspace).unwrap();
     tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
         .unwrap()
         .revoke(
@@ -71,7 +71,7 @@ fn issued_owner_permits_recheck_execution_and_device_revocation() {
         )
         .unwrap();
     assert!(runtime.block_on(host.import(permit)).is_err());
-    let scope = runtime_fs::blobs::BlobScope::new(room, "so.tilo.photos").unwrap();
+    let scope = runtime_fs::blobs::BlobScope::new(workspace, "so.tilo.photos").unwrap();
     assert!(!runtime.block_on(media.contains(&scope, hash)));
     drop(session);
 }
@@ -80,16 +80,19 @@ fn issued_owner_permits_recheck_execution_and_device_revocation() {
 fn owner_revision_ignores_effect_updates_but_not_ownership() {
     struct Membership(Workspace);
     impl tilo_identity_host::broker::WorkspaceMembership for Membership {
-        fn with_workspace(&self, room: &RoomId, read: &mut dyn FnMut(&Workspace)) {
-            if &self.0.room() == room {
+        fn with_workspace(&self, workspace: &RoomId, read: &mut dyn FnMut(&Workspace)) {
+            if &self.0.room() == workspace {
                 read(&self.0);
             }
         }
     }
-    let mut membership = Membership(Workspace::new(tilo_desktop_model::WorkspaceId(1), "Room"));
+    let mut membership = Membership(Workspace::new(
+        tilo_desktop_model::WorkspaceId(1),
+        "Workspace",
+    ));
     membership.0.set_owner("owner");
-    let room = membership.0.room().to_string();
-    let revision = owner_revision(&membership, &room, "owner").unwrap();
+    let workspace = membership.0.room().to_string();
+    let revision = owner_revision(&membership, &workspace, "owner").unwrap();
     membership
         .0
         .effect_receipts
@@ -101,13 +104,13 @@ fn owner_revision_ignores_effect_updates_but_not_ownership() {
             2,
         ));
     assert_eq!(
-        owner_revision(&membership, &room, "owner").unwrap(),
+        owner_revision(&membership, &workspace, "owner").unwrap(),
         revision
     );
     membership.0.set_owner("new-owner");
-    assert!(owner_revision(&membership, &room, "owner").is_err());
+    assert!(owner_revision(&membership, &workspace, "owner").is_err());
     assert_ne!(
-        owner_revision(&membership, &room, "new-owner").unwrap(),
+        owner_revision(&membership, &workspace, "new-owner").unwrap(),
         revision
     );
 }

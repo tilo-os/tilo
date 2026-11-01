@@ -907,7 +907,7 @@ pub trait Store {
     /// A [`StoreError`] when the document cannot be created.
     fn create(&mut self, record: &NewRecord) -> Result<ResourceRef, StoreError>;
 
-    /// Create a document under the id `id` and commit it as one change: a package's per-room
+    /// Create a document under the id `id` and commit it as one change: a package's per-workspace
     /// root, `root-<type id>`, which code names as `root T` or by the root's name.
     ///
     /// # Errors

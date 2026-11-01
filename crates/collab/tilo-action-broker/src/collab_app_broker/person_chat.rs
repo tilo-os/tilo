@@ -204,7 +204,7 @@ impl JoinedChannel {
             .person_chat
             .as_ref()
             .ok_or("private person owner unavailable")?;
-        // The owner's serialized transaction checks fresh room membership,
+        // The owner's serialized transaction checks fresh workspace membership,
         // certificate revocation and participants before reading or committing.
         let reply = service.command(&route.cluster_id, &actor, bytes)?;
         if reply.len() > 1024 * 1024 {

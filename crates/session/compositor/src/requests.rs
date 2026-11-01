@@ -118,14 +118,14 @@ impl State {
                 continue;
             };
             let middle = geometry.loc + Point::from((geometry.size.w / 2, geometry.size.h / 2));
-            let owner = |point: Point<i32, Logical>| {
+            let display_at = |point: Point<i32, Logical>| {
                 self.space.outputs().find(|output| {
                     self.space
                         .output_geometry(output)
                         .is_some_and(|area| area.contains(point))
                 })
             };
-            if let Some(output) = owner(middle).or_else(|| owner(geometry.loc))
+            if let Some(output) = display_at(middle).or_else(|| display_at(geometry.loc))
                 && !owned.contains(&output)
             {
                 owned.push(output);

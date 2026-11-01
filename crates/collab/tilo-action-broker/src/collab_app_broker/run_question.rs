@@ -79,7 +79,7 @@ impl AppBrokerState {
         let CallerPrincipal::Person(person) = caller.principal() else {
             return None;
         };
-        let room = caller.room()?;
+        let workspace = caller.room()?;
         let InvokeArgument::Json(arguments) = &invoke.argument else {
             return None;
         };
@@ -87,7 +87,7 @@ impl AppBrokerState {
             "{TRACKER_ISSUE_PREFIX}{}",
             arguments.get("issue")?.as_str()?
         );
-        let (request, grant) = self.run_question_for(room, person, &issue)?;
+        let (request, grant) = self.run_question_for(workspace, person, &issue)?;
         let answer = self.consent_prompter()?.ask(request.clone())?;
         Some(PendingAnswer {
             request,
@@ -103,18 +103,18 @@ impl AppBrokerState {
             .and_then(|prompter| prompter.clone())
     }
 
-    /// What `issue`'s going run, started by `person` in `room`, asks them,
+    /// What `issue`'s going run, started by `person` in `workspace`, asks them,
     /// as the sheet puts it, and the grant "Allow for the issue" records
     /// where they may give it.
     fn run_question_for(
         &self,
-        room: &str,
+        workspace: &str,
         person: &str,
         issue: &str,
     ) -> Option<(AppActionConsentRequest, Option<Grant>)> {
         let run = self
-            .tracker_runs(room)?
-            .runs(room)
+            .tracker_runs(workspace)?
+            .runs(workspace)
             .ok()?
             .into_iter()
             .find(|run| run.issue == issue && run.active && run.starter == person)?;
@@ -124,7 +124,7 @@ impl AppBrokerState {
         let (draft, preview) = super::super::services::confirmation_preview(&question);
         let draft = (!draft.fields.is_empty()).then_some(draft);
         let asked = self.published_surfaces().into_iter().find_map(|surface| {
-            (surface.app_id == question.app && surface.route.cluster_id == room)
+            (surface.app_id == question.app && surface.route.cluster_id == workspace)
                 .then(|| {
                     surface.actions.into_iter().find(|action| {
                         action.action == question.action
@@ -138,13 +138,13 @@ impl AppBrokerState {
             .services
             .app_action_grants
             .as_ref()
-            .is_some_and(|grants| grants.may_grant(room, person));
+            .is_some_and(|grants| grants.may_grant(workspace, person));
         let grant = asked
             .as_ref()
             .filter(|action| may_grant && !action.contract.need().privileged)
             .map(|action| {
                 answer_grant(
-                    room,
+                    workspace,
                     Subject::task(issue),
                     (
                         &issue_answer_scope(
@@ -168,7 +168,7 @@ impl AppBrokerState {
         };
         let request = AppActionConsentRequest {
             handle: run_question_handle(&question.id),
-            room: room.to_owned(),
+            workspace: workspace.to_owned(),
             person: person.to_owned(),
             app_id: run.agent,
             target_app: question.app.clone(),
@@ -213,10 +213,10 @@ impl AppBrokerState {
         }
     }
 
-    /// Tell each person here about what their going runs in `room` ask, as
+    /// Tell each person here about what their going runs in `workspace` ask, as
     /// `runs` holds them, once per question, and take back the notices of
     /// questions answered or gone.
-    pub(super) fn notify_run_questions(self: &Arc<Self>, room: &str, runs: &[TrackerRun]) {
+    pub(super) fn notify_run_questions(self: &Arc<Self>, workspace: &str, runs: &[TrackerRun]) {
         let Some(prompter) = self.consent_prompter() else {
             return;
         };
@@ -231,8 +231,8 @@ impl AppBrokerState {
             .run_question_notices
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        notified.retain(|handle, notice_room| {
-            let keep = notice_room != room || waiting.contains(handle);
+        notified.retain(|handle, notice_workspace| {
+            let keep = notice_workspace != workspace || waiting.contains(handle);
             if !keep {
                 prompter.withdraw(handle);
             }
@@ -250,7 +250,7 @@ impl AppBrokerState {
             if notified.contains_key(&handle) {
                 continue;
             }
-            let Some((request, grant)) = self.run_question_for(room, &run.starter, &run.issue)
+            let Some((request, grant)) = self.run_question_for(workspace, &run.starter, &run.issue)
             else {
                 continue;
             };
@@ -259,7 +259,7 @@ impl AppBrokerState {
             let notice = request.clone();
             let answer = Box::new(move |answer| state.give_answer(notice, grant, &issue, answer));
             if prompter.notify(request, answer) {
-                notified.insert(handle, room.to_owned());
+                notified.insert(handle, workspace.to_owned());
             }
         }
     }
@@ -306,7 +306,8 @@ impl AppBrokerState {
                     return;
                 }
             };
-            let caller = Caller::local_person(request.person.clone()).in_room(&request.room);
+            let caller =
+                Caller::local_person(request.person.clone()).in_workspace(&request.workspace);
             match self.action_invoke_local_person(&caller, &invoke).await {
                 Some(Ok(_)) => {}
                 Some(Err(error)) => tracing::warn!(%error, "the person's answer was refused"),
@@ -328,14 +329,14 @@ impl AppBrokerState {
         answer: &AppActionAnswer,
     ) -> Result<Option<InvokeRequest>, String> {
         use tilo_actions::remote::{Confirmation, RemoteActionTarget};
-        let room = request.room.as_str();
+        let workspace = request.workspace.as_str();
         let mut arguments = serde_json::Map::new();
         answer_arguments(request, answer, &mut arguments)?;
         let Some(id) = issue.strip_prefix(TRACKER_ISSUE_PREFIX) else {
             return Ok(None);
         };
         let found = self.published_surfaces().into_iter().find_map(|surface| {
-            let action = (surface.app_id == TRACKER_APP && surface.route.cluster_id == room)
+            let action = (surface.app_id == TRACKER_APP && surface.route.cluster_id == workspace)
                 .then(|| {
                     surface
                         .actions

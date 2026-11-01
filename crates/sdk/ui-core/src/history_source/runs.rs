@@ -5,7 +5,7 @@
 //! neither app's history can undo the other's. [`groups`](crate::history_source::groups)
 //! names a run *within* one document; this is the record above it.
 //!
-//! It lives in the coordinator's collaborative document (often the room
+//! It lives in the coordinator's collaborative document (often the workspace
 //! document, or the primary document for a headless agent). That coordinator
 //! cannot materialise every app's document, so a record holds no content,
 //! only references. Undoing is

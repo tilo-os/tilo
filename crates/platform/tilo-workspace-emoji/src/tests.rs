@@ -1,5 +1,5 @@
 use super::{EmojiImage, MAX_EMOJI, MAX_IMAGE_BYTES, WorkspaceEmoji, workspace_emoji};
-use tilo_action_policy::{ActionKind, Answer, Authority, Context, Role, RoomPolicy, roles};
+use tilo_action_policy::{ActionKind, Answer, Authority, Context, Role, WorkspacePolicy, roles};
 use tilo_resource::{Model as _, Replica, Resource as _};
 
 const ALICE: &str = "a11ce";
@@ -155,7 +155,7 @@ fn removing_anyones_emoji_sits_under_the_moderation_node() {
 /// and someone who may only view or comment adds none.
 #[test]
 fn the_rooms_roles_decide_who_adds_and_who_moderates() {
-    let mut room = RoomPolicy::new("r", ALICE);
+    let mut room = WorkspacePolicy::new("r", ALICE);
     for (person, role) in [
         (BOB, Role::Editor),
         (CAROL, Role::Moderator),
@@ -170,7 +170,7 @@ fn the_rooms_roles_decide_who_adds_and_who_moderates() {
             .find(|decl| decl.id == id)
             .unwrap();
         tilo_actions::action_node(
-            &tilo_action_policy::TreePath::room("r"),
+            &tilo_action_policy::TreePath::workspace("r"),
             super::OWNER,
             WorkspaceEmoji::KIND,
             "workspace-emoji",

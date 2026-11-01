@@ -3,7 +3,7 @@
 //! record the agent opens; it is held in the replica of the record that
 //! keeps it, as a window holds it, so the record's operations read and
 //! write it (a post goes to the chat's head part). A part that arrives
-//! before its record is open waits with the room's unopened records and is
+//! before its record is open waits with the workspace's unopened records and is
 //! held when the record opens; what an operation changed of a part goes out
 //! on the part's own route.
 
@@ -65,7 +65,7 @@ impl AgentParticipant {
     }
 
     /// Hold in the record just opened at `holder` the parts of its app the
-    /// room sent before it was open.
+    /// workspace sent before it was open.
     pub(super) fn hold_waiting_parts(&mut self, holder: &DocumentRoute) {
         let waiting: Vec<DocumentRoute> = self
             .unopened
@@ -118,7 +118,7 @@ impl AgentParticipant {
             };
             // A part another member already started, which this agent
             // started again without holding it (its keys had not come):
-            // the room keeps the first start as the part's checkpoint, so
+            // the workspace keeps the first start as the part's checkpoint, so
             // this one goes out as changes on top of it, which meet the
             // others' as two starts of one part do.
             let mutation = match mutation {

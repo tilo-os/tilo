@@ -1,10 +1,10 @@
-//! What the runtime invokes is decided by the room's one policy: the person's standing, the
+//! What the runtime invokes is decided by the workspace's one policy: the person's standing, the
 //! answers they gave their agents, and the authors of the code, the minimum winning.
 
 use automerge::AutoCommit;
 use serde_json::json;
 use tilo_action_policy::agent_answers::{self, AnswerScope};
-use tilo_action_policy::{ActionKind, Answer, RoomPolicy, Standing, Subject};
+use tilo_action_policy::{ActionKind, Answer, Standing, Subject, WorkspacePolicy};
 use tilolang_runtime::{AgentBlock, Principal};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{Caller, PlanRequest};
@@ -16,7 +16,7 @@ const TODO_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const LETTERS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.tl");
 const LETTERS_IDS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.ids");
 const APP: &str = "so.tilo.lang.tasks";
-const ROOM: &str = "room";
+const WORKSPACE: &str = "workspace";
 
 fn agent() -> Caller {
     Caller {
@@ -26,9 +26,9 @@ fn agent() -> Caller {
     }
 }
 
-/// Ada's standing in a room she owns and Grace edits, with `answers` she gave her agents.
+/// Ada's standing in a workspace she owns and Grace edits, with `answers` she gave her agents.
 fn standing(answers: Vec<tilo_action_policy::Grant>) -> Standing {
-    let mut policy = RoomPolicy::new(ROOM, "ada");
+    let mut policy = WorkspacePolicy::new(WORKSPACE, "ada");
     policy
         .members
         .insert("grace".to_owned(), tilo_action_policy::Role::Editor);
@@ -52,7 +52,7 @@ fn state(block: AgentBlock) -> String {
 #[test]
 fn an_agent_the_person_denied_the_app_is_denied() {
     let answer = agent_answers::grant(
-        ROOM,
+        WORKSPACE,
         "task-1",
         (&AnswerScope::app(APP), ActionKind::Undoable),
         Answer::Deny,
@@ -104,14 +104,14 @@ fn untrusted_code_asks_and_the_persons_agents_code_runs() {
     );
     ada.host.root_of(APP).unwrap();
     ada.commit();
-    // Code Grace wrote, which nobody here trusts, asks; she may edit the room herself.
+    // Code Grace wrote, which nobody here trusts, asks; she may edit the workspace herself.
     let untrusted = ada
         .host
         .runtime()
         .run_agent_block(&Principal::new("grace"), &add_block(&ada, "milk"))
         .unwrap();
     assert_eq!(state(untrusted), "suggested");
-    // Someone the room does not know is refused outright.
+    // Someone the workspace does not know is refused outright.
     let stranger = ada
         .host
         .runtime()

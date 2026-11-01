@@ -211,7 +211,7 @@ async fn admit_directory_invoke(
 ) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError> {
     use tilo_actions::remote::{Caller, PendingPoll};
     let caller = Caller::local_person("fixture-owner")
-        .in_room(fixture.cluster_id.clone())
+        .in_workspace(fixture.cluster_id.clone())
         .in_new_execution();
     let mut pending = fixture.state.action_invoke(&caller, None, None, request);
     tilo_test_env::within("bounded directory admission", async {
@@ -238,7 +238,7 @@ async fn a_directory_invoke_naming_no_revision_resolves_the_directory_as_it_is_n
             let mut fixture = local_directory_fixture();
             let revisions = record_resolutions(&fixture, Some("r9"));
             let caller = Caller::local_person("fixture-owner")
-                .in_room(fixture.cluster_id.clone())
+                .in_workspace(fixture.cluster_id.clone())
                 .in_new_execution();
             let mut request = directory_request(&fixture, Some(""), None);
             assert!(matches!(
@@ -384,10 +384,10 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
     tokio::task::LocalSet::new()
         .run_until(async {
             use runtime_collab::{SHAPE_ID_BYTES, SurfaceDelta, SurfaceResource};
-            use signed_worker::{OriginalRoom, directory_state};
-            let room =
-                OriginalRoom::new(tilo_user_identity::DeviceCapabilities::host(), None, None);
-            let (worker, _authorize) = room.join_worker(905).await;
+            use signed_worker::{OriginalWorkspace, directory_state};
+            let workspace =
+                OriginalWorkspace::new(tilo_user_identity::DeviceCapabilities::host(), None, None);
+            let (worker, _authorize) = workspace.join_worker(905).await;
             let handle = &worker.handle;
             let mut base = directory_state("original-r1")
                 .borrow()
@@ -415,7 +415,8 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
                     template,
                 };
             let surface = || {
-                room.state
+                workspace
+                    .state
                     .surfaces
                     .lock()
                     .unwrap()

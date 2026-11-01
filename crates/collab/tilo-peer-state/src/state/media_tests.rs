@@ -1,11 +1,11 @@
 use super::*;
-use crate::room::media;
+use crate::workspace::media;
 use automerge::{ObjType, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use tilo_automerge::ApplyIncoming;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
-const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "so.tilo.chat";
 fn fixture() -> (StatePeer, SigningKey, SystemTime) {
     let root = SigningKey::from_bytes(&[101; 32]);
@@ -24,7 +24,7 @@ fn fixture() -> (StatePeer, SigningKey, SystemTime) {
         .checked_add(Duration::from_secs(2000))
         .unwrap();
     let mut peer = StatePeer::new(
-        ROOM,
+        WORKSPACE,
         certificate.clone(),
         vec![],
         RevocationList::new(),
@@ -41,7 +41,8 @@ fn fixture() -> (StatePeer, SigningKey, SystemTime) {
     chat.put(&channel, "workspace", "home").unwrap();
     peer.install_seed(
         SeedState {
-            room_changes: seed_room(ROOM, &certificate, &[certificate.clone()]).unwrap(),
+            workspace_changes: seed_workspace(WORKSPACE, &certificate, &[certificate.clone()])
+                .unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
                 record_id: String::new(),
@@ -58,7 +59,7 @@ fn fixture() -> (StatePeer, SigningKey, SystemTime) {
 }
 fn message(doc: &mut AutoCommit) -> NeighbourMsg {
     NeighbourMsg::SyncResp {
-        room: ROOM.into(),
+        room: WORKSPACE.into(),
         changes: doc
             .get_changes(&[])
             .iter()
@@ -67,15 +68,17 @@ fn message(doc: &mut AutoCommit) -> NeighbourMsg {
     }
 }
 #[test]
-fn room_media_native_rejects_malformed_policy_before_any_mutation() {
+fn workspace_media_native_rejects_malformed_policy_before_any_mutation() {
     let (mut peer, key, now) = fixture();
     let before = peer.durable().unwrap();
-    let mut room = peer.admitted_room().unwrap().clone();
-    room.put(ROOT, media::FIELD, "not policy bytes").unwrap();
+    let mut workspace = peer.admitted_workspace().unwrap().clone();
+    workspace
+        .put(ROOT, media::FIELD, "not policy bytes")
+        .unwrap();
     assert!(
         peer.receive_from(
             TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-            message(&mut room),
+            message(&mut workspace),
             now
         )
         .is_err()
@@ -83,10 +86,10 @@ fn room_media_native_rejects_malformed_policy_before_any_mutation() {
     assert_eq!(before, peer.durable().unwrap());
 }
 #[test]
-fn room_media_restore_rejects_malformed_present_policy() {
+fn workspace_media_restore_rejects_malformed_present_policy() {
     let (mut peer, _, now) = fixture();
     peer.core
-        .room_doc
+        .workspace_doc
         .as_mut()
         .unwrap()
         .put(ROOT, media::FIELD, "not policy bytes")
@@ -95,7 +98,7 @@ fn room_media_restore_rejects_malformed_present_policy() {
     assert!(
         StatePeer::restore(
             &bytes,
-            ROOM,
+            WORKSPACE,
             peer.owner_certificates()[0].clone(),
             vec![],
             RevocationList::new(),
@@ -104,18 +107,19 @@ fn room_media_restore_rejects_malformed_present_policy() {
         .is_err()
     );
 }
-fn policy(peer: &StatePeer) -> media::RoomMediaV1 {
+fn policy(peer: &StatePeer) -> media::WorkspaceMediaV1 {
     let chat = AutoCommit::load(&peer.document(APP, "").unwrap()).unwrap();
     let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
     let object = {
         let entry = chat.get(&channels, "voice").unwrap().unwrap().1;
         chat.get(&entry, "v").unwrap().unwrap().1
     };
-    media::RoomMediaV1 {
+    media::WorkspaceMediaV1 {
         version: 1,
-        room: *uuid::Uuid::parse_str(ROOM).unwrap().as_bytes(),
+        workspace: *uuid::Uuid::parse_str(WORKSPACE).unwrap().as_bytes(),
         authorization_revision: 1,
-        authorization_basis: media::security_basis(peer.admitted_room().unwrap(), &[]).unwrap(),
+        authorization_basis: media::security_basis(peer.admitted_workspace().unwrap(), &[])
+            .unwrap(),
         calls: BTreeMap::from([(
             [7; 32],
             media::CallV1 {
@@ -141,9 +145,9 @@ fn install_policy(
     peer: &mut StatePeer,
     key: &SigningKey,
     now: SystemTime,
-    value: &media::RoomMediaV1,
+    value: &media::WorkspaceMediaV1,
 ) -> Result<ReceiveOutcome, String> {
-    let mut doc = peer.admitted_room().unwrap().clone();
+    let mut doc = peer.admitted_workspace().unwrap().clone();
     doc.put(
         ROOT,
         media::FIELD,
@@ -188,7 +192,7 @@ fn edited_chat(peer: &StatePeer, operation: u8) -> (Vec<u8>, Vec<u8>) {
     (chat.save(), changes)
 }
 #[test]
-fn room_media_active_chat_publication_rejects_destructive_edits_atomically() {
+fn workspace_media_active_chat_publication_rejects_destructive_edits_atomically() {
     for operation in [0, 1, 2, 4] {
         for snapshot in [false, true] {
             let (mut peer, key, now) = fixture();
@@ -226,7 +230,7 @@ fn room_media_active_chat_publication_rejects_destructive_edits_atomically() {
     assert_eq!(peer.validated_media_policy().unwrap(), Some(value));
 }
 #[test]
-fn room_media_room_policy_cannot_activate_a_present_mismatched_binding() {
+fn workspace_media_workspace_policy_cannot_activate_a_present_mismatched_binding() {
     let (mut peer, key, now) = fixture();
     let mut value = policy(&peer);
     value.calls.get_mut(&[7; 32]).unwrap().binding.channel_id = "missing".into();
@@ -235,7 +239,7 @@ fn room_media_room_policy_cannot_activate_a_present_mismatched_binding() {
     assert_eq!(before, peer.durable().unwrap());
 }
 #[test]
-fn room_media_policy_epoch_and_basis_cannot_change_at_equal_revision() {
+fn workspace_media_policy_epoch_and_basis_cannot_change_at_equal_revision() {
     let (mut peer, key, now) = fixture();
     let value = policy(&peer);
     install_policy(&mut peer, &key, now, &value).unwrap();
@@ -250,7 +254,7 @@ fn room_media_policy_epoch_and_basis_cannot_change_at_equal_revision() {
     assert_eq!(before, peer.durable().unwrap());
 }
 #[test]
-fn room_media_restore_rejects_present_mismatched_bound_chat() {
+fn workspace_media_restore_rejects_present_mismatched_bound_chat() {
     let (mut peer, key, now) = fixture();
     let value = policy(&peer);
     install_policy(&mut peer, &key, now, &value).unwrap();
@@ -266,7 +270,7 @@ fn room_media_restore_rejects_present_mismatched_bound_chat() {
     assert!(
         StatePeer::restore(
             &peer.durable().unwrap(),
-            ROOM,
+            WORKSPACE,
             peer.owner_certificates()[0].clone(),
             vec![],
             RevocationList::new(),
@@ -302,28 +306,40 @@ fn members() -> (
     let roster = std::iter::once(original.owner_certificates()[0].clone())
         .chain(members.iter().map(|(_, cert)| cert.clone()))
         .collect::<Vec<_>>();
-    let mut room = room::candidate(
+    let mut workspace = workspace::candidate(
         None,
-        &seed_room(ROOM, &original.owner_certificates()[0], &roster).unwrap(),
+        &seed_workspace(WORKSPACE, &original.owner_certificates()[0], &roster).unwrap(),
     )
     .unwrap();
-    let caps = room.get(ROOT, "members").unwrap().unwrap().1;
-    put_member(&mut room, &caps, members[0].1.user_public_key, Role::Editor).unwrap();
-    put_member(&mut room, &caps, members[1].1.user_public_key, Role::Viewer).unwrap();
+    let caps = workspace.get(ROOT, "members").unwrap().unwrap().1;
+    put_member(
+        &mut workspace,
+        &caps,
+        members[0].1.user_public_key,
+        Role::Editor,
+    )
+    .unwrap();
+    put_member(
+        &mut workspace,
+        &caps,
+        members[1].1.user_public_key,
+        Role::Viewer,
+    )
+    .unwrap();
     let mut peer = StatePeer::new(
-        ROOM,
+        WORKSPACE,
         original.owner_certificates()[0].clone(),
         roster,
         RevocationList::new(),
         now,
     )
     .unwrap();
-    let NeighbourMsg::SyncResp { changes, .. } = message(&mut room) else {
+    let NeighbourMsg::SyncResp { changes, .. } = message(&mut workspace) else {
         panic!("unexpected fixture shape")
     };
     peer.install_seed(
         SeedState {
-            room_changes: changes,
+            workspace_changes: changes,
             documents: vec![SeedDocument {
                 app_id: APP.into(),
                 record_id: String::new(),
@@ -339,7 +355,7 @@ fn members() -> (
     (peer, key, members, now)
 }
 #[test]
-fn room_media_policy_changes_only_from_the_owners_devices() {
+fn workspace_media_policy_changes_only_from_the_owners_devices() {
     let (mut peer, authority, members, now) = members();
     let value = policy(&peer);
     // The third member is another device of the owner's.
@@ -356,7 +372,7 @@ fn room_media_policy_changes_only_from_the_owners_devices() {
     for (key, _) in members {
         for delete in [false, true] {
             let before = peer.durable().unwrap();
-            let mut doc = peer.admitted_room().unwrap().clone();
+            let mut doc = peer.admitted_workspace().unwrap().clone();
             if delete {
                 doc.delete(ROOT, media::FIELD).unwrap();
             } else {
@@ -383,7 +399,7 @@ fn room_media_policy_changes_only_from_the_owners_devices() {
     }
 }
 #[test]
-fn room_media_signed_editor_edits_preserve_call_binding_and_reader_cannot_write() {
+fn workspace_media_signed_editor_edits_preserve_call_binding_and_reader_cannot_write() {
     let (mut peer, authority, members, now) = members();
     let value = policy(&peer);
     install_policy(&mut peer, &authority, now, &value).unwrap();
@@ -420,9 +436,9 @@ fn room_media_signed_editor_edits_preserve_call_binding_and_reader_cannot_write(
         .unwrap();
     assert_eq!(peer.validated_media_policy().unwrap(), Some(value));
 }
-fn room_first_receiver(author: &StatePeer, key: &SigningKey, now: SystemTime) -> StatePeer {
+fn workspace_first_receiver(author: &StatePeer, key: &SigningKey, now: SystemTime) -> StatePeer {
     let mut receiver = StatePeer::new(
-        ROOM,
+        WORKSPACE,
         author.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
@@ -433,7 +449,7 @@ fn room_first_receiver(author: &StatePeer, key: &SigningKey, now: SystemTime) ->
     receiver
         .receive_from_report(
             TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-            author.room_message(),
+            author.workspace_message(),
             now,
         )
         .unwrap();
@@ -446,7 +462,7 @@ fn assert_invalid_then_valid_chat(
     author: &StatePeer,
     key: &SigningKey,
     now: SystemTime,
-    expected: media::RoomMediaV1,
+    expected: media::WorkspaceMediaV1,
 ) {
     assert!(receiver.admission_v5_selected());
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
@@ -454,10 +470,10 @@ fn assert_invalid_then_valid_chat(
     let (bad, coverage) = author
         .prepare_signed_mutation(APP, "", DocumentMutation::Snapshot(bad_bytes), key, now)
         .unwrap();
-    let mut room = author.admitted_room().unwrap().clone();
-    crate::coverage::put(&mut room, coverage.unwrap()).unwrap();
+    let mut workspace = author.admitted_workspace().unwrap().clone();
+    crate::coverage::put(&mut workspace, coverage.unwrap()).unwrap();
     receiver
-        .receive_from_report(origin, message(&mut room), now)
+        .receive_from_report(origin, message(&mut workspace), now)
         .unwrap();
     let bytes = receiver.durable().unwrap();
     let floors = receiver.replay_floors();
@@ -474,7 +490,7 @@ fn assert_invalid_then_valid_chat(
     assert!(receiver.validated_media_policy().is_err());
 
     // A different snapshot needs its own authentic coverage and a higher
-    // sequence. Continue the same room history so the malicious candidate and
+    // sequence. Continue the same workspace history so the malicious candidate and
     // recovery checkpoint cannot collide at an Automerge actor sequence.
     let good_bytes = author.document(APP, "").unwrap();
     let (mut valid, coverage) = author
@@ -490,9 +506,9 @@ fn assert_invalid_then_valid_chat(
     coverage
         .watermarks
         .insert(hex::encode(key.verifying_key().to_bytes()), envelope.seq);
-    crate::coverage::put(&mut room, coverage).unwrap();
+    crate::coverage::put(&mut workspace, coverage).unwrap();
     receiver
-        .receive_from_report(origin, message(&mut room), now)
+        .receive_from_report(origin, message(&mut workspace), now)
         .unwrap();
     let admitted = receiver.receive_from_report(origin, valid, now).unwrap();
     assert!(matches!(admitted.primary(), InputDisposition::Accepted(_)));
@@ -500,7 +516,7 @@ fn assert_invalid_then_valid_chat(
 }
 
 #[test]
-fn room_media_room_first_restore_preserves_pending_exact_chat() {
+fn workspace_media_workspace_first_restore_preserves_pending_exact_chat() {
     let (mut author, key, now) = fixture();
     let value = policy(&author);
     install_policy(&mut author, &key, now, &value).unwrap();
@@ -508,17 +524,17 @@ fn room_media_room_first_restore_preserves_pending_exact_chat() {
         .publication_mut()
         .bootstrap_messages(&key, now)
         .unwrap();
-    let receiver = room_first_receiver(&author, &key, now);
+    let receiver = workspace_first_receiver(&author, &key, now);
     let bytes = receiver.durable().unwrap();
     let restored = StatePeer::restore(
         &bytes,
-        ROOM,
+        WORKSPACE,
         author.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
         now,
     )
-    .expect("accepted room-first state must remain recoverable before Chat arrives");
+    .expect("accepted workspace-first state must remain recoverable before Chat arrives");
     assert_eq!(bytes, restored.durable().unwrap());
     assert!(restored.admission_v5_selected());
     assert!(restored.validated_media_policy().is_err());
@@ -526,7 +542,7 @@ fn room_media_room_first_restore_preserves_pending_exact_chat() {
 }
 
 #[test]
-fn room_media_strict_missing_chat_snapshot_reaches_binding_guard() {
+fn workspace_media_strict_missing_chat_snapshot_reaches_binding_guard() {
     let (mut author, key, now) = fixture();
     let value = policy(&author);
     install_policy(&mut author, &key, now, &value).unwrap();
@@ -534,11 +550,11 @@ fn room_media_strict_missing_chat_snapshot_reaches_binding_guard() {
         .publication_mut()
         .bootstrap_messages(&key, now)
         .unwrap();
-    let receiver = room_first_receiver(&author, &key, now);
+    let receiver = workspace_first_receiver(&author, &key, now);
     assert_invalid_then_valid_chat(receiver, &author, &key, now, value);
 }
 #[test]
-fn room_media_exact_record_foreign_room_and_alias_are_not_substitutes() {
+fn workspace_media_exact_record_foreign_workspace_and_alias_are_not_substitutes() {
     let (mut peer, key, now) = fixture();
     let other = edited_chat(&peer, 5).0;
     peer.publication_mut()
@@ -555,7 +571,7 @@ fn room_media_exact_record_foreign_room_and_alias_are_not_substitutes() {
         .unwrap();
     assert_eq!(peer.validated_media_policy().unwrap(), Some(value.clone()));
     let mut wrong = value;
-    wrong.room = *uuid::Uuid::parse_str("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+    wrong.workspace = *uuid::Uuid::parse_str("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
         .unwrap()
         .as_bytes();
     let before = peer.durable().unwrap();
@@ -563,7 +579,7 @@ fn room_media_exact_record_foreign_room_and_alias_are_not_substitutes() {
     assert_eq!(before, peer.durable().unwrap());
 }
 #[test]
-fn room_media_ended_call_allows_delete_but_cannot_restart_missing_object() {
+fn workspace_media_ended_call_allows_delete_but_cannot_restart_missing_object() {
     let (mut peer, key, now) = fixture();
     let mut value = policy(&peer);
     install_policy(&mut peer, &key, now, &value).unwrap();
@@ -580,35 +596,42 @@ fn room_media_ended_call_allows_delete_but_cannot_restart_missing_object() {
     assert!(install_policy(&mut peer, &key, now, &value).is_err());
 }
 #[test]
-fn room_media_security_basis_excludes_labels_and_normalizes_identity_json() {
+fn workspace_media_security_basis_excludes_labels_and_normalizes_identity_json() {
     let (peer, _, _) = fixture();
-    let mut room = peer.admitted_room().unwrap().clone();
-    let initial = media::security_basis(&room, &[]).unwrap();
-    room.put(ROOT, "name", "renamed").unwrap();
-    let peers = room.get(ROOT, "peers").unwrap().unwrap().1;
-    room.put(
-        &peers,
-        hex::encode(peer.owner_certificates()[0].device_public_key),
-        "label",
-    )
-    .unwrap();
-    let ids = room.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
+    let mut workspace = peer.admitted_workspace().unwrap().clone();
+    let initial = media::security_basis(&workspace, &[]).unwrap();
+    workspace.put(ROOT, "name", "renamed").unwrap();
+    let peers = workspace.get(ROOT, "peers").unwrap().unwrap().1;
+    workspace
+        .put(
+            &peers,
+            hex::encode(peer.owner_certificates()[0].device_public_key),
+            "label",
+        )
+        .unwrap();
+    let ids = workspace
+        .get(ROOT, "peer_identities_v1")
+        .unwrap()
+        .unwrap()
+        .1;
     let id = hex::encode(peer.owner_certificates()[0].device_public_key);
     let row: GovernedIdentity =
-        serde_json::from_slice(&room::governance_of(Some(&room)).identities[&id]).unwrap();
-    room.put(
-        &ids,
-        id,
-        automerge::ScalarValue::Bytes(serde_json::to_vec_pretty(&row).unwrap()),
-    )
-    .unwrap();
-    assert_eq!(initial, media::security_basis(&room, &[]).unwrap());
-    let caps = room.get(ROOT, "members").unwrap().unwrap().1;
-    put_member(&mut room, &caps, [44; 32], Role::Viewer).unwrap();
-    assert_ne!(initial, media::security_basis(&room, &[]).unwrap());
+        serde_json::from_slice(&workspace::governance_of(Some(&workspace)).identities[&id])
+            .unwrap();
+    workspace
+        .put(
+            &ids,
+            id,
+            automerge::ScalarValue::Bytes(serde_json::to_vec_pretty(&row).unwrap()),
+        )
+        .unwrap();
+    assert_eq!(initial, media::security_basis(&workspace, &[]).unwrap());
+    let caps = workspace.get(ROOT, "members").unwrap().unwrap().1;
+    put_member(&mut workspace, &caps, [44; 32], Role::Viewer).unwrap();
+    assert_ne!(initial, media::security_basis(&workspace, &[]).unwrap());
 }
 #[test]
-fn room_media_governance_role_removal_and_enrollment_refresh_once() {
+fn workspace_media_governance_role_removal_and_enrollment_refresh_once() {
     let (mut peer, key, members, now) = members();
     let value = policy(&peer);
     install_policy(&mut peer, &key, now, &value).unwrap();
@@ -668,7 +691,7 @@ fn room_media_governance_role_removal_and_enrollment_refresh_once() {
     );
 }
 #[test]
-fn room_media_verified_independent_revocation_denies_before_promotion() {
+fn workspace_media_verified_independent_revocation_denies_before_promotion() {
     let (mut peer, key, members, now) = members();
     let value = policy(&peer);
     install_policy(&mut peer, &key, now, &value).unwrap();
@@ -698,23 +721,29 @@ fn room_media_verified_independent_revocation_denies_before_promotion() {
             .is_err(),
         "same-root public restriction remains"
     );
-    let old = peer.admitted_room().unwrap().clone();
-    let mut room = old.clone();
-    let ids = room.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
+    let old = peer.admitted_workspace().unwrap().clone();
+    let mut workspace = old.clone();
+    let ids = workspace
+        .get(ROOT, "peer_identities_v1")
+        .unwrap()
+        .unwrap()
+        .1;
     let id = hex::encode(members[0].1.device_public_key);
     let mut row: GovernedIdentity =
-        serde_json::from_slice(&room::governance_of(Some(&room)).identities[&id]).unwrap();
+        serde_json::from_slice(&workspace::governance_of(Some(&workspace)).identities[&id])
+            .unwrap();
     row.revocations.push(revoked);
-    room.put(
-        &ids,
-        id,
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
-    )
-    .unwrap();
-    media::refresh_authorization(&old, &mut room).unwrap();
+    workspace
+        .put(
+            &ids,
+            id,
+            automerge::ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+        )
+        .unwrap();
+    media::refresh_authorization(&old, &mut workspace).unwrap();
     peer.receive_from(
         TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-        message(&mut room),
+        message(&mut workspace),
         now,
     )
     .unwrap();
@@ -727,7 +756,7 @@ fn room_media_verified_independent_revocation_denies_before_promotion() {
     );
 }
 #[test]
-fn room_media_current_revoked_or_expired_governor_cannot_publish_policy() {
+fn workspace_media_current_revoked_or_expired_governor_cannot_publish_policy() {
     for expired in [false, true] {
         let (mut peer, key, now) = fixture();
         let value = policy(&peer);
@@ -738,10 +767,11 @@ fn room_media_current_revoked_or_expired_governor_cannot_publish_policy() {
             cert.expires_at_ns = Some(now_ns(now) + 1);
             sign_device_cert(&mut cert, &SigningKey::from_bytes(&[101; 32])).unwrap();
             let doc = peer.document(APP, "").unwrap();
-            peer = StatePeer::new(ROOM, cert.clone(), vec![], RevocationList::new(), now).unwrap();
+            peer = StatePeer::new(WORKSPACE, cert.clone(), vec![], RevocationList::new(), now)
+                .unwrap();
             peer.install_seed(
                 SeedState {
-                    room_changes: seed_room(ROOM, &cert, &[cert.clone()]).unwrap(),
+                    workspace_changes: seed_workspace(WORKSPACE, &cert, &[cert.clone()]).unwrap(),
                     documents: vec![SeedDocument {
                         app_id: APP.into(),
                         record_id: String::new(),
@@ -777,29 +807,35 @@ fn room_media_current_revoked_or_expired_governor_cannot_publish_policy() {
 }
 
 #[test]
-fn room_media_restore_rejects_governed_certificate_replacement() {
+fn workspace_media_restore_rejects_governed_certificate_replacement() {
     let (mut peer, key, now) = fixture();
     let value = policy(&peer);
     install_policy(&mut peer, &key, now, &value).unwrap();
-    let mut room = peer.admitted_room().unwrap().clone();
-    let ids = room.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
+    let mut workspace = peer.admitted_workspace().unwrap().clone();
+    let ids = workspace
+        .get(ROOT, "peer_identities_v1")
+        .unwrap()
+        .unwrap()
+        .1;
     let id = hex::encode(peer.owner_certificates()[0].device_public_key);
     let mut row: GovernedIdentity =
-        serde_json::from_slice(&room::governance_of(Some(&room)).identities[&id]).unwrap();
+        serde_json::from_slice(&workspace::governance_of(Some(&workspace)).identities[&id])
+            .unwrap();
     row.device_cert.device_label = "replacement certificate".into();
     sign_device_cert(&mut row.device_cert, &SigningKey::from_bytes(&[101; 32])).unwrap();
-    room.put(
-        &ids,
-        id,
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
-    )
-    .unwrap();
-    media::refresh_authorization(peer.admitted_room().unwrap(), &mut room).unwrap();
-    peer.core.room_doc = Some(room.into());
+    workspace
+        .put(
+            &ids,
+            id,
+            automerge::ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+        )
+        .unwrap();
+    media::refresh_authorization(peer.admitted_workspace().unwrap(), &mut workspace).unwrap();
+    peer.core.workspace_doc = Some(workspace.into());
     assert!(
         StatePeer::restore(
             &peer.durable().unwrap(),
-            ROOM,
+            WORKSPACE,
             peer.owner_certificates()[0].clone(),
             vec![],
             RevocationList::new(),
@@ -809,7 +845,7 @@ fn room_media_restore_rejects_governed_certificate_replacement() {
     );
 }
 #[test]
-fn room_media_sdk_snapshot_uses_same_binding_guard() {
+fn workspace_media_sdk_snapshot_uses_same_binding_guard() {
     let (mut peer, key, now) = fixture();
     let value = policy(&peer);
     install_policy(&mut peer, &key, now, &value).unwrap();
@@ -828,7 +864,7 @@ fn room_media_sdk_snapshot_uses_same_binding_guard() {
     assert_eq!(before, peer.durable().unwrap());
 }
 #[test]
-fn room_media_governed_security_change_without_revision_rejected_and_exhaustion_atomic() {
+fn workspace_media_governed_security_change_without_revision_rejected_and_exhaustion_atomic() {
     let (mut peer, key, members, now) = members();
     let mut value = policy(&peer);
     value.authorization_revision = u64::MAX;
@@ -840,7 +876,7 @@ fn room_media_governed_security_change_without_revision_rejected_and_exhaustion_
             .is_err()
     );
     assert_eq!(before, peer.durable().unwrap());
-    let mut document = peer.admitted_room().unwrap().clone();
+    let mut document = peer.admitted_workspace().unwrap().clone();
     let caps = document.get(ROOT, "members").unwrap().unwrap().1;
     put_member(
         &mut document,
@@ -860,16 +896,16 @@ fn room_media_governed_security_change_without_revision_rejected_and_exhaustion_
     assert_eq!(before, peer.durable().unwrap());
 }
 #[test]
-fn room_media_reader_uses_current_room_read_without_room_write() {
+fn workspace_media_reader_uses_current_workspace_read_without_workspace_write() {
     let (mut peer, key, members, now) = members();
     let value = policy(&peer);
     install_policy(&mut peer, &key, now, &value).unwrap();
     let member = peer
         .permissions(members[1].1.device_public_key, now)
         .unwrap();
-    let room_node = TreePath::room(ROOM);
-    assert!(member.allows(&room_node, ActionKind::Read, now));
-    assert!(!member.allows(&room_node, ActionKind::Undoable, now));
+    let workspace_node = TreePath::workspace(WORKSPACE);
+    assert!(member.allows(&workspace_node, ActionKind::Read, now));
+    assert!(!member.allows(&workspace_node, ActionKind::Undoable, now));
     peer.governance_mut()
         .remove_member(members[1].1.user_public_key, &key, now)
         .unwrap();
@@ -879,7 +915,7 @@ fn room_media_reader_uses_current_room_read_without_room_write() {
     );
 }
 #[test]
-fn room_media_signed_present_policy_schema_matrix_is_rejected_atomically() {
+fn workspace_media_signed_present_policy_schema_matrix_is_rejected_atomically() {
     let (mut peer, key, now) = fixture();
     let value = policy(&peer);
     install_policy(&mut peer, &key, now, &value).unwrap();
@@ -905,7 +941,7 @@ fn room_media_signed_present_policy_schema_matrix_is_rejected_atomically() {
         media::encode(&wrong_basis).unwrap(),
         vec![0; media::MAX_POLICY_BYTES + 1],
     ] {
-        let mut doc = peer.admitted_room().unwrap().clone();
+        let mut doc = peer.admitted_workspace().unwrap().clone();
         doc.put(ROOT, media::FIELD, automerge::ScalarValue::Bytes(bytes))
             .unwrap();
         let before = peer.durable().unwrap();
@@ -919,7 +955,7 @@ fn room_media_signed_present_policy_schema_matrix_is_rejected_atomically() {
         );
         assert_eq!(before, peer.durable().unwrap());
     }
-    let mut doc = AutoCommit::load(&peer.core.room_doc.as_ref().unwrap().saved()).unwrap();
+    let mut doc = AutoCommit::load(&peer.core.workspace_doc.as_ref().unwrap().saved()).unwrap();
     let mut branch = doc.fork();
     doc.set_actor(automerge::ActorId::from(vec![31]));
     branch.set_actor(automerge::ActorId::from(vec![32]));
@@ -943,7 +979,7 @@ fn room_media_signed_present_policy_schema_matrix_is_rejected_atomically() {
     );
 }
 #[test]
-fn room_media_governed_revocation_fence_cannot_be_removed_by_higher_revision() {
+fn workspace_media_governed_revocation_fence_cannot_be_removed_by_higher_revision() {
     let (mut peer, key, _, now) = members();
     let value = policy(&peer);
     install_policy(&mut peer, &key, now, &value).unwrap();
@@ -961,13 +997,14 @@ fn room_media_governed_revocation_fence_cannot_be_removed_by_higher_revision() {
         .unwrap();
     // The relay's historical retention proof refuses the same candidate; that
     // half lives beside the proof, in `tilo-relay-shell`.
-    let mut current = peer.admitted_room().unwrap().clone();
+    let mut current = peer.admitted_workspace().unwrap().clone();
     let ids = current.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
     // Every owner device's row carries the owner's revocations: clear them all.
     for cert in peer.owner_certificates() {
         let id = hex::encode(cert.device_public_key);
         let mut row: GovernedIdentity =
-            serde_json::from_slice(&room::governance_of(Some(&current)).identities[&id]).unwrap();
+            serde_json::from_slice(&workspace::governance_of(Some(&current)).identities[&id])
+                .unwrap();
         row.revocations.clear();
         current
             .put(

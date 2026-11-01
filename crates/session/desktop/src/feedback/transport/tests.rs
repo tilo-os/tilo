@@ -22,9 +22,9 @@ fn enrollment() -> Enrollment {
             provider: "record:so.tilo.chat:".into(),
             channel: "feedback".into(),
         },
-        owner: Caller::authenticated([11; 32], owner.verifying_key().to_bytes()).in_room(ROOM),
+        owner: Caller::authenticated([11; 32], owner.verifying_key().to_bytes()).in_workspace(ROOM),
         reporter: Caller::authenticated([12; 32], reporter.verifying_key().to_bytes())
-            .in_room(ROOM),
+            .in_workspace(ROOM),
         permissions: PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Owner)
             .at_unix_time(0),
     }
@@ -33,10 +33,10 @@ fn enrollment() -> Enrollment {
 /// `person`, holding no role in the workspace.
 fn no_member(person: &str) -> PermissionContext {
     PermissionContext::new(
-        Actor::person(person).in_room(ROOM),
+        Actor::person(person).in_workspace(ROOM),
         vec![],
         ui::permissions::Standing::person(
-            policy::RoomPolicy::unowned(ROOM, &policy::Subject::Role(Role::Owner)),
+            policy::WorkspacePolicy::unowned(ROOM, &policy::Subject::Role(Role::Owner)),
             person,
         ),
     )
@@ -47,7 +47,7 @@ fn submit_grant(kinds: KindSet, answer: Answer) -> policy::Grant {
     policy::Grant::new(
         "feedback-submit",
         policy::Subject::person(hex::encode([12; 32])),
-        TreePath::room(ROOM).join(&chat_action(
+        TreePath::workspace(ROOM).join(&chat_action(
             "channels",
             "feedback",
             Some(destination::SUBMIT_FIELD),
@@ -396,7 +396,7 @@ fn canonical_owner_refuses_pending_edits_wrong_owner_and_wrong_reporter() {
         [11; 32],
         SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes(),
     )
-    .in_room(ROOM);
+    .in_workspace(ROOM);
     assert!(matches!(
         service.receipt(&report, &wrong_owner),
         Err(Error::ReceiptMismatch)
@@ -406,7 +406,7 @@ fn canonical_owner_refuses_pending_edits_wrong_owner_and_wrong_reporter() {
         [15; 32],
         SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes(),
     )
-    .in_room(ROOM);
+    .in_workspace(ROOM);
     wrong_reporter.permissions =
         PermissionContext::member_of(ROOM, hex::encode([15; 32]), Role::Owner).at_unix_time(0);
     assert!(matches!(
@@ -802,7 +802,7 @@ fn changed_reporter_before_dispatch_cannot_enqueue_under_another_identity() {
         [15; 32],
         SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes(),
     )
-    .in_room(ROOM);
+    .in_workspace(ROOM);
     current.borrow_mut().permissions =
         PermissionContext::member_of(ROOM, hex::encode([15; 32]), Role::Owner);
     assert!(matches!(
@@ -874,7 +874,7 @@ fn persisted_owner_pin_and_current_role_survive_reconnect_without_reauthorizatio
         [11; 32],
         SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes(),
     )
-    .in_room(ROOM);
+    .in_workspace(ROOM);
     assert!(matches!(
         Host::open(store, startup(changed)),
         Err(Error::ReceiptMismatch)

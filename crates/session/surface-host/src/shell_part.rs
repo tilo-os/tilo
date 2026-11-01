@@ -100,6 +100,10 @@ const SHELL_FILES: &[(&str, &str)] = &[
         "composer.tl",
         include_str!("../../../../apps/tl/shell/composer.tl"),
     ),
+    (
+        "conversation.tl",
+        include_str!("../../../../apps/tl/shell/conversation.tl"),
+    ),
     ("desk.tl", include_str!("../../../../apps/tl/shell/desk.tl")),
     (
         "docks.tl",
@@ -350,6 +354,9 @@ pub struct NoticeActionReading {
     pub label: String,
 }
 
+mod runs;
+pub use runs::{EntryRefReading, RunEntryReading, RunReading};
+
 /// A timer or stopwatch running in Clocks, as the bar's clock reads it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimerReading {
@@ -443,6 +450,15 @@ pub struct DeskReading {
     /// The running applications' tray items, in the order they registered.
     #[serde(default)]
     pub tray: Vec<TrayReading>,
+    /// The runs of what the person asked the session's agents, oldest first.
+    #[serde(default)]
+    pub runs: Vec<RunReading>,
+    /// Each run's conversation, entry by entry, oldest first.
+    #[serde(default)]
+    pub run_entries: Vec<RunEntryReading>,
+    /// What each program of a run's conversation printed and changed.
+    #[serde(default)]
+    pub entry_refs: Vec<EntryRefReading>,
 }
 
 /// A workspace the person's desk shows, as their arrangement names it.
@@ -687,6 +703,11 @@ pub struct SessionLink {
     /// it in.
     arrangement: RefCell<Option<ArrangementReading>>,
     arrangement_fresh: Cell<bool>,
+    /// The readings of the resources the places name, by their session id: each with its type
+    /// as the shell's runtime names another app's (`<app>#<Type>`) and its JSON.
+    readings: RefCell<BTreeMap<String, (String, serde_json::Value)>>,
+    /// A reading arrived the origin has not handed the runtime yet.
+    readings_fresh: Cell<bool>,
     asked: RefCell<VecDeque<Ask>>,
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
@@ -927,6 +948,9 @@ pub struct SessionOrigin {
     arrangement_strips: BTreeMap<String, Kept<ArrangementStripReading>>,
     arrangement_places: BTreeMap<String, Kept<ArrangementPlaceReading>>,
     tray: BTreeMap<String, Kept<TrayReading>>,
+    runs: BTreeMap<String, Kept<RunReading>>,
+    run_entries: BTreeMap<String, Kept<RunEntryReading>>,
+    entry_refs: BTreeMap<String, Kept<EntryRefReading>>,
     /// Effects handed to the session and not answered yet.
     in_flight: BTreeSet<Ask>,
 }
@@ -950,6 +974,9 @@ impl SessionOrigin {
             arrangement_strips: BTreeMap::new(),
             arrangement_places: BTreeMap::new(),
             tray: BTreeMap::new(),
+            runs: BTreeMap::new(),
+            run_entries: BTreeMap::new(),
+            entry_refs: BTreeMap::new(),
             in_flight: BTreeSet::new(),
         }
     }
@@ -1253,6 +1280,73 @@ impl SessionOrigin {
                         ("notice", text(&a.notice)),
                         ("key", text(&a.key)),
                         ("label", text(&a.label)),
+                    ]
+                },
+            ));
+        }
+        // The runs of the session's agents and their conversations: each entry and each
+        // reference names what it is of by key, as a notice's actions name their notice.
+        if let (Ok(ty), Some(collection)) = (kind("run"), field(desk, "runs")) {
+            writes.extend(sync_items(
+                &mut self.runs,
+                &reading.runs,
+                root,
+                &collection,
+                ty,
+                |r| r.key.clone(),
+                |r| {
+                    vec![
+                        ("key", text(&r.key)),
+                        ("title", text(&r.title)),
+                        ("agent", text(&r.agent)),
+                        ("phase", text(&r.phase)),
+                        ("active", Value::Bool(r.active)),
+                        ("live", text(&r.live)),
+                    ]
+                },
+            ));
+        }
+        if let (Ok(ty), Some(collection)) = (kind("run_entry"), field(desk, "run_entries")) {
+            writes.extend(sync_items(
+                &mut self.run_entries,
+                &reading.run_entries,
+                root,
+                &collection,
+                ty,
+                |e| e.key.clone(),
+                |e| {
+                    vec![
+                        ("key", text(&e.key)),
+                        ("run", text(&e.run)),
+                        ("seq", Value::Int(e.seq)),
+                        ("author", text(&e.author)),
+                        ("by_agent", Value::Bool(e.by_agent)),
+                        ("step", Value::Bool(e.step)),
+                        ("text", text(&e.text)),
+                        ("outcome", text(&e.outcome)),
+                        ("answer", text(&e.answer)),
+                    ]
+                },
+            ));
+        }
+        if let (Ok(ty), Some(collection)) = (kind("entry_ref"), field(desk, "entry_refs")) {
+            writes.extend(sync_items(
+                &mut self.entry_refs,
+                &reading.entry_refs,
+                root,
+                &collection,
+                ty,
+                |r| r.key.clone(),
+                |r| {
+                    vec![
+                        ("key", text(&r.key)),
+                        ("entry", text(&r.entry)),
+                        ("changed", Value::Bool(r.changed)),
+                        ("resource", text(&r.resource)),
+                        ("app_id", text(&r.app_id)),
+                        ("type_kind", text(&r.type_kind)),
+                        ("label", text(&r.label)),
+                        ("change", text(&r.change)),
                     ]
                 },
             ));
@@ -1689,7 +1783,10 @@ impl Origin for SessionOrigin {
     }
 
     fn due(&self) -> bool {
-        self.link.fresh.get() || self.link.arrangement_fresh.get() || self.answered()
+        self.link.fresh.get()
+            || self.link.arrangement_fresh.get()
+            || self.link.readings_fresh.get()
+            || self.answered()
     }
 
     fn poll(&mut self, cx: &OriginCx<'_>) -> Polled {
@@ -1699,6 +1796,7 @@ impl Origin for SessionOrigin {
         };
         let wrote_arrangement = self.poll_arrangement(cx);
         polled.wrote |= wrote_arrangement;
+        polled.wrote |= self.poll_readings(cx);
         if !self.link.fresh.replace(false) {
             return polled;
         }
@@ -1788,15 +1886,30 @@ impl Origin for SessionOrigin {
 struct ShellPlatform {
     packages: Rc<Vec<Compiled>>,
     waker: Waker,
+    /// Where what the composed views change of other apps' resources goes.
+    link: Rc<SessionLink>,
 }
 
 impl Platform for ShellPlatform {
     fn load(&self, host: &Host) -> u64 {
-        for compiled in self.packages.iter() {
-            if let Err(error) = host.load_compiled(compiled) {
-                tracing::error!(app = compiled.meta.app, %error, "a shell package did not load");
+        // The packages the shell uses are other apps' here: their records are the ones their
+        // apps keep, read through the session ([`SessionLink::follow_places`]), and what their
+        // views change goes to those records' doors ([`PlaceInvoker`]). The shell's record
+        // holds the shell's own records only.
+        let Some((shell, uses)) = self.packages.split_last() else {
+            return 0;
+        };
+        for compiled in uses {
+            if let Err(error) = host.load_foreign_package(&compiled.wasm, &compiled.meta) {
+                tracing::error!(app = compiled.meta.app, %error, "a package the shell uses did not load");
             }
         }
+        if let Err(error) = host.load_compiled(shell) {
+            tracing::error!(app = shell.meta.app, %error, "the shell package did not load");
+        }
+        host.runtime().set_invoker(PlaceInvoker {
+            link: Rc::clone(&self.link),
+        });
         0
     }
 
@@ -1847,12 +1960,14 @@ fn shell_standing(
     app: &str,
     person: &str,
 ) -> impl Fn() -> Option<tilo_action_policy::Standing> + 'static {
-    use tilo_action_policy::{Answer, Grant, KindSet, RoomPolicy, Standing, Subject, TreePath};
-    let mut policy = RoomPolicy::new(SHELL_ROOM, person);
+    use tilo_action_policy::{
+        Answer, Grant, KindSet, Standing, Subject, TreePath, WorkspacePolicy,
+    };
+    let mut policy = WorkspacePolicy::new(SHELL_ROOM, person);
     policy.grants.push(Grant::new(
         format!("shell:{app}:session"),
         Subject::app(app),
-        TreePath::room(SHELL_ROOM).app(app),
+        TreePath::workspace(SHELL_ROOM).app(app),
         KindSet::OUTSIDE,
         Answer::Allow,
         Subject::person(person),
@@ -1989,6 +2104,7 @@ impl ShellPart {
             Rc::new(ShellPlatform {
                 packages: Rc::new(packages),
                 waker,
+                link: Rc::clone(&link),
             }),
             Rc::new(Person(person.to_owned())),
             Box::new(app_end),
@@ -2630,6 +2746,10 @@ impl SurfaceHost for ShellPart {
         self.widgets.cursor()
     }
 
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.widgets.next_deadline()
+    }
+
     fn prepare_frame(&mut self) -> bool {
         let input = std::mem::take(&mut self.input);
         // A surface the desk shows, or a menu it opened, makes the part cover the outputs:
@@ -2693,203 +2813,17 @@ impl ShellPart {
     }
 }
 
+mod readings;
+use readings::PlaceInvoker;
+
 #[cfg(test)]
-mod tests_support {
-    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
-
-    use super::*;
-    use tilo_compositor::KeyModifiers;
-
-    /// A desk at rest with two windows and two workspaces.
-    pub(super) fn reading_with_windows() -> DeskReading {
-        DeskReading {
-            person: "Pat".to_owned(),
-            clock: "4:28 PM".to_owned(),
-            workspace: "Desk".to_owned(),
-            strip: "Main".to_owned(),
-            windows: vec![
-                WindowReading {
-                    key: "11".to_owned(),
-                    title: "Release planning".to_owned(),
-                    origin_app: "Notes".to_owned(),
-                    strip: "Main".to_owned(),
-                    workspace: "Desk".to_owned(),
-                    focused: true,
-                    ..WindowReading::default()
-                },
-                WindowReading {
-                    key: "12".to_owned(),
-                    title: "Inbox".to_owned(),
-                    origin_app: "Mail".to_owned(),
-                    strip: "Main".to_owned(),
-                    workspace: "Desk".to_owned(),
-                    ..WindowReading::default()
-                },
-            ],
-            ..DeskReading::default()
-        }
-    }
-
-    /// A part over `reading`, its outputs set.
-    pub(super) fn part_with(reading: DeskReading) -> (ShellPart, Rc<SessionLink>) {
-        let packages = crate::shell_part::compile_shell().unwrap_or_else(|why| panic!("{why}"));
-        let app = packages
-            .last()
-            .expect("the shell compiles last")
-            .meta
-            .app
-            .clone();
-        let link = Rc::new(SessionLink::default());
-        link.publish(reading);
-        let mut part = ShellPart::new(
-            ShellIdentity {
-                app: &app,
-                packages,
-                person: "Pat",
-                link: Rc::clone(&link),
-                record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
-                seed: true,
-            },
-            32,
-            1.0,
-            std::sync::Arc::new(|| {}),
-            None,
-        );
-        part.outputs_changed(&[(0, 0, 1280, 800)]);
-        part.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, 1280, 800))));
-        for _ in 0..4 {
-            part.prepare_frame();
-        }
-        (part, link)
-    }
-
-    pub(super) fn key(keysym: u32, pressed: bool) -> HostKey {
-        HostKey {
-            keycode: 0,
-            pressed,
-            repeat: false,
-            keysym,
-            unmodified_keysym: keysym,
-            text: None,
-            modifiers: KeyModifiers::default(),
-        }
-    }
-
-    /// Tab, held with Alt (`pressed` is Alt's, not Tab's); Shift walks the other way.
-    pub(super) fn tab(alt: bool, shift: bool) -> HostKey {
-        HostKey {
-            modifiers: KeyModifiers {
-                alt,
-                shift,
-                ..KeyModifiers::default()
-            },
-            ..key(0xff09, true)
-        }
-    }
-
-    /// `Alt_L`, held (`true`) or let go.
-    pub(super) fn alt(pressed: bool) -> HostKey {
-        HostKey {
-            modifiers: KeyModifiers {
-                alt: pressed,
-                ..KeyModifiers::default()
-            },
-            ..key(0xffe9, pressed)
-        }
-    }
-}
+mod tests_support;
 
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
-mod surface_keys {
-    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
+mod places;
 
-    use super::tests_support::{alt, key, part_with, reading_with_windows, tab};
-    use tilo_compositor::{KeyClaim, SurfaceHost as _};
-
-    #[test]
-    fn alt_tab_asks_for_the_switcher_from_rest() {
-        let (mut part, link) = part_with(reading_with_windows());
-        assert_ne!(
-            part.claim_key(&tab(true, true), false, false),
-            KeyClaim::Pass
-        );
-        part.key(&tab(true, true));
-        assert_eq!(
-            link.asked.borrow().front().map(|ask| ask.action.clone()),
-            Some("walk-switcher".to_owned()),
-            "Alt+Tab asks the desk for its switcher"
-        );
-        // Holding Alt and pressing Tab again walks the switcher on.
-        link.asked.borrow_mut().clear();
-        part.key(&tab(true, false));
-        assert_eq!(
-            link.asked.borrow().front().map(|ask| ask.action.clone()),
-            Some("walk-switcher".to_owned())
-        );
-        assert_eq!(
-            link.asked.borrow().front().map(|ask| ask.arguments.clone()),
-            Some(std::collections::BTreeMap::from([(
-                "steps".to_owned(),
-                "1".to_owned()
-            )]))
-        );
-    }
-
-    #[test]
-    fn letting_alt_go_commits_the_switcher() {
-        let mut reading = reading_with_windows();
-        reading.here = "switcher".to_owned();
-        let (mut part, link) = part_with(reading);
-        link.asked.borrow_mut().clear();
-        assert_ne!(part.claim_key(&alt(false), false, false), KeyClaim::Pass);
-        part.key(&alt(false));
-        assert_eq!(
-            link.asked.borrow().front().map(|ask| ask.action.clone()),
-            Some("commit-switcher".to_owned()),
-            "letting Alt go goes to the window the walk reached"
-        );
-    }
-
-    #[test]
-    fn escape_closes_the_surface_that_is_up() {
-        let mut reading = super::tests_support::reading_with_windows();
-        reading.here = "overview".to_owned();
-        let (mut part, link) = part_with(reading);
-        assert_ne!(part.claim_key(&escape(), false, false), KeyClaim::Pass);
-        part.key(&escape());
-        assert_eq!(
-            link.asked.borrow().front().map(|ask| ask.action.clone()),
-            Some("close-surface".to_owned())
-        );
-        assert_eq!(
-            link.asked.borrow().front().map(|ask| ask.arguments.clone()),
-            Some(std::collections::BTreeMap::from([(
-                "surface".to_owned(),
-                "overview".to_owned()
-            )]))
-        );
-    }
-
-    #[test]
-    fn a_surface_up_makes_the_part_cover_the_outputs() {
-        let mut reading = super::tests_support::reading_with_windows();
-        reading.here = "launcher".to_owned();
-        let (part, _link) = part_with(reading);
-        assert_eq!(
-            part.widgets.placement().size,
-            (1280, 800),
-            "the launcher has the desk's room"
-        );
-        assert!(
-            part.accepts_pointer(640.0, 400.0),
-            "the launcher takes presses"
-        );
-    }
-
-    fn escape() -> tilo_compositor::HostKey {
-        key(0xff1b, true)
-    }
-}
+#[cfg(test)]
+mod surface_keys;

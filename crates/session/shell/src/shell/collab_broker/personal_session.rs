@@ -57,6 +57,7 @@ impl NativePersonalSource {
             host,
         });
         sources.insert(socket, Arc::downgrade(&source));
+        drop(sources);
         Some(source)
     }
     pub(crate) fn admit_for_socket(
@@ -100,7 +101,7 @@ impl NativePersonalSession {
         let mut public_key = [0; 32];
         hex::decode_to_slice(principal, &mut public_key)
             .map_err(|_| "native principal unavailable")?;
-        let room = collab_types::person_room(&public_key).to_string();
+        let room = collab_types::personal_cluster(&public_key).to_string();
         let workspace =
             tilo_relay_protocol::room_workspace_id(&room).map_err(|error| error.to_string())?;
         let (certificate, _) = host.current_native_material(workspace)?;
@@ -122,7 +123,7 @@ impl NativePersonalSession {
         .map_err(|error| error.to_string())?;
         let caller =
             Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
-                .in_room(room)
+                .in_workspace(room)
                 .in_new_execution();
         let person = match broker.certified_person_context(&caller, &presentation) {
             Ok(person) => person,
@@ -174,7 +175,8 @@ impl NativePersonalSession {
     ) -> Result<tilo_user_identity::DeviceCert, String> {
         self.check()?;
         let (certificate, _) = self.host.current_native_material(self.workspace)?;
-        if collab_types::person_room(&certificate.user_public_key).to_string() != room.to_string()
+        if collab_types::personal_cluster(&certificate.user_public_key).to_string()
+            != room.to_string()
             || self.caller.room() != Some(room.to_string().as_str())
         {
             return Err("retained launch differs from certified personal room".into());

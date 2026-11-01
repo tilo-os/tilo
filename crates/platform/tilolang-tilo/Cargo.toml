@@ -5,7 +5,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Tilo platform integration for tilolang apps: dynamic records in the room record, replayable actions, the published surface, and the UI graph translation."
+description = "Tilo platform integration for tilolang apps: dynamic records in the workspace record, replayable actions, the published surface, and the UI graph translation."
 
 [dependencies]
 automerge.workspace = true
@@ -21,6 +21,7 @@ toml.workspace = true
 tracing.workspace = true
 tilo-automerge.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-service = { path = "../../session/service" }
 # The one policy what the runtime invokes is decided by.
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # The patch protocol an instance sends its window over.
@@ -31,9 +32,9 @@ tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 tilo-document = { path = "../../doc/tilo-document" }
 tilolang = { path = "../../lang/tilolang" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
-# The collab client an instance commits to its room through, without the toolkit.
+# The collab client an instance commits to its workspace through, without the toolkit.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", optional = true }
-# The room record's on-disk copy and its writer, and who wrote a step (`instance::room`).
+# The workspace record's on-disk copy and its writer, and who wrote a step (`instance::record`).
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state", optional = true }
 durable-store = { version = "0.1.0", path = "../../system/durable-store", optional = true }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types", optional = true }
@@ -41,9 +42,9 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types", optional
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history", optional = true }
 
 [features]
-# The instance's commit path to its room through the collab client
-# (`instance::room`), without the toolkit.
-room = [
+# The instance's commit path to its workspace record through the collab client
+# (`instance::record`), without the toolkit.
+record = [
     "dep:collaboration",
     "collaboration/native",
     "dep:tilo-app-state",
@@ -52,10 +53,10 @@ room = [
     "dep:tilo-history",
 ]
 [dev-dependencies]
-# The system's mention notices, read from a room holding tilolang rich text.
+# The system's mention notices, read from a workspace holding tilolang rich text.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
-# The fake broker a room's committed read is served from in the tests.
+# The fake broker a workspace's committed read is served from in the tests.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["test-support", "broker-transport", "native"] }
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }

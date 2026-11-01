@@ -12,7 +12,9 @@ pub(crate) struct PreparedEffect {
     version: u8,
     #[serde(deserialize_with = "terminal_update")]
     pub(crate) update: InvocationUpdate,
-    room: String,
+    /// Written as `room`: existing journals keep their exact bytes on save.
+    #[serde(rename = "room")]
+    workspace: String,
     invocation: uuid::Uuid,
     redacted: Vec<u8>,
 }
@@ -46,7 +48,7 @@ impl PreparedEffect {
         Ok(Self {
             version: 1,
             update,
-            room: request.room.clone(),
+            workspace: request.workspace.clone(),
             invocation: *invocation,
             redacted: redacted.clone(),
         })
@@ -54,7 +56,7 @@ impl PreparedEffect {
 
     pub(crate) fn request(&self) -> OwnerCommitRequest {
         OwnerCommitRequest {
-            room: self.room.clone(),
+            workspace: self.workspace.clone(),
             operation: CommitOperation::EffectReceipt {
                 invocation: self.invocation,
                 redacted: self.redacted.clone(),
@@ -64,7 +66,7 @@ impl PreparedEffect {
 
     pub(super) fn validate(&self, record: &DurableInvocation) -> Result<(), String> {
         if self.version != 1
-            || self.room != record.key.room
+            || self.workspace != record.key.workspace
             || self.invocation != record.key.invocation.0
             || self.invocation.is_nil()
             || self.update.invocation() != record.key.invocation
@@ -200,6 +202,7 @@ impl InvocationJournal {
 
     /// The prepared effect's terminal, durable once the returned write
     /// resolves; the record as that write makes it.
+    #[cfg(test)]
     pub(crate) fn stage_finished_effect(
         &mut self,
         key: &InvocationKey,

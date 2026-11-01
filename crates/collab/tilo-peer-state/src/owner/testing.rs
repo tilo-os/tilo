@@ -10,7 +10,7 @@ use crate::owner::{
     VerifiedNativeEnrollmentIntent, publication,
 };
 use crate::owner_commit::OwnerCommitRequest;
-use crate::{SeedDocument, SeedState, StatePeer, join, room::media, seed_room};
+use crate::{SeedDocument, SeedState, StatePeer, join, seed_workspace, workspace::media};
 use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
@@ -20,34 +20,34 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 
 pub mod governor;
 
-pub const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+pub const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 pub const APP: &str = "so.tilo.chat";
 
-/// Enroll an empty interactive room through the real signed join protocol.
+/// Enroll an empty interactive workspace through the real signed join protocol.
 /// This helper neither seeds application records nor grants capabilities.
 pub fn enroll_interactive_governor(
     owner: &NativeWorkspaceOwner,
     key: &SigningKey,
     certificate: &DeviceCert,
 ) -> Result<governor::TestGovernor, String> {
-    enroll_interactive_governor_in(owner, key, certificate, ROOM)
+    enroll_interactive_governor_in(owner, key, certificate, WORKSPACE)
 }
 
-/// [`enroll_interactive_governor`] into `room`.
+/// [`enroll_interactive_governor`] into `workspace`.
 pub fn enroll_interactive_governor_in(
     owner: &NativeWorkspaceOwner,
     key: &SigningKey,
     certificate: &DeviceCert,
-    room: &str,
+    workspace: &str,
 ) -> Result<governor::TestGovernor, String> {
     let governor =
-        governor::TestGovernor::empty_interactive(certificate.clone(), key.clone(), room)?;
+        governor::TestGovernor::empty_interactive(certificate.clone(), key.clone(), workspace)?;
     enroll_into(governor, owner, key, certificate)
 }
 
-/// Enroll `certificate`'s device into the room `governor` already holds, as
-/// the room's devices [`enroll_interactive_governor`] make one for: what a
-/// room whose other devices are already in it admits this one into.
+/// Enroll `certificate`'s device into the workspace `governor` already holds, as
+/// the workspace's devices [`enroll_interactive_governor`] make one for: what a
+/// workspace whose other devices are already in it admits this one into.
 pub fn enroll_into(
     mut governor: governor::TestGovernor,
     owner: &NativeWorkspaceOwner,
@@ -60,7 +60,7 @@ pub fn enroll_into(
     let hint = governor.hint(endpoint);
     let now = SystemTime::now();
     let now_ns = ns(now).unwrap();
-    // One room admits more than one device: each asks with an id of its own.
+    // One workspace admits more than one device: each asks with an id of its own.
     let mut request_id = [0_u8; 32];
     request_id[..8].copy_from_slice(&certificate.device_public_key[..8]);
     let invitation = governor.issue(
@@ -115,9 +115,9 @@ pub fn enroll_into(
         .unwrap();
     Ok(governor)
 }
-/// Most outgoing entries one room holds.
+/// Most outgoing entries one workspace holds.
 pub const MAX_OUTGOING_ENTRIES: usize = publication::MAX_ENTRIES;
-/// Largest outgoing publication one room holds.
+/// Largest outgoing publication one workspace holds.
 pub const MAX_OUTGOING_BYTES: usize = publication::MAX_BYTES;
 
 pub fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
@@ -171,11 +171,11 @@ pub fn raw_fixture_at(
     );
     let device_key = SigningKey::from_bytes(&[63; 32]);
     let device = certificate(&SigningKey::from_bytes(&[64; 32]), &device_key, "Member");
-    let workspace_id = tilo_relay_protocol::room_workspace_id(ROOM).unwrap();
+    let workspace_id = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
     let hint = IrohWorkspaceHostHintV1 {
         version: 1,
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        room: ROOM.into(),
+        room: WORKSPACE.into(),
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
@@ -189,7 +189,7 @@ pub fn raw_fixture_at(
     let signed = join::issue_invitation(
         join::InviteGrant {
             workspace_id,
-            room: ROOM.into(),
+            room: WORKSPACE.into(),
             issuer: governor.clone(),
             role: join::MemberRole::Editor,
             nonce: [65; 16],
@@ -221,7 +221,7 @@ pub fn raw_fixture_at(
     let redemption =
         join::verify_join_proof(&proof, &challenge, &device, &RevocationList::new(), ns).unwrap();
     let mut peer = StatePeer::new(
-        ROOM,
+        WORKSPACE,
         governor.clone(),
         vec![governor.clone()],
         RevocationList::new(),
@@ -239,7 +239,12 @@ pub fn raw_fixture_at(
     collab_types::CommitNamed::commit_edit(&mut chat, "chat", "channels");
     peer.install_seed(
         SeedState {
-            room_changes: seed_room(ROOM, &governor, std::slice::from_ref(&governor)).unwrap(),
+            workspace_changes: seed_workspace(
+                WORKSPACE,
+                &governor,
+                std::slice::from_ref(&governor),
+            )
+            .unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
                 record_id: String::new(),
@@ -257,12 +262,12 @@ pub fn raw_fixture_at(
             .admit_invited_member(&redemption, &governor_key, now)
             .unwrap()
     );
-    let policy = media::RoomMediaV1 {
+    let policy = media::WorkspaceMediaV1 {
         version: 1,
-        room: *uuid::Uuid::parse_str(ROOM).unwrap().as_bytes(),
+        workspace: *uuid::Uuid::parse_str(WORKSPACE).unwrap().as_bytes(),
         authorization_revision: 1,
         authorization_basis: media::security_basis(
-            peer.admitted_room().unwrap(),
+            peer.admitted_workspace().unwrap(),
             &peer.revocations(),
         )
         .unwrap(),
@@ -296,7 +301,7 @@ pub fn raw_fixture_at(
         invite_id: verified.invite_id(),
         device_cert: device.clone(),
         role: join::MemberRole::Editor,
-        room: ROOM.into(),
+        room: WORKSPACE.into(),
         workspace_id,
         host: governor.clone(),
         certified_roster: peer.certificates(),
@@ -324,14 +329,14 @@ pub fn finalize(
 ) -> Result<crate::owner::VerifiedNativeEnrollment, String> {
     crate::owner::VerifiedNativeEnrollment::finalize(intent, pending, bootstrap)
 }
-/// An enrollment attempt into `room` at `generation` that no store
+/// An enrollment attempt into `workspace` at `generation` that no store
 /// published, for a test naming another attempt than the retained one.
 #[must_use]
 pub fn pending_id(
-    room: crate::owner::RoomId,
+    workspace: crate::owner::RoomId,
     generation: u64,
 ) -> crate::owner::PendingEnrollmentId {
-    crate::owner::PendingEnrollmentId::new(room, generation, [0; 32])
+    crate::owner::PendingEnrollmentId::new(workspace, generation, [0; 32])
 }
 /// The host an owner opened with [`crate::owner::open_file_with`] follows its
 /// publications through, for a host test to downcast.
@@ -353,7 +358,7 @@ pub fn ns(now: SystemTime) -> Result<u64, String> {
 /// The exact bytes of every original outgoing entry.
 ///
 /// # Errors
-/// The room has no publication state.
+/// The workspace has no publication state.
 pub fn entries(view: &NativeCommittedView) -> Result<Vec<Vec<u8>>, String> {
     Ok(publication::state(view)?
         .entries
@@ -364,7 +369,7 @@ pub fn entries(view: &NativeCommittedView) -> Result<Vec<Vec<u8>>, String> {
 /// The exact bytes of every recovery projection entry.
 ///
 /// # Errors
-/// The room has no publication state.
+/// The workspace has no publication state.
 pub fn projection(view: &NativeCommittedView) -> Result<Vec<Vec<u8>>, String> {
     Ok(publication::state(view)?
         .projection
@@ -412,13 +417,17 @@ pub fn seal(view: &mut NativeCommittedView) -> Result<(), String> {
 pub fn bump_generation(view: &mut NativeCommittedView) {
     view.record.generation = view.record.generation.saturating_add(1);
 }
-pub fn insert_room(storage: &mut NativeAuthorityStorage, room: RoomId, view: NativeCommittedView) {
-    storage.rooms.insert(room, view.record);
+pub fn insert_workspace(
+    storage: &mut NativeAuthorityStorage,
+    workspace: RoomId,
+    view: NativeCommittedView,
+) {
+    storage.workspaces.insert(workspace, view.record);
 }
 pub fn bump_revision(storage: &mut NativeAuthorityStorage) {
     storage.revision = storage.revision.saturating_add(1);
 }
-/// What a record keeps of one room.
+/// What a record keeps of one workspace.
 pub struct Stored {
     pub peer: Vec<u8>,
     pub governor: DeviceCert,
@@ -426,11 +435,11 @@ pub struct Stored {
     pub projection: Vec<Vec<u8>>,
 }
 #[must_use]
-pub fn stored(storage: &NativeAuthorityStorage, room: RoomId) -> Option<Stored> {
-    let record = storage.rooms.get(&room)?;
+pub fn stored(storage: &NativeAuthorityStorage, workspace: RoomId) -> Option<Stored> {
+    let record = storage.workspaces.get(&workspace)?;
     Some(Stored {
         peer: record.peer.clone(),
-        governor: record.room_host.clone(),
+        governor: record.workspace_host.clone(),
         device: record.device.clone(),
         projection: record
             .publication

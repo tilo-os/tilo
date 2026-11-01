@@ -329,8 +329,8 @@ impl SearchProvider for ShortcutsProvider {
             return Vec::new();
         };
         let provider = workspace_provider(&room.to_string());
-        let caller =
-            Caller::local_person(ctx.chrome.local_user_for_room(&room)).in_room(room.to_string());
+        let caller = Caller::local_person(ctx.chrome.local_user_for_room(&room))
+            .in_workspace(room.to_string());
         let mut page = BrokerActionHost::new(self.broker.clone()).query(
             &caller,
             CatalogueQuery {
@@ -561,7 +561,7 @@ mod tests {
             .map(Workspace::room)
             .expect("a workspace");
         let caller =
-            Caller::local_person(state.local_user_for_room(&room)).in_room(room.to_string());
+            Caller::local_person(state.local_user_for_room(&room)).in_workspace(room.to_string());
         (room.to_string(), caller)
     }
 
@@ -737,7 +737,7 @@ mod tests {
         let broker = crate::shell::broker_services::test_broker_with_membership(
             chrome.borrow().tree_handle(),
         );
-        let stranger = Caller::authenticated([9; 32], [8; 32]).in_room(room.clone());
+        let stranger = Caller::authenticated([9; 32], [8; 32]).in_workspace(room.clone());
         let page = broker_page(
             &broker,
             &stranger,

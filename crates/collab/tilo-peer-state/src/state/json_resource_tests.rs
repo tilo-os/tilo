@@ -3,15 +3,15 @@
 
 use super::*;
 
-#[expect(
-    clippy::similar_names,
-    reason = "`root` and `room` are the domain's own names"
-)]
 pub(crate) fn identity_fixture() -> (GovernedIdentity, SystemTime) {
     let (peer, _, _, _, now) = crate::admission_tests::seeded();
-    let room = peer.admitted_room().unwrap();
-    let identities = room.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-    let (value, _) = room
+    let workspace = peer.admitted_workspace().unwrap();
+    let identities = workspace
+        .get(ROOT, "peer_identities_v1")
+        .unwrap()
+        .unwrap()
+        .1;
+    let (value, _) = workspace
         .get(
             &identities,
             hex::encode(peer.owner_certificates()[0].device_public_key),
@@ -26,7 +26,7 @@ pub(crate) fn identity_fixture() -> (GovernedIdentity, SystemTime) {
     };
     let mut identity: GovernedIdentity = serde_json::from_slice(bytes).unwrap();
     let root = SigningKey::from_bytes(&[1; 32]);
-    identity.device_cert.device_label = "Desk 🦀\n\"Room\"\\".into();
+    identity.device_cert.device_label = "Desk 🦀\n\"Workspace\"\\".into();
     identity.device_cert.expires_at_ns = Some(u64::MAX);
     tilo_user_identity::sign_device_cert(&mut identity.device_cert, &root).unwrap();
     let mut revocation = tilo_user_identity::RevocationEntry {
@@ -46,7 +46,7 @@ pub(crate) fn grant_fixture() -> tilo_action_policy::Grant {
     Grant::new(
         "grant \u{0003}id",
         Subject::Person("person 🦀\n\"named\"\\".into()),
-        TreePath::room("room")
+        TreePath::workspace("room")
             .app("so.tilo.chat")
             .resource("chat.channel:\u{0002}general")
             .action("message.\u{0001}send"),

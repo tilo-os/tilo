@@ -1,6 +1,7 @@
 //! The bars the session shows on its displays, as a harness reads them: one
 //! per display, the full bar on the display in use and a compact one on each
-//! other, and whether each stepped aside for a fullscreen window there.
+//! other, and whether each stands in the desk's column, is hidden, or is
+//! shown over a window covering its display.
 
 use tilo_desktop::desktop_host::DesktopChrome;
 use tilo_desktop::topbar::Placement;
@@ -20,8 +21,9 @@ pub struct BarShown {
     /// The full bar (navigation, the centre widget and the session's own
     /// controls) rather than a compact one (navigation and the centre).
     pub full: bool,
-    /// A fullscreen window owns its display, so it stepped aside.
-    pub aside: bool,
+    /// Docked in the column, hidden, or shown over the window covering the
+    /// display.
+    pub presence: tilo_desktop::chrome::TopBarPresence,
 }
 
 impl Session {
@@ -38,7 +40,7 @@ impl Session {
                     display,
                     rect: bar.bar_rect(),
                     full: !bar.is_compact(),
-                    aside: bar.steps_aside(),
+                    presence: bar.presence(),
                 })
                 .collect()
         })
@@ -58,5 +60,38 @@ impl Session {
         let mut host = self.shared.chrome.borrow_mut();
         let root = host.host_mut().root_widget_mut();
         Some(read(root.as_any_mut()?.downcast_ref::<DesktopChrome>()?))
+    }
+
+    /// The chrome as the session hosts it, to change.
+    pub(crate) fn with_chrome_mut<T>(
+        &self,
+        change: impl FnOnce(&mut DesktopChrome) -> T,
+    ) -> Option<T> {
+        let mut host = self.shared.chrome.borrow_mut();
+        let root = host.host_mut().root_widget_mut();
+        Some(change(root.as_any_mut()?.downcast_mut::<DesktopChrome>()?))
+    }
+
+    /// Bring the bars' reveal up to date for the pass: the person's own
+    /// "hide the top bar", the pointer, a key or a finger reaching for the
+    /// bar, and what the chrome holds open over a covering window.
+    pub(crate) fn follow_bars(&self) {
+        let hide = self
+            .shared
+            .hide_top_bar
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let held = self.quick_settings_open();
+        let now = ui::time::now();
+        let changed = self
+            .with_chrome_mut(|chrome| chrome.follow_reveals(hide, held, now))
+            .unwrap_or(false);
+        if changed {
+            // A bar docked in the desk's column takes its room there: docking
+            // it, hiding it or showing it over a window lays the windows out
+            // again for what is left.
+            self.shared
+                .desktop
+                .with_widgets(tilo_surface_host::WidgetHost::relayout);
+        }
     }
 }

@@ -1,5 +1,5 @@
 //! Two devices of one person converge on a workspace directly over iroh,
-//! with no room host, relay or network actor in between, and a device
+//! with no workspace host, relay or network actor in between, and a device
 //! outside the workspace roster is refused.
 #![allow(
     clippy::unwrap_used,
@@ -15,11 +15,11 @@ use ed25519_dalek::SigningKey;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use std::time::Duration;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync};
-use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_room};
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::SystemTime;
 
-const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
 
@@ -80,7 +80,7 @@ async fn two_devices_of_one_person_converge_directly() {
 
     // Device A creates the workspace and a document.
     let mut a = StatePeer::new(
-        ROOM,
+        WORKSPACE,
         a_cert.clone(),
         roster.clone(),
         RevocationList::new(),
@@ -93,7 +93,7 @@ async fn two_devices_of_one_person_converge_directly() {
     document.commit_edit("fixture", "value");
     a.install_seed(
         SeedState {
-            room_changes: seed_room(ROOM, &a_cert, &roster).unwrap(),
+            workspace_changes: seed_workspace(WORKSPACE, &a_cert, &roster).unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
                 record_id: RECORD.into(),
@@ -106,7 +106,7 @@ async fn two_devices_of_one_person_converge_directly() {
     )
     .unwrap();
     // Device B knows the workspace's roster and nothing else.
-    let b = StatePeer::from_join(ROOM, a_cert.clone(), roster, &[], now).unwrap();
+    let b = StatePeer::from_join(WORKSPACE, a_cert.clone(), roster, &[], now).unwrap();
     assert!(b.rows().is_empty());
 
     let a = DirectSync::new(a, a_key.clone());
@@ -162,7 +162,8 @@ async fn two_devices_of_one_person_converge_directly() {
     // A device of another person, absent from the roster, is refused.
     let stranger_root = SigningKey::from_bytes(&[9; 32]);
     let (c_key, c_cert) = device(&stranger_root, 10);
-    let c = StatePeer::from_join(ROOM, a_cert.clone(), vec![a_cert, c_cert], &[], now).unwrap();
+    let c =
+        StatePeer::from_join(WORKSPACE, a_cert.clone(), vec![a_cert, c_cert], &[], now).unwrap();
     let c = DirectSync::new(c, c_key.clone());
     let c_endpoint = endpoint(&c_key).await;
     let refused = c.connect(&c_endpoint, addr(&a_endpoint)).await;

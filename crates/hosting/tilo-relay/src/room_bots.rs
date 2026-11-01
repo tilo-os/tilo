@@ -16,7 +16,9 @@
 
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
-use tilo_action_policy::{Answer, Change, Grant, KindSet, RoomPolicy, Standing, Subject, TreePath};
+use tilo_action_policy::{
+    Answer, Change, Grant, KindSet, Standing, Subject, TreePath, WorkspacePolicy,
+};
 use tilo_agent_participant::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_moderation::{Judge, ModerationAgent};
 use tilo_relay_session::rooms::RemoveMemberRequest;
@@ -273,13 +275,13 @@ fn bot_replica(
     let grant = Grant::new(
         format!("bot:{MODERATION_INSTALLATION}"),
         bot.clone(),
-        TreePath::room(room),
+        TreePath::workspace(room),
         KindSet::READ_UNDOABLE,
         Answer::Allow,
         Subject::person(installer),
     );
-    let standing =
-        Standing::person(RoomPolicy::new(room, installer), installer).bounded_by(bot, vec![grant]);
+    let standing = Standing::person(WorkspacePolicy::new(room, installer), installer)
+        .bounded_by(bot, vec![grant]);
     let mut replica = Replica::open(
         &AppCatalogue::native(),
         CHAT,
@@ -338,7 +340,7 @@ where
 #[must_use]
 pub fn room_record(catalogue: &tilo_agent_participant::AppCatalogue, app: &str) -> String {
     match catalogue.get(app) {
-        Some(definition) if !definition.keeps_room_record() => {
+        Some(definition) if !definition.keeps_workspace_record() => {
             ui::record::RecordId::room_default().as_str().to_owned()
         }
         _ => String::new(),

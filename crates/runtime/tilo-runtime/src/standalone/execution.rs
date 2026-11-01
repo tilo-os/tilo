@@ -17,7 +17,7 @@ pub(super) struct ExecutionPins {
 }
 
 struct ExecutionEntry {
-    room: RoomId,
+    workspace: RoomId,
     lease: tilo_actions::remote::ExecutionLease,
     admission: Weak<super::joined::SessionAdmission>,
 }
@@ -29,9 +29,9 @@ impl ExecutionPins {
             subscription: OnceLock::new(),
         });
         let weak = Arc::downgrade(&pins);
-        let subscription = owner.observe_fences(Arc::new(move |room, _continuity| {
+        let subscription = owner.observe_fences(Arc::new(move |workspace, _continuity| {
             if let Some(pins) = weak.upgrade() {
-                pins.fence(room);
+                pins.fence(workspace);
             }
         }));
         // This is a fresh OnceLock, before the pins are exposed to any caller.
@@ -39,12 +39,12 @@ impl ExecutionPins {
         pins
     }
 
-    fn fence(&self, room: RoomId) {
+    fn fence(&self, workspace: RoomId) {
         // The native owner calls synchronously under its continuity lock. Only
         // atomic lease closure happens here: no owner reread, SDK or user code.
         let entries = self.entries.lock_recover();
         for entry in entries.values() {
-            if entry.room == room {
+            if entry.workspace == workspace {
                 entry.lease.close();
             }
         }
@@ -52,12 +52,13 @@ impl ExecutionPins {
 
     pub(super) fn register_checked(
         self: &Arc<Self>,
-        room: RoomId,
+        workspace: RoomId,
         caller: &Caller,
         recheck: impl FnOnce() -> Result<(), String>,
     ) -> Result<ExecutionRegistration, String> {
         let result = (|| {
-            if caller.room() != Some(room.to_string().as_str()) || !caller.execution_is_live() {
+            if caller.room() != Some(workspace.to_string().as_str()) || !caller.execution_is_live()
+            {
                 return Err("execution audience or lifetime unavailable".into());
             }
             let id = caller
@@ -77,7 +78,7 @@ impl ExecutionPins {
                 entries.insert(
                     id,
                     ExecutionEntry {
-                        room,
+                        workspace,
                         lease,
                         admission: Weak::new(),
                     },
@@ -126,7 +127,7 @@ impl ExecutionPins {
 
     pub(super) fn admissions(
         &self,
-        room: RoomId,
+        workspace: RoomId,
     ) -> Result<Vec<Arc<super::joined::SessionAdmission>>, String> {
         let entries = self
             .entries
@@ -134,7 +135,7 @@ impl ExecutionPins {
             .map_err(|_| "execution registry unavailable")?;
         Ok(entries
             .values()
-            .filter(|entry| entry.room == room && entry.lease.is_live())
+            .filter(|entry| entry.workspace == workspace && entry.lease.is_live())
             .filter_map(|entry| entry.admission.upgrade())
             .collect())
     }

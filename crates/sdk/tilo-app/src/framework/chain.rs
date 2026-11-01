@@ -288,7 +288,7 @@ impl<P: Chained> ChainState<P> {
     /// Whether to look for a newer head and at the parts waited for now:
     /// the store was told a record arrived or what the room said of one
     /// ([`RecordStore::note_kept`], [`RecordStore::announce`],
-    /// [`RecordStore::note_room_answered`]), each of which wakes the window.
+    /// [`RecordStore::note_workspace_answered`]), each of which wakes the window.
     /// Not while a frame reads the store (a view's sync): opening a part
     /// takes the store's writer, so the look waits for the frame's settle,
     /// where the window takes up what it was sent, and the view's sync reads
@@ -323,7 +323,7 @@ impl<P: Chained> ChainState<P> {
                     }
                 }
             }
-            let now = if self.room.store.room_answered(&P::chain().part(index)) {
+            let now = if self.room.store.workspace_answered(&P::chain().part(index)) {
                 PartArrival::Unavailable
             } else {
                 PartArrival::Arriving

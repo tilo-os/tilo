@@ -10,6 +10,7 @@ use crate::widget::ActionEmitter;
 use crate::widget::ControlSize;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::badge::{BadgeMetrics, CountBadge};
 use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -59,6 +60,10 @@ pub struct Button {
     /// its [`crate::widget::TransportFace`] at that face's side.
     transport: Option<(crate::widget::TransportControl, f64)>,
     badge: Option<String>,
+    /// A count or dot on an icon-only face's icon ([`Self::with_count`]), and how large it was
+    /// measured, in `adjust_layout_style`.
+    count: Option<CountBadge>,
+    count_size: vello::kurbo::Size,
     /// Stretch to the parent's width instead of sizing to the label.
     fill_width: bool,
     /// What the button does, which decides its whole look (see
@@ -181,6 +186,8 @@ impl Button {
             image: None,
             transport: None,
             badge: None,
+            count: None,
+            count_size: vello::kurbo::Size::ZERO,
             fill_width: false,
             role: ButtonRole::Secondary,
             toggled: None,
@@ -257,7 +264,7 @@ impl Button {
     /// [`Self::on_effect`] for an effect whose scope is the person's own
     /// device and nothing shared: copying to their clipboard, applying their
     /// own appearance, starting a draft of their own. A room's grants have
-    /// nothing to consent to, so a guest presses it as the room's owner
+    /// nothing to consent to, so a guest presses it as the workspace's owner
     /// does ([`tilo_actions::OWN_DEVICE_SCOPE`]); a shared change it goes on
     /// to make is decided as that change's own action.
     #[must_use]
@@ -353,6 +360,62 @@ impl Button {
         self.badge = badge.filter(|text| !text.is_empty()).map(str::to_owned);
         self.dirty = true;
         self
+    }
+
+    /// Stand `content` on the icon's top-trailing corner, centred on it, in `style`: how many
+    /// new things wait behind the control (unread notifications, new mail), as an app icon's
+    /// count stands on it. Only an icon-only face shows it. The button keeps room for the part
+    /// past its trailing edge, so the count never covers the control beside it or leaves the
+    /// row; a zero count is none. The button's name says the count, not the badge.
+    #[must_use]
+    pub fn with_count(
+        mut self,
+        content: crate::widget::BadgeContent,
+        style: crate::widget::ChipStyle,
+    ) -> Self {
+        self.count = crate::widget::badge::shows(&content).then_some(CountBadge {
+            content,
+            style,
+            metrics: None,
+        });
+        self.dirty = true;
+        self
+    }
+
+    /// Whether it shows `content` on its icon, in the warning tone when `alert`.
+    pub(crate) fn shows_count(
+        &self,
+        content: Option<&crate::widget::BadgeContent>,
+        alert: bool,
+    ) -> bool {
+        use crate::widget::BadgeContent;
+        let same = |a: &BadgeContent, b: &BadgeContent| match (a, b) {
+            (BadgeContent::Count(a), BadgeContent::Count(b)) => a == b,
+            (BadgeContent::Dot, BadgeContent::Dot) => true,
+            _ => false,
+        };
+        match (&self.count, content) {
+            (None, None) => true,
+            (Some(shown), Some(content)) => {
+                same(&shown.content, content)
+                    && matches!(shown.style, crate::widget::ChipStyle::Tinted(_)) == alert
+            }
+            _ => false,
+        }
+    }
+
+    /// Where the count stands: centred on the icon's top-trailing corner. `None` without one.
+    fn count_rect(&self) -> Option<Rect> {
+        self.count.as_ref()?;
+        if !self.label.is_empty() || self.icon.is_none() || self.count_size.width <= 0.0 {
+            return None;
+        }
+        let icon = self.metrics.icon.min(self.rect.height());
+        let corner = Point::new(
+            self.rect.center().x + icon / 2.0,
+            self.rect.center().y - icon / 2.0,
+        );
+        Some(Rect::from_center_size(corner, self.count_size))
     }
 
     /// The text isn't painted — it's what a screen reader announces in
@@ -1758,6 +1821,51 @@ impl Button {
         taffy.set_style(node, style).is_ok()
     }
 
+    /// The room the count takes past the face's edges, kept on the node as its margins, so the
+    /// count stands over no control beside it and never leaves the row it is in: past the
+    /// trailing edge on that side, and past the top edge on the top and the bottom alike, so
+    /// the face stays centred where its row centres it.
+    fn keep_room_for_count(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        self.count_size = self
+            .count
+            .as_ref()
+            .map_or(vello::kurbo::Size::ZERO, |count| count.size(text));
+        let (past_x, past_y) =
+            if self.count.is_some() && self.label.is_empty() && self.icon.is_some() {
+                let face = self.face_height();
+                let icon = self.metrics.icon.min(face);
+                // The icon is centred in a square face: its corner stands `icon / 2` from the
+                // centre, the count's half again past that.
+                (
+                    (icon / 2.0 + self.count_size.width / 2.0 - face / 2.0).max(0.0),
+                    (icon / 2.0 + self.count_size.height / 2.0 - face / 2.0).max(0.0),
+                )
+            } else {
+                (0.0, 0.0)
+            };
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let length = |v: f64| taffy::LengthPercentageAuto::length(f32_of_f64(v.ceil()));
+        let margin = taffy::Rect {
+            left: length(0.0),
+            right: length(past_x),
+            top: length(past_y),
+            bottom: length(past_y),
+        };
+        if style.margin == margin {
+            return false;
+        }
+        let mut style = style.clone();
+        style.margin = margin;
+        taffy.set_style(node, style).is_ok()
+    }
+
     /// The face's height on the node, as the input asks for it now: a button made before the
     /// window told it a finger reaches it grows to the finger's target when it is laid out
     /// again, not only when its node is built anew.
@@ -1852,6 +1960,13 @@ impl Widget for Button {
             self.dirty = true;
             self.metrics = metrics;
         }
+        if let Some(count) = &mut self.count {
+            let badge = BadgeMetrics::of(theme);
+            if count.metrics.as_ref() != Some(&badge) {
+                count.metrics = Some(badge);
+                self.dirty = true;
+            }
+        }
         let height = f32_of_f64(self.face_height());
         let style = Style {
             // An intrinsic button never shrinks below its label: a parent
@@ -1905,7 +2020,7 @@ impl Widget for Button {
         node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
-        let tall = self.pin_face_height(taffy, node);
+        let tall = self.pin_face_height(taffy, node) | self.keep_room_for_count(taffy, node, text);
         if self.fill_width {
             return tall;
         }
@@ -2038,6 +2153,16 @@ impl Widget for Button {
             text_renderer,
             theme,
         ));
+        if let (Some(count), Some(rect)) = (&self.count, self.count_rect()) {
+            // Into the cached face, where it moves with the button.
+            count.paint(
+                self.face.scene_mut(),
+                Affine::IDENTITY,
+                rect,
+                text_renderer,
+                theme,
+            );
+        }
         self.painted_hit = hit.map(|hit| Affine::translate(-self.rect.origin().to_vec2()) * hit);
         self.face.append(out_scene, out_transform, self.rect);
         crate::widget::draw_gate_and_peer_focus(self, out_scene, out_transform, theme, presence);
@@ -2186,6 +2311,21 @@ impl Widget for Button {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// The count on the icon, and the icon it stands on.
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        let Some(count) = self.count_rect() else {
+            return Vec::new();
+        };
+        let icon = self.metrics.icon.min(self.rect.height());
+        vec![
+            ("count".to_owned(), count),
+            (
+                "icon".to_owned(),
+                Rect::from_center_size(self.rect.center(), (icon, icon)),
+            ),
+        ]
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {

@@ -110,6 +110,21 @@ class SchemaTests(unittest.TestCase):
         )
         self.assertEqual(schema["Root.at"], "DateTime<Utc>")
 
+    def test_a_file_listed_twice_is_named_as_listed_twice(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "interface.toml"
+            path.write_text(textwrap.dedent('''
+                name = "test"
+                version = 1
+                version_const = "wire.rs:PROTOCOL"
+                sources = ["wire.rs", "other.rs", "wire.rs"]
+                roots = ["Message"]
+            '''))
+            with self.assertRaisesRegex(
+                interfaces.InterfaceError, r"`sources` lists wire\.rs more than once"
+            ):
+                interfaces.load_spec(path)
+
     def test_serde_renames_like_serde(self):
         self.assertEqual(interfaces.renamed("MediaPositionV1", "kebab-case", variant=True),
                          "media-position-v1")
@@ -171,6 +186,16 @@ class CompatibilityTests(unittest.TestCase):
             strict, dict(strict, **{"S.b": "Option<u8> optional"}), "json"))
         self.assertTrue(interfaces.incompatible(
             self.BEFORE, dict(self.BEFORE, **{"S.b": "#1 Option<u8>"}), "postcard"))
+
+    def test_a_postcard_field_under_another_name_keeps_the_wire(self):
+        before = {"S": "struct", "S.old": "#0 u32", "S.kept": "#1 Uuid"}
+        renamed = {"S": "struct", "S.new": "#0 u32", "S.kept": "#1 Uuid"}
+        self.assertEqual(interfaces.incompatible(before, renamed, "postcard"), [])
+        self.assertTrue(interfaces.incompatible(before, renamed, "json"))
+        moved = {"S": "struct", "S.new": "#1 u32", "S.kept": "#0 Uuid"}
+        self.assertTrue(interfaces.incompatible(before, moved, "postcard"))
+        retyped = {"S": "struct", "S.new": "#0 u64", "S.kept": "#1 Uuid"}
+        self.assertTrue(interfaces.incompatible(before, retyped, "postcard"))
 
     def test_capnp_fields_may_be_added_and_methods_and_union_members_may_not(self):
         before = {"capnp:s.capnp:Entry": "struct", "capnp:s.capnp:Store": "interface"}

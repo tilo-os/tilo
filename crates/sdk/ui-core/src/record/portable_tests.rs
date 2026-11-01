@@ -4,8 +4,8 @@ use super::*;
 fn portable_owner_preserves_reservation_identity_actor_and_durability() {
     let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
     let mut owners = RecordOwners::portable(cache.clone());
-    let store = owners.open("so.tilo.test", "room").unwrap();
-    let again = owners.open("so.tilo.test", "room").unwrap();
+    let store = owners.open("so.tilo.test", "workspace").unwrap();
+    let again = owners.open("so.tilo.test", "workspace").unwrap();
     assert!(store.same_owner(&again));
     let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
     let mut reservation = store.reserve_record(&checkout).unwrap();
@@ -32,7 +32,7 @@ fn portable_owner_preserves_reservation_identity_actor_and_durability() {
     drop(reservation);
     drop(again);
     drop(store);
-    let reopened = owners.open("so.tilo.test", "room").unwrap();
+    let reopened = owners.open("so.tilo.test", "workspace").unwrap();
     reopened.try_open_record(&checkout).unwrap();
     assert_eq!(
         reopened
@@ -50,7 +50,7 @@ fn portable_owner_preserves_reservation_identity_actor_and_durability() {
 fn portable_failed_initializer_keeps_reservation_until_drop() {
     let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
     let store = RecordOwners::portable(cache.clone())
-        .open("so.tilo.test", "room")
+        .open("so.tilo.test", "workspace")
         .unwrap();
     let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
     let mut reservation = store.reserve_record(&checkout).unwrap();
@@ -62,10 +62,10 @@ fn portable_failed_initializer_keeps_reservation_until_drop() {
 }
 
 /// What a window says it did to a record nobody else decides is said
-/// at once; in a record a room decides, once the room answered every
-/// commit that carried it, and never when the room refused the change.
+/// at once; in a record a workspace decides, once the workspace answered every
+/// commit that carried it, and never when the workspace refused the change.
 #[test]
-fn a_notice_waits_for_the_room_that_decides_the_record() {
+fn a_notice_waits_for_the_workspace_that_decides_the_record() {
     use collab_types::CommitNamed as _;
     let store = RecordStore::in_memory();
     let checkout = RecordCheckout::new(RecordId::for_tab(78), RecordKind::new("tab"));
@@ -90,7 +90,7 @@ fn a_notice_waits_for_the_room_that_decides_the_record() {
     let (_, heads) = store.replication_snapshot(&checkout.id).unwrap();
     let mut frontier = crate::state::DocumentFrontier::default();
     frontier.advance(heads);
-    store.room_settled(&checkout.id);
+    store.workspace_settled(&checkout.id);
     commit("title", "shared");
     hold("Saved shared");
     assert!(
@@ -104,9 +104,9 @@ fn a_notice_waits_for_the_room_that_decides_the_record() {
     frontier.advance(heads);
     assert!(
         store.take_said(&checkout.id).is_empty(),
-        "the room has not answered"
+        "the workspace has not answered"
     );
-    store.room_settled(&checkout.id);
+    store.workspace_settled(&checkout.id);
     assert_eq!(store.take_said(&checkout.id), ["Saved shared"]);
     assert!(store.take_said(&checkout.id).is_empty(), "said once");
 
@@ -117,17 +117,21 @@ fn a_notice_waits_for_the_room_that_decides_the_record() {
         .unwrap();
     frontier.advance(heads);
     store
-        .withdraw_refused(&checkout.id, &[refused], "This room doesn't allow that.")
+        .withdraw_refused(
+            &checkout.id,
+            &[refused],
+            "This workspace doesn't allow that.",
+        )
         .unwrap()
         .expect("withdrawn");
-    store.room_settled(&checkout.id);
+    store.workspace_settled(&checkout.id);
     assert!(
         store.take_said(&checkout.id).is_empty(),
         "a refused change is never said done"
     );
 }
 
-/// A change the room refused leaves the record with every change built
+/// A change the workspace refused leaves the record with every change built
 /// on it, each named for the app as the action it was; what came before
 /// stays.
 #[test]
@@ -148,7 +152,11 @@ fn a_refused_change_is_withdrawn_with_what_was_built_on_it() {
     let refused = commit("body", "refused");
     commit("footer", "built on it");
     let heads = store
-        .withdraw_refused(&checkout.id, &[refused], "This room doesn't allow that.")
+        .withdraw_refused(
+            &checkout.id,
+            &[refused],
+            "This workspace doesn't allow that.",
+        )
         .unwrap()
         .expect("something was withdrawn");
     assert_eq!(
@@ -185,7 +193,7 @@ fn a_refused_change_is_withdrawn_with_what_was_built_on_it() {
     assert!(
         refusals
             .iter()
-            .all(|refusal| refusal.reason == "This room doesn't allow that.")
+            .all(|refusal| refusal.reason == "This workspace doesn't allow that.")
     );
     assert!(store.take_refusals(&checkout.id).is_empty(), "told once");
     assert_eq!(
@@ -194,5 +202,69 @@ fn a_refused_change_is_withdrawn_with_what_was_built_on_it() {
             .unwrap(),
         None,
         "a change the record no longer holds withdraws nothing"
+    );
+}
+
+/// A record the person kept in a page before their own store existed — filed
+/// under the workspace their records were keyed by then — opens as theirs:
+/// the same record id, in their own scope, with what was in it.
+#[test]
+fn a_record_a_page_kept_before_the_store_reads_in_the_persons_own_scope() {
+    let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
+    let root = [7u8; 32];
+    let person = hex::encode(root);
+    let kind = RecordKind::new("so.tilo.test.personal");
+    let id = RecordId::derived(kind.as_str(), &RecordId::for_tab(0));
+    let retired = collab_types::retired_person_workspace(&root).to_string();
+    let mut written = AutoCommit::new();
+    written.put(automerge::ROOT, "chapter", "three").unwrap();
+    assert!(crate::record::init_scoped(
+        &mut written,
+        &id,
+        &kind,
+        &retired,
+        Some(&retired)
+    ));
+    let former = crate::portable_storage::StorageKey::Record {
+        package: "so.tilo.test".into(),
+        workspace: retired,
+        record: id.as_str().into(),
+    };
+    cache
+        .put(
+            former,
+            written.save(),
+            Some(written.get_actor().to_bytes().to_vec()),
+        )
+        .unwrap();
+
+    let mut owners = RecordOwners::portable(cache.clone());
+    let store = owners.open_personal("so.tilo.test", &person).unwrap();
+    let checkout = RecordCheckout::new(id.clone(), kind.clone());
+    store.try_open_record(&checkout).unwrap();
+    assert_eq!(
+        store
+            .read(&checkout.id, |doc| str_at(doc, &ROOT, "chapter"))
+            .flatten()
+            .as_deref(),
+        Some("three"),
+        "what the person had in it is still there"
+    );
+    assert!(
+        cache
+            .get(&crate::portable_storage::StorageKey::Record {
+                package: "so.tilo.test".into(),
+                workspace: crate::record::person::PERSONAL_SCOPE.into(),
+                record: id.as_str().into(),
+            })
+            .is_some(),
+        "the record is kept in the person's own scope now"
+    );
+    assert_eq!(
+        store
+            .route(&checkout)
+            .expect("the person's own cluster carries it")
+            .cluster_id,
+        collab_types::personal_cluster(&root)
     );
 }

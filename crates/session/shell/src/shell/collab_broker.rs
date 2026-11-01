@@ -45,7 +45,7 @@ const LABEL_TTL: Duration = Duration::from_secs(2);
 pub use tilo_action_broker::route::CrdtRoute;
 
 pub use tilo_action_broker::collab_broker::{
-    AppActionBroker, FanoutSink, FanoutState, RoomSubscription, SessionFollowDispatcher,
+    AppActionBroker, FanoutSink, FanoutState, SessionFollowDispatcher, WorkspaceSubscription,
 };
 
 pub struct BrokerHandle {
@@ -312,7 +312,7 @@ pub fn spawn_native_peer(
     app_socket_path: PathBuf,
     membership: crate::shell::state::WorkspaceTreeHandle,
     publisher: &Arc<PeerPublisher>,
-    config: &tilo_action_broker::peer_actions::NativePeerBrokerConfig,
+    config: &tilo_action_broker::NativePeerBrokerConfig,
 ) -> std::io::Result<BrokerHandle> {
     if !publisher.is_wired() {
         return Err(std::io::Error::other(
@@ -356,8 +356,8 @@ impl CertificateProvisioning {
 struct HarnessCertificates {
     devices: Arc<Vec<[u8; 32]>>,
     origin: Result<
-        tilo_action_broker::peer_actions::PolicyOrigin,
-        tilo_action_broker::peer_actions::PolicyClockError,
+        tilo_action_broker::policy_clock::PolicyOrigin,
+        tilo_action_broker::policy_clock::PolicyClockError,
     >,
 }
 
@@ -366,15 +366,15 @@ impl HarnessCertificates {
     fn new(devices: Arc<Vec<[u8; 32]>>) -> Self {
         Self {
             devices,
-            origin: tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+            origin: tilo_action_broker::policy_clock::OwnerPolicyClock::new()
                 .map(|clock| clock.new_origin()),
         }
     }
 }
 
 #[cfg(any(test, feature = "test-support"))]
-impl tilo_action_broker::peer_actions::CertificateAuthority for HarnessCertificates {
-    fn policy_time(&self) -> Result<Option<tilo_action_broker::peer_actions::PolicyTime>, String> {
+impl tilo_action_broker::certificate_authority::CertificateAuthority for HarnessCertificates {
+    fn policy_time(&self) -> Result<Option<tilo_action_broker::policy_clock::PolicyTime>, String> {
         self.origin
             .as_ref()
             .map_err(ToString::to_string)?
@@ -387,7 +387,7 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for HarnessCertifica
         &self,
         room: uuid::Uuid,
         certificate: &tilo_user_identity::DeviceCert,
-        time: &tilo_action_broker::peer_actions::PolicyTime,
+        time: &tilo_action_broker::policy_clock::PolicyTime,
     ) -> Result<(), String> {
         let origin = self.origin.as_ref().map_err(ToString::to_string)?;
         if !origin.owns(time) {
@@ -427,7 +427,7 @@ pub(crate) fn scrollback_answer(
         return Vec::new();
     };
     if !ch
-        .room_of(entry.artifact)
+        .workspace_of(entry.artifact)
         .is_some_and(|room| net.scrollback_answer_allowed(&room, entry.workspace_topic))
     {
         return Vec::new();
@@ -744,8 +744,8 @@ impl DrainQueues {
     /// holding person-room records for their snapshots, which then travel to
     /// it over the personal fabric like any other edit.
     fn drain_person_snapshot_requests(&self) -> bool {
-        while let Some(person_room) = self.net.take_person_snapshot_request() {
-            let asked = self.table.request_room_snapshots(&person_room);
+        while let Some(personal_cluster) = self.net.take_person_snapshot_request() {
+            let asked = self.table.request_workspace_snapshots(&personal_cluster);
             tracing::debug!(asked, "asked local apps to catch a returning device up");
         }
         true
@@ -896,7 +896,7 @@ fn spawn_inner(
     publisher: &Arc<PeerPublisher>,
     membership: Option<crate::shell::state::WorkspaceTreeHandle>,
     certificate_provisioning: CertificateProvisioning,
-    config: Option<&tilo_action_broker::peer_actions::NativePeerBrokerConfig>,
+    config: Option<&tilo_action_broker::NativePeerBrokerConfig>,
     action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
     channel_store: Option<crate::shell::channel_encryption::ChannelEncryptionConfig>,
 ) -> std::io::Result<BrokerHandle> {
@@ -1104,22 +1104,6 @@ fn spawn_inner(
             )?
         }
     };
-    if let (Some(network), Some(tree), Some(broker)) =
-        (peer_sync, membership, inner.app_action_broker())
-        && let Ok((queue, host)) = broker.peer_action_attachment()
-    {
-        let rooms = tree
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .filter_map(|w| uuid::Uuid::parse_str(&w.room().to_string()).ok())
-            .collect();
-        network
-            .cmd_tx
-            .try_send(tilo_network_actor::NetCmd::AttachActionBroker { queue, host, rooms })
-            .map_err(|_| std::io::Error::other("action broker network attachment unavailable"))?;
-    }
     let personal_source = inner
         .app_action_broker()
         .zip(peer_sync.and_then(|network| network.messaging_host_identity()))
@@ -1735,7 +1719,7 @@ mod tests {
             let table = Arc::new(super::FanoutState::new());
             let seen = Arc::new(Mutex::new(Vec::new()));
             let sink_seen = Arc::clone(&seen);
-            let _sub = table.subscribe_rooms(
+            let _sub = table.subscribe_workspaces(
                 vec!["room-1".to_string()],
                 Box::new(move |event, _route| {
                     if let CollabEvent::FollowChanged { peer_id } = event
@@ -1798,7 +1782,7 @@ mod tests {
             let table = Arc::new(super::FanoutState::new());
             let heard: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
             let sink = Arc::clone(&heard);
-            let _sub = table.subscribe_rooms(
+            let _sub = table.subscribe_workspaces(
                 vec!["room-1".to_string()],
                 Box::new(move |event, _route| {
                     if let CollabEvent::Context { collaborators, .. } = event {
@@ -1861,7 +1845,7 @@ mod tests {
             let table = Arc::new(super::FanoutState::new());
             let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
             let sink_seen = Arc::clone(&seen);
-            let _sub = table.subscribe_rooms(
+            let _sub = table.subscribe_workspaces(
                 vec!["room-1".to_string()],
                 Box::new(move |event, _route| {
                     if let CollabEvent::Context { collaborators, .. } = event {
@@ -1930,7 +1914,7 @@ mod tests {
             let table = Arc::new(super::FanoutState::new());
             let heard: Heard = Arc::new(Mutex::new(Vec::new()));
             let sink = Arc::clone(&heard);
-            let _sub = table.subscribe_rooms(
+            let _sub = table.subscribe_workspaces(
                 vec!["room-1".to_string()],
                 Box::new(move |event, _route| {
                     if let CollabEvent::Context { collaborators, .. } = event {

@@ -343,8 +343,8 @@ fn days_total_across_ranges_with_their_ends_counted_as_said() {
 
 #[test]
 fn ranges_come_from_a_range_of_cells_too() {
-    let mut room = Room::default();
-    room.cells.insert(
+    let mut workspace = Workspace::default();
+    workspace.cells.insert(
         "Trips!B2:C4".into(),
         json!([
             ["2025-07-20", "2025-08-12"],
@@ -359,17 +359,17 @@ fn ranges_come_from_a_range_of_cells_too() {
     .as_object()
     .cloned()
     .unwrap();
-    bind(&mut arguments, &params, &mut room).unwrap();
+    bind(&mut arguments, &params, &mut workspace).unwrap();
     assert_eq!(arguments["days"], json!(17));
 }
 
-/// A room answering only cell reads.
+/// A workspace answering only cell reads.
 #[derive(Default)]
-struct Room {
+struct Workspace {
     cells: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-impl Reads for Room {
+impl Reads for Workspace {
     fn read(&mut self, view: &ViewRef) -> Result<serde_json::Value, String> {
         let item = view.arguments.get("item").cloned().unwrap_or_default();
         self.cells

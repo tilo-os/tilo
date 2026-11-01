@@ -43,9 +43,7 @@ impl App {
         if let Some(next) = self.actions.resource_generation.get().checked_add(1) {
             self.actions.resource_generation.set(next);
         }
-        self.actions.action_directory_snapshot = None;
-        self.actions.action_directory_stamp = None;
-        self.actions.action_directory_cursors.clear();
+        self.retire_action_directory();
         self.actions.resource_cache.get_mut().take();
         self.actions.local_resource_cache.get_mut().take();
         self.actions.open_resource_search_cache.get_mut().take();

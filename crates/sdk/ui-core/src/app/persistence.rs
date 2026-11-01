@@ -37,10 +37,10 @@ impl App {
             history.invalidate_owner();
             self.layout.request_rebuild();
         }
-        // Learn the current room grant before the widget selects a record.
+        // Learn the current workspace grant before the widget selects a record.
         // Discovery is metadata-only: it must not create an empty record
         // replica or join a collaboration route for every indexed document.
-        records.discover_room(&room_index);
+        records.discover_workspace(&room_index);
         self.persistence.records = Some(records);
         self.persistence.room_index = Some(crate::state::DocumentReplica::new(room_index));
         self
@@ -228,13 +228,13 @@ impl App {
                     self.layout.request_rebuild();
                 }
                 self.state.rebase_outbound();
-                // Preserve the launcher's unqualified route for the room
+                // Preserve the launcher's unqualified route for the workspace
                 // index before moving the editable document to its record
                 // route. The two Automerge graphs never share a channel or
                 // an apply target.
                 if native {
-                    if self.native_room_route.is_none() {
-                        self.native_room_route = self
+                    if self.native_workspace_route.is_none() {
+                        self.native_workspace_route = self
                             .collaboration
                             .manager
                             .primary_route()
@@ -244,12 +244,12 @@ impl App {
                         tracing::warn!(%error,"native document route switch remains unavailable");
                         return false;
                     }
-                } else if self.collaboration.room_manager.is_none() {
-                    let room = std::mem::replace(
+                } else if self.collaboration.workspace_manager.is_none() {
+                    let workspace = std::mem::replace(
                         &mut self.collaboration.manager,
                         CollaborationManager::for_record(&checkout),
                     );
-                    self.collaboration.room_manager = Some(room);
+                    self.collaboration.workspace_manager = Some(workspace);
                 } else {
                     self.collaboration.manager = CollaborationManager::for_record(&checkout);
                 }
@@ -277,19 +277,19 @@ impl App {
         }
     }
 
-    /// With records in play, the App's autosave writes the room index
+    /// With records in play, the App's autosave writes the workspace index
     /// instead of the live document — sending the live doc to both would put
-    /// a record's content in the room index.
+    /// a record's content in the workspace index.
     #[cfg(feature = "native")]
     fn autosave_tick(&mut self) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
         match self.persistence.records.as_mut() {
             Some(set) => {
                 set.tick(&mut self.state.doc);
-                if let (Some(saver), Some(room)) = (
+                if let (Some(saver), Some(workspace)) = (
                     self.persistence.autosave.as_mut(),
                     self.persistence.room_index.as_mut(),
                 ) {
-                    saver.request(room.document_mut());
+                    saver.request(workspace.document_mut());
                 }
             }
             None => {
@@ -337,11 +337,11 @@ impl App {
             if let Err(error) = set.flush(&mut self.state.doc) {
                 tracing::error!(%error, "record persistence failed");
             }
-            if let (Some(saver), Some(room)) = (
+            if let (Some(saver), Some(workspace)) = (
                 self.persistence.autosave.as_mut(),
                 self.persistence.room_index.as_mut(),
             ) {
-                saver.request(room.document_mut());
+                saver.request(workspace.document_mut());
                 saver.flush();
             }
             return;

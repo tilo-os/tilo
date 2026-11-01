@@ -296,7 +296,18 @@ fn version_summaries(app: &TestApp<JobApp>) -> Vec<String> {
 
 /// What #1300's `validate_import` allows in a record's meta map. A resource
 /// document that grows any other key cannot be carried into a governed room.
-const IMPORTABLE_META: &[&str] = &["id", "kind", "home", "room", "formerly", "refs", "blobs"];
+const IMPORTABLE_META: &[&str] = &[
+    "id",
+    "kind",
+    "home",
+    "workspace",
+    // A record written before workspaces were called workspaces carries its
+    // workspace under the old key, and a governed import carries it as it is.
+    "room",
+    "formerly",
+    "refs",
+    "blobs",
+];
 
 #[test]
 fn collaboration_and_history_survive_a_move_into_another_room() {

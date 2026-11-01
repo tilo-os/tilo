@@ -183,7 +183,7 @@ fn workspace_create_address_creates_and_selects_one_owned_empty_room() {
     );
     assert_eq!(
         created.policy.grants,
-        tilo_action_policy::roles::room_role_grants(
+        tilo_action_policy::roles::workspace_role_grants(
             &created.room().to_string(),
             &tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner),
         ),

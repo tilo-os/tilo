@@ -34,7 +34,7 @@ use automerge::{
     AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
 use collab_types::caps::CapOverride;
-use tilo_action_policy::{Grant, GrantId, Preset, Role, RoomPolicy, Subject};
+use tilo_action_policy::{Grant, GrantId, Preset, Role, Subject, WorkspacePolicy};
 
 use crate::app::AppKind;
 use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace};
@@ -678,7 +678,7 @@ fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
     let members = read_keyed_blob_map(doc, entry, MEMBERS_KEY).unwrap_or_default();
     let grants = read_blob_map(doc, entry, GRANTS_KEY).map(|mut grants: Vec<Grant>| {
         // Map keys are lexical, but the default role grants have a deliberate
-        // order in `room_role_grants`: by role as `Role::ALL` lists them, then
+        // order in `workspace_role_grants`: by role as `Role::ALL` lists them, then
         // by the index in their `role:<role>:<index>` id. Rebuild that order
         // (index 10 after 9, not after 1) before exposing the policy to the
         // live tree.
@@ -807,7 +807,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             // Old appended entries had no grants map. Reconstruct their
             // canonical defaults even when this tree reuses a cached workspace.
             ws.policy.grants =
-                RoomPolicy::unowned(ws.room().to_string(), &Subject::Role(Role::Owner)).grants;
+                WorkspacePolicy::unowned(ws.room().to_string(), &Subject::Role(Role::Owner)).grants;
         }
         if let Some(sandbox) = read_blob_map(doc, entry, SANDBOX_KEY) {
             ws.sandbox = sandbox;

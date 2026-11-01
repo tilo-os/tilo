@@ -32,6 +32,8 @@ enum DiskKey {
     Package {
         package: String,
     },
+    /// One workspace's index. A profile outlives any one build, and its rows
+    /// were written under this name, so the name it is stored under stays.
     RoomIndex {
         package: String,
         workspace: String,
@@ -49,27 +51,50 @@ enum DiskKey {
     },
 }
 
-/// The exact Settings personal-record key for a public root identity.
-/// Does not open or create a record, storage lease, or certificate.
+/// The exact Settings account record's key for a public root identity: the
+/// person's own record of their accounts, in their own scope, whichever
+/// workspace they have open. Does not open or create a record, storage
+/// lease, or certificate.
 ///
 /// # Errors
 /// Refuses an invalid root identity or unencodable storage key.
 #[wasm_bindgen]
 pub fn browser_accounts_key(root: &str) -> Result<String, JsValue> {
-    let person_room =
-        collab_types::person_room_of(root).ok_or_else(|| error("invalid root identity"))?;
+    let kind = ui::record::RecordKind::new("tilo.accounts");
+    if ui::record::RecordId::of_member(root, kind.as_str()).is_none() {
+        return Err(error("invalid root identity"));
+    }
+    let key = DiskKey::Record {
+        package: accounts::person::ACCOUNTS_OWNER.into(),
+        workspace: ui::record::person::PERSONAL_SCOPE.into(),
+        record: ui::record::person::record_id(&kind).storage_key(),
+    };
+    serde_json::to_string(&key).map_err(error)
+}
+
+/// The storage key the same account record had while the person's own records
+/// were filed under a workspace derived from their key: read once, so an
+/// account picked before their own store existed is still offered.
+///
+/// # Errors
+/// Refuses an invalid root identity or unencodable storage key.
+#[wasm_bindgen]
+pub fn browser_accounts_former_key(root: &str) -> Result<String, JsValue> {
+    let mut key = [0u8; 32];
+    hex::decode_to_slice(root, &mut key).map_err(|_| error("invalid root identity"))?;
     let kind = ui::record::RecordKind::new("tilo.accounts");
     let key = DiskKey::Record {
         package: accounts::person::ACCOUNTS_OWNER.into(),
-        workspace: person_room.to_string(),
+        workspace: collab_types::retired_person_workspace(&key).to_string(),
         record: ui::record::person::record_id(&kind).storage_key(),
     };
     serde_json::to_string(&key).map_err(error)
 }
 
 /// Read public picker metadata from an existing Settings account document.
-/// The caller reads only the key returned by `browser_accounts_key`; no
-/// record initialization, key custody, or credential store is involved.
+/// The caller reads only the keys [`browser_accounts_key`] and
+/// [`browser_accounts_former_key`] name; no record initialization, key
+/// custody, or credential store is involved.
 ///
 /// # Errors
 /// Refuses invalid identity, oversized or malformed documents, and failed projection.
@@ -79,17 +104,20 @@ pub fn project_browser_accounts(root: &str, origin: &str, bytes: &[u8]) -> Resul
         return Err(error("account projection exceeds its read budget"));
     }
     browser_accounts_key(root)?;
+    let mut former = [0u8; 32];
+    hex::decode_to_slice(root, &mut former).map_err(|_| error("invalid root identity"))?;
+    let former_home = collab_types::retired_person_workspace(&former).to_string();
     let doc = ui::automerge::AutoCommit::load_with_options(
         bytes,
         ui::automerge::LoadOptions::new().on_partial_load(ui::automerge::OnPartialLoad::Error),
     )
     .map_err(error)?;
-    let person_room =
-        collab_types::person_room_of(root).ok_or_else(|| error("invalid root identity"))?;
     let kind = ui::record::RecordKind::new("tilo.accounts");
     let id = ui::record::person::record_id(&kind);
+    let home = ui::record::home(&doc);
     if ui::record::identity(&doc).is_none_or(|found| found.id != id || found.kind != kind)
-        || ui::record::home(&doc).as_deref() != Some(person_room.to_string().as_str())
+        || !(home.as_deref() == Some(ui::record::person::PERSONAL_SCOPE)
+            || home.as_deref() == Some(former_home.as_str()))
     {
         return Err(error(
             "account document belongs to another identity or record",
@@ -113,7 +141,9 @@ impl From<&StorageKey> for DiskKey {
                 record,
             },
             StorageKey::Package { package } => Self::Package { package },
-            StorageKey::RoomIndex { package, workspace } => Self::RoomIndex { package, workspace },
+            StorageKey::WorkspaceIndex { package, workspace } => {
+                Self::RoomIndex { package, workspace }
+            }
             StorageKey::View {
                 device,
                 workspace,
@@ -141,7 +171,9 @@ impl DiskKey {
                 record,
             },
             Self::Package { package } => StorageKey::Package { package },
-            Self::RoomIndex { package, workspace } => StorageKey::RoomIndex { package, workspace },
+            Self::RoomIndex { package, workspace } => {
+                StorageKey::WorkspaceIndex { package, workspace }
+            }
             Self::PackageRecord { .. } => return None,
             Self::View {
                 device,

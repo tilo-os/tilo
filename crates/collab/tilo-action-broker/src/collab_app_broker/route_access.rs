@@ -18,7 +18,7 @@ pub(super) enum RouteAccess {
 }
 
 /// What the attested launch of `app` may do on `route`: its own route, or
-/// one of the room's workspace records
+/// one of the workspace's records
 /// ([`collab_types::WORKSPACE_RECORDS`]); or, read-only, a record of another app whose kinds its surface declares it
 /// reads, when the person may read that record (`reads_record`). In the
 /// person's own room only the records of theirs its surface declares
@@ -27,21 +27,21 @@ pub(super) enum RouteAccess {
 pub(super) fn attested_route_access(
     app: &str,
     route: &CrdtRoute,
-    person_room: bool,
+    personal_cluster: bool,
     reads_record: impl FnOnce() -> bool,
 ) -> Result<RouteAccess, String> {
-    if person_room {
+    if personal_cluster {
         person_record_join(app, route)?;
     }
     if route.app_id.is_empty() || route.app_id == app {
         return Ok(RouteAccess::Own);
     }
-    // A workspace record is changed from any app's window of its room; the
-    // room's grants on its owner decide each change.
+    // A workspace record is changed from any app's window of its workspace; the
+    // workspace's grants on its owner decide each change.
     if collab_types::workspace_record(&route.app_id, &route.record_id).is_some() {
         return Ok(RouteAccess::Own);
     }
-    if !person_room && !ui::app_surface::reads_app(app, &route.app_id) {
+    if !personal_cluster && !ui::app_surface::reads_app(app, &route.app_id) {
         return Err(format!(
             "{app} declares no read of {}'s resources; it changes another app's \
              resources only by invoking its actions",
@@ -57,7 +57,7 @@ pub(super) fn attested_route_access(
     Ok(RouteAccess::ReadOnly)
 }
 
-/// Whether `identity` may read the record `route` names, as the room's
+/// Whether `identity` may read the record `route` names, as the workspace's
 /// committed authority decides now.
 pub(super) fn identity_reads_record(
     membership: Option<&WorkspaceTreeHandle>,
@@ -97,7 +97,7 @@ mod tests {
     fn person_route(app: &str, record: &str) -> CrdtRoute {
         CrdtRoute {
             app_id: app.into(),
-            cluster_id: collab_types::person_room(&[7; 32]).to_string(),
+            cluster_id: collab_types::personal_cluster(&[7; 32]).to_string(),
             record_id: record.into(),
         }
     }
@@ -132,7 +132,7 @@ mod tests {
         assert_eq!(
             attested_route_access("test.lang-board", &workspace_route(""), false, unread),
             Ok(RouteAccess::Own),
-            "a route of no app is the room's"
+            "a route of no app is the workspace's"
         );
         assert_eq!(
             attested_route_access(
@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(
             attested_route_access("test.lang-board", &emoji, false, unread),
             Ok(RouteAccess::Own),
-            "a workspace record is any app's of the room, as its grants decide"
+            "a workspace record is any app's of the workspace, as its grants decide"
         );
         assert!(
             attested_route_access(

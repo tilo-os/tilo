@@ -1,6 +1,6 @@
 //! One ordering of current media prerequisites; no authority constructor.
-use super::{Route, StatePeer, err, room};
-use crate::room::media::RoomMediaV1;
+use super::{Route, StatePeer, err, workspace};
+use crate::workspace::media::WorkspaceMediaV1;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(in crate::state) enum ReadinessError<E> {
@@ -20,14 +20,14 @@ impl ReadinessError<String> {
     }
 }
 pub(in crate::state) fn bindings<E>(
-    policy: &RoomMediaV1,
+    policy: &WorkspaceMediaV1,
     require_complete: bool,
     mut check: impl FnMut(&str, &str) -> Result<bool, E>,
 ) -> Result<(), ReadinessError<E>> {
     for call in policy
         .calls
         .values()
-        .filter(|call| call.phase == room::media::CallPhaseV1::Active)
+        .filter(|call| call.phase == workspace::media::CallPhaseV1::Active)
     {
         let present =
             check(&call.binding.app_id, &call.binding.record_id).map_err(ReadinessError::Source)?;
@@ -38,7 +38,7 @@ pub(in crate::state) fn bindings<E>(
     Ok(())
 }
 pub(in crate::state) fn ready<E>(
-    policy: &RoomMediaV1,
+    policy: &WorkspaceMediaV1,
     check: impl FnMut(&str, &str) -> Result<bool, E>,
     basis: impl FnOnce() -> Result<[u8; 32], E>,
 ) -> Result<(), ReadinessError<E>> {
@@ -50,7 +50,7 @@ pub(in crate::state) fn ready<E>(
 }
 pub(in crate::state) fn legacy_binding(
     peer: &StatePeer,
-    policy: &RoomMediaV1,
+    policy: &WorkspaceMediaV1,
     app: &str,
     record: &str,
 ) -> Result<bool, String> {
@@ -60,7 +60,7 @@ pub(in crate::state) fn legacy_binding(
     };
     match peer.core.documents.get(&route) {
         Some(document) if !document.encryption_required => {
-            room::media::validate_bound_chat_change(
+            workspace::media::validate_bound_chat_change(
                 policy,
                 &route.app,
                 &route.record,

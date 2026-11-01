@@ -1,4 +1,4 @@
-//! App code the host runs for agents and room actions runs in confined
+//! App code the host runs for agents and workspace actions runs in confined
 //! worker processes, out of reach of the host's state and keys, and what a
 //! worker returns is admitted before the host would sign it.
 
@@ -27,15 +27,22 @@ use tilo_agent_participant::worker::{ProbeReport, probe_confinement};
 use tilo_agent_participant::{ConfinedReplica, Replica, ReplicaActor, Seed};
 use tilo_content::ContentStore;
 
-const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 #[test]
 fn a_confined_record_kept_at_an_older_storage_version_sends_its_migration() {
     use ui::tilo_resource::evolution::{VERSION_KEY, stored_version};
     let catalogue = catalogue();
     let app = "so.tilo.chat";
-    let mut page =
-        Replica::open(&catalogue, app, ROOM, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let mut page = Replica::open(
+        &catalogue,
+        app,
+        WORKSPACE,
+        "ada",
+        ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
     let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
         panic!("a new record is published whole");
     };
@@ -50,11 +57,11 @@ fn a_confined_record_kept_at_an_older_storage_version_sends_its_migration() {
     .unwrap();
 
     // As a host holds a bot's record: in a worker, its changes admitted to
-    // the host's mirror of the room's document.
+    // the host's mirror of the workspace's document.
     let held = ConfinedReplica::open(
         &catalogue,
         app,
-        ROOM,
+        WORKSPACE,
         "host",
         &ReplicaActor::Owner,
         Seed::Existing {
@@ -64,16 +71,16 @@ fn a_confined_record_kept_at_an_older_storage_version_sends_its_migration() {
     )
     .expect("an older record opens in its worker");
     held.apply(&DocumentMutation::Snapshot(kept.save()))
-        .expect("the room's older document merges");
+        .expect("the workspace's older document merges");
     let Some(DocumentMutation::Incremental(migration)) = held
         .take_mutation()
         .expect("the worker's migration is admitted to the host's mirror")
     else {
         panic!("the migration is sent");
     };
-    let mut room = kept.clone();
-    tilo_automerge::ApplyIncoming::load_incoming(&mut room, &migration).unwrap();
-    assert_eq!(stored_version(&room), current);
+    let mut workspace = kept.clone();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut workspace, &migration).unwrap();
+    assert_eq!(stored_version(&workspace), current);
 }
 
 #[test]
@@ -93,19 +100,19 @@ fn the_app_worker_cannot_read_the_hosts_state_directory() {
     );
 }
 
-/// A record a host creates under the room's default route is the record
+/// A record a host creates under the workspace's default route is the record
 /// every member's first window opens: its genesis names that id, not one
 /// of its own, or a member's store refuses it as not matching its binding.
 /// Only an app whose windows each show a resource of their own (Sheets)
 /// keeps such records; Scratchpad keeps the workspace's one record, its
 /// package primary, like Notes.
 #[test]
-fn a_confined_record_created_under_a_room_route_names_that_route() {
+fn a_confined_record_created_under_a_workspace_route_names_that_route() {
     assert_seed_route("so.tilo.sheets", ui::record::RecordId::room_default());
 }
 
 #[test]
-fn a_confined_room_record_is_created_under_the_package_primary_route() {
+fn a_confined_workspace_record_is_created_under_the_package_primary_route() {
     assert_seed_route("so.tilo.notes", ui::record::RecordId::package_primary());
 }
 
@@ -114,7 +121,7 @@ fn assert_seed_route(app: &str, default: ui::record::RecordId) {
     let source = ConfinedReplica::open(
         &catalogue,
         app,
-        ROOM,
+        WORKSPACE,
         "host",
         &tilo_agent_participant::ReplicaActor::Owner,
         Seed::NewAt(default.clone()),
@@ -130,7 +137,10 @@ fn assert_seed_route(app: &str, default: ui::record::RecordId) {
         // A package primary uses its store namespace, not a minted identity.
         assert_eq!(ui::record::identity(&doc), None);
     } else {
-        assert_eq!(ui::record::workspace_scope(&doc).as_deref(), Some(ROOM));
+        assert_eq!(
+            ui::record::workspace_scope(&doc).as_deref(),
+            Some(WORKSPACE)
+        );
         assert_eq!(
             ui::record::identity(&doc),
             Some(ui::record::RecordCheckout::new(default, kind))
@@ -140,7 +150,7 @@ fn assert_seed_route(app: &str, default: ui::record::RecordId) {
     ConfinedReplica::open(
         &catalogue,
         app,
-        ROOM,
+        WORKSPACE,
         "member",
         &tilo_agent_participant::ReplicaActor::Owner,
         Seed::Existing {
@@ -163,7 +173,7 @@ fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
     let mut page = Replica::open(
         &catalogue,
         app,
-        ROOM,
+        WORKSPACE,
         "ada",
         tilo_agent_participant::ReplicaActor::Owner,
         Seed::New,
@@ -175,7 +185,7 @@ fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
     let agent = ConfinedReplica::open(
         &catalogue,
         app,
-        ROOM,
+        WORKSPACE,
         "writer",
         &tilo_agent_participant::ReplicaActor::Agent,
         Seed::Existing {
@@ -232,7 +242,7 @@ fn bytes_that_are_not_automerge_never_reach_the_worker() {
     let agent = ConfinedReplica::open(
         &catalogue,
         "so.tilo.scratchpad",
-        ROOM,
+        WORKSPACE,
         "writer",
         &tilo_agent_participant::ReplicaActor::Agent,
         Seed::New,
@@ -259,7 +269,7 @@ fn a_dead_worker_is_replaced_from_what_the_host_holds() {
     let agent = ConfinedReplica::open(
         &catalogue,
         "so.tilo.scratchpad",
-        ROOM,
+        WORKSPACE,
         "writer",
         &tilo_agent_participant::ReplicaActor::Agent,
         Seed::New,
@@ -327,7 +337,7 @@ fn an_appearance_given_to_the_worker_is_recorded_on_the_change() {
     let mut page = Replica::open(
         &catalogue,
         app,
-        ROOM,
+        WORKSPACE,
         "ada",
         tilo_agent_participant::ReplicaActor::Owner,
         Seed::New,
@@ -339,7 +349,7 @@ fn an_appearance_given_to_the_worker_is_recorded_on_the_change() {
     let agent = ConfinedReplica::open(
         &catalogue,
         app,
-        ROOM,
+        WORKSPACE,
         "writer",
         &tilo_agent_participant::ReplicaActor::Agent,
         Seed::Existing {
@@ -371,20 +381,20 @@ const PDF: &str = "so.tilo.pdf-viewer";
 const WRITER: &str = "so.tilo.word-processor";
 const SHEETS: &str = "so.tilo.sheets";
 
-/// A new record of `app` held for an agent, lent `room`'s content when
-/// there is a room.
-fn agents_record(app: &str, room: Option<&ContentStore>) -> ConfinedReplica {
+/// A new record of `app` held for an agent, lent `workspace`'s content when
+/// there is a workspace.
+fn agents_record(app: &str, workspace: Option<&ContentStore>) -> ConfinedReplica {
     let agent = ConfinedReplica::open(
         &catalogue(),
         app,
-        ROOM,
+        WORKSPACE,
         "painter",
         &ReplicaActor::Agent,
         Seed::New,
     )
     .unwrap();
-    let agent = match room {
-        Some(room) => agent.lending(room.clone()),
+    let agent = match workspace {
+        Some(workspace) => agent.lending(workspace.clone()),
         None => agent,
     };
     agent.take_mutation().unwrap();
@@ -436,14 +446,15 @@ fn open_picture(
     )
 }
 
-/// The one piece of content `output` names, as `room` keeps it.
-fn produced(room: &ContentStore, output: &tilo_actions::ActionOutput) -> Vec<u8> {
+/// The one piece of content `output` names, as `workspace` keeps it.
+fn produced(workspace: &ContentStore, output: &tilo_actions::ActionOutput) -> Vec<u8> {
     let [address] = output.resources.as_slice() else {
         panic!("one content resource: {output:?}");
     };
     let hash = tilo_actions::content_hash(address).expect("a content address");
-    room.read(hash)
-        .expect("the room keeps what the effect made")
+    workspace
+        .read(hash)
+        .expect("the workspace keeps what the effect made")
 }
 
 /// The width and height a PNG's header gives.
@@ -455,9 +466,9 @@ fn png_size(png: &[u8]) -> (u32, u32) {
 }
 
 #[test]
-fn content_the_room_holds_reaches_the_worker_an_operation_names_it_in() {
-    let room = ContentStore::memory();
-    let hash = room.put(&png(3, 0x80)).unwrap();
+fn content_the_workspace_holds_reaches_the_worker_an_operation_names_it_in() {
+    let workspace = ContentStore::memory();
+    let hash = workspace.put(&png(3, 0x80)).unwrap();
     let address = tilo_actions::content_resource(&hash).unwrap();
 
     let unlent = agents_record(CANVAS, None);
@@ -466,12 +477,13 @@ fn content_the_room_holds_reaches_the_worker_an_operation_names_it_in() {
         "a worker lent no store has nothing at the address"
     );
 
-    let agent = agents_record(CANVAS, Some(&room));
-    open_picture(&agent, &address).expect("the worker reads the room's content at the address");
+    let agent = agents_record(CANVAS, Some(&workspace));
+    open_picture(&agent, &address)
+        .expect("the worker reads the workspace's content at the address");
     agent.take_mutation().unwrap().unwrap();
     assert!(
         agent.body().contains(&hash),
-        "the artwork's picture is the room's content: {}",
+        "the artwork's picture is the workspace's content: {}",
         agent.body()
     );
 
@@ -483,19 +495,19 @@ fn content_the_room_holds_reaches_the_worker_an_operation_names_it_in() {
 }
 
 #[test]
-fn content_an_app_stores_in_its_worker_is_kept_by_the_room() {
-    let room = ContentStore::memory();
+fn content_an_app_stores_in_its_worker_is_kept_by_the_workspace() {
+    let workspace = ContentStore::memory();
     let picture = png(2, 0x40);
     let hash = tilo_content::hash_bytes(&picture);
     let inline = format!("data:image/png;base64,{}", base64(&picture));
-    let agent = agents_record(CANVAS, Some(&room));
+    let agent = agents_record(CANVAS, Some(&workspace));
     open_picture(&agent, &inline).unwrap();
     agent.take_mutation().unwrap().unwrap();
     assert!(agent.body().contains(&hash), "{}", agent.body());
     assert_eq!(
-        room.read(&hash).as_deref(),
+        workspace.read(&hash).as_deref(),
         Some(picture.as_slice()),
-        "the picture the worker stored is the room's now"
+        "the picture the worker stored is the workspace's now"
     );
 }
 
@@ -542,12 +554,12 @@ fn an_agent_is_offered_the_effects_and_views_that_answer() {
                 || descriptor.contract.result != tilo_actions::ResultSpec::None)
     }));
 
-    // A record held for the room's owner lists no views.
+    // A record held for the workspace's owner lists no views.
     let owners = ConfinedReplica::open(
         &catalogue(),
         CANVAS,
-        ROOM,
-        "room",
+        WORKSPACE,
+        "workspace",
         &ReplicaActor::Owner,
         Seed::New,
     )
@@ -590,20 +602,20 @@ fn an_agent_is_offered_the_effects_and_views_that_answer() {
 }
 
 #[test]
-fn an_agent_exports_its_artwork_as_content_the_room_keeps() {
-    let room = ContentStore::memory();
-    let address = tilo_actions::content_resource(&room.put(&png(8, 0x80)).unwrap()).unwrap();
-    let agent = agents_record(CANVAS, Some(&room));
+fn an_agent_exports_its_artwork_as_content_the_workspace_keeps() {
+    let workspace = ContentStore::memory();
+    let address = tilo_actions::content_resource(&workspace.put(&png(8, 0x80)).unwrap()).unwrap();
+    let agent = agents_record(CANVAS, Some(&workspace));
     open_picture(&agent, &address).unwrap();
     agent.take_mutation().unwrap().unwrap();
 
     let export = operation(&agent, "export").address;
-    // An export the room keeps (no `path`) is a read: an agent's grants
+    // An export the workspace keeps (no `path`) is a read: an agent's grants
     // allow it without asking its person.
     let output = agent
         .invoke(&export, &serde_json::Map::new(), false)
         .expect("the worker exports the artwork unasked");
-    let picture = produced(&room, &output);
+    let picture = produced(&workspace, &output);
     let (width, height) = png_size(&picture);
     assert!(
         width >= 8 && width == height,
@@ -615,12 +627,12 @@ fn an_agent_exports_its_artwork_as_content_the_room_keeps() {
     );
 
     // Another worker holding the same record, given no content but the
-    // room's, exports the same picture: what the record refers to is put
+    // workspace's, exports the same picture: what the record refers to is put
     // into its worker before the export runs.
     let exporting = ConfinedReplica::open(
         &catalogue(),
         CANVAS,
-        ROOM,
+        WORKSPACE,
         "exporter",
         &ReplicaActor::Agent,
         Seed::Existing {
@@ -629,23 +641,23 @@ fn an_agent_exports_its_artwork_as_content_the_room_keeps() {
         },
     )
     .unwrap()
-    .lending(room.clone());
+    .lending(workspace.clone());
     let again = exporting
         .invoke(&export, &serde_json::Map::new(), false)
         .expect("the other worker exports it");
     assert_eq!(
-        produced(&room, &again),
+        produced(&workspace, &again),
         picture,
         "the picture the record refers to reached the other worker"
     );
 }
 
-/// Importing a workbook the room keeps edits the record and reaches nothing
-/// outside the room: an agent does it unasked, as it exports one.
+/// Importing a workbook the workspace keeps edits the record and reaches nothing
+/// outside the workspace: an agent does it unasked, as it exports one.
 #[test]
-fn an_agent_imports_a_workbook_the_room_keeps_unasked() {
-    let room = ContentStore::memory();
-    let source = agents_record(SHEETS, Some(&room));
+fn an_agent_imports_a_workbook_the_workspace_keeps_unasked() {
+    let workspace = ContentStore::memory();
+    let source = agents_record(SHEETS, Some(&workspace));
     let export = operation(&source, "export-xlsx-content");
     let exported = source
         .invoke(&export.address, &serde_json::Map::new(), false)
@@ -655,7 +667,7 @@ fn an_agent_imports_a_workbook_the_room_keeps_unasked() {
     };
     // The bare hash, as a step carrying the content gives it.
     let hash = tilo_actions::content_hash(address).unwrap().to_owned();
-    let target = agents_record(SHEETS, Some(&room));
+    let target = agents_record(SHEETS, Some(&workspace));
     let import = operation(&target, "import-xlsx-content");
     target
         .invoke(
@@ -689,15 +701,15 @@ fn an_agent_adds_a_local_event_unasked_and_is_asked_for_a_remote_one() {
     }
 }
 
-/// Placing a picture the room keeps is an ordinary edit of the document:
+/// Placing a picture the workspace keeps is an ordinary edit of the document:
 /// an agent is offered it, and it runs unasked, under the heading named.
 #[test]
-fn an_agent_places_a_picture_the_room_keeps_under_a_heading() {
-    let room = ContentStore::memory();
+fn an_agent_places_a_picture_the_workspace_keeps_under_a_heading() {
+    let workspace = ContentStore::memory();
     // The address an export answered with, as `tilo.content:latest` binds.
-    let hash = room.put(&png(8, 0x40)).unwrap();
+    let hash = workspace.put(&png(8, 0x40)).unwrap();
     let address = tilo_actions::content_resource(&hash).unwrap();
-    let writer = agents_record(WRITER, Some(&room));
+    let writer = agents_record(WRITER, Some(&workspace));
     let replace = operation(&writer, "replace-body");
     writer
         .invoke(
@@ -763,10 +775,10 @@ fn an_agent_may_not_write_where_an_effect_would_or_run_one_that_answers_nothing(
 
 #[test]
 fn an_agent_reads_and_looks_at_its_artwork_through_the_canvass_views() {
-    let room = ContentStore::memory();
+    let workspace = ContentStore::memory();
     let picture = png(40, 0x80);
-    let address = tilo_actions::content_resource(&room.put(&picture).unwrap()).unwrap();
-    let agent = agents_record(CANVAS, Some(&room));
+    let address = tilo_actions::content_resource(&workspace.put(&picture).unwrap()).unwrap();
+    let agent = agents_record(CANVAS, Some(&workspace));
     open_picture(&agent, &address).unwrap();
     agent.take_mutation().unwrap().unwrap();
 
@@ -783,7 +795,7 @@ fn an_agent_reads_and_looks_at_its_artwork_through_the_canvass_views() {
     );
 
     // A look renders the artwork, on the CPU in the confined worker, as
-    // content the room keeps; the answer names it, never inlines it.
+    // content the workspace keeps; the answer names it, never inlines it.
     let look = operation(&agent, "look");
     let looked = agent
         .invoke(
@@ -792,7 +804,7 @@ fn an_agent_reads_and_looks_at_its_artwork_through_the_canvass_views() {
             false,
         )
         .expect("look runs for the agent");
-    let rendered = produced(&room, &looked);
+    let rendered = produced(&workspace, &looked);
     assert_eq!(png_size(&rendered), (64, 64));
     let value = looked.value.clone().expect("a look answers");
     assert_eq!(value["content"], looked.resources[0].as_str(), "{value}");
@@ -822,9 +834,9 @@ fn did(change: &DocumentMutation) -> Vec<String> {
         .collect()
 }
 
-/// Pin the PDF `hash` the room holds as `agent`'s PDF record's source, and
+/// Pin the PDF `hash` the workspace holds as `agent`'s PDF record's source, and
 /// let its view open it.
-fn pin_pdf(agent: &ConfinedReplica, room: &ContentStore, hash: &str, name: &str) {
+fn pin_pdf(agent: &ConfinedReplica, workspace: &ContentStore, hash: &str, name: &str) {
     let pin = operation(agent, "pin-source");
     assert_eq!(pin.kind, OperationKind::Document);
     agent
@@ -832,12 +844,12 @@ fn pin_pdf(agent: &ConfinedReplica, room: &ContentStore, hash: &str, name: &str)
             &pin.address,
             &arguments(serde_json::json!({
                 "hash": hash,
-                "len": room.read(hash).unwrap().len(),
+                "len": workspace.read(hash).unwrap().len(),
                 "name": name,
             })),
             false,
         )
-        .expect("the record pins the room's PDF");
+        .expect("the record pins the workspace's PDF");
     // The view opens the PDF it now names, and the record takes on what
     // opening it adds the first time (its page plan, the markup the file
     // carries) before the pin answers: the app's own work, caused by the
@@ -855,22 +867,22 @@ fn pin_pdf(agent: &ConfinedReplica, room: &ContentStore, hash: &str, name: &str)
     );
 }
 
-/// A PDF the room holds is pinned in an agent's PDF record and its text
+/// A PDF the workspace holds is pinned in an agent's PDF record and its text
 /// read page by page, extracted inside the confined worker from the bytes
-/// the room lent it: no file, network or helper process.
+/// the workspace lent it: no file, network or helper process.
 #[test]
-fn an_agent_reads_a_pdf_the_room_holds_in_its_worker() {
-    let room = ContentStore::memory();
-    let hash = room
+fn an_agent_reads_a_pdf_the_workspace_holds_in_its_worker() {
+    let workspace = ContentStore::memory();
+    let hash = workspace
         .put(&pdf(&[
             "Lamps in the hall",
             "Lamps in the attic",
             "Lamps in the cellar",
         ]))
         .unwrap();
-    let agent = agents_record(PDF, Some(&room));
+    let agent = agents_record(PDF, Some(&workspace));
     assert_ne!(agent.worker_id(), Some(std::process::id()));
-    pin_pdf(&agent, &room, &hash, "inventory.pdf");
+    pin_pdf(&agent, &workspace, &hash, "inventory.pdf");
 
     let read = operation(&agent, "read-text");
     assert_eq!(read.kind, OperationKind::Effect);
@@ -897,13 +909,13 @@ fn an_agent_reads_a_pdf_the_room_holds_in_its_worker() {
         changed.as_ref().map(did)
     );
 
-    // Another worker on the same record, lent the room, asks for the PDF
+    // Another worker on the same record, lent the workspace, asks for the PDF
     // it lacks and reads it; one lent nothing says it cannot.
     let open = |lent: Option<&ContentStore>| {
         let replica = ConfinedReplica::open(
             &catalogue(),
             PDF,
-            ROOM,
+            WORKSPACE,
             "reader",
             &ReplicaActor::Agent,
             Seed::Existing {
@@ -913,14 +925,14 @@ fn an_agent_reads_a_pdf_the_room_holds_in_its_worker() {
         )
         .unwrap();
         match lent {
-            Some(room) => replica.lending(room.clone()),
+            Some(workspace) => replica.lending(workspace.clone()),
             None => replica,
         }
     };
     let whole = serde_json::Map::new();
-    let again = open(Some(&room))
+    let again = open(Some(&workspace))
         .invoke(&read.address, &whole, false)
-        .expect("the PDF the room holds reaches the other worker");
+        .expect("the PDF the workspace holds reaches the other worker");
     assert!(
         again
             .value
@@ -931,16 +943,16 @@ fn an_agent_reads_a_pdf_the_room_holds_in_its_worker() {
     assert!(open(None).invoke(&read.address, &whole, false).is_err());
 }
 
-/// A page of a PDF the room holds is drawn as a picture inside the
-/// confined worker and kept as content the room keeps.
+/// A page of a PDF the workspace holds is drawn as a picture inside the
+/// confined worker and kept as content the workspace keeps.
 #[test]
 fn an_agent_looks_at_a_pdf_page_in_its_worker() {
-    let room = ContentStore::memory();
-    let hash = room
+    let workspace = ContentStore::memory();
+    let hash = workspace
         .put(&pdf(&["Floor plan: hall", "Floor plan: attic"]))
         .unwrap();
-    let agent = agents_record(PDF, Some(&room));
-    pin_pdf(&agent, &room, &hash, "plan.pdf");
+    let agent = agents_record(PDF, Some(&workspace));
+    pin_pdf(&agent, &workspace, &hash, "plan.pdf");
 
     let look = operation(&agent, "look-page");
     assert!(tilo_agent_participant::apps::readable(&look), "{look:?}");
@@ -951,7 +963,7 @@ fn an_agent_looks_at_a_pdf_page_in_its_worker() {
             false,
         )
         .expect("look-page draws in the worker for the agent");
-    let (width, height) = png_size(&produced(&room, &looked));
+    let (width, height) = png_size(&produced(&workspace, &looked));
     assert_eq!(height, 512, "the page's long side");
     assert!(width < height, "a portrait page: {width}x{height}");
     let value = looked.value.unwrap();
@@ -964,13 +976,15 @@ fn an_agent_looks_at_a_pdf_page_in_its_worker() {
     );
 }
 
-/// A document the room holds as content is read with the word processor's
-/// read-content, in the worker, from the bytes the room lent it.
+/// A document the workspace holds as content is read with the word processor's
+/// read-content, in the worker, from the bytes the workspace lent it.
 #[test]
-fn an_agent_reads_a_document_the_room_holds_with_the_word_processor() {
-    let room = ContentStore::memory();
-    let hash = room.put(b"# Lamps\n\nThe cellar lamp flickers.\n").unwrap();
-    let agent = agents_record(WRITER, Some(&room));
+fn an_agent_reads_a_document_the_workspace_holds_with_the_word_processor() {
+    let workspace = ContentStore::memory();
+    let hash = workspace
+        .put(b"# Lamps\n\nThe cellar lamp flickers.\n")
+        .unwrap();
+    let agent = agents_record(WRITER, Some(&workspace));
     let read = operation(&agent, "read-content");
     assert!(tilo_agent_participant::apps::readable(&read), "{read:?}");
     let output = agent

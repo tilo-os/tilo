@@ -50,14 +50,14 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
         Some(untouched.clone())
     );
     let NeighbourMsg::SyncResp { changes, .. } = &tail[0] else {
-        panic!("room delta first")
+        panic!("workspace delta first")
     };
-    let NeighbourMsg::SyncResp { changes: all, .. } = governor.room_message() else {
+    let NeighbourMsg::SyncResp { changes: all, .. } = governor.workspace_message() else {
         panic!("unexpected fixture shape")
     };
     assert!(
         changes.len() < all.len(),
-        "ordinary room publication must exclude prior causal history"
+        "ordinary workspace publication must exclude prior causal history"
     );
     before = governor.clone();
     let rows = governor.rows();
@@ -102,7 +102,7 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     );
     tail.extend(created);
     let mut fresh = StatePeer::new(
-        governor.room(),
+        governor.workspace_id(),
         governor.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
@@ -135,7 +135,7 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     }
     let restored = StatePeer::restore(
         &fresh.durable().unwrap(),
-        governor.room(),
+        governor.workspace_id(),
         governor.owner_certificates()[0].clone(),
         governor.certificates(),
         RevocationList::new(),
@@ -188,7 +188,7 @@ fn selective_publication_compares_restored_checkpoints_by_exact_bytes() {
         .unwrap();
     let restored = StatePeer::restore(
         &governor.durable().unwrap(),
-        governor.room(),
+        governor.workspace_id(),
         governor.owner_certificates()[0].clone(),
         governor.certificates(),
         RevocationList::new(),
@@ -214,7 +214,7 @@ fn selective_publication_compares_restored_checkpoints_by_exact_bytes() {
 }
 
 #[test]
-fn selective_room_only_publication_refuses_a_revoked_owner_device() {
+fn selective_workspace_only_publication_refuses_a_revoked_owner_device() {
     let (mut governor, key, _, _, now) = seeded();
     governor
         .publication_mut()
@@ -233,7 +233,7 @@ fn selective_room_only_publication_refuses_a_revoked_owner_device() {
     revocations.insert(revoked).unwrap();
     let restored = StatePeer::restore(
         &governor.durable().unwrap(),
-        governor.room(),
+        governor.workspace_id(),
         governor.owner_certificates()[0].clone(),
         governor.certificates(),
         revocations,
@@ -246,7 +246,7 @@ fn selective_room_only_publication_refuses_a_revoked_owner_device() {
             .publication_mut()
             .durable_mutation_messages(&restored, &key, now, 2)
             .is_err(),
-        "a revoked owner device no longer writes the room's governance"
+        "a revoked owner device no longer writes the workspace's governance"
     );
 }
 
@@ -258,7 +258,7 @@ fn selective_publication_cannot_discard_prior_document_basis() {
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap();
     let mut candidate = StatePeer::new(
-        governor.room(),
+        governor.workspace_id(),
         governor.owner_certificates()[0].clone(),
         governor.certificates(),
         RevocationList::new(),
@@ -266,7 +266,11 @@ fn selective_publication_cannot_discard_prior_document_basis() {
     )
     .unwrap();
     candidate
-        .receive(key.verifying_key().to_bytes(), governor.room_message(), now)
+        .receive(
+            key.verifying_key().to_bytes(),
+            governor.workspace_message(),
+            now,
+        )
         .unwrap();
     assert!(candidate.rows().is_empty());
     assert!(

@@ -5,23 +5,18 @@
 //! Three carriers: the Iroh transport; any byte stream pair, for a host in
 //! the same process; and a host's HTTPS routes
 //! ([`tilo_relay_client::https::HttpsLink`]) for a host that publishes no
-//! iroh address. All carry the same state envelopes; the first two also
-//! carry the private v2 action channel.
+//! iroh address. All carry the same state envelopes.
 
 use iroh::endpoint::{Connection, ConnectionStats, Endpoint};
 use n0_future::boxed::BoxFuture;
 use tokio::sync::mpsc;
 
 use crate::transport::Envelope;
-use tilo_delivery_protocol::transport_v2::EnvelopeV2;
 
 /// Already bounded application channels supplied by an authenticated pump.
-/// Private frames must originate from the same verified session as state.
 pub(crate) struct SessionChannels {
     pub outbound: mpsc::Sender<Envelope>,
     pub inbound: mpsc::Receiver<Envelope>,
-    pub action_outbound: Option<mpsc::Sender<EnvelopeV2>>,
-    pub action_inbound: mpsc::Receiver<EnvelopeV2>,
 }
 
 /// Lifetime operations and transport counters only: no identity, business
@@ -104,12 +99,10 @@ pub(crate) struct HttpsCarrier {
 
 impl HttpsCarrier {
     /// Pump `link` into fresh state channels until either side ends or the
-    /// carrier stops. The link carries state only: the private channel
-    /// stays absent.
+    /// carrier stops.
     pub(crate) fn start(mut link: tilo_relay_client::HttpsLink) -> (Self, SessionChannels) {
         let (outbound, mut outgoing) = mpsc::channel::<Envelope>(256);
         let (incoming, inbound) = mpsc::channel::<Envelope>(256);
-        let (_, action_inbound) = mpsc::channel::<EnvelopeV2>(1);
         let (stop, mut stopped) = tokio::sync::watch::channel(false);
         n0_future::task::spawn(async move {
             loop {
@@ -135,15 +128,7 @@ impl HttpsCarrier {
             }
             link.close();
         });
-        (
-            Self { stop },
-            SessionChannels {
-                outbound,
-                inbound,
-                action_outbound: None,
-                action_inbound,
-            },
-        )
+        (Self { stop }, SessionChannels { outbound, inbound })
     }
 }
 

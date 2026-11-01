@@ -1,9 +1,10 @@
 //! Cache adapter for the canonical record lifecycle; widget, action and history
 //! ownership remain in the ordinary RecordStore.
 use super::{
-    AutoCommit, Parked, PortableStorage, Rc, RecordCheckout, RecordId, RecordOpenError,
-    RecordOpenOutcome, RecordOwners, RecordReservation, RecordSaveStatus, RecordSet, RecordStore,
-    Reserved, Transactable, validate_identity,
+    AutoCommit, LEGACY_WORKSPACE_KEY, Parked, PortableStorage, Rc, RecordCheckout, RecordId,
+    RecordOpenError, RecordOpenOutcome, RecordOwners, RecordReservation, RecordSaveStatus,
+    RecordSet, RecordStore, Reserved, Transactable, WORKSPACE, identity, meta_obj, transfer,
+    validate_identity, workspace_scope,
 };
 // The browser cache has its own key space (with a package-primary slot).
 use crate::portable_storage::StorageKey;
@@ -60,9 +61,11 @@ impl RecordSet {
             .portable
             .as_ref()
             .ok_or(RecordOpenError::IdentityMismatch)?;
-        let value = cache
-            .get(&key(&self.package_id, &self.home, &want.id))
-            .ok_or(RecordOpenError::MissingRecord)?;
+        let target = key(&self.package_id, &self.home, &want.id);
+        if cache.get(&target).is_none() {
+            self.take_from_retired_workspace_in_cache(cache, want)?;
+        }
+        let value = cache.get(&target).ok_or(RecordOpenError::MissingRecord)?;
         let actor = value
             .actor
             .filter(|actor| !actor.is_empty())
@@ -88,6 +91,54 @@ impl RecordSet {
         );
         Ok(RecordOpenOutcome::Loaded)
     }
+    /// [`RecordSet::take_from_retired_workspace`] for a cache with its own key
+    /// space: a record of the person's still kept in the workspace their
+    /// records were filed under before their own store existed is read there,
+    /// stamped into the scope they have now and written under the same record
+    /// id, with the whole history it had.
+    fn take_from_retired_workspace_in_cache(
+        &self,
+        cache: &PortableStorage,
+        want: &RecordCheckout,
+    ) -> Result<(), RecordOpenError> {
+        let Some(retired) = self.retired.as_deref() else {
+            return Ok(());
+        };
+        let Some(former) = cache.get(&key(&self.package_id, retired, &want.id)) else {
+            return Ok(());
+        };
+        let mut doc = AutoCommit::load_with_options(
+            &former.bytes,
+            automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Error),
+        )
+        .map_err(error)?;
+        if identity(&doc).is_none_or(|found| found.id != want.id || found.kind != want.kind)
+            || workspace_scope(&doc).as_deref() != Some(retired)
+            || transfer::is_retired(&doc)
+        {
+            return Ok(());
+        }
+        let Some(metadata) = meta_obj(&mut doc) else {
+            return Ok(());
+        };
+        doc.put(&metadata, "home", &self.home).map_err(error)?;
+        doc.put(&metadata, WORKSPACE, &self.home).map_err(error)?;
+        doc.put(&metadata, LEGACY_WORKSPACE_KEY, &self.home)
+            .map_err(error)?;
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),
+        );
+        let actor = doc.get_actor().to_bytes().to_vec();
+        cache
+            .put_document(
+                key(&self.package_id, &self.home, &want.id),
+                &mut doc,
+                Some(actor),
+            )
+            .map_err(error)
+    }
+
     pub(super) fn offer_portable_record(&mut self, id: &RecordId) -> Result<(), String> {
         let cache = self
             .portable
@@ -276,47 +327,47 @@ mod tests {
     fn cached_heads_save_status_tracks_current_document_and_durability() {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let id = RecordId::minted();
-        let storage_key = key("test", "room", &id);
+        let storage_key = key("test", "workspace", &id);
         let mut doc = AutoCommit::new();
         doc.put(automerge::ROOT, "value", 1).unwrap();
         cache.put(storage_key.clone(), doc.save(), None).unwrap();
         let older = cache.pending_writes().remove(0);
         assert_eq!(
-            save_status(&cache, "test", "room", &id, &doc),
+            save_status(&cache, "test", "workspace", &id, &doc),
             RecordSaveStatus::Saving
         );
         cache.acknowledge(&older, Ok(())).unwrap();
         assert_eq!(
-            save_status(&cache, "test", "room", &id, &doc),
+            save_status(&cache, "test", "workspace", &id, &doc),
             RecordSaveStatus::Saved
         );
         doc.put(automerge::ROOT, "value", 2).unwrap();
         let pending = doc.pending_ops();
         assert_eq!(
-            save_status(&cache, "test", "room", &id, &doc),
+            save_status(&cache, "test", "workspace", &id, &doc),
             RecordSaveStatus::Saving
         );
         assert_eq!(doc.pending_ops(), pending, "status must not commit typing");
         cache.put(storage_key.clone(), doc.save(), None).unwrap();
         cache.acknowledge(&older, Ok(())).unwrap();
         assert_eq!(
-            save_status(&cache, "test", "room", &id, &doc),
+            save_status(&cache, "test", "workspace", &id, &doc),
             RecordSaveStatus::Saving
         );
         let newer = cache.pending_writes().remove(0);
         cache.acknowledge(&newer, Err("quota".into())).unwrap();
         assert_eq!(
-            save_status(&cache, "test", "room", &id, &doc),
+            save_status(&cache, "test", "workspace", &id, &doc),
             RecordSaveStatus::Failed("quota".into())
         );
         cache.acknowledge(&newer, Ok(())).unwrap();
         assert_eq!(
-            save_status(&cache, "test", "room", &id, &doc),
+            save_status(&cache, "test", "workspace", &id, &doc),
             RecordSaveStatus::Saved
         );
         cache.put(storage_key, vec![1, 2, 3], None).unwrap();
         assert_eq!(
-            save_status(&cache, "test", "room", &id, &doc),
+            save_status(&cache, "test", "workspace", &id, &doc),
             RecordSaveStatus::Failed("cached document is corrupt".into())
         );
     }
@@ -324,10 +375,10 @@ mod tests {
     fn separate_registries_share_one_cache_owner() {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let a = RecordOwners::portable(cache.clone())
-            .open("so.tilo.test", "room")
+            .open("so.tilo.test", "workspace")
             .unwrap();
         let b = RecordOwners::portable(cache)
-            .open("so.tilo.test", "room")
+            .open("so.tilo.test", "workspace")
             .unwrap();
         assert!(a.same_owner(&b));
     }
@@ -335,7 +386,7 @@ mod tests {
     fn portable_convenience_admission_never_seeds_existing_or_uses_filesystem() {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let store = RecordOwners::portable(cache.clone())
-            .open("so.tilo.test", "room")
+            .open("so.tilo.test", "workspace")
             .unwrap();
         let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
         assert!(matches!(
@@ -355,7 +406,7 @@ mod tests {
         assert!(storage.starts_with("portable:"));
         drop(store);
         let restored = RecordOwners::portable(cache)
-            .open("so.tilo.test", "room")
+            .open("so.tilo.test", "workspace")
             .unwrap();
         restored.open_existing_record_checked(&checkout).unwrap();
         assert!(restored.is_ready(&checkout.id));
@@ -364,12 +415,12 @@ mod tests {
     fn corrupt_hydrated_record_is_retained_and_cannot_be_recreated() {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
-        let key = key("so.tilo.test", "room", &checkout.id);
+        let key = key("so.tilo.test", "workspace", &checkout.id);
         cache
             .hydrate(key.clone(), vec![1, 2, 3], Some(vec![42]))
             .unwrap();
         let store = RecordOwners::portable(cache.clone())
-            .open("so.tilo.test", "room")
+            .open("so.tilo.test", "workspace")
             .unwrap();
         assert!(store.open_existing_record_checked(&checkout).is_err());
         assert!(store.create_record(&checkout).is_err());
@@ -380,7 +431,7 @@ mod tests {
     fn initializer_cannot_replace_the_reserved_actor() {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let store = RecordOwners::portable(cache)
-            .open("so.tilo.test", "room")
+            .open("so.tilo.test", "workspace")
             .unwrap();
         let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
         let mut reservation = store.reserve_record(&checkout).unwrap();

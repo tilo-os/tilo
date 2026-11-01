@@ -1063,7 +1063,7 @@ fn identity_mutation(
     let value = match field {
         "id" => "uuid:00000000-0000-4000-8000-000000000099",
         "kind" => "foreign-kind",
-        "room" => "00000000-0000-4000-8000-000000000099",
+        "workspace" | "room" => "00000000-0000-4000-8000-000000000099",
         "home" => "foreign-origin",
         _ => unreachable!(),
     };
@@ -1083,7 +1083,7 @@ fn identity_mutation(
 #[test]
 fn signed_owned_identity_mutations_are_atomic_invalid_and_recover_with_fresh_snapshot() {
     for incremental in [false, true] {
-        for field in ["id", "kind", "room", "home"] {
+        for field in ["id", "kind", "workspace", "room", "home"] {
             let mut fixture = RoutedOwners::new();
             let family = "tilo:record";
             let incoming = identity_mutation(&fixture, 0, family, field, incremental);
@@ -1160,7 +1160,7 @@ fn signed_owned_corrupt_incremental_preserves_document_history_generation_and_st
 fn signed_owned_concurrent_losing_identity_values_are_rejected() {
     use automerge::ReadDoc;
     for incremental in [false, true] {
-        for field in ["id", "kind", "room", "home"] {
+        for field in ["id", "kind", "workspace", "home"] {
             let mut fixture = RoutedOwners::new();
             let binding = &fixture.bindings[0];
             let family = "tilo:record";
@@ -1284,7 +1284,7 @@ impl RoutedPrimary {
             required: vec![],
             optional: vec![],
             opens: &[],
-            room_record: false,
+            workspace_record: false,
             member_record: false,
             opens_before_record: false,
             create: primary_routed_factory,
@@ -2878,7 +2878,7 @@ fn native_owned_committed_read_is_not_republished_as_an_echo() {
 
 /// A committed read that arrives while the person is mid-word must not wait
 /// for their next input: its delivery turn holds every action queued behind
-/// it, so an idle window with an unfinished word stalled the room. The merge
+/// it, so an idle window with an unfinished word stalled the workspace. The merge
 /// closes the word as its own step, named by the action typing it, keeps it
 /// and applies at once. A step no action names stays open instead: committed
 /// unnamed, the identity service would refuse to sign it.

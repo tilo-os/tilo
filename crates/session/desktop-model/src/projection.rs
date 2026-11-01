@@ -202,7 +202,7 @@ pub fn workspace_presets_of(doc: &AutoCommit) -> Vec<tilo_action_policy::Preset>
 /// The document's error when a value cannot be written.
 pub fn project_room_policy(
     doc: &mut AutoCommit,
-    policy: &tilo_action_policy::RoomPolicy,
+    policy: &tilo_action_policy::WorkspacePolicy,
 ) -> Result<(), automerge::AutomergeError> {
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
 
@@ -247,7 +247,7 @@ pub fn project_room_policy(
 
 /// The authority a workspace document records for `room`. Values that do not
 /// decode are skipped; grants on another workspace's nodes are dropped.
-pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomPolicy {
+pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::WorkspacePolicy {
     use automerge::{ROOT, ReadDoc};
 
     let owner = doc
@@ -262,10 +262,10 @@ pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomP
     let grants = blob_map_of(doc, ROOM_GRANTS_KEY)
         .into_iter()
         .map(|(_, grant): (String, tilo_action_policy::Grant)| grant)
-        .filter(|grant| grant.node.room_id() == Some(room))
+        .filter(|grant| grant.node.workspace_id() == Some(room))
         .collect();
-    tilo_action_policy::RoomPolicy {
-        room: room.to_owned(),
+    tilo_action_policy::WorkspacePolicy {
+        workspace: room.to_owned(),
         owner,
         members,
         joined,
@@ -843,7 +843,7 @@ mod tests {
     fn a_grant_and_its_revocation_are_what_the_room_document_carries() {
         use tilo_action_policy::{Answer, Grant, KindSet, Level, Subject, TreePath};
 
-        let mut policy = tilo_action_policy::RoomPolicy::new("r", "owner");
+        let mut policy = tilo_action_policy::WorkspacePolicy::new("r", "owner");
         let mut doc = AutoCommit::new();
         project_room_policy(&mut doc, &policy).expect("projected");
         let roles = room_policy_of(&doc, "r");
@@ -859,7 +859,7 @@ mod tests {
         let grant = Grant::new(
             "bob-mail",
             Subject::person("bob"),
-            TreePath::room("r")
+            TreePath::workspace("r")
                 .app("mail")
                 .any(Level::Resource)
                 .any(Level::Action),

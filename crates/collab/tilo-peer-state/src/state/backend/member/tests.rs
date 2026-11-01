@@ -17,32 +17,34 @@ use tilo_automerge::ApplyIncoming;
 use web_time::Duration;
 
 fn put_member(peer: &mut StatePeer, person: &str, role: Role) {
-    let room = peer.core.room_doc.as_mut().unwrap();
-    let members = room.get(ROOT, "members").unwrap().unwrap().1;
-    room.put(
-        &members,
-        person,
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&role).unwrap()),
-    )
-    .unwrap();
-    room.commit();
+    let workspace = peer.core.workspace_doc.as_mut().unwrap();
+    let members = workspace.get(ROOT, "members").unwrap().unwrap().1;
+    workspace
+        .put(
+            &members,
+            person,
+            automerge::ScalarValue::Bytes(serde_json::to_vec(&role).unwrap()),
+        )
+        .unwrap();
+    workspace.commit();
 }
 fn put_grant(peer: &mut StatePeer, grant: &Grant) {
-    let room = peer.core.room_doc.as_mut().unwrap();
-    let grants = room.get(ROOT, "grants").unwrap().unwrap().1;
-    room.put(
-        &grants,
-        grant.id.as_str(),
-        automerge::ScalarValue::Bytes(serde_json::to_vec(grant).unwrap()),
-    )
-    .unwrap();
-    room.commit();
+    let workspace = peer.core.workspace_doc.as_mut().unwrap();
+    let grants = workspace.get(ROOT, "grants").unwrap().unwrap().1;
+    workspace
+        .put(
+            &grants,
+            grant.id.as_str(),
+            automerge::ScalarValue::Bytes(serde_json::to_vec(grant).unwrap()),
+        )
+        .unwrap();
+    workspace.commit();
 }
 fn fixture() -> (StatePeer, [u8; 32], SystemTime) {
     let (mut peer, _, _, cert, now) = crate::admission_tests::seeded();
-    let room = peer.core.room_doc.as_mut().unwrap();
-    room.put(ROOT, "owner", "a different person").unwrap();
-    room.commit();
+    let workspace = peer.core.workspace_doc.as_mut().unwrap();
+    workspace.put(ROOT, "owner", "a different person").unwrap();
+    workspace.commit();
     put_member(&mut peer, &hex::encode(cert.user_public_key), Role::Editor);
     (peer, cert.device_public_key, now)
 }
@@ -63,21 +65,21 @@ fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result
     let cert = peer
         .certificate(source, now)
         .map_err(|error| error.to_string())?;
-    let room = peer
+    let workspace = peer
         .core
-        .room_doc
+        .workspace_doc
         .as_ref()
-        .ok_or("room governance missing")?;
-    let (_, room_policy) = crate::room::extract_governed_fields(room);
-    let identities = crate::room::governance_of(Some(room)).identities;
+        .ok_or("workspace governance missing")?;
+    let (_, workspace_policy) = crate::workspace::extract_governed_fields(workspace);
+    let identities = crate::workspace::governance_of(Some(workspace)).identities;
     let policy = crate::cached_document::PolicyData {
-        owner: room_policy.owner.clone(),
-        members: room_policy.members.clone(),
-        joined: room_policy.joined.clone(),
-        grants: room_policy.grants.clone(),
+        owner: workspace_policy.owner.clone(),
+        members: workspace_policy.members.clone(),
+        joined: workspace_policy.joined.clone(),
+        grants: workspace_policy.grants.clone(),
         identities,
     };
-    // A root-signed certificate must also be the certificate admitted by room governance.
+    // A root-signed certificate must also be the certificate admitted by workspace governance.
     let identity: GovernedIdentity = serde_json::from_slice(
         policy
             .identities
@@ -98,12 +100,12 @@ fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result
         revoked.insert(entry).map_err(err)?;
     }
     if revoked.is_revoked(source) {
-        return Err("device revoked by room".into());
+        return Err("device revoked by workspace".into());
     }
     let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
-    room_policy
+    workspace_policy
         .active_role(person.id())
-        .ok_or_else(|| "person has no room membership".into())
+        .ok_or_else(|| "person has no workspace membership".into())
 }
 
 fn compare_native(peer: &StatePeer, source: [u8; 32], now: SystemTime) {
@@ -114,32 +116,36 @@ fn current_member_preserves_malformed_container_and_conflict_winner_semantics() 
     for kind in [ObjType::List, ObjType::Text, ObjType::Map] {
         let (mut peer, source, now) = fixture();
         let owner = hex::encode(peer.owner());
-        let room = peer.core.room_doc.as_mut().unwrap();
-        let object = room.put_object(ROOT, "members", kind).unwrap();
+        let workspace = peer.core.workspace_doc.as_mut().unwrap();
+        let object = workspace.put_object(ROOT, "members", kind).unwrap();
         if kind == ObjType::List {
-            room.insert(&object, 0, "not a map entry").unwrap();
+            workspace.insert(&object, 0, "not a map entry").unwrap();
         } else if kind == ObjType::Text {
-            room.splice_text(&object, 0, 0, "not a map entry").unwrap();
+            workspace
+                .splice_text(&object, 0, 0, "not a map entry")
+                .unwrap();
         } else {
-            room.put(
-                &object,
-                "invalid",
-                automerge::ScalarValue::Bytes(b"not json".to_vec()),
-            )
-            .unwrap();
-            room.put(
-                &object,
-                owner.as_str(),
-                automerge::ScalarValue::Bytes(serde_json::to_vec(&Role::Viewer).unwrap()),
-            )
-            .unwrap();
+            workspace
+                .put(
+                    &object,
+                    "invalid",
+                    automerge::ScalarValue::Bytes(b"not json".to_vec()),
+                )
+                .unwrap();
+            workspace
+                .put(
+                    &object,
+                    owner.as_str(),
+                    automerge::ScalarValue::Bytes(serde_json::to_vec(&Role::Viewer).unwrap()),
+                )
+                .unwrap();
         }
-        room.commit();
+        workspace.commit();
         compare_native(&peer, source, now);
     }
     let (mut peer, source, now) = fixture();
     peer.core
-        .room_doc
+        .workspace_doc
         .as_mut()
         .unwrap()
         .put(ROOT, "members", false)
@@ -147,7 +153,7 @@ fn current_member_preserves_malformed_container_and_conflict_winner_semantics() 
     compare_native(&peer, source, now);
     for map_wins in [false, true] {
         let (mut peer, source, now) = fixture();
-        let doc = peer.admitted_room().unwrap();
+        let doc = peer.admitted_workspace().unwrap();
         let mut valid = doc
             .clone()
             .with_actor(automerge::ActorId::from(vec![if map_wins { 3 } else { 1 }]));
@@ -165,14 +171,14 @@ fn current_member_preserves_malformed_container_and_conflict_winner_semantics() 
         invalid.commit();
         valid.merge_incoming(&mut invalid).unwrap();
         assert_eq!(valid.get_all(ROOT, "members").unwrap().len(), 2);
-        peer.core.room_doc = Some(valid.into());
+        peer.core.workspace_doc = Some(valid.into());
         compare_native(&peer, source, now);
     }
 }
 #[test]
 fn current_member_copies_all_grant_fields() {
     let (mut peer, source, now) = fixture();
-    let room = peer.room().to_owned();
+    let workspace = peer.workspace_id().to_owned();
     let long = "owned grant string ".repeat(32);
     let subjects = [
         Subject::Role(Role::Viewer),
@@ -184,16 +190,16 @@ fn current_member_copies_all_grant_fields() {
         Subject::ForeignDevice,
     ];
     let nodes = [
-        TreePath::room(&room),
-        TreePath::room(&room).app(long.clone()),
-        TreePath::room(&room)
+        TreePath::workspace(&workspace),
+        TreePath::workspace(&workspace).app(long.clone()),
+        TreePath::workspace(&workspace)
             .app(long.clone())
             .kind(long.clone())
             .resource(long.clone())
             .action(long.clone()),
-        TreePath::room(&room).rest().field(&long),
-        TreePath::room(&room).any(tilo_action_policy::Level::App),
-        roles::room_resource(&room),
+        TreePath::workspace(&workspace).rest().field(&long),
+        TreePath::workspace(&workspace).any(tilo_action_policy::Level::App),
+        roles::workspace_resource(&workspace),
     ];
     let lifetimes = [Lifetime::UntilRevoked, Lifetime::Until(u64::MAX)];
     for (i, node) in nodes.into_iter().enumerate() {
@@ -211,9 +217,13 @@ fn current_member_copies_all_grant_fields() {
     compare_native(&peer, source, now);
 }
 fn row(peer: &StatePeer, source: &[u8; 32]) -> GovernedIdentity {
-    let room = peer.admitted_room().unwrap();
-    let identities = room.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-    let raw = room
+    let workspace = peer.admitted_workspace().unwrap();
+    let identities = workspace
+        .get(ROOT, "peer_identities_v1")
+        .unwrap()
+        .unwrap()
+        .1;
+    let raw = workspace
         .get(&identities, hex::encode(source))
         .unwrap()
         .unwrap()
@@ -221,21 +231,22 @@ fn row(peer: &StatePeer, source: &[u8; 32]) -> GovernedIdentity {
     serde_json::from_slice(raw.as_bytes().unwrap()).unwrap()
 }
 fn replace_row(peer: &mut StatePeer, source: &[u8; 32], bytes: Vec<u8>) {
-    let room = peer.core.room_doc.as_mut().unwrap();
-    let identities = room.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-    room.put(
-        &identities,
-        hex::encode(source),
-        automerge::ScalarValue::Bytes(bytes),
-    )
-    .unwrap();
-    room.commit();
+    let workspace = peer.core.workspace_doc.as_mut().unwrap();
+    let identities = workspace
+        .get(ROOT, "peer_identities_v1")
+        .unwrap()
+        .unwrap()
+        .1;
+    workspace
+        .put(
+            &identities,
+            hex::encode(source),
+            automerge::ScalarValue::Bytes(bytes),
+        )
+        .unwrap();
+    workspace.commit();
 }
 #[test]
-#[expect(
-    clippy::similar_names,
-    reason = "`root` and `room` are the domain's own names"
-)]
 fn shared_current_member_retains_original_certificate_json_and_revocation_error_order() {
     let (base, source, now) = fixture();
     let mut cases = Vec::new();
@@ -243,9 +254,13 @@ fn shared_current_member_retains_original_certificate_json_and_revocation_error_
     replace_row(&mut malformed, &source, b"{bad json".to_vec());
     cases.push(malformed);
     let mut absent = base.clone();
-    let room = absent.core.room_doc.as_mut().unwrap();
-    let ids = room.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-    room.delete(&ids, hex::encode(source)).unwrap();
+    let workspace = absent.core.workspace_doc.as_mut().unwrap();
+    let ids = workspace
+        .get(ROOT, "peer_identities_v1")
+        .unwrap()
+        .unwrap()
+        .1;
+    workspace.delete(&ids, hex::encode(source)).unwrap();
     cases.push(absent);
     let mut mismatch = base.clone();
     let mut identity = row(&mismatch, &source);
@@ -288,7 +303,7 @@ fn shared_current_member_retains_original_certificate_json_and_revocation_error_
         cases.push(candidate);
     }
     let mut missing = base;
-    missing.core.room_doc = None;
+    missing.core.workspace_doc = None;
     cases.push(missing);
     for peer in cases {
         assert_eq!(peer.role(&source, now), original_role(&peer, &source, now));
@@ -311,7 +326,7 @@ fn current_member_preserves_restriction_role_semantics_and_current_certificate_e
     let deny = Grant::new(
         "denial",
         Subject::person(person.as_str()),
-        TreePath::room(restricted.room()).app("so.tilo.notes"),
+        TreePath::workspace(restricted.workspace_id()).app("so.tilo.notes"),
         KindSet::ALL,
         Answer::Deny,
         Subject::person("a different person"),
@@ -357,35 +372,37 @@ fn assert_foreign(peer: &StatePeer, source: [u8; 32], now: SystemTime, role: Rol
     let legacy = peer.permissions(source, now).unwrap();
     assert_eq!(legacy.role, role);
     assert!(legacy.foreign);
-    let invite = roles::governance_action(peer.room(), roles::governance::INVITE);
+    let invite = roles::governance_action(peer.workspace_id(), roles::governance::INVITE);
     assert!(!legacy.allows(&invite, ActionKind::Undoable, now));
 }
 #[test]
 fn a_foreign_device_acts_with_at_most_the_workspace_bound() {
     let (mut peer, source, now) = fixture();
     let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
-    let room = peer.core.room_doc.as_mut().unwrap();
-    room.put(ROOT, "owner", person.as_str()).unwrap();
-    room.commit();
+    let workspace = peer.core.workspace_doc.as_mut().unwrap();
+    workspace.put(ROOT, "owner", person.as_str()).unwrap();
+    workspace.commit();
     assert_eq!(peer.permissions(source, now).unwrap().role, Role::Owner);
 
     make_foreign(&mut peer, &source);
     assert_foreign(&peer, source, now, Role::Owner);
-    let content = TreePath::room(peer.room()).app("app").resource("record");
+    let content = TreePath::workspace(peer.workspace_id())
+        .app("app")
+        .resource("record");
     assert!(
         peer.permissions(source, now)
             .unwrap()
             .allows(&content, ActionKind::Undoable, now)
     );
 
-    // The room narrows what a foreign device may do to reading.
-    let room_id = peer.room().to_owned();
+    // The workspace narrows what a foreign device may do to reading.
+    let workspace_id = peer.workspace_id().to_owned();
     put_grant(
         &mut peer,
         &Grant::new(
             "foreign-device-read",
             Subject::ForeignDevice,
-            TreePath::room(&room_id),
+            TreePath::workspace(&workspace_id),
             KindSet::UNDOABLE.union(KindSet::OUTSIDE),
             Answer::Deny,
             Subject::person(person.as_str()),
@@ -404,12 +421,12 @@ fn a_foreign_device_acts_with_at_most_the_workspace_bound() {
     );
 }
 #[test]
-fn a_foreign_device_is_not_bounded_in_the_room_made_on_it() {
+fn a_foreign_device_is_not_bounded_in_the_workspace_made_on_it() {
     let (mut peer, source, now) = fixture();
     let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
-    let room = peer.core.room_doc.as_mut().unwrap();
-    room.put(ROOT, "owner", person.as_str()).unwrap();
-    room.commit();
+    let workspace = peer.core.workspace_doc.as_mut().unwrap();
+    workspace.put(ROOT, "owner", person.as_str()).unwrap();
+    workspace.commit();
     make_foreign(&mut peer, &source);
     assert!(peer.permissions(source, now).unwrap().foreign);
 
@@ -418,15 +435,15 @@ fn a_foreign_device_is_not_bounded_in_the_room_made_on_it() {
     assert_eq!(member.role, Role::Owner);
     assert!(!member.foreign);
 }
-/// Read is a kind like any other: a Deny on Read below the room answers Deny
+/// Read is a kind like any other: a Deny on Read below the workspace answers Deny
 /// for exactly the nodes under it, the most specific grant winning, while the
-/// room and every other record stay readable.
+/// workspace and every other record stay readable.
 #[test]
-fn a_read_deny_below_the_room_refuses_only_what_it_names() {
+fn a_read_deny_below_the_workspace_refuses_only_what_it_names() {
     let (mut peer, source, now) = fixture();
     let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
     put_member(&mut peer, &person, Role::Viewer);
-    let room_id = peer.room().to_owned();
+    let workspace_id = peer.workspace_id().to_owned();
     let read_grant = |id: &str, node: TreePath, answer: Answer| {
         Grant::new(
             id,
@@ -440,17 +457,17 @@ fn a_read_deny_below_the_room_refuses_only_what_it_names() {
     for grant in [
         read_grant(
             "payroll-hidden",
-            collab_types::document_node(&room_id, "app", "payroll"),
+            collab_types::document_node(&workspace_id, "app", "payroll"),
             Answer::Deny,
         ),
         read_grant(
             "finance-hidden",
-            TreePath::room(&room_id).app("finance"),
+            TreePath::workspace(&workspace_id).app("finance"),
             Answer::Deny,
         ),
         read_grant(
             "finance-summary",
-            collab_types::document_node(&room_id, "finance", "summary"),
+            collab_types::document_node(&workspace_id, "finance", "summary"),
             Answer::Allow,
         ),
     ] {
@@ -482,7 +499,7 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
     let (mut peer, source, now) = fixture();
     let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
     put_member(&mut peer, &person, Role::Viewer);
-    let room_id = peer.room().to_owned();
+    let workspace_id = peer.workspace_id().to_owned();
     // Every member device of the fixture is this person's: the Deny names
     // the person, so it withholds the record from all of them.
     let devices: std::collections::BTreeSet<[u8; 32]> = peer
@@ -510,17 +527,17 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
     for grant in [
         read_grant(
             "payroll-hidden",
-            collab_types::document_node(&room_id, "app", "payroll"),
+            collab_types::document_node(&workspace_id, "app", "payroll"),
             Answer::Deny,
         ),
         read_grant(
             "finance-hidden",
-            TreePath::room(&room_id).app("finance"),
+            TreePath::workspace(&workspace_id).app("finance"),
             Answer::Deny,
         ),
         read_grant(
             "finance-summary",
-            collab_types::document_node(&room_id, "finance", "summary"),
+            collab_types::document_node(&workspace_id, "finance", "summary"),
             Answer::Allow,
         ),
     ] {
@@ -536,14 +553,14 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
             .governance()
             .withheld_record_readers(now, known)
             .unwrap();
-        let payroll = collab_types::document_channel_id("app", &room_id, "payroll");
+        let payroll = collab_types::document_channel_id("app", &workspace_id, "payroll");
         assert_eq!(readers.withheld.get(&payroll), Some(&devices));
         assert!(
             peer.check_document_read(source, "app", "payroll", now)
                 .is_err()
         );
         assert_eq!(readers.unrouted, devices);
-        let q3 = collab_types::document_channel_id("finance", &room_id, "q3");
+        let q3 = collab_types::document_channel_id("finance", &workspace_id, "q3");
         assert!(
             peer.check_document_read(source, "finance", "q3", now)
                 .is_err()
@@ -557,7 +574,11 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
             assert!(
                 readers
                     .withheld
-                    .get(&collab_types::document_channel_id(app, &room_id, record))
+                    .get(&collab_types::document_channel_id(
+                        app,
+                        &workspace_id,
+                        record
+                    ))
                     .is_none_or(std::collections::BTreeSet::is_empty),
                 "{app}/{record}"
             );
@@ -569,17 +590,17 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
 }
 
 /// A member's own record in the workspace is theirs alone: another member,
-/// even the room's owner, neither reads nor changes it, and a steward
+/// even the workspace's owner, neither reads nor changes it, and a steward
 /// withholds its channel from every device but that person's, while the
 /// person reads and changes their own whatever their role.
 #[test]
 fn another_member_neither_reads_nor_writes_a_members_own_record() {
     let (mut peer, source, now) = fixture();
     let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
-    let room = peer.core.room_doc.as_mut().unwrap();
-    room.put(ROOT, "owner", person.as_str()).unwrap();
-    room.commit();
-    let room_id = peer.room().to_owned();
+    let workspace = peer.core.workspace_doc.as_mut().unwrap();
+    workspace.put(ROOT, "owner", person.as_str()).unwrap();
+    workspace.commit();
+    let workspace_id = peer.workspace_id().to_owned();
     let theirs = collab_types::member_record_id(&"ad".repeat(32), "chat.drafts");
     let own = collab_types::member_record_id(&person, "chat.drafts");
     let member = peer.permissions(source, now).unwrap();
@@ -589,7 +610,7 @@ fn another_member_neither_reads_nor_writes_a_members_own_record() {
         "the owner, who reads everything else"
     );
     for (record, theirs_alone) in [(&theirs, false), (&own, true)] {
-        let node = collab_types::document_node(&room_id, "so.tilo.chat", record);
+        let node = collab_types::document_node(&workspace_id, "so.tilo.chat", record);
         assert_eq!(
             peer.check_document_read(source, "so.tilo.chat", record, now)
                 .is_ok(),
@@ -625,7 +646,7 @@ fn another_member_neither_reads_nor_writes_a_members_own_record() {
     assert_eq!(
         readers.withheld.get(&collab_types::document_channel_id(
             "so.tilo.chat",
-            &room_id,
+            &workspace_id,
             &theirs
         )),
         Some(&devices)
@@ -635,20 +656,22 @@ fn another_member_neither_reads_nor_writes_a_members_own_record() {
             .withheld
             .get(&collab_types::document_channel_id(
                 "so.tilo.chat",
-                &room_id,
+                &workspace_id,
                 &own
             ))
             .is_some_and(std::collections::BTreeSet::is_empty)
     );
 
     // Their role does not decide their own record: a viewer still writes it.
-    let room = peer.core.room_doc.as_mut().unwrap();
-    room.put(ROOT, "owner", "b0".repeat(32).as_str()).unwrap();
-    room.commit();
+    let workspace = peer.core.workspace_doc.as_mut().unwrap();
+    workspace
+        .put(ROOT, "owner", "b0".repeat(32).as_str())
+        .unwrap();
+    workspace.commit();
     put_member(&mut peer, &person, Role::Viewer);
     let viewer = peer.permissions(source, now).unwrap();
     assert_eq!(viewer.role, Role::Viewer);
-    let own_node = collab_types::document_node(&room_id, "so.tilo.chat", &own);
+    let own_node = collab_types::document_node(&workspace_id, "so.tilo.chat", &own);
     assert!(viewer.allows(&own_node, ActionKind::Undoable, now));
 }
 
@@ -660,9 +683,9 @@ fn a_members_own_channel_admits_no_one_until_its_record_is_named() {
     let (mut peer, source, now) = fixture();
     let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
     put_member(&mut peer, &person, Role::Viewer);
-    let room_id = peer.room().to_owned();
+    let workspace_id = peer.workspace_id().to_owned();
     let theirs = collab_types::member_record_id(&"ad".repeat(32), "chat.drafts");
-    let channel = collab_types::document_channel_id("so.tilo.chat", &room_id, &theirs);
+    let channel = collab_types::document_channel_id("so.tilo.chat", &workspace_id, &theirs);
     let readers = |route: Option<&collab_types::ChannelRoute>| {
         peer.governance()
             .channel_readers(now, channel, route)
@@ -676,7 +699,7 @@ fn a_members_own_channel_admits_no_one_until_its_record_is_named() {
     assert!(!readers(Some(&named)).unwrap().contains(&source));
     // An ordinary record is everyone's once named.
     let notes = collab_types::ChannelRoute::new("so.tilo.chat", "tab:0000000000000001");
-    let notes_channel = notes.channel(&room_id);
+    let notes_channel = notes.channel(&workspace_id);
     assert!(
         peer.governance()
             .channel_readers(now, notes_channel, Some(&notes))

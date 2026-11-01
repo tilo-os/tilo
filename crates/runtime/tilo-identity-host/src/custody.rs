@@ -1,18 +1,18 @@
 //! The device custody a host authenticates with to Tilo workspace hosts,
-//! and the certificate it presents for each room it takes part in.
+//! and the certificate it presents for each workspace it takes part in.
 use std::collections::HashMap;
 use tilo_desktop_model::RoomId;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-/// A room's transport topic: the workspace id its hosts shard it by.
+/// A workspace's transport topic: the workspace id its hosts shard it by.
 pub type WorkspaceId = u64;
 
-/// The transport topic of `room`, as the desktop session's network routes it.
-fn room_topic(room: RoomId) -> WorkspaceId {
-    if room.is_nil() {
+/// The transport topic of `workspace`, as the desktop session's network routes it.
+fn workspace_topic(workspace: RoomId) -> WorkspaceId {
+    if workspace.is_nil() {
         return 0;
     }
-    tilo_relay_protocol::room_workspace_id(&room.to_string()).unwrap_or(0)
+    tilo_relay_protocol::room_workspace_id(&workspace.to_string()).unwrap_or(0)
 }
 
 /// Device certificate chain used to authenticate to a Tilo workspace host.
@@ -38,7 +38,7 @@ impl HostIdentity {
     ///
     /// # Errors
     /// The stored device key or certificate changed, cannot be read or does
-    /// not verify, the room's identity selection is missing or ambiguous, or
+    /// not verify, the workspace's identity selection is missing or ambiguous, or
     /// the selected device is revoked.
     pub fn current_native_material(
         &self,
@@ -75,9 +75,9 @@ impl HostIdentity {
             let mut selected = registry
                 .workspace_identities
                 .iter()
-                .filter_map(|(room, id)| {
-                    let room = RoomId::parse(room)?;
-                    (Some(room_topic(room)) == ws).then_some(id)
+                .filter_map(|(held, id)| {
+                    let workspace = RoomId::parse(held)?;
+                    (Some(workspace_topic(workspace)) == ws).then_some(id)
                 });
             let selected_id = selected
                 .next()
@@ -188,9 +188,9 @@ impl HostIdentity {
         let paths = self.identity_paths.as_ref()?;
         let registry_store = crate::registry::IdentityRegistryStore::from_env().ok()?;
         let registry = registry_store.load_reconciled_cached().ok()?;
-        let selected = registry.workspace_identities.iter().find_map(|(room, id)| {
-            let room = RoomId::parse(room)?;
-            (room_topic(room) == ws).then_some(id)
+        let selected = registry.workspace_identities.iter().find_map(|(held, id)| {
+            let workspace = RoomId::parse(held)?;
+            (workspace_topic(workspace) == ws).then_some(id)
         });
         let identity_id = selected
             .cloned()

@@ -24,7 +24,7 @@ use crate::host::Host;
 /// What a poll did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Polled {
-    /// It wrote into the room: the instance hands the change to the door.
+    /// It wrote into the workspace: the instance hands the change to the door.
     pub wrote: bool,
     /// An effect it was handed has an outcome now: the outbox is settled again.
     pub settle: bool,

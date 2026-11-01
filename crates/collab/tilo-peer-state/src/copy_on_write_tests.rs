@@ -5,13 +5,13 @@ use super::*;
 use crate::cached_document::take_copies_and_saves;
 use crate::{AdmissionError, InputDisposition};
 
-const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 /// A native peer holding a small record and a large untouched one.
 pub(crate) fn two_records() -> (StatePeer, SigningKey, SystemTime) {
     let (a, ac, b, bc, now) = fixtures();
     let mut native = StatePeer::new(
-        ROOM,
+        WORKSPACE,
         ac.clone(),
         vec![ac.clone(), bc.clone()],
         RevocationList::new(),
@@ -33,7 +33,7 @@ pub(crate) fn two_records() -> (StatePeer, SigningKey, SystemTime) {
     native
         .install_seed(
             SeedState {
-                room_changes: seed_room(ROOM, &ac, &[ac.clone(), bc]).unwrap(),
+                workspace_changes: seed_workspace(WORKSPACE, &ac, &[ac.clone(), bc]).unwrap(),
                 documents: vec![
                     seed("tab:1", document("native".into())),
                     seed("tab:2", document("large ".repeat(16 * 1024))),
@@ -103,7 +103,7 @@ fn admitting_one_document_copies_and_saves_only_that_document() {
     );
     let restored = StatePeer::restore(
         &durable,
-        candidate.room(),
+        candidate.workspace_id(),
         candidate.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),

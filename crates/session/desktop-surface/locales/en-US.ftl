@@ -1277,10 +1277,14 @@ people-follows-you = Following you
 people-follows-where = { $place }, following { $person }
 people-follows-you-where = { $place }, following you
 
+# The way out of a window that filled the display, said over it once.
+fullscreen-way-out = Press { $key } to leave full screen.
+
 ## The desktop's published actions
 desktop-actions-chrome = Desktop
 desktop-actions-desk = Windows
 desktop-actions-launchpad = Launchpad
+desktop-action-reveal-top-bar = Show the top bar over a full screen window
 desktop-action-toggle-overview = Show or hide the overview
 desktop-action-toggle-quick-settings = Show or hide quick settings
 desktop-action-toggle-tilo-menu = Show or hide the Tilo menu

@@ -2,7 +2,7 @@
 //! may do: allowed, asks first, or not allowed, for each kind of action, scoped to an application, one kind
 //! of resource in it, or one action.
 //!
-//! These are ordinary grants on the room, named so that setting an answer
+//! These are ordinary grants on the workspace, named so that setting an answer
 //! again replaces it instead of adding a second one. Without one, a run a
 //! person started takes the agent delegation's answer
 //! ([`crate::roles::agent_delegation`]), which is [`default_answer`], the
@@ -23,7 +23,7 @@ use crate::{
 /// The id prefix of every answer grant.
 pub const PREFIX: &str = "agent-answer:";
 
-/// Where an answer applies, below the room.
+/// Where an answer applies, below the workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AnswerScope {
     /// Every action of an application.
@@ -65,16 +65,18 @@ impl AnswerScope {
         }
     }
 
-    /// The node this scope stands for in `room`. An action's node may pass
+    /// The node this scope stands for in `workspace`. An action's node may pass
     /// through the resource's fields, so one action is matched at any depth
     /// below its kind.
     #[must_use]
-    pub fn node(&self, room: &str) -> TreePath {
-        let room = TreePath::room(room);
+    pub fn node(&self, workspace: &str) -> TreePath {
+        let workspace = TreePath::workspace(workspace);
         match self {
-            Self::App { app } => room.app(app),
-            Self::Kind { app, kind } => room.app(app).kind(kind),
-            Self::Action { app, kind, action } => room.app(app).kind(kind).rest().action(action),
+            Self::App { app } => workspace.app(app),
+            Self::Kind { app, kind } => workspace.app(app).kind(kind),
+            Self::Action { app, kind, action } => {
+                workspace.app(app).kind(kind).rest().action(action)
+            }
         }
     }
 
@@ -84,16 +86,16 @@ impl AnswerScope {
         use crate::Segment;
         match node.segments() {
             [
-                Segment::Name(Level::Room, _),
+                Segment::Name(Level::Workspace, _),
                 Segment::Name(Level::App, app),
             ] => Some(Self::app(app)),
             [
-                Segment::Name(Level::Room, _),
+                Segment::Name(Level::Workspace, _),
                 Segment::Name(Level::App, app),
                 Segment::Name(Level::Kind, kind),
             ] => Some(Self::kind(app, kind)),
             [
-                Segment::Name(Level::Room, _),
+                Segment::Name(Level::Workspace, _),
                 Segment::Name(Level::App, app),
                 Segment::Name(Level::Kind, kind),
                 Segment::Rest,
@@ -152,17 +154,17 @@ pub fn is_answer(grant: &Grant) -> bool {
 }
 
 /// The grant giving `agent` `answer` for actions of `kind` at `scope` in
-/// `room`, set by `granted_by`.
+/// `workspace`, set by `granted_by`.
 #[must_use]
 pub fn grant(
-    room: &str,
+    workspace: &str,
     agent: &str,
     (scope, kind): (&AnswerScope, ActionKind),
     answer: Answer,
     granted_by: Subject,
 ) -> Grant {
     answer_grant(
-        room,
+        workspace,
         Subject::agent(agent),
         (scope, kind),
         answer,
@@ -171,13 +173,13 @@ pub fn grant(
 }
 
 /// The grant giving `delegate` (an agent, or the work on an issue,
-/// [`Subject::Task`]) `answer` for actions of `kind` at `scope` in `room`,
+/// [`Subject::Task`]) `answer` for actions of `kind` at `scope` in `workspace`,
 /// set by `granted_by`. Given for one action, it is what "Allow for this
 /// issue" records, and lifts that action's confirmation as an agent's
 /// answer does.
 #[must_use]
 pub fn answer_grant(
-    room: &str,
+    workspace: &str,
     delegate: Subject,
     (scope, kind): (&AnswerScope, ActionKind),
     answer: Answer,
@@ -191,20 +193,20 @@ pub fn answer_grant(
     Grant::new(
         grant_id(&key, scope, kind).0,
         delegate,
-        scope.node(room),
+        scope.node(workspace),
         KindSet::of(kind),
         answer,
         granted_by,
     )
 }
 
-/// The changes setting `agent`'s answer for `kind` at `scope` in a room
+/// The changes setting `agent`'s answer for `kind` at `scope` in a workspace
 /// holding `held`: the earlier answer is revoked, so the new one replaces
 /// it. `None` clears the answer, returning the scope to what the agent's
 /// admission and broader answers say.
 #[must_use]
 pub fn set(
-    room: &str,
+    workspace: &str,
     agent: &str,
     (scope, kind): (&AnswerScope, ActionKind),
     answer: Option<Answer>,
@@ -214,10 +216,9 @@ pub fn set(
     held.iter()
         .filter(|grant| grant.id == id)
         .map(|grant| Change::Revoke(grant.id.clone()))
-        .chain(
-            answer
-                .map(|answer| Change::Grant(grant(room, agent, (scope, kind), answer, granted_by))),
-        )
+        .chain(answer.map(|answer| {
+            Change::Grant(grant(workspace, agent, (scope, kind), answer, granted_by))
+        }))
         .collect()
 }
 

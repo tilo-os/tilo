@@ -510,7 +510,7 @@ impl AgentParticipant {
             .cloned()
             .chain(held_parts)
             .chain(self.unopened.routes())
-            .filter(|route| route.cluster_id == self.room && covers(&route.app_id))
+            .filter(|route| route.cluster_id == self.workspace && covers(&route.app_id))
             .take(MOST_WAIT_RECORDS)
             .collect();
         // Read after the routes are gathered: reading needs the records
@@ -565,7 +565,7 @@ impl AgentParticipant {
         lines.iter().map(|line| shown_line(line, name)).collect()
     }
 
-    /// The names the records of `route`'s app in the room give
+    /// The names the records of `route`'s app in the workspace give
     /// participants: those open, else those not open.
     fn participant_names(&mut self, route: &DocumentRoute) -> HashMap<String, String> {
         let naming = |held: &DocumentRoute| {
@@ -889,7 +889,7 @@ pub(super) fn news_brief(
         // replayed as it was, it overwrites their work.
         format!(
             "Plan the rest of the request again with what you learned. These steps were about \
-             to run:{steps}\nPlan them again unless the news changes them, but the room may \
+             to run:{steps}\nPlan them again unless the news changes them, but the workspace may \
              have changed since they were planned: a step that writes to a row, cell, position \
              or id it read earlier must be checked against the record as it is now (read it \
              again) and corrected first, as others may have added, moved or filled rows since. \

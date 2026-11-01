@@ -2,7 +2,7 @@
 //! its person it asked to serve the room as well ([`crate::hosted`]).
 //!
 //! Each host signs its own address. The room's governance names the hosts
-//! serving it beside the governor ([`tilo_peer_state::ROOM_HOSTS_KEY`]), so
+//! serving it beside the governor ([`tilo_peer_state::WORKSPACE_HOSTS_KEY`]), so
 //! every member learns of each as it learns any change to the room, and the
 //! room's join answers carry them all, governor first: a member reaches the
 //! room wherever it is served. A hosting member is a device of the
@@ -61,7 +61,7 @@ impl Rooms {
         let governed = governed.lock().await;
         let own = self.transport_hint(&governed)?;
         Ok(std::iter::once(own)
-            .chain(governed.peer().governance().room_hosts())
+            .chain(governed.peer().governance().workspace_hosts())
             .collect())
     }
 
@@ -170,7 +170,7 @@ impl Rooms {
             return Err("the host answered an address that is not its own for the room".into());
         }
         self.name_host(room, |governance, key, now| {
-            governance.author_room_host(&hint, key, now)
+            governance.author_workspace_host(&hint, key, now)
         })
         .await?;
         // The host dials this device as it takes the room up, perhaps before
@@ -210,7 +210,7 @@ impl Rooms {
             let known = governed
                 .peer()
                 .governance()
-                .room_hosts()
+                .workspace_hosts()
                 .iter()
                 .find(|known| host_device(known) == device)
                 .map(|known| {
@@ -222,7 +222,7 @@ impl Rooms {
             known
         };
         self.name_host(room, |governance, key, now| {
-            governance.author_room_host_removed(&device, key, now)
+            governance.author_workspace_host_removed(&device, key, now)
         })
         .await?;
         let _ = self.inner.changes.send(room.to_owned());
@@ -270,7 +270,7 @@ impl Rooms {
         let Some(addr) = governed
             .peer()
             .governance()
-            .room_hosts()
+            .workspace_hosts()
             .iter()
             .find(|known| host_device(known) == device)
             .and_then(|known| IrohWorkspaceHostHintV1::from_transport_hint(known).ok())

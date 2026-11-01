@@ -48,7 +48,7 @@ pub fn component_apps() -> Vec<&'static ApplicationDefinition> {
         expect(unused_mut, reason = "only a linux host adds apps")
     )]
     let mut apps = crate::web_apps::web_apps();
-    // Connectors run on a room's host, never in a browser; the bots there
+    // Connectors run on a workspace's host, never in a browser; the bots there
     // work on their records.
     #[cfg(target_os = "linux")]
     apps.push(discord::definition());
@@ -93,7 +93,7 @@ impl AppCatalogue {
     }
 
     /// Read existing resource view descriptors without mounting or initializing
-    /// an application. The document remains owned by its original room.
+    /// an application. The document remains owned by its original workspace.
     #[must_use]
     pub fn resource_views(
         &self,
@@ -152,7 +152,7 @@ impl AppCatalogue {
 /// Which record a [`Replica`] holds.
 pub enum Seed {
     New,
-    /// A new record under the id a room route names (the room's default
+    /// A new record under the id a workspace route names (the workspace's default
     /// record a host seeds before any member opens it): its genesis names
     /// that id, as the record every member's first window opens.
     NewAt(RecordId),
@@ -167,13 +167,13 @@ pub enum Seed {
 /// Whom a replica acts as, which decides what its door allows.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ReplicaActor {
-    /// The host's own device acting for its user (room actions): the
+    /// The host's own device acting for its user (workspace actions): the
     /// record's owner, as a browser tab of the owner is.
     Owner,
     /// A delegated agent, at Editor under the operator preset.
     Agent,
     /// An installed bot: its installer's standing bounded by the bot's
-    /// grants, built by the host from the room's policy before each run.
+    /// grants, built by the host from the workspace's policy before each run.
     Bot {
         /// The installation the bot runs as.
         installation: String,
@@ -182,13 +182,13 @@ pub enum ReplicaActor {
         /// The installer's standing bounded by the bot's grants.
         standing: policy::Standing,
     },
-    /// A room member whose action the host runs (commenting a person may do
+    /// A workspace member whose action the host runs (commenting a person may do
     /// but cannot publish as a document writer): their own current standing
-    /// and the room's sandbox, as the room's policy gave them to the host.
+    /// and the workspace's sandbox, as the workspace's policy gave them to the host.
     Member {
-        /// The member's current standing in the room.
+        /// The member's current standing in the workspace.
         standing: policy::Standing,
-        /// The room's sandbox capabilities.
+        /// The workspace's sandbox capabilities.
         sandbox: Vec<collab_types::caps::CapOverride>,
         /// When the policy was read, for grant expiry.
         unix_time: u64,
@@ -353,7 +353,7 @@ fn not_offered(descriptor: &ActionDescriptor) -> DoorError {
     }
 }
 
-/// Whether any member of the room may ask the host to run `descriptor` for
+/// Whether any member of the workspace may ask the host to run `descriptor` for
 /// themselves ([`tilo_actions::MEMBER_OWN_TAG`]).
 #[must_use]
 pub fn member_own(descriptor: &ActionDescriptor) -> bool {
@@ -365,7 +365,7 @@ pub fn member_own(descriptor: &ActionDescriptor) -> bool {
 }
 
 impl Replica {
-    /// Hold a record of `app_id` in `room` as `participant` (its author id),
+    /// Hold a record of `app_id` in `workspace` as `participant` (its author id),
     /// acting as `actor` ([`ReplicaActor`]).
     ///
     /// # Errors
@@ -376,12 +376,12 @@ impl Replica {
     pub fn open(
         catalogue: &AppCatalogue,
         app_id: &str,
-        room: &str,
+        workspace: &str,
         participant: &str,
         actor: ReplicaActor,
         seed: Seed,
     ) -> Result<Self, AppError> {
-        Self::open_lending(catalogue, app_id, room, participant, actor, seed, None)
+        Self::open_lending(catalogue, app_id, workspace, participant, actor, seed, None)
     }
 
     /// [`Self::open`], lending the record's view `content`, as a host lends
@@ -395,7 +395,7 @@ impl Replica {
     pub fn open_lending(
         catalogue: &AppCatalogue,
         app_id: &str,
-        room: &str,
+        workspace: &str,
         participant: &str,
         actor: ReplicaActor,
         seed: Seed,
@@ -409,9 +409,9 @@ impl Replica {
             .ok_or_else(|| AppError::UnknownApp(app_id.to_owned()))?;
         let offers_reads = matches!(actor, ReplicaActor::Bot { .. });
         let runs_effects = matches!(actor, ReplicaActor::Agent);
-        let (invoker, permissions) = replica_standing(actor, room, participant);
-        let (checkout, bytes, created) = seeded(definition, kind, room, participant, seed)?;
-        let opening = AttachedView::opening(definition, room, checkout, bytes)
+        let (invoker, permissions) = replica_standing(actor, workspace, participant);
+        let (checkout, bytes, created) = seeded(definition, kind, workspace, participant, seed)?;
+        let opening = AttachedView::opening(definition, workspace, checkout, bytes)
             .for_invoker(&invoker)
             .with_permissions(permissions)
             .created(created);
@@ -432,7 +432,7 @@ impl Replica {
     }
 
     /// Whether an agent or a bot holds it, so it is offered only what
-    /// reaches agents. The host acting for a person (the owner's room
+    /// reaches agents. The host acting for a person (the owner's workspace
     /// actions, a member's comment) is offered what people are,
     /// `audience = "people"` included.
     const fn automated(&self) -> bool {
@@ -848,34 +848,34 @@ const DEVICE: &str = "agent";
 fn seeded(
     definition: &ApplicationDefinition,
     kind: ResourceKind,
-    room: &str,
+    workspace: &str,
     participant: &str,
     seed: Seed,
 ) -> Result<(RecordCheckout, Vec<u8>, bool), AppError> {
     let (checkout, bytes, created) = match seed {
         Seed::New => {
-            let checkout = if definition.keeps_room_record() {
+            let checkout = if definition.keeps_workspace_record() {
                 RecordCheckout::package_primary(definition.record_kind.clone())
             } else {
                 RecordCheckout::new(RecordId::minted(), definition.record_kind.clone())
             };
-            let bytes = genesis(definition, room, &checkout, kind, participant)?;
+            let bytes = genesis(definition, workspace, &checkout, kind, participant)?;
             (checkout, bytes, true)
         }
         Seed::NewAt(record) => {
-            if definition.keeps_room_record() != record.is_package_primary() {
+            if definition.keeps_workspace_record() != record.is_package_primary() {
                 return Err(AppError::Merge(
-                    "record route does not match the app's room scope".into(),
+                    "record route does not match the app's workspace scope".into(),
                 ));
             }
             let checkout = RecordCheckout::new(record, definition.record_kind.clone());
-            let bytes = genesis(definition, room, &checkout, kind, participant)?;
+            let bytes = genesis(definition, workspace, &checkout, kind, participant)?;
             (checkout, bytes, true)
         }
         Seed::Existing { record, changes } => {
-            if definition.keeps_room_record() != record.is_package_primary() {
+            if definition.keeps_workspace_record() != record.is_package_primary() {
                 return Err(AppError::Merge(
-                    "record route does not match the app's room scope".into(),
+                    "record route does not match the app's workspace scope".into(),
                 ));
             }
             let mut doc = automerge::AutoCommit::new();
@@ -898,7 +898,7 @@ fn seeded(
 
 fn genesis(
     definition: &ApplicationDefinition,
-    room: &str,
+    workspace: &str,
     checkout: &RecordCheckout,
     kind: ResourceKind,
     creator: &str,
@@ -906,14 +906,14 @@ fn genesis(
     let launch = |error: &dyn std::fmt::Display| AppError::Launch(error.to_string());
     let cache = PortableStorage::new("agent-records", DEVICE).map_err(|e| launch(&e))?;
     let records = RecordOwners::portable(cache)
-        .open(definition.app_id(), room)
+        .open(definition.app_id(), workspace)
         .map_err(|e| launch(&e))?;
     records
         .reserve_record(checkout)
         .map_err(|e| launch(&e))?
         .initialize_seeded(
             |doc| kind.initialize(doc).map_err(|error| error.to_string()),
-            |doc| ui::framework::seed_record_in_room(kind.kind(), doc, creator, DEVICE, room),
+            |doc| ui::framework::seed_record_in_room(kind.kind(), doc, creator, DEVICE, workspace),
         )
         .map_err(|e| launch(&e))?;
     records
@@ -959,26 +959,26 @@ fn discover_views(
         .collect()
 }
 
-/// Who a replica acts as and what it may do in `room`: an agent with the
+/// Who a replica acts as and what it may do in `workspace`: an agent with the
 /// operator preset under its person, an owner, a bot acting for whoever
 /// installed it, or a member with their standing.
 fn replica_standing(
     actor: ReplicaActor,
-    room: &str,
+    workspace: &str,
     participant: &str,
 ) -> (tilo_actions::ActionInvoker, PermissionContext) {
     let mut invoker = tilo_actions::ActionInvoker::actor(participant);
     let permissions = match actor {
         ReplicaActor::Agent => {
             let operator = policy::roles::AgentPreset::Operator.grants(
-                room,
+                workspace,
                 participant,
                 &policy::Subject::person(participant),
             );
-            PermissionContext::member_of(room, participant, Role::Editor)
+            PermissionContext::member_of(workspace, participant, Role::Editor)
                 .acting_as(policy::Subject::agent(participant), operator)
         }
-        ReplicaActor::Owner => PermissionContext::member_of(room, participant, Role::Owner),
+        ReplicaActor::Owner => PermissionContext::member_of(workspace, participant, Role::Owner),
         ReplicaActor::Bot {
             installer,
             standing,
@@ -987,14 +987,14 @@ fn replica_standing(
             invoker = invoker
                 .with_kind(tilo_actions::ActorKind::Bot)
                 .acting_for(installer);
-            PermissionContext::from_standing(room, standing)
+            PermissionContext::from_standing(workspace, standing)
         }
         ReplicaActor::Member {
             standing,
             sandbox,
             unix_time,
         } => PermissionContext::new(
-            ui::permissions::Actor::person(standing.person.clone()).in_room(room),
+            ui::permissions::Actor::person(standing.person.clone()).in_workspace(workspace),
             sandbox,
             standing,
         )

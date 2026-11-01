@@ -1,10 +1,16 @@
-//! The clipboard's history: recording what is copied, feeding it to Quick
-//! Settings, and pasting a chosen copy back into the app in front.
+//! The clipboard's history: recording what is copied, publishing it to the
+//! person's device panel, and pasting a chosen copy back into the app in
+//! front.
 //!
 //! A copy is kept as one format's bytes, content-addressed, and written
 //! through the device's settings document, so it survives the session: what
 //! the person pinned is still there tomorrow, and nothing lives in a file
 //! format of the clipboard's own.
+//!
+//! What was copied is personal, so the copies are published as a reading of
+//! the clipboard's own service that only granted callers read: the panel
+//! that lists them, and the session's own surfaces. Any other app, script or
+//! agent is refused it as it is refused an action it has no grant for.
 //!
 //! Reading a selection never holds up the loop: the app that owns it answers
 //! when it gets round to it, so a copy is taken as its bytes arrive
@@ -13,20 +19,26 @@
 //! so every app pastes the way it expects (a terminal with Ctrl+Shift+V).
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use std::path::Path;
 
+use serde_json::{Map, Value};
 use settings_store::clipboard_history::{HISTORY, PASTE, StoredCopy, StoredHistory, StoredPaste};
 use settings_store::paste_shortcut::{self, PasteShortcut};
+use tilo_actions::{ActionAddress, ActionOutput, ActionParam, DoorError, ParamType, ResourceSpec};
 use tilo_compositor::clipboard_history::{Copy, History, Pull, Pulled, TEXT_MIME, kept_mime};
 use tilo_compositor::{Compositor, InputEvent, Selection};
 use tilo_device_fabric::link::FabricLink;
 use tilo_device_fabric::{ClipboardEntry, ClipboardPayload, DeviceId, FabricStamp};
 use tilo_quick_settings::hosted::ClipboardCopy;
+use tilo_service::{Service, Started, reading};
 use ui::dnd::CopiedFiles;
 
 use super::clipboard_files;
+use crate::controls::{CLIPBOARD_RESOURCE, SessionCommand};
+use crate::i18n::t;
 
 /// The clipboard's history and the read of the selection filling it.
 pub(crate) struct Clipboard {
@@ -39,9 +51,9 @@ pub(crate) struct Clipboard {
     /// Copies quick settings chose, waiting for the loop that has the
     /// compositor.
     asks: RefCell<Vec<Ask>>,
-    /// The view last fed to quick settings, so an unchanged history is not
-    /// fed again.
-    fed: RefCell<Option<tilo_quick_settings::ClipboardView>>,
+    /// Moves whenever what the history keeps changed: what a reader of its
+    /// reading knows it has to read again.
+    generation: Cell<u64>,
     /// The files the selection holds, when what was copied last is a list of
     /// files: what a paste into a folder takes.
     files: RefCell<Option<CopiedFiles>>,
@@ -82,7 +94,7 @@ impl Clipboard {
             reading: RefCell::new(None),
             seen: Cell::new(0),
             asks: RefCell::new(Vec::new()),
-            fed: RefCell::new(None),
+            generation: Cell::new(0),
             files: RefCell::new(None),
             // A paste the last session was in the middle of is finished here.
             paste: RefCell::new(PASTE.get()),
@@ -166,11 +178,11 @@ impl Clipboard {
         }
     }
 
-    /// The history as quick settings lists it, as of `now_ms`.
+    /// The copies the history keeps, newest first, as its reading lists them:
+    /// what the person can paste again, without their bytes.
     #[must_use]
-    pub(crate) fn view(&self, now_ms: u64) -> tilo_quick_settings::ClipboardView {
-        let copies: Vec<ClipboardCopy> = self
-            .history
+    pub(crate) fn copies(&self) -> Vec<ClipboardCopy> {
+        self.history
             .borrow()
             .copies()
             .map(|copy| ClipboardCopy {
@@ -183,18 +195,14 @@ impl Clipboard {
                 pinned: copy.pinned,
                 from: copy.from.clone(),
             })
-            .collect();
-        tilo_quick_settings::hosted::clipboard_view(&copies, now_ms)
+            .collect()
     }
 
-    /// The view to feed quick settings, when it changed since the last feed.
-    pub(crate) fn changed_view(&self, now_ms: u64) -> Option<tilo_quick_settings::ClipboardView> {
-        let view = self.view(now_ms);
-        let mut fed = self.fed.borrow_mut();
-        (*fed != Some(view.clone())).then(|| {
-            *fed = Some(view.clone());
-            view
-        })
+    /// Which of the history's changes a reader has already read: moves
+    /// whenever what the history keeps does.
+    #[must_use]
+    pub(crate) const fn generation(&self) -> u64 {
+        self.generation.get()
     }
 
     /// Pin or unpin the copy `key` names. Returns whether the history
@@ -467,10 +475,95 @@ impl Clipboard {
                 .collect(),
         };
         self.unshared.set(true);
+        self.generation.set(self.generation.get().wrapping_add(1));
         if let Err(error) = HISTORY.set(stored) {
             tracing::warn!(%error, "the clipboard history was not saved");
         }
     }
+}
+
+/// The clipboard as the session's services publish it: what the person can
+/// paste again, which only a granted caller reads, and the action pasting
+/// copied files into a folder.
+pub(crate) struct Served {
+    clipboard: Rc<Clipboard>,
+    /// What the session's own actions ask of the compositor.
+    commands: Rc<RefCell<Vec<SessionCommand>>>,
+    /// The history's generation last reported as what its reading shows.
+    reported: Cell<u64>,
+}
+
+impl Served {
+    /// The service publishing `clipboard`, carrying its actions out as
+    /// [`SessionCommand`]s the loop runs.
+    pub(crate) fn new(
+        clipboard: Rc<Clipboard>,
+        commands: Rc<RefCell<Vec<SessionCommand>>>,
+    ) -> Self {
+        Self {
+            reported: Cell::new(clipboard.generation()),
+            clipboard,
+            commands,
+        }
+    }
+}
+
+impl Service for Served {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        vec![clipboard_resource()]
+    }
+
+    /// The copies, newest first: personal, so only a grant the room gives
+    /// reads them.
+    fn read(&self, resource: &str) -> Option<Value> {
+        (resource == CLIPBOARD_RESOURCE).then(|| reading(&self.clipboard.copies()))
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, DoorError> {
+        let command = crate::controls::command_of(
+            &self.resources(),
+            &ActionAddress::new(resource, action),
+            arguments,
+        )?;
+        self.commands.borrow_mut().push(command);
+        Ok(Started::Done(ActionOutput::default()))
+    }
+
+    fn poll(&mut self) -> bool {
+        let generation = self.clipboard.generation();
+        if self.reported.get() == generation {
+            return false;
+        }
+        self.reported.set(generation);
+        true
+    }
+}
+
+/// What the person copied, and pasting it into a folder.
+fn clipboard_resource() -> ResourceSpec {
+    ResourceSpec::new(
+        CLIPBOARD_RESOURCE,
+        tilo_action_policy::roles::SESSION_KIND,
+        t("session-clipboard"),
+    )
+    .with_granted_reading()
+    .with_action(crate::controls::action(
+        "paste-files",
+        t("session-clipboard-paste-files"),
+        vec![ActionParam::required_owned(
+            "destination",
+            ParamType::Text,
+            t("session-param-paste-destination"),
+        )],
+        |args| SessionCommand::PasteFiles {
+            destination: args.text("destination").unwrap_or_default().to_owned(),
+        },
+    ))
 }
 
 /// How often the fabric is read when nothing was copied here.

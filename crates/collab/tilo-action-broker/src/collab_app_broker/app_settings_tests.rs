@@ -318,7 +318,7 @@ async fn edit(
 }
 
 #[test]
-fn personal_dictionary_follows_authenticated_settings_without_room_storage() {
+fn personal_dictionary_follows_authenticated_settings_without_workspace_storage() {
     use settings_store::personal_dictionary::{Edit, Service, Word, host};
     let dir = tempfile::tempdir().unwrap();
     let records = session(dir.path());

@@ -33,12 +33,17 @@ pub const MAX_LEGACY_IMPORT_LIFETIME: Duration = Duration::from_secs(120);
 
 /// Canonical action arguments. Source identity is host-configured, never a path
 /// supplied by a scoped caller. Hashes are exact, unique and bounded, not a scan.
+///
+/// The two workspaces were called rooms when a request was first written, so a
+/// request stored under those names still reads.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LegacyImportRequest {
     pub source_store: String,
-    pub source_room: String,
-    pub destination_room: String,
+    #[serde(alias = "source_room")]
+    pub source_workspace: String,
+    #[serde(alias = "destination_room")]
+    pub destination_workspace: String,
     pub hashes: Vec<String>,
     pub max_bytes: u64,
 }
@@ -106,9 +111,10 @@ impl LegacyMediaImportHost {
         }
     }
 
-    /// Explicit owner import of resident legacy content without room roots.
-    /// This is not a provenance claim. The host fixes the source store; callers
-    /// select exact hashes and must name `unscoped` as the source room.
+    /// Explicit owner import of resident legacy content without workspace
+    /// roots. This is not a provenance claim. The host fixes the source store;
+    /// callers select exact hashes and must name `unscoped` as the source
+    /// workspace.
     pub fn new_unscoped(
         source_id: String,
         source: Arc<DocumentMedia>,
@@ -147,14 +153,14 @@ impl LegacyMediaImportHost {
             !lifetime.is_zero() && lifetime <= MAX_LEGACY_IMPORT_LIFETIME,
             "legacy import lifetime limit"
         );
-        BlobScope::new(&request.source_room, "legacy-import")?;
-        BlobScope::new(&request.destination_room, "legacy-import")?;
+        BlobScope::new(&request.source_workspace, "legacy-import")?;
+        BlobScope::new(&request.destination_workspace, "legacy-import")?;
         ensure!(
-            !self.unscoped || request.source_room == "unscoped",
+            !self.unscoped || request.source_workspace == "unscoped",
             "legacy import refused"
         );
         ensure!(
-            request.source_room != request.destination_room
+            request.source_workspace != request.destination_workspace
                 || !Arc::ptr_eq(&self.source.store, &self.destination.store),
             "legacy import source equals destination"
         );
@@ -204,8 +210,9 @@ impl LegacyMediaImportHost {
             "legacy import refused"
         );
         self.check(&permit)?;
-        let source_scope = BlobScope::new(&permit.request.source_room, "legacy-import")?;
-        let destination_scope = BlobScope::new(&permit.request.destination_room, "legacy-import")?;
+        let source_scope = BlobScope::new(&permit.request.source_workspace, "legacy-import")?;
+        let destination_scope =
+            BlobScope::new(&permit.request.destination_workspace, "legacy-import")?;
         // Serialize all imports into this destination, even from separate hosts.
         let _publication = PUBLICATION.lock().await;
         self.check(&permit)?;

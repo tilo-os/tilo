@@ -36,7 +36,7 @@ pub mod unix;
 pub mod viewer;
 pub mod watch;
 
-// Room admission decodes peer bytes in automerge worker processes started
+// Workspace admission decodes peer bytes in automerge worker processes started
 // from this test binary; this serves them.
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
@@ -52,8 +52,8 @@ pub const CONSOLE_SOCKET: &str = "console.sock";
 /// The profile's workspace files, served read only (`tilo-file-provider`).
 pub const FILES_SOCKET: &str = "files.sock";
 
-/// Joins a room another host governs from an invitation, answering the
-/// joined room's id.
+/// Joins a workspace another host governs from an invitation, answering the
+/// joined workspace's id.
 pub type Joiner = std::sync::Arc<dyn Fn(&str) -> io::Result<String> + Send + Sync>;
 
 /// Reads content an app of this profile stored, through that app's own
@@ -108,24 +108,24 @@ pub trait RuntimeServices: Sized {
         ))
     }
 
-    /// The workspace room every app of this profile joins.
-    fn room(&self) -> &str;
+    /// The workspace every app of this profile joins.
+    fn workspace(&self) -> &str;
 
     /// Select the fixed audience of a host-configured MCP endpoint. This
-    /// never enrolls a room or changes grants. Hosts supporting shared rooms
+    /// never enrolls a workspace or changes grants. Hosts supporting shared workspaces
     /// must check their current certified admission and the profile actor.
     ///
     /// # Errors
     /// Refuses any audience this host cannot currently authenticate.
-    fn mcp_room(&self, requested: Option<&str>) -> io::Result<String> {
-        let room = requested.unwrap_or_else(|| self.room());
-        if room != self.room() {
+    fn mcp_workspace(&self, requested: Option<&str>) -> io::Result<String> {
+        let workspace = requested.unwrap_or_else(|| self.workspace());
+        if workspace != self.workspace() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "this runtime has no admitted MCP audience for that room",
+                "this runtime has no admitted MCP audience for that workspace",
             ));
         }
-        Ok(room.to_owned())
+        Ok(workspace.to_owned())
     }
 
     /// The profile's fixed actor, as which MCP callers act.
@@ -138,20 +138,23 @@ pub trait RuntimeServices: Sized {
     ///
     /// # Errors
     /// Rejects unavailable admission, an invalid audience or a missing action host.
-    fn mcp_session_factory(&self, room: &str) -> io::Result<mcp::SessionFactory<Self::ActionHost>> {
-        let room = self.mcp_room(Some(room))?;
+    fn mcp_session_factory(
+        &self,
+        workspace: &str,
+    ) -> io::Result<mcp::SessionFactory<Self::ActionHost>> {
+        let workspace = self.mcp_workspace(Some(workspace))?;
         let host = self.action_host()?;
         let actor = self.actor().to_owned();
         Ok(std::sync::Arc::new(move || {
             Ok(mcp::McpServer::new(
                 host.clone(),
-                room.clone(),
+                workspace.clone(),
                 actor.clone(),
             ))
         }))
     }
 
-    /// How this host joins rooms other hosts govern; `None` for a host
+    /// How this host joins workspaces other hosts govern; `None` for a host
     /// that joins through its own surfaces.
     fn joiner(&self) -> Option<Joiner> {
         None

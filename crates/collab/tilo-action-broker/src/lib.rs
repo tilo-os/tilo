@@ -3,6 +3,7 @@ pub mod action_evidence;
 pub mod app_actions;
 pub mod automation;
 mod broker_error;
+pub mod certificate_authority;
 pub mod channel_encryption;
 pub mod collab_app_broker;
 pub mod collab_broker;
@@ -14,7 +15,8 @@ pub mod collab_presence;
 pub mod collaboration_admin;
 mod evidence_signer;
 pub mod local_document_action;
-pub mod peer_actions;
+pub mod owner_commits;
+pub mod policy_clock;
 pub mod policy_schedule;
 pub mod published_authorization;
 pub mod record_content;
@@ -23,11 +25,16 @@ pub mod services;
 pub mod task_runs;
 
 pub use broker_error::{BrokerError, BrokerErrorKind};
+pub use certificate_authority::CertificateAuthority;
+pub use collab_broker::NativePeerBrokerConfig;
+#[cfg(any(test, feature = "test-support"))]
+pub use policy_clock::PolicyClockTestControl;
+pub use policy_clock::{OwnerPolicyClock, PolicyClockError, PolicyOrigin, PolicyTime};
 #[cfg(test)]
 mod test_owner;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-// Room admission decodes peer bytes in automerge worker processes started
+// Workspace admission decodes peer bytes in automerge worker processes started
 // from this test binary; this serves them.
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
@@ -92,14 +99,14 @@ pub fn register_package_surface_and_reads<I>(
     }
 }
 
-/// Decide every change this process's rooms receive by its claim against
+/// Decide every change this process's workspaces receive by its claim against
 /// the app surface its op names, and name in the changes the process signs
 /// for an app the surface that app runs with. A host calls it once, before
-/// it opens its rooms.
+/// it opens its workspaces.
 ///
 /// The surface is the one this process runs the app with when the op names
 /// that one, and otherwise what `read` finds (the host's content store, in
-/// the record's room and app). The process's own writes name the surface it
+/// the record's workspace and app). The process's own writes name the surface it
 /// runs, and nothing puts that file in the content store, so without the
 /// first source every change a host signs for a package that ships a surface
 /// would wait for it forever, its first record included.

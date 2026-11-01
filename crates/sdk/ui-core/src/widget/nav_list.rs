@@ -319,8 +319,8 @@ pub struct NavArt {
 pub struct NavPerson {
     /// Who they are; their initials stand in for a picture.
     pub identity: String,
-    /// Their colour in the room, ringing the avatar; `None` takes the colour their identity
-    /// carries ([`AvatarFace::new`]), which every window paints the same.
+    /// Their colour in the workspace, ringing the avatar; `None` takes the colour their
+    /// identity carries ([`AvatarFace::new`]), which every window paints the same.
     pub colour: Option<Color>,
     /// They are speaking now.
     pub speaking: bool,

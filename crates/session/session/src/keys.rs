@@ -103,7 +103,7 @@ pub const SOUND: &str = tilo_audio_service::sound::SOUND;
 /// The microphone: the audio service's sound resource.
 pub const MICROPHONE: &str = SOUND;
 /// The radios: the connectivity service's network, which owns airplane mode.
-const NETWORK: &str = tilo_connectivity_service::NETWORK;
+pub const NETWORK: &str = tilo_connectivity_service::NETWORK;
 /// This device's input devices, the session's own.
 const TOUCHPAD: &str = crate::controls::INPUT_RESOURCE;
 /// The keyboard's backlight, the system service's.
@@ -328,6 +328,19 @@ impl GuideKeys {
     }
 }
 
+/// The controller the person last drove the desktop with, and whether the
+/// keys being routed are that controller's own rather than their fingers on
+/// a keyboard.
+#[derive(Clone, Default)]
+pub(crate) struct ControllerKeys {
+    /// The controller the person last drove the desktop with, which a press
+    /// of their own replaces: the guide then leads with the keyboard.
+    pub(crate) last: Rc<Cell<Option<ui::ControllerFamily>>>,
+    /// Whether the keys being routed are a controller's own, standing for
+    /// its presses rather than the person's fingers on a keyboard.
+    pub(crate) own: Rc<Cell<bool>>,
+}
+
 /// What stands over the desk and what the keys owe it: Escape folds the card
 /// a desk widget has open, and closes the topmost surface of the stack that
 /// answers Escape. Neither hears keys itself, so both say here what theirs
@@ -379,6 +392,9 @@ pub(crate) struct SessionKeys {
     /// Whether the keys being routed are a controller's own, standing for
     /// its presses rather than the person's fingers on a keyboard.
     controller_keys: Rc<Cell<bool>>,
+    /// When each display's bar shows over the window covering it: Super asks
+    /// for it, and the app under it has nothing of that press.
+    reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
 }
 
 impl SessionKeys {
@@ -389,13 +405,17 @@ impl SessionKeys {
         guide: GuideKeys,
         desk: DeskKeys,
         displays: Option<tilo_sheets::Presentation>,
-        controller: Rc<Cell<Option<ui::ControllerFamily>>>,
-        controller_keys: Rc<Cell<bool>>,
+        controller: ControllerKeys,
+        reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
     ) -> Self {
         let Presses {
             invocations,
             triggered,
         } = presses;
+        let ControllerKeys {
+            last: controller,
+            own: controller_keys,
+        } = controller;
         Self {
             shortcuts,
             displays,
@@ -408,6 +428,7 @@ impl SessionKeys {
             held: RefCell::new(BTreeMap::new()),
             controller,
             controller_keys,
+            reveals,
         }
     }
 
@@ -586,6 +607,17 @@ impl SessionKeys {
     }
 }
 
+/// Whether `key` is a Super key going down for the first time: the key that
+/// asks for a bar hidden by a fullscreen window.
+fn is_super(key: &HostKey) -> bool {
+    key.pressed
+        && !key.repeat
+        && matches!(
+            key.keysym,
+            keysyms::Super_L | keysyms::Super_R | keysyms::Meta_L | keysyms::Meta_R
+        )
+}
+
 impl SurfaceHost for SessionKeys {
     fn layers(&self) -> Vec<HostLayer> {
         Vec::new()
@@ -600,6 +632,15 @@ impl SurfaceHost for SessionKeys {
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 
     fn claim_key(&mut self, key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim {
+        // Super going down asks for the bar over the window that covers the
+        // display, as reaching for the top edge does. The app under it has
+        // nothing of a modifier that asked for the desktop's own bar.
+        if !locked && !inhibited && is_super(key) && self.reveals.borrow().covers_display(None) {
+            self.invocations
+                .borrow_mut()
+                .push(Invocation::new(CHROME_RESOURCE, "reveal-top-bar"));
+            return KeyClaim::Take;
+        }
         if self.guide.up() {
             if self.guide.listening().is_some() {
                 // The guide waits for a shortcut's new keys: every press is
@@ -875,8 +916,8 @@ mod tests {
             GuideKeys::default(),
             DeskKeys::default(),
             None,
-            Rc::new(Cell::new(None)),
-            Rc::new(Cell::new(false)),
+            ControllerKeys::default(),
+            Rc::default(),
         )
     }
 
@@ -892,8 +933,8 @@ mod tests {
             guide.clone(),
             DeskKeys::default(),
             None,
-            Rc::new(Cell::new(None)),
-            Rc::new(Cell::new(false)),
+            ControllerKeys::default(),
+            Rc::default(),
         );
         (keys, guide)
     }
@@ -1124,8 +1165,8 @@ mod tests {
             GuideKeys::default(),
             DeskKeys::default(),
             None,
-            Rc::new(Cell::new(None)),
-            Rc::new(Cell::new(false)),
+            ControllerKeys::default(),
+            Rc::default(),
         );
         let chord = KeyChord::parse("ctrl+alt+j").expect("a chord");
         // Nothing armed: the chord is nobody's, and types into what is up.
@@ -1190,8 +1231,8 @@ mod tests {
             GuideKeys::default(),
             DeskKeys::new(fold.clone(), Overlays::new()),
             None,
-            Rc::new(Cell::new(None)),
-            Rc::new(Cell::new(false)),
+            ControllerKeys::default(),
+            Rc::default(),
         );
         let escape = key(keysyms::Escape, None, KeyModifiers::default());
         // Folded cards want no key: Escape goes on to whatever is up.

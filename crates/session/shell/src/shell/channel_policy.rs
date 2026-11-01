@@ -23,7 +23,7 @@
 //!   ([`super::service_members`]): its own device key, admitted with a
 //!   purpose, a scope and optionally a deadline, and removed from every
 //!   channel when the grant ends.
-//! - a person room ([`collab_types::person_room`]) has no roster and no
+//! - a person room ([`collab_types::personal_cluster`]) has no roster and no
 //!   record grants: its channels are read by the identity it derives from,
 //!   through that identity's certified devices that are not revoked. No
 //!   governor or workspace takes part, and the identity decides.
@@ -124,14 +124,14 @@ impl WorkspaceChannelDirectory {
 
 /// The root whose person room `room` is, when it is one of `own_devices`:
 /// the room derives from that identity, and the fleet certifies its devices.
-fn person_room_root(
+fn personal_cluster_root(
     room: RoomId,
     own_devices: &[(tilo_user_identity::DeviceCert, bool)],
 ) -> Option<[u8; 32]> {
     own_devices
         .iter()
         .map(|(cert, _)| cert.user_public_key)
-        .find(|user| collab_types::is_person_room(user, &room.as_uuid()))
+        .find(|user| collab_types::is_personal_cluster(user, &room.as_uuid()))
 }
 
 /// Every device of `root`'s identity that `own_devices` holds, not revoked
@@ -200,7 +200,7 @@ impl ChannelDirectory for WorkspaceChannelDirectory {
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
         let own = (self.own_devices)(room);
-        if let Some(person) = person_room_root(room, &own) {
+        if let Some(person) = personal_cluster_root(room, &own) {
             // The person room's readers are the identity's devices, whatever
             // channel is asked: the room has no record grants to name one.
             return Some(person_devices(&own, person, now));
@@ -220,7 +220,7 @@ impl ChannelDirectory for WorkspaceChannelDirectory {
 
     fn next_policy_change(&self, room: RoomId, now: u64) -> Option<u64> {
         let own = (self.own_devices)(room);
-        if person_room_root(room, &own).is_some() {
+        if personal_cluster_root(room, &own).is_some() {
             let authenticated = (self.authenticated_changes)(now.saturating_mul(1_000_000_000))
                 .map(tilo_action_broker::policy_schedule::second_at_or_after);
             let certificates = own
@@ -391,7 +391,7 @@ fn channel_record(
     channel: ChannelId,
     route: Option<&ChannelRoute>,
 ) -> Option<tilo_action_policy::TreePath> {
-    let room = &workspace.policy.room;
+    let room = &workspace.policy.workspace;
     collab_types::named_record_of_channel(&workspace.policy.grants, room, channel)
         .or_else(|| {
             route
@@ -481,7 +481,7 @@ mod tests {
             .find(|workspace| workspace.room() == room)
             .unwrap();
         let route = ChannelRoute::new("so.tilo.notes", "plan");
-        (route.channel(&workspace.policy.room), route)
+        (route.channel(&workspace.policy.workspace), route)
     }
 
     fn endpoint(cert: &tilo_user_identity::DeviceCert) -> String {
@@ -603,7 +603,7 @@ mod tests {
         entry.set_owner(person(&owner));
         entry.admit(person(&bob), Role::Editor);
         entry.admit(person(&carol), Role::Viewer);
-        let room_id = entry.policy.room.clone();
+        let room_id = entry.policy.workspace.clone();
         entry.grant(crate::shell::service_members::service_membership(
             &room_id,
             &service,
@@ -690,7 +690,7 @@ mod tests {
         entry.set_owner(person(&owner));
         entry.admit(person(&bob), Role::Editor);
         entry.admit(person(&carol), Role::Viewer);
-        let room_id = entry.policy.room.clone();
+        let room_id = entry.policy.workspace.clone();
         entry.grant(crate::shell::service_members::service_membership(
             &room_id,
             &service,
@@ -699,7 +699,7 @@ mod tests {
             None,
             Subject::person(person(&owner)),
         ));
-        let finance = tilo_action_policy::TreePath::room(&room_id).app("finance");
+        let finance = tilo_action_policy::TreePath::workspace(&room_id).app("finance");
         let read = |id: &str, subject: Subject, node, answer| {
             Grant::new(
                 id,
@@ -839,10 +839,12 @@ mod tests {
     /// not revoked. A revoked device is excluded, and another person's
     /// device never appears.
     #[test]
-    fn a_person_rooms_readers_are_the_identitys_unrevoked_devices() {
+    fn a_personal_clusters_readers_are_the_identitys_unrevoked_devices() {
         let ada = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
         let bob = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
-        let room = RoomId::from(collab_types::person_room(&ada.verifying_key().to_bytes()));
+        let room = RoomId::from(collab_types::personal_cluster(
+            &ada.verifying_key().to_bytes(),
+        ));
         let lost = cert(&ada, 12, false);
         let mut revocation = tilo_user_identity::RevocationEntry {
             user_public_key: lost.user_public_key,

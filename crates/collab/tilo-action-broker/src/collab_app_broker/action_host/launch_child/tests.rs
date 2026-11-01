@@ -58,7 +58,7 @@ impl LauncherServices for Launcher {
 fn destination(fixture: &Fixture) -> LaunchDestination {
     let workspace = Workspace::in_room(
         WorkspaceId(9),
-        tilo_desktop_model::RoomId::parse(&fixture.room).unwrap(),
+        tilo_desktop_model::RoomId::parse(&fixture.workspace).unwrap(),
         "Launch child",
     );
     LaunchDestination {
@@ -72,7 +72,7 @@ fn destination(fixture: &Fixture) -> LaunchDestination {
 fn parent() -> InvokeRequest {
     let mut request = child_request(
         InvocationId::new(),
-        "room",
+        "workspace",
         &app_open_descriptor(&app()),
         &app().package_id,
     );
@@ -132,7 +132,7 @@ fn launcher_outcome_completes_signed_child_not_parent() {
         let parent = parent();
         let child = child_request(
             parent.invocation,
-            &fixture.room,
+            &fixture.workspace,
             &app_open_descriptor(&app()),
             &app().package_id,
         );
@@ -170,10 +170,10 @@ struct NativePerson;
 impl crate::services::LocalPersonServices for NativePerson {
     fn certificate(
         &self,
-        room: &str,
+        workspace: &str,
         person: &str,
     ) -> Result<tilo_user_identity::DeviceCert, String> {
-        let (_, certificate) = tilo_identity_host::broker::trusted_current_device(room)
+        let (_, certificate) = tilo_identity_host::broker::trusted_current_device(workspace)
             .map_err(|error| error.to_string())?;
         if crate::collab_app_broker::principal_id_for_root(certificate.user_public_key) != person {
             return Err("different person".into());
@@ -203,7 +203,7 @@ fn protected_native_parent_is_checked_before_child_rebind() {
     let parent = parent();
     let mut origin = InvocationCaller::NativePerson {
         invocation: InvocationId::new(),
-        room: fixture.room.clone(),
+        workspace: fixture.workspace.clone(),
         certificate: admitted.certificate.clone().unwrap(),
         time: fixture.state.registered_policy_time().unwrap().unwrap(),
     };
@@ -236,7 +236,7 @@ fn protected_native_parent_is_checked_before_child_rebind() {
         .unwrap();
     let child = child_request(
         parent.invocation,
-        &fixture.room,
+        &fixture.workspace,
         &app_open_descriptor(&app()),
         &app().package_id,
     );
@@ -261,7 +261,7 @@ fn launcher_observes_signed_admission_before_its_first_effect() {
     let parent = parent();
     let child = child_request(
         parent.invocation,
-        &fixture.room,
+        &fixture.workspace,
         &app_open_descriptor(&app()),
         &app().package_id,
     );
@@ -275,7 +275,7 @@ fn launcher_observes_signed_admission_before_its_first_effect() {
         agent: None,
     };
     let state = Arc::downgrade(&fixture.state);
-    let room = fixture.room.clone();
+    let workspace = fixture.workspace.clone();
     let invocation = child.invocation;
     let parent_id = parent.invocation;
     fixture.state.launchable.replace_launcher_for_test(
@@ -285,7 +285,7 @@ fn launcher_observes_signed_admission_before_its_first_effect() {
             let journal = guard.as_ref().unwrap().as_ref().unwrap();
             let record = journal
                 .lookup(&crate::collab_app_broker::InvocationKey {
-                    room: room.clone(),
+                    workspace: workspace.clone(),
                     host: journal.host(),
                     owner: owner.clone(),
                     invocation,
@@ -347,7 +347,7 @@ fn revoked_original_after_admission_never_launches_or_closes() {
             };
             let request = child_request(
                 InvocationId::new(),
-                &fixture.room,
+                &fixture.workspace,
                 &descriptor,
                 &app().package_id,
             );
@@ -357,7 +357,7 @@ fn revoked_original_after_admission_never_launches_or_closes() {
                     &fixture.caller,
                     Some(&fixture.origin),
                     HostActionAdmission {
-                        room: &fixture.room,
+                        workspace: &fixture.workspace,
                         app_id: &app().package_id,
                         descriptor: &descriptor,
                         request: &request,
@@ -369,7 +369,7 @@ fn revoked_original_after_admission_never_launches_or_closes() {
             let custody = (
                 &fixture.caller,
                 Some(&fixture.origin),
-                fixture.room.as_str(),
+                fixture.workspace.as_str(),
             );
             let effect = || {
                 if close {
@@ -427,7 +427,7 @@ fn local_origin_replacement_during_admission_is_refused() {
     let descriptor = app_open_descriptor(&app());
     let request = child_request(
         InvocationId::new(),
-        &fixture.room,
+        &fixture.workspace,
         &descriptor,
         &app().package_id,
     );
@@ -435,7 +435,7 @@ fn local_origin_replacement_during_admission_is_refused() {
         &fixture.caller,
         Some(&fixture.origin),
         HostActionAdmission {
-            room: &fixture.room,
+            workspace: &fixture.workspace,
             app_id: &app().package_id,
             descriptor: &descriptor,
             request: &request,
@@ -494,7 +494,7 @@ fn retired_worker_after_admission_never_launches_or_closes() {
             );
             fixture
                 .state
-                .check_launch_origin(&fixture.caller, Some(&fixture.origin), &fixture.room)
+                .check_launch_origin(&fixture.caller, Some(&fixture.origin), &fixture.workspace)
                 .unwrap();
             let descriptor = if close {
                 app_close_descriptor(&app().package_id, "Notes")
@@ -503,7 +503,7 @@ fn retired_worker_after_admission_never_launches_or_closes() {
             };
             let request = child_request(
                 InvocationId::new(),
-                &fixture.room,
+                &fixture.workspace,
                 &descriptor,
                 &app().package_id,
             );
@@ -513,7 +513,7 @@ fn retired_worker_after_admission_never_launches_or_closes() {
                     &fixture.caller,
                     Some(&fixture.origin),
                     HostActionAdmission {
-                        room: &fixture.room,
+                        workspace: &fixture.workspace,
                         app_id: &app().package_id,
                         descriptor: &descriptor,
                         request: &request,
@@ -533,7 +533,7 @@ fn retired_worker_after_admission_never_launches_or_closes() {
             let custody = (
                 &fixture.caller,
                 Some(&fixture.origin),
-                fixture.room.as_str(),
+                fixture.workspace.as_str(),
             );
             let result = if close {
                 fixture
@@ -583,7 +583,7 @@ fn keyless_continuation_retains_original_device_cap_without_forbidding_content_e
         // continuation presents only the person's keyless projection.
         fixture.caller =
             tilo_actions::remote::Caller::local_person(BrokerActor::for_caller(&fixture.caller).id)
-                .in_room(&fixture.room);
+                .in_workspace(&fixture.workspace);
         assert!(fixture.caller.device_public_key().is_none());
         let descriptor = if close {
             app_close_descriptor(&app().package_id, "Notes")
@@ -592,7 +592,7 @@ fn keyless_continuation_retains_original_device_cap_without_forbidding_content_e
         };
         let request = child_request(
             InvocationId::new(),
-            &fixture.room,
+            &fixture.workspace,
             &descriptor,
             &app().package_id,
         );
@@ -602,7 +602,7 @@ fn keyless_continuation_retains_original_device_cap_without_forbidding_content_e
                 &fixture.caller,
                 Some(&fixture.origin),
                 HostActionAdmission {
-                    room: &fixture.room,
+                    workspace: &fixture.workspace,
                     app_id: &app().package_id,
                     descriptor: &descriptor,
                     request: &request,
@@ -618,7 +618,7 @@ fn keyless_continuation_retains_original_device_cap_without_forbidding_content_e
         let custody = (
             &fixture.caller,
             Some(&fixture.origin),
-            fixture.room.as_str(),
+            fixture.workspace.as_str(),
         );
         let (_, original, now) = fixture
             .state
@@ -648,7 +648,7 @@ fn keyless_continuation_retains_original_device_cap_without_forbidding_content_e
             fixture
                 .state
                 .authorize_invocation_permission(
-                    &fixture.room,
+                    &fixture.workspace,
                     permission,
                     &outside,
                     &BrokerActor::for_caller(&fixture.caller),
@@ -660,7 +660,7 @@ fn keyless_continuation_retains_original_device_cap_without_forbidding_content_e
             fixture
                 .state
                 .authorize_invocation_permission(
-                    &fixture.room,
+                    &fixture.workspace,
                     permission,
                     &outside,
                     &original,
@@ -745,7 +745,7 @@ fn production_invoke_revoked_at_durable_admission_never_launches_or_closes() {
             };
             let request = child_request(
                 InvocationId::new(),
-                &fixture.room,
+                &fixture.workspace,
                 &descriptor,
                 &app().package_id,
             );
@@ -800,8 +800,8 @@ struct DiscoveryGate {
 }
 
 impl LauncherServices for DiscoveryGate {
-    fn attest_process(&self, pid: u32, room: &str, app: &str) -> bool {
-        self.launcher.attest_process(pid, room, app)
+    fn attest_process(&self, pid: u32, workspace: &str, app: &str) -> bool {
+        self.launcher.attest_process(pid, workspace, app)
     }
 
     fn applications(&self) -> Vec<LaunchableApplication> {
@@ -854,7 +854,7 @@ fn production_retained_invoke_revoked_during_discovery_never_starts_launcher() {
     let surface = crate::collab_app_broker::PublishedSurface {
         peer_id: 7,
         app_id: app().package_id,
-        route: crate::collab_app_broker::CrdtRoute::app("record", &fixture.room),
+        route: crate::collab_app_broker::CrdtRoute::app("record", &fixture.workspace),
         live: false,
         actions: vec![PublishedAction {
             state: tilo_actions::ActionState::default(),
@@ -896,13 +896,13 @@ fn production_retained_invoke_revoked_during_discovery_never_starts_launcher() {
 fn child_identity_is_stable_and_framed() {
     let parent = InvocationId::new();
     assert_eq!(
-        child_id(parent, "room", "app"),
-        child_id(parent, "room", "app")
+        child_id(parent, "workspace", "app"),
+        child_id(parent, "workspace", "app")
     );
     assert_ne!(child_id(parent, "a", "bc"), child_id(parent, "ab", "c"));
     assert_ne!(
-        child_id(parent, "room", "app"),
-        child_id(InvocationId::new(), "room", "app")
+        child_id(parent, "workspace", "app"),
+        child_id(InvocationId::new(), "workspace", "app")
     );
 }
 
@@ -914,7 +914,7 @@ fn check_launch_origin_refuses_a_delegation_the_admission_cannot_back() {
     let fixture = Fixture::new_certified(HostServices::default());
     fixture
         .state
-        .check_launch_origin(&fixture.caller, Some(&fixture.origin), &fixture.room)
+        .check_launch_origin(&fixture.caller, Some(&fixture.origin), &fixture.workspace)
         .expect("the undelegated origin crosses the barrier");
     let InvocationCaller::Certified {
         caller,
@@ -948,7 +948,7 @@ fn check_launch_origin_refuses_a_delegation_the_admission_cannot_back() {
     let agent_caller = fixture.caller.clone().delegated_to("mcp-7");
     fixture
         .state
-        .check_launch_origin(&agent_caller, Some(&delegated_origin), &fixture.room)
+        .check_launch_origin(&agent_caller, Some(&delegated_origin), &fixture.workspace)
         .expect("a backed delegation crosses the barrier");
     // The same delegated caller whose admission cannot name its agent is
     // refused, never re-owned as the person.
@@ -962,7 +962,7 @@ fn check_launch_origin_refuses_a_delegation_the_admission_cannot_back() {
                 caller: Box::new(keyless),
                 foreign_restriction: *foreign_restriction,
             }),
-            &fixture.room,
+            &fixture.workspace,
         )
         .expect_err("a delegation the admission cannot back is refused");
     // So is a caller whose admission carries another agent's delegation than
@@ -977,7 +977,7 @@ fn check_launch_origin_refuses_a_delegation_the_admission_cannot_back() {
                 caller: Box::new(elsewheres),
                 foreign_restriction: *foreign_restriction,
             }),
-            &fixture.room,
+            &fixture.workspace,
         )
         .expect_err("a mismatched delegation is refused");
 }

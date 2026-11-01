@@ -1,6 +1,6 @@
 //! A device's own terminal audit: each member's receipts are their own
-//! slice of the room, written by their devices and checked by every
-//! receiver ([`crate::room::effect_slices_kept`]). A device keeps
+//! slice of the workspace, written by their devices and checked by every
+//! receiver ([`crate::workspace::effect_slices_kept`]). A device keeps
 //! its newest receipts' commit receipts hot and archives the rest to a cold
 //! history it anchors in its slice.
 use crate::owner::{NativeWorkspaceOwner, RoomId};
@@ -18,7 +18,10 @@ pub(crate) fn validate(view: &crate::owner::NativeCommittedView) -> Result<(), S
     if view.record.effect_receipts.len() > 128 {
         return Err("native effect receipt capacity exceeded on restore".into());
     }
-    let document = view.peer().admitted_room().ok_or("effect room is absent")?;
+    let document = view
+        .peer()
+        .admitted_workspace()
+        .ok_or("effect workspace is absent")?;
     let effects = tilo_desktop_model::projection::workspace_effect_receipts_of(document);
     for (id, stored) in &view.record.effect_receipts {
         let effect = effects
@@ -26,7 +29,7 @@ pub(crate) fn validate(view: &crate::owner::NativeCommittedView) -> Result<(), S
             .find(|effect| effect.invocation.0.to_string() == *id)
             .ok_or("stored effect binding has no admitted public receipt")?;
         let request = OwnerCommitRequest {
-            room: view.record.room.to_string(),
+            workspace: view.record.workspace.to_string(),
             operation: CommitOperation::EffectReceipt {
                 invocation: effect.invocation.0,
                 redacted: serde_json::to_vec(effect).map_err(|error| error.to_string())?,
@@ -48,7 +51,7 @@ fn validate_fact(
     fact: &crate::owner::effect_history::Fact,
     effects: &EffectIndex,
 ) -> Result<(), String> {
-    let request = crate::owner::effect_history::request(&view.record.room.to_string(), fact);
+    let request = crate::owner::effect_history::request(&view.record.workspace.to_string(), fact);
     let effect = decode(&request)?;
     if request.binding()? != fact.receipt.binding
         || fact.receipt.generation == 0
@@ -76,7 +79,9 @@ fn index_effects(effects: Vec<tilo_desktop_model::WorkspaceEffectReceipt>) -> Ef
 fn public_effect_index(view: &crate::owner::NativeCommittedView) -> Result<EffectIndex, String> {
     Ok(index_effects(
         tilo_desktop_model::projection::workspace_effect_receipts_of(
-            view.peer().admitted_room().ok_or("effect room is absent")?,
+            view.peer()
+                .admitted_workspace()
+                .ok_or("effect workspace is absent")?,
         ),
     ))
 }
@@ -99,7 +104,9 @@ pub(crate) fn validate_history(
         return Err("native effect index differs from signed governance root".into());
     }
     let effects = tilo_desktop_model::projection::workspace_effect_receipts_of(
-        view.peer().admitted_room().ok_or("effect room is absent")?,
+        view.peer()
+            .admitted_workspace()
+            .ok_or("effect workspace is absent")?,
     );
     let count = effects.len();
     let effects = index_effects(effects);
@@ -167,9 +174,9 @@ mod tests;
 impl NativeWorkspaceOwner {
     /// Commit the broker's exact redacted terminal receipt, of an invocation
     /// this device served, before acknowledging it: written into this
-    /// device's person's slice of the room, signed by `key`, the device's
-    /// own, and published as any room change of its own. Original
-    /// arguments and results never enter the room.
+    /// device's person's slice of the workspace, signed by `key`, the device's
+    /// own, and published as any workspace change of its own. Original
+    /// arguments and results never enter the workspace.
     ///
     /// # Errors
     /// Refuses invalid receipts, a key that is not this device's, another's
@@ -182,9 +189,9 @@ impl NativeWorkspaceOwner {
     ) -> Result<OwnerCommitReceipt, String> {
         let effect = decode(request)?;
         let binding = request.binding()?;
-        let room = RoomId::parse(&request.room).ok_or("invalid effect room")?;
+        let workspace = RoomId::parse(&request.workspace).ok_or("invalid effect workspace")?;
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
         let device = candidate.device().clone();
         if key.verifying_key().to_bytes() != device.device_public_key {
             return Err("an effect receipt is signed by this device's own key".into());
@@ -225,7 +232,7 @@ impl NativeWorkspaceOwner {
             return Err("signed effect UUID lacks its immutable receipt history".into());
         }
         let governs = candidate.hosted_here();
-        let before = candidate.peer.room_heads().unwrap_or_default();
+        let before = candidate.peer.workspace_heads().unwrap_or_default();
         if candidate.record.effect_receipts.len() >= 128 {
             archive_one(&mut candidate, self.0.store.as_ref(), key, now)?;
         }
@@ -238,7 +245,7 @@ impl NativeWorkspaceOwner {
             .ok_or("effect generation exhausted")?;
         let written = if governs {
             // The signed delta includes the root update as well as the new receipt.
-            self.with_current(room, |previous| {
+            self.with_current(workspace, |previous| {
                 peer.publication_mut().durable_mutation_messages(
                     &previous.peer,
                     key,
@@ -249,7 +256,7 @@ impl NativeWorkspaceOwner {
             })?;
             Vec::new()
         } else {
-            peer.room_changes_since(&before)
+            peer.workspace_changes_since(&before)
         };
         candidate.peer = peer;
         candidate.record.peer = candidate.peer.durable()?;
@@ -279,7 +286,7 @@ impl NativeWorkspaceOwner {
                 now,
             )?;
         }
-        self.publish_room(room, candidate, None)?;
+        self.publish_workspace(workspace, candidate, None)?;
         Ok(receipt)
     }
 }

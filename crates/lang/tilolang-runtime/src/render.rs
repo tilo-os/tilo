@@ -29,6 +29,9 @@ pub(crate) const EMBED: &str = "embed";
 const SHOW: &str = "show";
 /// The property of a `show` node holding the resource it draws.
 const SHOWN: &str = "of";
+/// The property of a `show` node naming the view it draws the resource through (its id or
+/// name); empty or absent for its type's default view.
+const SHOWN_AS: &str = "view";
 /// The prefix of the properties of such a node that carry the view's arguments.
 const ARG_PREFIX: &str = "arg.";
 /// The prefix of the kind of the node a UI loop lowers to (`for:<app>:<row view id>`): one row
@@ -691,8 +694,12 @@ impl Core {
         (kind == SHOW).then(|| self.shown_view(props))
     }
 
-    /// The default view of the type of the resource a `show` node draws, called on it. A type
-    /// without one is an error: a shell asks `meta(r).opens` before it shows a resource.
+    /// The view a `show` node draws its resource through, called on it: the one its `view`
+    /// names (an offered view of the resource's package that takes the resource alone, by id or
+    /// name), or its type's default view when it names none. A type without a default view is
+    /// an error: a shell asks `meta(r).opens` before it shows a resource. The view is its own
+    /// package's code wherever it is drawn, another app's (`Runtime::load_foreign_package`)
+    /// included.
     fn shown_view(
         &self,
         props: &std::collections::BTreeMap<String, Value>,
@@ -703,15 +710,29 @@ impl Core {
             ));
         };
         let ty = &shown.target.ty;
-        let view = self.registry.borrow().default_view(ty).ok_or_else(|| {
-            RuntimeError::Package(format!(
-                "`show`: the type `{ty}` has no default view to draw it with"
-            ))
-        })?;
+        let named = match props.get(SHOWN_AS) {
+            Some(Value::Text(view)) if !view.is_empty() => Some(view.as_str()),
+            _ => None,
+        };
+        let view = {
+            let registry = self.registry.borrow();
+            match named {
+                Some(view) => registry.view_of_type(ty, view).ok_or_else(|| {
+                    RuntimeError::Package(format!(
+                        "`show`: `{ty}` has no view `{view}` that takes it alone"
+                    ))
+                })?,
+                None => registry.default_view(ty).ok_or_else(|| {
+                    RuntimeError::Package(format!(
+                        "`show`: the type `{ty}` has no default view to draw it with"
+                    ))
+                })?,
+            }
+        };
         let vt = self.view_target(&view)?;
         if vt.params.len() != 1 {
             return Err(RuntimeError::Package(format!(
-                "`show`: the default view {view} of `{ty}` takes {} arguments, not the resource alone",
+                "`show`: the view {view} of `{ty}` takes {} arguments, not the resource alone",
                 vt.params.len()
             )));
         }
