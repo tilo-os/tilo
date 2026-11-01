@@ -733,8 +733,10 @@ impl Client {
                     Serving {
                         link: plane_link,
                         actions: serving,
-                        bound: bound_endpoint,
-                        lane: served_lane,
+                        bound: Bound {
+                            endpoint: bound_endpoint,
+                            lane: served_lane,
+                        },
                     },
                 );
             })?;
@@ -1743,7 +1745,14 @@ pub(crate) struct Serving {
     pub(crate) actions: Arc<std::sync::OnceLock<DeviceActions>>,
     /// This device's endpoint, once it has bound, and what answers a call's
     /// lanes on it.
-    pub(crate) bound: Arc<std::sync::OnceLock<iroh::Endpoint>>,
+    pub(crate) bound: Bound,
+}
+
+/// This device's endpoint as the session binds it: the bound endpoint itself,
+/// once it is, and the call lane served on it from the first pass.
+#[derive(Clone, Default)]
+pub(crate) struct Bound {
+    pub(crate) endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
     pub(crate) lane: crate::calls::LaneSlot,
 }
 
@@ -1773,7 +1782,7 @@ fn run(
         link,
         actions,
         bound,
-        lane,
+        ..
     }: Serving,
 ) {
     let Some(runtime) = plane_runtime(&ready) else {
@@ -1796,7 +1805,6 @@ fn run(
             &ready,
             &actions,
             &bound,
-            &lane,
         )
         .await
         else {
@@ -1872,8 +1880,7 @@ async fn listening(
     link: Option<Arc<ChannelLink>>,
     ready: &std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
     actions: &Arc<std::sync::OnceLock<DeviceActions>>,
-    bound: &Arc<std::sync::OnceLock<iroh::Endpoint>>,
-    lane: &crate::calls::LaneSlot,
+    bound: &Bound,
 ) -> Option<Listening> {
     let lookup = iroh::address_lookup::memory::MemoryLookup::new();
     let (builder, deferred_relays) = match endpoint_for(identity) {
@@ -1915,9 +1922,9 @@ async fn listening(
     // then until the call ends.
     served.push((
         tilo_call_lane::ALPN.to_vec(),
-        Box::<dyn iroh::protocol::DynProtocolHandler>::from(lane.handler()),
+        Box::<dyn iroh::protocol::DynProtocolHandler>::from(bound.lane.handler()),
     ));
-    let _ = bound.set(endpoint.clone());
+    let _ = bound.endpoint.set(endpoint.clone());
     if let Some(identity) = identity {
         let device = DeviceActions::start(identity, endpoint.clone(), engine.cloned());
         served.push((

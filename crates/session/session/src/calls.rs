@@ -213,6 +213,10 @@ impl iroh::protocol::ProtocolHandler for LaneHandler {
     }
 }
 
+/// The devices a room's governance admits, read fresh: what a call's roster
+/// is made of, and who this device accepts frames from.
+pub(crate) type Admitted = Arc<dyn Fn(&str) -> Vec<[u8; 32]> + Send + Sync>;
+
 /// Where a call's carrier reads what only the session knows: its endpoint,
 /// the channel service, the room's governance, the person's answers, and
 /// what the audio runs on.
@@ -229,7 +233,7 @@ pub(crate) struct Sources {
     /// audio with.
     pub(crate) keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
     /// The devices the room `room` admits, which a call's roster names.
-    pub(crate) roster: Option<Arc<dyn Fn(&str) -> Vec<[u8; 32]> + Send + Sync>>,
+    pub(crate) roster: Option<Admitted>,
     /// The person's prompts: the microphone is asked for through them.
     pub(crate) questions: Option<tilo_service::Questions>,
     /// What the call hears and is heard by.
@@ -259,7 +263,7 @@ impl Sources {
         endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
         lane: LaneSlot,
         keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
-        roster: Arc<dyn Fn(&str) -> Vec<[u8; 32]> + Send + Sync>,
+        roster: Admitted,
         questions: Option<tilo_service::Questions>,
     ) -> Self {
         Self {
@@ -427,7 +431,8 @@ pub(crate) struct Call {
 
 impl MediaSession for Call {
     fn tick(&mut self, _now: Instant) -> Result<State, Issue> {
-        if let Some(issue) = *self.shared.issue.lock_recover() {
+        let issue = *self.shared.issue.lock_recover();
+        if let Some(issue) = issue {
             return Err(issue);
         }
         if self.shared.closed.load(Ordering::Acquire) {
@@ -488,7 +493,7 @@ struct Shared {
     channel: collab_types::ChannelId,
     workspace: String,
     /// The room's admitted devices, re-read while the call lasts.
-    admitted: Option<Arc<dyn Fn(&str) -> Vec<[u8; 32]> + Send + Sync>>,
+    admitted: Option<Admitted>,
     current: Mutex<Current>,
     side: Mutex<Side>,
     /// The lanes this device opened or took, one per device in the call.
@@ -551,6 +556,7 @@ impl Shared {
         let mut side = self.side.lock_recover();
         side.voice.start(&source, still_current)?;
         side.microphone = tilo_call_lane::Microphone::new(&keys, self.own, REPEATS).ok();
+        drop(side);
         Ok(())
     }
 
@@ -682,6 +688,7 @@ impl Shared {
                 }
             }
         }
+        drop(peers);
     }
 
     /// Re-read what the room admits and what the channel's keys are: a
@@ -781,7 +788,7 @@ async fn run(
         }
         shared.pump();
         ticks = ticks.wrapping_add(1);
-        if ticks % 100 == 0 {
+        if ticks.is_multiple_of(100) {
             shared.refresh();
         }
     }
@@ -1088,12 +1095,17 @@ mod tests {
             .map(|played| played.clone())
             .unwrap_or_default();
         let energy: f32 = played.iter().map(|sample| sample * sample).sum();
-        (energy / played.len().max(1) as f32).sqrt()
+        let samples: f32 = played.iter().map(|_| 1.0).sum::<f32>().max(1.0);
+        (energy / samples).sqrt()
     }
 
     /// Wait until this side of the call does, or does not, hear the tone.
+    #[allow(
+        clippy::future_not_send,
+        reason = "a session's client is not Send, and the test runtime does not need it to be"
+    )]
     async fn wait_heard(what: &str, probe: &Arc<Mutex<Vec<f32>>>, heard: bool) {
-        let deadline = Instant::now() + DEADLINE;
+        let deadline = Instant::now().checked_add(DEADLINE).expect("a deadline");
         loop {
             let playing = level(probe, Duration::from_millis(200)).await > HEARD;
             if playing == heard {
@@ -1112,8 +1124,12 @@ mod tests {
     }
 
     /// Wait until `client`'s endpoint has bound: a call runs on it.
+    #[allow(
+        clippy::future_not_send,
+        reason = "a session's client is not Send, and the test runtime does not need it to be"
+    )]
     async fn bound(client: &Client) {
-        let deadline = Instant::now() + DEADLINE;
+        let deadline = Instant::now().checked_add(DEADLINE).expect("a deadline");
         while client.endpoint().is_none() {
             assert!(Instant::now() < deadline, "the session's endpoint binds");
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1270,7 +1286,7 @@ mod tests {
         );
         let ended = media
             .command_for(
-                chat.clone(),
+                chat,
                 Request {
                     version: 1,
                     intent: 0,

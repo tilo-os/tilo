@@ -795,7 +795,7 @@ impl Shared {
 
     /// What the person hears of the call: the carrier stops playing it while
     /// deafened, and the frames it receives meanwhile are dropped.
-    fn set_deafened(entry: &mut Entry, deafened: bool) {
+    fn set_deafened(entry: &Entry, deafened: bool) {
         if let Some(backend) = &entry.backend {
             backend.lock_recover().set_deafened(deafened);
         }
