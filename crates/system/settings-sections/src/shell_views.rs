@@ -45,7 +45,19 @@ pub const FIXED: &[&str] = &["lock", "consent", "portal", "auth", "display-confi
 pub const SHEET: &str = "sheet:";
 
 /// The view bound to a slot.
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    ui::tilo_resource::Model,
+)]
+#[model(defaults)]
 pub struct Binding {
     /// The app whose view draws the slot.
     pub app: String,
