@@ -10,7 +10,7 @@
 use super::facades::PeerGovernance;
 use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
 use tilo_action_policy::{
-    Context, Grant, GrantId, RoomPolicy, bot,
+    Context, Grant, GrantId, WorkspacePolicy, bot,
     roles::{self, governance},
 };
 use tilo_automation::program::{parse_program, program_hash};
@@ -433,7 +433,7 @@ impl StatePeer {
             let authority = asking.authority();
             let cx = Context::at_time(now);
             for grant in &grants {
-                RoomPolicy::check_within(&authority, grant, &cx).map_err(|refusal| {
+                WorkspacePolicy::check_within(&authority, grant, &cx).map_err(|refusal| {
                     format!("the bot's program asks for more than you hold: {refusal}")
                 })?;
             }
@@ -704,7 +704,7 @@ impl StatePeer {
         for grant in &old {
             let mut next = grant.clone();
             next.granted_by = tilo_action_policy::Subject::person(member.person.clone());
-            RoomPolicy::check_within(&authority, &next, &cx)
+            WorkspacePolicy::check_within(&authority, &next, &cx)
                 .map_err(|refusal| refusal.to_string())?;
             reissued.push(next);
         }
@@ -738,7 +738,7 @@ impl StatePeer {
 fn program_grants(
     room: &str,
     install: &BotInstall,
-    policy: &RoomPolicy,
+    policy: &WorkspacePolicy,
     cx: &Context<'_>,
 ) -> Result<Vec<Grant>, String> {
     if program_hash(install.program.as_bytes()) != install.installation.program {
@@ -763,7 +763,8 @@ fn program_grants(
     let installer = tilo_action_policy::Standing::person(policy.clone(), installed_by.clone());
     let authority = installer.authority();
     for grant in &grants {
-        RoomPolicy::check_within(&authority, grant, cx).map_err(|refusal| refusal.to_string())?;
+        WorkspacePolicy::check_within(&authority, grant, cx)
+            .map_err(|refusal| refusal.to_string())?;
     }
     Ok(grants)
 }

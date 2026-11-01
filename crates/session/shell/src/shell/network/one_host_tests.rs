@@ -1389,7 +1389,7 @@ impl Device {
 
     /// `room`'s governance as this device holds it: its owner, its members'
     /// roles and its grants.
-    pub(crate) fn policy(&self, room: RoomId) -> Option<tilo_action_policy::RoomPolicy> {
+    pub(crate) fn policy(&self, room: RoomId) -> Option<tilo_action_policy::WorkspacePolicy> {
         let owner = self.net.as_ref()?.native_owner().ok()?;
         owner
             .with_current(room, |view| {

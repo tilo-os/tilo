@@ -40,7 +40,7 @@ fn authorize(
         .peer()
         .permissions(device, std::time::SystemTime::now())
         .map_err(|error| error.to_string())?;
-    if member.policy.room != room
+    if member.policy.workspace != room
         || !member.allows(
             &member.policy.node().app(settings_sections::APP_ID),
             tilo_action_policy::ActionKind::Outside,

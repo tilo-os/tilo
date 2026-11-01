@@ -158,7 +158,7 @@ struct WorkspacePolicy {
     room: tilo_desktop_model::RoomId,
     owner: Option<tilo_desktop_model::UserId>,
     collaborators: Vec<tilo_desktop_model::Collaborator>,
-    policy: tilo_action_policy::RoomPolicy,
+    policy: tilo_action_policy::WorkspacePolicy,
     sandbox: Vec<collab_types::caps::CapOverride>,
     shortcuts: Vec<tilo_automation::SavedShortcut>,
     pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,

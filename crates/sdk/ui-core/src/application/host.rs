@@ -1825,7 +1825,7 @@ mod native_process_tests {
         let app = "so.tilo.store";
         let author = UserId("person-a".into());
         let original = AppActionAuthorityProjection::project(
-            &tilo_action_policy::RoomPolicy::new(room, author.0.clone()),
+            &tilo_action_policy::WorkspacePolicy::new(room, author.0.clone()),
             app,
             &author.0,
             false,
@@ -1906,7 +1906,7 @@ mod native_process_tests {
         let app = "so.tilo.store";
         let author = UserId("person-a".into());
         let original = AppActionAuthorityProjection::project(
-            &tilo_action_policy::RoomPolicy::new(room, author.0.clone()),
+            &tilo_action_policy::WorkspacePolicy::new(room, author.0.clone()),
             app,
             &author.0,
             false,

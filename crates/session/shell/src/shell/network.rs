@@ -874,7 +874,7 @@ fn person_room_standing(
 ) -> tilo_action_policy::Standing {
     let person = hex::encode(user_pubkey);
     let standing = tilo_action_policy::Standing::person(
-        tilo_action_policy::RoomPolicy::new(cluster_id, person.clone()),
+        tilo_action_policy::WorkspacePolicy::new(cluster_id, person.clone()),
         person,
     );
     if foreign {
@@ -3170,7 +3170,7 @@ impl ShellNetwork {
         let person = self.person_in_room(room);
         let author = if self.is_local_person_room(&cluster_id) {
             tilo_action_policy::Standing::person(
-                tilo_action_policy::RoomPolicy::new(cluster_id.clone(), person.clone()),
+                tilo_action_policy::WorkspacePolicy::new(cluster_id.clone(), person.clone()),
                 person,
             )
         } else if self.is_in_room(&cluster_id) {
@@ -7237,7 +7237,7 @@ fn unauthenticated_editor(cluster_id: &str, peer: u64) -> tilo_action_policy::St
 
 /// `person` as an editor of `cluster_id`, and nothing more.
 fn editor_standing(cluster_id: &str, person: String) -> tilo_action_policy::Standing {
-    let mut policy = tilo_action_policy::RoomPolicy::unowned(
+    let mut policy = tilo_action_policy::WorkspacePolicy::unowned(
         cluster_id,
         &tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner),
     );

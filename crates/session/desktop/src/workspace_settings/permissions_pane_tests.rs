@@ -491,7 +491,7 @@ fn granting_and_revoking_permissions_is_owner_only_and_enforced() {
             let mut ws = ws_with_grants();
             let now = tilo_clock::unix_now();
             let grant = tilo_action_policy::roles::app_authorship(
-                &ws.policy.room,
+                &ws.policy.workspace,
                 "firefox",
                 tilo_action_policy::Subject::person(OWNER),
             );
@@ -570,7 +570,7 @@ fn grant_and_revoke_parameters_pick_from_the_workspace() {
     let mut ws = ws_with_grants();
     let now = tilo_clock::unix_now();
     let grant = tilo_action_policy::roles::app_authorship(
-        &ws.policy.room,
+        &ws.policy.workspace,
         "firefox",
         tilo_action_policy::Subject::person(OWNER),
     );
@@ -682,7 +682,7 @@ fn a_grant_naming_a_resource_is_listed_by_that_resources_name() {
     let grant = tilo_action_policy::Grant::new(
         "issue-grant",
         tilo_action_policy::Subject::task("tasks.tracker/issues/1"),
-        tilo_action_policy::TreePath::room(ws.policy.room.clone())
+        tilo_action_policy::TreePath::room(ws.policy.workspace.clone())
             .app("so.tilo.notes")
             .any(tilo_action_policy::Level::Kind)
             .resource("tasks.tracker/issues/1"),
@@ -908,7 +908,7 @@ fn a_grant_set_reads_back_as_the_grants_the_room_holds() {
     use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
 
     let ws = ws_with_grants();
-    let room = TreePath::room(ws.policy.room.clone());
+    let room = TreePath::room(ws.policy.workspace.clone());
     let grant = |id: &str, node: TreePath, kinds: KindSet, answer: Answer| {
         Grant::new(
             id,
@@ -941,7 +941,7 @@ fn a_grant_set_reads_back_as_the_grants_the_room_holds() {
             "room {} › mail › anywhere › send: outside effects ask first. \
              room {} › mail: everything allowed. room {}: reading and undoable \
              changes allowed.",
-            ws.policy.room, ws.policy.room, ws.policy.room
+            ws.policy.workspace, ws.policy.workspace, ws.policy.workspace
         ),
         "an exception reads beside the grant it narrows"
     );
@@ -954,6 +954,6 @@ fn a_grant_set_reads_back_as_the_grants_the_room_holds() {
     let single = grant("mail", room.app("mail"), KindSet::READ, Answer::Deny);
     assert_eq!(
         grant_allows(&single, &NoAppDirectory),
-        format!("room {} › mail: reading not allowed.", ws.policy.room)
+        format!("room {} › mail: reading not allowed.", ws.policy.workspace)
     );
 }

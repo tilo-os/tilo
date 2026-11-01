@@ -93,7 +93,7 @@ impl NativeTaskActionRequirement {
     /// The run's binding, its epoch or the room's grants refuse the action.
     pub fn check_tracker_policy(
         &self,
-        policy: &tilo_action_policy::RoomPolicy,
+        policy: &tilo_action_policy::WorkspacePolicy,
         room: &str,
         run: &TrackerRun,
         now: std::time::SystemTime,

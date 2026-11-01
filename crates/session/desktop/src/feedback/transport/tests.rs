@@ -36,7 +36,7 @@ fn no_member(person: &str) -> PermissionContext {
         Actor::person(person).in_room(ROOM),
         vec![],
         ui::permissions::Standing::person(
-            policy::RoomPolicy::unowned(ROOM, &policy::Subject::Role(Role::Owner)),
+            policy::WorkspacePolicy::unowned(ROOM, &policy::Subject::Role(Role::Owner)),
             person,
         ),
     )

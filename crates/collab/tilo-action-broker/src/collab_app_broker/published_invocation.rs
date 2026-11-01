@@ -684,7 +684,10 @@ impl OriginalInvocationData {
                 let workspace = workspace.ok_or("original launch workspace unavailable")?;
                 if !actor.may_in(
                     workspace,
-                    &roles::governance_action(&workspace.policy.room, roles::governance::GRANT),
+                    &roles::governance_action(
+                        &workspace.policy.workspace,
+                        roles::governance::GRANT,
+                    ),
                     roles::GOVERNANCE_KIND,
                     seconds,
                 ) {

@@ -33,9 +33,9 @@ pub(crate) struct PolicyData {
 impl PolicyData {
     /// The room's authority as recorded: owner, members and the grants on
     /// `room`'s nodes.
-    pub(crate) fn room_policy(&self, room: &str) -> tilo_action_policy::RoomPolicy {
-        tilo_action_policy::RoomPolicy {
-            room: room.to_owned(),
+    pub(crate) fn room_policy(&self, room: &str) -> tilo_action_policy::WorkspacePolicy {
+        tilo_action_policy::WorkspacePolicy {
+            workspace: room.to_owned(),
             owner: self.owner.clone(),
             members: self.members.clone(),
             joined: self.joined.clone(),

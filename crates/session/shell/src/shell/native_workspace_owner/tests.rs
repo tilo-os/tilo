@@ -601,7 +601,7 @@ fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_devi
 /// Grant `person` the room's invite governance action in `workspace`.
 pub(crate) fn grant_invite(workspace: &mut crate::shell::state::Workspace, person: &str) {
     let node = tilo_action_policy::roles::governance_action(
-        &workspace.policy.room,
+        &workspace.policy.workspace,
         tilo_action_policy::roles::governance::INVITE,
     );
     workspace.grant(tilo_action_policy::Grant::new(

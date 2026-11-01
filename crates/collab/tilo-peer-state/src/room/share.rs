@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use automerge::AutoCommit;
 use tilo_action_policy::share::{self, ShareAccess};
 use tilo_action_policy::{
-    Authority, Context, Grant, GrantId, RoomPolicy, Subject, TreePath, roles::governance,
+    Authority, Context, Grant, GrantId, Subject, TreePath, WorkspacePolicy, roles::governance,
 };
 
 /// The start of every share grant's id.
@@ -76,7 +76,7 @@ pub fn window_is_the_writers(
 /// # Errors
 /// The first of those that does not hold.
 pub fn share_grants(
-    (doc, policy): (Option<&AutoCommit>, &RoomPolicy),
+    (doc, policy): (Option<&AutoCommit>, &WorkspacePolicy),
     (person, device, authority, cx): (&str, &str, &Authority<'_>, &Context<'_>),
     share: &str,
     node: &TreePath,
@@ -85,7 +85,7 @@ pub fn share_grants(
     if policy.is_blocked(person) || policy.restricted_until(person, cx).is_some() {
         return Err("you can't share in this room right now".into());
     }
-    let grants = share::share_grants(&policy.room, person, share, node, access)
+    let grants = share::share_grants(&policy.workspace, person, share, node, access)
         .map_err(|refusal| refusal.to_string())?;
     window_is_the_writers(doc, device, share, node)?;
     share::check_held(authority, &grants, cx).map_err(|refusal| refusal.to_string())?;
@@ -96,7 +96,7 @@ pub fn share_grants(
 /// or all of them when they may revoke in the room.
 #[must_use]
 pub fn ended_by(
-    policy: &RoomPolicy,
+    policy: &WorkspacePolicy,
     (person, authority, cx): (&str, &Authority<'_>, &Context<'_>),
     share: &str,
 ) -> Vec<GrantId> {
@@ -120,7 +120,7 @@ pub fn ended_by(
 /// # Errors
 /// A share grant the writer could not have given or ended.
 pub(super) fn changed(
-    (at, held, wanted): (&AutoCommit, &RoomPolicy, &RoomPolicy),
+    (at, held, wanted): (&AutoCommit, &WorkspacePolicy, &WorkspacePolicy),
     (person, device, authority, cx): (&str, &str, &Authority<'_>, &Context<'_>),
 ) -> Result<(Vec<Grant>, Vec<GrantId>), String> {
     let held_shares: BTreeMap<&GrantId, &Grant> = held

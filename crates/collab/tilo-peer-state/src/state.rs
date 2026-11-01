@@ -16,7 +16,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Grant, GrantId, RoomPolicy, Subject, TreePath,
+    ActionKind, Answer, Authority, Grant, GrantId, Subject, TreePath, WorkspacePolicy,
 };
 use tilo_lock::MutexRecover;
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -148,7 +148,7 @@ impl From<backend::CertificateLookupError> for MembershipError {
 pub struct MemberAuthority {
     pub role: Role,
     pub person: String,
-    pub policy: RoomPolicy,
+    pub policy: WorkspacePolicy,
     pub foreign: bool,
     /// The bound on a delegate's device, an agent's or a bot's: its
     /// person's grants within its own, never above an Editor's.
@@ -192,7 +192,7 @@ impl MemberAuthority {
 }
 /// Whether `agent` is admitted to the room: it holds a live grant on the room
 /// itself.
-pub(crate) fn agent_is_member(policy: &RoomPolicy, agent: &str, now: SystemTime) -> bool {
+pub(crate) fn agent_is_member(policy: &WorkspacePolicy, agent: &str, now: SystemTime) -> bool {
     let cx = tilo_action_policy::Context::at_time(now);
     let room = policy.node();
     policy.grants.iter().any(|grant| {

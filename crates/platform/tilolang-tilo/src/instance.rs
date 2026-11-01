@@ -269,7 +269,7 @@ pub struct Instance {
     /// The person and the room's policy the runtime's members were last read from.
     members_from: Option<(
         String,
-        tilo_action_policy::RoomPolicy,
+        tilo_action_policy::WorkspacePolicy,
         crate::members::People,
     )>,
     /// How the policy's people are the runtime's principals, as presence pairs them.

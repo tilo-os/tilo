@@ -294,7 +294,7 @@ mod identity_fs_tests {
                 PolicySubject::Person("owner".into()),
             )
         };
-        let first_room = room_a.policy.room.clone();
+        let first_room = room_a.policy.workspace.clone();
         room_a.grant(reader("alice-reads", &alice_id, &first_room));
         // A Files share remains Files authority, not an implicit relay
         // membership on either room.
@@ -305,7 +305,7 @@ mod identity_fs_tests {
             Access::Read,
         ));
         let until_ms = (tilo_clock::unix_now() + 3600) * 1000;
-        let second_room = room_b.policy.room.clone();
+        let second_room = room_b.policy.workspace.clone();
         room_b.grant(
             reader("bob-reads", &bob_id, &second_room).with_lifetime(Lifetime::Until(until_ms)),
         );
@@ -5702,7 +5702,7 @@ mod workspace_tree_lifecycle_tests {
     fn relay_authority_never_turns_session_grants_into_timeless_nas_access() {
         use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
         let mut workspace = Workspace::new(WorkspaceId(1), "A");
-        let room = workspace.policy.room.clone();
+        let room = workspace.policy.workspace.clone();
         let reach = |id: &str, person: &str, lifetime: Lifetime| {
             Grant::new(
                 id,

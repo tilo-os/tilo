@@ -3385,7 +3385,7 @@ mod foreign_caller_tests {
             let (workspace, policy, now) = state.workspaces_for(caller).pop().unwrap();
             policy.may_in(
                 &workspace,
-                &roles::governance_action(&workspace.policy.room, roles::governance::SETTINGS),
+                &roles::governance_action(&workspace.policy.workspace, roles::governance::SETTINGS),
                 roles::GOVERNANCE_KIND,
                 now,
             )

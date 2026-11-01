@@ -556,7 +556,7 @@ fn sign_collaboration_op(
     let decided = read_workspace(tree, bound_room, |workspace| {
         workspace.role_of(&principal_id)?;
         let record = collab_types::Record {
-            room: &workspace.policy.room,
+            room: &workspace.policy.workspace,
             app: app_id,
             record: record_id,
         };
@@ -652,7 +652,7 @@ fn channel_keys(
     let reads = own_room
         || read_workspace(tree, bound.room, |workspace| {
             let node = collab_types::validator::document_node(
-                &workspace.policy.room,
+                &workspace.policy.workspace,
                 route.app_id,
                 route.record_id,
             );

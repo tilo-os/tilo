@@ -180,10 +180,10 @@ fn reads_node(standing: &Standing, people: &People, who: &Principal, node: &Tree
 mod tests {
     use super::*;
     use tilo_action_policy::roles::AgentPreset;
-    use tilo_action_policy::{Grant, KindSet, Role, RoomPolicy};
+    use tilo_action_policy::{Grant, KindSet, Role, WorkspacePolicy};
 
     fn standing() -> Standing {
-        let mut policy = RoomPolicy::new("room", "ada");
+        let mut policy = WorkspacePolicy::new("room", "ada");
         policy.members.insert("bo".to_owned(), Role::Editor);
         policy.members.insert("cy".to_owned(), Role::Viewer);
         policy.grants.extend(AgentPreset::Contributor.grants(

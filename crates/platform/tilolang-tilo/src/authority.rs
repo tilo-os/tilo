@@ -35,7 +35,7 @@ pub type StandingSource = dyn Fn() -> Option<Standing>;
 /// runtime might invoke runs.
 pub fn holding_nothing(person: &str) -> impl Fn() -> Option<Standing> + 'static {
     let standing = Standing::person(
-        tilo_action_policy::RoomPolicy::new(NO_ROOM, format!("{person}'s owner")),
+        tilo_action_policy::WorkspacePolicy::new(NO_ROOM, format!("{person}'s owner")),
         person,
     );
     move || Some(standing.clone())
@@ -272,7 +272,7 @@ impl Authority for TiloAuthority {
 mod tests {
     use super::*;
     use tilo_action_policy::agent_answers::{self, AnswerScope};
-    use tilo_action_policy::{ActionKind, RoomPolicy};
+    use tilo_action_policy::{ActionKind, WorkspacePolicy};
     use tilolang_runtime::meta::EffectClass;
 
     const ROOM: &str = "room";
@@ -302,7 +302,7 @@ mod tests {
     }
 
     fn authority(grants: Vec<Grant>) -> TiloAuthority {
-        let mut policy = RoomPolicy::new(ROOM, PERSON);
+        let mut policy = WorkspacePolicy::new(ROOM, PERSON);
         policy.grants.extend(grants);
         let standing = Standing::person(policy, PERSON);
         let authority = TiloAuthority::new(Principal::new(PERSON), move || Some(standing.clone()));
@@ -317,7 +317,7 @@ mod tests {
     fn a_package_whose_records_are_each_members_own_is_its_persons_alone() {
         let ada = "ab".repeat(32);
         let owner = "ef".repeat(32);
-        let mut policy = RoomPolicy::new(ROOM, owner.clone());
+        let mut policy = WorkspacePolicy::new(ROOM, owner.clone());
         policy
             .members
             .insert(ada.clone(), tilo_action_policy::Role::Editor);
@@ -503,7 +503,7 @@ mod tests {
             Decision::Deny
         );
         // A grant on Todo's node, `room/app:todo/**`, decides for a member on Tasks.
-        let mut policy = RoomPolicy::new(ROOM, PERSON);
+        let mut policy = WorkspacePolicy::new(ROOM, PERSON);
         let node_denied = Grant::new(
             "no-todo-for-bob",
             Subject::person("bob"),

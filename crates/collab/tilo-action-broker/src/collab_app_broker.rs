@@ -136,7 +136,7 @@ use collab_types::{DocumentMutation, document_artifact_id, document_attestation_
 use runtime_collab::event::CollabEvent;
 use runtime_collab::wire::ContextUpdate;
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Grant, RoomPolicy, Subject, TreePath, roles,
+    ActionKind, Answer, Authority, Grant, Subject, TreePath, WorkspacePolicy, roles,
 };
 use ui::presence::PresenceKey;
 
@@ -573,7 +573,7 @@ impl BrokerActor {
         let (answer, spent) = actor.verdict_in(workspace, &node, need.kind, need.privileged, now);
         let record = record.map(|record| {
             let node = collab_types::validator::document_node(
-                &workspace.policy.room,
+                &workspace.policy.workspace,
                 &surface.app_id,
                 &record,
             );
@@ -828,7 +828,7 @@ impl AdmittedJoinIdentity {
             // The person room's devices are its owner's; a foreign one is
             // held to the foreign-device bound there as anywhere, and an
             // agent one of them was handed to, to that delegation too.
-            let policy = RoomPolicy::new(room, self.principal_id.clone());
+            let policy = WorkspacePolicy::new(room, self.principal_id.clone());
             let authority =
                 policy.person_on_device(&self.principal_id, self.verified.capped, &bound);
             let actor = self.broker_actor();
@@ -13676,7 +13676,7 @@ pub mod tests {
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(45), "Hosted");
         workspace.set_owner(owner.clone());
-        let room = workspace.policy.room.clone();
+        let room = workspace.policy.workspace.clone();
         // Bob comments, and may launch the room's agents.
         workspace.admit(bob.clone(), Role::Commenter);
         workspace.grant(tilo_action_policy::Grant::new(

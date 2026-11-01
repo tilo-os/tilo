@@ -89,7 +89,7 @@ pub(super) fn governed(chrome: &Chrome, actor: &str) {
 fn capabilities(
     chrome: &Chrome,
 ) -> Option<(
-    tilo_action_policy::RoomPolicy,
+    tilo_action_policy::WorkspacePolicy,
     Vec<crate::shell::state::CapOverride>,
 )> {
     let state = chrome.borrow();

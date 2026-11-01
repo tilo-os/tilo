@@ -4923,7 +4923,7 @@ mod members_pane_tests {
             let admin = Grant::new(
                 "peer-administers",
                 tilo_action_policy::Subject::person(PEER),
-                roles::room_resource(&ws.policy.room),
+                roles::room_resource(&ws.policy.workspace),
                 KindSet::ALL,
                 Answer::Allow,
                 tilo_action_policy::Subject::person(OWNER),

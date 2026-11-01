@@ -624,8 +624,8 @@ mod tests {
 
     #[test]
     fn presets_are_closed_admission_markers_without_admin_authority() {
-        use tilo_action_policy::{ActionKind, Authority, Context, Party, RoomPolicy};
-        let room = RoomPolicy::new("room", "owner");
+        use tilo_action_policy::{ActionKind, Authority, Context, Party, WorkspacePolicy};
+        let room = WorkspacePolicy::new("room", "owner");
         let content = TreePath::room("room").app("notes").resource("page");
         let comment = content.clone().field(roles::COMMENTS_FIELD).action("add");
         let invite = roles::governance_action("room", roles::governance::INVITE);

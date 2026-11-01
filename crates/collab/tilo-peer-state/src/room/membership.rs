@@ -3,7 +3,7 @@
 //! A room's members, their roles, the grants on it, the devices each member
 //! holds it on and its own settings (its name, saved grant sets and its
 //! apps' sandbox capabilities) are changed by actions, under the action
-//! policy (`tilo_action_policy::RoomPolicy`). The owner's devices write
+//! policy (`tilo_action_policy::WorkspacePolicy`). The owner's devices write
 //! every part of the room's governance; anyone else writes only these, and
 //! only what their own grants let them.
 //!
@@ -33,7 +33,7 @@ use std::collections::BTreeMap;
 
 use automerge::AutoCommit;
 use tilo_action_policy::{
-    Change, Context, Grant, GrantId, Role, RoomPolicy, roles, roles::governance,
+    Change, Context, Grant, GrantId, Role, WorkspacePolicy, roles, roles::governance,
 };
 
 use super::{RoomGovernance, governance_of};
@@ -234,7 +234,7 @@ pub fn authorize(
 /// # Errors
 /// The first of those that does not hold.
 pub fn invitation_admits(
-    policy: &tilo_action_policy::RoomPolicy,
+    policy: &tilo_action_policy::WorkspacePolicy,
     room: &str,
     signed: &[u8],
     joiner: [u8; 32],
@@ -279,8 +279,8 @@ pub fn invitation_admits(
 /// so a spent invitation stays spent.
 fn redemptions(
     room: &str,
-    held: &RoomPolicy,
-    wanted: &RoomPolicy,
+    held: &WorkspacePolicy,
+    wanted: &WorkspacePolicy,
     before: &RoomGovernance,
     written: &RoomGovernance,
     now_ns: u64,
@@ -397,7 +397,7 @@ fn settings(
     room: &str,
     at: &AutoCommit,
     after: &AutoCommit,
-    held: &RoomPolicy,
+    held: &WorkspacePolicy,
     (actor, authority, cx): Writer<'_>,
 ) -> Result<(), MembershipRefusal> {
     use tilo_desktop_model::projection::{ROOM_NAME_KEY, RoomLayout, room_layout};
@@ -447,7 +447,7 @@ fn settings(
 fn sandbox(
     before: &RoomGovernance,
     written: &RoomGovernance,
-    held: &RoomPolicy,
+    held: &WorkspacePolicy,
     (actor, authority, cx): Writer<'_>,
 ) -> Result<(), MembershipRefusal> {
     let may = |action: &str| {
@@ -490,8 +490,8 @@ fn sandbox(
 fn assignments(
     room: &str,
     at: &AutoCommit,
-    held: &RoomPolicy,
-    wanted: &RoomPolicy,
+    held: &WorkspacePolicy,
+    wanted: &WorkspacePolicy,
     (actor, authority, cx): Writer<'_>,
 ) -> Result<Vec<Grant>, MembershipRefusal> {
     let presets = tilo_desktop_model::projection::workspace_presets_of(at);
@@ -542,7 +542,7 @@ fn assignments(
                 grant.id.as_str()
             )));
         }
-        RoomPolicy::check_within(authority, grant, cx)
+        WorkspacePolicy::check_within(authority, grant, cx)
             .map_err(|refusal| MembershipRefusal::Refused(refusal.to_string()))?;
         assigned.push(grant.clone());
     }
@@ -551,7 +551,7 @@ fn assignments(
 
 /// The policy changes that take `held` to `wanted`, in the order they apply:
 /// removals and bans, admissions and roles, then the grants left to change.
-fn changes(held: &RoomPolicy, wanted: &RoomPolicy) -> Vec<Change> {
+fn changes(held: &WorkspacePolicy, wanted: &WorkspacePolicy) -> Vec<Change> {
     let wanted_grants: BTreeMap<&GrantId, &Grant> = wanted
         .grants
         .iter()
@@ -652,8 +652,8 @@ fn sorted(grants: &[Grant]) -> Vec<&Grant> {
 /// and the writer's own, one an invitation admits, a further device of
 /// someone already a member, or one they may admit.
 fn identities(
-    held: &RoomPolicy,
-    wanted: &RoomPolicy,
+    held: &WorkspacePolicy,
+    wanted: &WorkspacePolicy,
     invited: &BTreeMap<String, (Role, String)>,
     (actor, authority, cx): (&str, &tilo_action_policy::Authority<'_>, &Context<'_>),
     (before, written): (&RoomGovernance, &RoomGovernance),

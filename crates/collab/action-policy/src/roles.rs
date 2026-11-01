@@ -165,7 +165,7 @@ pub fn administrator_grant_id(person: &str) -> GrantId {
 /// ([`crate::Refusal::NotBelowActor`]), and a grant they give never exceeds
 /// what they hold ([`crate::Refusal::AboveActorGrant`]). A ban or a live
 /// restriction on them stops their governance with the rest of their
-/// changes ([`crate::RoomPolicy::check_action`]).
+/// changes ([`crate::WorkspacePolicy::check_action`]).
 ///
 /// Rooms written before the grant took this node held it on
 /// [`room_resource`], where the Editor's own Deny at the same node outranked
@@ -454,7 +454,7 @@ impl Preset {
 /// | Owner | everything: Allow |
 ///
 /// A Moderator's membership actions reach only members ranked below
-/// Moderator; [`crate::RoomPolicy`] enforces that, since it depends on the
+/// Moderator; [`crate::WorkspacePolicy`] enforces that, since it depends on the
 /// target and not on the tree.
 #[must_use]
 pub fn role_rules(role: Role, room: &str) -> Vec<Rule> {

@@ -85,7 +85,7 @@ struct Open {
     person: ui::permissions::UserId,
     /// The grants it was opened with: they decide its actions, so a
     /// workspace whose grants changed opens the record again.
-    policy: tilo_action_policy::RoomPolicy,
+    policy: tilo_action_policy::WorkspacePolicy,
     /// `None` where the record could not be opened here.
     record: Option<WorkspaceRecord<Record>>,
 }

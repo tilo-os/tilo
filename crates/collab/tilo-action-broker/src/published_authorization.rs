@@ -152,7 +152,7 @@ mod tests {
             }
             let person = if role == Role::Owner { OWNER } else { member };
             let window = ui::permissions::PermissionContext::from_standing(
-                &w.policy.room,
+                &w.policy.workspace,
                 tilo_action_policy::Standing::person(w.policy.clone(), person),
             )
             .at_unix_time(10);
@@ -274,7 +274,7 @@ mod tests {
         w.grant(Grant::new(
             "rec-1-read-only",
             Subject::person(member),
-            collab_types::validator::document_node(&w.policy.room, WRITER, "rec-1"),
+            collab_types::validator::document_node(&w.policy.workspace, WRITER, "rec-1"),
             KindSet::UNDOABLE,
             tilo_action_policy::Answer::Deny,
             Subject::person(OWNER),

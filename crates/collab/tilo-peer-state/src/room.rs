@@ -236,7 +236,7 @@ pub fn room_bots_of(doc: &AutoCommit) -> Vec<tilo_desktop_model::WorkspaceBot> {
 /// it declares. Rows that do not decode are skipped.
 pub fn extract_governed_fields(
     candidate: &AutoCommit,
-) -> (Option<String>, tilo_action_policy::RoomPolicy) {
+) -> (Option<String>, tilo_action_policy::WorkspacePolicy) {
     #[cfg(test)]
     POLICY_READS.with(|count| count.set(count.get().saturating_add(1)));
     let text = |key: &str| candidate.str_at(&ROOT, key);

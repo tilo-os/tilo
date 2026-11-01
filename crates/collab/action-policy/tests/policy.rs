@@ -1,7 +1,7 @@
 use tilo_action_policy::{
     ActionKind, Answer, Authority, Basis, Change, Context, Grant, GrantId, Ids, KindSet, Labels,
-    Level, Lifetime, Party, Preset, PresetError, Refusal, Role, RoomPolicy, Rule, Subject,
-    TreePath, decide, describe, describe_node,
+    Level, Lifetime, Party, Preset, PresetError, Refusal, Role, Rule, Subject, TreePath,
+    WorkspacePolicy, decide, describe, describe_node,
     roles::{self, governance},
     sentences,
 };
@@ -524,7 +524,7 @@ fn every_bound_applies() {
 
 #[test]
 fn the_owner_is_structural() {
-    let mut room = RoomPolicy::new("r", ALICE);
+    let mut room = WorkspacePolicy::new("r", ALICE);
     room.grants.push(grant(
         "deny-owner",
         TreePath::room("r"),
@@ -570,8 +570,8 @@ fn the_owner_is_structural() {
     );
 }
 
-fn room_with(members: &[(&str, Role)]) -> RoomPolicy {
-    let mut room = RoomPolicy::new("r", ALICE);
+fn room_with(members: &[(&str, Role)]) -> WorkspacePolicy {
+    let mut room = WorkspacePolicy::new("r", ALICE);
     for (person, role) in members {
         room.members.insert((*person).to_owned(), *role);
     }
@@ -836,7 +836,7 @@ fn non_members_hold_nothing() {
 
 #[test]
 fn admission_records_when_a_member_joined_until_they_leave() {
-    fn by_owner(room: &RoomPolicy, change: Change, now: u64) -> RoomPolicy {
+    fn by_owner(room: &WorkspacePolicy, change: Change, now: u64) -> WorkspacePolicy {
         let owner = Authority::person(room.party(ALICE));
         let mut next = room.clone();
         next.apply(ALICE, &owner, change, &Context::at(now), false)
@@ -1077,7 +1077,7 @@ fn nobody_grants_more_than_they_hold() {
     ));
     assert_eq!(
         granted.clone().apply(BOB, &bob, elsewhere, &cx(), false),
-        Err(Refusal::OutsideRoom(TreePath::room("s")))
+        Err(Refusal::OutsideWorkspace(TreePath::room("s")))
     );
 }
 
@@ -1150,7 +1150,7 @@ fn a_policy_moves_to_another_room_id() {
         alice(),
     ));
     room.rehome("q");
-    assert_eq!(room.room, "q");
+    assert_eq!(room.workspace, "q");
     let bob = Authority::person(room.party(BOB));
     let moved = TreePath::room("q").app("mail").action("archive");
     assert_eq!(
@@ -1166,7 +1166,7 @@ fn a_policy_moves_to_another_room_id() {
             .iter()
             .any(|grant| grant.node == TreePath::room("s"))
     );
-    let unowned = RoomPolicy::unowned("u", &alice());
+    let unowned = WorkspacePolicy::unowned("u", &alice());
     assert_eq!(unowned.owner, None);
     assert_eq!(
         unowned.grants.len(),
@@ -1417,12 +1417,27 @@ fn grants_round_trip_through_json() {
     assert_eq!(json["answer"], "ask");
     let back: Grant = serde_json::from_value(json).expect("deserialises");
     assert_eq!(back, grant);
-    let room = RoomPolicy::new("r", ALICE);
+    let room = WorkspacePolicy::new("r", ALICE);
     let text = serde_json::to_string(&room).expect("serialises");
     assert_eq!(
-        serde_json::from_str::<RoomPolicy>(&text).expect("deserialises"),
+        serde_json::from_str::<WorkspacePolicy>(&text).expect("deserialises"),
         room
     );
+}
+
+#[test]
+fn a_policy_document_written_with_room_still_parses() {
+    let policy = WorkspacePolicy::new("r", ALICE);
+    let written = serde_json::to_string(&policy).expect("serialises");
+    assert!(written.contains("\"workspace\":\"r\""), "{written}");
+    assert!(!written.contains("\"room\":"), "{written}");
+    // Documents stored while the field was named `room` read as they are.
+    let stored = written.replace("\"workspace\":", "\"room\":");
+    assert!(stored.contains("\"room\":\"r\""), "{stored}");
+    let read: WorkspacePolicy = serde_json::from_str(&stored).expect("reads the stored shape");
+    assert_eq!(read, policy);
+    assert_eq!(read.workspace, "r");
+    assert_eq!(read.owner.as_deref(), Some(ALICE));
 }
 
 struct Names;
@@ -1545,7 +1560,7 @@ fn verdicts_explain_themselves() {
         verdict.explain(),
         "Asks first: the person's grants give outside effects on room:r/app:mail the answer \"ask\" (grant mail)."
     );
-    let room = RoomPolicy::new("r", ALICE);
+    let room = WorkspacePolicy::new("r", ALICE);
     let verdict = Authority::person(room.party(ALICE)).decide(&send(), ActionKind::Outside, &cx());
     assert_eq!(verdict.explain(), "Allowed: the person owns the room.");
 }
@@ -1601,7 +1616,7 @@ fn a_privileged_action_needs_the_persons_own_allow() {
 
 #[test]
 fn a_governance_change_spends_the_once_grant_it_ran_on() {
-    let mut room = RoomPolicy::new("r", CAROL);
+    let mut room = WorkspacePolicy::new("r", CAROL);
     room.members.insert(ALICE.into(), Role::Editor);
     let once = Grant::new(
         "grant-once",
@@ -2035,7 +2050,7 @@ fn built_in_roles_load_as_the_code_defines_them_and_a_room_keeps_its_own_grants(
     );
     stored.grants.push(custom.clone());
 
-    let loaded: RoomPolicy =
+    let loaded: WorkspacePolicy =
         serde_json::from_value(serde_json::to_value(&stored).unwrap()).unwrap();
     let mut expected = vec![adjustment];
     expected.extend(roles::room_role_grants("r", &alice()));

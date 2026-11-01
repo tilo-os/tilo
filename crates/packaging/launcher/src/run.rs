@@ -5824,7 +5824,7 @@ bin = \"store\"
 ",
         );
         let policy = AppActionAuthorityProjection::project(
-            &tilo_action_policy::RoomPolicy::new("room-a", "person-a"),
+            &tilo_action_policy::WorkspacePolicy::new("room-a", "person-a"),
             &manifest.package_id,
             "person-a",
             false,

@@ -1,5 +1,5 @@
-//! A room's authority: its owner, its members' roles and its grants, changed
-//! only through the room's governance actions.
+//! A workspace's authority: its owner, its members' roles and its grants,
+//! changed only through the workspace's governance actions.
 
 use std::collections::BTreeMap;
 
@@ -11,36 +11,41 @@ use crate::{
     roles::{self, governance},
 };
 
-/// Everything that decides authority in one room.
+/// Everything that decides authority in one workspace.
 ///
 /// The built-in roles' grants are the code's ([`roles::role_rules`]): a
 /// stored policy loads with them as defined now
-/// ([`Self::with_current_roles`]), so a room written before a role changed
-/// gets the role as it is. Grants given in the room stay as stored.
+/// ([`Self::with_current_roles`]), so a workspace written before a role
+/// changed gets the role as it is. Grants given in the workspace stay as
+/// stored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "StoredRoomPolicy")]
-pub struct RoomPolicy {
-    pub room: String,
+#[serde(from = "StoredWorkspacePolicy")]
+pub struct WorkspacePolicy {
+    /// The workspace this policy governs.
+    pub workspace: String,
     /// The owner, by person id. Structural: holds everything and cannot be
     /// removed, demoted or denied by a grant.
     pub owner: Option<String>,
     /// Members other than the owner and the role preset each holds.
     pub members: BTreeMap<String, Role>,
-    /// When the room admitted each member, Unix milliseconds, by person id.
-    /// Recorded once, by whoever admitted them, and kept through role
-    /// changes; a member admitted before rooms recorded it has none. People
-    /// who share a name are numbered in this order.
+    /// When the workspace admitted each member, Unix milliseconds, by person
+    /// id. Recorded once, by whoever admitted them, and kept through role
+    /// changes; a member admitted before workspaces recorded it has none.
+    /// People who share a name are numbered in this order.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub joined: BTreeMap<String, u64>,
-    /// Every grant in the room, role presets included.
+    /// Every grant in the workspace, role presets included.
     pub grants: Vec<Grant>,
 }
 
-/// A [`RoomPolicy`] as written, before its built-in roles are brought to
+/// A [`WorkspacePolicy`] as written, before its built-in roles are brought to
 /// their current definition.
 #[derive(Deserialize)]
-struct StoredRoomPolicy {
-    room: String,
+struct StoredWorkspacePolicy {
+    /// Policies stored before the field was named `workspace` carry it as
+    /// `room`; both names read.
+    #[serde(alias = "room")]
+    workspace: String,
     owner: Option<String>,
     members: BTreeMap<String, Role>,
     #[serde(default)]
@@ -48,10 +53,10 @@ struct StoredRoomPolicy {
     grants: Vec<Grant>,
 }
 
-impl From<StoredRoomPolicy> for RoomPolicy {
-    fn from(stored: StoredRoomPolicy) -> Self {
+impl From<StoredWorkspacePolicy> for WorkspacePolicy {
+    fn from(stored: StoredWorkspacePolicy) -> Self {
         Self {
-            room: stored.room,
+            workspace: stored.workspace,
             owner: stored.owner,
             members: stored.members,
             joined: stored.joined,
@@ -61,7 +66,7 @@ impl From<StoredRoomPolicy> for RoomPolicy {
     }
 }
 
-/// A change to a room's authority. Each is one governance action.
+/// A change to a workspace's authority. Each is one governance action.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Change {
@@ -138,8 +143,8 @@ pub enum Refusal {
         held: Answer,
         wanted: Answer,
     },
-    /// A grant on a node outside this room.
-    OutsideRoom(TreePath),
+    /// A grant on a node outside this workspace.
+    OutsideWorkspace(TreePath),
     /// A membership action on someone the actor does not outrank: a
     /// Moderator reaches only members below Moderator, and nobody bans
     /// themselves.
@@ -149,8 +154,8 @@ pub enum Refusal {
     },
     /// The person is banned: unban them first.
     Banned(String),
-    /// The person is restricted: they change nothing, the room's governance
-    /// included, until the restriction lapses or is lifted.
+    /// The person is restricted: they change nothing, the workspace's
+    /// governance included, until the restriction lapses or is lifted.
     Restricted(String),
     /// The person is not banned.
     NotBanned(String),
@@ -162,8 +167,9 @@ pub enum Refusal {
     AlreadyAMember(String),
     UnknownGrant(GrantId),
     DuplicateGrant(GrantId),
-    /// A built-in role's grant: the role's rules are the code's, so a room
-    /// neither revokes nor gives one; it adjusts a role with grants of its own.
+    /// A built-in role's grant: the role's rules are the code's, so a
+    /// workspace neither revokes nor gives one; it adjusts a role with grants
+    /// of its own.
     BuiltInRole(GrantId),
 }
 
@@ -171,7 +177,7 @@ impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotPermitted(why) | Self::NeedsApproval(why) => f.write_str(why),
-            Self::Owner => f.write_str("the room's owner cannot be removed or demoted"),
+            Self::Owner => f.write_str("the workspace's owner cannot be removed or demoted"),
             Self::OwnerRole => f.write_str("ownership is transferred, not granted as a role"),
             Self::AboveActorRole { actor, wanted } => match actor {
                 Some(actor) => write!(f, "a {actor} cannot hand out the {wanted} role"),
@@ -182,13 +188,13 @@ impl std::fmt::Display for Refusal {
                 "cannot grant \"{wanted}\" for {} while holding \"{held}\"",
                 kind.phrase()
             ),
-            Self::OutsideRoom(node) => write!(f, "{node} is not in this room"),
+            Self::OutsideWorkspace(node) => write!(f, "{node} is not in this workspace"),
             Self::NotBelowActor { actor, target } => match actor {
                 Some(actor) => write!(f, "a {actor} cannot do this to a {target}"),
                 None => write!(f, "only members ranked above a {target} can do this"),
             },
-            Self::Banned(person) => write!(f, "{person} is banned from the room"),
-            Self::Restricted(person) => write!(f, "{person} is restricted in the room"),
+            Self::Banned(person) => write!(f, "{person} is banned from the workspace"),
+            Self::Restricted(person) => write!(f, "{person} is restricted in the workspace"),
             Self::NotBanned(person) => write!(f, "{person} is not banned"),
             Self::NotRestricted(person) => write!(f, "{person} is not restricted"),
             Self::InThePast(at) => write!(f, "{at} ms is not in the future"),
@@ -203,15 +209,15 @@ impl std::fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
-impl RoomPolicy {
-    /// A new room: its owner and every role's preset grants.
+impl WorkspacePolicy {
+    /// A new workspace: its owner and every role's preset grants.
     #[must_use]
-    pub fn new(room: impl Into<String>, owner: impl Into<String>) -> Self {
-        let room = room.into();
+    pub fn new(workspace: impl Into<String>, owner: impl Into<String>) -> Self {
+        let workspace = workspace.into();
         let owner = owner.into();
-        let grants = roles::room_role_grants(&room, &Subject::Person(owner.clone()));
+        let grants = roles::room_role_grants(&workspace, &Subject::Person(owner.clone()));
         Self {
-            room,
+            workspace,
             owner: Some(owner),
             members: BTreeMap::new(),
             joined: BTreeMap::new(),
@@ -219,22 +225,22 @@ impl RoomPolicy {
         }
     }
 
-    /// Whether anyone besides `person` belongs to the room, its owner or a
-    /// member: what the room holds is shared with them whether or not they
-    /// are here right now.
+    /// Whether anyone besides `person` belongs to the workspace, its owner or
+    /// a member: what the workspace holds is shared with them whether or not
+    /// they are here right now.
     #[must_use]
     pub fn has_others(&self, person: &str) -> bool {
         self.owner.as_deref().is_some_and(|owner| owner != person)
             || self.members.keys().any(|member| member != person)
     }
 
-    /// A room with no owner yet and the role presets in place.
+    /// A workspace with no owner yet and the role presets in place.
     #[must_use]
-    pub fn unowned(room: impl Into<String>, presets_by: &Subject) -> Self {
-        let room = room.into();
-        let grants = roles::room_role_grants(&room, presets_by);
+    pub fn unowned(workspace: impl Into<String>, presets_by: &Subject) -> Self {
+        let workspace = workspace.into();
+        let grants = roles::room_role_grants(&workspace, presets_by);
         Self {
-            room,
+            workspace,
             owner: None,
             members: BTreeMap::new(),
             joined: BTreeMap::new(),
@@ -248,33 +254,34 @@ impl RoomPolicy {
     #[must_use]
     pub fn with_current_roles(mut self) -> Self {
         self.grants = roles::current_role_grants(std::mem::take(&mut self.grants));
-        // A room written before the session's app was granted gains it.
+        // A workspace written before the session's app was granted gains it.
         if !self.grants.iter().any(roles::is_session_app) {
             let by = self
                 .owner
                 .clone()
                 .map_or(Subject::Role(Role::Owner), Subject::Person);
-            self.grants.push(roles::session_app(&self.room, by));
+            self.grants.push(roles::session_app(&self.workspace, by));
         }
         self
     }
 
-    /// Move the policy to another room id: every grant on this room's nodes
-    /// now names `room`. Grants on other rooms are untouched.
-    pub fn rehome(&mut self, room: impl Into<String>) {
-        let room = room.into();
-        if room == self.room {
+    /// Move the policy to another workspace id: every grant on this
+    /// workspace's nodes now names `workspace`. Grants on other workspaces are
+    /// untouched.
+    pub fn rehome(&mut self, workspace: impl Into<String>) {
+        let workspace = workspace.into();
+        if workspace == self.workspace {
             return;
         }
         for grant in &mut self.grants {
-            grant.node = grant.node.with_room(&self.room, &room);
+            grant.node = grant.node.with_room(&self.workspace, &workspace);
         }
-        self.room = room;
+        self.workspace = workspace;
     }
 
     #[must_use]
     pub fn node(&self) -> TreePath {
-        TreePath::room(&self.room)
+        TreePath::room(&self.workspace)
     }
 
     #[must_use]
@@ -291,9 +298,10 @@ impl RoomPolicy {
         self.members.get(person).copied()
     }
 
-    /// When the room admitted `person`, Unix milliseconds: as recorded, or
-    /// for an owner the room has no time for, `0`, as they hold it since it
-    /// began. `None` for a non-member or a member admitted unrecorded.
+    /// When the workspace admitted `person`, Unix milliseconds: as recorded,
+    /// or for an owner the workspace has no time for, `0`, as they hold it
+    /// since it began. `None` for a non-member or a member admitted
+    /// unrecorded.
     #[must_use]
     pub fn joined_at(&self, person: &str) -> Option<u64> {
         self.joined
@@ -303,7 +311,7 @@ impl RoomPolicy {
     }
 
     /// Whether `person` is blocked: their own grants deny every kind on the
-    /// whole room. A blocked member stays on record (history keeps naming
+    /// whole workspace. A blocked member stays on record (history keeps naming
     /// them) but holds nothing; the owner is never blocked.
     #[must_use]
     pub fn is_blocked(&self, person: &str) -> bool {
@@ -311,10 +319,10 @@ impl RoomPolicy {
             return false;
         }
         let subject = Subject::Person(person.to_owned());
-        let room = self.node();
+        let workspace = self.node();
         self.grants.iter().any(|grant| {
             grant.subject == subject
-                && grant.node == room
+                && grant.node == workspace
                 && grant.answer == Answer::Deny
                 && grant.kinds == crate::KindSet::ALL
         })
@@ -332,11 +340,12 @@ impl RoomPolicy {
 
     #[must_use]
     pub fn block(&self, person: &str, granted_by: Subject) -> Grant {
-        roles::block_grant(&self.room, person, granted_by)
+        roles::block_grant(&self.workspace, person, granted_by)
     }
 
-    /// Whether `person` is banned: the room holds their `block:<person>`
-    /// grant. A banned person is not admitted again until `unban`.
+    /// Whether `person` is banned: the workspace holds their
+    /// `block:<person>` grant. A banned person is not admitted again until
+    /// `unban`.
     #[must_use]
     pub fn is_banned(&self, person: &str) -> bool {
         let id = roles::block_grant_id(person);
@@ -374,10 +383,10 @@ impl RoomPolicy {
 
     #[must_use]
     pub fn party(&self, person: &str) -> Party<'_> {
-        // The room's ban or restriction of the person is a decision about
-        // them: no grant to their role lifts it, however specific (an item
-        // shared with the room to edit included), as nobody but whoever may
-        // govern `unban` or `unrestrict` may.
+        // The workspace's ban or restriction of the person is a decision
+        // about them: no grant to their role lifts it, however specific (an
+        // item shared with the workspace to edit included), as nobody but
+        // whoever may govern `unban` or `unrestrict` may.
         let moderation = [
             roles::block_grant_id(person),
             roles::restriction_grant_id(person),
@@ -397,7 +406,7 @@ impl RoomPolicy {
 
     /// `person`'s authority from one of their devices: their own, and from a
     /// device that is not theirs (`foreign`), held to `foreign_bound` and to
-    /// the room's grants for such devices too.
+    /// the workspace's grants for such devices too.
     #[must_use]
     pub fn person_on_device<'a>(
         &'a self,
@@ -416,15 +425,15 @@ impl RoomPolicy {
         }
     }
 
-    /// The room's grants naming a delegation subject (an agent, an app, a
-    /// task), for bounding a person's authority.
+    /// The workspace's grants naming a delegation subject (an agent, an app,
+    /// a task), for bounding a person's authority.
     #[must_use]
     pub fn party_of(&self, subject: Subject) -> Party<'_> {
         Party::new(vec![subject], &self.grants)
     }
 
-    /// Whether application `app` is an author in the room: its grants let
-    /// it change its own records there ([`roles::app_authorship`]).
+    /// Whether application `app` is an author in the workspace: its grants
+    /// let it change its own records there ([`roles::app_authorship`]).
     #[must_use]
     pub fn app_authors(&self, app: &str, cx: &Context<'_>) -> bool {
         Authority::person(self.party_of(Subject::App(app.to_owned())))
@@ -465,7 +474,7 @@ impl RoomPolicy {
         approved: bool,
     ) -> Result<Vec<GrantId>, Refusal> {
         self.check_not_held_off(actor, cx)?;
-        let node = roles::governance_action(&self.room, action);
+        let node = roles::governance_action(&self.workspace, action);
         let verdict = actor.decide(&node, roles::GOVERNANCE_KIND, cx);
         let verdict = if roles::governance::is_privileged(action) {
             verdict.privileged()
@@ -480,8 +489,9 @@ impl RoomPolicy {
         }
     }
 
-    /// Refuses governance to a person the room bans or restricts, whatever
-    /// else they hold. Their Deny sits on the whole room, so a grant on a
+    /// Refuses governance to a person the workspace bans or restricts,
+    /// whatever else they hold. Their Deny sits on the whole workspace, so a
+    /// grant on a
     /// more specific node (an administrator's, a Moderator's actions) would
     /// otherwise decide a governance action past it: a ban or a restriction
     /// stops every change, governing others included. The owner is never
@@ -597,7 +607,7 @@ impl RoomPolicy {
                 let id = roles::restriction_grant_id(&person);
                 self.grants.retain(|grant| grant.id != id);
                 self.grants.push(roles::restriction_grant(
-                    &self.room,
+                    &self.workspace,
                     &person,
                     until_ms,
                     Subject::Person(actor_person.to_owned()),
@@ -616,7 +626,7 @@ impl RoomPolicy {
         Ok(())
     }
 
-    /// The member and every grant naming them leave the room.
+    /// The member and every grant naming them leave the workspace.
     fn drop_member(&mut self, person: &str) {
         self.members.remove(person);
         self.joined.remove(person);
@@ -743,8 +753,8 @@ impl RoomPolicy {
                 if roles::is_role_grant(grant) {
                     return Err(Refusal::BuiltInRole(grant.id.clone()));
                 }
-                if grant.node.room_id() != Some(self.room.as_str()) {
-                    return Err(Refusal::OutsideRoom(grant.node.clone()));
+                if grant.node.room_id() != Some(self.workspace.as_str()) {
+                    return Err(Refusal::OutsideWorkspace(grant.node.clone()));
                 }
                 if self.grants.iter().any(|held| held.id == grant.id) {
                     return Err(Refusal::DuplicateGrant(grant.id.clone()));

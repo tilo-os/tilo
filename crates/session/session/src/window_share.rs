@@ -520,7 +520,7 @@ impl WindowShares {
         for workspace in tree
             .workspaces
             .iter_mut()
-            .filter(|workspace| workspace.policy.room == room)
+            .filter(|workspace| workspace.policy.workspace == room)
         {
             for grant in &grants {
                 let held = workspace
@@ -590,7 +590,7 @@ impl WindowShares {
         let now_ms = tilo_clock::unix_now_ms();
         let mut shared = Vec::new();
         for workspace in &tree.workspaces {
-            let room = workspace.policy.room.clone();
+            let room = workspace.policy.workspace.clone();
             let devices = sync.room_devices(&room);
             let owners = owners_of(self.salt, sync.publisher(), &devices);
             for (tab, share) in window_shares(&workspace.policy, &owners, now_ms) {
@@ -658,7 +658,7 @@ impl WindowShares {
         } else if let Some(workspace) = tree
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.policy.room == room)
+            .find(|workspace| workspace.policy.workspace == room)
         {
             let label = app_id.clone();
             let group = WindowGroup {

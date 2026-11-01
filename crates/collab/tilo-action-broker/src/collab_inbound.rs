@@ -539,7 +539,7 @@ mod tests {
 
     /// An editor of the room the ops are written in.
     fn editor() -> Standing {
-        let mut policy = tilo_action_policy::RoomPolicy::new("room", "owner");
+        let mut policy = tilo_action_policy::WorkspacePolicy::new("room", "owner");
         policy
             .members
             .insert("editor".into(), tilo_action_policy::Role::Editor);

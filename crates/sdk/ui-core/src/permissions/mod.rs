@@ -276,7 +276,10 @@ impl PermissionContext {
                     .with_id(format!("local-user-unrestricted-{index}"))
             })
             .collect(),
-            Standing::person(policy::RoomPolicy::new(LOCAL_ROOM, LOCAL_USER), LOCAL_USER),
+            Standing::person(
+                policy::WorkspacePolicy::new(LOCAL_ROOM, LOCAL_USER),
+                LOCAL_USER,
+            ),
         )
     }
 
@@ -292,9 +295,10 @@ impl PermissionContext {
     pub fn member_of(room: &str, person: impl Into<String>, role: Role) -> Self {
         let person = person.into();
         let policy = if role == Role::Owner {
-            policy::RoomPolicy::new(room, person.clone())
+            policy::WorkspacePolicy::new(room, person.clone())
         } else {
-            let mut policy = policy::RoomPolicy::unowned(room, &policy::Subject::Role(Role::Owner));
+            let mut policy =
+                policy::WorkspacePolicy::unowned(room, &policy::Subject::Role(Role::Owner));
             policy.members.insert(person.clone(), role);
             policy
         };
@@ -323,7 +327,7 @@ impl PermissionContext {
             Actor::person(person.clone()).in_room(LOCAL_ROOM),
             Vec::new(),
             Standing::person(
-                policy::RoomPolicy::unowned(LOCAL_ROOM, &policy::Subject::Role(Role::Owner)),
+                policy::WorkspacePolicy::unowned(LOCAL_ROOM, &policy::Subject::Role(Role::Owner)),
                 person,
             ),
         )

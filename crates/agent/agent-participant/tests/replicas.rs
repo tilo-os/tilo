@@ -428,7 +428,7 @@ fn an_agent_removes_a_clip_it_placed_without_being_asked() {
 }
 
 fn bot_standing(kinds: ui::permissions::policy::KindSet) -> ui::permissions::policy::Standing {
-    use ui::permissions::policy::{Answer, Grant, RoomPolicy, Standing, Subject, TreePath};
+    use ui::permissions::policy::{Answer, Grant, Standing, Subject, TreePath, WorkspacePolicy};
     let bot = Subject::bot("b1");
     let grant = Grant::new(
         "bot:b1",
@@ -438,7 +438,7 @@ fn bot_standing(kinds: ui::permissions::policy::KindSet) -> ui::permissions::pol
         Answer::Allow,
         Subject::person("ada"),
     );
-    Standing::person(RoomPolicy::new(ROOM, "ada"), "ada").bounded_by(bot, vec![grant])
+    Standing::person(WorkspacePolicy::new(ROOM, "ada"), "ada").bounded_by(bot, vec![grant])
 }
 
 /// Ada's new scratchpad, and the same record held by her bot `b1` granted
@@ -578,7 +578,7 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
             installer: "ada".into(),
             standing: {
                 use ui::permissions::policy::{
-                    Answer, Grant, KindSet, Level, RoomPolicy, Standing, Subject, TreePath,
+                    Answer, Grant, KindSet, Level, Standing, Subject, TreePath, WorkspacePolicy,
                 };
                 let bot = Subject::bot("b1");
                 let read = Grant::new(
@@ -592,7 +592,8 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
                     Answer::Allow,
                     Subject::person("ada"),
                 );
-                Standing::person(RoomPolicy::new(ROOM, "ada"), "ada").bounded_by(bot, vec![read])
+                Standing::person(WorkspacePolicy::new(ROOM, "ada"), "ada")
+                    .bounded_by(bot, vec![read])
             },
         },
         Seed::Existing {
@@ -678,7 +679,7 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
     // What a program that posts derives: posting on the chat's messages.
     let standing = {
         use ui::permissions::policy::{
-            Answer, Grant, KindSet, Level, RoomPolicy, Standing, Subject, TreePath,
+            Answer, Grant, KindSet, Level, Standing, Subject, TreePath, WorkspacePolicy,
         };
         let bot = Subject::bot("b1");
         let post = Grant::new(
@@ -695,7 +696,7 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
             Answer::Allow,
             Subject::person("ada"),
         );
-        Standing::person(RoomPolicy::new(ROOM, "ada"), "ada").bounded_by(bot, vec![post])
+        Standing::person(WorkspacePolicy::new(ROOM, "ada"), "ada").bounded_by(bot, vec![post])
     };
     let mut bot = Replica::open(
         &catalogue,

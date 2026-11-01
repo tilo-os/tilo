@@ -4,7 +4,7 @@
 use automerge::AutoCommit;
 use serde_json::json;
 use tilo_action_policy::agent_answers::{self, AnswerScope};
-use tilo_action_policy::{ActionKind, Answer, RoomPolicy, Standing, Subject};
+use tilo_action_policy::{ActionKind, Answer, Standing, Subject, WorkspacePolicy};
 use tilolang_runtime::{AgentBlock, Principal};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{Caller, PlanRequest};
@@ -28,7 +28,7 @@ fn agent() -> Caller {
 
 /// Ada's standing in a room she owns and Grace edits, with `answers` she gave her agents.
 fn standing(answers: Vec<tilo_action_policy::Grant>) -> Standing {
-    let mut policy = RoomPolicy::new(ROOM, "ada");
+    let mut policy = WorkspacePolicy::new(ROOM, "ada");
     policy
         .members
         .insert("grace".to_owned(), tilo_action_policy::Role::Editor);

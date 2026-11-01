@@ -1936,7 +1936,8 @@ impl Rooms {
             .peer()
             .permissions(author, now)
             .map_err(|error| error.to_string())?;
-        let node = collab_types::validator::document_node(&member.policy.room, &app_id, &record_id);
+        let node =
+            collab_types::validator::document_node(&member.policy.workspace, &app_id, &record_id);
         if !member.allows(&node, tilo_action_policy::ActionKind::Undoable, now) {
             return Err(format!(
                 "{app_id} record written by a device that may not edit"

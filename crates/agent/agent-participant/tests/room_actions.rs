@@ -456,7 +456,7 @@ impl tilo_agent_participant::room_actions::RoomRecordsLink for DeliveryReadFixtu
         Some(tilo_agent_participant::room_actions::ViewReadPolicy {
             room: self.route.cluster_id.clone(),
             standing: ui::permissions::Standing::person(
-                ui::permissions::policy::RoomPolicy::new(
+                ui::permissions::policy::WorkspacePolicy::new(
                     &self.route.cluster_id,
                     hex::encode(self.user_public_key()),
                 ),
