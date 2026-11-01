@@ -559,7 +559,25 @@ impl Harness {
         self.session.step(Duration::from_millis(1)).expect("step");
     }
 
+    /// Press a row of the person's devices, as the panel does: the session's
+    /// published verb, through the door every caller uses.
     fn press(&mut self, row: &str, part: RowPart) {
+        self.session
+            .invoke(
+                tilo_session::DEVICES_RESOURCE,
+                "press",
+                &serde_json::from_value(serde_json::json!({ "row": row, "part": part }))
+                    .expect("arguments"),
+            )
+            .expect("press the device's row");
+        for _ in 0..3 {
+            self.step();
+        }
+    }
+
+    /// Press a row of the panel itself: what the person's click in the panel
+    /// asks of the session.
+    fn press_in_panel(&mut self, row: &str, part: RowPart) {
         self.session
             .invoke(
                 tilo_session::QUICK_SETTINGS,
@@ -567,7 +585,7 @@ impl Harness {
                 &serde_json::from_value(serde_json::json!({ "row": row, "part": part }))
                     .expect("arguments"),
             )
-            .expect("press the device's row");
+            .expect("press the device's row in the panel");
         for _ in 0..3 {
             self.step();
         }
@@ -758,6 +776,35 @@ fn pressing_another_device_sends_it_what_plays_here() {
     );
     assert!(*resume_playing);
     assert!(!has_video);
+}
+
+/// A press in the panel is the session's published verb: the panel asks for
+/// the press and the session carries out the same hand-over it does when
+/// anyone else presses the row.
+#[test]
+fn a_press_in_the_panel_is_the_session_s_published_verb() {
+    let _settled = ui::motion::testing::settled();
+    let link = FakeLink::joined(true);
+    let mut harness = session(&link, Rc::new(Host::default()));
+    open_devices(&mut harness);
+    harness.playing();
+    for _ in 0..4 {
+        harness.step();
+    }
+    harness.press_in_panel("laptop", RowPart::Action);
+
+    let sent = link.sent();
+    assert_eq!(
+        sent.len(),
+        1,
+        "one hand-over, as a press on the verb: {sent:?}"
+    );
+    let (target, action) = sent.first().expect("the hand-over");
+    assert_eq!(target, &laptop(), "the device pressed");
+    assert!(
+        matches!(action, PersonalFabricAction::ResumeMedia { .. }),
+        "what plays here is sent to it: {action:?}"
+    );
 }
 
 #[test]
@@ -1260,4 +1307,47 @@ fn what_plays() -> tilo_audio_service::media::Media {
         outputs: Vec::new(),
         problem: None,
     }
+}
+
+/// What plays reaches the desk's own widget from the same reading the panel
+/// shows, with the panel never opened: the widget is a view of the audio
+/// service's players, not of the panel.
+#[test]
+fn what_plays_reaches_the_desk_with_the_panel_closed() {
+    let _settled = ui::motion::testing::settled();
+    let link = FakeLink::joined(true);
+    let mut harness = session(&link, Rc::new(Host::default()));
+    for _ in 0..4 {
+        harness.step();
+    }
+    assert!(
+        !harness.session.quick_settings_open(),
+        "the panel stays closed"
+    );
+    assert!(
+        !harness
+            .session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Open Music"),
+        "nothing plays: the desk shows no song"
+    );
+
+    harness.playing();
+    for _ in 0..6 {
+        harness.step();
+    }
+    assert!(
+        !harness.session.quick_settings_open(),
+        "the panel was never opened"
+    );
+    assert!(
+        harness
+            .session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Open Music"),
+        "the desk shows what plays: {:?}",
+        harness.session.accessible_labels()
+    );
 }

@@ -41,6 +41,9 @@ pub enum SessionCommand {
     SetTouchpad { on: Option<bool> },
     /// Lock the screen.
     Lock,
+    /// Put the power menu up: locking, logging out, switching user,
+    /// suspending, restarting or shutting down.
+    OpenPowerMenu,
     /// End the session: the person logs out.
     LogOut,
     /// End this session and nothing else: what shutting down is to a
@@ -152,7 +155,7 @@ fn input_resource() -> ResourceSpec {
         ))
 }
 
-/// Locking and logging out of the session.
+/// Locking, logging out of and the menu of the session.
 fn screen_resource() -> ResourceSpec {
     ResourceSpec::new(SESSION_RESOURCE, "session", t("session-screen"))
         .with_action(action("lock", t("session-lock"), Vec::new(), |_| {
@@ -161,6 +164,12 @@ fn screen_resource() -> ResourceSpec {
         .with_action(action("log-out", t("session-log-out"), Vec::new(), |_| {
             SessionCommand::LogOut
         }))
+        .with_action(action(
+            "power-menu",
+            t("session-power-menu"),
+            Vec::new(),
+            |_| SessionCommand::OpenPowerMenu,
+        ))
 }
 
 /// The screen's night light.
@@ -302,12 +311,19 @@ mod tests {
                 &serde_json::Map::new(),
             )
             .unwrap();
+        controls
+            .invoke(
+                &ActionAddress::new(SESSION_RESOURCE, "power-menu"),
+                &serde_json::Map::new(),
+            )
+            .unwrap();
         assert_eq!(
             *commands.borrow(),
             [
                 SessionCommand::SetTouchpad { on: None },
                 SessionCommand::SetTouchpad { on: Some(true) },
                 SessionCommand::Lock,
+                SessionCommand::OpenPowerMenu,
             ]
         );
         assert!(

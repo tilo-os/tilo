@@ -44,18 +44,11 @@ pub(crate) fn land(shared: &Shared) -> bool {
 }
 
 /// Land a session another of the person's devices hands this one, so the
-/// now-playing card offers to continue it here; `None` clears it. Logs and
-/// does nothing when this session has no device to show it on.
+/// now-playing card offers to continue it here; `None` clears it. The
+/// devices' reading carries it ([`crate::devices`]), so the panel shows the
+/// offer as it shows the rows, and continuing it names the same one back.
 pub(crate) fn handoff(shared: &Shared, offer: Option<tilo_quick_settings::MediaOffer>) {
-    // The session handed this offer over, so continuing it is the session's
-    // to name: the audio service's `resume` action is asked with what this
-    // holds.
-    shared.handoff.borrow_mut().clone_from(&offer);
-    let Some(device) = &shared.device else {
-        tracing::debug!("a handoff arrived for a session that shows no device");
-        return;
-    };
-    device.handoff(offer);
+    *shared.handoff.borrow_mut() = offer;
 }
 
 /// Carry out a sound effect quick settings asked of the desktop through the

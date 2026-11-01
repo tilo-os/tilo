@@ -13,9 +13,8 @@ use tilo_desktop::overlays::Slot;
 use tilo_desktop_surface::navigation::Command;
 use tilo_quick_settings::QsEffect;
 use tilo_quick_settings::device::{DeviceHost, SessionRequest};
-use tilo_sheets::Seat as _;
 
-use crate::{GENERATION, SessionCommand, Shared, notifications};
+use crate::{GENERATION, SESSION_RESOURCE, Shared, notifications};
 
 /// The settings app, which quick settings opens.
 const SETTINGS_APP: &str = "so.tilo.settings";
@@ -96,31 +95,22 @@ pub(crate) fn answer(shared: &Shared) {
     land(shared, device);
     for request in device.take_requests() {
         match request {
+            // Putting the menu up, locking and opening a kept notification
+            // are the session's own verbs, published beside it: the panel
+            // invokes them as any other caller would.
             SessionRequest::Effect(QsEffect::PowerMenu) => {
                 close(shared);
-                if let Some(power) = &shared.power {
-                    power.presentation().open(false);
-                }
+                invoke(shared, SESSION_RESOURCE, "power-menu", &Map::new());
             }
             SessionRequest::Effect(QsEffect::LockScreen) => {
                 close(shared);
-                shared.commands.borrow_mut().push(SessionCommand::Lock);
+                invoke(shared, SESSION_RESOURCE, "lock", &Map::new());
             }
             SessionRequest::Effect(QsEffect::OpenNotification { notification }) => {
                 close(shared);
-                let room = shared.active_room();
-                let activation = shared.notifications.borrow().open(notification);
-                match activation {
-                    tilo_desktop_surface::notifications::HistoryActivation::OpenApp {
-                        app_id,
-                        ..
-                    } => shared.search.perform(
-                        &room,
-                        tilo_desktop_search::Target::Launch { app: app_id },
-                        &mut |own| shared.doors.invoke(&own.address, &own.arguments).map(drop),
-                    ),
-                    other => tracing::debug!(?other, "notification chosen"),
-                }
+                let mut arguments = Map::new();
+                arguments.insert("notification".into(), Value::from(notification));
+                invoke(shared, notifications::RESOURCE, "open", &arguments);
             }
             SessionRequest::Effect(QsEffect::SetDoNotDisturb { on }) => {
                 // The switch is persisted, so the settings app and the
@@ -159,11 +149,6 @@ pub(crate) fn answer(shared: &Shared) {
             }
         }
     }
-    // What plays reaches the desk from the same reading the panel shows, so
-    // the widget and the panel never disagree and neither reads the players
-    // again.
-    let playing = device.state().now_playing;
-    shared.music.set(playing.as_ref().map(crate::desk::playing));
     shared.feed_notifications();
     shared.feed_clipboard();
 }
@@ -198,11 +183,17 @@ fn follow_centre(shared: &Shared, request: &SessionRequest) -> bool {
         QsEffect::UndoClearNotifications => "undo-clear",
         _ => return false,
     };
-    let address = ActionAddress::new(notifications::RESOURCE, action);
-    if let Err(error) = shared.doors.invoke(&address, &arguments) {
-        // The centre's reading is what the panel lists, so a dismiss that
-        // did not happen is still there on the next pass.
-        tracing::debug!(%error, %action, "the centre did not change");
-    }
+    invoke(shared, notifications::RESOURCE, action, &arguments);
     true
+}
+
+/// Ask one of the session's own resources to carry out `action`, as the
+/// panel's press does: through the door every caller uses, with its
+/// arguments. A refusal is the resource's own words, and what the panel
+/// shows is its reading, so it changes on the next pass either way.
+fn invoke(shared: &Shared, resource: &str, action: &str, arguments: &Map<String, Value>) {
+    let address = ActionAddress::new(resource, action);
+    if let Err(error) = shared.doors.invoke(&address, arguments) {
+        tracing::debug!(%error, %action, "the panel's press did not reach the session");
+    }
 }

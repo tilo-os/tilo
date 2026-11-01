@@ -1295,6 +1295,30 @@ fn a_session_that_cannot_check_a_password_never_locks() {
     );
 }
 
+/// The power menu opens from the session's published verb, so the panel's
+/// press and any other caller offered it put up the same menu.
+#[test]
+fn the_power_menu_opens_by_its_published_verb() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(
+        !session
+            .power_menu()
+            .is_some_and(|seat| seat.presentation().is_open()),
+        "the menu is down to begin with"
+    );
+
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "power-menu");
+    let menu = session.power_menu().expect("the power menu");
+    assert!(menu.presentation().is_open(), "the verb puts the menu up");
+    assert!(
+        !menu.rows().is_empty(),
+        "and it offers the person's choices"
+    );
+}
+
 #[test]
 fn quick_settings_opens_by_its_action_and_a_press_outside_closes_it() {
     let _settled = ui::motion::testing::settled();

@@ -151,6 +151,7 @@ pub use launches::Launches;
 pub use lists::{AppLists, Lists};
 pub use mount::vpn::KillSwitch;
 pub use mount::wake::{Seams as WakeSeams, WakeInterfaces};
+pub use notifications::RESOURCE as NOTIFICATIONS_RESOURCE;
 pub use options::{ActionPlane, Machine, Options, QuickSettings, no_session_actions};
 use options::{open_engine, start_collaboration};
 pub use records::Records;
@@ -269,8 +270,9 @@ struct Shared {
     /// them.
     panel_power: mount::panel_power::PanelPower,
     /// The session another of the person's devices handed this one, as the
-    /// now-playing card shows it, until they continue it here.
-    handoff: std::cell::RefCell<Option<tilo_quick_settings::MediaOffer>>,
+    /// now-playing card shows it, until they continue it here: published
+    /// beside the person's devices.
+    handoff: Rc<std::cell::RefCell<Option<tilo_quick_settings::MediaOffer>>>,
     /// The services' revision and the speaker group session the panel last
     /// took what plays from: its reading carries the players' covers, so it
     /// is read only when one of the services published something or the
@@ -279,7 +281,8 @@ struct Shared {
     /// The wakes this session takes part in.
     waking: Rc<mount::wake::Wake>,
     /// What plays, as the desk's music widget shows it: written from the
-    /// device's reading every frame it is pumped.
+    /// machine's reading every pass, the same one the bar and the lock screen
+    /// show.
     music: tilo_desktop::desk_widgets::DeskMusic,
     /// The power menu, workspace settings, and the questions the session
     /// asks for apps and services, by their seats.
@@ -441,6 +444,9 @@ impl Shared {
 
     /// Carry out what the desktop asked since the last frame.
     fn follow_asks(&self) {
+        // A press on one of the person's devices is one of the session's own
+        // verbs: the queue it lands in is carried out here, with the asks.
+        self.carry_out_presses();
         let asks = std::mem::take(&mut *self.asks.borrow_mut());
         for ask in asks {
             match ask {
@@ -555,21 +561,6 @@ impl Shared {
             ),
             LEAVE_WORKSPACE => self.leave_workspace(),
             choice => identity::answered(choice),
-        }
-    }
-
-    /// Open what the person chose on a scheduled notification, in the
-    /// workspace that scheduled it: the app that takes its scheme.
-    fn open_notifications(&self) {
-        for (room, uri) in self.notifications.borrow().take_opened() {
-            self.search.perform(
-                &room,
-                tilo_desktop_search::Target::Open {
-                    uri,
-                    fallback: None,
-                },
-                &mut |own| self.doors.invoke(&own.address, &own.arguments).map(drop),
-            );
         }
     }
 
@@ -1724,7 +1715,7 @@ impl Session {
             devices: mount::devices::Devices::default(),
             displays: mount::displays::Displays::default(),
             panel_power: mount::panel_power::PanelPower::default(),
-            handoff: std::cell::RefCell::new(None),
+            handoff: Rc::new(std::cell::RefCell::new(None)),
             media_fed: std::cell::Cell::new(None),
             waking: mount::wake::Wake::new(&options.wake_seams),
             music,
@@ -1817,6 +1808,8 @@ impl Session {
                     fabric,
                     Rc::clone(&shared.readings),
                     Rc::clone(&shared.devices.chosen),
+                    Rc::clone(&shared.handoff),
+                    Rc::clone(&shared.devices.pressed),
                 )));
         }
         // The broker decides a granted reading when the app asks, which is
@@ -2736,6 +2729,12 @@ impl Session {
     fn command(&mut self, command: SessionCommand) -> Result<(), Error> {
         match command {
             SessionCommand::Lock => self.lock_by_person(),
+            SessionCommand::OpenPowerMenu => {
+                if let Some(power) = &self.shared.power {
+                    power.presentation().open(false);
+                }
+                Ok(())
+            }
             SessionCommand::Displays { mode } => {
                 let changes = displays::arrange(mode, &self.compositor.outputs());
                 // A refused arrangement leaves the displays as they were.
