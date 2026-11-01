@@ -63,9 +63,18 @@ fn room() -> Replica {
         "ada",
         AutoCommit::new(),
         &[
-            (include_str!("../../../../apps/tl/chat/app.tl"), include_str!("../../../../apps/tl/chat/app.ids")),
-            (include_str!("../../../../apps/tl/notes/app.tl"), include_str!("../../../../apps/tl/notes/app.ids")),
-            (include_str!("../../../../apps/tl/tasks/app.tl"), include_str!("../../../../apps/tl/tasks/app.ids")),
+            (
+                include_str!("../../../../apps/tl/chat/app.tl"),
+                include_str!("../../../../apps/tl/chat/app.ids"),
+            ),
+            (
+                include_str!("../../../../apps/tl/notes/app.tl"),
+                include_str!("../../../../apps/tl/notes/app.ids"),
+            ),
+            (
+                include_str!("../../../../apps/tl/tasks/app.tl"),
+                include_str!("../../../../apps/tl/tasks/app.ids"),
+            ),
             (source.as_str(), IDS),
         ],
     );
@@ -84,11 +93,7 @@ fn room() -> Replica {
     let desk_ty = meta
         .roots
         .iter()
-        .find(|ty| {
-            meta.types
-                .iter()
-                .any(|t| &&t.id == ty && t.name == "Desk")
-        })
+        .find(|ty| meta.types.iter().any(|t| &&t.id == ty && t.name == "Desk"))
         .cloned();
     if let Some(ty) = desk_ty {
         let root = replica.host.root_record(APP, &ty).unwrap();

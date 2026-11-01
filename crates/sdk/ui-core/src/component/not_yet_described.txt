@@ -19,6 +19,5 @@ PolarAreaChart — a rose of angular categories: its items and style are Rust da
 RadarChart — several metrics on axes of their own: its axes and series are Rust data the language has no value for yet
 RangeChart — timelines and intervals with progress: its bars and style are Rust data the language has no value for yet
 SankeyChart — movement between stages: its nodes, links and style are Rust data the language has no value for yet
-Sparkline — a tiny inline trend line: its samples are a list of floats it could take; not described yet
 SunburstChart — hierarchical part-to-whole rings: its node tree and style are Rust data the language has no value for yet
 Treemap — hierarchical part-to-whole tiles: its items and style are Rust data the language has no value for yet

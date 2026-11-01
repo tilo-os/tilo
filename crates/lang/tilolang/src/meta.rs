@@ -396,6 +396,15 @@ pub struct ActionMeta {
     /// person's keymap, never a key code, so it is layout-correct on any keyboard.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// `group: "Reply"`: the run of the resource's actions this one stands in, as the app names
+    /// it. A surface showing the resource's actions draws the runs in the order the app
+    /// declared them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// `frequent: true`: a command the person reaches for on most things of this type, which a
+    /// surface showing the resource's actions draws directly rather than behind the rest.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub frequent: bool,
 }
 
 impl ActionMeta {

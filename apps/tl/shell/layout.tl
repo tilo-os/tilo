@@ -28,7 +28,9 @@ view layouts(s: Shell) {
 /// What the person's settings stand as: the preset's name, or "Custom, based on" it.
 fn standing(s: Shell) -> Text {
     if s.tuned {
-        if s.based_on == .tilo { "Custom, based on Tilo" } else if s.based_on == .macos { "Custom, based on macOS" } else if s.based_on == .windows { "Custom, based on Windows" } else if s.based_on == .gnome { "Custom, based on GNOME" } else { "Custom, based on Minimal" }
+        if s.based_on == .tilo { "Custom, based on Tilo" } else if s.based_on == .macos { "Custom, based on macOS" } else if s.based_on == .windows { "Custom, based on Windows" } else if s.based_on == .gnome { "Custom, based on GNOME" } else if s.based_on == .windows_desktop {
+            "Custom, based on the traditional desktop"
+        } else { "Custom, based on Minimal" }
     } else if s.preset == .tilo { "Tilo" } else if s.preset == .macos { "Like macOS" } else if s.preset == .windows { "Like Windows" } else if s.preset == .gnome { "Like GNOME" } else { "Minimal" }
 }
 
@@ -59,6 +61,8 @@ fn describe(preset: Layout) -> Text {
         "A full-width taskbar at the bottom, always shown."
     } else if preset == .gnome {
         "The top bar alone; the overview on demand."
+    } else if preset == .windows_desktop {
+        "A floating desk of windows, each with its own bar, the focused window's commands in the top bar, and a dock at the foot."
     } else {
         "No chrome at rest: the screen edges reveal the bar and the dock."
     }
@@ -69,12 +73,12 @@ fn describe(preset: Layout) -> Text {
 view preview(preset: Layout) {
     layers {
         row(fill, align: .center, padding: .tight) {
-            if preset == .tilo or preset == .macos or preset == .gnome or preset == .minimal {
+            if preset == .tilo or preset == .macos or preset == .gnome or preset == .minimal or preset == .windows_desktop {
                 preview_bar(preset)
             }
         }
         row(at: .bottom, fill, align: .center, padding: .tight) {
-            if preset == .tilo or preset == .macos or preset == .windows {
+            if preset == .tilo or preset == .macos or preset == .windows or preset == .windows_desktop {
                 preview_dock(preset)
             }
         }
@@ -85,7 +89,7 @@ view preview(preset: Layout) {
 view preview_bar(preset: Layout) {
     row(gap: .tight, align: .center, fill) {
         ui.Icon(.tilo, size: .small)
-        if preset == .macos {
+        if preset == .macos or preset == .windows_desktop {
             ui.Text("File", role: .caption)
             ui.Text("Edit", role: .caption)
             ui.Text("View", role: .caption)
@@ -99,7 +103,7 @@ view preview_bar(preset: Layout) {
 
 /// The miniature dock: the launcher and three items, on the fit the preset gives it.
 view preview_dock(preset: Layout) {
-    if preset == .macos {
+    if preset == .macos or preset == .windows_desktop {
         row(gap: .tight, align: .center) {
             ui.Icon(.layout_grid, size: .small)
             ui.Icon(.file_text, size: .small)
