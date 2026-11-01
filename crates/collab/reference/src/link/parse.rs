@@ -98,15 +98,15 @@ fn split_path(path: &str) -> Result<Vec<&str>, LinkError> {
     Ok(parts)
 }
 
-fn parse_room(segment: &str) -> Result<(Option<Slug>, Uuid), LinkError> {
-    let (slug, room) = match segment.split_once('~') {
-        Some((slug, room)) => (Some(Slug::parse(slug)?), room),
+fn parse_workspace(segment: &str) -> Result<(Option<Slug>, Uuid), LinkError> {
+    let (slug, workspace) = match segment.split_once('~') {
+        Some((slug, workspace)) => (Some(Slug::parse(slug)?), workspace),
         None => (None, segment),
     };
-    let parsed = Uuid::try_parse(room).map_err(|_| LinkError::BadRoom)?;
-    // Only the lowercase, hyphenated spelling is the room's id.
-    if parsed.hyphenated().to_string() != room {
-        return Err(LinkError::BadRoom);
+    let parsed = Uuid::try_parse(workspace).map_err(|_| LinkError::BadWorkspace)?;
+    // Only the lowercase, hyphenated spelling is the workspace's id.
+    if parsed.hyphenated().to_string() != workspace {
+        return Err(LinkError::BadWorkspace);
     }
     Ok((slug, parsed))
 }
@@ -147,8 +147,12 @@ fn parse_scope<'a, I: Iterator<Item = &'a str>>(
     } else {
         return Err(LinkError::BadScope);
     };
-    let (slug, room) = parse_room(segments.next().ok_or(LinkError::BadRoom)?)?;
-    Ok(Scope::Room { host, room, slug })
+    let (slug, workspace) = parse_workspace(segments.next().ok_or(LinkError::BadWorkspace)?)?;
+    Ok(Scope::Room {
+        host,
+        room: workspace,
+        slug,
+    })
 }
 
 fn parse_offset(text: &str) -> Result<usize, LinkError> {
@@ -287,8 +291,7 @@ fn parse_route(route: &str, context: Context<'_>) -> Result<(LinkTarget, LinkSec
 
 /// A reader who arrived from a published text (`?discuss=<slug>`) and named
 /// no other place lands in that text's discussion thread: the chat's channel
-/// of that name, which the room keeps for what is published outside it (see
-/// `room_discussions` in `tilo-relay`).
+/// of that name, which the workspace keeps for what is published outside it.
 ///
 /// A link that names its own place — an app, a record or an item — says where
 /// it points, and the parameter only says where its reader came from; it is
