@@ -1,5 +1,7 @@
 //! The runtime must own a profile exclusively and preserve workspace identity.
 
+use tilo_test_env::SpawnUnderEnvLock as _;
+
 #[test]
 #[allow(
     clippy::significant_drop_tightening,
@@ -23,7 +25,7 @@ fn profile_is_exclusive_and_workspace_survives_restart() {
             .env("TILO_IDENTITY_ROOT", root.path().join("identity"))
             // A file, not a pipe: a lingering broker descendant cannot block the read.
             .stdout(std::fs::File::create(&log).unwrap())
-            .status()
+            .status_locked()
             .unwrap();
         let stdout = std::fs::read_to_string(&log).unwrap();
         assert!(status.success(), "{stdout}");
@@ -93,7 +95,7 @@ fn an_agent_receipt_survives_a_restart_before_and_after_its_host_commits_it() {
             .env("XDG_CONFIG_HOME", root.path().join("config"))
             .env("TILO_IDENTITY_ROOT", root.path().join("identity"))
             .stdout(std::fs::File::create(&log).unwrap())
-            .status()
+            .status_locked()
             .unwrap();
         let stdout = std::fs::read_to_string(&log).unwrap();
         assert!(status.success(), "{stdout}");
