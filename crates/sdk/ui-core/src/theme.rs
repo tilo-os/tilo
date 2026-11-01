@@ -132,6 +132,13 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
         // A floating panel's inner hairline becomes the border.
         tokens.elevation.floating_edge = ink;
     }
+    // A theme that holds still answers the pointer with lifts only: nothing
+    // scales and no edge lights, the same rule reduced motion follows.
+    tokens.response = if matches!(document.motion.curve, MotionCurve::None) {
+        crate::tokens::Response::STILL
+    } else {
+        crate::tokens::Response::STOCK
+    };
     tokens.selector = if document.palette.high_contrast {
         crate::tokens::SelectorFinish::OPAQUE
     } else {
@@ -398,13 +405,47 @@ impl Theme {
         }
     }
 
+    /// Why `document` is not a theme this build can show, as the person or
+    /// the theme's author reads it: the schema, an out-of-band role, or a
+    /// surface shader that is not a surface shader. `None` when it is a
+    /// theme.
+    #[must_use]
+    pub fn refusal(document: &ThemeDocument) -> Option<String> {
+        if let Err(reason) = document.validate() {
+            return Some(reason.to_owned());
+        }
+        for (role, finish) in [
+            ("window", &document.material.window),
+            ("control", &document.material.control),
+            ("floating", &document.material.floating),
+        ]
+        .into_iter()
+        .chain(
+            document
+                .material
+                .bar
+                .as_ref()
+                .map(|bar| ("bar", bar))
+                .into_iter(),
+        ) {
+            if finish.set() == crate::part_paint::builtin::shader_set()
+                && let Err(reason) = finish.shader().validate()
+            {
+                return Some(format!("material.{role}: {reason}"));
+            }
+        }
+        None
+    }
+
     /// The theme a document describes, or `None` for one this build does not
-    /// admit ([`ThemeDocument::validate`]). Values outside a role's usable
-    /// band are clamped, and a pairing that misses a contrast floor is
-    /// repaired, so every theme that materializes is legible.
+    /// admit ([`Self::refusal`], which names why). Values outside a role's
+    /// usable band are clamped, and a pairing that misses a contrast floor
+    /// is repaired, so every theme that materializes is legible.
     #[must_use]
     pub fn from_document(document: &ThemeDocument) -> Option<Self> {
-        document.validate().ok()?;
+        if Self::refusal(document).is_some() {
+            return None;
+        }
         Some(Self::built(document.clone(), PresenceHue::Blue))
     }
 

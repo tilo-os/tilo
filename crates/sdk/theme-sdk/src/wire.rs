@@ -32,7 +32,7 @@ use peniko::Color;
 
 use crate::{
     Brush, Easing, Lens, Op, PaintedPart, Param, ParamSpec, Part, PartImage, PartScene, PartState,
-    PartTokens, States, Stop, Transition,
+    PartTokens, Sampling, ShaderSource, States, Stop, Transition,
 };
 
 /// A paint request.
@@ -408,7 +408,15 @@ impl Writer {
                 self.f32(*blur);
                 self.f32(lens.refraction);
                 self.color(*fallback);
+                self.u8(u8::from(lens.sampling == Sampling::Blocky));
+                self.f32(lens.cell);
                 self.ops(glaze);
+            }
+            Brush::Shader { source, fallback } => {
+                self.u8(5);
+                self.u32(source.time_centis);
+                self.bytes(source.wgsl.as_bytes());
+                self.color(*fallback);
             }
         }
     }
@@ -471,6 +479,10 @@ impl Writer {
         // Appended after the parameter list so a shorter, older encoding
         // still reads: see the module note.
         self.color(tokens.light);
+        // A theme's surface shader (`crate::Brush::Shader`), empty for a set
+        // that draws without one.
+        self.bytes(tokens.shader.wgsl.as_bytes());
+        self.u32(tokens.shader.time_centis);
     }
 }
 
@@ -592,13 +604,34 @@ impl Reader<'_> {
                     scale: self.f32()?,
                 }
             }
-            4 if !glazed => Brush::Backdrop {
-                blur: self.f32()?,
-                lens: Lens {
-                    refraction: self.f32()?,
+            4 if !glazed => {
+                let blur = self.f32()?;
+                let refraction = self.f32()?;
+                let fallback = self.color()?;
+                let sampling = match self.u8()? {
+                    0 => Sampling::Smooth,
+                    1 => Sampling::Blocky,
+                    _ => return None,
+                };
+                let cell = self.f32()?;
+                let lens = Lens {
+                    refraction,
+                    sampling,
+                    cell,
+                };
+                Brush::Backdrop {
+                    blur,
+                    lens,
+                    fallback,
+                    glaze: self.ops(true)?,
+                }
+            }
+            5 => Brush::Shader {
+                source: ShaderSource {
+                    time_centis: self.u32()?,
+                    wgsl: String::from_utf8(self.bytes()?.to_vec()).ok()?,
                 },
                 fallback: self.color()?,
-                glaze: self.ops(true)?,
             },
             _ => return None,
         })
@@ -676,6 +709,17 @@ impl Reader<'_> {
         } else {
             self.color()?
         };
+        // The set's surface shader came after the light: bytes that end
+        // before it are an encoding from before a set could carry one.
+        let shader = if self.0.is_empty() {
+            ShaderSource::default()
+        } else {
+            let wgsl = String::from_utf8(self.bytes()?.to_vec()).ok()?;
+            ShaderSource {
+                wgsl,
+                time_centis: self.u32()?,
+            }
+        };
         Some(PartTokens {
             fill,
             ink,
@@ -693,6 +737,7 @@ impl Reader<'_> {
             reduce_transparency,
             backdrop,
             params,
+            shader,
         })
     }
 }
@@ -735,7 +780,11 @@ mod tests {
             },
             Brush::Backdrop {
                 blur: 12.0,
-                lens: Lens { refraction: 3.0 },
+                lens: Lens {
+                    refraction: 3.0,
+                    sampling: Sampling::Blocky,
+                    cell: 8.0,
+                },
                 fallback: Color::WHITE,
                 glaze: vec![Op::Fill {
                     path: Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.1),

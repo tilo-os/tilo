@@ -23,7 +23,7 @@ use vello::peniko::Color;
 
 use super::{
     Brush, Lens, Op, PaintedPart, PainterSet, ParamSpec, Part, PartPainter, PartScene, PartState,
-    PartTokens, States, Stop,
+    PartTokens, Sampling, States, Stop,
 };
 
 /// The name a document gives the Default set.
@@ -32,6 +32,18 @@ pub const DEFAULT: &str = "default";
 pub const GLASS: &str = "glass";
 /// The name a document gives the Block set.
 pub const BLOCK: &str = "block";
+/// The name a document gives the Pixelated set.
+pub const PIXELATED: &str = "pixelated";
+/// The name a document gives the Shader set.
+pub const SHADER: &str = "shader";
+
+/// Cell band a document may state for the Pixelated set, logical pixels.
+pub const CELL_ADMITTED: std::ops::RangeInclusive<f32> = 1.0..=64.0;
+/// The cell band the Pixelated set is built at.
+pub const CELL_USABLE: std::ops::RangeInclusive<f32> = 2.0..=32.0;
+/// Tint band for the Pixelated and Shader sets: the ground's opacity over
+/// what they sample. Any, as for Default; legibility is the band's.
+pub const COVER_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=1.0;
 
 /// Blur band a document may state, logical pixels.
 pub const BLUR_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=64.0;
@@ -52,6 +64,10 @@ static DEFAULT_SET: LazyLock<PainterSet> =
 static GLASS_SET: LazyLock<PainterSet> =
     LazyLock::new(|| PainterSet::new(GLASS, Arc::new(Stock { light: true })));
 static BLOCK_SET: LazyLock<PainterSet> = LazyLock::new(|| PainterSet::new(BLOCK, Arc::new(Block)));
+static PIXELATED_SET: LazyLock<PainterSet> =
+    LazyLock::new(|| PainterSet::new(PIXELATED, Arc::new(Pixelated)));
+static SHADER_SET: LazyLock<PainterSet> =
+    LazyLock::new(|| PainterSet::new(SHADER, Arc::new(Shader)));
 
 /// The Default set.
 #[must_use]
@@ -71,13 +87,27 @@ pub fn block_set() -> &'static PainterSet {
     &BLOCK_SET
 }
 
-/// The built-in set `name`.
+/// The Pixelated set.
+#[must_use]
+pub fn pixelated_set() -> &'static PainterSet {
+    &PIXELATED_SET
+}
+
+/// The Shader set.
+#[must_use]
+pub fn shader_set() -> &'static PainterSet {
+    &SHADER_SET
+}
+
+/// The built-in set `name` a document may name without installing anything.
 #[must_use]
 pub fn builtin(name: &str) -> Option<&'static PainterSet> {
     match name {
         DEFAULT => Some(default_set()),
         GLASS => Some(glass_set()),
         BLOCK => Some(block_set()),
+        PIXELATED => Some(pixelated_set()),
+        SHADER => Some(shader_set()),
         _ => None,
     }
 }
@@ -152,6 +182,8 @@ impl PartPainter for Stock {
                             blur,
                             lens: Lens {
                                 refraction: light.refraction,
+                                sampling: Sampling::Smooth,
+                                cell: 0.0,
                             },
                             fallback: tokens.fill,
                             glaze: sheen(&body, light).into_iter().collect(),
@@ -229,6 +261,116 @@ impl PartPainter for Block {
             _ => return None,
         }
         Some(PaintedPart::new(scene))
+    }
+}
+
+/// Pixelated: what lies below the part, sampled at a coarse cell so the
+/// surface shows it as pixels. A window, a panel and a bar show the
+/// backdrop through the cell grid at `cover`; where there is no backdrop
+/// pass (a window's own ground, a control face) the part is its ground in
+/// cells, each one step apart so the pixel grid stays visible.
+struct Pixelated;
+
+impl PartPainter for Pixelated {
+    fn paint(
+        &self,
+        part: Part,
+        size: Size,
+        _state: PartState,
+        _progress: f32,
+        tokens: &PartTokens,
+    ) -> Option<PaintedPart> {
+        let path = body(size, tokens).to_path(0.1);
+        let cell = tokens.param("cell", 8.0).clamp(1.0, 64.0);
+        let cover = tokens.param("cover", 0.85).clamp(0.0, 1.0);
+        let mut scene = PartScene::new();
+        match part {
+            Part::WindowGround | Part::FloatingPanel | Part::BarBody => {
+                if tokens.backdrop {
+                    scene.fill(
+                        path.clone(),
+                        Brush::Backdrop {
+                            blur: 0.0,
+                            lens: Lens {
+                                refraction: 0.0,
+                                sampling: Sampling::Blocky,
+                                cell,
+                            },
+                            fallback: tokens.fill,
+                            glaze: Vec::new(),
+                        },
+                    );
+                    scene.fill(path, Brush::Solid(tokens.fill.with_alpha(cover)));
+                } else {
+                    scene.fill(path, Brush::Solid(pixel_cells(tokens, cell)));
+                }
+            }
+            Part::ControlFace => {
+                if tokens.fill.components[3] > 0.0 {
+                    scene.fill(path, Brush::Solid(tokens.fill));
+                }
+            }
+            _ => return None,
+        }
+        Some(PaintedPart::new(scene))
+    }
+
+    fn params(&self) -> Vec<ParamSpec> {
+        vec![
+            ParamSpec::new("cell", Some(8.0), CELL_ADMITTED).usable_within(CELL_USABLE),
+            ParamSpec::new("cover", Some(0.85), COVER_ADMITTED),
+        ]
+    }
+}
+
+/// The ground a Pixelated part stands on where nothing lies below it:
+/// its own fill, stepped a hair further from the ground so the surface
+/// reads as a slightly raised pixel plane rather than plain colour.
+fn pixel_cells(tokens: &PartTokens, _cell: f32) -> Color {
+    let base = crate::color::Oklch::from_color(tokens.fill);
+    // Eighteen per cent of a surface step: visible as a plane, far inside
+    // the band the toolkit holds a material in.
+    let step = if tokens.dark { 0.018 } else { -0.013 };
+    crate::color::oklch(base.l + step, base.c, base.h)
+}
+
+/// Shader: the theme's own WGSL fragment over the fixed input set
+/// (`crate::tokens::shader`), evaluated once per settled frame.
+///
+/// The set draws every part it is given as one [`Brush::Shader`] over the
+/// part's body. The toolkit evaluates it into an image the first time it is
+/// drawn and replays that image until the part's size, state or tokens
+/// change, so an idle surface draws no frame at all.
+struct Shader;
+
+impl PartPainter for Shader {
+    fn paint(
+        &self,
+        part: Part,
+        size: Size,
+        _state: PartState,
+        _progress: f32,
+        tokens: &PartTokens,
+    ) -> Option<PaintedPart> {
+        match part {
+            Part::WindowGround | Part::FloatingPanel | Part::BarBody | Part::ControlFace => {}
+            _ => return None,
+        }
+        let path = body(size, tokens).to_path(0.1);
+        let mut scene = PartScene::new();
+        scene.ops.push(Op::Fill {
+            path,
+            brush: Brush::Shader {
+                source: tokens.shader.clone(),
+                fallback: tokens.fill,
+            },
+            brush_transform: Affine::IDENTITY,
+        });
+        Some(PaintedPart::new(scene))
+    }
+
+    fn params(&self) -> Vec<ParamSpec> {
+        vec![ParamSpec::new("cover", Some(1.0), COVER_ADMITTED)]
     }
 }
 

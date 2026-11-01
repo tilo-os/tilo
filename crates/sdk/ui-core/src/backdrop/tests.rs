@@ -414,6 +414,8 @@ fn cost_at_1080p() {
         image: placeholder((0, 0), texels(rect.width()), texels(rect.height()), ground),
         rect,
         blur_px: f64::from(theme.tokens.colors.surfaces.material_blur_px),
+        sampling: Sampling::Smooth,
+        cell_px: 0.0,
         below: stripes(target.0, target.1),
         ground,
     };

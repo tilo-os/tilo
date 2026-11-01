@@ -335,6 +335,8 @@ fn a_frame_record_carries_layers_damage_copies_and_backdrops() {
                     y1: 60.0,
                 },
                 blur_px: 12.0,
+                sampling: 0,
+                cell_px: 0.0,
                 ground: [0.9, 0.9, 0.9, 1.0],
                 below: content.encoding().clone(),
             },

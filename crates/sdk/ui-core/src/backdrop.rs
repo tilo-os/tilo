@@ -44,8 +44,23 @@ use vello::peniko::{Color, Extend, Fill, ImageBrush, ImageData, ImageQuality};
 use vello::{AaConfig, RenderParams, Renderer, Scene, wgpu};
 
 use crate::floating_surface::Material;
+use crate::part_paint::{Lens, Sampling};
 use crate::theme::Theme;
 use crate::tokens::{Finish, SurfaceRole};
+
+/// What a backdrop brush asks of the pass: how blurred, through what lens,
+/// at what corner radius.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sample {
+    /// Blur standard deviation, logical pixels; `0` shows what is below
+    /// straight.
+    pub blur: f32,
+    /// The lens: refraction at the rim, and whether the sample is shown as
+    /// cells.
+    pub lens: Lens,
+    /// The part's corner radius, which the lens rings follow.
+    pub radius: f64,
+}
 
 /// Most surfaces one frame blurs behind. Later ones in the same frame are
 /// opaque: each region costs one extra render of everything below it.
@@ -268,21 +283,38 @@ pub(crate) fn fill_backdrop_sample(
     scene: &mut Scene,
     transform: Affine,
     path: &vello::kurbo::BezPath,
-    (blur, refraction, radius): (f32, f32, f64),
+    sample: Sample,
     theme: &Theme,
     tint: Color,
 ) -> bool {
-    let translucent = !(theme.reduce_transparency || theme.forced_colors) && blur > 0.0;
-    let recorded = translucent
-        .then(|| record(scene, transform, path, blur, tint))
-        .flatten();
+    let Sample { blur, lens, radius } = sample;
+    // Unblurred, a cell-sampled backdrop is still a backdrop: the
+    // Pixelated set shows what lies below without smoothing it.
+    let blurring = if lens.sampling == Sampling::Blocky {
+        if theme.reduce_transparency || theme.forced_colors {
+            return false;
+        }
+        blur
+    } else if theme.reduce_transparency || theme.forced_colors || blur <= 0.0 {
+        return false;
+    } else {
+        blur
+    };
+    let recorded = record(scene, transform, path, blurring, lens, tint);
     let Some((image, brush_transform)) = recorded else {
         return false;
     };
+    // A cell-sampled backdrop is a few texels across, each one cell: drawn
+    // up at the cell grid, its texels are the cells, so it reads as pixels
+    // with no smoothing of its own.
+    let quality = match lens.sampling {
+        Sampling::Smooth => ImageQuality::Medium,
+        Sampling::Blocky => ImageQuality::Low,
+    };
     let brush = ImageBrush::new(image)
         .with_extend(Extend::Pad)
-        .with_quality(ImageQuality::Medium);
-    if refraction > 0.0 {
+        .with_quality(quality);
+    if lens.refraction > 0.0 {
         let body = RoundedRect::from_rect(path.bounding_box(), radius);
         // The rings fill the rounded box; a path that is not that box
         // keeps them inside it.
@@ -290,7 +322,14 @@ pub(crate) fn fill_backdrop_sample(
         if clipped {
             scene.push_clip_layer(Fill::NonZero, transform, path);
         }
-        refract(scene, transform, &body, &brush, brush_transform, refraction);
+        refract(
+            scene,
+            transform,
+            &body,
+            &brush,
+            brush_transform,
+            lens.refraction,
+        );
         if clipped {
             scene.pop_layer();
         }
@@ -390,6 +429,7 @@ pub(crate) fn fill_with_ground(
                 transform,
                 shape,
                 theme.tokens.colors.surfaces.material_blur_px,
+                Lens::default(),
                 ground,
             )
         {
@@ -476,6 +516,10 @@ pub struct RecordedBackdrop {
     pub bounds: Rect,
     /// Blur standard deviation in recording pixels.
     pub blur_px: f64,
+    /// How the sample is filtered after the blur.
+    pub sampling: crate::part_paint::Sampling,
+    /// The cell's side in recording pixels, for [`crate::part_paint::Sampling::Blocky`].
+    pub cell_px: f64,
     /// The layer of the scene the surface was drawn into (see
     /// [`layer_scene`]).
     pub layer: u32,
@@ -724,6 +768,7 @@ fn record(
     transform: Affine,
     shape: &impl Shape,
     blur_px: f32,
+    lens: Lens,
     ground: Color,
 ) -> Option<(ImageData, Affine)> {
     RECORDING.with(|slot| {
@@ -749,7 +794,24 @@ fn record(
             return None;
         }
         recording.next_slot = slot_index.saturating_add(1);
-        let (width, height) = (texels(bounds.width()), texels(bounds.height()));
+        let device_scale = transform.determinant().abs().sqrt();
+        let (width, height) = match lens.sampling {
+            // One texel per cell, at most the placeholder's own edge: the
+            // image is the cells themselves.
+            crate::part_paint::Sampling::Blocky => {
+                let cell = f64::from(lens.cell.max(1.0));
+                (
+                    texels(bounds.width() / cell),
+                    texels(bounds.height() / cell),
+                )
+            }
+            crate::part_paint::Sampling::Smooth => {
+                (texels(bounds.width()), texels(bounds.height()))
+            }
+        };
+        // A cell's side in recording pixels: the lens states it in logical
+        // pixels at the part's own coordinates.
+        let cell_px = f64::from(lens.cell.max(1.0));
         let key = (recording.depth, slot_index);
         let image =
             provided(key, width, height).unwrap_or_else(|| placeholder(key, width, height, ground));
@@ -767,7 +829,9 @@ fn record(
             bounds,
             // The theme's radius is logical; a host drawing through a device
             // scale records in device pixels.
-            blur_px: f64::from(blur_px) * transform.determinant().abs().sqrt(),
+            blur_px: f64::from(blur_px) * device_scale,
+            sampling: lens.sampling,
+            cell_px: cell_px * device_scale,
             layer: layer.unwrap_or_default(),
             below: {
                 let mut below = scene.clone();
@@ -847,6 +911,12 @@ pub struct BackdropRegion {
     pub rect: Rect,
     /// Blur standard deviation in target pixels.
     pub blur_px: f64,
+    /// How the sample is filtered after the blur: smoothly, or at one
+    /// colour per cell of `cell_px` target pixels (a surface shown as
+    /// pixels).
+    pub sampling: Sampling,
+    /// The cell's side in target pixels, for [`Sampling::Blocky`].
+    pub cell_px: f64,
     /// Everything composed below the surface, in target pixels.
     pub below: Scene,
     /// The opaque panel ground: what the backdrop shows where nothing below
@@ -872,6 +942,8 @@ impl BackdropFrame {
                     image: surface.image,
                     rect: surface.bounds,
                     blur_px: surface.blur_px,
+                    sampling: surface.sampling,
+                    cell_px: surface.cell_px,
                     below: surface.below,
                     ground: surface.ground,
                 })
