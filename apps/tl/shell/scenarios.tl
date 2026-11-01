@@ -377,6 +377,14 @@ scenario "resources standing as content" -> Arrangement {
     let a = root Arrangement
     let row = a_workspace(a, "Desk")
     let s = a_strip(a, row, "Spaces", 667)
+    let strip = a.strips.find(st -> st.key == s)
+    if let held = strip {
+        held.canvas_x = 0
+        held.canvas_y = 0
+        held.canvas_width = 1100
+        held.canvas_height = 1200
+        held.placed = true
+    }
     let i = 0
     for n in notes.notes.take(4) {
         a.places.insert(ArrangementPlace(key: "x-{i}", strip: s, shows: "so.tilo.lang.notes", shown_as: "note_editor", record: n.id(), title: n.title, shell: "so.tilo.shell.strips"))
