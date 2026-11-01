@@ -59,8 +59,10 @@ SELECT_JOB = "select"
 UNSTARTED_JOB = ("waiting", "blocked")
 # A run in one of these states has finished, whatever it found.
 FINISHED_RUN = ("success", "failure")
-# A run in one of these states was stopped or never ran.
-GAVE_UP_RUN = ("cancelled", "skipped")
+# A run in one of these states was stopped or never ran. A run whose planning
+# job failed is `blocked`: its remaining jobs wait behind that failure forever,
+# so it is not a window somebody else has to wait for.
+GAVE_UP_RUN = ("cancelled", "skipped", "blocked")
 # `--dry-run`: report the decision without cancelling anything.
 DRY_RUN = "--dry-run" in sys.argv[1:]
 # How many runs to inspect backwards and forwards: the queue is about a dozen
