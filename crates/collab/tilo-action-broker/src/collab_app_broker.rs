@@ -3475,6 +3475,9 @@ pub struct AppBrokerState {
     stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
     /// Broker-owned governed membership surface per native workspace.
     workspace_membership_peers: Mutex<HashMap<String, u64>>,
+    /// The workspace's governance surface per native workspace: the changes to
+    /// its people, published under the provider clients name.
+    workspace_governance_peers: Mutex<HashMap<String, u64>>,
     /// Opens waiting for a workspace's membership actions to be published, each
     /// told after the next refresh of the membership surfaces whether they
     /// are ([`Self::await_membership_surface`]).
@@ -3620,6 +3623,7 @@ impl AppBrokerState {
         clear!(self.private_drafts);
         clear!(self.stable_invocation_subscribers);
         clear!(self.workspace_membership_peers);
+        clear!(self.workspace_governance_peers);
         clear!(self.confirmation_grants);
         clear!(self.cancellation_requests);
         clear!(self.task_subscribers);
@@ -4232,6 +4236,7 @@ impl AppBrokerState {
                 local_report_receipts: Mutex::default(),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
                 workspace_membership_peers: Mutex::new(HashMap::new()),
+                workspace_governance_peers: Mutex::new(HashMap::new()),
                 membership_surface_waiters: Mutex::new(Vec::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 live_views: live_views::LiveViews::default(),
@@ -7402,15 +7407,41 @@ impl AppBrokerState {
         self.fanout.upgrade().map_or(u64::MAX, |t| t.next_peer_id())
     }
 
-    /// A peer id for one of the broker's own services, which runs on the
-    /// broker thread's runtime and is started again with it.
     fn next_service_peer_id(&self) -> u64 {
-        let peer_id = self.next_peer_id();
+        // A fanout allocates unique ids. Without one — before the first
+        // connection, and on a broker tests drive directly — the placeholder
+        // would be handed out again, and a workspace's second service would
+        // replace its first in every registry. Take the next id no surface
+        // holds instead.
+        let candidate = self.next_peer_id();
+        let peer_id = if candidate == u64::MAX {
+            match self.surfaces.lock() {
+                Ok(surfaces) if surfaces.contains_key(&candidate) => (1..candidate)
+                    .rev()
+                    .find(|id| !surfaces.contains_key(id))
+                    .unwrap_or(candidate),
+                _ => candidate,
+            }
+        } else {
+            candidate
+        };
         match self.service_peers.lock() {
             Ok(mut peers) => peers.push(peer_id),
             Err(poisoned) => poisoned.into_inner().push(peer_id),
         }
         peer_id
+    }
+
+    /// The registry of one of a workspace's surfaces: the membership this
+    /// device writes, or its people's governance.
+    fn workspace_surface_peers(
+        &self,
+        surface: workspace_memberships::Surface,
+    ) -> &Mutex<HashMap<String, u64>> {
+        match surface {
+            workspace_memberships::Surface::Membership => &self.workspace_membership_peers,
+            workspace_memberships::Surface::Governance => &self.workspace_governance_peers,
+        }
     }
 
     /// Withdraw the services a broker thread that unwound had started, as

@@ -13,11 +13,10 @@
 //! Answers arrive as [`Arriving`] reads ([`crate::arriving`]), so a bound
 //! view updates, an idle window wakes when one lands, and
 //! [`Arriving::view`] shows them with the framework's placeholders. Each
-//! read says where its answer comes from: this device's broker, or the
-//! workspace's host for the workspace's own governance. A root that owns a client returns it
-//! as its [`Collaborative`] capability
-//! (or forwards to it), which is how its requests reach the connection and
-//! the answers come back.
+//! read says where its answer comes from: this device's broker. A root that
+//! owns a client returns it as its [`Collaborative`] capability (or forwards
+//! to it), which is how its requests reach the connection and the answers
+//! come back.
 //!
 //! [`RemoteActions::with_host`] serves the same client from an in-process
 //! [`ActionHost`] instead, for tests and embedded hosts.
@@ -31,7 +30,7 @@ use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
     InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus, RemoteActionMessage,
-    RemoteActionTarget, UpdateMark, WORKSPACE_GOVERNANCE_PROVIDER, serve,
+    RemoteActionTarget, UpdateMark, serve,
 };
 
 use crate::arriving::{Arrival, ArrivalWriter, Arriving, Source};
@@ -296,7 +295,7 @@ impl RemoteActions {
     fn start_catalogue(&self, query: CatalogueQuery, follow_pages: bool) -> CatalogueCall {
         let client = self.clone();
         let asked = query.clone();
-        let answer = Arriving::pending(self.source(None)).on_retry(move |answer| {
+        let answer = Arriving::pending(self.source()).on_retry(move |answer| {
             client.ask_catalogue(answer, asked.clone(), follow_pages);
         });
         self.ask_catalogue(&answer, query, follow_pages);
@@ -307,7 +306,7 @@ impl RemoteActions {
     /// failure.
     fn ask_catalogue(&self, answer: &CatalogueCall, query: CatalogueQuery, follow_pages: bool) {
         let writer = answer.writer();
-        writer.pending(self.source(None));
+        writer.pending(self.source());
         let background = crate::background::Background::current();
         let due = background.now() + CATALOGUE_WAIT;
         let message = {
@@ -340,22 +339,11 @@ impl RemoteActions {
         self.send(message);
     }
 
-    /// Where this client's answer to a request for `target` (none: the
-    /// catalogue) comes from. An in-process host and the session's broker
-    /// are this device; a workspace's own governance is answered by the workspace's
-    /// host, named as the person knows its workspace.
-    fn source(&self, target: Option<&RemoteActionTarget>) -> Source {
-        let session = matches!(self.lock().transport, Transport::Session);
-        let governance =
-            target.is_some_and(|target| target.provider == WORKSPACE_GOVERNANCE_PROVIDER);
-        if session && governance {
-            if let Some(sync) = crate::workspace_sync::current() {
-                let workspace = sync.workspace.trim();
-                if !workspace.is_empty() {
-                    return Source::host(workspace);
-                }
-            }
-        }
+    /// Where this client's answer comes from: this device, whose broker
+    /// answers every request — an app's own actions, the catalogue it is
+    /// offered, and a workspace's governance (its people and its own name),
+    /// which the workspace's person changes here and this device signs.
+    const fn source(&self) -> Source {
         Source::Local
     }
 
@@ -399,7 +387,7 @@ impl RemoteActions {
         argument: InvokeArgument,
         confirmation: Option<Confirmation>,
     ) -> InvocationCall {
-        let answer = Arriving::pending(self.source(Some(&target)));
+        let answer = Arriving::pending(self.source());
         let request = InvokeRequest {
             on_behalf_of,
             invocation,
@@ -446,7 +434,7 @@ impl RemoteActions {
         then: impl FnMut(&Arrival<InvocationUpdate, ActionHostError>) + Send + 'static,
     ) -> Followed {
         let invocation = InvocationId::new();
-        let answer = Arriving::pending(self.source(Some(&target)));
+        let answer = Arriving::pending(self.source());
         let request = InvokeRequest {
             on_behalf_of: None,
             invocation,
@@ -491,7 +479,7 @@ impl RemoteActions {
     /// call is the authority for whether it actually stopped.
     #[must_use]
     pub fn cancel(&self, invocation: InvocationId) -> Option<CancellationCall> {
-        let source = self.source(None);
+        let source = self.source();
         let answer = {
             let mut inner = self.lock();
             let running = inner.invocations.get_mut(&invocation)?;

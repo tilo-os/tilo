@@ -627,7 +627,7 @@ pub(super) fn answer_with<T: Send + 'static>(
     });
 }
 
-fn refusal(reason: String) -> ActionHostError {
+pub(super) fn refusal(reason: String) -> ActionHostError {
     if reason.starts_with("action_confirmation_required")
         || reason.contains("confirmation is required")
     {
@@ -2700,6 +2700,15 @@ impl AppBrokerState {
         let address = &request.target.address;
         let argument = request.argument.to_slot();
         let provider = request.target.provider.as_str();
+        if provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER {
+            return self.start_governance_action(
+                caller,
+                origin,
+                original_request,
+                request,
+                argument.as_deref(),
+            );
+        }
         if let Some(workspace) = provider_workspace(provider) {
             return self
                 .start_workspace_action(
