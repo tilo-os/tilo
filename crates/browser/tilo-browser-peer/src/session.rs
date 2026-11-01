@@ -306,7 +306,7 @@ pub enum PeerEvent {
     DocumentRejected(String),
     /// The host admitted a workspace subscription.
     Ready {
-        /// The workspace's workspace.
+        /// The workspace id.
         workspace_id: u64,
     },
     /// A commit became durable on the host.
@@ -332,7 +332,7 @@ pub enum PeerEvent {
     /// A live frame another member published, opened with its record's
     /// channel keys.
     Live {
-        /// The workspace's workspace.
+        /// The workspace id.
         workspace_id: u64,
         /// Host-stamped publisher.
         from: [u8; 32],
@@ -343,7 +343,7 @@ pub enum PeerEvent {
     /// bytes) another device of the workspace addressed to this one: a request
     /// to answer, or the answer to one this device sent.
     RemoteAction {
-        /// The workspace's workspace.
+        /// The workspace id.
         workspace_id: u64,
         /// Host-stamped sending device.
         from: [u8; 32],
@@ -354,7 +354,7 @@ pub enum PeerEvent {
     /// alone by a member that keeps it (the host's own device included),
     /// in answer to [`PeerHandle::want_content`].
     RecordContent {
-        /// The workspace's workspace.
+        /// The workspace id.
         workspace_id: u64,
         /// Host-stamped sending device.
         from: [u8; 32],
@@ -366,7 +366,7 @@ pub enum PeerEvent {
     /// keeps it. The workspace's host asks this way for a copy of what members
     /// post, so a visitor's file stays after they leave.
     ContentWanted {
-        /// The workspace's workspace.
+        /// The workspace id.
         workspace_id: u64,
         /// Host-stamped publishing device.
         from: [u8; 32],
@@ -375,7 +375,7 @@ pub enum PeerEvent {
     },
     /// The host could not deliver a remote-action frame this device sent.
     RemoteActionUndeliverable {
-        /// The workspace's workspace.
+        /// The workspace id.
         workspace_id: u64,
         /// The addressed device.
         to: [u8; 32],
@@ -384,7 +384,7 @@ pub enum PeerEvent {
     },
     /// Live membership changed.
     LiveMember {
-        /// The workspace's workspace.
+        /// The workspace id.
         workspace_id: u64,
         /// The member.
         device: [u8; 32],
@@ -407,7 +407,7 @@ pub enum PeerEvent {
     /// ([`PeerHandle::open_record`]) as [`PeerEvent::Document`]s, before
     /// this event; its changes keep arriving from now on.
     RecordOpened {
-        /// The workspace's workspace.
+        /// The workspace id.
         workspace_id: u64,
         /// The record.
         route: DocumentRoute,

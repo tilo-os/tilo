@@ -27,7 +27,7 @@ pub enum VoiceEvent {
     },
     /// The answer to [`crate::PeerHandle::voice_call`] `request`.
     CallResult {
-        /// The workspace's workspace.
+        /// The workspace id.
         workspace_id: u64,
         /// The request's id.
         request: [u8; 16],
@@ -37,14 +37,14 @@ pub enum VoiceEvent {
     /// The participation's current grant: the first after a join, then
     /// whenever the roster, the directions or the token change.
     Granted {
-        /// The workspace's workspace.
+        /// The workspace id.
         workspace_id: u64,
         grant: Box<VoiceGrant>,
     },
     /// The participation ended: the call ended, the device may no longer
     /// take part, or the host refused the join.
     Ended {
-        /// The workspace's workspace.
+        /// The workspace id.
         workspace_id: u64,
         call: [u8; 32],
         /// Why.

@@ -70,7 +70,7 @@ impl PrivateDoor for SessionDoor {
     }
 }
 
-/// Enter the workspace's workspace on `link`, as a page does once it joined.
+/// Enter the workspace on `link`, as a page does once it joined.
 async fn subscribe(link: &mut HttpsLink, workspace_id: u64) {
     link.send(tilo_relay_protocol::Envelope::Subscribe { workspace_id })
         .unwrap();
