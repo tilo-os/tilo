@@ -387,7 +387,7 @@ fn answer(
             // The place it opens into is there from this frame; a launch
             // that starts nothing takes it back.
             let held = desktop.with_policy(|policy| policy.hold_beside(&app, anchor, background));
-            if let Err(error) = apps.start_beside(&launch, &apps.room_named(&room)) {
+            if let Err(error) = apps.start_beside(&launch, &apps.workspace_named(&room)) {
                 if held {
                     desktop.with_policy(|policy| policy.release_held(&app));
                 }

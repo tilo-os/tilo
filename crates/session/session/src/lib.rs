@@ -760,7 +760,7 @@ impl Shared {
             app: app.to_owned(),
             open,
         };
-        let room = apps.room_named(&room.to_string());
+        let room = apps.workspace_named(&room.to_string());
         if let Err(error) = apps.start(&launch, &room) {
             tracing::debug!(%error, %app, "an app is not opened from the history");
         }

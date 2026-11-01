@@ -458,7 +458,7 @@ fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, St
             app: PROBE.to_owned(),
             open: None,
         },
-        &apps.room_named(&room),
+        &apps.workspace_named(&room),
     )
     .expect("the app starts");
     until(session, "the app runs", |_| started.exists());
