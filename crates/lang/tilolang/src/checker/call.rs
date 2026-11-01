@@ -1,7 +1,7 @@
 //! Calls: functions, actions, flows, record construction, built-ins and methods.
 
 use super::expr::dotted;
-use super::{Checker, Ctx, Ex, conv, store_op};
+use super::{Checker, Ctx, Ex, Written, conv, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind};
 use crate::diag::Span;
@@ -767,7 +767,7 @@ impl Checker<'_> {
     }
 
     fn builtin_person(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        if !self.st.scenario {
+        if self.st.written != Written::Scenario {
             self.err("E094", span, "`person(name)` makes a sample person for a scenario; elsewhere a principal comes only from `invoker` or a stored field");
             for a in args {
                 let _ = self.expr(&a.value, None);
