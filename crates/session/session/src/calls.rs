@@ -900,8 +900,6 @@ mod tests {
     /// What the tone's playout reads as heard, against the silence a call
     /// plays while nobody speaks.
     const HEARD: f32 = 0.02;
-    /// How long a call's audio has to begin, or stop, playing here.
-    const DEADLINE: Duration = Duration::from_secs(30);
 
     fn public(seed: u8) -> EndpointId {
         iroh::SecretKey::from_bytes(&[seed; 32]).public()
@@ -1164,12 +1162,16 @@ mod tests {
     }
 
     /// Wait until this side of the call does, or does not, hear the tone.
+    ///
+    /// What it waits for is the call's own audio: moved by the call's worker
+    /// on its own thread, between two sessions' devices, so the bound is the
+    /// suite's, not a second count.
     #[allow(
         clippy::future_not_send,
         reason = "a session's client is not Send, and the test runtime does not need it to be"
     )]
     async fn wait_heard(what: &str, probe: &Arc<Mutex<Vec<f32>>>, heard: bool) {
-        let deadline = Instant::now().checked_add(DEADLINE).expect("a deadline");
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let playing = level(probe, Duration::from_millis(200)).await > HEARD;
             if playing == heard {
@@ -1193,7 +1195,9 @@ mod tests {
         reason = "a session's client is not Send, and the test runtime does not need it to be"
     )]
     async fn bound(client: &Client) {
-        let deadline = Instant::now().checked_add(DEADLINE).expect("a deadline");
+        // The endpoint binds on its own task and over the network, so the
+        // bound is the suite's, not a second count.
+        let deadline = tilo_test_env::hang_deadline();
         while client.endpoint().is_none() {
             assert!(Instant::now() < deadline, "the session's endpoint binds");
             tokio::time::sleep(Duration::from_millis(20)).await;
