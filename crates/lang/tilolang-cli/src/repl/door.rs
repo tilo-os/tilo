@@ -180,7 +180,10 @@ impl Door {
                     "wait_ms": 5000
                 }))?;
             }
-            None => say("waiting for you to admit “tilolang repl” in the desktop…"),
+            None => say(
+                "asking to act as you: allow “tilolang repl” in the desktop, unless you named it \
+                 when you started the session (--admit-repl)…",
+            ),
         }
         let initialized = lines.receive(ADMIT_TIMEOUT)?;
         if let Some(error) = initialized.get("error") {
