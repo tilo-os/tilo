@@ -10,8 +10,9 @@
 //! own id. Run it on a software adapter (lavapipe) where the GPU is not to
 //! be touched.
 //!
-//! The desk's wallpaper carries a page of text under the floating panel
-//! and a line of it under the bar, so a lens's bend shows as bent lines.
+//! The desk's wallpaper carries a dark page of light text under the
+//! floating panel and a line of text under the bar, so a lens's bend shows
+//! as bent lines.
 
 use std::path::{Path, PathBuf};
 
@@ -202,27 +203,31 @@ fn wallpaper(width: u32, height: u32) -> Scene {
 }
 
 /// A page of text where the floating panel lands, its edges and lines
-/// crossing the panel's rim, and a line of text under the bar.
+/// crossing the panel's rim, and a line of text under the bar. The page is
+/// dark with light text: a translucent surface holds what shows through in
+/// a narrow band around its own ground (`tilo_ui::tokens::finish::material_band`),
+/// so on a dark theme a bright page shows through as one flat colour and a
+/// dark one with light lines shows every line.
 fn page(scene: &mut Scene) {
     let mut text = TextRenderer::new();
     let sheet = Rect::new(250.0, 136.0, 700.0, 404.0);
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        Color::from_rgb8(244, 240, 228),
+        Color::from_rgb8(14, 16, 22),
         None,
         &sheet,
     );
-    let line = "The lens bends what lies below along its rim and leaves the middle straight.";
+    let line = "The lens bends the lines below along its rim.";
     for row in 0..12_u32 {
-        let y = f64::from(row).mul_add(22.0, sheet.y0 + 6.0);
+        let y = f64::from(row).mul_add(22.0, sheet.y0 + 4.0);
         text.draw_text(
             scene,
             line,
             15.0,
-            Color::from_rgb8(20, 20, 24),
+            Color::from_rgb8(236, 236, 240),
             Affine::translate((sheet.x0 + 10.0, y)),
-            Some(430.0),
+            None,
         );
     }
     text.draw_text(
@@ -231,6 +236,6 @@ fn page(scene: &mut Scene) {
         16.0,
         Color::WHITE,
         Affine::translate((16.0, 6.0)),
-        Some(688.0),
+        None,
     );
 }

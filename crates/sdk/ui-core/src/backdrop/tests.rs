@@ -917,6 +917,65 @@ fn a_liquid_panel_records_its_lens_with_its_backdrop() {
     assert!(!surfaces[0].refraction.bends());
 }
 
+/// The shipped Liquid Glass panel, bar and window show what lies below:
+/// across the stripes their middles are not one flat colour.
+#[test]
+fn the_shipped_liquid_glass_shows_what_lies_below() {
+    let width = 256;
+    let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
+    let seen = render_floating_over_stripes(&theme);
+    let row: Vec<u16> = (100..160)
+        .map(|x| brightness(pixel(&seen, width, x, 96)))
+        .collect();
+    let spread = row.iter().max().unwrap() - row.iter().min().unwrap();
+    assert!(spread >= 20, "the panel shows nothing below: {row:?}");
+}
+
+/// The bar and a panel over a window, under Liquid Glass in one frame, both
+/// show the stripes below them: every region of the frame is substituted,
+/// not only the first. The window ground stays opaque, as every finish's
+/// does.
+#[test]
+fn a_liquid_bar_and_panel_in_one_frame_both_show_what_lies_below() {
+    let (width, height) = (256, 192);
+    let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
+    let ground = theme.tokens.colors.surfaces.base;
+    let mut scene = stripes(width, height);
+    let recording = BackdropRecording::begin();
+    layer_scene(&scene, 0);
+    let bar = RoundedRect::from_rect(Rect::new(0.0, 0.0, 256.0, 24.0), 0.0);
+    fill_role(
+        &mut scene,
+        Affine::IDENTITY,
+        &bar,
+        SurfaceRole::Bar,
+        &theme,
+        ground,
+    );
+    let window = RoundedRect::from_rect(Rect::new(8.0, 30.0, 120.0, 186.0), 12.0);
+    fill_role(
+        &mut scene,
+        Affine::IDENTITY,
+        &window,
+        SurfaceRole::Window,
+        &theme,
+        ground,
+    );
+    crate::surface::panel(&mut scene, Affine::IDENTITY, PANEL, 12.0, &theme);
+    let surfaces = recording.finish();
+    assert_eq!(surfaces.len(), 2, "the bar and the panel sample");
+    let frame = BackdropFrame::from_single_scene(surfaces);
+    let mut renderer = OffscreenRenderer::new(width, height);
+    renderer.set_backdrop(Some(std::sync::Arc::new(frame)));
+    let seen = renderer.render(&scene, Color::BLACK);
+    let spread = |xs: std::ops::Range<u32>, y: u32| {
+        let row: Vec<u16> = xs.map(|x| brightness(pixel(&seen, width, x, y))).collect();
+        row.iter().max().unwrap() - row.iter().min().unwrap()
+    };
+    assert!(spread(40..120, 12) >= 12, "the bar shows nothing below");
+    assert!(spread(130..180, 100) >= 12, "the panel shows nothing below");
+}
+
 /// Over the stripes, a Liquid panel's rim shows what lies further in (the
 /// pixel at its right rim shows a stripe from about a lens's strength in),
 /// its middle shows the stripes exactly as an unbent panel does, sharp,
