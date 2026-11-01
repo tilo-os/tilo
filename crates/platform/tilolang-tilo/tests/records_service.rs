@@ -156,8 +156,7 @@ fn another_app_reads_the_published_note_through_the_notes_package() {
     let notes = tilolang::compile_package(NOTES.0, &IdsLock::parse(NOTES.1).unwrap(), &[])
         .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
     shell
-        .runtime()
-        .load_foreign_package(&notes.wasm, notes.meta.clone())
+        .load_foreign_package(&notes.wasm, &notes.meta)
         .unwrap();
     let card = tilolang::compile_package(CARD, &IdsLock::new(), std::slice::from_ref(&notes.meta))
         .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
