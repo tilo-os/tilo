@@ -790,7 +790,8 @@ impl Widget for Chart {
 /// or a stat card to show a recent trend.
 pub struct Sparkline {
     data: Vec<f32>,
-    color: Color,
+    /// The colour it was built in; `None` wears the theme's accent at paint.
+    color: Option<Color>,
     /// Explicit max; `None` ⇒ derived from the data.
     pub(crate) max: Option<f32>,
     width: f32,
@@ -800,21 +801,27 @@ pub struct Sparkline {
     /// What the trend is of, for assistive technology; `None` makes it decorative.
     pub(crate) label: Option<String>,
     /// What the line means, when it means something: a status, a person. Its colour comes from
-    /// the theme at paint; without one the sparkline wears [`Sparkline::ACCENT`].
+    /// the theme at paint; without one the sparkline wears the colour it was built in.
     pub(crate) tone: Option<crate::widget::Tone>,
 }
 
 impl Sparkline {
-    /// The colour a sparkline wears until it is told what its line means: the theme's accent,
-    /// the person's own colour at that theme's palette.
-    pub const ACCENT: Color = Color::from_rgb8(0x3a, 0x7b, 0xd5);
-
     /// Construct a sparkline of `data` in `color`. Defaults to a 64×20
     /// intrinsic size and a data-derived max.
     pub fn new(data: Vec<f32>, color: Color) -> Self {
         Self {
+            color: Some(color),
+            ..Self::accented(data)
+        }
+    }
+
+    /// A sparkline of `data` in the theme's accent, read at paint so every theme wears its
+    /// own, until it is told what its line means (its tone).
+    #[must_use]
+    pub fn accented(data: Vec<f32>) -> Self {
+        Self {
             data,
-            color,
+            color: None,
             max: None,
             width: 64.0,
             height: 20.0,
@@ -842,9 +849,14 @@ impl Sparkline {
         self.style = style;
     }
 
-    /// The colour painted now: the tone's, when it has one, else the one it was built with.
+    /// The colour painted now: the tone's, when it has one, else the one it was built with,
+    /// else the theme's accent.
     fn painted_colour(&self, theme: &Theme) -> Color {
-        self.tone.map_or(self.color, |tone| tone.colour(theme))
+        match (self.tone, self.color) {
+            (Some(tone), _) => tone.colour(theme),
+            (None, Some(color)) => color,
+            (None, None) => theme.tokens.colors.intent.accent,
+        }
     }
 
     /// Builder: pin the vertical max.
