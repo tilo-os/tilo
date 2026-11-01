@@ -523,8 +523,10 @@ mod tests {
         /// Settle until `condition`, which the registry answers on its own
         /// thread or through the sheet the person answered.
         fn until(&self, what: &str, mut condition: impl FnMut() -> bool) {
-            let started = Instant::now();
-            while started.elapsed() < Duration::from_secs(60) {
+            // What this waits for is the registry's own work, so the bound is
+            // the suite's, not a second count.
+            let deadline = tilo_test_env::hang_deadline();
+            while Instant::now() < deadline {
                 self.settle();
                 if condition() {
                     return;
