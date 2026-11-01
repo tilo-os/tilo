@@ -1111,6 +1111,13 @@ impl Compositor {
             .refresh(&outputs, &capabilities, backend.describe());
     }
 
+    /// The outputs a fullscreen window owns, by connector name: the shell's
+    /// bar there steps aside and leaves the display to the window, on the
+    /// same displays as [`Compositor::fullscreen_monitors`].
+    pub fn fullscreen_outputs(&self) -> Vec<String> {
+        self.data.state.fullscreen_outputs()
+    }
+
     /// Whether the panel of the output named `name` is lit (not blanked,
     /// switched off by a tool or turned off); `false` when no output is
     /// there to light.

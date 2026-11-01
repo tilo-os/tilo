@@ -69,8 +69,7 @@ impl Decorator for Pane {
         let own = std::mem::take(&mut self.structure);
         own.join(self.inner.take_structure_change())
     }
-
-    fn name(&self) -> &'static str {
-        "TilolangPane"
-    }
+    // No name of its own: a pane is where the window reaches a column's content, not a box
+    // of the layout, so it reads as what it shows (a view whose body is `layers` is Layers to
+    // whatever inspects the window, and its children may cover each other).
 }

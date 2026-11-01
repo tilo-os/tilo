@@ -202,8 +202,8 @@ pub struct Options {
     /// The theme and fonts surface apps draw with.
     pub presentation: fn() -> ComponentRunnerInputs,
     /// The tilolang shell package's bar (`apps/tl/shell`) is shown as a layer over the
-    /// desktop. Off until it covers every display and steps aside for a fullscreen window as
-    /// the desktop's own bar does.
+    /// desktop: one bar per display, standing on its own display's rectangle and stepping
+    /// aside where a fullscreen window owns one, as the desktop's own bar does. On by default.
     pub shell_bar: bool,
     /// What quick settings reads of the device and carries out on it;
     /// without it, the bar's status cluster opens nothing.
@@ -429,7 +429,7 @@ impl Default for Options {
             device: "this-device".into(),
             person: "person".into(),
             presentation: ComponentRunnerInputs::from_native_process,
-            shell_bar: false,
+            shell_bar: true,
             sync: None,
             quick_settings: None,
             controllers: None,

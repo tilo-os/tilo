@@ -129,8 +129,8 @@ fn floats(widget: &str) -> bool {
     matches!(widget, "HoverToolbarFace")
 }
 
-/// Whether a node shows text: its own, or its children's.
-fn has_text(node: &InspectionNode) -> bool {
+/// Whether a node is text itself.
+fn is_text(node: &InspectionNode) -> bool {
     use ui::a11y::Role;
     node.widget == "Text"
         || node.semantics.as_ref().is_some_and(|access| {
@@ -139,7 +139,34 @@ fn has_text(node: &InspectionNode) -> bool {
                 Role::StaticText | Role::Label | Role::Heading { .. }
             )
         })
-        || node.children.iter().any(has_text)
+}
+
+/// The boxes of the text a node shows, its own or its children's, within `clip`.
+fn text_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
+    if floats(&node.widget) {
+        return;
+    }
+    if is_text(node) {
+        let r = rect(node.rect).intersect(clip);
+        if has_area(r) {
+            out.push(r);
+        }
+        return;
+    }
+    for child in &node.children {
+        text_boxes(child, clip, out);
+    }
+}
+
+/// Whether text `a` shows lies over text `b` shows: then neither can be read. Two boxes laid
+/// over each other on purpose (a dock over the desk under the bar) whose text stands apart
+/// can both be read.
+fn texts_meet(a: &InspectionNode, b: &InspectionNode, clip: Rect) -> bool {
+    let (mut ta, mut tb) = (Vec::new(), Vec::new());
+    text_boxes(a, clip, &mut ta);
+    text_boxes(b, clip, &mut tb);
+    ta.iter()
+        .any(|x| tb.iter().any(|y| has_area(x.intersect(*y))))
 }
 
 /// Whether a widget lays its children over each other on purpose.
@@ -506,7 +533,7 @@ impl Walk<'_> {
                 let covers = if places {
                     is_control(a) && is_control(b)
                 } else {
-                    !layered || (has_text(a) && has_text(b))
+                    !layered || texts_meet(a, b, clip)
                 };
                 if has_area(both) && covers {
                     let mut keys = keys.to_vec();
