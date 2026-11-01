@@ -23,18 +23,23 @@
 //!   workspace's members as its records do — encrypted on the wire, and
 //!   fetched by a member that joins later from whichever device keeps it;
 //! - the queue: members' asks and answers reach [`RouteContent`] from a worker
-//!   thread, never from the session's loop, which walks no path.
+//!   thread, never from the session's loop, which walks no path;
+//! - the offload route: an action that runs on another of the person's devices
+//!   is measured here and its output is kept here, in the invoking app's scope,
+//!   so what a run elsewhere produced is read by the same addresses a run here
+//!   returns ([`Plane::media`], [`Plane::fetch`]).
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use iroh::EndpointId;
 use neighbour_wire::{NeighbourMsg, peer_handle};
 use tilo_action_broker::record_content::{
     ContentPeer, ContentPeers, ContentPiece, ContentScope, ContentShelf, ContentSources,
-    MAX_CONTENT_BYTES, RouteContent,
+    ContentState, MAX_CONTENT_BYTES, RouteContent,
 };
 use tilo_action_broker::route::CrdtRoute;
 use tilo_action_broker::services::{CONTENT_PUT_SCOPE, ContentSink, ContentStoreServices};
@@ -42,6 +47,7 @@ use tilo_content::{ContentStore, hash_bytes};
 use tilo_desktop_model::RoomId;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::{RecordContentDelivery, WorkspaceId, workspace_topic_id};
+use tilo_runtime::offload::{BindError, BlobScope, MediaFuture, RoomMedia};
 
 use crate::sync::Outgoing;
 
@@ -109,6 +115,59 @@ impl Plane {
     /// addressed by the hash its record then references.
     pub(crate) fn puts(&self) -> Arc<dyn ContentStoreServices> {
         Arc::new(Puts(Arc::clone(&self.shelf)))
+    }
+
+    /// This device's content as an offload route reads and keeps it: the
+    /// invoking app's scope in its workspace, through the same store the
+    /// app's own `offerBlob` and `wantBlob` reach.
+    pub(crate) fn media(self: &Arc<Self>) -> Arc<dyn RoomMedia> {
+        Arc::new(Media(Arc::clone(&self.shelf)))
+    }
+
+    /// Whether this device keeps `digest` of `app`'s content in `workspace`:
+    /// what this session says of itself when another of the person's devices
+    /// offers it work reading that content.
+    pub(crate) fn holds(&self, workspace: &str, app: &str, digest: [u8; 32]) -> bool {
+        let scope = ContentScope {
+            workspace: workspace.to_owned(),
+            app: app.to_owned(),
+        };
+        self.shelf
+            .store(&scope)
+            .is_some_and(|store| store.has(&hex::encode(digest)))
+    }
+
+    /// `digest` of `app`'s content in `workspace`, once it is here: what this
+    /// device keeps already, else what the workspace's other devices hand
+    /// over within `within`. `None` when it does not arrive in time.
+    pub(crate) async fn fetch(
+        &self,
+        workspace: &str,
+        app: &str,
+        digest: [u8; 32],
+        within: Duration,
+    ) -> Option<Vec<u8>> {
+        let hash = hex::encode(digest);
+        let route = CrdtRoute::app(app, workspace);
+        // Subscribed before it is asked for, so content that arrives at once
+        // is not missed.
+        let mut news = self.route.subscribe(&route);
+        self.route.want(&route, &hash);
+        let started = tokio::time::Instant::now();
+        loop {
+            let left = within.saturating_sub(started.elapsed());
+            match tokio::time::timeout(left, news.recv()).await {
+                Ok(Some(arrived))
+                    if arrived.hash == hash && arrived.state == ContentState::Resolved =>
+                {
+                    return Some(arrived.bytes);
+                }
+                // Where another want of this scope got to, or what the
+                // devices connected could answer: this one is still coming.
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => return None,
+            }
+        }
     }
 
     /// Where this device's plane says and hears on the network: the
@@ -316,8 +375,71 @@ impl ContentShelf for Shelf {
     }
 }
 
-/// Whether `value` is a name this device keeps content under: one path
-/// component, and no way out of the store's directory.
+/// This device's content as an offload route measures, reads and keeps it:
+/// the store of the scope the route names, and nothing else.
+struct Media(Arc<Shelf>);
+
+/// The record scope a route names, when it names one this device keeps
+/// content in.
+fn scoped(scope: &BlobScope) -> ContentScope {
+    ContentScope {
+        workspace: scope.room().to_owned(),
+        app: scope.app().to_owned(),
+    }
+}
+
+impl RoomMedia for Media {
+    fn len<'a>(
+        &'a self,
+        scope: &'a BlobScope,
+        digest: [u8; 32],
+    ) -> MediaFuture<'a, Result<u64, BindError>> {
+        let scope = scoped(scope);
+        Box::pin(async move {
+            let bytes = self
+                .0
+                .read(&scope, &hex::encode(digest))
+                .ok_or(BindError::NotLocal)?;
+            Ok(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+        })
+    }
+
+    fn read<'a>(
+        &'a self,
+        scope: &'a BlobScope,
+        digest: [u8; 32],
+    ) -> MediaFuture<'a, Result<Vec<u8>, BindError>> {
+        let scope = scoped(scope);
+        Box::pin(async move {
+            let bytes = self
+                .0
+                .read(&scope, &hex::encode(digest))
+                .ok_or(BindError::NotLocal)?;
+            if hash_bytes(&bytes) == hex::encode(digest) {
+                Ok(bytes)
+            } else {
+                Err(BindError::Integrity)
+            }
+        })
+    }
+
+    fn keep<'a>(
+        &'a self,
+        scope: &'a BlobScope,
+        bytes: Vec<u8>,
+    ) -> MediaFuture<'a, Result<[u8; 32], String>> {
+        let scope = scoped(scope);
+        Box::pin(async move {
+            let hash = hash_bytes(&bytes);
+            self.0.keep(&scope, &hash, &bytes)?;
+            let mut digest = [0; 32];
+            hex::decode_to_slice(&hash, &mut digest)
+                .map_err(|_| "the content store keeps these bytes under no address".to_owned())?;
+            Ok(digest)
+        })
+    }
+}
+
 fn component(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_SCOPE_COMPONENT

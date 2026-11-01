@@ -325,6 +325,10 @@ pub struct Hosted {
     /// what its record names, and the route an app asks the workspace's other
     /// devices for what it lacks.
     pub record_content: Option<std::sync::Arc<crate::content::Plane>>,
+    /// Where an app's offloadable action runs: the round this session asks
+    /// the workspace's other devices, when it holds a workspace to ask them
+    /// in.
+    pub action_offload: Option<std::sync::Arc<dyn tilo_actions::offload::ActionOffload>>,
 }
 
 /// Serve the session's published resources to the apps on `socket`: the
@@ -511,6 +515,7 @@ fn host_services(
         sealed,
         own_device,
         record_content,
+        action_offload,
     } = hosted;
     let speakers: Option<std::sync::Arc<dyn SpeakerServices>> = fabric.map(|fabric| {
         std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
@@ -571,6 +576,10 @@ fn host_services(
         local_person: Some(std::sync::Arc::new(
             tilo_identity_authority::NativeLocalPerson,
         )),
+        // An offloadable action runs where the workspace's devices would run
+        // it sooner, and what they produced is kept where this app reads its
+        // output.
+        action_offload,
         ..HostServices::default()
     }
 }
@@ -817,6 +826,7 @@ mod tests {
             },
             own_device: None,
             record_content: None,
+            action_offload: None,
         }
     }
 

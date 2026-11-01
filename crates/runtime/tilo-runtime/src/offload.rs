@@ -49,7 +49,6 @@ use std::{
 };
 
 use neighbour_wire::offer::{MAX_WORK_INPUTS, Route, Work};
-use runtime_fs::blobs::BlobScope;
 use tilo_actions::offload::{ActionOffload, OffloadFuture, OffloadRequest, Offloaded};
 use tilo_actions::remote::InvokeRequest;
 use tilo_actions::{InvocationId, Offload};
@@ -58,10 +57,16 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::offload::{OffloadPeers, RanAway};
 use tilo_relay::HomePeerRegistration;
 use tilo_relay::offload::{
-    DeviceOffload, DeviceOffloadConfig, DeviceRevocations, OffloadIdentity, RoomMedia, RoomOffload,
+    DeviceOffload, DeviceOffloadConfig, DeviceRevocations, OffloadIdentity, RoomOffload,
     RoomPlacements, RoomRelays, SessionMedia, home_relay, room_relays,
 };
 use tilo_user_identity::RevocationList;
+
+// A host that keeps the workspaces' content itself implements the media a
+// route binds its inputs from in the same scope the apps' own content is
+// addressed in, and hands it to [`offer_offload`] beside the peers it asks.
+pub use runtime_fs::blobs::BlobScope;
+pub use tilo_relay::offload::{BindError, MediaFuture, RoomMedia};
 
 /// Set to `off` (or `0`, `false`, `no`) to keep every offloadable action on
 /// this device even when a home relay could place it elsewhere.
