@@ -88,7 +88,7 @@ pub(super) fn answer(
     if caller.room().is_some_and(|room| room != destination.room) {
         return Err(unavailable("feedback caller workspace mismatch"));
     }
-    let caller = caller.in_room(destination.room.clone());
+    let caller = caller.in_workspace(destination.room.clone());
     let policy = link
         .view_read_policy(workspace, &caller, &route.app_id, &route.record)
         .filter(|policy| policy.workspace == route.cluster_id)

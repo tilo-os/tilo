@@ -665,7 +665,7 @@ impl AppBrokerState {
         let access = self.app_action_access(app_id);
         let mut as_app = Caller::local_app(app_id);
         if let Some(workspace) = person.room() {
-            as_app = as_app.in_room(workspace);
+            as_app = as_app.in_workspace(workspace);
         }
         let permitted = match message {
             RemoteActionMessage::CatalogueRequest { query, .. } => {
@@ -3361,7 +3361,7 @@ mod foreign_caller_tests {
         );
         assert!(
             state
-                .workspace_ids_for(&bot.in_room("unknown-workspace"))
+                .workspace_ids_for(&bot.in_workspace("unknown-workspace"))
                 .is_empty()
         );
     }

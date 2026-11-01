@@ -446,7 +446,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if let Some(person) = person {
             caller = caller.acting_for(person);
         }
-        let caller = caller.in_room(workspace.clone()).in_new_execution();
+        let caller = caller.in_workspace(workspace.clone()).in_new_execution();
         Self::from_caller(host, workspace, format!("agent:{agent_id}"), caller)
             .with_surface(crate::mcp::Surface::Agent)
     }

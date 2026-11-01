@@ -3925,7 +3925,7 @@ impl ShellNetwork {
             // Opening or closing an app is refused unless the transport
             // confined the caller to the room the frame arrived on.
             if let Some(room) = self.room_for_topic(workspace_topic) {
-                caller = caller.in_room(room.to_string());
+                caller = caller.in_workspace(room.to_string());
             }
             if let Ok(mut inbound) = self.inbound_remote_actions.lock() {
                 inbound.push(crate::shell::remote_action_link::InboundRemoteAction {
