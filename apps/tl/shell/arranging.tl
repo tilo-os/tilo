@@ -36,7 +36,7 @@ action place_found(text: Text, x: Int, y: Int, shown_as: Text = "") (icon: .map_
 
 /// Moves the place `place` into the row `row`, before the place `before` or last: within a row,
 /// or to another row, which is how a line of work moves whole (§3).
-action move_place(place: Text, row: Text, before: Text = "") (icon: .navigation, label: "Move") {
+action move_place(place: Text, row: Text, before: Text = "") (icon: .navigation, label: "Move", group: "Arrange") {
     require place != "" "Name the place to move"
     require row != "" "Name the row it goes into"
     outside("session.arrange", "move-place \{\"place\":\"{place}\",\"row\":\"{row}\",\"before\":\"{before}\"\}")
@@ -44,7 +44,7 @@ action move_place(place: Text, row: Text, before: Text = "") (icon: .navigation,
 
 /// Resizes the strip `strip` to `permille` of its row's usable width (333 narrow, 667 normal,
 /// 1000 wide), as the person drags its edge.
-action resize_strip(strip: Text, permille: Int) (icon: .columns_2, label: "Width") {
+action resize_strip(strip: Text, permille: Int) (icon: .columns_2, label: "Width", group: "Arrange") {
     require strip != "" "Name the strip to resize"
     require permille > 0 "A strip is wider than nothing"
     outside("session.arrange", "resize-strip \{\"strip\":\"{strip}\",\"permille\":{permille}\}")
@@ -52,14 +52,14 @@ action resize_strip(strip: Text, permille: Int) (icon: .columns_2, label: "Width
 
 /// Closes the place `place`: its window goes with it. The resource stays where it lives, and
 /// nobody else's arrangement changes (§4).
-destructive action close_place(place: Text) (icon: .x, label: "Close") {
+destructive action close_place(place: Text) (icon: .x, label: "Close", group: "Arrange") {
     require place != "" "Name the place to close"
     outside("session.arrange", "close-place \{\"place\":\"{place}\"\}")
 }
 
 /// Pins the place `place`, so an agent's arrangement leaves it alone (§5, "Moving what the
 /// person placed"), or unpins it.
-action pin_place(place: Text, pinned: Bool = true) (icon: .pin, label: "Pin") {
+action pin_place(place: Text, pinned: Bool = true) (icon: .pin, label: "Pin", group: "Arrange") {
     require place != "" "Name the place to pin"
     outside("session.arrange", "pin-place \{\"place\":\"{place}\",\"pinned\":{pinned}\}")
 }

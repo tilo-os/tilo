@@ -96,10 +96,7 @@ const SHELL_FILES: &[(&str, &str)] = &[
         "composer.tl",
         include_str!("../../../../apps/tl/shell/composer.tl"),
     ),
-    (
-        "desk.tl",
-        include_str!("../../../../apps/tl/shell/desk.tl"),
-    ),
+    ("desk.tl", include_str!("../../../../apps/tl/shell/desk.tl")),
     (
         "docks.tl",
         include_str!("../../../../apps/tl/shell/docks.tl"),
@@ -155,6 +152,10 @@ const SHELL_FILES: &[(&str, &str)] = &[
     (
         "system.tl",
         include_str!("../../../../apps/tl/shell/system.tl"),
+    ),
+    (
+        "traditional.tl",
+        include_str!("../../../../apps/tl/shell/traditional.tl"),
     ),
 ];
 /// The shell package's ids lock.
@@ -1579,7 +1580,6 @@ impl Origin for SessionOrigin {
                 self.keep_inserted(&reading, &types, inserted, made);
                 self.written = Some(reading);
                 polled.wrote = true;
-
             }
             Err(error) => {
                 // Nothing was written: the next reading tries again from what was.
@@ -1852,7 +1852,6 @@ impl ShellPart {
         // The seed moved the record: the part's next turn settles what it started (a view
         // that read a bound field runs again), as any change of the record does.
         self.instance.moved();
-
     }
 
     /// Stand over the outputs: the whole of them while a menu of the part's is up, and else
@@ -2601,13 +2600,6 @@ mod tests {
             "the effect was answered"
         );
     }
-
-
-
-
-
-
-
 
     #[test]
     fn the_part_stands_in_the_band_the_shell_records_dock_names() {

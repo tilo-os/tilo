@@ -1366,6 +1366,11 @@ impl Core {
                 args: shown.args.clone(),
                 author,
             }),
+            action
+                .group
+                .clone()
+                .map_or_else(Value::none, |group| Value::some(Value::Text(group))),
+            Value::Bool(action.frequent),
             // After its fields, the action's id, which `a.is(edit)` compares
             // (`tilolang::host::action_id_at`).
             Value::Text(action.id.clone()),

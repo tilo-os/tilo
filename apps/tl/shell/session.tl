@@ -10,22 +10,22 @@ action switch_to_key(key: Text, current: Bool) (icon: .layers, label: "Switch to
 }
 
 /// Brings the window `w` to the front: its workspace, its strip, and it.
-action focus_window(w: Win) (icon: .arrow_right, label: "Go there") {
+action focus_window(w: Win) (icon: .arrow_right, label: "Go there", group: "Window") {
     outside("session.run", ("focus-window", w.key))
 }
 
 /// Closes the window `w`.
-destructive action close_window(w: Win) (icon: .x, label: "Close") {
+destructive action close_window(w: Win) (icon: .x, label: "Close", group: "Window") {
     outside("session.run", ("close-window", w.key))
 }
 
 /// Carries the window `w` onto the strip `strip` of its workspace.
-action move_to_strip(w: Win, strip: Text) (icon: .arrow_right, label: "Move to a strip") {
+action move_to_strip(w: Win, strip: Text) (icon: .arrow_right, label: "Move to a strip", group: "Window") {
     outside("session.run", ("move-window-to-strip", w.key, strip))
 }
 
 /// Carries the window `w` into the workspace `workspace`.
-action move_to_room(w: Win, workspace: Text) (icon: .layers, label: "Move to a workspace") {
+action move_to_room(w: Win, workspace: Text) (icon: .layers, label: "Move to a workspace", group: "Window") {
     outside("session.run", ("move-window-to-workspace", w.key, workspace))
 }
 
@@ -46,7 +46,7 @@ action show_agent(key: Text) (icon: .bot, label: "Its menu") {
 }
 
 /// Asks an agent about the window `w`: its title, the app it shows and what it holds.
-action ask_about(w: Win) (icon: .bot, label: "Ask an agent") {
+action ask_about(w: Win) (icon: .bot, label: "Ask an agent", group: "Window") {
     outside("session.run", ("ask-about-window", w.key))
 }
 
