@@ -656,6 +656,7 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
             record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
             seed: true,
         },
+        ShellLayer::Bar,
         32,
         1.0,
         std::sync::Arc::new(|| {}),
