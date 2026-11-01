@@ -265,7 +265,7 @@ a panel beside the strips or the whole screen of the conversation shell.
 Each step deletes the Rust part it replaces once the tilolang one passes that part's tests,
 screenshots and frame budgets.
 
-1. *(landed; `shell_bar` on by default)* The tilolang surface host and system resources, with
+1. *(landed; `shell_bar` off by default, bar only)* The tilolang surface host and system resources, with
    the top bar as a tilolang view: one bar per display, following hotplug, each stepping aside
    on a display a fullscreen window owns (`Compositor::fullscreen_outputs`).
 2. The canvas composes views (§8, first point above): a package's views run inline in the
@@ -282,6 +282,98 @@ screenshots and frame budgets.
 7. Looks: theme finishes beyond block, default and glass (pixelated, shader), hover and press
    responses, and fonts, icons and sizes. All of these are theme roles, so a view never names
    a look.
+
+## 8.3 One model
+
+The shell is held to AGENTS.md's first principle: one type per concept and one declaration per
+action, owned by whoever owns the state. This section fixes how the shell's pieces fit, and it
+overrides any earlier sketch above that disagrees.
+
+### The session's resources
+
+The session publishes what the shell reads as resources, one type per concept. Each type
+carries its own actions:
+
+| Type | What it is | Its actions |
+|---|---|---|
+| `Workspace` | a workspace on this device | `switch`, `create`, `join`, `rename` |
+| `Window` | a window an app mapped (its id is the window's tab id) | `focus`, `close`, `move_to(workspace)` |
+| `Notice` | a notification | `act(choice)`, `dismiss`; `clear_all` on the centre |
+| `Run` | a conversation with the session's agent (§8.1) | `ask`, `send`, `stop` |
+| `Person` | someone here | `follow`, `message`, `call`, `see_work` |
+| `Setting` | a device setting quick settings shows | `set(value)` |
+| `Surface` | the system surface over the desk (launcher, overview, search) | `show`, `close` |
+| `Clock`, `TrayItem`, `Task` | the time, a tray item, a running task | their own, if any |
+
+- The session describes these the way a native app describes its own (`surface.toml`, generated
+  from what it publishes and checked for drift). A shell imports them with `use so.tilo.session
+  as session` and calls the actions directly: `w.focus()`, `n.dismiss()`,
+  `session.surfaces.launcher.show()`. Nothing in the shell turns a string into an action, and the
+  shell declares no wrapper action around one of these.
+- No reading bundles them. `Desk` (the old chrome's every input in one record) and the
+  `desktop:desk`, `desktop:chrome` and `desktop:tab:N` addresses are replaced by the types above.
+  `Room` and `ArrangementWorkspace` are replaced by `Workspace`, and `Win` by `Window`.
+- Values the session derives (the time, which surface is up, whether the pointer is at an edge)
+  stay unsaved (§7).
+
+### The arrangement belongs to each shell
+
+Each layout is a shell package with its own arrangement type in the person's own record
+(`records: .own`), as §2 says. A place is a resource and a view, and never an app. The app follows
+from the resource, and a foreign window's place names the `Window`.
+
+```
+type Place { resource: Text, view: Text = "" }              // shared by every shell (parts package)
+
+// so.tilo.shell.strips
+type Strips  { rows: List<Row> }
+type Row     { name: Text, strips: List<Strip> }
+type Strip   { places: List<Place>, width: Width = .normal, active: Int = 0 }
+
+// so.tilo.shell.desktop
+type Desktop { frames: List<Frame> }                         // list order is stacking order
+type Frame   { place: Place, x: Int, y: Int, width: Int, height: Int }
+
+// so.tilo.shell.canvas
+type Canvas  { pins: List<Pin> }
+type Pin     { place: Place, x: Int, y: Int, width: Int, height: Int }
+```
+
+- **Rust never reads these types.** The shell's view lays each place out. A place showing a
+  resource draws it with `show(r, view:)`; a place showing a foreign window draws a
+  `ui.WindowWell`, which reports its rectangle to `Wells`, and `WellPolicy` puts the real window
+  there. This is how every layout places real windows: the strips' scrolling, the desktop's
+  frames and the canvas's pan and zoom are all the view's layout.
+- **Arranging is the shell's own actions on its own type**, declared once in its package:
+  `place`, `move`, `close`, `resize`, `raise`. Each is attributed and undoable like any action on
+  a record.
+- **Every shell answers two actions under the same names**: `place(resource, view)` and
+  `close(place)` on its arrangement root. The checker enforces this for a package of category
+  `.shell`. The session publishes the person's active shell's arrangement root as
+  `shell:arrangement`, so the agent, the REPL and a reference's activation call
+  `arrangement.place(r, view:)` without knowing which shell is up. When an app maps a new
+  window, the session calls `place` with that `Window`, so every window gets a place in whatever
+  shell is active.
+- Switching shells maps places across. Each shell has a `from(places: List<Place>)` that lays out
+  the other shell's places in its own terms, so no place is lost and no id changes.
+- The migration from `tilo_desktop_model`'s strips keeps every window, strip and canvas place and
+  every id (the data invariants).
+
+### Shells and their parts
+
+- One package per layout: `so.tilo.shell.strips` (the scrolling WM with tabs),
+  `so.tilo.shell.desktop` (the traditional desktop: frames, dock, the focused window's actions
+  in the top bar) and `so.tilo.shell.canvas` (places with no fixed app, the conversation, typed
+  `find`).
+- All three use `so.tilo.shell.parts`: the bar, the dock, the window frame and its action bar,
+  notices, quick settings, the launcher and `conversation(r)`. The person picks a shell per
+  device in Settings, which is one setting naming a package. There is no `Preset` enum and no
+  `if/else` over layouts.
+- The person's bar and dock settings are structure only: which parts, their order, which edge,
+  and when they show. How a bar or dock looks (floating or edge to edge, translucent or solid,
+  its size) is the theme's, as roles `bar` and `dock`. A dock item is what the person pinned
+  (a resource or an app). Whether it runs, its badge and whether it wants attention are read
+  live from `Window` and `Notice`, never saved in the person's record.
 
 ## 9. Open
 
