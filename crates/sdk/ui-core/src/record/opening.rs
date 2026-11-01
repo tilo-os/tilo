@@ -272,7 +272,8 @@ mod tests {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "body", body).unwrap();
         let landing =
-            super::super::transfer::install_room_document(&store, PACKAGE, WORKSPACE, &mut doc).unwrap();
+            super::super::transfer::install_room_document(&store, PACKAGE, WORKSPACE, &mut doc)
+                .unwrap();
         store.flush(None).unwrap();
         assert!(matches!(landing.durability(&*store), Durability::Durable));
         drop(store);

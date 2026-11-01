@@ -950,11 +950,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             doc.put(ROOT, "body", "a draft").unwrap();
             assert!(crate::record::init_scoped(
-                &mut doc,
-                &target,
-                &kind,
-                FROM,
-                None
+                &mut doc, &target, &kind, FROM, None
             ));
             let meta = meta_obj(&mut doc).unwrap();
             doc.put(&meta, key, FROM).unwrap();
