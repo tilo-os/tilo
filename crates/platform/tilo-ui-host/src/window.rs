@@ -276,30 +276,23 @@ pub struct AppWindow {
 
 impl AppWindow {
     /// A part of a shell (its top bar, a dock) receiving its views over `transport`: the root
-    /// view's tree shown as it is, at the top of the area the part is given, with no window
-    /// shell, header or ground of its own. What the area holds beyond the view stays clear, so
-    /// what lies under the part shows through, and what the view opens (a menu) has room.
+    /// view's tree shown as it is, over the whole area the part is given, with no window
+    /// shell, header or ground of its own. The view fills the area, so what it places at the
+    /// area's edges (a dock at the foot) stands there however little it shows between them;
+    /// what it does not draw stays clear, so what lies under the part shows through, and what
+    /// the view opens (a menu) has room.
     #[must_use]
     pub fn part(transport: Box<dyn Transport>) -> Self {
-        Self::part_fit(transport, Fit::hug())
-    }
-
-    /// A part of a shell that is the whole of the area it is given (a shell drawing the whole
-    /// screen): as [`Self::part`], its root view filling the area rather than standing at its
-    /// top, so every press on what the view lays out reaches it.
-    #[must_use]
-    pub fn whole_part(transport: Box<dyn Transport>) -> Self {
-        Self::part_fit(transport, Fit::fill(1.0))
-    }
-
-    fn part_fit(transport: Box<dyn Transport>, root: Fit) -> Self {
         let mut window = Self::new(transport, Vec::new());
         window.shape = Shape::Part;
         window.body = Box::new(
             Stack::stack()
                 .fill_width()
                 .fill_height()
-                .push_slot(slot(Box::new(Pane::new(Box::new(Absent::new()))), root))
+                .push_slot(slot(
+                    Box::new(Pane::new(Box::new(Absent::new()))),
+                    Fit::fill(1.0),
+                ))
                 .push_slot(slot(Box::new(Absent::new()), Fit::hug()))
                 .push_slot(slot(Box::new(Absent::new()), Fit::hug())),
         );

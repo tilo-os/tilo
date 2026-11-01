@@ -2175,10 +2175,7 @@ impl ShellPart {
             let record = record.borrow();
             instance.sync(Some(&record));
         }
-        let window = match layer {
-            ShellLayer::Bar => AppWindow::part(Box::new(window_end)),
-            ShellLayer::Screen => AppWindow::whole_part(Box::new(window_end)),
-        };
+        let window = AppWindow::part(Box::new(window_end));
         // The whole screen lies under the windows, which stand in its wells; the bar rides over
         // them.
         let mut widgets = WidgetHost::new(
