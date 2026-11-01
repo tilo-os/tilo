@@ -236,9 +236,9 @@ pub struct WorkspaceAuthorityEnvelope {
     pub revision: u64,
     pub capabilities: Vec<CapOverride>,
     /// Who may reach each workspace a relay carries, by its relay workspace
-    /// id. Written under the key it always had: a revision signed and stored
-    /// before the name changed must still read.
-    #[serde(default, rename = "room_members")]
+    /// id. A revision signed and stored before the name changed wrote it
+    /// under the old key, which still reads.
+    #[serde(default, rename = "workspace_members", alias = "room_members")]
     pub workspace_members: std::collections::BTreeMap<String, Vec<collab_types::WorkspaceMember>>,
     pub tombstoned: bool,
     pub governor: [u8; 32],
