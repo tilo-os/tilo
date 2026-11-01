@@ -1,5 +1,5 @@
 //! Who may use which capture device: the person's decision per app, per
-//! room and per device, kept by the host that brokers capture, and the
+//! workspace and per device, kept by the host that brokers capture, and the
 //! [`crate::broker::Policy`] that applies it.
 //!
 //! A decision is recorded the first time an app that declares a device asks
@@ -29,7 +29,7 @@ type Key = (String, String, &'static str);
 /// One recorded decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grant {
-    pub room: String,
+    pub workspace: String,
     pub app: String,
     pub device: DeviceKind,
     pub decision: Decision,
@@ -103,29 +103,29 @@ impl DeviceGrants {
         loaded
     }
 
-    /// What was decided for `app` in `room` about `device`, if anything. A
+    /// What was decided for `app` in `workspace` about `device`, if anything. A
     /// file changed by another process is read again first; one that no
     /// longer reads holds no decisions.
-    pub fn decision(&self, room: &str, app: &str, device: DeviceKind) -> Option<Decision> {
+    pub fn decision(&self, workspace: &str, app: &str, device: DeviceKind) -> Option<Decision> {
         let loaded = self.current();
         let decision = loaded
             .decisions
-            .get(&(room.to_owned(), app.to_owned(), device.name()))
+            .get(&(workspace.to_owned(), app.to_owned(), device.name()))
             .copied();
         drop(loaded);
         decision
     }
 
-    /// Every decision, in room, app and device order, as the file holds
+    /// Every decision, in workspace, app and device order, as the file holds
     /// it now.
     pub fn list(&self) -> Vec<Grant> {
         let loaded = self.current();
         let grants = loaded
             .decisions
             .iter()
-            .filter_map(|((room, app, device), decision)| {
+            .filter_map(|((workspace, app, device), decision)| {
                 Some(Grant {
-                    room: room.clone(),
+                    workspace: workspace.clone(),
                     app: app.clone(),
                     device: DeviceKind::from_name(device)?,
                     decision: *decision,
@@ -144,16 +144,21 @@ impl DeviceGrants {
     /// written; nothing is recorded then.
     pub fn record(
         &self,
-        room: &str,
+        workspace: &str,
         app: &str,
         device: DeviceKind,
         decision: Decision,
     ) -> io::Result<()> {
-        if !valid_id(room) || !valid_id(app) {
-            return Err(invalid("a room or app id is not a valid device-grant id"));
+        if !valid_id(workspace) || !valid_id(app) {
+            return Err(invalid(
+                "a workspace or app id is not a valid device-grant id",
+            ));
         }
         self.update(|decisions| {
-            decisions.insert((room.to_owned(), app.to_owned(), device.name()), decision);
+            decisions.insert(
+                (workspace.to_owned(), app.to_owned(), device.name()),
+                decision,
+            );
         })
     }
 
@@ -163,11 +168,11 @@ impl DeviceGrants {
     /// # Errors
     ///
     /// The file cannot be written; the decision stands then.
-    pub fn revoke(&self, room: &str, app: &str, device: DeviceKind) -> io::Result<bool> {
+    pub fn revoke(&self, workspace: &str, app: &str, device: DeviceKind) -> io::Result<bool> {
         let mut removed = false;
         self.update(|decisions| {
             removed = decisions
-                .remove(&(room.to_owned(), app.to_owned(), device.name()))
+                .remove(&(workspace.to_owned(), app.to_owned(), device.name()))
                 .is_some();
         })?;
         Ok(removed)
@@ -188,12 +193,12 @@ impl DeviceGrants {
 
     fn persist(&self, decisions: &BTreeMap<Key, Decision>) -> io::Result<()> {
         let mut text = String::new();
-        for ((room, app, device), decision) in decisions {
+        for ((workspace, app, device), decision) in decisions {
             let decision = match decision {
                 Decision::Allow => "allow",
                 Decision::Deny => "deny",
             };
-            let _ = writeln!(text, "{room}\t{app}\t{device}\t{decision}");
+            let _ = writeln!(text, "{workspace}\t{app}\t{device}\t{decision}");
         }
         tilo_files::native::atomic::write_creating_parent_with_mode(
             &self.path,
@@ -234,7 +239,7 @@ fn read(path: &Path) -> io::Result<Loaded> {
         Ok(text) => {
             for line in text.lines().filter(|line| !line.is_empty()) {
                 let fields: Vec<&str> = line.split('\t').collect();
-                let [room, app, device, decision] = fields.as_slice() else {
+                let [workspace, app, device, decision] = fields.as_slice() else {
                     return Err(invalid("a device grant line has the wrong shape"));
                 };
                 let device = DeviceKind::from_name(device)
@@ -245,7 +250,7 @@ fn read(path: &Path) -> io::Result<Loaded> {
                     _ => return Err(invalid("a device grant has an unknown decision")),
                 };
                 decisions.insert(
-                    ((*room).to_owned(), (*app).to_owned(), device.name()),
+                    ((*workspace).to_owned(), (*app).to_owned(), device.name()),
                     decision,
                 );
             }
@@ -259,12 +264,12 @@ fn read(path: &Path) -> io::Result<Loaded> {
     })
 }
 
-/// The [`Policy`] of one app in one room: a device it did not declare is
+/// The [`Policy`] of one app in one workspace: a device it did not declare is
 /// refused without asking anyone; a declared one follows the person's
 /// recorded decision, and `consent` asks them when there is none.
 pub struct GrantPolicy<C> {
     pub grants: std::sync::Arc<DeviceGrants>,
-    pub room: String,
+    pub workspace: String,
     pub app: String,
     pub declared: Vec<DeviceKind>,
     pub consent: C,
@@ -282,19 +287,20 @@ where
                 device.name()
             ));
         }
-        let decision = if let Some(decision) = self.grants.decision(&self.room, &self.app, device) {
-            decision
-        } else {
-            let decision = if (self.consent)(device)? {
-                Decision::Allow
+        let decision =
+            if let Some(decision) = self.grants.decision(&self.workspace, &self.app, device) {
+                decision
             } else {
-                Decision::Deny
+                let decision = if (self.consent)(device)? {
+                    Decision::Allow
+                } else {
+                    Decision::Deny
+                };
+                self.grants
+                    .record(&self.workspace, &self.app, device, decision)
+                    .map_err(|error| format!("the decision could not be kept: {error}"))?;
+                decision
             };
-            self.grants
-                .record(&self.room, &self.app, device, decision)
-                .map_err(|error| format!("the decision could not be kept: {error}"))?;
-            decision
-        };
         match decision {
             Decision::Allow => Ok(()),
             Decision::Deny => Err(format!(
@@ -307,7 +313,7 @@ where
 
     fn allows(&self, device: DeviceKind) -> bool {
         self.declared.contains(&device)
-            && self.grants.decision(&self.room, &self.app, device) == Some(Decision::Allow)
+            && self.grants.decision(&self.workspace, &self.app, device) == Some(Decision::Allow)
     }
 }
 
@@ -318,7 +324,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn decisions_are_per_app_room_and_device_persisted_and_revocable() {
+    fn decisions_are_per_app_workspace_and_device_persisted_and_revocable() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state/device-grants");
         let grants = DeviceGrants::open(&path).unwrap();
@@ -329,7 +335,10 @@ mod tests {
         grants
             .record("r", "a", DeviceKind::Microphone, Decision::Deny)
             .unwrap();
-        assert_eq!(grants.decision("other-room", "a", DeviceKind::Camera), None);
+        assert_eq!(
+            grants.decision("other-workspace", "a", DeviceKind::Camera),
+            None
+        );
         assert_eq!(grants.decision("r", "other-app", DeviceKind::Camera), None);
 
         let reopened = DeviceGrants::open(&path).unwrap();
@@ -345,13 +354,13 @@ mod tests {
             reopened.list(),
             [
                 Grant {
-                    room: "r".into(),
+                    workspace: "r".into(),
                     app: "a".into(),
                     device: DeviceKind::Camera,
                     decision: Decision::Allow,
                 },
                 Grant {
-                    room: "r".into(),
+                    workspace: "r".into(),
                     app: "a".into(),
                     device: DeviceKind::Microphone,
                     decision: Decision::Deny,
@@ -383,7 +392,7 @@ mod tests {
         let answer = Arc::new(Mutex::new(true));
         let policy = GrantPolicy {
             grants: Arc::clone(&grants),
-            room: "r".into(),
+            workspace: "r".into(),
             app: "so.tilo.video".into(),
             declared: vec![DeviceKind::Camera],
             consent: {
