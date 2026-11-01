@@ -895,7 +895,7 @@ async fn one_journal_answers_a_local_caller_and_the_persons_other_device() {
             let door = crate::collab_app_broker::device_host(Arc::clone(&rig.state));
             let device =
                 Caller::authenticated(env.cert.user_public_key, env.cert.device_public_key)
-                    .in_room(env.route.cluster_id.clone());
+                    .in_workspace(env.route.cluster_id.clone());
             let completed = |invocation| tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: tilo_actions::ActionOutput::default(),
