@@ -199,8 +199,9 @@ pub(crate) struct ChromeWiring {
 
 /// What the snapshot revision was last bumped for: the tree's revision, the
 /// minute, the last wave heard, the ask on the person's avatar, the tray's
-/// revision, the displays a fullscreen window owns, and who views the
-/// windows this session shares.
+/// revision, the displays a fullscreen window owns, who views the windows
+/// this session shares, and the notification count and silence the bell
+/// shows.
 type Seen = (
     u64,
     i64,
@@ -209,6 +210,8 @@ type Seen = (
     u64,
     Vec<String>,
     Vec<(u64, u64, bool)>,
+    u32,
+    bool,
 );
 
 /// The bar's view of the session: the desktop's tree, the wall clock, and
@@ -291,6 +294,8 @@ impl SessionChrome {
                 u64::MAX,
                 Vec::new(),
                 Vec::new(),
+                0,
+                false,
             )),
             revision: Cell::new(0),
         }
@@ -366,6 +371,8 @@ impl DesktopChromeSource for SessionChrome {
                 .iter()
                 .map(|exposure| (exposure.surface, exposure.peer, exposure.can_control))
                 .collect(),
+            self.signals.unread(),
+            self.signals.quiet(),
         );
         if *self.seen.borrow() != seen {
             self.seen.replace(seen);
