@@ -266,6 +266,25 @@ impl SourceMap {
         })
     }
 
+    /// Every view the node keyed `key` is shown inside, as `(app, view name)`: the view named
+    /// last, whose node it is, and each view named before it, whose call holds it. A view
+    /// whose body is only a branch (`if let`) or a call of another view adds no node of its own,
+    /// yet it ran wherever a key names it.
+    pub fn views_in<'k>(&'k self, key: &'k str) -> impl Iterator<Item = (&'k str, &'k str)> + 'k {
+        self.views.iter().filter_map(move |(id, view)| {
+            key.match_indices(id.as_str())
+                .any(|(at, _)| {
+                    let before = key.get(..at).and_then(|k| k.chars().next_back());
+                    let after = key
+                        .get(at.saturating_add(id.len())..)
+                        .and_then(|k| k.chars().next());
+                    matches!(before, None | Some('~' | '.' | '/'))
+                        && matches!(after, None | Some('~' | '.'))
+                })
+                .then_some((view.app.as_str(), view.name.as_str()))
+        })
+    }
+
     /// Where a widget comes from, by the keys of it and the widgets around it, innermost
     /// first: the innermost that names a call in `app`'s own source, else the innermost in
     /// one of its views, else the innermost that resolves at all.
