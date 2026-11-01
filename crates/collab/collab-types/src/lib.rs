@@ -87,7 +87,7 @@ pub const RECORD_URI_SCHEME: &str = "tilo-record";
 pub use canonical::{CanonicalError, canonical_bytes};
 pub use caps::{
     Access, Actor, CapDecision, CapOverride, Effect, Expiry, FsAuthority, LaunchGrants, Principal,
-    ResourceRef, RoomMember, Scope, Subject, decide_capability, host_covers, path_covers,
+    ResourceRef, Scope, Subject, WorkspaceMember, decide_capability, host_covers, path_covers,
 };
 pub use channel::{
     Artifact, ArtifactId, ArtifactRef, Channel, ChannelId, ChannelRef, ChannelSettingsDelta,
