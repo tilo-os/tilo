@@ -9778,7 +9778,7 @@ fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
             PathBuf::from("tests/headless-actions.json"),
             headless_actions(spec),
         ),
-        (PathBuf::from("tilo-app.toml"), app_manifest(spec)),
+        (PathBuf::from("tilo-app.toml"), app_manifest(spec)?),
         (PathBuf::from("README.md"), app_readme(spec)),
         (PathBuf::from("AGENTS.md"), APP_AGENT_GUIDE.to_owned()),
         (PathBuf::from("locales/en-US.ftl"), catalog),
@@ -9930,24 +9930,25 @@ fn app_test(spec: &AppSpec) -> String {
     format!("{tests}{NATIVE_APP_TESTS}").replace("generated_app", &spec.crate_name)
 }
 
-fn app_manifest(spec: &AppSpec) -> String {
+fn app_manifest(spec: &AppSpec) -> Result<String> {
     // An app runs only where every service it names is served at exactly that
     // version, so a scaffold names the versions this Tilo serves rather than
-    // the ones that were current when this line was written.
+    // the ones that were current when this line was written. A service the
+    // image does not serve is a broken image, not a scaffold: say so and stop.
     let served = interface_versions::current();
     let version = |service: &str| {
-        served.version(service).unwrap_or_else(|| {
-            panic!("os/usr/share/tilo/system-interfaces.toml serves no {service} service")
+        served.version(service).with_context(|| {
+            format!("os/usr/share/tilo/system-interfaces.toml serves no {service} service")
         })
     };
-    format!(
+    Ok(format!(
         "[package]\nid = {app_id:?}\nname = {title:?}\ncategory = \"Utility\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"tilo-runtime/2026.07\"\n\n[package.isa]\nx86_64 = \"v3\"\naarch64 = \"aarch64\"\n\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\nsignature = \"\"\n\n[sandbox]\nnamespaces = [\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\n[sandbox.net]\nmode = \"off\"\n\n[sandbox.portals]\n\n[sandbox.services]\ncollab = \"optional@{collab}\"\ntilo-fs = \"optional@{fs}\"\n\n[entrypoint]\nbin = \"bin/{package}\"\ntype = \"gui\"\nsplash-budget = 250\n\n[providers]\nmime = []\next = []\n",
         app_id = spec.app_id,
         title = spec.title,
         package = spec.package_name,
-        collab = version("collab"),
-        fs = version("tilo-fs"),
-    )
+        collab = version("collab")?,
+        fs = version("tilo-fs")?,
+    ))
 }
 
 fn headless_actions(spec: &AppSpec) -> String {
