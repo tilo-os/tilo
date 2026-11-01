@@ -71,7 +71,7 @@ impl PeerGovernanceMut<'_> {
         self.peer.require_governance_writer(key, now)?;
         let mut doc = self.peer.core.room_doc.clone().ok_or("missing room")?;
         let before = doc.get_heads();
-        let authors = shared_record::read(&*doc, None)
+        let authors = shared_record::read(&doc, None)
             .map(|desktop| desktop.authors)
             .unwrap_or_default();
         doc.set_actor(self.peer.room_actor_of(key));

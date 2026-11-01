@@ -15,6 +15,19 @@ use ui::widget::TileContent;
 
 const ROOM: &str = "room-a";
 
+/// Write the desk as it stands into `doc` and commit it at `time`, as a page
+/// records each pass: one change of the desk, by its person.
+fn stamp(doc: &mut AutoCommit, tree: &DesktopTree, time: i64) {
+    tilo_desktop_model::desktop_doc::seed(doc, tree);
+    doc.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_desktop_model::shared_record::change_message(Some(
+                "Ada",
+            )))
+            .with_time(time),
+    );
+}
+
 struct Activity;
 
 impl TileSource for Activity {
@@ -39,8 +52,9 @@ impl TileSource for Activity {
     }
 }
 
+/// The desk's own document, as a browser page keeps it.
 struct RetainedHistory {
-    log: Rc<std::cell::RefCell<AutoCommit>>,
+    document: Rc<std::cell::RefCell<AutoCommit>>,
 }
 
 impl HistorySource for RetainedHistory {
@@ -49,11 +63,12 @@ impl HistorySource for RetainedHistory {
         tree: &DesktopTree,
         workspace: WorkspaceId,
     ) -> Option<crate::activity::ActivitySnapshot> {
-        let room = tree.workspaces.iter().find(|w| w.id == workspace)?.room();
-        let history = crate::history_log::workspace_history(self.log.borrow().clone(), room);
         let mut desktop = tree.clone();
         desktop.active = workspace;
-        crate::activity::ActivitySnapshot::new(desktop, history.doc).ok()
+        Some(crate::activity::ActivitySnapshot::of_desktop(
+            desktop,
+            self.document.borrow().clone(),
+        ))
     }
 
     fn record_histories(
@@ -72,7 +87,7 @@ impl HistorySource for RetainedHistory {
         use automerge::transaction::Transactable as _;
         use std::hash::{Hash as _, Hasher as _};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.log.borrow().base_heads().hash(&mut hasher);
+        self.document.borrow().base_heads().hash(&mut hasher);
         hasher.finish()
     }
 }
@@ -116,7 +131,7 @@ struct Served {
     surface: DesktopSurface,
     handle: DesktopHandle,
     session: Arc<crate::session::DesktopSession>,
-    log: Rc<std::cell::RefCell<AutoCommit>>,
+    document: Rc<std::cell::RefCell<AutoCommit>>,
     tree: DesktopTree,
 }
 
@@ -137,22 +152,12 @@ impl Served {
         let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Activity));
         let mut tree = handle.read(Clone::clone);
         let mut retained = AutoCommit::new();
-        assert!(crate::history_log::record(
-            &mut retained,
-            &serde_json::to_value(&tree).unwrap(),
-            "Ada",
-            1_000,
-        ));
+        stamp(&mut retained, &tree, 1_000);
         tree.workspaces[0].name = "Renamed".into();
-        assert!(crate::history_log::record(
-            &mut retained,
-            &serde_json::to_value(&tree).unwrap(),
-            "Ada",
-            2_000,
-        ));
-        let log = Rc::new(std::cell::RefCell::new(retained));
+        stamp(&mut retained, &tree, 2_000);
+        let document = Rc::new(std::cell::RefCell::new(retained));
         let retained = RetainedHistory {
-            log: Rc::clone(&log),
+            document: Rc::clone(&document),
         };
         match code {
             Some(code) => surface.set_history_source(Box::new(DeferredHistory { retained, code })),
@@ -164,7 +169,7 @@ impl Served {
             surface,
             handle,
             session,
-            log,
+            document,
             tree,
         }
     }
@@ -183,12 +188,7 @@ impl Served {
     /// Someone renames the workspace: the history moves.
     fn rename(&mut self, name: &str, at_ms: i64) {
         self.tree.workspaces[0].name = name.into();
-        assert!(crate::history_log::record(
-            &mut self.log.borrow_mut(),
-            &serde_json::to_value(&self.tree).unwrap(),
-            "Ada",
-            at_ms,
-        ));
+        stamp(&mut self.document.borrow_mut(), &self.tree, at_ms);
     }
 
     fn activity_windows(&self) -> usize {
