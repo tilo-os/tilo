@@ -12,7 +12,9 @@ use super::{
 };
 use crate::StatePeer;
 use crate::join::TransportHint;
-use crate::join::invitations::{IssueInvitationRequest, IssuedInvitation};
+use crate::join::invitations::{
+    CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
+};
 use crate::join_answer::{JoinWorkspaces, WorkspaceTxn};
 use crate::join_ledger::{GovernanceMessages, Governed, JoinError, JoinLedger, Signer};
 use crate::owner_commit::{CommitBinding, CommitTarget, OwnerCommitReceipt};
@@ -335,5 +337,69 @@ impl NativeWorkspaceOwner {
             .ok_or("native join generation exhausted")?;
         self.publish_workspace(workspace, candidate, None)?;
         Ok(issued)
+    }
+
+    /// Cancel the invitation `request` names in `workspace` as this device,
+    /// signed with `key`, and publish the workspace's join ledger without it:
+    /// the link is dead for every member that takes the change, and no host
+    /// keeps a list of cancelled links. Answers whether the ledger changed;
+    /// asking again with the same request changes nothing.
+    ///
+    /// An invitation is cancelled by the person who issued it, from any of
+    /// their devices: the ledger keeps the issuer's user root, not the one
+    /// device that first made the link.
+    ///
+    /// # Errors
+    ///
+    /// `key` is not the device's, it may not write, the invitation is unknown
+    /// or was issued by someone else, or the workspace cannot be published.
+    pub fn cancel_invitation(
+        &self,
+        workspace: RoomId,
+        request: &CancelInvitationRequest,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let _turn = self.0.mutation.lock();
+        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
+        if key.verifying_key().to_bytes() != candidate.device().device_public_key {
+            return Err("invitation is not cancelled by this device".into());
+        }
+        candidate.peer.require_member_writer(key, now)?;
+        let mut ledger = candidate.record.join_ledger.clone();
+        let issuer = ledger
+            .issuer_of(request.invite_id)
+            .ok_or("invitation does not exist")?;
+        if issuer != candidate.device().user_public_key {
+            return Err("an invitation is cancelled by the person who issued it".into());
+        }
+        let changed = ledger.cancel(request).map_err(|error| error.to_string())?;
+        if !changed {
+            return Ok(false);
+        }
+        candidate.record.join_ledger = ledger;
+        candidate.record.generation = candidate
+            .generation()
+            .checked_add(1)
+            .ok_or("native join generation exhausted")?;
+        self.publish_workspace(workspace, candidate, None)?;
+        Ok(true)
+    }
+
+    /// The invitations into `workspace` still redeemable at `now`, as this
+    /// device holds them: what the person who invited others sees, without
+    /// asking a host.
+    ///
+    /// # Errors
+    ///
+    /// This device holds no such workspace, `now` is not a clock reading, or
+    /// the workspace's record cannot be read.
+    pub fn pending_invitations(
+        &self,
+        workspace: RoomId,
+        now: SystemTime,
+    ) -> Result<Vec<PendingInvitation>, String> {
+        let now = crate::owner::enrollment::ns(now)?;
+        self.with_current(workspace, |view| Ok(view.record.join_ledger.pending(now)))
     }
 }

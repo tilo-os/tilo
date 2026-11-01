@@ -1423,6 +1423,7 @@ impl Session {
             notices: notices.clone(),
             overlays: Rc::clone(&desk_overlays),
             tray: tray.clone(),
+            engine: engine.clone(),
         };
         let desk_service = desk();
         let shell = options

@@ -25,6 +25,7 @@ use tilo_desktop_model::{RoomId, WorkspaceId};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::invitations::{CancelInvitationRequest, PendingInvitation};
 use tilo_peer_state::owner::{
     Change, DocumentRead, FileHost, NativeWorkspaceOwner, open_file_with, owner_file_of,
 };
@@ -334,6 +335,49 @@ impl Engine {
         })
     }
 
+    /// The invitations into `room` this device's person issued that are still
+    /// redeemable: the links they made, listed where they made them, since a
+    /// link is answered by the device that signed it.
+    ///
+    /// # Errors
+    /// The room is not held here, or its join ledger cannot be read now.
+    pub(crate) fn invitations(
+        &self,
+        room: &str,
+        now: SystemTime,
+    ) -> Result<Vec<PendingInvitation>, String> {
+        let room = RoomId::parse(room).ok_or("that is not a room")?;
+        self.owner.pending_invitations(room, now)
+    }
+
+    /// Cancel the invitation `invitation` into `room`, named by the id listing
+    /// it reports, as the person who issued it: the link admits nobody from
+    /// now on. Answers whether the workspace changed here; cancelling the same
+    /// link again changes nothing.
+    ///
+    /// # Errors
+    /// The room is not held here, the invitation was not issued from this
+    /// device's person, or the workspace cannot be published.
+    pub(crate) fn cancel_invitation(
+        &self,
+        room: &str,
+        invitation: &str,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let room = RoomId::parse(room).ok_or("that is not a room")?;
+        let invite_id = invitation_id(invitation)?;
+        let identity = self.identity();
+        self.owner.cancel_invitation(
+            room,
+            &CancelInvitationRequest {
+                request_id: cancellation_id(invite_id),
+                invite_id,
+            },
+            &identity.device_signing_key,
+            now,
+        )
+    }
+
     /// The revocations the room `room`'s governance records, as the room
     /// last admitted them: the devices of any of its people the room refuses
     /// to hear from. `None` when this device holds no room of that name, so
@@ -421,6 +465,23 @@ impl Engine {
     pub(crate) fn unbind(&self, workspace: WorkspaceId) {
         self.slots.0.lock_recover().remove(&workspace);
     }
+}
+
+/// The id a listing reports for an invitation, as its 32 bytes: 64 hex
+/// characters.
+fn invitation_id(text: &str) -> Result<[u8; 32], String> {
+    let bytes = hex::decode(text).map_err(|error| error.to_string())?;
+    <[u8; 32]>::try_from(bytes.as_slice())
+        .map_err(|_| "an invitation's id is 64 hex characters".to_owned())
+}
+
+/// The id cancelling `invite_id` asks under: the link is what is cancelled, so
+/// asking again about the same link is the same request.
+fn cancellation_id(invite_id: [u8; 32]) -> [u8; 32] {
+    *blake3::Hasher::new_derive_key("Tilo invitation cancellation v1")
+        .update(&invite_id)
+        .finalize()
+        .as_bytes()
 }
 
 /// A room's revocations, as the threads beside the session's loop ask for

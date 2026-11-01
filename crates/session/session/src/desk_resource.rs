@@ -8,9 +8,11 @@ use std::rc::Rc;
 
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::{DesktopTree, RoomId, Workspace};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::Command;
+use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::invitations::PendingInvitation;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_surface_host::shell_part::DESK_RESOURCE;
@@ -56,6 +58,22 @@ pub(crate) enum DeskEffect {
     /// the item is one
     #[effect(row, label = "Open")]
     OpenTrayItem { key: String },
+    /// The invitations this device's person made into a workspace that can still be
+    /// redeemed, in the words the workspace's host lists them by
+    Invitations {
+        /// The workspace, by its key; the one in front when absent
+        #[param("The workspace, by its key; the one in front when absent")]
+        workspace: Option<String>,
+    },
+    /// Cancel the invitation `invite` of a workspace: its link admits nobody from now on
+    CancelInvitation {
+        /// The invitation's id, 64 hex characters, as listing invitations reports it
+        #[param("The invitation's id, 64 hex characters, as listing invitations reports it")]
+        invite: String,
+        /// The workspace, by its key; the one in front when absent
+        #[param("The workspace, by its key; the one in front when absent")]
+        workspace: Option<String>,
+    },
     /// Show the surface `surface` over the desk's windows, or close it when it is up.
     ShowSurface {
         #[param(
@@ -113,6 +131,9 @@ pub(crate) struct Desk {
     /// The runs of what the person asked the session's agents: each run's conversation is
     /// the desk's to show (shell.md §8.1).
     pub(crate) runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
+    /// This device's workspaces' record, when the session holds one: the invitations
+    /// a workspace's people made are kept there, by the device that made them.
+    pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
 }
 
 /// What a window with no title is called.
@@ -634,6 +655,93 @@ impl Desk {
 }
 
 impl Desk {
+    /// The room of the desk's workspace `key`, or of the workspace in front when
+    /// the caller names none.
+    fn room(&self, workspace: Option<&str>) -> Result<RoomId, DoorError> {
+        let room = self.handle.read(|tree| {
+            let workspace = match workspace {
+                Some(key) => tree
+                    .workspaces
+                    .iter()
+                    .find(|candidate| candidate.id.0.to_string() == key),
+                None => tree.active_workspace(),
+            };
+            workspace.map(Workspace::room)
+        });
+        room.ok_or_else(|| match workspace {
+            Some(key) => {
+                DoorError::InvalidArguments(format!("there is no workspace {key} on this device"))
+            }
+            None => DoorError::Failed("no workspace is in front".to_owned()),
+        })
+    }
+
+    /// The invitations into a workspace this device's person made that are still
+    /// redeemable, as the workspace's host lists them: its id in hex, the part it
+    /// grants, whom it is addressed to, how it names them and when it lapses.
+    fn invitations(&self, workspace: Option<&str>) -> Result<Started, DoorError> {
+        let engine = self.engine()?;
+        let room = self.room(workspace)?;
+        let invitations = engine
+            .invitations(&room.to_string(), std::time::SystemTime::now())
+            .map_err(DoorError::Failed)?;
+        let value = Value::Array(invitations.iter().map(invitation_json).collect());
+        Ok(Started::Done(tilo_actions::ActionOutput {
+            value: Some(value),
+            resources: Vec::new(),
+        }))
+    }
+
+    /// Cancel one of them, from the device that issued it: the link admits nobody
+    /// from now on.
+    fn cancel_invitation(
+        &self,
+        invite: &str,
+        workspace: Option<&str>,
+    ) -> Result<Started, DoorError> {
+        let engine = self.engine()?;
+        let room = self.room(workspace)?;
+        let cancelled = engine
+            .cancel_invitation(&room.to_string(), invite, std::time::SystemTime::now())
+            .map_err(DoorError::Failed)?;
+        Ok(Started::Done(tilo_actions::ActionOutput {
+            value: Some(serde_json::json!({"cancelled": cancelled})),
+            resources: Vec::new(),
+        }))
+    }
+
+    /// This device's engine: invitations are its record's, and a session without
+    /// one has none.
+    fn engine(&self) -> Result<&crate::engine::Engine, DoorError> {
+        self.engine
+            .as_deref()
+            .ok_or_else(|| DoorError::Failed("this session holds no workspace's record".to_owned()))
+    }
+}
+
+/// A pending invitation as listing invitations reports it, in the workspace host's
+/// own words: a client that lists them from a host reads the same fields.
+fn invitation_json(invitation: &PendingInvitation) -> Value {
+    serde_json::json!({
+        "invite": hex::encode(invitation.invite_id),
+        "role": role_name(invitation.role),
+        "recipient": invitation.recipient_user_public_key.map(hex::encode),
+        "invitee_name": invitation.invitee_name,
+        "expires_at_ns": invitation.expires_at_ns,
+    })
+}
+
+/// The part an invitation grants, as the workspace's settings name it.
+const fn role_name(role: MemberRole) -> &'static str {
+    match role {
+        MemberRole::Viewer => "viewer",
+        MemberRole::Commenter => "commenter",
+        MemberRole::Editor => "editor",
+        MemberRole::Moderator => "moderator",
+    }
+}
+
+impl Desk {
     /// Open or close the running application's tray item `key`, as a press on its icon does:
     /// its window, or its menu when the item is one.
     fn open_tray_item(&self, key: &str) -> Result<Started, DoorError> {
@@ -691,6 +799,12 @@ impl Service for Desk {
                 return Ok(Started::Done(tilo_actions::ActionOutput::default()));
             }
             DeskEffect::OpenTrayItem { key } => return self.open_tray_item(key),
+            DeskEffect::Invitations { workspace } => {
+                return self.invitations(workspace.as_deref());
+            }
+            DeskEffect::CancelInvitation { invite, workspace } => {
+                return self.cancel_invitation(invite, workspace.as_deref());
+            }
             _ => {}
         }
         if let DeskEffect::ShowSurface { surface } = &effect {
