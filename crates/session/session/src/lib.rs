@@ -2166,6 +2166,12 @@ impl Session {
         let up = self
             .read(mount::shell::WINDOW_MENU)
             .is_some_and(|reading| reading.get("tab").is_some_and(|tab| !tab.is_null()));
+        // A slot the person is not looking at is nobody's to draw: the
+        // binding is read while the part is up, and once more when it goes,
+        // rather than on every pass of a menu that is down.
+        if !up && self.slots.running(VIEW).is_none() {
+            return;
+        }
         let settings = self.read(mount::slots::BINDINGS);
         match self.slots.follow(VIEW, SHIPPED, up, settings.as_ref()) {
             mount::slots::Mount::Nothing => {}
