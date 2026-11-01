@@ -422,7 +422,7 @@ test('only a bare desktop entry under a home reopens the workspace the person la
   assert.equal(chosenRoute({location: bare, mode: 'desktop', home, chosen: null}), null);
 });
 
-function roomPage({href, hash, parse}) {
+function workspacePage({href, hash, parse}) {
   const listeners = {};
   const calls = {reloads: 0, dispatched: [], scopes: []};
   const navigation = {
@@ -443,7 +443,7 @@ function roomPage({href, hash, parse}) {
 
 test('a returning person’s bare entry opens the chosen workspace through their membership, not the home’s door', async () => {
   const home = {name: 'Lounge', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
-  const page = roomPage({href: 'https://tilo.example/', hash: '', parse: () => { throw new Error('a chosen room needs no parse'); }});
+  const page = workspacePage({href: 'https://tilo.example/', hash: '', parse: () => { throw new Error('a chosen room needs no parse'); }});
   const connected = [];
   const peer = {workspace: 'A', whenReady: async () => {}, mountDesktop: async (element, options) => { options.onNavigation?.(page.navigation); return {navigation: page.navigation}; }};
   const deps = {
@@ -467,7 +467,7 @@ test('Back or Forward to another workspace loads it anew, never inside the works
     '#/@acme.example/w/A': {kind: 'room', host: 'https://acme.example', room: 'A'},
     '#/@globex.example/w/G': {kind: 'room', host: 'https://globex.example', room: 'G'},
   };
-  const page = roomPage({href: 'https://tilo.example/#/@acme.example/w/A', hash: '#/@acme.example/w/A',
+  const page = workspacePage({href: 'https://tilo.example/#/@acme.example/w/A', hash: '#/@acme.example/w/A',
     parse: url => ({mode: 'desktop', target: {scope: scopes[new URL(url).hash]}})});
   const peer = {workspace: 'A', whenReady: async () => {}, mountDesktop: async (element, options) => { options.onNavigation?.(page.navigation); return {navigation: page.navigation}; }};
   const deps = {
@@ -547,7 +547,7 @@ test('the home workspace sends reports to the channel its entry names, without h
 test('reports from another workspace reach the home workspace’s channel through its peer there', async () => {
   const home = {name: 'Lounge', room: 'LOUNGE', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/',
     feedback: {channel: 'c_feedback'}};
-  const page = roomPage({href: 'https://tilo.example/', hash: '', parse: () => { throw new Error('a chosen room needs no parse'); }});
+  const page = workspacePage({href: 'https://tilo.example/', hash: '', parse: () => { throw new Error('a chosen room needs no parse'); }});
   const through = [];
   const asked = [];
   let configured;
@@ -618,7 +618,7 @@ test('the address names the app in front, and the view a link opened, as a link 
 test('a link opened inside the desktop names its view in the address, and focus elsewhere takes it back', async () => {
   const scope = {kind: 'room', host: 'https://acme.example', room: 'A'};
   const opened = {scope, app: 'so.tilo.chat', record: 'c1', resource: message};
-  const page = roomPage({href: 'https://acme.example/open/#/@acme.example/w/A', hash: '#/@acme.example/w/A',
+  const page = workspacePage({href: 'https://acme.example/open/#/@acme.example/w/A', hash: '#/@acme.example/w/A',
     parse: () => ({mode: 'desktop', target: {scope}})});
   const written = [];
   page.runtime.formatLink = route => { written.push(JSON.parse(route).target); return `https://acme.example/open/#${written.length}`; };

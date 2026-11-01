@@ -72,7 +72,7 @@ pub(crate) enum HostRequest {
     /// name)`).
     Named(String),
     /// Have the workspace's host run an action of a workspace record for the person
-    /// (`peer.actions`), and answer it with `desktop_room_action_answer`.
+    /// (`peer.actions`), and answer it with `desktop_record_action_answer`.
     RecordAction(crate::desktop::RecordActionRequest),
     /// Open Chat's direct conversation with this person, through Chat's own
     /// action, as following a link to it does (`desktop_run_own_ask`).

@@ -7,7 +7,7 @@ const SEALED = 0x53;
 const sealedFrame = value => Uint8Array.from([SEALED, ...new TextEncoder().encode(JSON.stringify(value))]);
 const openedFrame = bytes => JSON.parse(new TextDecoder().decode(bytes.subarray(1)));
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
-const ROOM_HEX = 'aa'.repeat(32);
+const WORKSPACE_HEX = 'aa'.repeat(32);
 const SELF = 'dd'.repeat(32);
 const OTHER = 'cc'.repeat(32);
 const AGENT = 'ee'.repeat(32);
@@ -126,7 +126,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
           liveGrant: async (room, ...agent) => {
             calls.grants++;
             calls.grantAgents.push(agent);
-            return JSON.stringify({token: '0102', workspace: ROOM_HEX, publisher: agent.length ? AGENT : SELF, expiresAtNs: (Date.now() + 600_000) * 1e6});
+            return JSON.stringify({token: '0102', workspace: WORKSPACE_HEX, publisher: agent.length ? AGENT : SELF, expiresAtNs: (Date.now() + 600_000) * 1e6});
           },
           // Stand-in channel keys: a sealed frame carries the SEALED marker,
           // and only a sealed frame opens.
@@ -306,7 +306,7 @@ test('the live layer joins over the carrier with the session grant and interpola
   const [session] = liveCarriers.connects;
   assert.equal(session.options.endpoint, 'https://host.example:8443/moq/live');
   assert.deepEqual([...session.options.authorization], [1, 2]);
-  assert.deepEqual(session.options.namespace, ['tilo-live', ROOM_HEX, SELF]);
+  assert.deepEqual(session.options.namespace, ['tilo-live', WORKSPACE_HEX, SELF]);
   assert.equal(peer.live.state, 'live');
 
   const presence = [];
@@ -1172,7 +1172,7 @@ test('raw record watches bind the member namespace and stop retrying after unwat
       return () => { canceled++; };
     },
   };
-  const layer = createLiveLayer({liveGrant: async () => JSON.stringify({token: '0102', workspace: ROOM_HEX,
+  const layer = createLiveLayer({liveGrant: async () => JSON.stringify({token: '0102', workspace: WORKSPACE_HEX,
     publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6})}, runtime, ROOM, {
     endpoint: 'test', carriers: {connect: async () => session},
     setTimer: callback => {timers.push(callback); return timers.length;}, clearTimer() {},
@@ -1288,7 +1288,7 @@ test('an old membership retry cannot replace a rejoined publishers presence subs
   const carriers = fakeCarriers();
   const timers = [];
   const layer = createLiveLayer({
-    liveGrant: async () => JSON.stringify({token: '0102', workspace: ROOM_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
+    liveGrant: async () => JSON.stringify({token: '0102', workspace: WORKSPACE_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
     sealLive: async (_room, bytes) => bytes,
     openLive: async (_room, bytes) => bytes.slice(1),
   }, runtime, ROOM, {
@@ -1320,7 +1320,7 @@ test('a renewed live session announces the name the person chose since, not the 
   const carriers = fakeCarriers();
   const timers = [];
   const layer = createLiveLayer({
-    liveGrant: async () => JSON.stringify({token: '0102', workspace: ROOM_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
+    liveGrant: async () => JSON.stringify({token: '0102', workspace: WORKSPACE_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
     sealLive: async (_room, bytes) => bytes,
   }, fakeRuntime(), ROOM, {
     endpoint: 'test', carriers, participant: {kind: 'person', label: 'Ada', color: '#336699', activity: null},
@@ -1344,7 +1344,7 @@ test('a renewed live session announces the name the person chose since, not the 
 test('each live grant tells the host what the page decodes; an agent\'s layer does not speak for the page', async () => {
   const advertised = [];
   const peerOf = () => ({
-    liveGrant: async () => JSON.stringify({token: '0102', workspace: ROOM_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
+    liveGrant: async () => JSON.stringify({token: '0102', workspace: WORKSPACE_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
     legacyCodecs: async (room, codecs) => { advertised.push([room, JSON.parse(codecs)]); return true; },
   });
   const timers = [];
