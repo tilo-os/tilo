@@ -788,6 +788,236 @@ fn a_persons_presence_opens_their_menu() {
     keep(&mut session, "shell-person-menu");
 }
 
+/// A sound card in memory: the speakers, at 40%.
+struct Card {
+    graph: std::sync::Mutex<media::audio::AudioGraph>,
+}
+
+impl tilo_audio_service::sound::Graph for Card {
+    fn read(&self) -> tilo_audio_service::sound::Read {
+        tilo_audio_service::sound::Read {
+            graph: self.graph.lock().unwrap().clone(),
+            uses: Vec::new(),
+        }
+    }
+
+    fn control(&self) -> &dyn media::audio::GraphControl {
+        self
+    }
+}
+
+impl media::audio::GraphControl for Card {
+    fn set_default_sink(&self, _node_id: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_default_source(&self, _node_id: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn route_stream(&self, _stream_id: u32, _target_serial: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn unroute_stream(&self, _stream_id: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_node_volume(&self, node_id: u32, perceptual: f32) -> Result<(), String> {
+        for sink in &mut self.graph.lock().unwrap().sinks {
+            if sink.id == node_id {
+                sink.volume = Some(perceptual);
+            }
+        }
+        Ok(())
+    }
+
+    fn set_node_mute(&self, _node_id: u32, _muted: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_device_profile(&self, _device_id: u32, _profile_index: u32) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// A session of `width` by `height` with the shell's bar, the person's settings and a sound
+/// card: what the quick settings read and change.
+fn session_with_devices(width: i32, height: i32) -> Session {
+    use tilo_session::Service as _;
+    let card = Card {
+        graph: std::sync::Mutex::new(media::audio::AudioGraph {
+            sinks: vec![media::audio::AudioDevice {
+                id: 40,
+                serial: 40,
+                name: "node-40".to_owned(),
+                description: "Speakers".to_owned(),
+                is_default: true,
+                volume: Some(0.4),
+                muted: Some(false),
+                channels: 2,
+                codec: None,
+            }],
+            ..media::audio::AudioGraph::default()
+        }),
+    };
+    let mut sound =
+        tilo_audio_service::sound::SoundService::new(std::sync::Arc::new(card), None).unwrap();
+    sound.settle();
+    Session::headless(
+        Options {
+            services: vec![
+                Box::new(tilo_settings_service::SettingsService::new()),
+                Box::new(sound),
+            ],
+            collab: false,
+            ..options()
+        },
+        &[OutputConfig::new("HEADLESS-1", width, height)],
+    )
+    .expect("session")
+}
+
+/// Run frames, taking in what the services report, until `done` holds.
+#[track_caller]
+fn until_settled(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
+    for _ in 0..2000 {
+        session.settle_services();
+        session.step(Duration::from_millis(1)).expect("step");
+        if done(session) {
+            return;
+        }
+    }
+    panic!(
+        "condition not reached; the session says: {:?}; the shell refused: {:?}",
+        session.accessible_labels(),
+        session.shell_refusals()
+    );
+}
+
+/// Press the control named `name` once the bar stands still: what the services report while
+/// the session starts (the workspace, who is here) adds controls beside it and moves it, and a
+/// person presses the control where they see it at rest.
+fn press_at_rest(session: &mut Session, name: &str) {
+    until_settled(session, |session| {
+        let before = (
+            session.shell_control(name),
+            session.shell_work().map(|w| w.turns),
+        );
+        session.settle_services();
+        session.step(Duration::from_millis(1)).expect("step");
+        let after = (
+            session.shell_control(name),
+            session.shell_work().map(|w| w.turns),
+        );
+        before.0.is_some() && before == after
+    });
+    press(session, name);
+}
+
+/// The person's appearance mode, as the session publishes their settings.
+fn appearance_mode(session: &Session) -> serde_json::Value {
+    session
+        .read("settings:settings.appearance")
+        .map(|section| section["mode"].clone())
+        .unwrap_or_default()
+}
+
+/// The bar's quick settings open the panel over the desk, and its Dark mode tile runs the
+/// appearance settings' own published action: the published mode turns from what it was to the
+/// other, as Settings and an agent turn it.
+fn dark_mode_from_quick_settings_at(width: i32, height: i32) {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with_devices(width, height);
+    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    press_at_rest(&mut session, "Quick settings");
+    until_settled(&mut session, |session| here(session) == "quick-settings");
+    until_settled(&mut session, |session| says(session, "Dark mode"));
+    until_settled(&mut session, |session| says(session, "Volume"));
+    let dark = serde_json::json!("dark");
+    let was_dark = appearance_mode(&session) == dark;
+    let name = |dark: bool| {
+        format!(
+            "shell-quick-settings-{width}-{}",
+            if dark { "dark" } else { "light" }
+        )
+    };
+    keep(&mut session, &name(was_dark));
+    press_at_rest(&mut session, "Dark mode");
+    until_settled(&mut session, |session| {
+        (appearance_mode(session) == dark) != was_dark
+    });
+    assert!(
+        session.shell_refusals().is_empty(),
+        "the tile's press reached the settings: {:?}",
+        session.shell_refusals()
+    );
+    for _ in 0..20 {
+        session.settle_services();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    keep(&mut session, &name(!was_dark));
+}
+
+#[test]
+fn quick_settings_dark_mode_changes_the_published_appearance() {
+    dark_mode_from_quick_settings_at(WIDTH, HEIGHT);
+}
+
+#[test]
+fn quick_settings_dark_mode_changes_the_published_appearance_on_a_phone() {
+    dark_mode_from_quick_settings_at(390, 844);
+}
+
+/// The volume slider shows the sound's published volume, and pressing its track runs the
+/// sound's own `set-volume`: the published volume follows.
+#[test]
+fn quick_settings_volume_slider_sets_the_published_volume() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with_devices(WIDTH, HEIGHT);
+    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    let volume = |session: &Session| {
+        session
+            .read("sound")
+            .and_then(|sound| sound["volume"].as_f64())
+            .unwrap_or_default()
+    };
+    assert!(
+        (volume(&session) - 0.4).abs() < 0.01,
+        "the card starts at 40%"
+    );
+    press_at_rest(&mut session, "Quick settings");
+    until_settled(&mut session, |session| {
+        session.shell_control("Volume").is_some()
+    });
+    // Press the track near its end.
+    let (x, y, w, h) = session.shell_control("Volume").unwrap();
+    let (x, y) = (x + w * 0.9, y + h / 2.0);
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x, y })
+        .unwrap();
+    session.step(Duration::from_millis(1)).unwrap();
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed,
+            })
+            .unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    until_settled(&mut session, |session| volume(session) > 0.7);
+    assert!(
+        session.shell_refusals().is_empty(),
+        "the slider's change reached the sound: {:?}",
+        session.shell_refusals()
+    );
+}
+
 // ---- each press of the shell's reaches the session ------------------------------------------
 //
 // Every `session.run` and `session.notify` the shell hands the session is an invocation on the

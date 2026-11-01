@@ -280,8 +280,17 @@ fn a_finger_on_a_quick_settings_slider_moves_it_and_never_the_window_behind() {
         "Quick Settings never showed its volume slider",
     )
     .expect("the volume slider");
-    let from = (x + w * 0.2, y + h / 2.0);
-    let to = (x + w - 1.0, y + h / 2.0);
+    // The finger runs along the band where the slider covers the window: the
+    // panel stands under the bar, so its first row may start above the window.
+    let row = compositor
+        .foreign_surface_rects()
+        .iter()
+        .filter(|[sx, _, sw, _]| x + w * 0.2 > *sx && x + w * 0.2 < sx + sw)
+        .map(|[_, sy, _, sh]| (y.max(*sy) + (y + h).min(sy + sh)) / 2.0)
+        .find(|middle| *middle > y && *middle < y + h)
+        .unwrap_or(y + h / 2.0);
+    let from = (x + w * 0.2, row);
+    let to = (x + w - 1.0, row);
     assert!(
         over_the_client(&compositor, from),
         "the slider must lie over the window to prove the panel takes the finger: {from:?}, \

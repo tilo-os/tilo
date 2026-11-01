@@ -204,7 +204,10 @@ impl PartPainter for Stock {
         match part {
             Part::WindowGround | Part::FloatingPanel | Part::BarBody => {
                 let blur = tokens.param("blur", 0.0);
-                if tokens.backdrop && translucent(tokens) && blur > 0.0 {
+                // A window's ground stays its frosted fill: only floating
+                // chrome and bars blur what lies below.
+                let sampled = tokens.backdrop && part != Part::WindowGround;
+                if sampled && translucent(tokens) && blur > 0.0 {
                     // The backdrop, the sheen on it, held in the band by the
                     // toolkit; the ground at its tint; the rim over all.
                     scene.fill(
@@ -320,7 +323,9 @@ impl PartPainter for Pixelated {
         let mut scene = PartScene::new();
         match part {
             Part::WindowGround | Part::FloatingPanel | Part::BarBody => {
-                if tokens.backdrop {
+                // A window's ground stays its fill: only floating chrome and
+                // bars show what lies below as cells.
+                if tokens.backdrop && part != Part::WindowGround {
                     scene.fill(
                         path.clone(),
                         Brush::Backdrop {
@@ -413,7 +418,9 @@ impl PartPainter for Shader {
 /// lies up to `refraction` further in along the outline's normal (all of it
 /// at the rim, easing to none at the band's inner side), red and blue set
 /// apart by `dispersion`; the flat middle shows what lies below straight,
-/// softened by `blur` (none by default). The bend is the backdrop pass's
+/// softened by `blur` (none by default). A window's ground is glass too:
+/// what lies below a window shows through it the same way. The bend is the
+/// backdrop pass's
 /// (`crate::backdrop`), evaluated with the blur, so a settled surface draws
 /// nothing new. The ground lies over it at `tint`, and every body and rest
 /// face carries a thin specular rim lit from `light_angle`: at
@@ -433,7 +440,7 @@ impl PartPainter for Liquid {
     ) -> Option<PaintedPart> {
         let body = body(size, tokens);
         let path = body.to_path(0.1);
-        let tint = tokens.param("tint", 0.2).clamp(0.0, 1.0);
+        let tint = tokens.param("tint", 0.1).clamp(0.0, 1.0);
         let rim = SpecularRim {
             strength: tokens.param("edge_highlight", 0.45),
             light_angle: tokens.param("light_angle", 135.0),

@@ -197,6 +197,14 @@ impl Checker<'_> {
         let node = Ex::local(n, Ty::View);
         if let Some(p) = d.prop(name) {
             self.typed_prop(n, d, name, &p.ty, &p.doc, value);
+        } else if let Some(b) = d.binding(name)
+            && d.event("change").is_some()
+            && !self.is_place(value)
+        {
+            // A value the view does not hold (a device's volume, read from its reading) is
+            // given, not bound: the control shows it, and the person's change goes to the
+            // view's `on change(v)`, which asks whoever holds the value to change it.
+            self.typed_prop(n, d, name, &b.ty, &b.doc, value);
         } else if let Some(b) = d.binding(name) {
             let want: Vec<Ty> = match &b.ty {
                 Type::Text => vec![Ty::Text],
@@ -243,6 +251,16 @@ impl Checker<'_> {
                 ),
             );
             let _ = self.expr(value, None);
+        }
+    }
+
+    /// Whether `value` names somewhere a control can be bound to: a field, or a piece of the
+    /// view's state. Anything else is a value computed for the control to show.
+    fn is_place(&self, value: &ast::Expr) -> bool {
+        match &value.kind {
+            ExprKind::Ident(name) => self.state_named(name).is_some(),
+            ExprKind::Field { .. } => true,
+            _ => false,
         }
     }
 

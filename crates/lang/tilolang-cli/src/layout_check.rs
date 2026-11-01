@@ -322,6 +322,28 @@ pub fn check(options: &Options) -> Result<Report, String> {
 /// The identity of a finding while it is gathered: kind, app, view, node, widget.
 type Identity = (Kind, String, String, Option<String>, String);
 
+/// The app in `dir` and the packages it uses, found in `search`, built in dependency order; and
+/// the platform's packages (the device's, Settings'), which an app such as the shell uses as
+/// metadata rather than as a package directory.
+fn build(
+    dir: &Path,
+    search: &[PathBuf],
+) -> Result<
+    (
+        Vec<tilolang::source::BuiltPackage>,
+        Vec<tilolang_tilo::tilolang::PackageMeta>,
+    ),
+    String,
+> {
+    let platform = tilolang_tilo::platform_apps::platform_packages()?;
+    let provided: Vec<String> = platform.iter().map(|meta| meta.app.clone()).collect();
+    let dirs = tilolang::source::dependency_order_with(dir, search, &provided)?;
+    let built =
+        tilolang::source::compile_dirs(&dirs, &platform, &mut tilolang::OsEntropy::default())
+            .map_err(|e| e.to_string())?;
+    Ok((built, platform))
+}
+
 /// Check one app: every scenario at every layout, then each view no scenario showed, opened on
 /// a resource of its type the window names. Its findings, the layouts run and the views
 /// shown nowhere.
@@ -335,14 +357,13 @@ fn check_app(
 ) -> Result<(Vec<Finding>, usize, Vec<String>), String> {
     let mut search = search.to_vec();
     search.extend(dir.parent().map(Path::to_path_buf));
-    let dirs = tilolang::source::dependency_order(dir, &search)?;
-    let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
-        .map_err(|e| e.to_string())?;
+    let (built, platform) = build(dir, &search)?;
     let sources = source::SourceMap::new(&built);
     let meta = built.last().ok_or("no package")?.compiled.meta.clone();
-    let packages = Rc::new(stage::Packages(Rc::new(
-        built.into_iter().map(|b| b.compiled).collect(),
-    )));
+    let packages = Rc::new(stage::Packages(
+        Rc::new(built.into_iter().map(|b| b.compiled).collect()),
+        platform,
+    ));
     let mut check = AppCheck {
         dir,
         short: meta.app.rsplit('.').next().unwrap_or(&meta.app).to_owned(),
@@ -881,13 +902,12 @@ mod traditional_desktop {
     fn packages() -> (String, Rc<stage::Packages>) {
         let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
         let search = vec![shell.parent().expect("apps/tl").to_path_buf()];
-        let dirs = tilolang::source::dependency_order(&shell, &search).expect("the shell resolves");
-        let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
-            .expect("the shell compiles");
+        let (built, platform) = super::build(&shell, &search).expect("the shell compiles");
         let app = built.last().expect("the shell").compiled.meta.app.clone();
-        let packages = Rc::new(stage::Packages(Rc::new(
-            built.into_iter().map(|b| b.compiled).collect(),
-        )));
+        let packages = Rc::new(stage::Packages(
+            Rc::new(built.into_iter().map(|b| b.compiled).collect()),
+            platform,
+        ));
         (app, packages)
     }
 
@@ -1186,18 +1206,28 @@ mod traditional_desktop {
         }
     }
 
-    fn desktop_read_out() -> Vec<(bool, String)> {
+    /// What the traditional desktop reads out at `size`, laid out for a finger on a phone's
+    /// width (its controls a finger's target), as the layout check lays a phone out.
+    fn desktop_read_out(size: (u32, u32)) -> Vec<(bool, String)> {
         tilo_ui_host::i18n::ensure();
         let (app, packages) = packages();
-        let staged = stage::Staged::over(
+        let mut staged = stage::Staged::over(
             &app,
             &packages,
             "the traditional desktop",
-            (1280, 800),
+            size,
             ui::Theme::light(),
             None,
         )
         .expect("the scenario stages");
+        let input = if size.0 < 600 {
+            ui::interaction::InteractionEnvironment::TOUCH
+        } else {
+            ui::interaction::InteractionEnvironment::POINTER
+        };
+        staged
+            .lay_out(size, ui::Theme::light(), input, 1.0)
+            .expect("the desktop lays out");
         let mut said = Vec::new();
         read_out(&staged.harness().inspection().root, false, &mut said);
         said
@@ -1205,20 +1235,82 @@ mod traditional_desktop {
 
     #[test]
     fn a_windows_header_holds_the_apps_own_actions_and_no_generated_menu() {
-        // An action the app gave no icon is in the top bar's window menu, under the name
-        // the app gave it, never in a "More actions" list made up for the window's header.
-        let said = desktop_read_out();
-        let generated: Vec<&String> = said
+        // The desktop's bar lists the window's actions (its window menu), so what does not
+        // fit in a window's header gives way to it: no "More actions" door in a window, on a
+        // desk or on a phone, and never a list made up for the header.
+        for size in [(1280, 800), (320, 568)] {
+            let said = desktop_read_out(size);
+            let generated: Vec<&String> = said
+                .iter()
+                .filter(|(in_window, name)| *in_window && name == "More actions")
+                .map(|(_, name)| name)
+                .collect();
+            assert!(
+                generated.is_empty(),
+                "a window offers {generated:?} at {size:?}"
+            );
+        }
+    }
+
+    /// A control named `name` that stands on the window (a rect with room), by its test id.
+    fn shown_named(node: &ui::headless::InspectionNode, name: &str) -> Option<String> {
+        let [_, _, w, h] = node.rect;
+        if w > 0.0
+            && h > 0.0
+            && node.semantics.as_ref().and_then(|s| s.name.as_deref()) == Some(name)
+            && let Some(id) = &node.test_id
+        {
+            return Some(id.clone());
+        }
+        node.children
             .iter()
-            .filter(|(in_window, name)| *in_window && name == "More actions")
-            .map(|(_, name)| name)
-            .collect();
-        assert!(generated.is_empty(), "a window offers {generated:?}");
+            .find_map(|child| shown_named(child, name))
+    }
+
+    #[test]
+    fn an_action_without_an_icon_is_reachable_from_its_window_where_nothing_lists_it() {
+        // In the strips preset a window is the app's own: nothing lists its actions, so its
+        // header holds the notes app's icon-less Untag as a labelled button, or behind the
+        // header's door when the row has no room for it.
+        tilo_ui_host::i18n::ensure();
+        let (_, packages) = packages();
+        for size in [(1280, 800), (390, 844)] {
+            let mut staged = stage::Staged::over(
+                "so.tilo.lang.notes",
+                &packages,
+                "a week of notes",
+                size,
+                ui::Theme::light(),
+                None,
+            )
+            .expect("the notes stage");
+            let input = if size.0 < 600 {
+                ui::interaction::InteractionEnvironment::TOUCH
+            } else {
+                ui::interaction::InteractionEnvironment::POINTER
+            };
+            staged
+                .lay_out(size, ui::Theme::light(), input, 1.0)
+                .expect("the notes lay out");
+            let root = staged.harness().inspection().root;
+            if shown_named(&root, "Untag…").is_some() {
+                continue;
+            }
+            let door = shown_named(&root, "More actions")
+                .unwrap_or_else(|| panic!("Untag… is neither shown nor behind a door at {size:?}"));
+            staged.press(&door, size.0 < 600).expect("the door opens");
+            let mut said = Vec::new();
+            read_out(&staged.harness().inspection().root, false, &mut said);
+            assert!(
+                said.iter().any(|(_, name)| name == "Untag…"),
+                "the door holds Untag… at {size:?}: {said:?}"
+            );
+        }
     }
 
     #[test]
     fn its_people_are_called_by_their_names_never_their_ids() {
-        let said = desktop_read_out();
+        let said = desktop_read_out((1280, 800));
         let ids: Vec<&String> = said
             .iter()
             .map(|(_, name)| name)

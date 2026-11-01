@@ -293,7 +293,7 @@ view desk_view(a: Arrangement) {
             desk_around(root Desk, .some(a), fill)
         } else {
             layers(fill) {
-                traditional_desktop(a, fill)
+                traditional_desktop(a, bar_lists_actions(shell, root Desk, space.width_class == .expanded or space.width_class == .wide), fill)
                 desk(root Desk, fill)
             }
         }
@@ -431,6 +431,9 @@ view bar_part(d: Desk, part: BarPart) {
                 }
             }
             bell(d)
+            ui.Button("Quick settings", icon: .settings, icon_only: true, role: .bar, toggled: .some(d.here == "quick-settings")) {
+                on press: device.show_surface(device.desk, "quick-settings")
+            }
         }
     }
 }
