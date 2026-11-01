@@ -1027,6 +1027,15 @@ fn the_legible_range_compresses_luminance_and_keeps_hue() {
     let [r, g, b] = legible.tone([0.1, 0.8, 0.2]);
     assert!(g > 2.0 * r && g > 2.0 * b, "green became {r} {g} {b}");
     assert_eq!(Legible::ANY.tone([0.9, 0.1, 0.3]), [0.9, 0.1, 0.3]);
+    // Lifted into a light theme's range, a near-black page with a faint
+    // blue cast stays a near-grey, not a lavender.
+    let light = Theme::preset(crate::theme::Preset::LiquidGlassLight);
+    let lifted = Legible::of(&light, crate::chrome::panel_ground(&light));
+    let [r, g, b] = lifted.tone([14.0 / 255.0, 16.0 / 255.0, 22.0 / 255.0]);
+    assert!(b - r < 0.03 && b - g < 0.03, "the page turned {r} {g} {b}");
+    // A red lifted stays red.
+    let [r, g, b] = lifted.tone([0.9, 0.1, 0.1]);
+    assert!(r > g + 0.1 && r > b + 0.1, "red became {r} {g} {b}");
 }
 
 /// Wide columns of saturated colour and white: a bright, photo-like
@@ -1102,7 +1111,12 @@ fn text_over_a_white_page_and_bright_colour_stays_legible_on_every_translucent_f
     use crate::theme::Preset;
     let width = 256;
     let floor = crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST - 0.1;
-    for preset in [Preset::LiquidGlass, Preset::Glass, Preset::Pixelated] {
+    for preset in [
+        Preset::LiquidGlass,
+        Preset::LiquidGlassLight,
+        Preset::Glass,
+        Preset::Pixelated,
+    ] {
         let theme = Theme::preset(preset);
         let ink = theme.tokens.colors.text_dim;
         for (name, below) in [
@@ -1111,7 +1125,7 @@ fn text_over_a_white_page_and_bright_colour_stays_legible_on_every_translucent_f
         ] {
             let seen = render_over(&theme, below);
             let mut areas = vec![("panel", (70..186, 54..140))];
-            if preset == Preset::LiquidGlass {
+            if matches!(preset, Preset::LiquidGlass | Preset::LiquidGlassLight) {
                 areas.push(("window", (10..54, 20..170)));
             }
             for (area, (xs, ys)) in areas {
@@ -1374,4 +1388,28 @@ fn an_unchanged_backdrop_is_shown_from_the_sample_it_kept() {
     let (moved, stats) = show(&mut renderer, liquid_desk(20.0, mark));
     assert_eq!((stats.substituted, stats.reused), (3, 1));
     assert_eq!(moved, fresh(liquid_desk(20.0, mark)));
+}
+
+/// Light Liquid Glass is clear bright glass: over a white page its panel is
+/// nearly white, the page's dark lines still show through it, and a red
+/// column shows red.
+#[test]
+fn light_liquid_glass_is_clear_and_bright() {
+    let width = 256;
+    let theme = Theme::preset(crate::theme::Preset::LiquidGlassLight);
+    let seen = render_over(&theme, white_page(256, 192));
+    // Rows 4..8 of each 12 carry a line; row 10 is paper.
+    let paper = pixel(&seen, width, 128, 94);
+    assert!(
+        paper[..3].iter().all(|&c| c >= 220),
+        "the panel over paper is {paper:?}"
+    );
+    let line = pixel(&seen, width, 128, 90);
+    assert!(
+        brightness(paper) > brightness(line) + 60,
+        "the page's lines are gone: {line:?} on {paper:?}"
+    );
+    let seen = render_over(&theme, colour_stripes(256, 192));
+    let [r, g, b, _] = pixel(&seen, width, 88, 96);
+    assert!(r > g + 12 && r > b + 12, "red shows as {r} {g} {b}");
 }

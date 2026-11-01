@@ -178,9 +178,11 @@ impl Refraction {
 /// ([`material_band`]) as relative luminances. The backdrop pass maps what
 /// it sampled into it ([`Self::tone`] is the same arithmetic): luminance
 /// is compressed evenly in contrast (a contrast ratio below becomes a
-/// smaller, fixed power of itself), and each colour keeps its chromaticity,
-/// so a bright photo shows dimmed but in its own colours and shapes, never
-/// as one flat colour.
+/// smaller, fixed power of itself), and each colour keeps its hue: dimmed,
+/// its channels scale with its luminance; lifted, it keeps how far its
+/// channels stand off its grey, so a near-grey stays near-grey. A bright
+/// photo shows dimmed but in its own colours and shapes, a dark page lifted
+/// without a cast, never as one flat colour.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Legible {
     /// Relative luminance black maps to.
@@ -225,9 +227,11 @@ impl Legible {
 
     /// `rgb` (sRGB-encoded, 0–1) as it shows through: its relative
     /// luminance `y` mapped so `(y + 0.05) / 0.05` becomes that ratio to
-    /// the power the band allows over the whole 21:1 range, its linear
-    /// channels scaled to it, and pulled toward grey only where a channel
-    /// would leave the gamut. The backdrop pass's `tone` computes the same.
+    /// the power the band allows over the whole 21:1 range; its linear
+    /// channels' offsets from `y` carried to the new luminance, scaled down
+    /// with it where it falls and kept where it rises; and pulled toward
+    /// grey only where a channel would leave the gamut. The backdrop pass's
+    /// `tone` computes the same.
     #[must_use]
     pub fn tone(&self, rgb: [f64; 3]) -> [f64; 3] {
         if !self.compresses() {
@@ -243,11 +247,12 @@ impl Legible {
         let y = 0.0722f64.mul_add(linear[2], 0.2126f64.mul_add(linear[0], 0.7152 * linear[1]));
         let power = ((self.light + 0.05) / (self.dark + 0.05)).ln() / 21f64.ln();
         let target = (self.dark + 0.05) * ((y + 0.05) / 0.05).powf(power) - 0.05;
-        let mut out = if y <= 1e-5 {
-            [target; 3]
+        let keep = if y <= 1e-5 {
+            1.0
         } else {
-            linear.map(|c| c * target / y)
+            (target / y).min(1.0)
         };
+        let mut out = linear.map(|c| (c - y).mul_add(keep, target));
         let top = out[0].max(out[1]).max(out[2]);
         if top > 1.0 {
             let pull = (1.0 - target) / (top - target);
@@ -1253,8 +1258,9 @@ fn encoded(c: vec3<f32>) -> vec3<f32> {
 }
 
 // What shows through, compressed into the legible range: luminance mapped
-// evenly in contrast, chromaticity kept, pulled toward grey only where a
-// channel would leave the gamut. The same arithmetic as `Legible::tone`.
+// evenly in contrast, each channel's offset from it scaled down where it
+// falls and kept where it rises, pulled toward grey only where a channel
+// would leave the gamut. The same arithmetic as `Legible::tone`.
 fn tone(c: vec4<f32>) -> vec4<f32> {
     if (pass_.dark <= 0.0 && pass_.light >= 1.0) {
         return c;
@@ -1263,10 +1269,11 @@ fn tone(c: vec4<f32>) -> vec4<f32> {
     let y = dot(lin, vec3<f32>(0.2126, 0.7152, 0.0722));
     let power = log((pass_.light + 0.05) / (pass_.dark + 0.05)) / log(21.0);
     let aim = (pass_.dark + 0.05) * pow((y + 0.05) / 0.05, power) - 0.05;
-    var out = vec3<f32>(aim);
+    var keep = 1.0;
     if (y > 1e-5) {
-        out = lin * (aim / y);
+        keep = min(aim / y, 1.0);
     }
+    var out = vec3<f32>(aim) + (lin - vec3<f32>(y)) * keep;
     let top = max(out.r, max(out.g, out.b));
     if (top > 1.0) {
         out = vec3<f32>(aim) + (out - vec3<f32>(aim)) * ((1.0 - aim) / (top - aim));
