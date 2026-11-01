@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The tilolang host: one process per room and author, without the toolkit, running each of that author's tilolang apps in that room as an instance on its own broker connection."
+description = "The tilolang host: one process per workspace and author, without the toolkit, running each of that author's tilolang apps in that workspace as an instance on its own broker connection."
 
 [lib]
 name = "tilolang_host"
@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 tilolang-tilo = { path = "../tilolang-tilo", features = ["record"] }
-# Each instance's connection to its room, opened by the session for that app's launch.
+# Each instance's connection to its workspace, opened by the session for that app's launch.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["native", "broker-transport"] }
 # The door the session hands instances over.
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal" }

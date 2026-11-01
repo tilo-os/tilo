@@ -366,7 +366,7 @@ fn opened_from_own_copy_in(
 
 /// What the workspace holds of the record: every change the instance sent on its connection, and
 /// nothing else, as a sealed workspace's channel keeps it.
-fn room_copy(sent: &Sent) -> automerge::AutoCommit {
+fn workspace_copy(sent: &Sent) -> automerge::AutoCommit {
     let mut workspace = automerge::AutoCommit::new();
     for request in sent.borrow().iter() {
         if let CollabRequest::Document { mutation, .. } = request {
@@ -381,7 +381,7 @@ fn room_copy(sent: &Sent) -> automerge::AutoCommit {
 }
 
 #[test]
-fn a_record_made_from_the_hosts_own_copy_reopens_from_what_its_room_holds() {
+fn a_record_made_from_the_hosts_own_copy_reopens_from_what_its_workspace_holds() {
     // A record the workspace did not hold opens from the host's own copy, whose making (its schema
     // stamp) is a change of this replica's. A press is the instance's first change to the workspace.
     let documents: Rc<dyn durable_store::DurableStore> =
@@ -400,7 +400,7 @@ fn a_record_made_from_the_hosts_own_copy_reopens_from_what_its_room_holds() {
 
     // The workspace's copy alone is the whole record: nothing it holds builds on a change that never
     // reached it, so a reader that has only the workspace's writes can read it back.
-    let workspace = room_copy(&sent);
+    let workspace = workspace_copy(&sent);
     assert_eq!(
         automerge::ReadDoc::get_missing_deps(&workspace, &[]),
         Vec::new(),
@@ -1695,7 +1695,7 @@ fn a_change_of_the_root_no_window_made_yet_makes_it_first() {
 /// has none of. Here the surface the workspace decides the record's changes by publishes the
 /// counter's record but none of its actions.
 #[test]
-fn a_change_the_room_refuses_is_never_kept() {
+fn a_change_the_workspace_refuses_is_never_kept() {
     let (address, doc) = increment();
     collaboration::app_surface::register_package(
         APP,
@@ -1736,7 +1736,7 @@ fn a_change_the_room_refuses_is_never_kept() {
 /// stamp, a root change with no deps that only sets the schema version, as the record's
 /// genesis. No change is rewritten and no id changes.
 #[test]
-fn a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_room_whole() {
+fn a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_workspace_whole() {
     let documents: Rc<dyn durable_store::DurableStore> =
         Rc::new(durable_store::MemoryStore::default());
     let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
@@ -1764,7 +1764,7 @@ fn a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_room_whole()
     }]);
     settle(&mut host, &mut window);
     assert_eq!(value_of(host.instances().next().unwrap()), 1);
-    let workspace = room_copy(&sent);
+    let workspace = workspace_copy(&sent);
     assert!(
         automerge::ReadDoc::get_change_by_hash(&workspace, &stamp).is_some(),
         "the stamp, unchanged, reached the workspace"

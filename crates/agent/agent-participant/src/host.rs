@@ -365,7 +365,7 @@ fn spawn_agent(
                 workspace,
                 identity,
                 &thread_control,
-            )
+            );
         })
         .map_err(|error| error.to_string())?;
     let mut threads = shared.threads.lock_recover();
