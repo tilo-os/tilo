@@ -1,6 +1,6 @@
 use super::*;
 use crate::SeedState;
-use crate::seed_room;
+use crate::seed_workspace;
 use automerge::AutoCommit;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
@@ -9,7 +9,7 @@ use tilo_user_identity::{
 use web_time::Duration;
 #[expect(
     clippy::similar_names,
-    reason = "`root` and `room` are the domain's own names"
+    reason = "`root` and `workspace` are the domain's own names"
 )]
 fn fixture(revision: u64) -> (StatePeer, SigningKey, SigningKey, SystemTime) {
     let root = SigningKey::from_bytes(&[91; 32]);
@@ -27,11 +27,12 @@ fn fixture(revision: u64) -> (StatePeer, SigningKey, SigningKey, SystemTime) {
         signature: [0; 64],
     };
     sign_device_cert(&mut cert, &root).unwrap();
-    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let mut peer = StatePeer::new(room, cert.clone(), vec![], RevocationList::new(), now).unwrap();
+    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let mut peer =
+        StatePeer::new(workspace, cert.clone(), vec![], RevocationList::new(), now).unwrap();
     peer.install_seed(
         SeedState {
-            room_changes: seed_room(room, &cert, &[cert.clone()]).unwrap(),
+            workspace_changes: seed_workspace(workspace, &cert, &[cert.clone()]).unwrap(),
             documents: vec![],
         },
         &key,
@@ -41,10 +42,10 @@ fn fixture(revision: u64) -> (StatePeer, SigningKey, SigningKey, SystemTime) {
     if revision == 0 {
         return (peer, root, key, now);
     }
-    let mut doc = peer.admitted_room().unwrap().clone();
-    let policy = RoomMediaV1 {
+    let mut doc = peer.admitted_workspace().unwrap().clone();
+    let policy = WorkspaceMediaV1 {
         version: 1,
-        room: *uuid::Uuid::parse_str(room).unwrap().as_bytes(),
+        workspace: *uuid::Uuid::parse_str(workspace).unwrap().as_bytes(),
         authorization_revision: revision,
         authorization_basis: media::security_basis(&doc, &[]).unwrap(),
         calls: BTreeMap::new(),
@@ -63,7 +64,7 @@ fn fixture(revision: u64) -> (StatePeer, SigningKey, SigningKey, SystemTime) {
     peer.receive_from(
         TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
         NeighbourMsg::SyncResp {
-            room: room.into(),
+            room: workspace.into(),
             changes,
         },
         now,
@@ -95,7 +96,7 @@ fn revoked(peer: &StatePeer, root: &SigningKey, now: SystemTime) -> StatePeer {
     candidate
 }
 #[test]
-fn room_media_reconciliation_promotes_verified_union_once_and_does_not_change_epoch() {
+fn workspace_media_reconciliation_promotes_verified_union_once_and_does_not_change_epoch() {
     let (peer, root, key, now) = fixture(1);
     let mut candidate = revoked(&peer, &root, now);
     assert!(
@@ -128,7 +129,7 @@ fn room_media_reconciliation_promotes_verified_union_once_and_does_not_change_ep
     assert_eq!(candidate.durable().unwrap(), bytes);
 }
 #[test]
-fn room_media_exhaustion_keeps_the_record_and_reopens_denied() {
+fn workspace_media_exhaustion_keeps_the_record_and_reopens_denied() {
     let (peer, root, key, now) = fixture(u64::MAX);
     let mut candidate = revoked(&peer, &root, now);
     let bytes = candidate.durable().unwrap();
@@ -141,7 +142,7 @@ fn room_media_exhaustion_keeps_the_record_and_reopens_denied() {
     assert_eq!(candidate.durable().unwrap(), bytes);
     let restored = StatePeer::restore(
         &bytes,
-        peer.room(),
+        peer.workspace_id(),
         peer.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
@@ -150,7 +151,7 @@ fn room_media_exhaustion_keeps_the_record_and_reopens_denied() {
     .unwrap();
     assert!(restored.validated_media_policy().is_err());
     assert_eq!(
-        media::parse(restored.admitted_room().unwrap())
+        media::parse(restored.admitted_workspace().unwrap())
             .unwrap()
             .unwrap()
             .authorization_revision,
@@ -158,7 +159,7 @@ fn room_media_exhaustion_keeps_the_record_and_reopens_denied() {
     );
 }
 #[test]
-fn room_media_reconciliation_preserves_disabled_policy_before_first_call() {
+fn workspace_media_reconciliation_preserves_disabled_policy_before_first_call() {
     let (peer, root, key, now) = fixture(0);
     let mut candidate = revoked(&peer, &root, now);
     assert!(
@@ -169,9 +170,12 @@ fn room_media_reconciliation_preserves_disabled_policy_before_first_call() {
     );
     assert!(candidate.validated_media_policy().unwrap().is_none());
     assert_eq!(
-        media::security_basis(candidate.admitted_room().unwrap(), &[]).unwrap(),
-        media::security_basis(candidate.admitted_room().unwrap(), &candidate.revocations())
-            .unwrap()
+        media::security_basis(candidate.admitted_workspace().unwrap(), &[]).unwrap(),
+        media::security_basis(
+            candidate.admitted_workspace().unwrap(),
+            &candidate.revocations()
+        )
+        .unwrap()
     );
 }
 
@@ -188,7 +192,7 @@ fn no_policy_document_fixture() -> (StatePeer, SigningKey, SigningKey, SystemTim
 }
 
 #[test]
-fn room_media_security_no_policy_accepts_host_revocation_without_enabling_media() {
+fn workspace_media_security_no_policy_accepts_host_revocation_without_enabling_media() {
     let (mut peer, root, key, now) = no_policy_document_fixture();
     let owner = peer.owner_certificates()[0].clone();
     let sibling_key = SigningKey::from_bytes(&[209; 32]);
@@ -238,15 +242,15 @@ fn room_media_security_no_policy_accepts_host_revocation_without_enabling_media(
             .is_revoked(&owner.device_public_key)
     );
     assert!(
-        media::parse(observed.admitted_room().unwrap())
+        media::parse(observed.admitted_workspace().unwrap())
             .unwrap()
             .is_none()
     );
     assert_eq!(peer.durable().unwrap(), before);
-    // The revoked device's room reopens; the device itself writes nothing more.
+    // The revoked device's workspace reopens; the device itself writes nothing more.
     let reopened = StatePeer::restore(
         &observed.durable().unwrap(),
-        peer.room(),
+        peer.workspace_id(),
         owner.clone(),
         vec![],
         RevocationList::new(),
@@ -257,7 +261,7 @@ fn room_media_security_no_policy_accepts_host_revocation_without_enabling_media(
 }
 
 #[test]
-fn room_media_security_no_policy_refuses_foreign_and_forged_revocations() {
+fn workspace_media_security_no_policy_refuses_foreign_and_forged_revocations() {
     let (peer, root, _, now) = no_policy_document_fixture();
     let candidate = revoked(&peer, &root, now);
     let foreign_root = SigningKey::from_bytes(&[210; 32]);
@@ -303,7 +307,7 @@ fn room_media_security_no_policy_refuses_foreign_and_forged_revocations() {
 }
 
 #[test]
-fn room_media_security_basis_ignores_a_revocation_the_room_already_carries() {
+fn workspace_media_security_basis_ignores_a_revocation_the_workspace_already_carries() {
     let (peer, root, key, now) = fixture(0);
     let mut governed = revoked(&peer, &root, now);
     assert!(
@@ -312,13 +316,20 @@ fn room_media_security_basis_ignores_a_revocation_the_room_already_carries() {
             .reconcile_media_governance(&key, now)
             .unwrap()
     );
-    // The signed room already carries this revocation. Adding the same entry
+    // The signed workspace already carries this revocation. Adding the same entry
     // only to its durable sidecar is not a new effective security change.
     governed.core.revocations = RevocationList::new();
     let duplicate = revoked(&governed, &root, now);
     assert_eq!(
-        media::security_basis(governed.admitted_room().unwrap(), &governed.revocations()).unwrap(),
-        media::security_basis(duplicate.admitted_room().unwrap(), &duplicate.revocations())
-            .unwrap()
+        media::security_basis(
+            governed.admitted_workspace().unwrap(),
+            &governed.revocations()
+        )
+        .unwrap(),
+        media::security_basis(
+            duplicate.admitted_workspace().unwrap(),
+            &duplicate.revocations()
+        )
+        .unwrap()
     );
 }

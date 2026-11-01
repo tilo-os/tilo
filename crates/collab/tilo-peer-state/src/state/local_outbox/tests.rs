@@ -17,7 +17,7 @@ fn fixture() -> (
     let (mut governor, governor_key, key, cert, now) = crate::admission_tests::seeded();
     governor.select_admission_v5().unwrap();
     let mut member = StatePeer::new(
-        governor.room(),
+        governor.workspace_id(),
         governor.owner_certificates()[0].clone(),
         vec![cert.clone()],
         RevocationList::new(),
@@ -74,9 +74,9 @@ fn local_edit(
         .unwrap();
     let mut envelope = SignedOp::new_unsigned(
         DocumentMutation::Snapshot(doc.save()).encode().unwrap(),
-        collab_types::document_artifact_id("test.app", peer.room(), "tab:1"),
+        collab_types::document_artifact_id("test.app", peer.workspace_id(), "tab:1"),
         author,
-        collab_types::document_attestation_id("test.app", peer.room(), "tab:1"),
+        collab_types::document_attestation_id("test.app", peer.workspace_id(), "tab:1"),
         OpKind::Change,
         now,
         seq,
@@ -87,7 +87,7 @@ fn local_edit(
     NeighbourMsg::AppDocument {
         peer: peer_handle(&key.verifying_key().to_bytes()),
         app_id: "test.app".into(),
-        cluster_id: peer.room().into(),
+        cluster_id: peer.workspace_id().into(),
         record_id: "tab:1".into(),
         envelope: Box::new(envelope),
     }
@@ -100,14 +100,15 @@ fn checkpoint(
     durable: bool,
 ) {
     let messages = if durable {
-        let generation = crate::durability::entries(governor.core.room_doc.as_deref().unwrap())
-            .unwrap()
-            .values()
-            .map(|receipt| receipt.generation)
-            .max()
-            .unwrap_or(0)
-            .checked_add(1)
-            .unwrap();
+        let generation =
+            crate::durability::entries(governor.core.workspace_doc.as_deref().unwrap())
+                .unwrap()
+                .values()
+                .map(|receipt| receipt.generation)
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)
+                .unwrap();
         governor
             .publication_mut()
             .durable_bootstrap_messages(key, now, generation)
@@ -158,7 +159,7 @@ fn local_outbox_revoked_custody_survives_restore_but_signing_and_current_lookup_
     let history = member.clone();
     let mut member = StatePeer::restore(
         &member.durable().unwrap(),
-        member.room(),
+        member.workspace_id(),
         member.owner_certificates()[0].clone(),
         vec![cert],
         RevocationList::new(),
@@ -227,7 +228,7 @@ fn local_outbox_structural_lookup_rejects_conflicting_unknown_and_cross_scope_ev
             panic!()
         };
         match field {
-            "room" => *cluster_id = "other-room".into(),
+            "room" => *cluster_id = "other-workspace".into(),
             "record" => *record_id = "other-record".into(),
             "peer" => *peer = peer.wrapping_add(1),
             _ => envelope.payload.push(1),

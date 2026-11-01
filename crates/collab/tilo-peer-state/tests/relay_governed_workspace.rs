@@ -1,6 +1,6 @@
-//! A native device of another person joins a room a relay governs: it
-//! redeems the invitation, installs the room, holds its relay session, and
-//! edits with the room's owner, each seeing the other's presence.
+//! A native device of another person joins a workspace a relay governs: it
+//! redeems the invitation, installs the workspace, holds its relay session, and
+//! edits with the workspace's owner, each seeing the other's presence.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -58,14 +58,14 @@ fn certificate(
     cert
 }
 
-/// The text of an Editor's invitation to `room`, for `person` only, that
-/// the relay governing it issues for the room's owner `issuer`.
-async fn invite(relay: &Relay, issuer: &DeviceCert, room: &str, person: [u8; 32]) -> String {
+/// The text of an Editor's invitation to `workspace`, for `person` only, that
+/// the relay governing it issues for the workspace's owner `issuer`.
+async fn invite(relay: &Relay, issuer: &DeviceCert, workspace: &str, person: [u8; 32]) -> String {
     let invitation = relay
         .rooms()
         .unwrap()
         .issue(
-            room,
+            workspace,
             issuer,
             IssueInvitationRequest {
                 request_id: person,
@@ -99,12 +99,12 @@ fn text(doc: Option<Vec<u8>>, key: &str) -> Option<String> {
         .and_then(|(value, _)| value.into_string().ok())
 }
 
-/// A person's native device holding a room through the joined-room owner,
+/// A person's native device holding a workspace through the joined-workspace owner,
 /// as the shell does.
 struct Native {
     identity: HostIdentity,
     owner: NativeWorkspaceOwner,
-    room: RoomId,
+    workspace: RoomId,
     scope: Arc<Scope>,
     session: RelayCoeditSession,
     presence: Vec<[u8; 32]>,
@@ -119,7 +119,7 @@ impl Native {
         workspace_id: u64,
     ) -> Self {
         let owner =
-            tilo_peer_state::owner::open_file(&directory.join("joined-rooms.json")).unwrap();
+            tilo_peer_state::owner::open_file(&directory.join("joined-workspaces.json")).unwrap();
         let identity = HostIdentity {
             device_cert: cert,
             device_signing_key: key.clone(),
@@ -139,8 +139,8 @@ impl Native {
         .await
         .unwrap();
         owner.install(&enrollment, SystemTime::now()).unwrap();
-        let room = RoomId::parse(&enrollment.bootstrap().room).unwrap();
-        let connect = Connect::new(owner.clone(), room).unwrap();
+        let workspace = RoomId::parse(&enrollment.bootstrap().room).unwrap();
+        let connect = Connect::new(owner.clone(), workspace).unwrap();
         let (hint, device, revocations, continuity) = connect.material(&identity).unwrap();
         let session = tilo_peer_state::owner::session::dial(
             endpoint,
@@ -156,7 +156,7 @@ impl Native {
         Self {
             identity,
             owner,
-            room,
+            workspace,
             scope,
             session,
             presence: Vec::new(),
@@ -165,7 +165,7 @@ impl Native {
 
     fn document(&self) -> Option<Vec<u8>> {
         self.owner
-            .with_current(self.room, |view| Ok(view.peer().document(APP, "")))
+            .with_current(self.workspace, |view| Ok(view.peer().document(APP, "")))
             .unwrap()
     }
 
@@ -177,7 +177,9 @@ impl Native {
                         let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
                         let governor = self
                             .owner
-                            .with_current(self.room, |view| Ok(view.room_host().device_public_key))
+                            .with_current(self.workspace, |view| {
+                                Ok(view.workspace_host().device_public_key)
+                            })
                             .unwrap();
                         let input = self.scope.input(author, author == governor, message);
                         if let Err(error) = input.admit(&self.identity) {
@@ -198,7 +200,7 @@ impl Native {
         let now = SystemTime::now();
         let message = self
             .owner
-            .with_current(self.room, |view| {
+            .with_current(self.workspace, |view| {
                 let mut doc = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
                 let heads = doc.get_heads();
                 doc.put(ROOT, key, value).unwrap();
@@ -218,7 +220,7 @@ impl Native {
         self.owner
             .commit_document(
                 OwnerCommitRequest {
-                    room: self.room.to_string(),
+                    workspace: self.workspace.to_string(),
                     operation: CommitOperation::Document {
                         app: APP.into(),
                         record: String::new(),
@@ -244,7 +246,7 @@ fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_native_device_of_another_person_joins_a_relay_governed_room() {
+async fn a_native_device_of_another_person_joins_a_relay_governed_workspace() {
     let alice = SigningKey::from_bytes(&[1; 32]);
     let bob = SigningKey::from_bytes(&[2; 32]);
     let host_key = SigningKey::from_bytes(&[3; 32]);
@@ -275,28 +277,34 @@ async fn a_native_device_of_another_person_joins_a_relay_governed_room() {
     .unwrap();
     let address = relay.node_addr();
 
-    // Alice's room on her relay, her device in it as its owner's, and Bob's
+    // Alice's workspace on her relay, her device in it as its owner's, and Bob's
     // person invited.
-    let rooms = relay.rooms().unwrap();
-    let room = rooms.create("Design review").await.unwrap();
-    rooms.enter(&room.room, &laptop).await.unwrap();
-    let invitation = invite(&relay, &laptop, &room.room, bob.verifying_key().to_bytes()).await;
+    let workspaces = relay.rooms().unwrap();
+    let workspace = workspaces.create("Design review").await.unwrap();
+    workspaces.enter(&workspace.room, &laptop).await.unwrap();
+    let invitation = invite(
+        &relay,
+        &laptop,
+        &workspace.room,
+        bob.verifying_key().to_bytes(),
+    )
+    .await;
 
-    // Bob's native device redeems it, installs the room and connects.
+    // Bob's native device redeems it, installs the workspace and connects.
     let directory = tempfile::tempdir().unwrap();
     let mut bob_native = Native::join(
         directory.path(),
         desk.clone(),
         desk_key,
         &invitation,
-        room.workspace_id,
+        workspace.workspace_id,
     )
     .await;
-    assert_eq!(bob_native.room.to_string(), room.room);
+    assert_eq!(bob_native.workspace.to_string(), workspace.room);
     let role = |native: &Native, device: [u8; 32]| {
         native
             .owner
-            .with_current(native.room, |view| {
+            .with_current(native.workspace, |view| {
                 Ok(view
                     .peer()
                     .permissions(device, SystemTime::now())
@@ -321,12 +329,12 @@ async fn a_native_device_of_another_person_joins_a_relay_governed_room() {
         )
         .await
         .unwrap(),
-        room.workspace_id,
+        workspace.workspace_id,
         laptop.device_public_key,
     )
     .unwrap();
     let mut alice_peer = StatePeer::new(
-        &room.room,
+        &workspace.room,
         host.clone(),
         vec![host.clone()],
         RevocationList::new(),
@@ -418,7 +426,7 @@ async fn a_native_device_of_another_person_joins_a_relay_governed_room() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_owners_native_device_holds_its_relay_governed_room() {
+async fn the_owners_native_device_holds_its_relay_governed_workspace() {
     let alice = SigningKey::from_bytes(&[1; 32]);
     let host_key = SigningKey::from_bytes(&[3; 32]);
     let laptop_key = SigningKey::from_bytes(&[4; 32]);
@@ -444,13 +452,13 @@ async fn the_owners_native_device_holds_its_relay_governed_room() {
     )
     .await
     .unwrap();
-    let rooms = relay.rooms().unwrap();
-    let room = rooms.create("Mine").await.unwrap();
-    rooms.enter(&room.room, &laptop).await.unwrap();
+    let workspaces = relay.rooms().unwrap();
+    let workspace = workspaces.create("Mine").await.unwrap();
+    workspaces.enter(&workspace.room, &laptop).await.unwrap();
     let invitation = invite(
         &relay,
         &laptop,
-        &room.room,
+        &workspace.room,
         alice.verifying_key().to_bytes(),
     )
     .await;
@@ -460,12 +468,12 @@ async fn the_owners_native_device_holds_its_relay_governed_room() {
         laptop.clone(),
         laptop_key,
         &invitation,
-        room.workspace_id,
+        workspace.workspace_id,
     )
     .await;
     let role = native
         .owner
-        .with_current(native.room, |view| {
+        .with_current(native.workspace, |view| {
             Ok(view
                 .peer()
                 .permissions(laptop.device_public_key, SystemTime::now())

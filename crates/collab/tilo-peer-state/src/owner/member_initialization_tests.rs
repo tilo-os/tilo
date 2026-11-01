@@ -1,4 +1,4 @@
-//! A member completing an app's bootstrap on the empty record the room's
+//! A member completing an app's bootstrap on the empty record the workspace's
 //! governor (a host) created for it: an ordinary signed member change.
 use super::*;
 use crate::owner::{ApplicationInitialization, ApplicationRecord};
@@ -15,7 +15,7 @@ fn governor_creates_empty_record(joined: &Enrolled) {
     let key = SigningKey::from_bytes(&[61; 32]);
     let (messages, governor) = joined
         .owner
-        .with_current(joined.room, |view| {
+        .with_current(joined.workspace, |view| {
             let before = view.peer().clone();
             let mut candidate = before.clone();
             candidate.publication_mut().publish_document(
@@ -31,14 +31,14 @@ fn governor_creates_empty_record(joined: &Enrolled) {
                 joined.now,
                 view.generation().checked_add(1).unwrap(),
             )?;
-            Ok((messages, view.room_host().device_public_key))
+            Ok((messages, view.workspace_host().device_public_key))
         })
         .unwrap();
     for message in messages {
         joined
             .owner
             .receive(
-                joined.room,
+                joined.workspace,
                 TransportOrigin::RetainedRelayDelta(governor),
                 message,
                 joined.now,
@@ -50,7 +50,7 @@ fn governor_creates_empty_record(joined: &Enrolled) {
 fn captured(joined: &Enrolled) -> crate::owner::CommittedDocument {
     joined
         .owner
-        .with_current(joined.room, |view| {
+        .with_current(joined.workspace, |view| {
             match view.read_document(
                 member().verifying_key().to_bytes(),
                 APP,
@@ -73,8 +73,8 @@ fn bootstrap(from: &crate::owner::CommittedDocument) -> Vec<u8> {
     document.save()
 }
 
-/// A member enrolled in a room whose governor created the empty record:
-/// the room, the member's certificate, the empty capture and the bootstrap
+/// A member enrolled in a workspace whose governor created the empty record:
+/// the workspace, the member's certificate, the empty capture and the bootstrap
 /// the app made from it.
 fn member_with_empty_record() -> (
     Enrolled,
@@ -85,7 +85,7 @@ fn member_with_empty_record() -> (
     let joined = enrolled();
     let creator = joined
         .owner
-        .with_current(joined.room, |view| Ok(view.device().clone()))
+        .with_current(joined.workspace, |view| Ok(view.device().clone()))
         .unwrap();
     governor_creates_empty_record(&joined);
     let empty = captured(&joined);
@@ -117,12 +117,12 @@ fn a_member_bootstrap_needs_its_own_key_and_never_signs_a_snapshot() {
         revision: empty.revision,
         document: &document,
     };
-    let queued = outgoing((joined.room, joined.now), &joined.owner);
+    let queued = outgoing((joined.workspace, joined.now), &joined.owner);
     assert!(
         joined
             .owner
             .initialize_application_record_as_member(
-                joined.room,
+                joined.workspace,
                 &creator,
                 &SigningKey::from_bytes(&[61; 32]),
                 initialization,
@@ -133,7 +133,7 @@ fn a_member_bootstrap_needs_its_own_key_and_never_signs_a_snapshot() {
     );
     assert_eq!(captured(&joined).revision, empty.revision);
     assert_eq!(
-        outgoing((joined.room, joined.now), &joined.owner),
+        outgoing((joined.workspace, joined.now), &joined.owner),
         queued,
         "a refused bootstrap publishes nothing"
     );
@@ -148,12 +148,12 @@ fn a_member_bootstrap_is_its_own_signed_change_onto_the_hosts_empty_record() {
         revision: empty.revision,
         document: &document,
     };
-    let queued = outgoing((joined.room, joined.now), &joined.owner);
+    let queued = outgoing((joined.workspace, joined.now), &joined.owner);
 
     let revision = joined
         .owner
         .initialize_application_record_as_member(
-            joined.room,
+            joined.workspace,
             &creator,
             &member(),
             initialization,
@@ -176,13 +176,13 @@ fn a_member_bootstrap_is_its_own_signed_change_onto_the_hosts_empty_record() {
         Some("First note")
     );
     assert_eq!(
-        outgoing((joined.room, joined.now), &joined.owner),
+        outgoing((joined.workspace, joined.now), &joined.owner),
         queued + 1,
         "the bootstrap is one member write the relay receives"
     );
     let author = joined
         .owner
-        .with_current(joined.room, |view| {
+        .with_current(joined.workspace, |view| {
             Ok(view
                 .peer()
                 .replay_floors()
@@ -198,7 +198,7 @@ fn a_member_bootstrap_is_its_own_signed_change_onto_the_hosts_empty_record() {
         joined
             .owner
             .initialize_application_record_as_member(
-                joined.room,
+                joined.workspace,
                 &creator,
                 &member(),
                 initialization,
@@ -211,7 +211,7 @@ fn a_member_bootstrap_is_its_own_signed_change_onto_the_hosts_empty_record() {
     drop(joined.owner);
     let reopened = open_file(&joined.path).unwrap();
     assert_eq!(
-        outgoing((joined.room, joined.now), &reopened),
+        outgoing((joined.workspace, joined.now), &reopened),
         queued + 1,
         "the member write is durable"
     );

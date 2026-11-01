@@ -10,7 +10,7 @@ const RECORD: &str = "tab:1";
 fn host() -> (StatePeer, SigningKey, SigningKey, SystemTime) {
     let (mut native, a, b, bc, now) = seeded();
     let mut receiver = StatePeer::new(
-        native.room(),
+        native.workspace_id(),
         native.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
@@ -35,12 +35,12 @@ fn origin(key: &SigningKey) -> TransportOrigin {
 /// `key`'s sealed write number `seq` to the seeded record.
 fn sealed(peer: &StatePeer, key: &SigningKey, seq: u64, ciphertext: &[u8]) -> NeighbourMsg {
     let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
-    let channel = collab_types::document_channel_id(APP, peer.room(), RECORD);
+    let channel = collab_types::document_channel_id(APP, peer.workspace_id(), RECORD);
     let mut envelope = SignedOp::new_unsigned_with_encryption(
         ciphertext.to_vec(),
-        collab_types::document_artifact_id(APP, peer.room(), RECORD),
+        collab_types::document_artifact_id(APP, peer.workspace_id(), RECORD),
         author,
-        collab_types::document_attestation_id(APP, peer.room(), RECORD),
+        collab_types::document_attestation_id(APP, peer.workspace_id(), RECORD),
         OpKind::Change,
         peer_time(),
         seq,
@@ -50,7 +50,7 @@ fn sealed(peer: &StatePeer, key: &SigningKey, seq: u64, ciphertext: &[u8]) -> Ne
     NeighbourMsg::AppDocument {
         peer: peer_handle(&key.verifying_key().to_bytes()),
         app_id: APP.into(),
-        cluster_id: peer.room().into(),
+        cluster_id: peer.workspace_id().into(),
         record_id: RECORD.into(),
         envelope: Box::new(envelope),
     }
@@ -68,7 +68,7 @@ fn restore(peer: &StatePeer, now: SystemTime) -> Result<StatePeer, String> {
 fn restore_bytes(peer: &StatePeer, bytes: &[u8], now: SystemTime) -> Result<StatePeer, String> {
     StatePeer::restore(
         bytes,
-        peer.room(),
+        peer.workspace_id(),
         peer.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
@@ -140,7 +140,7 @@ fn a_sealed_write_from_another_signer_is_refused() {
     assert_eq!(
         report.primary(),
         &InputDisposition::RetryLater(crate::MissingPrerequisite::Certificate),
-        "a device outside the room waits for a certificate, never admitted"
+        "a device outside the workspace waits for a certificate, never admitted"
     );
     assert_eq!(held(&host), before);
     let mut forged = sealed(&host, &stranger, 1, b"sealed");

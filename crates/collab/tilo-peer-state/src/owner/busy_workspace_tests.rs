@@ -1,11 +1,11 @@
-//! "Joining a busy public room never fails because of how many messages it
-//! has": becoming a member takes the room's governance alone, and its app
-//! messages reach the room afterwards through its sync, each authorized as
+//! "Joining a busy public workspace never fails because of how many messages it
+//! has": becoming a member takes the workspace's governance alone, and its app
+//! messages reach the workspace afterwards through its sync, each authorized as
 //! any write is.
-use crate::owner::testing::{APP, ROOM, certificate};
+use crate::owner::testing::{APP, WORKSPACE, certificate};
 use crate::owner::{NativeWorkspaceOwner, RoomId, VerifiedNativeEnrollmentIntent, open_file};
 use crate::{
-    InputDisposition, SeedDocument, SeedState, StatePeer, TransportOrigin, join, seed_room,
+    InputDisposition, SeedDocument, SeedState, StatePeer, TransportOrigin, join, seed_workspace,
 };
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
@@ -15,7 +15,7 @@ use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-/// People who write in the room before the joining device arrives.
+/// People who write in the workspace before the joining device arrives.
 const AUTHORS: u8 = 40;
 
 fn ns(now: SystemTime) -> u64 {
@@ -37,8 +37,8 @@ fn redemption(
 ) {
     let signed = join::issue_invitation(
         join::InviteGrant {
-            workspace_id: tilo_relay_protocol::room_workspace_id(ROOM).unwrap(),
-            room: ROOM.into(),
+            workspace_id: tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap(),
+            room: WORKSPACE.into(),
             issuer: governor.clone(),
             role: join::MemberRole::Editor,
             nonce: [nonce; 16],
@@ -97,9 +97,9 @@ fn message(
     let author_key = author.verifying_key().to_bytes();
     let mut envelope = SignedOp::new_unsigned(
         mutation.encode().unwrap(),
-        document_artifact_id(APP, ROOM, ""),
+        document_artifact_id(APP, WORKSPACE, ""),
         Ed25519PublicKey::from_bytes(author_key),
-        document_attestation_id(APP, ROOM, ""),
+        document_attestation_id(APP, WORKSPACE, ""),
         OpKind::Change,
         now,
         seq,
@@ -108,41 +108,41 @@ fn message(
     NeighbourMsg::AppDocument {
         peer: crate::peer_handle(&author_key),
         app_id: APP.into(),
-        cluster_id: ROOM.into(),
+        cluster_id: WORKSPACE.into(),
         record_id: String::new(),
         envelope: Box::new(envelope),
     }
 }
 
-struct BusyRoom {
+struct BusyWorkspace {
     intent: VerifiedNativeEnrollmentIntent,
     complete_bootstrap: join::JoinBootstrap,
-    /// What the room's sync delivers once it is installed, in the host's
+    /// What the workspace's sync delivers once it is installed, in the host's
     /// order: the governor's checkpoint of the chat, then every message.
     sync: Vec<([u8; 32], NeighbourMsg)>,
     texts: Vec<String>,
     now: SystemTime,
 }
 
-/// A public room whose chat holds `messages_each` messages of each of
+/// A public workspace whose chat holds `messages_each` messages of each of
 /// [`AUTHORS`] people, and whose join bootstrap carries each author's
 /// messages ahead of the governance that admits the author.
 #[expect(
     clippy::too_many_lines,
-    reason = "one linear room history: governance, members, messages and the join"
+    reason = "one linear workspace history: governance, members, messages and the join"
 )]
-fn busy_room(messages_each: u64) -> BusyRoom {
+fn busy_workspace(messages_each: u64) -> BusyWorkspace {
     let now = SystemTime::now();
     let root = SigningKey::from_bytes(&[121; 32]);
     let governor_key = SigningKey::from_bytes(&[122; 32]);
     let governor = certificate(&root, &governor_key, "Lounge host");
     let device_key = SigningKey::from_bytes(&[123; 32]);
     let device = certificate(&SigningKey::from_bytes(&[124; 32]), &device_key, "Joining");
-    let workspace_id = tilo_relay_protocol::room_workspace_id(ROOM).unwrap();
+    let workspace_id = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
     let hint = IrohWorkspaceHostHintV1 {
         version: 1,
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        room: ROOM.into(),
+        room: WORKSPACE.into(),
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
@@ -154,7 +154,7 @@ fn busy_room(messages_each: u64) -> BusyRoom {
     .transport_hint(&governor_key)
     .unwrap();
     let mut peer = StatePeer::new(
-        ROOM,
+        WORKSPACE,
         governor.clone(),
         vec![governor.clone()],
         RevocationList::new(),
@@ -166,7 +166,12 @@ fn busy_room(messages_each: u64) -> BusyRoom {
     chat.commit_edit("chat", "messages");
     peer.install_seed(
         SeedState {
-            room_changes: seed_room(ROOM, &governor, std::slice::from_ref(&governor)).unwrap(),
+            workspace_changes: seed_workspace(
+                WORKSPACE,
+                &governor,
+                std::slice::from_ref(&governor),
+            )
+            .unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
                 record_id: String::new(),
@@ -246,7 +251,7 @@ fn busy_room(messages_each: u64) -> BusyRoom {
         invite_id: verified.invite_id(),
         device_cert: device.clone(),
         role: join::MemberRole::Editor,
-        room: ROOM.into(),
+        room: WORKSPACE.into(),
         workspace_id,
         host: governor.clone(),
         // The authors' certificates reach the device only through the
@@ -262,7 +267,7 @@ fn busy_room(messages_each: u64) -> BusyRoom {
     };
     let intent =
         VerifiedNativeEnrollmentIntent::from_proof(verified, complete, device, hint, now).unwrap();
-    BusyRoom {
+    BusyWorkspace {
         intent,
         complete_bootstrap,
         sync,
@@ -271,37 +276,37 @@ fn busy_room(messages_each: u64) -> BusyRoom {
     }
 }
 
-fn install(room: BusyRoom) -> (tempfile::TempDir, NativeWorkspaceOwner, BusyRoom) {
+fn install(workspace: BusyWorkspace) -> (tempfile::TempDir, NativeWorkspaceOwner, BusyWorkspace) {
     let directory = tempfile::tempdir().unwrap();
-    let owner = open_file(&directory.path().join("joined-rooms.json")).unwrap();
+    let owner = open_file(&directory.path().join("joined-workspaces.json")).unwrap();
     let pending = owner
-        .prepare_enrollment_into(&room.intent, None, room.now)
+        .prepare_enrollment_into(&workspace.intent, None, workspace.now)
         .unwrap();
     let enrollment = crate::owner::testing::finalize(
-        room.intent.clone(),
+        workspace.intent.clone(),
         pending,
-        room.complete_bootstrap.clone(),
+        workspace.complete_bootstrap.clone(),
     )
     .unwrap();
     owner
-        .install(&enrollment, room.now)
-        .expect("joining a busy public room never fails because of how many messages it has");
-    (directory, owner, room)
+        .install(&enrollment, workspace.now)
+        .expect("joining a busy public workspace never fails because of how many messages it has");
+    (directory, owner, workspace)
 }
 
 #[test]
-fn joining_a_busy_public_room_never_fails_because_of_how_many_messages_it_has() {
-    let room = busy_room(50);
+fn joining_a_busy_public_workspace_never_fails_because_of_how_many_messages_it_has() {
+    let workspace = busy_workspace(50);
     assert!(
-        room.complete_bootstrap.governance_messages.len() > 30 * crate::MAX_HELD_INPUTS,
+        workspace.complete_bootstrap.governance_messages.len() > 30 * crate::MAX_HELD_INPUTS,
         "the replay holds far more than the prerequisite queue ever does"
     );
     assert!(
-        room.complete_bootstrap.governance_messages.len() > 2000,
+        workspace.complete_bootstrap.governance_messages.len() > 2000,
         "the bootstrap carries every message"
     );
-    let (_directory, owner, room) = install(room);
-    let id = RoomId::parse(ROOM).unwrap();
+    let (_directory, owner, workspace) = install(workspace);
+    let id = RoomId::parse(WORKSPACE).unwrap();
     owner
         .with_current(id, |view| {
             assert_eq!(
@@ -313,9 +318,9 @@ fn joining_a_busy_public_room_never_fails_because_of_how_many_messages_it_has() 
                 view.peer().document(APP, "").is_none(),
                 "app data is not part of becoming a member"
             );
-            for (author, _) in &room.sync {
+            for (author, _) in &workspace.sync {
                 view.peer()
-                    .permissions(*author, room.now)
+                    .permissions(*author, workspace.now)
                     .expect("every author is authorized by the installed governance");
             }
             Ok(())
@@ -327,17 +332,17 @@ fn joining_a_busy_public_room_never_fails_because_of_how_many_messages_it_has() 
 const BATCH: usize = 256;
 
 #[test]
-fn a_busy_rooms_messages_are_authorized_and_visible_once_its_app_syncs() {
+fn a_busy_workspaces_messages_are_authorized_and_visible_once_its_app_syncs() {
     // Still many times what the prerequisite queue holds.
-    let (_directory, owner, room) = install(busy_room(20));
-    assert!(room.sync.len() > 12 * crate::MAX_HELD_INPUTS);
-    let id = RoomId::parse(ROOM).unwrap();
-    let inputs = room.sync.len();
+    let (_directory, owner, workspace) = install(busy_workspace(20));
+    assert!(workspace.sync.len() > 12 * crate::MAX_HELD_INPUTS);
+    let id = RoomId::parse(WORKSPACE).unwrap();
+    let inputs = workspace.sync.len();
     let started = std::time::Instant::now();
     let generation = owner
         .with_current(id, |view| Ok(view.generation()))
         .unwrap();
-    let mut sync = room.sync.into_iter().peekable();
+    let mut sync = workspace.sync.into_iter().peekable();
     while sync.peek().is_some() {
         let batch = sync
             .by_ref()
@@ -345,7 +350,7 @@ fn a_busy_rooms_messages_are_authorized_and_visible_once_its_app_syncs() {
             .map(|(author, message)| (TransportOrigin::RetainedRelayDelta(author), message))
             .collect();
         let reports = owner
-            .receive_batch(id, batch, room.now)
+            .receive_batch(id, batch, workspace.now)
             .expect("the batch commits");
         for report in reports {
             let report =
@@ -371,7 +376,7 @@ fn a_busy_rooms_messages_are_authorized_and_visible_once_its_app_syncs() {
             assert_eq!(view.peer().pending_count(), 0);
             let chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
             let messages = chat.get(ROOT, "messages").unwrap().unwrap().1;
-            for text in &room.texts {
+            for text in &workspace.texts {
                 assert_eq!(
                     chat.get(&messages, text.as_str())
                         .unwrap()

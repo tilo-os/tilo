@@ -1,5 +1,5 @@
-//! A room has members, not one governing device: a participant that does not
-//! host the room answers a join and removes a member, every device admits
+//! A workspace has members, not one governing device: a participant that does not
+//! host the workspace answers a join and removes a member, every device admits
 //! what it wrote, and the removed device is refused everywhere.
 #![allow(
     clippy::unwrap_used,
@@ -20,9 +20,9 @@ use tilo_peer_state::join::{
     MemberRole, TransportHint,
 };
 use tilo_peer_state::join_answer::JoinAnswer;
-use tilo_peer_state::owner::testing::{self, ROOM, governor::TestGovernor};
+use tilo_peer_state::owner::testing::{self, WORKSPACE, governor::TestGovernor};
 use tilo_peer_state::owner::{
-    NativeWorkspaceOwner, OwnerJoinRooms, VerifiedNativeEnrollmentIntent, open_file,
+    NativeWorkspaceOwner, OwnerJoinWorkspaces, VerifiedNativeEnrollmentIntent, open_file,
 };
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
@@ -38,13 +38,13 @@ fn device(root: u8, key: u8, label: &str) -> (SigningKey, SigningKey, DeviceCert
     (root, key, cert)
 }
 
-/// The host's signed hint that it answers the room's joins at its own endpoint.
+/// The host's signed hint that it answers the workspace's joins at its own endpoint.
 fn hint(cert: &DeviceCert, key: &SigningKey) -> TransportHint {
     IrohWorkspaceHostHintV1 {
         version: 1,
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        room: ROOM.into(),
-        workspace_id: join::room_workspace_id(ROOM).unwrap(),
+        room: WORKSPACE.into(),
+        workspace_id: join::room_workspace_id(WORKSPACE).unwrap(),
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&cert.device_public_key).unwrap(),
         ),
@@ -59,7 +59,7 @@ fn hint(cert: &DeviceCert, key: &SigningKey) -> TransportHint {
 /// `governor`'s answer to `request` from `remote` at `now`. Every step of an
 /// engine's answer is decided before its future is first polled.
 fn answer(
-    governor: &JoinAnswer<OwnerJoinRooms>,
+    governor: &JoinAnswer<OwnerJoinWorkspaces>,
     remote: [u8; 32],
     request: JoinTransportRequest,
     now: SystemTime,
@@ -71,7 +71,7 @@ fn answer(
     }
 }
 
-/// Enroll `owner` as `certificate`'s device into the room `governor` holds.
+/// Enroll `owner` as `certificate`'s device into the workspace `governor` holds.
 fn enroll(
     owner: &NativeWorkspaceOwner,
     key: &SigningKey,
@@ -112,7 +112,7 @@ fn enroll(
             request_id,
         }),
     ) else {
-        panic!("the room's host challenges the device");
+        panic!("the workspace's host challenges the device");
     };
     let complete = JoinCompleteRequest {
         proof: join::sign_join_proof(challenge.challenge, key).unwrap(),
@@ -130,17 +130,17 @@ fn enroll(
         certificate.device_public_key,
         JoinTransportRequest::Complete(complete),
     ) else {
-        panic!("the room's host admits the device");
+        panic!("the workspace's host admits the device");
     };
     owner
         .install(&testing::finalize(intent, pending, bootstrap).unwrap(), now)
         .unwrap();
 }
 
-/// What `owner` publishes for its room now.
-fn outgoing(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> Vec<NeighbourMsg> {
+/// What `owner` publishes for its workspace now.
+fn outgoing(owner: &NativeWorkspaceOwner, workspace: RoomId, now: SystemTime) -> Vec<NeighbourMsg> {
     owner
-        .with_outgoing(room, now, |_, outgoing| {
+        .with_outgoing(workspace, now, |_, outgoing| {
             Ok(outgoing
                 .entries()
                 .map(|entry| postcard::from_bytes(entry.bytes()).unwrap())
@@ -149,15 +149,15 @@ fn outgoing(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> Vec<
         .unwrap()
 }
 
-/// Whether `owner`'s room still holds `certificate` as a member device.
+/// Whether `owner`'s workspace still holds `certificate` as a member device.
 fn is_member(
     owner: &NativeWorkspaceOwner,
-    room: RoomId,
+    workspace: RoomId,
     certificate: &DeviceCert,
     now: SystemTime,
 ) -> bool {
     owner
-        .with_current(room, |view| {
+        .with_current(workspace, |view| {
             Ok(view
                 .peer()
                 .permissions(certificate.device_public_key, now)
@@ -166,20 +166,20 @@ fn is_member(
         .unwrap()
 }
 
-/// A room with three people: its owner's device answers the room's host, a
+/// A workspace with three people: its owner's device answers the workspace's host, a
 /// second person's device holds it as a participant, and a third joins
 /// through that participant, which then removes them.
 #[test]
-fn a_participant_that_does_not_host_the_room_admits_and_removes_members() {
+fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
     let directory = tempfile::tempdir().unwrap();
     let (_root_a, key_a, cert_a) = device(91, 92, "A's desktop");
     let (_root_b, key_b, cert_b) = device(73, 74, "B's desktop");
     let (_root_c, key_c, cert_c) = device(75, 76, "C's desktop");
-    let room = RoomId::parse(ROOM).unwrap();
+    let workspace = RoomId::parse(WORKSPACE).unwrap();
 
-    // A's device is the room's host: it made the room.
+    // A's device is the workspace's host: it made the workspace.
     let mut governor =
-        TestGovernor::empty_interactive(cert_a.clone(), key_a.clone(), ROOM).unwrap();
+        TestGovernor::empty_interactive(cert_a.clone(), key_a.clone(), WORKSPACE).unwrap();
     let now = SystemTime::now();
     governor.pin_clock(now);
     let a = open_file(&directory.path().join("a.json")).unwrap();
@@ -193,16 +193,17 @@ fn a_participant_that_does_not_host_the_room_admits_and_removes_members() {
         now,
     );
     assert!(
-        a.with_current(room, |view| Ok(view.hosted_here())).unwrap(),
-        "A's device holds the room it made"
+        a.with_current(workspace, |view| Ok(view.hosted_here()))
+            .unwrap(),
+        "A's device holds the workspace it made"
     );
 
-    // The room's owner lets B invite: what a participant admits with.
+    // The workspace's owner lets B invite: what a participant admits with.
     let invite = tilo_action_policy::Grant::new(
         "invite:b",
         tilo_action_policy::Subject::person(hex::encode(cert_b.user_public_key)),
         tilo_action_policy::roles::governance_action(
-            ROOM,
+            WORKSPACE,
             tilo_action_policy::roles::governance::INVITE,
         ),
         tilo_action_policy::KindSet::of(tilo_action_policy::roles::GOVERNANCE_KIND),
@@ -211,7 +212,7 @@ fn a_participant_that_does_not_host_the_room_admits_and_removes_members() {
     );
     a.commit_workspace_membership_command(
         OwnerCommitRequest {
-            room: ROOM.into(),
+            workspace: WORKSPACE.into(),
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: cert_a.clone(),
@@ -222,7 +223,7 @@ fn a_participant_that_does_not_host_the_room_admits_and_removes_members() {
         now,
     )
     .unwrap();
-    for message in outgoing(&a, room, now) {
+    for message in outgoing(&a, workspace, now) {
         governor
             .receive(
                 TransportOrigin::RetainedRelayDelta(cert_a.device_public_key),
@@ -231,7 +232,7 @@ fn a_participant_that_does_not_host_the_room_admits_and_removes_members() {
             .unwrap();
     }
 
-    // B is a member, a participant of the room on their own device.
+    // B is a member, a participant of the workspace on their own device.
     let b = open_file(&directory.path().join("b.json")).unwrap();
     enroll(
         &b,
@@ -243,28 +244,32 @@ fn a_participant_that_does_not_host_the_room_admits_and_removes_members() {
         now,
     );
     assert!(
-        !b.with_current(room, |view| Ok(view.hosted_here())).unwrap(),
-        "B's device holds the room without hosting it"
+        !b.with_current(workspace, |view| Ok(view.hosted_here()))
+            .unwrap(),
+        "B's device holds the workspace without hosting it"
     );
-    // A's device takes the room as its host has it now, B's membership
+    // A's device takes the workspace as its host has it now, B's membership
     // included.
     for (bytes, _) in governor.outgoing() {
         a.receive(
-            room,
+            workspace,
             TransportOrigin::RetainedRelayDelta(cert_a.device_public_key),
             postcard::from_bytes(bytes).unwrap(),
             now,
         )
         .unwrap();
     }
-    assert!(is_member(&a, room, &cert_b, now), "A admits B's membership");
+    assert!(
+        is_member(&a, workspace, &cert_b, now),
+        "A admits B's membership"
+    );
 
     // C joins through B's own engine: the invitation B issues and the
     // admission B commits are B's, published like any change B makes.
     let c = open_file(&directory.path().join("c.json")).unwrap();
     let issued = b
         .issue_invitation(
-            room,
+            workspace,
             &cert_b,
             IssueInvitationRequest {
                 request_id: [3; 32],
@@ -282,7 +287,7 @@ fn a_participant_that_does_not_host_the_room_admits_and_removes_members() {
             now,
         )
         .unwrap();
-    let joined = JoinAnswer(OwnerJoinRooms::new(b.clone(), key_b.clone()));
+    let joined = JoinAnswer(OwnerJoinWorkspaces::new(b.clone(), key_b.clone()));
     let verified = join::decode_and_verify_invitation(
         &issued.signed_invitation,
         Some(cert_c.user_public_key),
@@ -324,10 +329,13 @@ fn a_participant_that_does_not_host_the_room_admits_and_removes_members() {
     };
     c.install(&testing::finalize(intent, pending, bootstrap).unwrap(), now)
         .unwrap();
-    assert!(is_member(&b, room, &cert_c, now), "B's engine admitted C");
-    for message in outgoing(&b, room, now) {
+    assert!(
+        is_member(&b, workspace, &cert_c, now),
+        "B's engine admitted C"
+    );
+    for message in outgoing(&b, workspace, now) {
         a.receive(
-            room,
+            workspace,
             TransportOrigin::RelayDelta(cert_b.device_public_key),
             message,
             now,
@@ -335,13 +343,13 @@ fn a_participant_that_does_not_host_the_room_admits_and_removes_members() {
         .unwrap();
     }
     assert!(
-        is_member(&a, room, &cert_c, now),
+        is_member(&a, workspace, &cert_c, now),
         "A admits what B admitted"
     );
-    // B removes C: no governing device signs it, the room's policy does.
+    // B removes C: no governing device signs it, the workspace's policy does.
     b.commit_workspace_membership_command(
         OwnerCommitRequest {
-            room: ROOM.into(),
+            workspace: WORKSPACE.into(),
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: cert_b.clone(),
@@ -357,14 +365,14 @@ fn a_participant_that_does_not_host_the_room_admits_and_removes_members() {
     )
     .unwrap();
     assert!(
-        !is_member(&b, room, &cert_c, now),
+        !is_member(&b, workspace, &cert_c, now),
         "B's own engine dropped C"
     );
     for (label, owner) in [("A", &a), ("C", &c)] {
-        for message in outgoing(&b, room, now) {
+        for message in outgoing(&b, workspace, now) {
             owner
                 .receive(
-                    room,
+                    workspace,
                     TransportOrigin::RelayDelta(cert_b.device_public_key),
                     message.clone(),
                     now,
@@ -373,24 +381,24 @@ fn a_participant_that_does_not_host_the_room_admits_and_removes_members() {
         }
     }
     assert!(
-        !is_member(&a, room, &cert_c, now),
+        !is_member(&a, workspace, &cert_c, now),
         "A converged on the removal B made"
     );
-    // The removed device holds the same room and may write nothing into it.
+    // The removed device holds the same workspace and may write nothing into it.
     assert!(
-        !is_member(&c, room, &cert_c, now),
+        !is_member(&c, workspace, &cert_c, now),
         "C holds its own removal"
     );
     assert!(
         c.commit_workspace_membership_command(
             OwnerCommitRequest {
-                room: ROOM.into(),
+                workspace: WORKSPACE.into(),
                 operation: CommitOperation::WorkspaceMembershipCommand {
                     invocation: uuid::Uuid::new_v4(),
                     caller: cert_c,
                     command: WorkspaceMembershipCommand::Settings(
                         tilo_peer_state::workspace_membership::SettingsChange::Rename {
-                            name: "C's room".into(),
+                            name: "C's workspace".into(),
                         },
                     ),
                 },

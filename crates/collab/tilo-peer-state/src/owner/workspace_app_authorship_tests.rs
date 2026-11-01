@@ -7,7 +7,7 @@ use crate::workspace_membership::WorkspaceMembershipCommand;
 fn app_authorship_is_governor_signed_durable_and_exact_retry_only() {
     let fixture = fixture();
     let request = OwnerCommitRequest {
-        room: testing::ROOM.into(),
+        workspace: testing::WORKSPACE.into(),
         operation: CommitOperation::WorkspaceMembershipCommand {
             invocation: uuid::Uuid::new_v4(),
             caller: fixture.certificate.clone(),
@@ -41,7 +41,7 @@ fn app_authorship_is_governor_signed_durable_and_exact_retry_only() {
     );
     let reopened = crate::owner::open_file(&fixture.directory.path().join("owner.json")).unwrap();
     reopened
-        .with_current(RoomId::parse(testing::ROOM).unwrap(), |view| {
+        .with_current(RoomId::parse(testing::WORKSPACE).unwrap(), |view| {
             let now = std::time::SystemTime::now();
             let policy = view
                 .peer()
@@ -67,7 +67,7 @@ fn app_authorship_refuses_forged_person_and_invalid_package() {
             caller.user_public_key = [7; 32];
         }
         let request = OwnerCommitRequest {
-            room: testing::ROOM.into(),
+            workspace: testing::WORKSPACE.into(),
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller,
@@ -83,15 +83,15 @@ fn app_authorship_refuses_forged_person_and_invalid_package() {
     }
 }
 
-/// The room's owner holds it structurally: a grant naming them, even one
-/// they signed themselves, never takes their authority over the room away.
+/// The workspace's owner holds it structurally: a grant naming them, even one
+/// they signed themselves, never takes their authority over the workspace away.
 #[test]
 fn the_owners_own_grants_never_restrict_their_app_delegation() {
     let fixture = fixture();
-    let room = RoomId::parse(testing::ROOM).unwrap();
+    let workspace = RoomId::parse(testing::WORKSPACE).unwrap();
     let messages = fixture
         .owner
-        .with_current(room, |view| {
+        .with_current(workspace, |view| {
             let before = view.peer().clone();
             let person = before
                 .permissions(fixture.certificate.device_public_key, fixture.now)
@@ -102,7 +102,7 @@ fn the_owners_own_grants_never_restrict_their_app_delegation() {
                 &[tilo_action_policy::Grant::new(
                     "app-open-read-only-person",
                     tilo_action_policy::Subject::Person(person.clone()),
-                    tilo_action_policy::TreePath::room(testing::ROOM),
+                    tilo_action_policy::TreePath::room(testing::WORKSPACE),
                     tilo_action_policy::KindSet::UNDOABLE
                         .union(tilo_action_policy::KindSet::OUTSIDE),
                     tilo_action_policy::Answer::Deny,
@@ -123,7 +123,7 @@ fn the_owners_own_grants_never_restrict_their_app_delegation() {
         fixture
             .owner
             .receive(
-                room,
+                workspace,
                 crate::TransportOrigin::RetainedRelayDelta(fixture.certificate.device_public_key),
                 message,
                 fixture.now,
@@ -132,7 +132,7 @@ fn the_owners_own_grants_never_restrict_their_app_delegation() {
     }
     fixture
         .owner
-        .with_current(room, |view| {
+        .with_current(workspace, |view| {
             assert!(
                 view.peer()
                     .workspace()
@@ -146,7 +146,7 @@ fn the_owners_own_grants_never_restrict_their_app_delegation() {
         })
         .unwrap();
     let request = OwnerCommitRequest {
-        room: testing::ROOM.into(),
+        workspace: testing::WORKSPACE.into(),
         operation: CommitOperation::WorkspaceMembershipCommand {
             invocation: uuid::Uuid::new_v4(),
             caller: fixture.certificate.clone(),

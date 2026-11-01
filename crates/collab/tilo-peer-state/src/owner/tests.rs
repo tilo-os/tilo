@@ -1,5 +1,5 @@
 use crate::TransportOrigin;
-use crate::owner::testing::{APP, ROOM, raw_fixture};
+use crate::owner::testing::{APP, WORKSPACE, raw_fixture};
 use crate::owner::{DocumentRead, NativeWorkspaceOwner, RoomId, open_file};
 use crate::owner_commit::{CommitOperation, OwnerCommitRequest};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
@@ -15,8 +15,8 @@ use std::{
     time::SystemTime,
 };
 
-#[path = "busy_room_tests.rs"]
-mod busy_room;
+#[path = "busy_workspace_tests.rs"]
+mod busy_workspace;
 #[path = "changes_read_tests.rs"]
 mod changes_read;
 #[path = "create_tests.rs"]
@@ -30,7 +30,7 @@ struct Enrolled {
     _directory: tempfile::TempDir,
     path: PathBuf,
     owner: NativeWorkspaceOwner,
-    room: RoomId,
+    workspace: RoomId,
     now: SystemTime,
     replay: NeighbourMsg,
 }
@@ -38,13 +38,13 @@ struct Enrolled {
 /// Enroll through the file store and admit the governor's history.
 fn enrolled() -> Enrolled {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let path = directory.path().join("joined-rooms.json");
+    let path = directory.path().join("joined-workspaces.json");
     let owner = open_file(&path).unwrap();
     let (intent, bootstrap, messages, governor, now) = raw_fixture();
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
     let enrollment = crate::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
-    let room = RoomId::parse(ROOM).unwrap();
+    let workspace = RoomId::parse(WORKSPACE).unwrap();
     let replay = messages
         .iter()
         .rev()
@@ -54,7 +54,7 @@ fn enrolled() -> Enrolled {
     for message in messages.into_iter().skip(1) {
         owner
             .receive(
-                room,
+                workspace,
                 TransportOrigin::RetainedRelayDelta(governor),
                 message,
                 now,
@@ -65,7 +65,7 @@ fn enrolled() -> Enrolled {
         _directory: directory,
         path,
         owner,
-        room,
+        workspace,
         now,
         replay,
     }
@@ -75,18 +75,18 @@ fn member() -> SigningKey {
     SigningKey::from_bytes(&[63; 32])
 }
 
-fn edit(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> OwnerCommitRequest {
-    edit_with(owner, room, now, "written while joined")
+fn edit(owner: &NativeWorkspaceOwner, workspace: RoomId, now: SystemTime) -> OwnerCommitRequest {
+    edit_with(owner, workspace, now, "written while joined")
 }
 
 fn edit_with(
     owner: &NativeWorkspaceOwner,
-    room: RoomId,
+    workspace: RoomId,
     now: SystemTime,
     topic: &str,
 ) -> OwnerCommitRequest {
     owner
-        .with_current(room, |view| edit_from_view(view, now, topic))
+        .with_current(workspace, |view| edit_from_view(view, now, topic))
         .unwrap()
 }
 
@@ -110,7 +110,7 @@ fn edit_from_view(
         return Err("test edit was not a signed document write".into());
     };
     Ok(OwnerCommitRequest {
-        room: ROOM.into(),
+        workspace: WORKSPACE.into(),
         operation: CommitOperation::Document {
             app: APP.into(),
             record: String::new(),
@@ -120,11 +120,11 @@ fn edit_from_view(
 }
 
 #[test]
-fn a_joined_room_is_kept_in_its_own_private_file_and_reopens() {
+fn a_joined_workspace_is_kept_in_its_own_private_file_and_reopens() {
     let joined = enrolled();
     let policy_calls = |owner: &NativeWorkspaceOwner| {
         owner
-            .with_current(joined.room, |view| {
+            .with_current(joined.workspace, |view| {
                 Ok(view
                     .peer()
                     .validated_media_policy()?
@@ -138,7 +138,7 @@ fn a_joined_room_is_kept_in_its_own_private_file_and_reopens() {
     drop(joined.owner);
     let reopened = open_file(&joined.path).unwrap();
     assert_eq!(policy_calls(&reopened), 1);
-    assert_eq!(reopened.rooms(), vec![joined.room]);
+    assert_eq!(reopened.workspaces(), vec![joined.workspace]);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -153,8 +153,8 @@ fn a_joined_room_is_kept_in_its_own_private_file_and_reopens() {
 #[test]
 fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
     let joined = enrolled();
-    assert_eq!(joined.owner.unadmitted_writes(joined.room).unwrap(), 0);
-    let request = edit(&joined.owner, joined.room, joined.now);
+    assert_eq!(joined.owner.unadmitted_writes(joined.workspace).unwrap(), 0);
+    let request = edit(&joined.owner, joined.workspace, joined.now);
     let receipt = joined
         .owner
         .commit_document(request.clone(), joined.now)
@@ -169,14 +169,14 @@ fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
     );
     let outgoing = |owner: &NativeWorkspaceOwner| {
         owner
-            .with_outgoing(joined.room, joined.now, |_, outgoing| {
+            .with_outgoing(joined.workspace, joined.now, |_, outgoing| {
                 Ok(outgoing.entries().count())
             })
             .unwrap()
     };
     assert_eq!(outgoing(&joined.owner), 1);
     assert_eq!(
-        joined.owner.unadmitted_writes(joined.room).unwrap(),
+        joined.owner.unadmitted_writes(joined.workspace).unwrap(),
         1,
         "the write waits for the governor's admission"
     );
@@ -187,10 +187,10 @@ fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
 #[test]
 fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
     let joined = enrolled();
-    let stale = edit_with(&joined.owner, joined.room, joined.now, "stale edit");
+    let stale = edit_with(&joined.owner, joined.workspace, joined.now, "stale edit");
     let first = edit_with(
         &joined.owner,
-        joined.room,
+        joined.workspace,
         joined.now,
         "first committed edit",
     );
@@ -203,7 +203,7 @@ fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
     let receipt = joined
         .owner
         .commit_document_with_current(
-            joined.room,
+            joined.workspace,
             |view| edit_from_view(view, joined.now, "edit from current owner turn"),
             joined.now,
         )
@@ -211,7 +211,7 @@ fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
     assert!(receipt.generation > 1);
     joined
         .owner
-        .with_current(joined.room, |view| {
+        .with_current(joined.workspace, |view| {
             let chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
             assert_eq!(
                 chat.get(ROOT, "topic").unwrap().unwrap().0.as_str(),
@@ -229,11 +229,11 @@ fn with_pending_original(joined: &Enrolled) {
     let governor_key = SigningKey::from_bytes(&[61; 32]);
     let mut remote = joined
         .owner
-        .with_current(joined.room, |view| Ok(view.peer().clone()))
+        .with_current(joined.workspace, |view| Ok(view.peer().clone()))
         .unwrap();
     let original = edit_with(
         &joined.owner,
-        joined.room,
+        joined.workspace,
         joined.now,
         "original awaiting ack",
     );
@@ -246,7 +246,7 @@ fn with_pending_original(joined: &Enrolled) {
         joined
             .owner
             .receive(
-                joined.room,
+                joined.workspace,
                 TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
                 message,
                 joined.now,
@@ -258,7 +258,7 @@ fn with_pending_original(joined: &Enrolled) {
 fn projections(joined: &Enrolled) -> usize {
     joined
         .owner
-        .with_current(joined.room, |view| {
+        .with_current(joined.workspace, |view| {
             Ok(crate::owner::testing::projection(view)?.len())
         })
         .unwrap()
@@ -273,7 +273,7 @@ fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
     };
     let changes = joined
         .owner
-        .with_current(joined.room, |view| {
+        .with_current(joined.workspace, |view| {
             let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
             let before = chat.get_heads();
             chat.put(ROOT, "topic", topic).unwrap();
@@ -285,16 +285,16 @@ fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
     let mutation = DocumentMutation::Incremental(changes);
     let mut envelope = SignedOp::new_unsigned(
         mutation.encode().unwrap(),
-        document_artifact_id(APP, ROOM, ""),
+        document_artifact_id(APP, WORKSPACE, ""),
         Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-        document_attestation_id(APP, ROOM, ""),
+        document_attestation_id(APP, WORKSPACE, ""),
         OpKind::Change,
         joined.now,
         next_unordered_document_sequence(joined.now),
     );
     sign_op(&mut envelope, &key).unwrap();
     OwnerCommitRequest {
-        room: ROOM.into(),
+        workspace: WORKSPACE.into(),
         operation: CommitOperation::Document {
             app: APP.into(),
             record: String::new(),
@@ -307,11 +307,11 @@ fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
 fn dense_snapshot_sequence_is_stale_after_an_intervening_recovery_projection() {
     let joined = enrolled();
     with_pending_original(&joined);
-    let dense = edit_with(&joined.owner, joined.room, joined.now, "dense edit");
+    let dense = edit_with(&joined.owner, joined.workspace, joined.now, "dense edit");
     assert_eq!(projections(&joined), 0);
     joined
         .owner
-        .reconcile_outgoing(joined.room, &member(), joined.now)
+        .reconcile_outgoing(joined.workspace, &member(), joined.now)
         .unwrap();
     assert_eq!(
         projections(&joined),
@@ -332,7 +332,7 @@ fn unordered_sequence_survives_an_intervening_recovery_projection() {
     assert_eq!(projections(&joined), 0);
     joined
         .owner
-        .reconcile_outgoing(joined.room, &member(), joined.now)
+        .reconcile_outgoing(joined.workspace, &member(), joined.now)
         .unwrap();
     assert_eq!(
         projections(&joined),
@@ -348,7 +348,7 @@ fn unordered_sequence_survives_an_intervening_recovery_projection() {
     };
     joined
         .owner
-        .with_current(joined.room, |view| {
+        .with_current(joined.workspace, |view| {
             assert!(
                 view.peer()
                     .lookup_exact_local_document(APP, "", envelope, joined.now)
@@ -367,7 +367,7 @@ fn unordered_sequence_survives_an_intervening_recovery_projection() {
 }
 
 #[test]
-fn an_uncertain_write_fences_every_room_until_reopened() {
+fn an_uncertain_write_fences_every_workspace_until_reopened() {
     use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let joined = enrolled();
     let calls = Arc::new(AtomicUsize::new(0));
@@ -375,7 +375,7 @@ fn an_uncertain_write_fences_every_room_until_reopened() {
     let _subscription = joined.owner.observe_fences(Arc::new(move |_, _| {
         counter.fetch_add(1, Ordering::SeqCst);
     }));
-    let request = edit(&joined.owner, joined.room, joined.now);
+    let request = edit(&joined.owner, joined.workspace, joined.now);
     assert!(
         with_failure(Checkpoint::AfterPublish, || joined
             .owner
@@ -384,7 +384,7 @@ fn an_uncertain_write_fences_every_room_until_reopened() {
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(joined.owner.health().is_err());
-    assert!(joined.owner.contains_room(joined.room));
+    assert!(joined.owner.contains_workspace(joined.workspace));
     assert!(joined.owner.commit_document(request, joined.now).is_err());
     drop(joined.owner);
     open_file(&joined.path).unwrap().health().unwrap();
@@ -393,14 +393,14 @@ fn an_uncertain_write_fences_every_room_until_reopened() {
 #[test]
 fn a_pending_enrollment_without_a_slot_survives_restart_and_cancels() {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let path = directory.path().join("joined-rooms.json");
+    let path = directory.path().join("joined-workspaces.json");
     let (intent, _, _, _, now) = raw_fixture();
     let id = open_file(&path)
         .unwrap()
         .prepare_enrollment_into(&intent, None, now)
         .unwrap();
     let owner = open_file(&path).unwrap();
-    assert!(owner.contains_room(id.room()));
+    assert!(owner.contains_workspace(id.workspace()));
     let invitation =
         crate::join::encode_invitation_text(intent.verified_join().signed_invitation());
     assert_eq!(
@@ -422,11 +422,11 @@ fn a_pending_enrollment_without_a_slot_survives_restart_and_cancels() {
         id,
         "a retry reuses the exact persisted proof"
     );
-    assert!(owner.cancel_enrollment(id.room(), &id).unwrap());
+    assert!(owner.cancel_enrollment(id.workspace(), &id).unwrap());
     assert!(
         open_file(&path)
             .unwrap()
-            .pending_enrollment(id.room())
+            .pending_enrollment(id.workspace())
             .unwrap()
             .is_some()
     );
@@ -438,12 +438,12 @@ fn a_member_reads_the_admitted_document_and_a_stranger_does_not() {
     let member = member().verifying_key().to_bytes();
     let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
     let read = |reader, record: &str, known, maximum| {
-        joined.owner.with_current(joined.room, |view| {
+        joined.owner.with_current(joined.workspace, |view| {
             view.read_document(reader, APP, record, known, maximum, joined.now)
         })
     };
     let Ok(DocumentRead::Captured(document)) = read(member, "", None, usize::MAX) else {
-        panic!("a member reads what the room admitted");
+        panic!("a member reads what the workspace admitted");
     };
     let doc = AutoCommit::load(&document.bytes).unwrap();
     assert!(doc.get(ROOT, "channels").unwrap().is_some());
@@ -457,7 +457,7 @@ fn a_member_reads_the_admitted_document_and_a_stranger_does_not() {
     );
     assert!(
         read(stranger, "", None, usize::MAX).is_err(),
-        "a device outside the room reads nothing"
+        "a device outside the workspace reads nothing"
     );
     assert!(read(member, "uuid:absent", None, usize::MAX).is_err());
 }
@@ -472,18 +472,18 @@ fn a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused() {
     let member = member().verifying_key().to_bytes();
     let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
     let governor_key = SigningKey::from_bytes(&[61; 32]);
-    let covered = edit_with(&joined.owner, joined.room, joined.now, "covered next");
+    let covered = edit_with(&joined.owner, joined.workspace, joined.now, "covered next");
     joined.owner.commit_document(covered, joined.now).unwrap();
     let mut remote = joined
         .owner
-        .with_current(joined.room, |view| Ok(view.peer().clone()))
+        .with_current(joined.workspace, |view| Ok(view.peer().clone()))
         .unwrap();
     let frames = remote
         .publication_mut()
         .durable_bootstrap_messages(&governor_key, joined.now, 600)
         .unwrap();
     let read = |reader| {
-        joined.owner.with_current(joined.room, |view| {
+        joined.owner.with_current(joined.workspace, |view| {
             view.read_document(reader, APP, "", None, usize::MAX, joined.now)
         })
     };
@@ -492,7 +492,7 @@ fn a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused() {
         joined
             .owner
             .receive(
-                joined.room,
+                joined.workspace,
                 TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
                 frame,
                 joined.now,
@@ -513,7 +513,7 @@ fn a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused() {
     }
     assert!(
         pending > 0,
-        "the checkpoint's frames leave the room between cuts"
+        "the checkpoint's frames leave the workspace between cuts"
     );
     let Ok(DocumentRead::Captured(document)) = read(member) else {
         panic!("the completed checkpoint is read again");
@@ -533,7 +533,7 @@ fn an_unchanged_committed_read_does_not_capture_the_document() {
     let member = member().verifying_key().to_bytes();
     let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
     let read = |reader, known| {
-        joined.owner.with_current(joined.room, |view| {
+        joined.owner.with_current(joined.workspace, |view| {
             view.read_document(reader, APP, "", known, usize::MAX, joined.now)
         })
     };
@@ -557,7 +557,7 @@ fn an_unchanged_committed_read_does_not_capture_the_document() {
     );
     assert!(
         read(stranger, Some(document.revision)).is_err(),
-        "a device outside the room cannot reuse a revision it was never given"
+        "a device outside the workspace cannot reuse a revision it was never given"
     );
 }
 
@@ -566,13 +566,15 @@ fn a_held_revision_is_checked_from_heads_with_the_read_permission() {
     let joined = enrolled();
     let member = member().verifying_key().to_bytes();
     let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
-    let Ok(DocumentRead::Captured(document)) = joined.owner.with_current(joined.room, |view| {
-        view.read_document(member, APP, "", None, usize::MAX, joined.now)
-    }) else {
+    let Ok(DocumentRead::Captured(document)) =
+        joined.owner.with_current(joined.workspace, |view| {
+            view.read_document(member, APP, "", None, usize::MAX, joined.now)
+        })
+    else {
         panic!("the first read admits the document");
     };
     let holds = |reader, known| {
-        joined.owner.with_current(joined.room, |view| {
+        joined.owner.with_current(joined.workspace, |view| {
             view.holds_revision(reader, APP, "", known, joined.now)
         })
     };
@@ -602,7 +604,7 @@ fn rotated_channel() -> (
     channel_crypto::ChannelContentKeys,
     channel_crypto::ChannelContentKeys,
 ) {
-    let channel = collab_types::document_channel_id(APP, ROOM, "");
+    let channel = collab_types::document_channel_id(APP, WORKSPACE, "");
     let mut group = channel_crypto::ChannelGroup::create(
         channel,
         channel_crypto::MemberKey::generate("governor").unwrap(),
@@ -637,7 +639,7 @@ fn commit_sealed_as(
     let OwnerCommitRequest {
         operation: CommitOperation::Document { mut envelope, .. },
         ..
-    } = edit_with(&joined.owner, joined.room, joined.now, SECRET)
+    } = edit_with(&joined.owner, joined.workspace, joined.now, SECRET)
     else {
         panic!("a document write")
     };
@@ -651,7 +653,7 @@ fn commit_sealed_as(
         .owner
         .commit_document(
             OwnerCommitRequest {
-                room: ROOM.into(),
+                workspace: WORKSPACE.into(),
                 operation: CommitOperation::Document {
                     app: APP.into(),
                     record: String::new(),
@@ -664,9 +666,9 @@ fn commit_sealed_as(
     *envelope
 }
 
-fn sent(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> Vec<Vec<u8>> {
+fn sent(owner: &NativeWorkspaceOwner, workspace: RoomId, now: SystemTime) -> Vec<Vec<u8>> {
     owner
-        .with_outgoing(room, now, |_, outgoing| {
+        .with_outgoing(workspace, now, |_, outgoing| {
             Ok(outgoing
                 .entries()
                 .map(|entry| entry.bytes().to_vec())
@@ -686,7 +688,7 @@ fn native_sealed_checkpoint_is_classified_like_browser() {
     let joined = enrolled();
     let (keys, _) = rotated_channel();
     let envelope = commit_sealed_as(&joined, &keys, collab_types::ContentRetention::Checkpoint);
-    let [bytes] = sent(&joined.owner, joined.room, joined.now)
+    let [bytes] = sent(&joined.owner, joined.workspace, joined.now)
         .try_into()
         .expect("the committed sealed checkpoint is released");
     let message: NeighbourMsg = postcard::from_bytes(&bytes).unwrap();
@@ -705,7 +707,7 @@ fn native_sealed_checkpoint_is_classified_like_browser() {
     );
     let published = joined
         .owner
-        .with_outgoing(joined.room, joined.now, |_, outgoing| {
+        .with_outgoing(joined.workspace, joined.now, |_, outgoing| {
             Ok(outgoing
                 .entries()
                 .map(|entry| (entry.channel(), entry.retention()))
@@ -733,7 +735,7 @@ fn native_sealed_checkpoint_is_classified_like_browser() {
     if let NeighbourMsg::AppDocument { envelope, .. } = &mut single_use {
         envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
             0,
-            collab_types::document_channel_id(APP, ROOM, ""),
+            collab_types::document_channel_id(APP, WORKSPACE, ""),
         ));
     }
     assert!(
@@ -752,7 +754,7 @@ fn a_members_sealed_compaction_is_published_as_a_checkpoint() {
     let joined = enrolled();
     let (keys, _) = rotated_channel();
     let sealed = commit_sealed_as(&joined, &keys, collab_types::ContentRetention::Checkpoint);
-    let [bytes] = sent(&joined.owner, joined.room, joined.now)
+    let [bytes] = sent(&joined.owner, joined.workspace, joined.now)
         .try_into()
         .expect("the committed sealed checkpoint is released");
     let mut message: NeighbourMsg = postcard::from_bytes(&bytes).unwrap();
@@ -786,7 +788,7 @@ fn a_member_with_no_sealed_history_past_its_bound_compacts_nothing() {
     let compacted = joined
         .owner
         .compact_outgoing(
-            joined.room,
+            joined.workspace,
             &member(),
             &mut |_| {
                 opened += 1;
@@ -801,7 +803,7 @@ fn a_member_with_no_sealed_history_past_its_bound_compacts_nothing() {
         .unwrap();
     assert_eq!(compacted, 0);
     assert_eq!((opened, sealed), (0, 0), "nothing is opened or sealed");
-    assert_eq!(sent(&joined.owner, joined.room, joined.now).len(), 1);
+    assert_eq!(sent(&joined.owner, joined.workspace, joined.now).len(), 1);
 }
 
 #[test]
@@ -813,13 +815,13 @@ fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_or
         .now
         .checked_add(std::time::Duration::from_secs(301))
         .unwrap();
-    assert!(sent(&joined.owner, joined.room, later).is_empty());
+    assert!(sent(&joined.owner, joined.workspace, later).is_empty());
 
     let mut asked = 0;
     joined
         .owner
         .renew_outgoing(
-            joined.room,
+            joined.workspace,
             &member(),
             &mut |op| {
                 asked += 1;
@@ -839,9 +841,14 @@ fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_or
         )
         .unwrap();
     assert_eq!(asked, 1);
-    let status = joined.owner.outgoing_status(joined.room, later).unwrap();
+    let status = joined
+        .owner
+        .outgoing_status(joined.workspace, later)
+        .unwrap();
     assert_eq!(status.pending, 1, "the renewal replaces its original");
-    let [bytes] = sent(&joined.owner, joined.room, later).try_into().unwrap();
+    let [bytes] = sent(&joined.owner, joined.workspace, later)
+        .try_into()
+        .unwrap();
     let NeighbourMsg::AppDocument { envelope, .. } = postcard::from_bytes(&bytes).unwrap() else {
         panic!("a document write")
     };
@@ -868,7 +875,7 @@ fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_or
 
     drop(joined.owner);
     let reopened = open_file(&joined.path).unwrap();
-    assert_eq!(sent(&reopened, joined.room, later), vec![bytes]);
+    assert_eq!(sent(&reopened, joined.workspace, later), vec![bytes]);
     for file in std::fs::read_dir(joined.path.parent().unwrap()).unwrap() {
         let contents = std::fs::read(file.unwrap().path()).unwrap();
         assert!(
@@ -893,7 +900,7 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
     joined
         .owner
         .renew_outgoing(
-            joined.room,
+            joined.workspace,
             &member(),
             &mut |_| Err("this device holds no current key".into()),
             later,
@@ -903,17 +910,17 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
     assert_eq!(
         joined
             .owner
-            .outgoing_status(joined.room, later)
+            .outgoing_status(joined.workspace, later)
             .unwrap()
             .pending,
         1
     );
-    assert!(sent(&joined.owner, joined.room, later).is_empty());
+    assert!(sent(&joined.owner, joined.workspace, later).is_empty());
     assert!(
         joined
             .owner
             .renew_outgoing(
-                joined.room,
+                joined.workspace,
                 &SigningKey::from_bytes(&[99; 32]),
                 &mut |_| panic!("another signer's renewal asked the key holder"),
                 later,
@@ -923,29 +930,29 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
 }
 
 #[test]
-fn an_owner_file_from_before_the_room_host_had_its_name_restores() {
+fn an_owner_file_from_before_the_workspace_host_had_its_name_restores() {
     let joined = enrolled();
     let host = joined
         .owner
-        .with_current(joined.room, |view| Ok(view.room_host().clone()))
+        .with_current(joined.workspace, |view| Ok(view.workspace_host().clone()))
         .unwrap();
     drop(joined.owner);
     let mut value: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
-    let room = &mut value["rooms"][joined.room.to_string()];
-    let stored = room.as_object_mut().expect("a stored room");
+    let workspace = &mut value["workspaces"][joined.workspace.to_string()];
+    let stored = workspace.as_object_mut().expect("a stored workspace");
     let named_as_the_host = stored
-        .remove("room_host")
+        .remove("workspace_host")
         .expect("the record names the host");
     stored.insert("governor".into(), named_as_the_host);
     std::fs::write(&joined.path, serde_json::to_vec(&value).unwrap()).unwrap();
     let reopened = open_file(&joined.path).expect("a file from before the rename reads");
     assert_eq!(
         reopened
-            .with_current(joined.room, |view| Ok(view.room_host().clone()))
+            .with_current(joined.workspace, |view| Ok(view.workspace_host().clone()))
             .unwrap(),
         host,
-        "the governor field is the room's host"
+        "the governor field is the workspace's host"
     );
 }
 
@@ -969,9 +976,9 @@ fn an_owner_file_from_before_the_join_version_bump_restores() {
     // build before the version bump.
     let mut value: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
-    let stored = value["rooms"][joined.room.to_string()]
+    let stored = value["workspaces"][joined.workspace.to_string()]
         .as_object_mut()
-        .expect("a stored room");
+        .expect("a stored workspace");
     let invitation = STANDARD
         .decode(stored["invitation"].as_str().expect("base64 invitation"))
         .unwrap();
@@ -1030,7 +1037,7 @@ fn an_owner_file_from_before_the_join_version_bump_restores() {
     std::fs::write(&joined.path, serde_json::to_vec(&value).unwrap()).unwrap();
 
     let reopened = open_file(&joined.path).expect("a file from before the join version bump reads");
-    assert_eq!(reopened.rooms(), vec![joined.room]);
+    assert_eq!(reopened.workspaces(), vec![joined.workspace]);
 
     // Opened once, the file is written in this build's form; the proof keeps
     // the bytes it was signed as.
@@ -1038,7 +1045,7 @@ fn an_owner_file_from_before_the_join_version_bump_restores() {
         serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
     let stored_intent = STANDARD
         .decode(
-            value["rooms"][joined.room.to_string()]["enrollment_intent"]
+            value["workspaces"][joined.workspace.to_string()]["enrollment_intent"]
                 .as_str()
                 .expect("base64 intent"),
         )
@@ -1062,9 +1069,9 @@ fn owner_file_holds_byte_fields_as_compact_base64() {
     let current = std::fs::read(&joined.path).unwrap();
     assert!(!current.contains(&b'\n'), "the owner file is compact");
     let value: serde_json::Value = serde_json::from_slice(&current).unwrap();
-    let room = &value["rooms"][joined.room.to_string()];
+    let workspace = &value["workspaces"][joined.workspace.to_string()];
     for field in ["peer", "invitation", "enrollment_intent"] {
-        assert!(room[field].is_string(), "{field} is base64 text");
+        assert!(workspace[field].is_string(), "{field} is base64 text");
     }
 }
 
@@ -1073,18 +1080,20 @@ fn retained_replay_reuses_exact_committed_publication() {
     let joined = enrolled();
     let governor = joined
         .owner
-        .with_current(joined.room, |view| Ok(view.room_host().device_public_key))
+        .with_current(joined.workspace, |view| {
+            Ok(view.workspace_host().device_public_key)
+        })
         .unwrap();
     let message = joined.replay.clone();
     let before = std::fs::read(&joined.path).unwrap();
     let generation = joined
         .owner
-        .with_current(joined.room, |view| Ok(view.generation()))
+        .with_current(joined.workspace, |view| Ok(view.generation()))
         .unwrap();
     let report = joined
         .owner
         .receive(
-            joined.room,
+            joined.workspace,
             TransportOrigin::RetainedRelayDelta(governor),
             message,
             joined.now,
@@ -1097,7 +1106,7 @@ fn retained_replay_reuses_exact_committed_publication() {
     assert_eq!(
         joined
             .owner
-            .with_current(joined.room, |view| Ok(view.generation()))
+            .with_current(joined.workspace, |view| Ok(view.generation()))
             .unwrap(),
         generation,
         "an unchanged authenticated replay must reuse the actual committed generation"
@@ -1130,7 +1139,7 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
     };
     let captured = joined
         .owner
-        .with_current(joined.room, |view| {
+        .with_current(joined.workspace, |view| {
             assert!(
                 view.read_document(reader, APP, "", None, 1024 * 1024, joined.now)
                     .is_err(),
@@ -1177,11 +1186,11 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
     );
     assert_eq!(std::fs::read(&joined.path).unwrap(), before);
     let path = joined.path.clone();
-    let room = joined.room;
+    let workspace = joined.workspace;
     let now = joined.now;
     drop(joined.owner);
     let reopened = open_file(&path).unwrap();
-    assert!(matches!(reopened.with_current(room, |view| {
+    assert!(matches!(reopened.with_current(workspace, |view| {
         view.read_document_with_history(reader, (APP, ""), Some(captured.revision),
             1024 * 1024, now, &mut |op| {
                 keys.open_content(op.artifact, &op.encryption.ok_or("not sealed")?,
