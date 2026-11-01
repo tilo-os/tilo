@@ -42,6 +42,7 @@ mod refused_answer;
 #[path = "task_agent_route.rs"]
 mod task_agent_route;
 use bytes::{command_bytes, event_diagnostics, fit_catalogue, remote_action_round_trip};
+#[cfg(all(unix, any(test, feature = "test-support")))]
 #[path = "broker_fixtures.rs"]
 mod fixtures;
 #[path = "broker_published.rs"]

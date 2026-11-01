@@ -816,6 +816,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",
   "crates/platform/tilolang-tilo/tests/policy.rs",
+  "crates/platform/tilolang-tilo/tests/records_service.rs",
   "crates/platform/tilolang-tilo/tests/rich_text.rs",
   "crates/platform/tilolang-tilo/tests/scenarios.rs",
   "crates/platform/tilolang-tilo/tests/shell_record.rs",
@@ -841,9 +842,13 @@ readers = [
 [[cargo]]
 package = "tilo-surface-host"
 # The part embeds and compiles the shell package's sources and ids lock, and the packages its
-# views reach (`notes`, `tasks`, `chat`), every file of each.
+# views reach (`notes`, `tasks`, `chat`), every file of each; its places' tests publish a notebook
+# from the notes app's sources.
 inputs = ["apps/tl/"]
-readers = ["crates/session/surface-host/src/shell_part.rs"]
+readers = [
+  "crates/session/surface-host/src/shell_part.rs",
+  "crates/session/surface-host/src/shell_part/places.rs",
+]
 
 [[cargo]]
 package = "onboarding-walk"
