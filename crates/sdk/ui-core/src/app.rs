@@ -526,6 +526,11 @@ pub struct App {
     pub debug_mode: bool,
     pub focused_node: Option<NodeId>,
     pub focusable_order: Vec<NodeId>,
+    /// The name of the control the keyboard is on ([`Self::answer_name`]),
+    /// kept beside [`Self::focused_node`]: a tree rebuilt while the person is
+    /// on it replaces every node id, and a name is what finds the same control
+    /// again when nothing in the new tree reports itself as focused.
+    focus_anchor: Option<String>,
     /// Opt-in: focuses the first focusable widget after initial layout, so
     /// the app is keyboard-usable without a click.
     pub autofocus_first: bool,
@@ -2329,6 +2334,34 @@ impl App {
         name
     }
 
+    /// Whether the control at `node` still answers to `name`.
+    fn answers_to(&self, node: NodeId, name: &str) -> bool {
+        let mut answers = false;
+        // SAFETY: the caller owns this tree; nothing borrows the widget.
+        let _ = unsafe {
+            crate::bound_dispatch::inspect_bound_node(
+                &self.bindings,
+                &self.layout.node_map,
+                node,
+                |widget| answers = widget.test_id() == Some(name),
+            )
+        };
+        answers
+    }
+
+    /// The one control among the focusable ones that answers to `name`, when
+    /// exactly one does: a rebuilt tree that put it somewhere else still holds
+    /// the answer the person was on.
+    fn unique_answering(&self, name: &str) -> Option<NodeId> {
+        let mut answering = self
+            .focusable_order
+            .iter()
+            .copied()
+            .filter(|&node| self.answers_to(node, name));
+        let single = answering.next()?;
+        answering.next().is_none().then_some(single)
+    }
+
     /// [`Self::rebuild_structure`]: whether a control asked for the keyboard in the tree it
     /// built ([`Widget::take_focus_request`]) and has it. That request is where the keyboard
     /// goes, over where it was before the rebuild: a caller restoring the focus it captured
@@ -2393,10 +2426,19 @@ impl App {
                 let identity = crate::widget::layout::CompositionFocus::capture_live(
                     self.root_widget.as_ref(),
                 );
-                let named = self.focused_node.and_then(|id| self.answer_name(id));
-                (at, identity, named)
+                let live = self.focused_node.and_then(|id| self.answer_name(id));
+                // The answer the person was on is not in this tree any more,
+                // replaced along with everything the sheet drew: the name it
+                // went by is all that is left of where they were, and it finds
+                // that answer again wherever the new tree put it. While the
+                // tree still holds the answer, its name at its own place
+                // decides, as it always has.
+                let remembered = live.is_none().then(|| self.focus_anchor.clone()).flatten();
+                (at, identity, live, remembered)
             })
-            .filter(|(at, identity, named)| at.is_some() || identity.is_some() || named.is_some());
+            .filter(|(at, identity, live, remembered)| {
+                at.is_some() || identity.is_some() || live.is_some() || remembered.is_some()
+            });
         // NodeId values can be reused by the new tree. Clear the old handle
         // without dispatching through its potentially invalid pointer, so a
         // replacement control at the same id still receives set_focus(true).
@@ -2425,15 +2467,15 @@ impl App {
         self.update_focusable_order();
         #[cfg(test)]
         drop(probe);
-        if let Some((at, identity, named)) = trapped_focus
+        if let Some((at, identity, live, remembered)) = trapped_focus
             && self.accessibility.focus_trap_active
         {
             // The same answer holds the keyboard after the rebuild. When the
-            // tree no longer reports that answer, only a control that still
-            // answers to the same name at the same place may take the
-            // keyboard: a rebuilt modal can show different answers, and the
-            // person's place there is the first one, as it already was by the
-            // focus order above.
+            // tree no longer reports that answer, a control that still answers
+            // to the same name at the same place may take the keyboard: a
+            // rebuilt modal can show different answers, and the person's place
+            // there is the first one, as it already was by the focus order
+            // above.
             // SAFETY: the build above made this exact tree, exclusively owned.
             let restored = identity.and_then(|focus| unsafe {
                 focus.restore(
@@ -2443,9 +2485,12 @@ impl App {
                 )
             });
             let kept = restored.or_else(|| {
+                if let Some(named) = remembered.as_deref() {
+                    return self.unique_answering(named);
+                }
                 let at = at?;
                 let node = *self.focusable_order.get(at)?;
-                (self.answer_name(node) == named).then_some(node)
+                (self.answer_name(node) == live).then_some(node)
             });
             if let Some(node) = kept {
                 self.set_focused_node(Some(node));

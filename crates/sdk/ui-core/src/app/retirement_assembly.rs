@@ -326,6 +326,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         debug_mode,
         focused_node,
         focusable_order,
+        focus_anchor: None,
         autofocus_first,
         autofocus_on_structure_change,
         appearance_reconcile,
