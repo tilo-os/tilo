@@ -14,6 +14,7 @@
 //!   a value.
 //! - [`recv`] receives from a [`std::sync::mpsc::Receiver`].
 //! - [`within`] awaits a future on any executor.
+//! - [`exited`] blocks until a process has ended.
 //! - [`hang_bound`] and [`hang_deadline`] serve waits the helpers do not fit,
 //!   such as a socket's read timeout.
 
@@ -106,6 +107,50 @@ pub fn recv<T>(what: impl Display, receiver: &Receiver<T>) -> T {
         Err(RecvTimeoutError::Timeout) => hung(&what),
         Err(RecvTimeoutError::Disconnected) => {
             panic!("every sender was dropped while waiting for {what}")
+        }
+    }
+}
+
+/// Block until the process `pid` has ended, through a pidfd: no polling,
+/// and the wait returns the moment it exits. A process that is already gone
+/// has ended.
+#[cfg(target_os = "linux")]
+#[track_caller]
+pub fn exited(what: impl Display, pid: u32) {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+
+    let pid = libc::pid_t::try_from(pid).expect("a pid fits a pid_t");
+    // SAFETY: pidfd_open takes a pid and flags and returns a new descriptor
+    // this process owns, or -1.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    let Ok(fd) = i32::try_from(fd) else {
+        panic!("pidfd_open returned {fd}");
+    };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(libc::ESRCH),
+            "no pidfd for {what}: {error}"
+        );
+        return;
+    }
+    // SAFETY: the kernel just returned this descriptor, and nothing else
+    // owns it.
+    let pidfd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let mut poll = libc::pollfd {
+        fd: pidfd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let timeout = i32::try_from(hang_bound().as_millis()).unwrap_or(i32::MAX);
+    loop {
+        // SAFETY: one valid pollfd, which outlives the call.
+        match unsafe { libc::poll(&raw mut poll, 1, timeout) } {
+            0 => hung(&what),
+            -1 if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted => {}
+            -1 => panic!("waiting for {what}: {}", std::io::Error::last_os_error()),
+            _ => return,
         }
     }
 }

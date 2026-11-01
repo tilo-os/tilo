@@ -3435,8 +3435,7 @@ impl Widget for ListRow {
             // text band's fractional inset at a large text scale put a button's left edge at
             // 39.596 at 1.5x).
             let scale = f64::from(crate::widget::device_scale());
-            let snap = |edge: f64| (edge * scale).round() / scale;
-            child_origin.x = snap(child_origin.x + shift.min(room));
+            child_origin.x = ((child_origin.x + shift.min(room)) * scale).round() / scale;
         } else if trailing.on_disclosure_column
             && let Some(metrics) = &self.metrics
         {

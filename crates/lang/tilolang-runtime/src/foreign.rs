@@ -193,10 +193,14 @@ fn decode(json: &Json, ty: &Ty, author: Option<&ModuleHash>) -> Result<Value, St
         | Ty::Length(_) => plain(json, ty),
         Ty::Option(inner) => match json {
             Json::Null => Ok(Value::none()),
-            value => Ok(Value::some(decode(value, inner, author)?)),
+            value if tagged(value, "none").is_some() => Ok(Value::none()),
+            value => match tagged(value, "some") {
+                Some(held) => Ok(Value::some(decode(held, inner, author)?)),
+                None => Ok(Value::some(decode(value, inner, author)?)),
+            },
         },
         Ty::List(inner) | Ty::Collection(inner) | Ty::Set(inner) => {
-            let Some(items) = json.as_array() else {
+            let Some(items) = tagged(json, "list").unwrap_or(json).as_array() else {
                 return Err(format!("{json} is not a list"));
             };
             Ok(Value::List(
@@ -239,16 +243,26 @@ fn plain(json: &Json, ty: &Ty) -> Result<Value, String> {
         Ty::Float | Ty::Length(_) => json.as_f64().map(Value::Float),
         Ty::Bool => json.as_bool().map(Value::Bool),
         Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => json.as_str().map(Value::text),
-        _ => json
+        _ => tagged(json, "principal")
+            .unwrap_or(json)
             .as_str()
             .map(|who| Value::Principal(crate::ids::Principal::new(who))),
     };
     value.ok_or_else(|| format!("{json} is not a {}", ty.meta_text("")))
 }
 
+/// What `json` holds when it is the runtime's own encoding of a value tagged `tag`
+/// ([`crate::value::to_json`]: `{"list": [...]}`, `{"some": ...}`): an object of that one key.
+fn tagged<'a>(json: &'a Json, tag: &str) -> Option<&'a Json> {
+    match json {
+        Json::Object(fields) if fields.len() == 1 => fields.get(tag),
+        _ => None,
+    }
+}
+
 /// The values of the tuple's types, in order.
 fn tuple(json: &Json, items: &[Ty], author: Option<&ModuleHash>) -> Result<Value, String> {
-    let Some(given) = json.as_array() else {
+    let Some(given) = tagged(json, "tuple").unwrap_or(json).as_array() else {
         return Err(format!("{json} is not a tuple"));
     };
     if given.len() != items.len() {

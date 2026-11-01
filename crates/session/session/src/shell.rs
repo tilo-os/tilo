@@ -9,6 +9,7 @@ use std::rc::Rc;
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_compositor::Compositor;
+use tilo_service::Services;
 use tilo_surface_host::shell_part::{ArrangementReading, Ask};
 use tilo_surface_host::{Doors, SessionLink, ShellPart, ShellWork};
 
@@ -53,6 +54,8 @@ pub(crate) struct Shell {
     link: Rc<SessionLink>,
     /// What the desk's reading was last made from.
     seen: Option<crate::desk_resource::DeskKey>,
+    /// The services' revision and the arrangement the places' readings were last followed at.
+    followed: Option<(u64, ArrangementReading)>,
     /// The shell's record, shared by every part: the bar draws it and every other display's
     /// bar draws the same.
     record: Rc<RefCell<tilo_resource::Doc>>,
@@ -88,6 +91,7 @@ impl Shell {
             announced: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             link,
             seen: None,
+            followed: None,
             record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
             parts: Vec::new(),
             packages,
@@ -238,6 +242,19 @@ impl Shell {
         let width = u32::try_from(x1.saturating_sub(x0)).ok()?;
         let height = u32::try_from(y1.saturating_sub(y0)).ok()?;
         Some((x0, y0, width.max(1), height.max(1)))
+    }
+
+    /// Hand the shell the reading of every resource a place of `arrangement` names, from what
+    /// `services` publish, whenever the arrangement or a reading moved: a place showing a note
+    /// draws the note's own view over the note the notes app shows.
+    pub(crate) fn follow_places(&mut self, arrangement: &ArrangementReading, services: &Services) {
+        let key = (services.revision(), arrangement.clone());
+        if self.followed.as_ref() == Some(&key) {
+            return;
+        }
+        self.link
+            .follow_places(arrangement, &services.resources(), |id| services.read(id));
+        self.followed = Some(key);
     }
 
     /// Hand the shell the person's arrangement, which its views draw, whenever it changed.
@@ -509,7 +526,9 @@ impl crate::Session {
                 ));
         }
         shell.publish();
-        shell.publish_arrangement(self.shared.arrangement.borrow().reading());
+        let arrangement = self.shared.arrangement.borrow().reading();
+        shell.follow_places(&arrangement, &self.shared.services.borrow());
+        shell.publish_arrangement(arrangement);
         // What the screen says of its edges is what a bar or dock that shows only sometimes
         // follows; it moves without the desk, so it goes every turn. The part covers the bands
         // the record says the chrome stands in.

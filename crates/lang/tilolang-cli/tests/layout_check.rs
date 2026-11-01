@@ -110,6 +110,27 @@ fn a_desk_longer_and_wider_than_its_window_scrolls_inside_it() {
     );
 }
 
+/// A view whose body is a bare `if let` leaves no widget of its own: absent, it draws nothing,
+/// and present, what it draws is the view it calls. Each still ran, so each is reached.
+#[test]
+fn a_view_that_is_one_branch_is_reached_whether_or_not_it_draws() {
+    let report = layout_check::check(&Options {
+        dirs: vec![manifest().join("tests/layout_check/branches")],
+        ..Options::default()
+    })
+    .expect("the fixture lays out");
+    assert!(
+        report.unreached.is_empty(),
+        "every view the window ran is reached:\n{}",
+        layout_check::render(&report)
+    );
+    assert!(
+        report.findings.is_empty(),
+        "the fixture is laid out right:\n{}",
+        layout_check::render(&report)
+    );
+}
+
 #[test]
 fn edges_sized_in_fractions_of_a_rem_land_on_device_pixels_at_every_display_scale() {
     let scales = layout_check::layouts()

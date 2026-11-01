@@ -643,6 +643,10 @@ impl AppCheck<'_> {
             }
         }
         self.note_shown(&inspection.root);
+        // A view that ran but drew nothing has no widget; what the app sent still names it.
+        if let Some(composed) = staged.composed() {
+            self.note_shown_row(&composed);
+        }
         let rows = staged.rows();
         for row in rows.values() {
             self.note_shown_row(row);
@@ -726,28 +730,29 @@ impl AppCheck<'_> {
         staged.lay_out(viewport, layout.theme(), layout.input(), 1.0)
     }
 
+    /// Remember the views shown in `key`: the view the node is of, and every view whose call
+    /// holds it.
+    fn note_key(&mut self, key: &str) {
+        for (app, view) in self.sources.views_in(key) {
+            if app == self.meta.app {
+                self.shown.insert(view.to_owned());
+            }
+        }
+    }
+
     /// Remember the views whose nodes `node` and what it holds show.
     fn note_shown(&mut self, node: &ui::headless::InspectionNode) {
-        if let Some(origin) = node
-            .test_id
-            .as_deref()
-            .and_then(|id| self.sources.origin(id))
-            && origin.app == self.meta.app
-        {
-            self.shown.insert(origin.view);
+        if let Some(id) = node.test_id.as_deref() {
+            self.note_key(id);
         }
         for child in &node.children {
             self.note_shown(child);
         }
     }
 
-    /// Remember the views a row's tree is of.
+    /// Remember the views a tree the app sent (a row's, the window's) is of.
     fn note_shown_row(&mut self, node: &tilo_ui_host::UiNode) {
-        if let Some(origin) = self.sources.origin(&node.key)
-            && origin.app == self.meta.app
-        {
-            self.shown.insert(origin.view);
-        }
+        self.note_key(&node.key);
         for child in &node.children {
             self.note_shown_row(child);
         }
