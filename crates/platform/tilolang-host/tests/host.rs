@@ -441,8 +441,8 @@ fn a_press_in_the_window_is_a_step_on_the_instances_connection_and_undo_takes_it
     assert!(
         sent.borrow()
             .iter()
-            .any(|request| matches!(request, CollabRequest::PublishActionSurface { app_id, .. } if app_id == APP)),
-        "published on its own connection, under its app"
+            .any(|request| matches!(request, CollabRequest::PublishActionSurface { .. })),
+        "published on its own connection"
     );
 
     // The person presses + in the window: the instance runs it and commits it as their step.
@@ -1802,9 +1802,9 @@ fn mail() -> Bundle {
 /// certified route, as the session's index applies them.
 fn published_index(index: &tilo_desktop_search::content_index::AppContentIndex, sent: &Sent) {
     for request in sent.borrow().iter() {
-        if let CollabRequest::PublishSearchIndex { app_id, delta_json } = request {
+        if let CollabRequest::PublishSearchIndex { delta_json } = request {
             index
-                .publish("room", app_id, "", delta_json)
+                .publish("room", "so.tilo.lang.mail", "", delta_json)
                 .expect("the session takes every delta");
         }
     }

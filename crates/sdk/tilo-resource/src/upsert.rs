@@ -8,7 +8,7 @@
 //! it is when the edit applies, merged edits of others included; [`At`]
 //! names a place by the item beside it.
 
-use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::{ObjId, ObjType, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
 
 use crate::collection::Id;
@@ -201,22 +201,10 @@ fn fields_of(
 /// absent or a container.
 fn stored(doc: &Doc, fields: &ObjId, key: &str) -> Option<serde_json::Value> {
     match doc.get(fields, key).ok()?? {
-        (Value::Scalar(scalar), _) => scalar_json(&scalar),
+        (Value::Scalar(scalar), _) => tilo_automerge::json::scalar_json(&scalar).ok(),
         (Value::Object(ObjType::Text), text) => doc.text(&text).ok().map(serde_json::Value::String),
         (Value::Object(_), _) => None,
     }
-}
-
-fn scalar_json(scalar: &ScalarValue) -> Option<serde_json::Value> {
-    Some(match scalar {
-        ScalarValue::Str(text) => serde_json::Value::String(text.to_string()),
-        ScalarValue::Int(number) => (*number).into(),
-        ScalarValue::Uint(number) => (*number).into(),
-        ScalarValue::F64(number) => serde_json::Number::from_f64(*number)?.into(),
-        ScalarValue::Boolean(flag) => (*flag).into(),
-        ScalarValue::Null => serde_json::Value::Null,
-        _ => return None,
-    })
 }
 
 /// Whether `stored` holds the key value `wanted`: numbers by value (`7`,

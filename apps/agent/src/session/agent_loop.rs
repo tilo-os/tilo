@@ -1080,12 +1080,10 @@ impl Session {
             tools::catalogue_summary(&catalogue, &mut state.revealed, tools::MOST_SUMMARISED);
         // Stable first, volatile last. System and tools are the same bytes on
         // every turn of every task; this catalogue changes only when the
-        // applications republish, so it opens the first turn and the earlier
-        // conversation and the request follow it. For Anthropic the
-        // `FirstTurn` closes the catalogue with its own cache breakpoint,
-        // so the next task reads system, tools and catalogue back from the
-        // cache rather than prefilling them; an OpenAI-compatible provider
-        // caches the same repeated prefix by itself.
+        // applications republish, so it opens the first turn in a block of
+        // its own and the earlier conversation and the request follow it.
+        // The gateway's own cache breakpoints make a provider read the
+        // prefix back instead of prefilling it.
         let request = super::selection_prompt::task_request(run, &catalogue);
         // The request as the model reads it, the selection it is about and
         // the operations named for it included, so a run that acted at the
@@ -1534,7 +1532,7 @@ impl Session {
                 ))));
             }
         };
-        // Calls the stream did not report as they completed (a dialect that
+        // Calls the turn did not report as they completed (a transport that
         // does not stream, or a gateway past its event bound) run now, in
         // order.
         for (index, call) in calls.iter().enumerate() {

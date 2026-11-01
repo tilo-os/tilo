@@ -812,7 +812,7 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
         let broker =
-            tilo_action_broker::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
+            tilo_action_broker::collab_app_broker::AppBrokerState::test_broker_with_authority(
                 Arc::new(crate::shell::broker_services::NativeWorkspaceAuthority(
                     tree.shared(),
                 )),

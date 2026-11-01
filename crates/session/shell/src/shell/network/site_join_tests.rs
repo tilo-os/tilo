@@ -12,7 +12,8 @@ use automerge::transaction::Transactable as _;
 use collab_types::DocumentMutation;
 use ed25519_dalek::{Signer as _, SigningKey};
 use sha2::Digest as _;
-use tilo_browser_peer::{DocumentRoute, Host, MemoryPeerStore, PeerConfig, PeerHandle};
+use tilo_browser_peer::{Host, MemoryPeerStore, PeerConfig, PeerHandle};
+use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::rooms::{JoinReply, PreAdmission, RoomRole};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 

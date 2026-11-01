@@ -19,7 +19,7 @@
 //! answer what is installed.
 
 use os_actions::{ToolIntent, ToolRequest};
-use tilo_action_broker::collab_broker_capnp::AppOpen;
+use tilo_action_broker::collab_app_broker::AppOpen;
 
 use crate::shell::chrome_state::Chrome;
 use crate::shell::state::{Tab, TileContent, WorkspaceTree};

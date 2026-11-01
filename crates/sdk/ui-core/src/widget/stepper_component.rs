@@ -34,7 +34,7 @@ impl Described for Stepper {
             .with_id(key)
             .current(current.and_then(|index| usize::try_from(index).ok()));
         if !station.is_none() {
-            stepper = stepper.on_station(move |index| {
+            stepper = stepper.on_station_view(move |index| {
                 station.fire(Some(Value::Int(i64::try_from(index).unwrap_or(i64::MAX))));
             });
         }

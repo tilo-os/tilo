@@ -57,4 +57,28 @@ pub enum TasksEffect {
         #[param("The issue")]
         issue: Id,
     },
+
+    /// Show the list
+    ///
+    /// Show every issue, sub-issues under their parent.
+    #[effect(view, idempotent)]
+    ShowList,
+
+    /// Show the board
+    ///
+    /// Show a lane per status.
+    #[effect(view, idempotent)]
+    ShowBoard,
+
+    /// Show the tasks
+    ///
+    /// Show the tasks the tracker holds a run for.
+    #[effect(view, idempotent)]
+    ShowTasks,
+
+    /// Show the threads
+    ///
+    /// Show the tasks that have said something, as their conversations.
+    #[effect(view, idempotent)]
+    ShowThread,
 }

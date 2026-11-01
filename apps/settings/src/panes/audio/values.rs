@@ -46,12 +46,14 @@ fn switch_where(app: &SettingsApp, offers: impl FnOnce(&AudioModel) -> bool, on:
 }
 
 pub(crate) fn output_device(app: &SettingsApp, _: &Follows) -> Option<String> {
-    read(app, |model| model.devices.default_sink().map(str::to_owned))
+    read(app, |model| {
+        model.output_device().map(|device| device.label.clone())
+    })
 }
 
 pub(crate) fn input_device(app: &SettingsApp, _: &Follows) -> Option<String> {
     read(app, |model| {
-        model.devices.default_source().map(str::to_owned)
+        model.input_device().map(|device| device.label.clone())
     })
 }
 

@@ -270,7 +270,9 @@ pub mod shortcut_table {
 /// wait at, as the settings document keeps them: what every desktop host
 /// places them by, the native shell and a browser page alike.
 pub mod desk_widgets {
-    pub use settings_store::desk_widgets::{DockEdge, WidgetId};
+    pub use settings_store::desk_widgets::{
+        DeskWidgetPrefs, DockEdge, Place, ShowMode, WidgetId, WidgetPrefs, prefs_key,
+    };
 }
 #[cfg(any(test, feature = "ux-bench"))]
 pub mod ux_bench;
@@ -336,6 +338,8 @@ pub mod snap;
 pub mod state;
 pub mod strip_layers;
 pub mod surface;
+pub mod surface_peer;
+pub mod surface_services;
 pub mod sysdirs;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
@@ -493,10 +497,8 @@ pub use tilo_actions;
 pub mod autocorrect {
     pub use spellcheck::contraction;
 }
+pub use action_palette::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome, RowFace};
 pub use widget::ModelView;
-pub use widget::command_palette::{
-    ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, RowFace, SearchScope,
-};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::{Card, CardGrid, Section, card_column_width, card_columns};
 pub use widget::{ContentKind, NavItem, NavList, NavMode, NavPane, NavSection, NavShell};

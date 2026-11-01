@@ -140,7 +140,7 @@ impl<R: tilo_resource::Resource> ActionProposalView<R> {
         let accept = Button::new("proposal-accept", "proposal-accept")
             .role(ButtonRole::Primary)
             .with_enabled(self.proposal.refusal().is_none() && change.changes_anything())
-            .on_click({
+            .on_effect({
                 let changed = Rc::clone(&changed);
                 move || {
                     (*changed.borrow_mut())(ProposalDecision::Accept {
@@ -148,7 +148,7 @@ impl<R: tilo_resource::Resource> ActionProposalView<R> {
                     });
                 }
             });
-        let reject = Button::new("proposal-reject", "proposal-reject").on_click(move || {
+        let reject = Button::new("proposal-reject", "proposal-reject").on_effect(move || {
             (*changed.borrow_mut())(ProposalDecision::Reject);
         });
         let label = Text::new(&titled("proposal-decisions")).with_role(TextRole::Label);

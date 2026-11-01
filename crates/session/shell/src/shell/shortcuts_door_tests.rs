@@ -340,7 +340,6 @@ impl FixtureApp {
             }),
         };
         manager.send(CollabRequest::PublishActions {
-            app_id: FIXTURE.into(),
             actions: vec![
                 exported(
                     "draft",

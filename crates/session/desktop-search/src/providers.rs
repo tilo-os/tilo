@@ -5,12 +5,15 @@
 
 #[cfg(feature = "catalogue")]
 pub mod catalogue;
+pub mod downloaded;
 #[cfg(feature = "indexes")]
 pub mod files;
+pub mod happening;
 pub mod host_apps;
 pub mod jobs;
 pub mod people;
 pub mod places;
+pub mod records;
 #[cfg(feature = "settings")]
 pub mod settings;
 pub mod waiting;
@@ -82,6 +85,10 @@ impl Source for Applications {
         "applications"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-apps")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         let browsing = needle.trim().is_empty();
         let ranks = rank::rank_rows(&self.ranker, needle, &self.fields);
@@ -91,6 +98,8 @@ impl Source for Applications {
             .filter_map(|(app, matched)| {
                 let matched = matched?;
                 Some(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: ResourceKind::Application,
                     provider: self.id().into(),
                     id: app.id.clone(),
@@ -135,6 +144,10 @@ impl Source for Windows {
         "desktop-windows"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-windows")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         self.0
             .iter()
@@ -145,6 +158,8 @@ impl Source for Windows {
                     rank::window_match_score(needle, &[&window.title, &window.app_title])?
                 };
                 Some(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: ResourceKind::Custom(WINDOWS_KIND.into()),
                     provider: self.id().into(),
                     id: window.tab.to_string(),
@@ -178,6 +193,10 @@ impl Source for Commands {
         "desktop-commands"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-commands")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         self.0
             .iter()
@@ -197,6 +216,8 @@ impl Source for Commands {
                     )?
                 };
                 Some(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: ResourceKind::Action,
                     provider: self.id().into(),
                     id: command.id.clone(),
@@ -270,6 +291,10 @@ impl Source for Actions {
         "app-actions"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-app-actions")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         // Every open window's actions would bury everything else unasked.
         if needle.trim().is_empty() {
@@ -296,6 +321,8 @@ impl Source for Actions {
                     rank::item_action_match_score(needle, &flat.resource_label)?
                 };
                 Some(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: ResourceKind::Action,
                     provider: self.id().into(),
                     id: flat.key.clone(),
@@ -357,6 +384,10 @@ impl Source for Published {
         "published-actions"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-published-actions")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         // Every provider's actions would bury everything else unasked.
         if needle.trim().is_empty() {
@@ -377,6 +408,8 @@ impl Source for Published {
                     continue;
                 };
                 hits.push(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: ResourceKind::Action,
                     provider: self.id().into(),
                     id: Self::row_id(published, &action.address),
@@ -518,6 +551,10 @@ impl Source for Content {
         "app-content"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-app-content")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         if needle.trim().is_empty() && !self.browse {
             return Vec::new();
@@ -570,6 +607,8 @@ impl Source for Content {
                     .unwrap_or(CONTENT_MATCH_SCORE)
                     .min(MAX_PROVIDER_SCORE);
                 hits.push(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: content_kind(&result.kind),
                     provider: self.id().into(),
                     id,
@@ -626,6 +665,8 @@ impl Answers {
         }
         let kind = answers_kind();
         let answer = |id: &str, title: String, subtitle: Option<String>, target: Target| Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind: kind.clone(),
             provider: self.id().into(),
             id: format!("{id}:{typed}"),
@@ -710,6 +751,10 @@ impl Source for Answers {
         "quick-answers"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-kind-answers")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         self.answers(needle)
     }
@@ -771,6 +816,8 @@ impl WebSearch {
     fn web_search_row(&self, query: &str) -> Hit {
         use crate::answers::web::{fallback_search_url, web_search_uri};
         Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind: web_kind(),
             provider: self.id().into(),
             id: format!("search:{query}"),
@@ -789,6 +836,8 @@ impl WebSearch {
     /// The service named alone: opens its site.
     fn service_row(&self, service: &'static crate::answers::web::Service) -> Hit {
         Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind: websites_kind(),
             provider: self.id().into(),
             id: format!("service:{}", service.id),
@@ -833,6 +882,8 @@ impl WebSearch {
             ),
         };
         Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind: websites_kind(),
             provider: self.id().into(),
             id: format!("query:{}:{query}", service.id),
@@ -876,6 +927,10 @@ impl WebSearch {
 impl Source for WebSearch {
     fn id(&self) -> &'static str {
         "web"
+    }
+
+    fn name(&self) -> String {
+        crate::i18n::t("search-kind-web")
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {
@@ -937,7 +992,10 @@ impl Recents {
     pub fn record(&mut self, hit: &Hit) {
         if matches!(
             hit.target,
-            Target::Copy { .. } | Target::Open { .. } | Target::Cancel { .. }
+            Target::Copy { .. }
+                | Target::Open { .. }
+                | Target::Cancel { .. }
+                | Target::Prefer { .. }
         ) {
             return;
         }
@@ -953,6 +1011,10 @@ impl Source for Recents {
         "recent"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-recent")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         if !needle.trim().is_empty() {
             return Vec::new();
@@ -961,12 +1023,113 @@ impl Source for Recents {
             .iter()
             .enumerate()
             .map(|(position, hit)| Hit {
+                faces: Vec::new(),
+                outcome: None,
                 kind: ResourceKind::Custom(RECENT_KIND.into()),
                 provider: self.id().into(),
                 id: format!("{}\u{1f}{}", hit.provider, hit.id),
                 score: MAX_PROVIDER_SCORE
                     .saturating_sub(i32::try_from(position).unwrap_or(MAX_PROVIDER_SCORE)),
                 ..hit.clone()
+            })
+            .collect()
+    }
+}
+
+/// The sources search asks, as the rows that switch each off and on again:
+/// a row per source, saying what it shows now and flipping it, so what a
+/// person wants to stop finding is one search away.
+///
+/// The rows come from the sources this search was built from, each named
+/// as the person knows it; the actions source stays whatever is switched,
+/// because it is how anything is done from search.
+pub struct Switches {
+    /// The switchable sources, as `(id, name)`, in search's own order.
+    sources: Vec<(String, String)>,
+    preferences: crate::preferences::SearchPreferences,
+}
+
+impl Switches {
+    /// The switches for `sources`, each shown as it stands in `preferences`.
+    #[must_use]
+    pub fn new(
+        sources: Vec<(String, String)>,
+        preferences: &crate::preferences::SearchPreferences,
+    ) -> Self {
+        Self {
+            sources,
+            preferences: preferences.clone(),
+        }
+    }
+}
+
+impl Source for Switches {
+    fn id(&self) -> &'static str {
+        "search-sources"
+    }
+
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-switches")
+    }
+
+    fn query(&self, needle: &str) -> Vec<Hit> {
+        // What is asked for by name, not browsed: a switch is nothing to
+        // look at while nothing is typed.
+        if needle.trim().is_empty() {
+            return Vec::new();
+        }
+        let keywords = crate::i18n::t("search-source-keywords");
+        self.sources
+            .iter()
+            .filter_map(|(id, name)| {
+                let enabled = self.preferences.enabled(id);
+                let (title, detail) = if enabled {
+                    (
+                        crate::i18n::t_args(
+                            "search-source-disable",
+                            &[("source", name.as_str().into())],
+                        ),
+                        crate::i18n::t_args(
+                            "search-source-disable-detail",
+                            &[("source", name.as_str().into())],
+                        ),
+                    )
+                } else {
+                    (
+                        crate::i18n::t_args(
+                            "search-source-enable",
+                            &[("source", name.as_str().into())],
+                        ),
+                        crate::i18n::t_args(
+                            "search-source-enable-detail",
+                            &[("source", name.as_str().into())],
+                        ),
+                    )
+                };
+                let score = rank_fields(
+                    needle,
+                    &[
+                        (&title, ui::search::FieldWeight::TITLE),
+                        (&detail, ui::search::FieldWeight::SUBTITLE),
+                        (&keywords, ui::search::FieldWeight::KEYWORD),
+                    ],
+                )?;
+                Some(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
+                    kind: ResourceKind::Action,
+                    provider: self.id().into(),
+                    id: id.clone(),
+                    title,
+                    subtitle: Some(detail),
+                    facts: Vec::new(),
+                    score,
+                    icon: None,
+                    target: Target::Prefer {
+                        source: id.clone(),
+                        enabled: !enabled,
+                    },
+                })
             })
             .collect()
     }
@@ -1513,6 +1676,8 @@ mod tests {
             }
             fn query(&self, needle: &str) -> Vec<Hit> {
                 vec![Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: ResourceKind::Note,
                     provider: "notes".into(),
                     id: "n".into(),

@@ -580,7 +580,7 @@ mod tests {
         let store: Rc<dyn DurableStore> = backend.clone();
         let key = StorageKey::package("so.tilo.test");
         let owner = Rc::new(crate::DocOwner::acquire(store, key.clone()).unwrap());
-        let mut doc = owner.new_document().unwrap();
+        let mut doc = owner.new_document();
         let mut writer = crate::DocWriter::start_new(&owner, &mut doc).unwrap();
         let initial = backend.drain().pop().unwrap();
         backend.acknowledge(initial.revision, Ok(())).unwrap();
@@ -624,7 +624,7 @@ mod tests {
         let store: Rc<dyn DurableStore> = backend.clone();
         let key = StorageKey::package("so.tilo.test");
         let owner = Rc::new(crate::DocOwner::acquire(store, key.clone()).unwrap());
-        let mut doc = owner.new_document().unwrap();
+        let mut doc = owner.new_document();
         let mut writer = crate::DocWriter::start_new(&owner, &mut doc).unwrap();
         for write in backend.drain() {
             backend.acknowledge(write.revision, Ok(())).unwrap();
@@ -676,7 +676,7 @@ mod tests {
         let key = StorageKey::package("so.tilo.test");
         let store: Rc<dyn DurableStore> = Rc::new(crate::FsStore::new(directory.path()));
         let owner = Rc::new(crate::DocOwner::acquire(store.clone(), key.clone()).unwrap());
-        let mut doc = owner.new_document().unwrap();
+        let mut doc = owner.new_document();
         doc.put(automerge::ROOT, "body", "saved edit").unwrap();
         let mut writer = crate::DocWriter::start_new(&owner, &mut doc).unwrap();
         writer.try_flush().unwrap();

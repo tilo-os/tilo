@@ -170,7 +170,7 @@ impl Participant {
     /// Pause one device's signed request, leaving other admissions unchanged.
     pub fn hold_admission(
         &self,
-        route: &tilo_browser_peer::DocumentRoute,
+        route: &tilo_peer_state::document_frame::DocumentRoute,
         device: [u8; 32],
     ) -> HeldAdmission {
         let gate = Arc::new(AdmissionGate {
@@ -191,7 +191,10 @@ impl Participant {
         HeldAdmission(gate)
     }
 
-    pub fn content_keys(&self, route: &tilo_browser_peer::DocumentRoute) -> ChannelContentKeys {
+    pub fn content_keys(
+        &self,
+        route: &tilo_peer_state::document_frame::DocumentRoute,
+    ) -> ChannelContentKeys {
         self.channels
             .lock()
             .unwrap()

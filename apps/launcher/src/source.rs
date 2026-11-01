@@ -19,8 +19,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+pub use ui::search::ActivationModifier;
 pub use ui::search::system::{ResourceKind, SearchScope};
-pub use ui::widget::command_palette::{ActivationModifier, ArgumentSpec, CommandEntry};
+pub use ui::{ArgumentSpec, CommandEntry};
 
 /// What the person searches for: the text typed and the kinds of result
 /// they narrowed it to (none: every kind).

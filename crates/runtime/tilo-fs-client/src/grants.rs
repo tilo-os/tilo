@@ -21,8 +21,5 @@ pub enum FsRight {
     /// victim. Admission must derive a current signed edit/Author scope; this
     /// right never admits raw Remove or permanent deletion.
     Replace,
-    Copy,
-    Move,
-    Trash,
     Purge,
 }

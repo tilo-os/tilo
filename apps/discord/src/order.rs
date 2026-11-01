@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Id, JsonSchema, Keyed};
 
 use crate::record::{DChannel, Guild, MappedKind};
-use crate::tilo::RoomChat;
+use crate::tilo::WorkspaceChat;
 
 /// Chat `arrange-channels`: the bridged categories, and the bridged
 /// channels each under its category, in Discord's order.
@@ -235,14 +235,14 @@ pub fn finished(guild: &Guild, after: &Keyed<DChannel>) -> Vec<Id> {
 /// The bridged categories and channels in Tilo's order, with each
 /// channel's category as Discord would have it. A channel under a Tilo
 /// category not bridged yet waits for it.
-fn shared(guild: &Guild, room: &RoomChat) -> Vec<Item> {
+fn shared(guild: &Guild, workspace: &WorkspaceChat) -> Vec<Item> {
     let live = |kind: MappedKind, tilo: &str| {
         guild
             .mapping(kind, tilo)
             .filter(|m| !guild.vanished.contains(&m.discord))
             .map(|m| m.discord.clone())
     };
-    let mut items: Vec<Item> = room
+    let mut items: Vec<Item> = workspace
         .categories
         .iter()
         .filter_map(|category| {
@@ -255,7 +255,7 @@ fn shared(guild: &Guild, room: &RoomChat) -> Vec<Item> {
             })
         })
         .collect();
-    for channel in room.channels.iter().filter(|c| !c.archived) {
+    for channel in workspace.channels.iter().filter(|c| !c.archived) {
         let Some(discord) = live(MappedKind::Channel, &channel.id) else {
             continue;
         };
@@ -368,11 +368,11 @@ fn ordered(guild: &Guild) -> bool {
 /// category there. The arrangements the bridge has in flight are laid
 /// over both, so their echo is no move.
 #[must_use]
-pub fn moved_in_discord(before: &Guild, after: &Guild, room: &RoomChat) -> bool {
+pub fn moved_in_discord(before: &Guild, after: &Guild, workspace: &WorkspaceChat) -> bool {
     if !ordered(after) {
         return false;
     }
-    let items = shared(after, room);
+    let items = shared(after, workspace);
     let then = Seen::new(before, before);
     let now = Seen::new(after, before);
     let order = |seen: &Seen<'_>| discord_order(&comparable(items.clone(), seen), seen);
@@ -383,12 +383,16 @@ pub fn moved_in_discord(before: &Guild, after: &Guild, room: &RoomChat) -> bool 
 /// the layout `layout` with the arrangements `asked` has in flight laid
 /// over it; none when Chat lists them so already.
 #[must_use]
-pub fn to_chat(layout: &Guild, asked: &Guild, room: &RoomChat) -> Option<ChatArrangement> {
+pub fn to_chat(
+    layout: &Guild,
+    asked: &Guild,
+    workspace: &WorkspaceChat,
+) -> Option<ChatArrangement> {
     if !ordered(layout) {
         return None;
     }
     let seen = Seen::new(layout, asked);
-    let items = comparable(shared(layout, room), &seen);
+    let items = comparable(shared(layout, workspace), &seen);
     let discord = discord_order(&items, &seen);
     if discord == tilo_order(&items) {
         return None;
@@ -455,12 +459,12 @@ fn fill(full: Vec<String>, wanted: &[String], bridged: &BTreeSet<String>) -> Vec
 /// shows it already, counting what is in flight. Each list that differs is
 /// numbered anew from 0; only what that moves is placed.
 #[must_use]
-pub fn to_discord(guild: &Guild, room: &RoomChat) -> Option<ArrangeOp> {
+pub fn to_discord(guild: &Guild, workspace: &WorkspaceChat) -> Option<ArrangeOp> {
     if !ordered(guild) || !guild.mirror_channels {
         return None;
     }
     let seen = Seen::new(guild, guild);
-    let items = comparable(shared(guild, room), &seen);
+    let items = comparable(shared(guild, workspace), &seen);
     let discord = discord_order(&items, &seen);
     let tilo = tilo_order(&items);
     if discord == tilo {

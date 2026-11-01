@@ -41,9 +41,7 @@ fn redemption(
         InviteGrant {
             workspace_id: 7,
             room: peer.room().into(),
-            authority: issuer.clone(),
             issuer: issuer.clone(),
-            delegation: None,
             role,
             nonce: [nonce; 16],
             recipient_user_public_key: None,
@@ -82,7 +80,7 @@ fn received(peer: &StatePeer) -> crate::room::RoomGovernance {
 #[test]
 fn an_administrator_admits_an_owners_invitation_and_an_editor_does_not() {
     let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
-    let owner = peer.authority().clone();
+    let owner = peer.owner_certificates()[0].clone();
     let (editor, user) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
     let editor_key = SigningKey::from_bytes(&[6; 32]);
     let guest = device(70, 71);
@@ -184,7 +182,7 @@ fn a_receiver_refuses_a_members_admission_without_a_valid_invitation() {
     // The administrator's device writes a receipt whose invitation is not
     // the one it names.
     let guest = device(78, 79);
-    let owner = peer.authority().clone();
+    let owner = peer.owner_certificates()[0].clone();
     let invited = redemption(
         &peer,
         &owner,
@@ -250,7 +248,7 @@ fn any_participant_admits_a_members_further_device() {
     let editor_key = SigningKey::from_bytes(&[6; 32]);
     // Someone else's second device: the editor holds no governance, yet
     // writes it in, for its root certifies it as a member's.
-    let owner = peer.authority().clone();
+    let owner = peer.owner_certificates()[0].clone();
     let guest = device(82, 83);
     let invited = redemption(
         &peer,

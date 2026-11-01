@@ -468,6 +468,13 @@ pub struct VpnWatch {
 }
 
 impl VpnWatch {
+    /// A reading fed by whoever holds the sending end, for a reader whose
+    /// VPNs come from somewhere other than this client's bus.
+    #[must_use]
+    pub fn following(receiver: watch::Receiver<VpnReading>) -> Self {
+        Self { receiver }
+    }
+
     /// The latest reading.
     #[must_use]
     pub fn current(&self) -> VpnReading {

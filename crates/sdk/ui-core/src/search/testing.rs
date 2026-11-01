@@ -125,7 +125,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::{SearchCatalog, SearchCursor, SearchPage};
+    use crate::search::{FieldWeight, SearchCatalog, SearchCursor, SearchPage, SearchRecord};
     use tilo_actions::ActionAddress;
 
     fn catalogue(corpus: Corpus, extra_text: &str) -> SearchCatalog {
@@ -138,7 +138,10 @@ mod tests {
                 ActionAddress::new(&id, "open"),
             );
             catalog
-                .upsert(&id, format!("{}{extra_text}", row.text), hit)
+                .upsert_record(
+                    SearchRecord::new(&id, hit)
+                        .field(format!("{}{extra_text}", row.text), FieldWeight::UNRANKED),
+                )
                 .unwrap();
         }
         catalog

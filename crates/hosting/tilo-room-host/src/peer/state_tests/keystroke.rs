@@ -80,6 +80,7 @@ async fn keystroke_presence_and_position_share_the_production_delta_write() {
         own_user_public_key: &fixture.source.own_user,
         own_device_cert: &fixture.source.peer.cert,
         own_device_public_key: &fixture.source.peer.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: None,
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,

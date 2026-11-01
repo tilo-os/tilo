@@ -87,8 +87,9 @@ and a theme sets them through one document:
 | `density` | `spacing`, a multiple of the 4 px scale | `spacing.s0`–`s16`; `Metrics` (pointer targets, control heights) stay put | `tokens/spacing.rs` |
 | `type` | `face` (a built-in face by name, `Default` or `Hyperlegible`, or any family name), `reading` (a reading face by name, `New Computer Modern`, `Libertinus`, `Literata`, `EB Garamond` or `Source Serif`, or any family name), `base_size`, `distinct_letters` (optional; absent follows the face: on with Hyperlegible), `contrast` (the spread of role sizes, 0.5–1.5, stock 1), `weights` of the `body`, `label` and `heading` tiers | `typography.sans_family`, `typography.serif_family` (the `Reading` role's face, set in the optical cut its size calls for), the body size every `TextRole` derives from (`Theme::text(role)`), `typography.distinct_letters` (every look-alike set apart in all text, `docs/typography.md`) | `tokens/typography.rs` (`UiFace`, `ReadingFace`, `Typography::set_face`, `Typography::set_reading_face`), `theme_document.rs` (`ThemeType::distinguishes_letters`) |
 | `motion` | `character`: 0 calm, 1 stock, 2 lively; `curve` (`spring`, `eased` or `none`); `duration_scale` | the shared UI springs, `motion_character` | `tokens/motion.rs`, `theme_document.rs` (`ThemeMotion`) |
-| `material` | For each surface role (`window`, `control`, `floating`, `bar`) the painter set that draws it and its parameters: `block` (flat, square, borders only), `default` (opaque, or translucent given `blur`, `tint`, `saturation`) or `glass` (translucent plus `refraction` at the rim, `edge_highlight`, `specular`); `selector`: what the window group's tab strip is made of (`floating` or `opaque`), the active selector's lit rim (`rim_span`, `rim_alpha`) and the hover film's opacity (`hover_alpha`, admitted only where a hover clears the selection step) | `RoleFinishes`, `surfaces.material`, `tokens.selector` | `tokens/finish.rs` (`Finish`: a painter set and its parameters; `RoleFinishes`), `part_paint/builtin.rs`, `tokens/selector.rs`, `backdrop.rs`, `chrome/selector.rs` |
+| `material` | For each surface role (`window`, `control`, `floating`, `bar`) the painter set that draws it and its parameters: `block` (flat, square, borders only), `default` (opaque, or translucent given `blur`, `tint`, `saturation`), `glass` (translucent plus `refraction` at the rim, `edge_highlight`, `specular`), `pixelated` (what lies below shown as square cells of `cell` logical pixels, softened first by `blur`, under the ground at `cover`) or `shader` (the theme's own surface shader, [below](#a-surface-shader)); `selector`: what the window group's tab strip is made of (`floating` or `opaque`), the active selector's lit rim (`rim_span`, `rim_alpha`) and the hover film's opacity (`hover_alpha`, admitted only where a hover clears the selection step) | `RoleFinishes`, `surfaces.material`, `tokens.selector` | `tokens/finish.rs` (`Finish`: a painter set and its parameters; `RoleFinishes`), `part_paint/builtin.rs`, `tokens/selector.rs`, `backdrop.rs`, `chrome/selector.rs` |
 | `depth` | `shadow { strength }`, `outline` or `none`: how a raised surface stands off what is below it | the elevation shadows | `tokens/finish.rs` (`Depth`) |
+| `response` | How the shared components answer the pointer: for `hover` and `press`, how far the fill `lift`s toward the next surface step (0–2), how much of the accent it carries (`tint`, 0–0.25), the control's `scale` about its centre (0.7–1.15) and its lit inner edge (`glow`, 0–0.5). Optional: absent is the stock response (hover half a step; press a step, 0.97, a 0.2 edge), or with `motion.curve: none` the still one (the same lifts, nothing scaling, no edge) | `tokens.response`, read by `selection_tier`, `selection_tier_on`, `selector_tier` | `tokens/response.rs` (`Response`) |
 
 Not theme roles, by design: there is no accent and no app colour (an app
 has no brand colour in this language), no per-widget colour, no way to
@@ -149,10 +150,37 @@ that a document may state it in, and a **usable** band, no wider, that the
 theme is built at. A document that leaves out a parameter with no default,
 states one the set does not declare, or states a value outside the admitted
 band is refused. A value outside the usable band is clamped when the theme
-is built. `default`, `glass` and `block` are the toolkit's built-in sets
+is built. `default`, `glass`, `block`, `pixelated` and `shader` are the toolkit's built-in sets
 (`part_paint::builtin`), and those names are reserved. A theme's own set
 registers under any other name (`register_painter_set`), and a set named by
 a document but not installed is refused like an unknown field.
+
+#### A surface shader
+
+The `shader` set paints a role with the theme's own colour arithmetic: a
+WGSL function `fs_surface` that takes exactly the documented inputs, in
+order, and returns `vec4<f32>` (`tokens/shader.rs`, `INPUTS`): `backdrop`,
+`uv` (0–1 across the part), `size` and `position` (logical pixels),
+`fill`, `ink`, `ground`, `raised`, `accent`, `light` (linear sRGB),
+`params` (the finish's `tint`, `saturation`, `scale`, `phase`) and `time`
+(the static seconds the finish states, never a clock). The finish carries
+the source as `shader` and the value as `time`:
+
+```json
+"window": { "painter": "shader", "shader": "fn fs_surface(...) -> vec4<f32> { ... }" }
+```
+
+It declares no entry point, binding or global; the toolkit owns every
+input, so a shader reads nothing but what it is handed. The source is
+checked when the document is read (`Source::validate`: at most 16 KiB,
+parses with the WGSL front end wgpu uses, the signature above). A document
+whose shader fails is refused with the compiler's message and position
+(`Theme::refusal`, "material.window: surface shader does not parse: …
+(line 3, column 9)"); Theme Studio's import shows it, and a saved theme
+that fails is logged and does not apply. A shader is evaluated once per
+settled part into an image the part cache replays, so an idle surface
+draws nothing; `backdrop` is the part's ground today (no backdrop pass
+feeds it yet).
 
 Built-in presets, distribution defaults, the user's themes and every file
 Theme Studio exports are this document. Unknown fields are refused. A new
@@ -174,6 +202,9 @@ The shipped presets (`Preset`, `Theme::ALL`):
 | Light | – / 0.010 (neutral until a workspace gives it a hue) | the light ladder |
 | High contrast | – / 0 | black surfaces, ink 1.0 / 0.94 / 0.88, AAA |
 | High contrast light | – / 0 | white surfaces, ink 0 / 0.30 / 0.40, AAA |
+
+Glass, Glass light, Block, Block light and Pixelated are plain documents in
+`crates/sdk/ui-core/themes/`.
 
 ### Validation and legibility
 
@@ -327,7 +358,7 @@ The theme a person sees is resolved from layers, lowest to highest:
 |---|---|---|---|
 | 1 | Built-in defaults | the toolkit, in code | `Preset::Dark` |
 | 2 | **Distribution defaults** (`appearance_device.distribution_defaults` / `appearance_device.distribution`) | whoever ships the OS image | a preset id or a whole document, and pins |
-| 3 | User theme | the person, through Settings and Theme Studio, or an agent through the same actions | the theme for the current mode, and the person's density |
+| 3 | User theme | the person, through Settings and Theme Studio, or an agent through the same actions | the theme for the current mode, the person's density, and their finish over it (`FinishLayer`: the interface face, the accent and how much of the theme's translucency they keep) |
 | 4 | Window | the shell, per window | the neutral hue of the workspace the window is in, and the person's colour (`WindowAppearance`) |
 | 5 | Accessibility | the person or assistive policy | high contrast / forced colours, text scale, UI scale, reduce motion, reduce transparency, thick caret, the Hyperlegible face |
 
@@ -352,6 +383,17 @@ section (`theme_layers::user_document`):
 | `light_theme` | the theme light mode shows; default `"light"` |
 | `custom_themes` | the documents a `custom:<id>` names (Theme Studio writes them when it applies one) |
 | `density` | the person's spacing over whichever theme is shown (Compact 0.85, Regular 1, Roomy 1.2) |
+| `ui_face` | the face the person reads best, over the theme's (`Default`, `Hyperlegible`, any family name); absent or `null` follows the theme |
+| `accent` | the accent they chose, by a name the presence palette gives a hue (`violet`, `teal`); absent or `null` follows the theme's emphasis |
+| `translucency` | how much of the theme's translucency they keep: 1 as the theme sets it, 0 opaque floating chrome; absent or `null` follows the theme |
+
+None of `ui_face`, `accent` or `translucency` is a new role: each names a
+role the theme already has (`type`, `emphasis`, `material`), so a person who
+cannot read the theme's face, wants their own accent colour or wants menus
+opaque need not write a theme of their own. A distribution that pins `type`,
+`emphasis` or `material` keeps its choice, a high-contrast palette has no
+accent to give, and the accessibility layer is applied after all three (high
+contrast and "make panels opaque" still win).
 
 A section with none of `mode`, `dark_theme`, `light_theme` is no user
 theme, so distribution defaults still show.
@@ -410,7 +452,8 @@ receiving shell paints that peer in it and announces it to its apps in the
 roster (`Collaborator::colour`). It is their focus ring, text caret, text-selection tint and unread
 mark (`intent.you`, `selection_tint`, `border_focus`), painted at the
 current theme's presence lightness and chroma, so it reads on every theme.
-The theme sets only that lightness and chroma.
+The theme sets only that lightness and chroma. Settings' Appearance page
+offers the twelve hues beside "from your identity", which writes none.
 
 ### What users get
 
@@ -513,11 +556,12 @@ Verified against the code at the time of writing:
   and sends it to every app window; collaborators receive it with the
   person's presence and paint them in it.
 - **The material.** Each surface role names its painter set (`block`,
-  `default`, `glass`) in `material`, and one path (`fill_role`,
+  `default`, `glass`, `pixelated`, `shader`) in `material`, and one path (`fill_role`,
   `control_face`) paints windows, menus, buttons, fields, dropdowns, toggle
   groups and the top bar from it. Glass adds a lens refraction pass, a rim
-  light and a specular sheen. Glass, Glass light, Block and Block light ship
-  as documents in `crates/sdk/ui-core/themes/`. Legibility is checked
+  light and a specular sheen; Pixelated runs the backdrop pass at one texel
+  per cell and draws it unsmoothed. Glass, Glass light, Block, Block light
+  and Pixelated ship as documents in `crates/sdk/ui-core/themes/`. Legibility is checked
   against the worst backdrop each material can show (`audit_materials`), and
   `tilolang layout-check --theme NAME` lays a view out under a theme. Reduce
   transparency, forced colours and the high-contrast palettes keep floating
@@ -525,8 +569,9 @@ Verified against the code at the time of writing:
   (`material.selector`) is read by `chrome::paint_selector`; the same three
   make the tab strip solid and drop the rim.
 - **Theme Studio** (`apps/themes`) edits the document role by role with
-  live findings and applies or exports only legible themes. Settings does
-  not yet expose the appearance controls.
+  live findings and applies or exports only legible themes. Settings'
+  Appearance page offers the theme, density, interface size, face, accent,
+  translucency and colour; none of them needs a theme of one's own.
 - **Hard-coded colours in apps.** The HIG §9.13 `theme` and `app-paint`
   ratchets count literal colours, `Color::WHITE`/`BLACK`, ramp slots and
   app-painted grounds per app, and the counts may only fall; see the

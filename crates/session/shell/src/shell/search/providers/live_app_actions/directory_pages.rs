@@ -14,8 +14,8 @@ use std::collections::HashMap;
 use tilo_actions::remote::CataloguePage;
 
 use super::DirectoryCacheKey;
+use crate::shell::collab_app_broker::{ActionDirectoryRoot, PublishedSurface};
 use crate::shell::collab_broker::AppActionBroker;
-use crate::shell::collab_broker_capnp::{ActionDirectoryRoot, PublishedSurface};
 
 /// What one connection publishes: its surfaces and its directory root. Its
 /// cached directory pages hold while this does not change.

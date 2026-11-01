@@ -9,6 +9,7 @@ use crate::time::{Duration, Instant};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
+use tilo_lock::MutexRecover;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Contact {
@@ -147,7 +148,7 @@ impl<T> Pending<T> {
 
     /// The answer, once it is here; taken, it is gone.
     pub fn take(&self) -> Option<Result<T, String>> {
-        self.slot.lock().ok()?.value.take()
+        self.slot.lock_recover().value.take()
     }
 }
 
@@ -157,9 +158,7 @@ impl<T> Fill<T> {
             return;
         };
         let waker = {
-            let Ok(mut slot) = slot.lock() else {
-                return;
-            };
+            let mut slot = slot.lock_recover();
             slot.value = Some(value);
             slot.waker.take()
         };
@@ -187,9 +186,7 @@ impl<T> std::future::Future for Pending<T> {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        let Ok(mut slot) = self.slot.lock() else {
-            return std::task::Poll::Ready(Err("private snapshot unavailable".into()));
-        };
+        let mut slot = self.slot.lock_recover();
         if let Some(value) = slot.value.take() {
             return std::task::Poll::Ready(value);
         }
@@ -283,10 +280,7 @@ fn register_reader(value: &mut Cache) {
 }
 /// Wake every app reading these snapshots, and the caller's.
 fn wake_all() {
-    let readers = cache()
-        .lock()
-        .map(|value| value.readers.clone())
-        .unwrap_or_default();
+    let readers = cache().lock_recover().readers.clone();
     for reader in readers {
         reader.wake();
     }
@@ -295,7 +289,8 @@ fn wake_all() {
 /// Drop the cached contacts and conversations: the host calls this when
 /// the identity or connection changes.
 pub(crate) fn invalidate() {
-    if let Ok(mut value) = cache().lock() {
+    {
+        let mut value = cache().lock_recover();
         let generation = value.generation.wrapping_add(1);
         let readers = std::mem::take(&mut value.readers);
         *value = Cache {
@@ -377,9 +372,7 @@ fn decode(contacts: bool, bytes: &[u8]) -> Result<Answer, String> {
 
 fn load_contacts_once() {
     let key = String::new();
-    let Ok(mut value) = cache().lock() else {
-        return;
-    };
+    let mut value = cache().lock_recover();
     current(&mut value);
     register_reader(&mut value);
     if value.pending.get(&key).is_some_and(|at| {
@@ -401,9 +394,7 @@ fn load_contacts_once() {
     drop(value);
     let load = move || {
         exchange(Request::Contacts, None, move |reply| {
-            let Ok(mut value) = cache().lock() else {
-                return;
-            };
+            let mut value = cache().lock_recover();
             current(&mut value);
             if value.generation != generation {
                 return;
@@ -425,9 +416,8 @@ fn load_contacts_once() {
     if crate::background::Background::current()
         .spawn("person-chat-snapshot", load)
         .is_err()
-        && let Ok(mut value) = cache().lock()
     {
-        value.pending.remove("");
+        cache().lock_recover().pending.remove("");
     }
     #[cfg(not(feature = "broker-transport"))]
     load();
@@ -448,9 +438,7 @@ pub fn contacts() -> Vec<Contact> {
 /// list did not have: at most once every ten seconds, and the list in hand
 /// stays until the new one comes.
 pub fn refresh_contacts() {
-    let Ok(mut value) = cache().lock() else {
-        return;
-    };
+    let mut value = cache().lock_recover();
     current(&mut value);
     let recent = value.attempts.get("").is_some_and(|at| {
         crate::time::now().saturating_duration_since(*at) < Duration::from_secs(10)
@@ -468,9 +456,7 @@ pub fn refresh_contacts() {
 /// decoded, before its private effect context exists. This starts no RPC and
 /// exposes no conversation bodies or authority to open/read a conversation.
 pub fn contacts_snapshot() -> Vec<Contact> {
-    let Ok(mut value) = cache().lock() else {
-        return Vec::new();
-    };
+    let mut value = cache().lock_recover();
     current(&mut value);
     value
         .contacts
@@ -491,7 +477,7 @@ fn bound_conversation(
     if conversation.peer != peer {
         return Err("private conversation peer binding changed".into());
     }
-    let mut value = cache().lock().map_err(|_| "private snapshot unavailable")?;
+    let mut value = cache().lock_recover();
     current(&mut value);
     if value.generation != generation {
         return Err("private conversation channel was replaced".into());
@@ -524,7 +510,7 @@ fn note_conversation(value: &mut Cache, conversation: &Conversation) {
 }
 
 fn generation() -> Result<u64, String> {
-    let mut value = cache().lock().map_err(|_| "private snapshot unavailable")?;
+    let mut value = cache().lock_recover();
     current(&mut value);
     register_reader(&mut value);
     Ok(value.generation)
@@ -534,7 +520,7 @@ fn start_subscription(peer: &str, original: Option<uuid::Uuid>) -> Result<uuid::
     let token = uuid::Uuid::new_v4();
     let (cancel, receiver) = tokio::sync::watch::channel(());
     {
-        let mut value = cache().lock().map_err(|_| "private snapshot unavailable")?;
+        let mut value = cache().lock_recover();
         current(&mut value);
         if let Some(active) = value.active.get_mut(peer) {
             active.owners += 1;
@@ -629,16 +615,14 @@ fn follow(
 /// Identifies the lane acquired by a successful open. Views keep this token so
 /// a close after security-context replacement cannot release a newer owner.
 pub fn subscription_token(public_key: &str) -> Option<uuid::Uuid> {
-    let mut value = cache().lock().ok()?;
+    let mut value = cache().lock_recover();
     current(&mut value);
     value.active.get(public_key).map(|active| active.token)
 }
 
 /// Retain only the selected lane, not a replacement opened after revocation.
 pub fn retain_current(public_key: &str, token: uuid::Uuid) -> bool {
-    let Ok(mut value) = cache().lock() else {
-        return false;
-    };
+    let mut value = cache().lock_recover();
     current(&mut value);
     register_reader(&mut value);
     let Some(active) = value
@@ -660,9 +644,7 @@ pub fn close_current(public_key: &str, token: uuid::Uuid) {
 /// Retain an already selected view when creating another presentation of it.
 /// This never opens a channel or polls the host.
 pub fn retain(public_key: &str) -> bool {
-    let Ok(mut value) = cache().lock() else {
-        return false;
-    };
+    let mut value = cache().lock_recover();
     current(&mut value);
     register_reader(&mut value);
     let Some(active) = value.active.get_mut(public_key) else {
@@ -679,7 +661,8 @@ pub fn close(public_key: &str) {
 }
 
 fn release(public_key: &str, token: Option<uuid::Uuid>) {
-    if let Ok(mut value) = cache().lock() {
+    {
+        let mut value = cache().lock_recover();
         current(&mut value);
         if let Some(active) = value.active.get_mut(public_key) {
             if token.is_some_and(|token| active.token != token) {
@@ -696,9 +679,7 @@ fn release(public_key: &str, token: Option<uuid::Uuid>) {
 }
 
 pub(crate) fn subscription_current(token: uuid::Uuid, peer: &str) -> bool {
-    let Ok(mut value) = cache().lock() else {
-        return false;
-    };
+    let mut value = cache().lock_recover();
     current(&mut value);
     value
         .active
@@ -707,7 +688,8 @@ pub(crate) fn subscription_current(token: uuid::Uuid, peer: &str) -> bool {
 }
 
 pub(crate) fn subscription_failed(token: uuid::Uuid, peer: &str) {
-    if let Ok(mut value) = cache().lock() {
+    {
+        let mut value = cache().lock_recover();
         current(&mut value);
         if value
             .active
@@ -741,7 +723,7 @@ fn store_snapshot(token: uuid::Uuid, peer: &str, snapshot: Conversation) -> Resu
     if snapshot.peer != peer {
         return Err("private conversation peer binding changed".into());
     }
-    let mut value = cache().lock().map_err(|_| "private snapshot unavailable")?;
+    let mut value = cache().lock_recover();
     current(&mut value);
     if value
         .active
@@ -801,7 +783,7 @@ fn opened(
     // lanes; stream failures revoke only their bound peer.
     let snapshot = bound_conversation(answer, peer, generation)?;
     let token = start_subscription(peer, original)?;
-    let mut value = cache().lock().map_err(|_| "private snapshot unavailable")?;
+    let mut value = cache().lock_recover();
     current(&mut value);
     if value
         .active
@@ -827,7 +809,7 @@ fn opened(
 /// original person custody.
 pub fn snapshot(public_key: &str) -> Result<Conversation, String> {
     original()?;
-    let mut value = cache().lock().map_err(|_| "private snapshot unavailable")?;
+    let mut value = cache().lock_recover();
     current(&mut value);
     register_reader(&mut value);
     value

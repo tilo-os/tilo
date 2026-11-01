@@ -40,22 +40,33 @@ fn context(prefix: &[u8], index: u64, footer: bool) -> Vec<u8> {
     record.push(u8::from(footer));
     record
 }
+fn framing(max: usize) -> wire_frame::Framing {
+    wire_frame::Framing::little_endian(max)
+}
+/// A frame the bounds refuse reads as the failed transfer it is.
+fn frame_error(error: wire_frame::FrameError) -> io::Error {
+    match error {
+        wire_frame::FrameError::Io(io) => io,
+        wire_frame::FrameError::Truncated => {
+            io::Error::new(io::ErrorKind::UnexpectedEof, "Migration frame ends short")
+        }
+        _ => invalid("Migration frame exceeds bounds"),
+    }
+}
 fn write_frame(writer: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
-    let length =
-        u32::try_from(bytes.len()).map_err(|_| invalid("Migration frame exceeds bounds"))?;
-    writer.write_all(&length.to_le_bytes())?;
-    writer.write_all(bytes)
+    // A frame carries what a `u32` prefix can announce, as it always has.
+    framing(u32::MAX as usize)
+        .write(writer, bytes)
+        .map_err(frame_error)
 }
 fn read_frame(reader: &mut impl Read, max: usize) -> io::Result<Vec<u8>> {
-    let mut length = [0; 4];
-    reader.read_exact(&mut length)?;
-    let length = u32::from_le_bytes(length) as usize;
-    if length > max {
-        return Err(invalid("Migration frame exceeds bounds"));
+    match framing(max).read(reader).map_err(frame_error)? {
+        Some(bytes) => Ok(bytes),
+        None => Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "Migration frame is missing",
+        )),
     }
-    let mut bytes = vec![0; length];
-    reader.read_exact(&mut bytes)?;
-    Ok(bytes)
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

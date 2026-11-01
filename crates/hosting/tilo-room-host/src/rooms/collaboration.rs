@@ -8,8 +8,8 @@
 
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use tilo_governor::{GovernorStore, RoomTxn};
 use tilo_peer_state::join::{JoinBootstrap, JoinProof, VerifiedRedemption};
+use tilo_peer_state::join_answer::{JoinRooms, RoomTxn};
 use tilo_peer_state::join_ledger::{Administered, Governed, Signer};
 pub use tilo_peer_state::join_ledger::{JoinError as CollaborationError, Redeeming};
 use tilo_relay_session::rooms::{
@@ -70,6 +70,7 @@ impl GovernedRoom {
 fn governed<'a>(record: &'a RoomRecord, peer: &'a tilo_peer_state::StatePeer) -> Governed<'a> {
     Governed {
         peer,
+        host: &record.authority,
         workspace_id: record.workspace_id,
         generation: record.generation,
         governance_messages: record,
@@ -352,7 +353,8 @@ impl Rooms {
             tilo_action_policy::Subject::Person(hex::encode(administrator.user_public_key));
         let held = governed
             .peer()
-            .permissions(administrator.device_public_key, system_time(now))?
+            .permissions(administrator.device_public_key, system_time(now))
+            .map_err(|error| error.to_string())?
             .policy
             .grants;
         let grants: Vec<tilo_action_policy::Grant> = apps
@@ -718,20 +720,6 @@ impl Rooms {
         Ok((GovernanceCompletion { generation }, added))
     }
 
-    /// `room`'s whole history as its governor here holds it: what the
-    /// replica of this host's own device takes when it diverged from it.
-    ///
-    /// # Errors
-    /// The room is not hosted here.
-    pub async fn governed_history(&self, room: &str) -> Result<Vec<Vec<u8>>, CollaborationError> {
-        let room = self.room(room).await?;
-        let room = room.lock().await;
-        match room.peer().room_message() {
-            neighbour_wire::NeighbourMsg::SyncResp { changes, .. } => Ok(changes),
-            _ => Err(CollaborationError::new("room governance missing")),
-        }
-    }
-
     /// Install a bot as a governed member of `room`, update its program,
     /// renew its delegation or uninstall it
     /// ([`WorkspaceMembershipCommand::InstallBot`],
@@ -1064,7 +1052,7 @@ impl Rooms {
     }
 
     /// Admit the verified `joins` to `room` in one governance change: the
-    /// shared admission ([`tilo_governor::admit`]), published before anyone
+    /// shared admission ([`tilo_peer_state::join_answer::admit`]), published before anyone
     /// hears their answer. People arriving together cost the room one write
     /// and one publication instead of one each, and each of those grows
     /// with the room.
@@ -1079,7 +1067,7 @@ impl Rooms {
     ) -> Result<Vec<Result<JoinBootstrap, CollaborationError>>, CollaborationError> {
         let key = &self.inner.host.key;
         let mut held = HeldRoom::new(key, room);
-        let admitted = tilo_governor::admit(&mut held, joins, key, now);
+        let admitted = tilo_peer_state::join_answer::admit(&mut held, joins, key, now);
         if held.committed {
             self.settle(room).await?;
             // Someone invited from the wait list is in now: their entry
@@ -1169,7 +1157,7 @@ impl RoomTxn for HeldRoom<'_> {
 /// everyone who staged one meanwhile (`Rooms::written`); a governance
 /// change is committed under the room's lock and published before the
 /// lock is released.
-impl GovernorStore for Rooms {
+impl JoinRooms for Rooms {
     fn key(&self) -> &SigningKey {
         &self.inner.host.key
     }

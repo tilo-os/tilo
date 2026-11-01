@@ -2,8 +2,8 @@
  * The page as a certified device of one tilo-relay room, in one call:
  * `connectRelayPeer` opens this profile's device key (`device-custody.mjs`),
  * loads the runtime and connects `peer.mjs`'s certified peer to `room`.
- * Pages written for the relay peer of the runtime this one replaced
- * (`tilo-room-service`'s `rooms.mjs`, the site) keep working unchanged:
+ * Pages written for the relay peer of the runtime this one replaced keep
+ * working unchanged:
  *
  * - `whenReady()`, `records()`, `hasRecord()`, `whenRecord()`: the room's
  *   admission and the records this page holds;

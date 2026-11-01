@@ -1,27 +1,30 @@
-//! Resizing windows on a strip: which window an edge drag changes, and how.
+//! Resizing windows from their edges: which edge an edge drag changes, and
+//! how.
 //!
 //! The strip is infinitely wide, so a resize is never zero-sum unless the
-//! person asks for it. Two functions hold the whole model, and every pointer
-//! path ([`crate::widget::GroupRow`]'s hover, press and drag) goes through
-//! them:
+//! person asks for it. Every pointer path goes through the same few rules:
+//! [`crate::widget::GroupRow`]'s hover, press and drag for a window on a
+//! strip, and [`crate::widget::FloatingWindow`]'s for a free one.
 //!
-//! - [`seam_owner`] — **who owns an edge.** Every window owns both of its
-//!   edges. The seam between two windows is split down the middle, the half
-//!   nearest each window being its edge, except that the window you are
+//! - [`seam_owner`] — **who owns an edge on a strip.** Every window owns both
+//!   of its edges. The seam between two windows is split down the middle, the
+//!   half nearest each window being its edge, except that the window you are
 //!   working in (the focused one) owns the whole seam. Hovering shows that
 //!   owner's edge before anything is pressed.
-//! - [`EdgeDrag::resize`] — **what a drag does.** A plain drag changes only
-//!   the grabbed window: its width follows the pointer 1:1 and its *opposite*
-//!   edge holds still on screen, so everything beyond the dragged edge is
-//!   pushed away or pulled along at its own width. Shift+drag is zero-sum
-//!   between the two windows sharing that seam and nothing else. A limit (the
-//!   app's real minimum, a client's maximum) stops the edge; nothing else is
-//!   resized to make up for it.
+//! - [`RectEdge::at`] — **which sides a point on a free rect grabs**: a side,
+//!   the bottom, or a corner, never the top where the title bar drags.
+//! - [`EdgeDrag::resize`] and [`RectEdge::resize`] — **what a drag does**, both
+//!   on `dragged_span`: the grabbed side follows the pointer 1:1 and its
+//!   *opposite* side holds still, so everything beyond the dragged edge is
+//!   pushed away or pulled along at its own size. On a strip, Shift+drag is
+//!   zero-sum between the two windows sharing that seam and nothing else. A
+//!   limit (the app's real minimum, a client's maximum) stops the edge;
+//!   nothing else is resized to make up for it.
 //!
 //! This is a design rule, not a tuning: `docs/architecture/window-management.md`
 //! ("Resizing a window") is its contract, and the tests below pin each case.
 
-use vello::kurbo::Rect;
+use vello::kurbo::{Point, Rect};
 
 /// One of a window's two vertical edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,9 +126,89 @@ pub struct WidthLimits {
     pub max: f64,
 }
 
-impl WidthLimits {
-    fn clamp(self, width: f64) -> f64 {
-        width.clamp(self.min, self.max.max(self.min))
+/// **The edge rule on one axis**: move the grabbed side `travel` px and hold
+/// the opposite side still, so everything beyond the grabbed edge is pushed
+/// away or pulled along at its own size; a limit stops the edge, and nothing
+/// else changes to make up for it.
+///
+/// `start` and `end` are the axis's two sides as the caller lays them out
+/// (`x0` and `x1`, `y0` and `y1`); `moving` names the side the pointer holds.
+/// Returns the new `start` and `end`.
+#[must_use]
+fn dragged_span(
+    start: f64,
+    end: f64,
+    moving: WindowEdge,
+    travel: f64,
+    min: f64,
+    max: f64,
+) -> (f64, f64) {
+    let wanted = (end - start)
+        + match moving {
+            WindowEdge::Trailing => travel,
+            WindowEdge::Leading => -travel,
+        };
+    let span = wanted.clamp(min, max.max(min));
+    match moving {
+        WindowEdge::Trailing => (start, start + span),
+        WindowEdge::Leading => (end - span, end),
+    }
+}
+
+/// The edge of a free rect (a floating window, a picture in a document) that
+/// a drag grabbed: which side of each axis moves. Absent on an axis the edge
+/// leaves alone, so a side edge moves one axis and a corner both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RectEdge {
+    pub x: Option<WindowEdge>,
+    pub y: Option<WindowEdge>,
+}
+
+impl RectEdge {
+    /// The sides a pointer `grip` px from `rect`'s edges grabs, or `None` off
+    /// every edge. `top_band` is the height at the top of the rect that drags
+    /// the rect instead of resizing it (a title bar), so no side edge is
+    /// offered there; the bottom edge is everywhere along the width.
+    #[must_use]
+    pub fn at(rect: Rect, p: Point, grip: f64, top_band: f64) -> Option<Self> {
+        let in_title = p.y <= rect.y0 + top_band;
+        let near_start_x = !in_title && (p.x - rect.x0).abs() <= grip;
+        let near_end_x = (p.x - rect.x1).abs() <= grip;
+        let near_end_y = (p.y - rect.y1).abs() <= grip;
+        let edge = Self {
+            x: if near_end_x {
+                Some(WindowEdge::Trailing)
+            } else if near_start_x {
+                Some(WindowEdge::Leading)
+            } else {
+                None
+            },
+            y: near_end_y.then_some(WindowEdge::Trailing),
+        };
+        (edge.x.is_some() || edge.y.is_some()).then_some(edge)
+    }
+
+    /// `rect` after this edge was carried `by`: each grabbed side follows the
+    /// pointer and its opposite side holds still, down to `minimum` on each
+    /// axis.
+    #[must_use]
+    pub fn resize(self, rect: Rect, by: vello::kurbo::Vec2, minimum: vello::kurbo::Size) -> Rect {
+        let mut out = rect;
+        if let Some(moving) = self.x {
+            (out.x0, out.x1) =
+                dragged_span(rect.x0, rect.x1, moving, by.x, minimum.width, f64::INFINITY);
+        }
+        if let Some(moving) = self.y {
+            (out.y0, out.y1) = dragged_span(
+                rect.y0,
+                rect.y1,
+                moving,
+                by.y,
+                minimum.height,
+                f64::INFINITY,
+            );
+        }
+        out
     }
 }
 
@@ -189,12 +272,27 @@ impl EdgeDrag {
         let travel = travel.round();
         let grabbed = self.grabbed;
         let Some(other) = self.zero_sum_with else {
-            let (width, pan) = match self.edge {
-                WindowEdge::Trailing => (grabbed.limits.clamp(grabbed.width + travel), 0.0),
-                WindowEdge::Leading => {
-                    let width = grabbed.limits.clamp(grabbed.width - travel);
-                    (width, width - grabbed.width)
-                }
+            let limits = grabbed.limits;
+            // The strip lays a window out from its start, so a leading-edge
+            // drag is the same rule measured from the other side: the width
+            // moves the other way, and the pan is how far that edge left the
+            // place the strip gave it.
+            let signed = match self.edge {
+                WindowEdge::Trailing => travel,
+                WindowEdge::Leading => -travel,
+            };
+            let (_, width) = dragged_span(
+                0.0,
+                grabbed.width,
+                WindowEdge::Trailing,
+                signed,
+                limits.min,
+                limits.max,
+            );
+            let pan = if self.edge == WindowEdge::Leading {
+                width - grabbed.width
+            } else {
+                0.0
             };
             return EdgeResize {
                 width,
@@ -434,5 +532,147 @@ mod tests {
             };
             assert_eq!(drag.resize(100_000.0).width, 100_500.0);
         }
+    }
+
+    #[test]
+    fn one_axis_moves_its_grabbed_side_and_holds_the_other() {
+        let free = f64::INFINITY;
+        {
+            // The grabbed side follows the pointer 1:1 and the opposite side
+            // stays exactly where it was.
+            assert_eq!(
+                dragged_span(100.0, 600.0, WindowEdge::Trailing, 40.0, 280.0, free),
+                (100.0, 640.0)
+            );
+            assert_eq!(
+                dragged_span(100.0, 600.0, WindowEdge::Leading, -40.0, 280.0, free),
+                (60.0, 600.0),
+                "a leading edge dragged left grows the span leftwards"
+            );
+            assert_eq!(
+                dragged_span(100.0, 600.0, WindowEdge::Leading, 40.0, 280.0, free),
+                (140.0, 600.0)
+            );
+        }
+        {
+            // The minimum stops the grabbed side; the opposite one never moves
+            // to make up for it.
+            assert_eq!(
+                dragged_span(100.0, 600.0, WindowEdge::Trailing, -1000.0, 280.0, free),
+                (100.0, 380.0)
+            );
+            assert_eq!(
+                dragged_span(100.0, 600.0, WindowEdge::Leading, 1000.0, 280.0, free),
+                (320.0, 600.0)
+            );
+            // A maximum stops the span just the same: the far side stays put
+            // and only the grabbed side stops short.
+            assert_eq!(
+                dragged_span(100.0, 600.0, WindowEdge::Trailing, 100.0, 280.0, 700.0),
+                (100.0, 700.0),
+                "the span reaches its maximum and no further"
+            );
+            assert_eq!(
+                dragged_span(100.0, 600.0, WindowEdge::Trailing, 500.0, 280.0, 700.0),
+                (100.0, 800.0)
+            );
+            assert_eq!(
+                dragged_span(100.0, 600.0, WindowEdge::Leading, -500.0, 280.0, 700.0),
+                (-100.0, 600.0)
+            );
+        }
+    }
+
+    #[test]
+    fn a_free_rects_grabbable_edges_are_its_sides_its_bottom_and_its_corners() {
+        let rect = Rect::new(100.0, 100.0, 500.0, 400.0);
+        let grip = 8.0;
+        let bar = 40.0;
+        let at = |x: f64, y: f64| RectEdge::at(rect, Point::new(x, y), grip, bar);
+        assert_eq!(
+            at(494.0, 300.0),
+            Some(RectEdge {
+                x: Some(WindowEdge::Trailing),
+                y: None
+            })
+        );
+        assert_eq!(
+            at(106.0, 300.0),
+            Some(RectEdge {
+                x: Some(WindowEdge::Leading),
+                y: None
+            })
+        );
+        assert_eq!(
+            at(300.0, 396.0),
+            Some(RectEdge {
+                x: None,
+                y: Some(WindowEdge::Trailing)
+            })
+        );
+        assert_eq!(
+            at(494.0, 396.0),
+            Some(RectEdge {
+                x: Some(WindowEdge::Trailing),
+                y: Some(WindowEdge::Trailing)
+            }),
+            "a corner moves both axes"
+        );
+        assert_eq!(
+            at(106.0, 396.0),
+            Some(RectEdge {
+                x: Some(WindowEdge::Leading),
+                y: Some(WindowEdge::Trailing)
+            })
+        );
+        assert_eq!(at(300.0, 300.0), None, "the middle grabs nothing");
+        assert_eq!(
+            at(106.0, 110.0),
+            None,
+            "the title bar owns the top: no side edge there"
+        );
+    }
+
+    #[test]
+    fn a_free_rects_edge_drag_keeps_far_sides_still_and_stops_at_the_minimum() {
+        let rect = Rect::new(100.0, 100.0, 500.0, 400.0);
+        let minimum = vello::kurbo::Size::new(280.0, 200.0);
+        let right = RectEdge {
+            x: Some(WindowEdge::Trailing),
+            y: None,
+        };
+        assert_eq!(
+            right.resize(rect, vello::kurbo::Vec2::new(40.0, -70.0), minimum),
+            Rect::new(100.0, 100.0, 540.0, 400.0),
+            "the leading edge and the whole height hold still"
+        );
+        assert_eq!(
+            right.resize(rect, vello::kurbo::Vec2::new(-1000.0, 0.0), minimum),
+            Rect::new(100.0, 100.0, 380.0, 400.0)
+        );
+        let left = RectEdge {
+            x: Some(WindowEdge::Leading),
+            y: None,
+        };
+        assert_eq!(
+            left.resize(rect, vello::kurbo::Vec2::new(-60.0, 0.0), minimum),
+            Rect::new(40.0, 100.0, 500.0, 400.0)
+        );
+        assert_eq!(
+            left.resize(rect, vello::kurbo::Vec2::new(1000.0, 0.0), minimum),
+            Rect::new(220.0, 100.0, 500.0, 400.0)
+        );
+        let corner = RectEdge {
+            x: Some(WindowEdge::Leading),
+            y: Some(WindowEdge::Trailing),
+        };
+        assert_eq!(
+            corner.resize(rect, vello::kurbo::Vec2::new(-20.0, 30.0), minimum),
+            Rect::new(80.0, 100.0, 500.0, 430.0)
+        );
+        assert_eq!(
+            corner.resize(rect, vello::kurbo::Vec2::new(0.0, -1000.0), minimum),
+            Rect::new(100.0, 100.0, 500.0, 300.0)
+        );
     }
 }

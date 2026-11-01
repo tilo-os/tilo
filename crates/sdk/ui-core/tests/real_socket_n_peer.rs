@@ -1,5 +1,5 @@
 //! N-peer end-to-end test across real Unix sockets speaking the production
-//! Cap'n Proto collaboration protocol.
+//! collaboration wire.
 //!
 //! Generalizes `real_socket_two_peer.rs` to three peers, asserting the two
 //! properties that matter for N > 2:

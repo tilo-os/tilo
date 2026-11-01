@@ -85,11 +85,6 @@ pub struct RelayConfig {
     #[serde(default = "default_services")]
     pub services: ServiceCapabilities,
 
-    /// The `[[peer_relays]]` (or empty `peer_relays = []`) older
-    /// configurations listed. Read only to be ignored, never written.
-    #[serde(default, rename = "peer_relays", skip_serializing)]
-    pub retired_peer_relays: Option<toml::Value>,
-
     /// Interactive environment sessions this relay's own compute worker
     /// runs for members. Absent: it runs none. Needs `services.compute`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -108,11 +103,6 @@ pub struct RelayConfig {
     /// room that pre-admits every visitor raises it. `None` keeps 1024.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_room_grants: Option<usize>,
-    /// The `[[workspace]]` tables older configurations listed. Which rooms a
-    /// relay holds is the rooms' own governance now, so they are read only
-    /// to be ignored (the daemon says so when it starts) and never written.
-    #[serde(default, rename = "workspace", skip_serializing)]
-    pub retired_workspaces: Option<toml::Value>,
 }
 
 /// How a relay's compute worker hosts members' environment sessions.
@@ -306,12 +296,10 @@ impl Default for RelayConfig {
             trust_policy: TrustPolicy::default(),
             device_role: default_device_role(),
             services: default_services(),
-            retired_peer_relays: None,
             environments: None,
             web_entry: None,
             member_limits: None,
             max_room_grants: None,
-            retired_workspaces: None,
         }
     }
 }
@@ -408,36 +396,10 @@ mod tests {
         assert!(!cfg.services.compute);
 
         // A minimal file names only the two roots.
-        let cfg: RelayConfig = toml::from_str(PRELUDE).unwrap();
-        assert!(cfg.retired_peer_relays.is_none());
-
-        // The peer relays older configurations listed still load, and are
-        // never written back.
-        for listed in [
-            "peer_relays = []\n",
-            "[[peer_relays]]\niroh_node_id = \"aa\"\n",
-        ] {
-            let cfg: RelayConfig = toml::from_str(&format!("{PRELUDE}\n{listed}")).unwrap();
-            assert!(cfg.retired_peer_relays.is_some());
-            assert!(!toml::to_string(&cfg).unwrap().contains("peer_relays"));
-        }
+        let _: RelayConfig = toml::from_str(PRELUDE).unwrap();
 
         // An unknown field is rejected rather than ignored.
         assert!(toml::from_str::<RelayConfig>(&format!("{PRELUDE}surprise = 3\n")).is_err());
-
-        // The workspace tables older configurations listed still load, and
-        // are never written back.
-        let cfg: RelayConfig = toml::from_str(&format!(
-            "{PRELUDE}\n[[workspace]]\nid = \"42\"\npin = true\nreplication = \"on_demand\"\n"
-        ))
-        .unwrap();
-        assert!(cfg.retired_workspaces.is_some());
-        // `[services] workspace_replication` is a different key and stays.
-        let written = toml::to_string(&cfg).unwrap();
-        let table: toml::Table = toml::from_str(&written).unwrap();
-        assert!(!table.contains_key("workspace"), "{written}");
-        let reread: RelayConfig = toml::from_str(&written).unwrap();
-        assert!(reread.retired_workspaces.is_none());
     }
 
     #[test]

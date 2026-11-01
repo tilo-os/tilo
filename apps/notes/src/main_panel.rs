@@ -849,7 +849,7 @@ impl MainPanel {
         std::mem::take(&mut self.empty_action_requested) && self.empty_adds
     }
 
-    /// Whether this person may make a note in the notebook, as the room
+    /// Whether this person may make a note in the notebook, as the workspace
     /// decides it.
     fn adds_notes(&self) -> bool {
         self.notebook.as_ref().is_none_or(|notebook| {

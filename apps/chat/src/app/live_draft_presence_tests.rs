@@ -30,7 +30,7 @@ fn focused_app(text: &str) -> ChatApp {
     app
 }
 
-/// The composer tells the room that its person is writing there, while
+/// The composer tells the workspace that its person is writing there, while
 /// they are, and never what or where in their draft.
 #[test]
 fn focused_composer_publishes_only_that_its_person_is_writing() {
@@ -45,7 +45,7 @@ fn focused_composer_publishes_only_that_its_person_is_writing() {
     assert_eq!(
         ui::presence::capability::presence_payload(&app),
         Some((key, PresencePayload::Caret { pos: 0 })),
-        "a selection in the draft is not the room's either"
+        "a selection in the draft is not the workspace's either"
     );
     Widget::set_focus(&mut app, false);
     assert_eq!(ui::presence::capability::presence_payload(&app), None);

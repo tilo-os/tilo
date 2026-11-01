@@ -404,7 +404,7 @@ impl ProfileCard {
             .with_id(id)
             .with_placeholder(placeholder)
             .with_accessible_name(accessible)
-            .on_submit(move |typed| {
+            .on_submit_view(move |typed| {
                 let typed = typed.trim();
                 if !typed.is_empty() {
                     *chosen.borrow_mut() = Some(ProfileChoice::Rename(typed.to_owned()));
@@ -438,7 +438,9 @@ impl ProfileCard {
                 .push(Box::new(
                     Button::icon_only("profile-copy-key", Icon::Copy, &t("profile-copy-id"))
                         .role(ButtonRole::Plain)
-                        .on_click(move || ui::text_selection::clipboard_copy(&copy)),
+                        .on_own_device_effect(move || {
+                            ui::text_selection::clipboard_copy(&copy);
+                        }),
                 )),
         )
     }
@@ -513,7 +515,7 @@ impl ProfileCard {
                 Button::new("profile-message", &t("profile-message"))
                     .with_icon(Icon::MessageCircle)
                     .role(ButtonRole::Primary)
-                    .on_click(move || {
+                    .on_own_device_effect(move || {
                         *chosen.borrow_mut() = Some(ProfileChoice::Message(key.clone()));
                     }),
             ));
@@ -530,7 +532,7 @@ impl ProfileCard {
             actions = actions.push(Box::new(
                 Button::new("profile-follow", &label)
                     .with_icon(Icon::Eye)
-                    .on_click(move || {
+                    .on_effect(move || {
                         *chosen.borrow_mut() = Some(ProfileChoice::Follow(id.clone()));
                     }),
             ));
@@ -563,7 +565,7 @@ impl ProfileCard {
                 Button::new(&format!("profile-action-{id}"), &label)
                     .with_icon(icon)
                     .role(ButtonRole::Plain)
-                    .on_click(move || {
+                    .on_effect(move || {
                         *chosen.borrow_mut() = Some(ProfileChoice::Action(id.clone()));
                     }),
             ));
@@ -679,7 +681,7 @@ impl ProfileCard {
                     Button::new(&format!("profile-action-{}", action.id), &action.title)
                         .with_icon(action.icon)
                         .role(ButtonRole::Plain)
-                        .on_click(move || {
+                        .on_effect(move || {
                             *chosen.borrow_mut() = Some(ProfileChoice::Action(id.clone()));
                         }),
                 ));
@@ -713,7 +715,7 @@ impl ProfileCard {
                 Toggle::from_state(&state)
                     .with_id("profile-control-hints-toggle")
                     .with_accessible_name(&label)
-                    .on_change(move |on| {
+                    .on_view("profile-control-hints-toggle", move |on| {
                         *chosen.borrow_mut() = Some(ProfileChoice::ControlHints(on));
                     }),
             )),
@@ -742,7 +744,7 @@ impl ProfileCard {
             .with_id("profile-status")
             .with_placeholder(t("profile-status-placeholder"))
             .with_accessible_name(t("profile-status"))
-            .on_submit(move |typed| {
+            .on_submit_view(move |typed| {
                 *chosen.borrow_mut() = Some(ProfileChoice::Status(typed.trim().to_owned()));
             })
     }
@@ -772,7 +774,7 @@ impl ProfileCard {
             )
             .with_id("profile-sharing")
             .with_accessible_name(t("a11y-shell-sharing-change"))
-            .on_change(move |index| {
+            .on_view("profile-sharing", move |index| {
                 if let Some(mode) = sharings.get(index) {
                     *chosen.borrow_mut() = Some(ProfileChoice::Sharing(*mode));
                 }
@@ -809,7 +811,7 @@ impl ProfileCard {
         )
         .with_id("profile-availability")
         .with_accessible_name(t("profile-section-status"))
-        .on_change(move |index| {
+        .on_view("profile-availability", move |index| {
             if let Some(preset) = presets.get(index) {
                 *chosen.borrow_mut() = Some(ProfileChoice::Availability(*preset));
             }
@@ -833,7 +835,7 @@ impl ProfileCard {
             // Two rows of six: the card's width, never past it.
             hues.len() / 2,
         )
-        .on_change(move |index| {
+        .on_change_view(move |index| {
             if let Some(hue) = hues.get(index) {
                 *chosen.borrow_mut() = Some(ProfileChoice::Colour(hue.id().to_owned()));
             }
@@ -882,7 +884,7 @@ impl ProfileCard {
             "profile-section-visibility",
             &[("workspace", sight.workspace.clone().into())],
         ))
-        .on_change(move |index| {
+        .on_view("profile-visibility", move |index| {
             if let Some(choice) = choices.get(index) {
                 *chosen.borrow_mut() = Some(ProfileChoice::Visibility(*choice));
             }
@@ -939,7 +941,7 @@ impl ProfileCard {
                         )
                         .with_icon(icon)
                         .role(ButtonRole::Primary)
-                        .on_click(move || {
+                        .on_effect(move || {
                             *chosen.borrow_mut() = Some(ProfileChoice::Link(app.clone()));
                         }),
                     ));
@@ -1021,7 +1023,7 @@ impl ProfileCard {
                         )
                         .with_icon(icon)
                         .role(ButtonRole::Primary)
-                        .on_click(move || {
+                        .on_effect(move || {
                             *chosen.borrow_mut() = Some(ProfileChoice::Accept(app.clone()));
                         }),
                     ))
@@ -1031,7 +1033,7 @@ impl ProfileCard {
                             &t("profile-link-decline"),
                         )
                         .role(ButtonRole::Plain)
-                        .on_click(move || {
+                        .on_effect(move || {
                             *declined.borrow_mut() =
                                 Some(ProfileChoice::Decline(declining.clone()));
                         }),
@@ -1105,7 +1107,7 @@ impl ProfileCard {
                         &t("profile-unlink"),
                     )
                     .with_icon(Icon::Unlink)
-                    .on_click(move || {
+                    .on_effect(move || {
                         *chosen.borrow_mut() = Some(ProfileChoice::Unlink(app.clone()));
                     }),
                 )),

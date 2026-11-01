@@ -668,7 +668,7 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
         steps: vec![Step::new(
             "digest",
             StepKind::Invoke {
-                action: tilo_actions::ActionKey::new(CHAT, "chat.workspace", "read-room"),
+                action: tilo_actions::ActionKey::new(CHAT, "chat.workspace", "read-workspace"),
                 resource: Selector::FirstOfKind("chat.workspace".into()),
                 args: std::collections::BTreeMap::new(),
                 appearance: None,

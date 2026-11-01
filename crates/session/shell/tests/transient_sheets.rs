@@ -414,6 +414,7 @@ fn a_system_modal_opens_on_the_focused_display() {
                 y: r.y0,
                 width: r.width(),
                 height: r.height(),
+                primary: false,
             }
         })
         .collect();

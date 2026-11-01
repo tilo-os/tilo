@@ -33,7 +33,7 @@ pub const SHAPE_ID_BYTES: usize = 16;
 pub type ShapeId = [u8; SHAPE_ID_BYTES];
 
 /// The fields of a resource every one of its actions carries.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResourceFields {
     pub resource_kind: String,
     pub resource_label: String,
@@ -42,7 +42,7 @@ pub struct ResourceFields {
 
 /// One resource: the fields that are its own, and the template of the actions
 /// it offers.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SurfaceResource {
     pub resource: String,
     pub fields: ResourceFields,
@@ -74,7 +74,7 @@ impl ExportedAction {
 }
 
 /// A change to a connection's published surface.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SurfaceDelta {
     /// Discard the surface published so far before applying the rest.
     pub reset: bool,

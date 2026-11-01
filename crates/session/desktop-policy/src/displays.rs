@@ -10,17 +10,21 @@ use tilo_desktop_model::Display;
 use ui::kurbo::Rect;
 
 /// One output as the host knows it: who it is (the monitor's identity,
-/// stable across restarts and port swaps when the host can name it) and
-/// where it is in the surface's coordinates.
+/// stable across restarts and port swaps when the host can name it), where
+/// it is in the surface's coordinates, and whether the person made it the
+/// primary display.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Output {
     pub monitor: String,
     pub rect: Rect,
+    /// The display the person chose in Settings for their bar, their new
+    /// windows and their sheets.
+    pub primary: bool,
 }
 
-/// The displays among `outputs` (primary first, as the host lists them):
-/// every output with an area, a mirror set as one. Each display's id is
-/// its output's place in `outputs`.
+/// The displays among `outputs` (the host lists them as the compositor
+/// holds them, and names the primary one): every output with an area, a
+/// mirror set as one. Each display's id is its output's place in `outputs`.
 #[must_use]
 pub fn distinct(outputs: &[Output]) -> Vec<Display> {
     let mut displays: Vec<Display> = Vec::with_capacity(outputs.len());
@@ -50,6 +54,7 @@ pub fn distinct(outputs: &[Output]) -> Vec<Display> {
                 y: rect.y0,
                 width: rect.width(),
                 height: rect.height(),
+                primary: output.primary,
             });
         }
     }
@@ -64,6 +69,7 @@ mod tests {
         Output {
             monitor: monitor.into(),
             rect: Rect::new(x, 0.0, x + w, 600.0),
+            primary: false,
         }
     }
 
@@ -96,5 +102,19 @@ mod tests {
         let displays = distinct(&[output("off", 0.0, 0.0), output("on", 0.0, 800.0)]);
         assert_eq!(displays.len(), 1);
         assert_eq!(displays[0].monitor, "on");
+    }
+
+    #[test]
+    fn the_primary_the_host_names_is_the_one_that_carries_it() {
+        let mut second = output("b", 800.0, 1024.0);
+        second.primary = true;
+        let displays = distinct(&[output("a", 0.0, 800.0), second]);
+        assert_eq!(
+            displays
+                .iter()
+                .map(|display| (display.monitor.as_str(), display.primary))
+                .collect::<Vec<_>>(),
+            [("a", false), ("b", true)]
+        );
     }
 }

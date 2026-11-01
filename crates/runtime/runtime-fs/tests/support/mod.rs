@@ -16,9 +16,6 @@ pub fn all_task1_rights() -> Vec<FsRight> {
         FsRight::Read,
         FsRight::Create,
         FsRight::Rename,
-        FsRight::Copy,
-        FsRight::Move,
-        FsRight::Trash,
     ]
 }
 
@@ -43,9 +40,6 @@ pub fn granted_root() -> (
                 runtime_fs::FsRight::Read,
                 runtime_fs::FsRight::Create,
                 runtime_fs::FsRight::Rename,
-                runtime_fs::FsRight::Copy,
-                runtime_fs::FsRight::Move,
-                runtime_fs::FsRight::Trash,
             ],
         )
         .unwrap();

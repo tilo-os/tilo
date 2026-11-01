@@ -3951,7 +3951,7 @@ mod tests {
         // Phase `resolve_named_rect_falls_back_to_registry`.
         // `resolve_named_rect` must fall through to the widget tree when the
         // hand-curated table misses: `command_palette_input` isn't in that
-        // table, but the `CommandPalette` widget opts in via `test_id()`.
+        // table, but the palette widget opts in via `test_id()`.
         {
             let mut d = ShellDriver::new((1600, 900));
             // Open the palette — drives the same code path scenarios use,

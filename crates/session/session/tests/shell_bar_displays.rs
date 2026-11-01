@@ -38,6 +38,7 @@ fn options() -> Options {
         presentation: ui::headless::fixture_runner_inputs,
         person: PERSON.to_owned(),
         collab: false,
+        shell_bar: true,
         ..Options::default()
     }
 }
@@ -49,7 +50,7 @@ fn session(places: &[(i32, i32)]) -> Session {
         .enumerate()
         .map(|(index, place)| {
             let mut output = OutputConfig::new(format!("HEADLESS-{}", index + 1), WIDTH, HEIGHT);
-            output.position = *place;
+            output.position = Some(*place);
             output
         })
         .collect();
@@ -129,7 +130,7 @@ fn a_display_added_later_gets_its_own_bar() {
     assert!(bar(&session, "HEADLESS-1").is_some());
     // A second display comes: its bar is made, on its rectangle.
     let mut output = OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT);
-    output.position = (WIDTH, 0);
+    output.position = Some((WIDTH, 0));
     session.compositor().add_output(&output).unwrap();
     until(&mut session, |session| session.shell_bars().len() == 2);
     let second = bar(&session, "HEADLESS-2")

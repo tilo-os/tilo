@@ -142,7 +142,7 @@ impl App {
         // A tooltip goes when the person acts, or when the pointer or the
         // keyboard leaves the window, whatever then takes the event: History's
         // controls and the close dialog take some before the widgets do.
-        if crate::widget::TooltipHost::dismissed_by(&event) && self.input.tooltip_host.dismiss() {
+        if crate::widget::TooltipHost::dismissed_by(&event) && self.input.tooltips.dismiss() {
             window.request_redraw();
         }
         if matches!(
@@ -659,7 +659,6 @@ impl App {
             app.publish_action_surface();
         }
         app.publish_continuation_metadata();
-        app.publish_playback_handoff();
         app.publish_search_index();
         phases.finish(InputPhase::Publication, publication);
 
@@ -706,7 +705,7 @@ impl App {
             let hit_test = phases.start();
             let desired = app.resolve_cursor(logical).unwrap_or(CursorIcon::Default);
             let target = app
-                .tooltip_placed_at(logical)
+                .tooltip_target_at(logical)
                 .map(|(rect, label, _)| (rect, label));
             phases.finish(InputPhase::HitTest, hit_test);
             if app.input.current_cursor != desired {
@@ -715,11 +714,7 @@ impl App {
             }
             // `on_pointer` keeps the dwell running over the same
             // region and restarts it on a new one.
-            if app
-                .input
-                .tooltip_host
-                .on_pointer(target, crate::time::now())
-            {
+            if app.input.tooltips.on_pointer(target, crate::time::now()) {
                 window.request_redraw();
             }
         }
@@ -786,11 +781,24 @@ impl App {
             .is_some_and(crate::wake::WakeScope::is_pending)
     }
 
+    /// Which surface this app is on the thread's motion clock: the frames it
+    /// asks for and draws are its own, so a desk drawing on the same thread
+    /// never meets a lock screen's wish for it. Its state box stays put for
+    /// as long as the app does.
+    pub(crate) fn motion_owner(&self) -> usize {
+        std::ptr::from_ref(&*self.state) as usize
+    }
+
     /// When the app next wants a frame with no input to bring one, for a
     /// host that schedules its own frames: now while something moves, else
     /// the earliest deadline its widgets set (a caret's blink, the clock's
     /// next minute) or a tooltip's dwell runs out.
     pub fn surface_next_frame(&self) -> Option<crate::time::Instant> {
+        crate::motion::own(self.motion_owner(), || self.surface_next_frame_own())
+    }
+
+    /// [`Self::surface_next_frame`], asked as this app.
+    fn surface_next_frame_own(&self) -> Option<crate::time::Instant> {
         let now = crate::time::now();
         let moving = self.root_widget.needs_animation_frame()
             || crate::motion::frames_wanted(now)
@@ -798,11 +806,17 @@ impl App {
                 .presence_ctx
                 .interaction_animation_demand(now, &self.theme);
         if moving {
-            return Some(now);
+            // Due this very frame: a host takes its own `now` before asking
+            // and draws when the answer is at or behind it, so the deadline
+            // sits just behind the clock instead of on it.
+            return Some(
+                now.checked_sub(crate::time::Duration::from_millis(1))
+                    .unwrap_or(now),
+            );
         }
         [
             self.root_widget.next_wake_deadline(),
-            self.input.tooltip_host.reveal_at(),
+            self.input.tooltips.reveal_at(),
         ]
         .into_iter()
         .flatten()

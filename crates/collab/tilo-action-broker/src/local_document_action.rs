@@ -57,7 +57,7 @@ impl Request {
             .as_object_mut()
             .ok_or("invalid local report")?
             .remove("invocation");
-        let digest = crate::collab_broker_capnp::admission_request_digest(&value);
+        let digest = crate::collab_app_broker::admission_request_digest(&value);
         let mut hash = blake3::Hasher::new_derive_key("tilo local document capture identity v1");
         hash.update(&digest);
         let bytes = hash

@@ -27,8 +27,6 @@ const CLIENT_FRAME_BUTTONS: &str = ":";
 /// Point size GNOME uses for its interface fonts; text scaling is published separately as
 /// `text-scaling-factor`, so the base stays fixed.
 const INTERFACE_FONT_POINTS: u32 = 11;
-/// Adwaita ships with every GTK install and is what GNOME applications expect by default.
-const CURSOR_THEME: &str = "Adwaita";
 
 /// GNOME's named accent colours with the sRGB values libadwaita renders for them.
 const GNOME_ACCENTS: [(&str, [u8; 3]); 9] = [
@@ -53,6 +51,8 @@ pub struct LegacyAppearance {
     pub mono_family: String,
     pub text_scale: f64,
     pub cursor_size: i32,
+    /// The pointer theme the session draws, as the person chose it.
+    pub cursor_theme: String,
 }
 
 impl LegacyAppearance {
@@ -95,6 +95,7 @@ impl LegacyAppearance {
                 1.0,
             ),
             cursor_size: i32::try_from(accessibility.effective_cursor_size()).unwrap_or(i32::MAX),
+            cursor_theme: accessibility.cursor_theme.as_str().to_owned(),
         }
     }
 
@@ -182,7 +183,7 @@ impl LegacyAppearance {
             (
                 GNOME_INTERFACE,
                 "cursor-theme",
-                PortalSetting::Text(CURSOR_THEME.into()),
+                PortalSetting::Text(self.cursor_theme.clone()),
             ),
             (
                 GNOME_INTERFACE,
@@ -370,11 +371,25 @@ mod tests {
         );
     }
 
+    /// The pointer theme the person chose is what the toolkits draw with; an
+    /// untouched machine reports the Adwaita the desktop ships with.
+    #[test]
+    fn the_pointer_theme_the_person_chose_is_the_one_published() {
+        let text = r#"{
+            "accessibility": {"cursor_theme": "Bibata-Modern-Ice"}
+        }"#;
+        let settings = LegacyAppearance::from_settings_text(text, false).portal_settings();
+        assert_eq!(
+            lookup(&settings, GNOME_INTERFACE, "cursor-theme"),
+            &PortalSetting::Text("Bibata-Modern-Ice".into())
+        );
+    }
+
     #[test]
     fn a_light_theme_with_accessibility_choices_reaches_every_namespace() {
         let text = r#"{
             "appearance": {"mode": "light", "reduce_motion": true, "text_scale": 1.25},
-            "accessibility": {"large_cursor": true, "cursor_size": 48}
+            "accessibility": {"large_cursor": true, "cursor_size": 48, "cursor_theme": "Bibata-Modern-Ice"}
         }"#;
         let appearance = LegacyAppearance::from_settings_text(text, false);
         let settings = appearance.portal_settings();
@@ -405,6 +420,11 @@ mod tests {
         assert_eq!(
             lookup(&settings, GNOME_INTERFACE, "cursor-size"),
             &PortalSetting::Int(48)
+        );
+        assert_eq!(
+            lookup(&settings, GNOME_INTERFACE, "cursor-theme"),
+            &PortalSetting::Text("Bibata-Modern-Ice".into()),
+            "the theme the person chose, beside its size"
         );
     }
 
@@ -482,6 +502,7 @@ mod tests {
         assert!(keyfile.contains("\nfont-name='O\\'Brien Sans 11'\n"));
         assert!(keyfile.contains("\ntext-scaling-factor=1.0\n"));
         assert!(keyfile.contains("\ncursor-size=24\n"));
+        assert!(keyfile.contains("\ncursor-theme='Adwaita'\n"));
         assert!(keyfile.contains("\nenable-animations=true\n"));
         assert!(
             !keyfile.contains("reduced-motion") && !keyfile.contains("contrast=uint32"),

@@ -84,7 +84,7 @@ fn local_projection_full_original_queue_repeated_expiry_stays_bounded_and_conver
             )
             .unwrap();
         let room = member.room().to_owned();
-        let authority = member.authority().clone();
+        let authority = member.owner_certificates()[0].clone();
         member = StatePeer::restore(
             &member.durable().unwrap(),
             &room,
@@ -191,7 +191,7 @@ fn local_projection_reserved_floor_survives_restore_and_next_original_cannot_reu
         panic!()
     };
     let room = member.room().to_owned();
-    let authority = member.authority().clone();
+    let authority = member.owner_certificates()[0].clone();
     member = StatePeer::restore(
         &member.durable().unwrap(),
         &room,
@@ -538,7 +538,7 @@ fn local_projection_revocation_preserves_historical_proof_and_blocks_send_and_re
             TransportOrigin::UntrustedPresence(governor_key.verifying_key().to_bytes()),
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                cert: Box::new(governor.authority().clone()),
+                cert: Box::new(governor.owner_certificates()[0].clone()),
                 revocations: vec![revocation],
             },
             later,

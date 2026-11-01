@@ -717,7 +717,10 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     #field: #krate::__private::serde_json::from_value(
                         #krate::__private::serde_json::Value::Object(::core::clone::Clone::clone(arguments)),
                     )
-                    .map_err(|error| ::std::string::ToString::to_string(&error))?,
+                    .map_err(|error| #krate::effect::EffectDecodeError::Argument {
+                        name: ::std::string::ToString::to_string(::std::stringify!(#field)),
+                        source: error,
+                    })?,
                 }),
             )
         } else if matches!(variant.fields, Fields::Unit) {
@@ -813,10 +816,12 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             fn decode(
                 id: &str,
                 #arguments_binding: &#krate::__private::serde_json::Map<::std::string::String, #krate::__private::serde_json::Value>,
-            ) -> ::core::result::Result<Self, ::std::string::String> {
+            ) -> ::core::result::Result<Self, #krate::effect::EffectDecodeError> {
                 match id {
                     #(#decodes)*
-                    other => ::core::result::Result::Err(::std::format!("there is no effect `{other}`")),
+                    other => ::core::result::Result::Err(
+                        #krate::effect::EffectDecodeError::Unknown(::std::string::ToString::to_string(other)),
+                    ),
                 }
             }
         }

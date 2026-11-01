@@ -345,9 +345,6 @@ impl App {
                     crate::widget::ControlBindingKind::SemanticAction(_) => {
                         ControlBindingStatus::SemanticAction
                     }
-                    crate::widget::ControlBindingKind::LegacyCallback => {
-                        ControlBindingStatus::ExplicitLegacy
-                    }
                 };
                 ControlBindingCoverage { binding, status }
             })
@@ -389,9 +386,15 @@ impl App {
         crate::collaboration::local_app_id()
     }
     fn require_bound_broker_route(
-        &self,
+        &mut self,
         binding: &crate::bound_dispatch::CallbackBinding,
     ) -> Result<(), tilo_actions::DoorError> {
+        // A surface's components are published to the desktop that placed
+        // it, and what that desktop asks comes back over the same socket:
+        // there is no document route for the binding to name.
+        if self.collaboration.manager.hosts_surface() {
+            return Ok(());
+        }
         if binding.matches_broker_route(self.bound_broker_route()) {
             return Ok(());
         }
@@ -619,12 +622,11 @@ impl App {
     }
 
     /// Withdraw everything this app published: a reset delta with nothing in it.
-    fn withdraw_action_surface(&mut self, app_id: String) -> bool {
+    fn withdraw_action_surface(&mut self) -> bool {
         let withdrawn = self
             .collaboration
             .manager
             .send(CollabRequest::PublishActionSurface {
-                app_id,
                 delta: crate::collaboration::SurfaceDelta {
                     reset: true,
                     ..crate::collaboration::SurfaceDelta::default()
@@ -672,7 +674,10 @@ impl App {
                 });
             return;
         }
-        if !self.published_action_history_ready() {
+        // A surface's actions belong to the desktop that placed it, not to a
+        // document: there is no history to custody them, and no route to
+        // witness.
+        if !self.collaboration.manager.hosts_surface() && !self.published_action_history_ready() {
             // An already accepted delivery lost its original owner-history
             // custody. Run no handler; disconnect retains admitted uncertainty.
             self.action_publication_failure = Some(
@@ -932,31 +937,8 @@ impl App {
             self.actions.resource_generation.get(),
         )
         .map_err(tilo_actions::DoorError::Failed)?;
-        let action = match request {
-            crate::undo::UndoRequest::Undo => "undo",
-            crate::undo::UndoRequest::Redo => "redo",
-        };
-        let mut candidates = snapshots
-            .iter()
-            .filter(|snapshot| snapshot.binding.same_component(binding))
-            .flat_map(|snapshot| snapshot.resources().iter())
-            .filter(|resource| {
-                resource.actions.iter().any(|spec| {
-                    spec.id == action && spec.kind == tilo_actions::OperationKind::Document
-                })
-            });
-        let resource = candidates
-            .next()
-            .ok_or_else(|| tilo_actions::DoorError::Unavailable {
-                code: "history_action_unavailable".into(),
-                reason: "the current document does not publish its history action".into(),
-            })?;
-        if candidates.next().is_some() {
-            return Err(tilo_actions::DoorError::Unavailable {
-                code: "history_action_ambiguous".into(),
-                reason: "the current document publishes more than one history target".into(),
-            });
-        }
+        let (resource, action) =
+            crate::bound_dispatch::history_action_resource(&snapshots, binding, request)?;
         let alias = self
             .actions
             .bound_publication

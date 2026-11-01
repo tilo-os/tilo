@@ -12,7 +12,7 @@
 //! stale; `BLESS=1` rewrites it.
 //!
 //! The program is a fixed run of loops: `plan-route` names the Chat message
-//! the event is about, then up to six passes each read the room's chat, ask
+//! the event is about, then up to six passes each read the workspace's chat, ask
 //! `plan-event` what to do and loop over its lists. A pass runs only while
 //! the previous plan asked for another, so a reply waits for its thread and
 //! a post for its author's avatar.
@@ -20,6 +20,7 @@
 use std::collections::BTreeMap;
 
 use chat::resource::ChatShell;
+use discord::bridge::{LEGACY_WORKSPACE_KIND, WORKSPACE_KIND};
 use discord::resource::Discord;
 use discord::{APP_ID, Guild, KIND};
 use serde_json::{Value, json};
@@ -36,6 +37,8 @@ const CHAT_APP: &str = "so.tilo.chat";
 const CHAT_KIND: &str = "chat.workspace";
 const MESSAGES_KIND: &str = "chat.messages";
 const PASSES: usize = 6;
+/// The workspace's governance verbs the bridge follows.
+const MEMBER_VERBS: [&str; 5] = ["add-member", "set-role", "remove-member", "ban", "unban"];
 
 fn input(name: &str) -> Binding {
     Binding::Input(name.into())
@@ -114,7 +117,7 @@ fn message(id: &str, action: &str, args: &[(&str, Binding)], shown: bool) -> Ste
 /// The framework's `op` field edit (`react` or `unreact`) of the reactions
 /// of the loop item's message, with its emoji, as the Discord member it
 /// shows. The path is spelled out so every check decides the step where the
-/// room does, at the message's reactions.
+/// workspace does, at the message's reactions.
 fn reaction(id: &str, op: &str) -> Step {
     let step = |kind: &str, binding: Binding| {
         Binding::Object(BTreeMap::from([(kind.to_owned(), binding)]))
@@ -198,7 +201,7 @@ fn pass() -> Vec<Step> {
     vec![
         invoke(
             "read",
-            ActionKey::new(CHAT_APP, CHAT_KIND, "read-room"),
+            ActionKey::new(CHAT_APP, CHAT_KIND, "read-workspace"),
             Selector::FirstOfKind(CHAT_KIND.into()),
             &[
                 ("message", plan_step("route", "/message")),
@@ -213,6 +216,8 @@ fn pass() -> Vec<Step> {
                 ("event", input("event")),
                 ("chat", plan_step("read", "")),
                 ("context", input("context")),
+                // The host tells a program the workspace's members and
+                // their roles under this input's name.
                 ("room", input("room")),
                 ("emoji", input("emoji")),
             ],
@@ -692,11 +697,19 @@ fn triggers() -> Vec<TriggerSpec> {
             fields: Vec::new(),
             by: ActorFilter::Anyone,
         },
+        // The workspace's own governance: who joined, whose role changed,
+        // who was removed or banned. Followed under the kind it is
+        // published as now and under the one it had before, so a host
+        // that still writes the old kind is bridged all the same.
         TriggerSpec::RecordChanged {
-            kind: "tilo.room".into(),
-            actions: ["add-member", "set-role", "remove-member", "ban", "unban"]
-                .map(str::to_owned)
-                .to_vec(),
+            kind: WORKSPACE_KIND.into(),
+            actions: MEMBER_VERBS.map(str::to_owned).to_vec(),
+            fields: Vec::new(),
+            by: ActorFilter::Anyone,
+        },
+        TriggerSpec::RecordChanged {
+            kind: LEGACY_WORKSPACE_KIND.into(),
+            actions: MEMBER_VERBS.map(str::to_owned).to_vec(),
             fields: Vec::new(),
             by: ActorFilter::Anyone,
         },
@@ -744,9 +757,9 @@ fn program() -> Shortcut {
             ActionParam::optional(
                 "room",
                 ParamType::Object,
-                "The room's members with their roles: members [{person, role}]",
+                "The workspace's members with their roles: members [{person, role}]",
             ),
-            // The host binds it on each firing from the room's workspace
+            // The host binds it on each firing from the workspace's own
             // emoji, keeping each picture where the worker can upload it.
             ActionParam::optional(
                 "emoji",
@@ -875,8 +888,8 @@ fn the_bridge_field_edits_only_chats_messages() {
         ["room:*/app:so.tilo.chat/kind:chat.messages/resource:*/**/action:field-edit"]
     );
     // Where the bot's own door offers and admits the field edit (the
-    // resource), and where the room decides a reaction (its field).
-    let messages = ui::permissions::TreePath::room("room")
+    // resource), and where the workspace decides a reaction (its field).
+    let messages = ui::permissions::TreePath::room("workspace")
         .app(CHAT_APP)
         .kind(MESSAGES_KIND)
         .resource("part-0");
@@ -969,7 +982,7 @@ fn blocking_a_persona_removes_what_was_mirrored_of_them() {
             guild: &state,
             chat: &json!({}),
             context: &discord::outbound::Context::default(),
-            room: &Value::Null,
+            workspace: &Value::Null,
             emoji: None,
         },
         &firing.inputs["event"],

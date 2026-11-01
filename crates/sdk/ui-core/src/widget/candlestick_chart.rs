@@ -5,22 +5,16 @@
     reason = "financial chart projection is bounded floating-point geometry"
 )]
 
-use crate::widget::ModelPath;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::WindowEvent;
 
-use crate::a11y::{AccessNode, AccessState, Role};
 use crate::color_compat::ColorCompat;
-use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::Widget;
-use crate::widget::chart_navigation::{
-    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
-};
+use crate::widget::chart_navigation::draw_title;
+use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
 pub struct Candle {
@@ -110,78 +104,63 @@ impl Default for CandlestickStyle {
     }
 }
 
-pub struct CandlestickChart {
+pub struct CandlestickMarks {
     candles: Vec<Candle>,
     style: CandlestickStyle,
-    title: String,
-    height: f32,
-    rect: Rect,
-    inspection: ChartInspection<usize>,
-    activated: Option<String>,
+    frame: PlotFrame<usize>,
 }
+
+/// Open/high/low/close candles over an optional volume panel.
+pub type CandlestickChart = Plot<CandlestickMarks>;
 
 impl CandlestickChart {
     pub fn new(candles: Vec<Candle>) -> Self {
-        Self {
+        Plot::from_marks(CandlestickMarks {
             candles,
             style: CandlestickStyle::default(),
-            title: String::new(),
-            height: 380.0,
-            rect: Rect::ZERO,
-            inspection: ChartInspection::default(),
-            activated: None,
-        }
+            frame: PlotFrame::new(380.0, 160.0),
+        })
     }
-
     #[must_use]
     pub fn with_style(mut self, style: CandlestickStyle) -> Self {
-        self.style = style;
+        self.marks.style = style;
         self
-    }
-    #[must_use]
-    pub fn titled(mut self, title: impl Into<String>) -> Self {
-        self.title = title.into();
-        self
-    }
-    #[must_use]
-    pub fn with_height(mut self, height: f32) -> Self {
-        self.height = height.max(160.0);
-        self
-    }
-    pub fn take_activated(&mut self) -> Option<String> {
-        self.activated.take()
     }
     pub fn inspect(&mut self, id: &str) -> bool {
-        self.inspection.hovered = self
+        let candle = self
+            .marks
             .candles
             .iter()
             .position(|candle| candle.id == id && candle.valid());
-        self.inspection.keyboard = self.inspection.hovered.is_some();
-        if let Some(index) = self.inspection.hovered
-            && let Some(candle) = self.candles.get(index)
-        {
-            self.inspection.pointer = Point::new(self.center_x(index), self.price_y(candle.close));
-        }
-        self.inspection.hovered.is_some()
+        self.inspect_item(candle)
     }
-    pub fn clear_inspection(&mut self) {
-        self.inspection.clear();
-    }
+}
 
+impl CandlestickMarks {
     fn price_rect(&self) -> Rect {
         let bottom = if self.style.show_volume { 88.0 } else { 38.0 };
         Rect::new(
-            self.rect.x0 + 60.0,
-            self.rect.y0 + if self.title.is_empty() { 18.0 } else { 48.0 },
-            self.rect.x1 - 14.0,
-            self.rect.y1 - bottom,
+            self.frame.rect.x0 + 60.0,
+            self.frame.rect.y0
+                + if self.frame.title.is_empty() {
+                    18.0
+                } else {
+                    48.0
+                },
+            self.frame.rect.x1 - 14.0,
+            self.frame.rect.y1 - bottom,
         )
     }
 
     fn volume_rect(&self) -> Option<Rect> {
         self.style.show_volume.then(|| {
             let price = self.price_rect();
-            Rect::new(price.x0, price.y1 + 16.0, price.x1, self.rect.y1 - 26.0)
+            Rect::new(
+                price.x0,
+                price.y1 + 16.0,
+                price.x1,
+                self.frame.rect.y1 - 26.0,
+            )
         })
     }
 
@@ -240,7 +219,7 @@ impl CandlestickChart {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(index) = self.inspection.hovered.filter(|_| self.style.tooltip) else {
+        let Some(index) = self.frame.inspection.hovered.filter(|_| self.style.tooltip) else {
             return;
         };
         let Some(candle) = self.candles.get(index) else {
@@ -285,13 +264,13 @@ impl CandlestickChart {
         };
         let (detail_width, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
         let width = f64::from(detail_width).max(236.0) + 28.0;
-        let mut x = self.inspection.pointer.x + 16.0;
-        let mut y = self.inspection.pointer.y + 16.0;
-        if x + width > self.rect.x1 {
-            x = self.inspection.pointer.x - width - 16.0;
+        let mut x = self.frame.inspection.pointer.x + 16.0;
+        let mut y = self.frame.inspection.pointer.y + 16.0;
+        if x + width > self.frame.rect.x1 {
+            x = self.frame.inspection.pointer.x - width - 16.0;
         }
-        if y + 72.0 > self.rect.y1 {
-            y = self.inspection.pointer.y - 82.0;
+        if y + 72.0 > self.frame.rect.y1 {
+            y = self.frame.inspection.pointer.y - 82.0;
         }
         let tooltip = Rect::new(x, y, x + width, y + 70.0);
         scene.fill(
@@ -322,46 +301,40 @@ impl CandlestickChart {
     }
 }
 
-impl InteractiveChart for CandlestickChart {
+impl PlotMarks for CandlestickMarks {
     type Hover = usize;
-    fn inspection(&mut self) -> &mut ChartInspection<usize> {
-        &mut self.inspection
+    type Activated = String;
+    const NAME: &'static str = "CandlestickChart";
+    const LABEL: &'static str = "Candlestick chart";
+
+    fn frame(&self) -> &PlotFrame<usize> {
+        &self.frame
     }
-    fn update_hover(&mut self) {
-        let inside = self.price_rect().contains(self.inspection.pointer)
-            || self
-                .volume_rect()
-                .is_some_and(|rect| rect.contains(self.inspection.pointer));
+    fn frame_mut(&mut self) -> &mut PlotFrame<usize> {
+        &mut self.frame
+    }
+    fn hit(&self, point: Point) -> Option<usize> {
+        let inside = self.price_rect().contains(point)
+            || self.volume_rect().is_some_and(|rect| rect.contains(point));
         if !inside {
-            self.inspection.hovered = None;
-            return;
+            return None;
         }
         let slot = self.slot_width();
-        self.inspection.hovered = self
-            .candles
+        self.candles
             .iter()
             .enumerate()
             .filter(|(_, candle)| candle.valid())
             .min_by(|(left, _), (right, _)| {
-                (self.center_x(*left) - self.inspection.pointer.x)
+                (self.center_x(*left) - point.x)
                     .abs()
-                    .total_cmp(&(self.center_x(*right) - self.inspection.pointer.x).abs())
+                    .total_cmp(&(self.center_x(*right) - point.x).abs())
             })
             .and_then(|(index, _)| {
-                ((self.center_x(index) - self.inspection.pointer.x).abs() <= slot / 2.0)
-                    .then_some(index)
-            });
+                ((self.center_x(index) - point.x).abs() <= slot / 2.0).then_some(index)
+            })
     }
-    fn activate_hovered(&mut self) -> bool {
-        let Some(candle) = self
-            .inspection
-            .hovered
-            .and_then(|index| self.candles.get(index))
-        else {
-            return false;
-        };
-        self.activated = Some(candle.id.clone());
-        true
+    fn activation(&self, &index: &usize) -> Option<String> {
+        Some(self.candles.get(index)?.id.clone())
     }
     fn keyboard_items(&self) -> Vec<usize> {
         let valid = self.candles.iter().map(Candle::valid);
@@ -374,54 +347,53 @@ impl InteractiveChart for CandlestickChart {
         let candle = self.candles.get(index)?;
         Some(Point::new(self.center_x(index), self.price_y(candle.close)))
     }
-}
-
-impl Widget for CandlestickChart {
-    crate::widget::chart_navigation::chart_leaf!();
+    fn items(&self) -> Vec<PlotItem<String>> {
+        self.candles
+            .iter()
+            .filter(|candle| candle.valid())
+            .map(|candle| {
+                PlotItem::new(
+                    &candle.id,
+                    &candle.label,
+                    format!(
+                        "Open {}, high {}, low {}, close {}. {}",
+                        candle.open, candle.high, candle.low, candle.close, candle.detail
+                    ),
+                    candle.id.clone(),
+                )
+            })
+            .collect()
+    }
 
     #[allow(
         clippy::too_many_lines,
         reason = "candles, volume, axes and tooltip form one plot pass"
     )]
-    fn draw(
+    fn paint(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
     ) {
         let price = self.price_rect();
         let (min, max) = self.price_range();
         self.follow_keyboard_anchor();
-        draw_title(scene, transform, tr, theme, self.rect, &self.title);
-        for value in crate::charts::nice_ticks(min, max, 5) {
-            let fraction = if max > min {
-                (max - value) / (max - min)
-            } else {
-                0.0
-            };
-            let y = price.y0 + price.height() * fraction;
-            if self.style.show_grid {
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    theme.tokens.colors.border_standard,
-                    None,
-                    &Line::new((price.x0, y), (price.x1, y)),
-                );
-            }
-            let label = format!("{:.*}", self.style.price_decimals, value);
-            let (width, _) = tr.measure_style(&label, None, &theme.text(TextRole::Caption));
-            tr.draw_style(
-                scene,
-                &label,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((price.x0 - f64::from(width) - 9.0, y - 6.0)),
-                None,
-                &theme.text(TextRole::Caption),
-            );
+        draw_title(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.frame.rect,
+            &self.frame.title,
+        );
+        crate::widget::plot::ValueAxis {
+            plot: price,
+            range: (min, max),
+            grid: self.style.show_grid,
+            label: |value| format!("{:.*}", self.style.price_decimals, value),
         }
+        .paint(scene, transform, tr, theme);
         let candle_width =
             (self.slot_width() * self.style.candle_width_fraction.clamp(0.1, 0.95)).max(2.0);
         let max_volume = self
@@ -461,7 +433,7 @@ impl Widget for CandlestickChart {
                 None,
                 &RoundedRect::from_rect(body, 2.0),
             );
-            if self.inspection.hovered == Some(index) {
+            if self.frame.inspection.hovered == Some(index) {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -494,65 +466,13 @@ impl Widget for CandlestickChart {
                 scene,
                 &candle.label,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((x - f64::from(width) / 2.0, self.rect.y1 - 18.0)),
+                transform
+                    * Affine::translate((x - f64::from(width) / 2.0, self.frame.rect.y1 - 18.0)),
                 Some(crate::num::f32_of_f64(self.slot_width().max(0.0))),
                 &theme.text(TextRole::Caption),
             );
         }
         self.draw_inspector(scene, transform, tr, theme);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        handle_chart_event(self, event, ctx);
-    }
-
-    fn accessibility(&self) -> Option<AccessNode> {
-        let children = self
-            .candles
-            .iter()
-            .filter(|candle| candle.valid())
-            .map(|candle| {
-                AccessNode::new(Role::Button)
-                    .with_action_target(&candle.id)
-                    .with_name(&candle.label)
-                    .with_description(format!(
-                        "Open {}, high {}, low {}, close {}. {}",
-                        candle.open, candle.high, candle.low, candle.close, candle.detail
-                    ))
-                    .with_state(AccessState::new().focusable(true))
-            })
-            .collect();
-        Some(
-            AccessNode::new(Role::Canvas)
-                .with_name(if self.title.is_empty() {
-                    "Candlestick chart"
-                } else {
-                    &self.title
-                })
-                .with_children(children),
-        )
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        crate::widget::chart_navigation::activate(
-            &mut self.activated,
-            action,
-            key_path,
-            self.candles.iter().map(|c| &c.id),
-        )
-    }
-
-    fn name(&self) -> &'static str {
-        "CandlestickChart"
-    }
-    fn is_focusable(&self) -> bool {
-        true
     }
 }
 
@@ -568,7 +488,7 @@ mod tests {
 
         fn flat_data_gets_a_safe_price_range() {
             let chart = CandlestickChart::new(vec![Candle::new("x", "X", 2.0, 2.0, 2.0, 2.0)]);
-            let (min, max) = chart.price_range();
+            let (min, max) = chart.marks.price_range();
             assert!(max > min);
         }
 

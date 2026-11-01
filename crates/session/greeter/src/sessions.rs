@@ -11,9 +11,16 @@
 //! someone logging in.
 //!
 //! This is a *minimal* desktop-entry parser: it reads `Name`, `Exec`,
-//! `TryExec`, `Hidden` and `NoDisplay` from the `[Desktop Entry]` group, and
-//! the session files we ship are simple (no `%`-field codes, no quoting). It
-//! ignores localized `Name[xx]=` keys and keeps the first unlocalized `Name=`.
+//! `TryExec`, `X-Tilo-Session-Default`, `Hidden` and `NoDisplay` from the
+//! `[Desktop Entry]` group, and the session files we ship are simple (no
+//! `%`-field codes, no quoting). It ignores localized `Name[xx]=` keys and
+//! keeps the first unlocalized `Name=`.
+//!
+//! `X-Tilo-Session-Default=true` is how an entry says it is the desktop this
+//! image is about, and the greeter offers it first; every other entry follows
+//! in name order. The shipped entries say so explicitly rather than relying on
+//! a name that happens to sort first, so renaming a session never changes what
+//! a person gets.
 //!
 //! Only real, launchable sessions count: an entry that hides itself, or whose
 //! `TryExec` program is not installed, is not offered. The greeter shows a
@@ -28,6 +35,9 @@ pub struct Session {
     pub name: String,
     /// `Exec=` split on whitespace — argv`0` is the program.
     pub argv: Vec<String>,
+    /// `X-Tilo-Session-Default=true`: the desktop this image is about, which
+    /// the picker offers first.
+    pub default: bool,
 }
 
 /// A parsed entry before the installed-program check.
@@ -40,6 +50,7 @@ fn parse_entry(contents: &str) -> Option<Entry> {
     let mut name: Option<String> = None;
     let mut exec: Option<String> = None;
     let mut try_exec: Option<String> = None;
+    let mut default = false;
     let mut in_entry = false;
 
     for raw in contents.lines() {
@@ -64,6 +75,7 @@ fn parse_entry(contents: &str) -> Option<Entry> {
             "Name" if name.is_none() => name = Some(value.to_string()),
             "Exec" if exec.is_none() => exec = Some(value.to_string()),
             "TryExec" if try_exec.is_none() => try_exec = Some(value.to_string()),
+            "X-Tilo-Session-Default" => default = value == "true",
             "Hidden" | "NoDisplay" if value == "true" => return None,
             // Localized `Name[de]=` etc. fall through (don't match `Name`).
             _ => {}
@@ -85,7 +97,11 @@ fn parse_entry(contents: &str) -> Option<Entry> {
     });
 
     Some(Entry {
-        session: Session { name, argv },
+        session: Session {
+            name,
+            argv,
+            default,
+        },
         try_exec: try_exec.filter(|program| !program.is_empty()),
     })
 }
@@ -108,7 +124,8 @@ fn installed(program: &str, path: Option<&std::ffi::OsStr>) -> bool {
 }
 
 /// Read every `*.desktop` entry in `dir`, parse it, and return the
-/// launchable sessions sorted by name for a stable order. Entries whose
+/// launchable sessions for the picker: the entry that declares itself the
+/// default first, then the rest by name for a stable order. Entries whose
 /// `TryExec` program is missing, and duplicates of a command already
 /// listed, are dropped. A missing or unreadable directory yields an empty
 /// vec (the caller surfaces that as "no session available").
@@ -147,7 +164,7 @@ fn read_sessions_with_path(dir: &Path, path: Option<&std::ffi::OsStr>) -> Vec<Se
             sessions.push(entry.session);
         }
     }
-    sessions.sort_by(|a, b| a.name.cmp(&b.name));
+    sessions.sort_by(|a, b| b.default.cmp(&a.default).then_with(|| a.name.cmp(&b.name)));
     sessions
 }
 
@@ -158,8 +175,8 @@ pub const DEFAULT_SESSIONS_DIR: &str = "/usr/share/wayland-sessions";
 mod tests {
     use super::*;
 
-    // The entry shipped in os/usr/share/wayland-sessions/.
-    const TILO: &str = "\
+    // The default entry shipped in os/usr/share/wayland-sessions/.
+    const NATIVE: &str = "\
 [Desktop Entry]
 Name=Tilo
 GenericName=Desktop
@@ -167,9 +184,23 @@ Comment=Collaborative spatial desktop environment
 Exec=/usr/libexec/tilo-session --backend drm
 Type=Application
 DesktopNames=tilo
+X-Tilo-Session-Default=true
 ";
 
-    // A second session someone installed alongside.
+    // The old shell entry shipped beside it, while the shell is still carried.
+    const OLD_SHELL: &str = "\
+[Desktop Entry]
+Name=Tilo (old shell)
+GenericName=Desktop
+Comment=Collaborative spatial desktop environment, previous session
+Exec=/usr/libexec/tilo-session --shell --backend drm
+Type=Application
+DesktopNames=tilo
+";
+
+    // A session someone installed alongside. Its name sorts after the
+    // default's, which is why the assertions below also carry a name that
+    // sorts before it.
     const WESTON: &str = "\
 [Desktop Entry]
 Name=Weston
@@ -181,17 +212,28 @@ Type=Application
     #[test]
     fn session_desktop_files_are_discovered_and_parsed() {
         {
-            let s = parse_desktop_entry(TILO).expect("should parse");
+            let s = parse_desktop_entry(NATIVE).expect("should parse");
             assert_eq!(s.name, "Tilo");
             assert_eq!(
                 s.argv,
                 vec!["/usr/libexec/tilo-session", "--backend", "drm"]
             );
+            assert!(s.default);
+        }
+        {
+            let s = parse_desktop_entry(OLD_SHELL).expect("should parse");
+            assert_eq!(s.name, "Tilo (old shell)");
+            assert_eq!(
+                s.argv,
+                vec!["/usr/libexec/tilo-session", "--shell", "--backend", "drm"]
+            );
+            assert!(!s.default);
         }
         {
             let s = parse_desktop_entry(WESTON).expect("should parse");
             assert_eq!(s.name, "Weston");
             assert_eq!(s.argv, vec!["/usr/bin/weston"]);
+            assert!(!s.default);
         }
         {
             let entry = "\
@@ -213,7 +255,7 @@ Type=Application
             let dir =
                 std::env::temp_dir().join(format!("tilo-greeter-sessions-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("a.desktop"), TILO).unwrap();
+            std::fs::write(dir.join("a.desktop"), NATIVE).unwrap();
             std::fs::write(dir.join("b.desktop"), WESTON).unwrap();
             // A non-.desktop file must be skipped.
             std::fs::write(dir.join("README.txt"), "ignore me").unwrap();
@@ -222,7 +264,8 @@ Type=Application
             let _ = std::fs::remove_dir_all(&dir);
 
             assert_eq!(sessions.len(), 2);
-            // Sorted by name: "Tilo" before "Weston".
+            // The default first, then the rest by name: "Tilo" before
+            // "Weston".
             assert_eq!(sessions[0].name, "Tilo");
             assert_eq!(sessions[1].name, "Weston");
         }
@@ -230,6 +273,42 @@ Type=Application
             let sessions = read_sessions(Path::new("/nonexistent/tilo/sessions/dir"));
             assert!(sessions.is_empty());
         }
+    }
+
+    #[test]
+    fn the_default_session_is_offered_first() {
+        // The two entries the image ships, in the directory the greeter reads:
+        // signing in without touching the picker starts the native session.
+        let dir = std::env::temp_dir().join(format!(
+            "tilo-greeter-default-session-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("shell.desktop"), OLD_SHELL).unwrap();
+        std::fs::write(dir.join("tilo-session.desktop"), NATIVE).unwrap();
+
+        let sessions = read_sessions(&dir);
+
+        assert_eq!(sessions.len(), 2, "{sessions:?}");
+        assert_eq!(sessions[0].name, "Tilo");
+        assert_eq!(
+            sessions[0].argv,
+            vec!["/usr/libexec/tilo-session", "--backend", "drm"]
+        );
+        assert_eq!(sessions[1].name, "Tilo (old shell)");
+
+        // Name order does not decide it: an entry whose name sorts first still
+        // comes after the one that declares itself the default, and those
+        // without the key keep their order among themselves.
+        std::fs::write(
+            dir.join("aardvark.desktop"),
+            "[Desktop Entry]\nName=Aardvark\nExec=/usr/bin/aardvark\nType=Application\n",
+        )
+        .unwrap();
+        let sessions = read_sessions(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Tilo", "Aardvark", "Tilo (old shell)"]);
     }
 
     #[test]
@@ -241,9 +320,9 @@ Type=Application
         std::fs::write(bin.join("weston"), "").unwrap();
         let sessions_dir = dir.join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();
-        std::fs::write(sessions_dir.join("tilo.desktop"), TILO).unwrap();
+        std::fs::write(sessions_dir.join("tilo.desktop"), NATIVE).unwrap();
         // The same command under another file is one session, not two.
-        std::fs::write(sessions_dir.join("tilo-copy.desktop"), TILO).unwrap();
+        std::fs::write(sessions_dir.join("tilo-copy.desktop"), NATIVE).unwrap();
         std::fs::write(
             sessions_dir.join("hidden.desktop"),
             "[Desktop Entry]\nName=Hidden\nExec=/usr/bin/hidden\nHidden=true\n",

@@ -271,8 +271,7 @@ fn contact_properties(contact: &Contact, actions: Option<&Actions<Contacts>>) ->
             }),
     );
     if let Some(birthday) = &contact.birthday {
-        let property =
-            Property::new("Birthday", birthday.pretty()).with_kind(TextKind::Numeric);
+        let property = Property::new("Birthday", birthday.pretty()).with_kind(TextKind::Numeric);
         facts.push(editable(property, actions, contact, Slot::Birthday));
     }
     let website = contact.website.trim();

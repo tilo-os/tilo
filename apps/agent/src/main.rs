@@ -33,7 +33,7 @@ struct Cli {
     name: String,
     /// Stable admitted agent id. Defaults to the name for existing launchers.
     agent_id: Option<String>,
-    /// Explicit typed Cap'n Proto broker socket for headless diagnostics.
+    /// Explicit typed collaboration socket for headless diagnostics.
     /// Normal launched sessions inherit `TILO_SVC_COLLAB_FD` instead.
     endpoint: Option<PathBuf>,
     /// Receive the runs of issues assigned to it, the agent's only mode; every

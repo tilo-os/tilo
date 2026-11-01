@@ -581,7 +581,7 @@ impl EditForm {
             _ => {}
         }
         let submit = std::rc::Rc::clone(shared);
-        input.on_submit(move |_| submit.borrow_mut().push(Request::AdvanceField(slot)))
+        input.on_submit_view(move |_| submit.borrow_mut().push(Request::AdvanceField(slot)))
     }
 
     fn type_menu(&self, target: TypeTarget) -> Option<Dropdown> {

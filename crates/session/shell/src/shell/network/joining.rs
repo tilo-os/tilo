@@ -36,11 +36,12 @@ impl ShellNetwork {
         let Some(local) = pending.target_workspace() else {
             return Ok(None);
         };
-        if pending.status() != tilo_joined_room::PendingEnrollmentStatus::Active {
+        if pending.status() != tilo_peer_state::owner::PendingEnrollmentStatus::Active {
             return Ok(None);
         }
-        let intent =
-            tilo_joined_room::VerifiedNativeEnrollmentIntent::restore(pending.intent_bytes())?;
+        let intent = tilo_peer_state::owner::VerifiedNativeEnrollmentIntent::restore(
+            pending.intent_bytes(),
+        )?;
         Ok(Some((
             local,
             tilo_peer_state::join::encode_invitation_text(

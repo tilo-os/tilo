@@ -1,12 +1,12 @@
-//! Bringing the notebooks of earlier Notes windows into the room's notebook.
+//! Bringing the notebooks of earlier Notes windows into the workspace's notebook.
 //!
 //! Notes used to keep a notebook per window: each window the launcher opened
 //! got a record of its own (`derived:default@tab:<window>`), so a new window
 //! showed an empty notebook and the pages written in another were reachable
 //! only by restoring that exact window. Notes now keeps one notebook per
-//! room ([`ResourceApp::ROOM_RECORD`](ui::framework::ResourceApp::ROOM_RECORD)).
-//! When a room's notebook is first created, its seed copies the notes, tags
-//! and pictures of every per-window notebook this device holds in the room
+//! workspace ([`ResourceApp::ROOM_RECORD`](ui::framework::ResourceApp::ROOM_RECORD)).
+//! When a workspace's notebook is first created, its seed copies the notes, tags
+//! and pictures of every per-window notebook this device holds in the workspace
 //! into it ([`adoption`]).
 //!
 //! The copy is deterministic: notebooks are taken in record id order, notes
@@ -17,7 +17,7 @@
 //!
 //! Why a copy and not [`RecordCheckout::formerly`](ui::record::RecordCheckout::formerly):
 //! a former identity hands the new record *one* earlier document, history
-//! and all, and claims it so no other successor gets it. A room usually has
+//! and all, and claims it so no other successor gets it. A workspace usually has
 //! several window notebooks with notes (each window someone wrote in), and
 //! independent Automerge documents cannot be merged into one: each created
 //! its own `pages` collection, so merging would keep one window's notes and
@@ -33,7 +33,7 @@ use crate::actions;
 use crate::model::{PageId, TagId};
 use crate::notebook::{self, Notebook};
 
-/// The seed that copies `records` (a room's window notebooks, as
+/// The seed that copies `records` (a workspace's window notebooks, as
 /// [`SeedCx::window_records`](ui::framework::SeedCx::window_records) reads
 /// them) into a new notebook: its notes with their trees, bodies and tags,
 /// then the pictures they show, which `content` (this device's content

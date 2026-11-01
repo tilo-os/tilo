@@ -4,6 +4,7 @@
 use ui::framework::testing::TestApp;
 
 pub const APPEARANCE: &str = "settings.appearance";
+pub const IDENTITY: &str = "settings.identity";
 pub const ACCESSIBILITY: &str = "settings.accessibility";
 pub const NOTIFICATIONS: &str = "settings.notifications";
 pub const POWER: &str = "settings.power";

@@ -95,6 +95,11 @@ pub struct PartTokens {
     /// The painter set's own parameters from the theme document, as its
     /// [`ParamSpec`]s declare them.
     pub params: Arc<[Param]>,
+    /// The theme's own surface shader (`crate::Brush::Shader`), empty for a
+    /// set that draws without one: the toolkit replaces the marker fill
+    /// with the evaluated shader. A theme's document is validated when it is
+    /// read, so a shader here has already been checked.
+    pub shader: crate::ShaderSource,
 }
 
 impl PartTokens {
@@ -128,6 +133,7 @@ impl Default for PartTokens {
             reduce_transparency: false,
             backdrop: false,
             params: Arc::new([]),
+            shader: crate::ShaderSource::default(),
         }
     }
 }

@@ -73,7 +73,7 @@ impl<E: Expectation> BrowserArtifact<E> {
         let name = path
             .file_name()
             .ok_or_else(|| io::Error::other("Browser data has no filename"))?;
-        let pin = crate::browser_selection::pinned::PinnedDirectory::open_absolute(parent)?;
+        let pin = crate::migration_directory::PinnedDirectory::open_absolute(parent)?;
         let facts = pin.file.metadata()?;
         if facts.uid() != caller || facts.mode() & 0o077 != 0 {
             return Err(io::Error::other(

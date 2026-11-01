@@ -16,6 +16,7 @@ use ui::widget::{
     TextInputKind, Tone,
 };
 
+use crate::actions::PasswordsEffect;
 use crate::vault::{
     Core, Dialog, DraftField, Request, Requests, Screen, Shared, identity, identity_label,
     is_favorite, kind_label, origin_label, secret_label,
@@ -36,6 +37,21 @@ const KINDS: [(SecretItemKind, &str); 5] = [
 fn ask(requests: &Requests, request: Request) -> impl FnMut() + 'static {
     let requests = Rc::clone(requests);
     move || requests.borrow_mut().push(request.clone())
+}
+
+/// `property` with its button running `effect`: the control asks the vault
+/// what the palette or an agent asking for the same effect asks. Without a
+/// published effect for it the property stays readable, with no button.
+fn bound_action(
+    property: Property,
+    icon: Icon,
+    label: &str,
+    effect: &PasswordsEffect,
+) -> Property {
+    match crate::bindings::effect(effect) {
+        Some(binding) => property.action_binding(icon, label, binding),
+        None => property,
+    }
 }
 
 fn button(
@@ -133,9 +149,7 @@ fn detail(core: &Core, requests: &Requests, actions_in_bar: bool) -> Element {
         children.push(Box::new(Banner::error(error.clone())));
     }
     children.extend(detail_header(item, requests, actions_in_bar));
-    children.push(Box::new(PropertyList::new(properties(
-        core, item, requests,
-    ))));
+    children.push(Box::new(PropertyList::new(properties(core, item))));
     page(children)
 }
 
@@ -224,26 +238,44 @@ fn secret_noun(kind: SecretItemKind) -> String {
     }
 }
 
-fn properties(core: &Core, item: &SecretItem, requests: &Requests) -> Vec<Property> {
+fn properties(core: &Core, item: &SecretItem) -> Vec<Property> {
     let mut rows = Vec::new();
     let who = identity(item);
     if !who.is_empty() && item.kind != SecretItemKind::SecureNote {
-        rows.push(
-            Property::new(identity_label(item.kind), who)
-                .with_kind(TextKind::Identifier)
-                .action(Icon::Copy, "Copy", ask(requests, Request::CopyIdentity)),
-        );
+        rows.push(bound_action(
+            Property::new(identity_label(item.kind), who).with_kind(TextKind::Identifier),
+            Icon::Copy,
+            "Copy",
+            &PasswordsEffect::CopyIdentity {
+                item: item.id.0.clone(),
+            },
+        ));
     }
     let label = secret_label(item.kind);
     let revealed = core.revealed_value(&item.id);
     let shown = revealed.is_some();
-    let (value, action) = match revealed {
-        Some(value) => (value, format!("Hide {}", secret_noun(item.kind))),
-        None => (MASK, format!("Show {}", secret_noun(item.kind))),
+    let (value, action, effect) = match revealed {
+        Some(value) => (
+            value,
+            format!("Hide {}", secret_noun(item.kind)),
+            PasswordsEffect::Hide {
+                item: item.id.0.clone(),
+            },
+        ),
+        None => (
+            MASK,
+            format!("Show {}", secret_noun(item.kind)),
+            PasswordsEffect::Reveal {
+                item: item.id.0.clone(),
+            },
+        ),
     };
-    let secret = Property::new(label, value)
-        .with_kind(TextKind::Secret)
-        .action(Icon::Eye, action, ask(requests, Request::RevealSecret));
+    let secret = bound_action(
+        Property::new(label, value).with_kind(TextKind::Secret),
+        Icon::Eye,
+        &action,
+        &effect,
+    );
     // A masked value reads as hidden, not as a row of dots.
     rows.push(if shown {
         secret
@@ -254,11 +286,15 @@ fn properties(core: &Core, item: &SecretItem, requests: &Requests) -> Vec<Proper
         && !item.origins.is_empty()
     {
         let origins = item.origins.iter().cloned().collect::<Vec<_>>().join("\n");
-        rows.push(
+        rows.push(bound_action(
             Property::new(origin_label(item.kind, item.origins.len()), origins)
-                .with_kind(TextKind::Identifier)
-                .action(Icon::Copy, "Copy", ask(requests, Request::CopyOrigins)),
-        );
+                .with_kind(TextKind::Identifier),
+            Icon::Copy,
+            "Copy",
+            &PasswordsEffect::CopyOrigins {
+                item: item.id.0.clone(),
+            },
+        ));
     }
     let tags: Vec<&str> = item
         .tags
@@ -307,7 +343,7 @@ fn input(shared: &Shared, field: DraftField, value: &str) -> TextInput {
     };
     input
         .with_initial_value(value)
-        .on_change(move |value| core.borrow_mut().set_draft(field, value))
+        .on_change_view(move |value| core.borrow_mut().set_draft(field, value))
 }
 
 fn field_label(kind: SecretItemKind, field: DraftField) -> &'static str {
@@ -353,7 +389,7 @@ fn editor(core: &Core, shared: &Shared, requests: &Requests) -> Element {
             &ui::LocalState::new(selected.to_owned()),
         )
         .with_id("passwords.kind")
-        .on_change(move |label| {
+        .on_change_view(move |label| {
             if let Some((kind, _)) = KINDS.iter().find(|(_, candidate)| *candidate == label) {
                 requests.borrow_mut().push(Request::SetKind(*kind));
             }
@@ -526,7 +562,7 @@ fn app_access(core: &Core, requests: &Requests) -> Element {
     let grants: Vec<Property> = core
         .app_grants
         .iter()
-        .map(|grant| grant_property(core, grant, requests))
+        .map(|grant| grant_property(core, grant))
         .collect();
     let count = grants.len();
     let mut sections: Vec<Element> = Vec::new();
@@ -584,7 +620,7 @@ fn app_access(core: &Core, requests: &Requests) -> Element {
     )
 }
 
-fn grant_property(core: &Core, grant: &accounts::CredentialGrant, requests: &Requests) -> Property {
+fn grant_property(core: &Core, grant: &accounts::CredentialGrant) -> Property {
     let item = core
         .item(&grant.item_id)
         .map_or_else(|| "A saved item".to_owned(), |item| item.title.clone());
@@ -618,10 +654,13 @@ fn grant_property(core: &Core, grant: &accounts::CredentialGrant, requests: &Req
         || format!("{relationship}\n{lifetime}"),
         |scope| format!("{relationship}\n{scope}\n{lifetime}"),
     );
-    Property::new(crate::vault::app_name(&grant.app_id), value).action(
+    bound_action(
+        Property::new(crate::vault::app_name(&grant.app_id), value),
         Icon::Ban,
-        crate::CATALOG.t("passwords-revoke-access"),
-        ask(requests, Request::Revoke(grant.id().into())),
+        &crate::CATALOG.t("passwords-revoke-access"),
+        &PasswordsEffect::RevokeAccess {
+            grant: grant.id().into(),
+        },
     )
 }
 
@@ -748,7 +787,7 @@ fn secret_input(shared: &Shared, confirmation: bool, label: &str, error: Option<
         })
         .with_secret(true)
         .with_initial_value(&value)
-        .on_change(move |value| {
+        .on_change_view(move |value| {
             let mut core = core.borrow_mut();
             let before = core.backup_confirmation_problem();
             let slot = if confirmation {

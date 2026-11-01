@@ -25,7 +25,7 @@ impl Fixture {
         let (joined, directory) = Joined::test_hosting(room).await;
         let joined =
             Arc::try_unwrap(joined).unwrap_or_else(|_| panic!("fixture holds no sessions"));
-        let actor = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        let actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
             joined.custody.device_cert.user_public_key,
         );
         let admit = || {
@@ -125,7 +125,7 @@ impl Fixture {
 }
 
 fn actor(joined: &Joined) -> String {
-    tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+    tilo_action_broker::collab_app_broker::principal_id_for_root(
         joined.custody.device_cert.user_public_key,
     )
 }

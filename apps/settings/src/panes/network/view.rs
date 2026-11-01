@@ -19,8 +19,8 @@ use ui::widget::{
 
 use super::{
     HOTSPOT_BANDS, NetworkEffect, NetworkModel, PAGE_ADVANCED, PAGE_ALL, PAGE_HOTSPOT, PAGE_KNOWN,
-    PAGE_MOBILE, PAGE_WIFI, area, band_shown, connectivity_shown, mobile, network_detail, order,
-    profile_label, wake_description,
+    PAGE_MOBILE, PAGE_USAGE, PAGE_WIFI, PAGE_WIRED, area, band_shown, connectivity_shown, mobile,
+    network_detail, order, profile_label, wake_description,
 };
 use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
@@ -182,6 +182,8 @@ impl Page<'_> {
             Some(PAGE_KNOWN) => self.known_page(),
             Some(PAGE_HOTSPOT) => vec![self.hotspot_card()],
             Some(PAGE_ADVANCED) => self.advanced_page(),
+            Some(PAGE_WIRED) => self.wired_page(),
+            Some(PAGE_USAGE) => self.usage_page(),
             Some(PAGE_MOBILE) => self.mobile_page().unwrap_or_else(|| self.first_page()),
             Some(key) => match key.strip_prefix(PAGE_WIFI) {
                 Some(ssid) => self.network_page(ssid),
@@ -276,17 +278,15 @@ impl Page<'_> {
             .filter(|sections| !sections.is_empty())
     }
 
-    /// The first page: Wi-Fi and mobile data, the controls, and the wired
-    /// connection.
+    /// The first page: each connection (Wi-Fi, mobile data, the cable),
+    /// then the controls. A connection's details are its own page.
     fn first_page(&self) -> Vec<SettingsSection> {
-        // The controls follow the radios at once, so they stay in view on a
-        // normal window; the wired connection comes after them.
         let mut cards = vec![self.wifi_card()];
         cards.extend(self.mobile_card().unwrap_or_default());
-        cards.push(self.controls_card());
         if self.wired.device.is_some() || self.read_errors.wired.is_some() {
             cards.push(self.wired_card());
         }
+        cards.push(self.controls_card());
         cards
     }
 
@@ -457,28 +457,18 @@ impl Page<'_> {
         })
     }
 
-    /// The controls under the Wi-Fi list, each a row of one list: the known
-    /// networks, VPN, the hotspot, airplane mode and the
-    /// advanced settings. A row that opens a page has a chevron; a row
-    /// with a switch also opens its page.
+    /// The controls under the connections, each a row of one list: VPN,
+    /// the hotspot, airplane mode, data usage and the advanced settings. A
+    /// row that opens a page has a chevron; a row with a switch also opens
+    /// its page.
     fn controls_card(&self) -> SettingsSection {
-        let saved = self.saved_wifi().count();
-        let mut lines: Vec<El> = vec![
-            Box::new(self.drill_row(
-                "settings.network.known",
-                Icon::History,
-                &t_args("net-known-count", &[("count", saved.into())]),
-                None,
-                NetworkEffect::ShowKnownNetworks,
-            )),
-            Box::new(self.drill_row(
-                "settings.network.vpn",
-                Icon::Shield,
-                &t("net-vpn"),
-                Some(self.vpn_summary()),
-                super::vpn::VpnEffect::ShowVpns,
-            )),
-        ];
+        let mut lines: Vec<El> = vec![Box::new(self.drill_row(
+            "settings.network.vpn",
+            Icon::Shield,
+            &t("net-vpn"),
+            Some(self.vpn_summary()),
+            super::vpn::VpnEffect::ShowVpns,
+        ))];
         if !self.wifi_absent() {
             lines.push(Box::new(
                 self.drill_row(
@@ -488,11 +478,6 @@ impl Page<'_> {
                     None,
                     NetworkEffect::ShowHotspotSetup,
                 )
-                .secondary(t(if self.radios.hotspot_active {
-                    "net-hotspot-active"
-                } else {
-                    "net-hotspot-off"
-                }))
                 .trailing(Box::new(self.switch_control(
                     "network.hotspot",
                     self.radios.hotspot_active,
@@ -503,7 +488,6 @@ impl Page<'_> {
         lines.push(Box::new(
             ListRow::new("settings.network.airplane", t("net-airplane"))
                 .icon(Icon::Plane)
-                .secondary(t("net-airplane-caption"))
                 .trailing(Box::new({
                     let toggle = self.switch_control(
                         "network.airplane",
@@ -518,6 +502,13 @@ impl Page<'_> {
                     }
                 })),
         ));
+        lines.push(Box::new(self.drill_row(
+            "settings.network.usage",
+            Icon::BarChart,
+            &t("net-usage"),
+            self.usage_summary(),
+            NetworkEffect::ShowDataUsage,
+        )));
         lines.push(Box::new(self.drill_row(
             "settings.network.advanced",
             Icon::Settings2,
@@ -536,8 +527,9 @@ impl Page<'_> {
         provider_settings_ui::widgets::untitled(rows(content))
     }
 
-    /// Wired card. `NetworkManager` applies the switch to this interface
-    /// only; Wi-Fi and VPN stay untouched.
+    /// The wired connection on the first page: its switch (which
+    /// `NetworkManager` applies to this interface only) and how it stands;
+    /// the row opens its page.
     fn wired_card(&self) -> SettingsSection {
         if let Some(error) = &self.read_errors.wired {
             return card(
@@ -548,19 +540,99 @@ impl Page<'_> {
                 )))]),
             );
         }
-        if self.wired.device.is_some() {
-            card_with_action(
-                &t("net-wired"),
-                Box::new(self.switch_control(
-                    "network.wired",
-                    self.wired.connected,
-                    NetworkEffect::SET_WIRED,
-                )),
-                rows(self.wired_rows()),
-            )
-        } else {
-            card(&t("net-wired"), rows(self.wired_rows()))
+        let status = self.drill_row(
+            "settings.network.wired",
+            Icon::EthernetPort,
+            &t("net-ethernet"),
+            Some(self.wired_status()),
+            NetworkEffect::ShowWired,
+        );
+        let content = vec![row(Box::new(status))];
+        card_with_action(
+            &t("net-wired"),
+            Box::new(self.switch_control(
+                "network.wired",
+                self.wired.connected,
+                NetworkEffect::SET_WIRED,
+            )),
+            rows(content),
+        )
+    }
+
+    /// How the cable stands, in a few words.
+    fn wired_status(&self) -> String {
+        if !self.wired.connected {
+            return t("net-not-connected");
         }
+        match &self.wired.speed {
+            Some(s) => t_args("net-connected-speed", &[("speed", s.as_str().into())]),
+            None => t("net-connected"),
+        }
+    }
+
+    /// The wired connection's page: how it stands, then its profile's
+    /// addresses and waking this machine over it.
+    fn wired_page(&self) -> Vec<SettingsSection> {
+        let mut status = vec![value_row(&t("net-ethernet"), &self.wired_status())];
+        if self.wired.connected {
+            // On the cable, the network's sign-in page is this page's to open.
+            if !self
+                .networks
+                .iter()
+                .any(|net| net.connected && self.wifi_enabled)
+            {
+                status.extend(self.portal_row());
+            }
+            if let Some(dev) = &self.wired.device {
+                status.push(value_row(&t("net-interface"), dev));
+            }
+            status.push(value_row(
+                &t("net-ipv4"),
+                self.wired.ipv4.as_deref().unwrap_or("—"),
+            ));
+        } else {
+            status.push(note(&t("net-wired-empty")));
+        }
+        let wired_profiles: Vec<&SavedNetworkProfile> = self
+            .profiles
+            .iter()
+            .filter(|p| p.kind == "802-3-ethernet")
+            .collect();
+        let profile = Self::selected(&wired_profiles, &self.wired_profile);
+        if let Some(usage) =
+            profile.and_then(|profile| self.usage_row(&format!("wired:{}", profile.uuid)))
+        {
+            status.insert(1, usage);
+        }
+        let mut cards = vec![card_with_action(
+            &t("net-status"),
+            Box::new(self.switch_control(
+                "network.wired",
+                self.wired.connected,
+                NetworkEffect::SET_WIRED,
+            )),
+            rows(status),
+        )];
+        let Some(profile) = profile else {
+            return cards;
+        };
+        let mut settings = Vec::new();
+        if wired_profiles.len() > 1 {
+            settings.push(setting_row(
+                &t("net-edit-profile"),
+                Box::new(
+                    Dropdown::from_state(
+                        wired_profiles.iter().map(|p| profile_label(p)).collect(),
+                        &self.wired_profile,
+                    )
+                    .with_placeholder(&profile_label(profile)),
+                ),
+            ));
+        }
+        settings.extend(self.ipv4_rows(profile, "settings.network.ipv4"));
+        settings.extend(self.wake_rows(profile));
+        cards.push(card(&t("net-settings"), rows(settings)));
+        cards
     }
 
     fn selected<'a>(
@@ -573,61 +645,6 @@ impl Page<'_> {
             .find(|p| profile_label(p) == label)
             .or_else(|| profiles.first())
             .copied()
-    }
-
-    /// Rows for the Wired card: the link, and the selected wired profile's
-    /// IPv4 settings.
-    fn wired_rows(&self) -> Vec<Item> {
-        if !self.wired.connected {
-            return vec![
-                value_row(&t("net-ethernet"), &t("net-not-connected")),
-                note(&t("net-wired-empty")),
-            ];
-        }
-        let mut out = Vec::new();
-        let status = match &self.wired.speed {
-            Some(s) => t_args("net-connected-speed", &[("speed", s.as_str().into())]),
-            None => t("net-connected"),
-        };
-        out.push(value_row(&t("net-ethernet"), &status));
-        // On the cable, the network's sign-in page is this card's to open.
-        if !self
-            .networks
-            .iter()
-            .any(|net| net.connected && self.wifi_enabled)
-        {
-            out.extend(self.portal_row());
-        }
-        if let Some(dev) = &self.wired.device {
-            out.push(value_row(&t("net-interface"), dev));
-        }
-        out.push(value_row(
-            &t("net-ipv4"),
-            self.wired.ipv4.as_deref().unwrap_or("—"),
-        ));
-        let wired_profiles: Vec<&SavedNetworkProfile> = self
-            .profiles
-            .iter()
-            .filter(|p| p.kind == "802-3-ethernet")
-            .collect();
-        let Some(profile) = Self::selected(&wired_profiles, &self.wired_profile) else {
-            return out;
-        };
-        if wired_profiles.len() > 1 {
-            out.push(setting_row(
-                &t("net-edit-profile"),
-                Box::new(
-                    Dropdown::from_state(
-                        wired_profiles.iter().map(|p| profile_label(p)).collect(),
-                        &self.wired_profile,
-                    )
-                    .with_placeholder(&profile_label(profile)),
-                ),
-            ));
-        }
-        out.extend(self.ipv4_rows(profile, "settings.network.ipv4"));
-        out.extend(self.wake_rows(profile));
-        out
     }
 
     /// The IPv4 form of `profile` and its Apply.
@@ -743,28 +760,20 @@ impl Page<'_> {
         )
     }
 
-    /// The hotspot's on/off state, or why the radios could not be read.
-    fn hotspot_status_row(&self) -> Item {
-        let status = t("net-status");
-        if let Some(error) = &self.read_errors.radios {
-            return error_row(
-                &status,
-                &t_args("net-radios-error", &[("error", error.as_str().into())]),
-            );
-        }
-        let value = if self.radios.hotspot_active {
-            t("net-hotspot-active")
-        } else {
-            t("net-hotspot-off")
-        };
-        value_row(&status, &value)
+    /// Why the radios, and so the hotspot's state, could not be read.
+    fn hotspot_error_row(&self) -> Option<Item> {
+        let error = self.read_errors.radios.as_ref()?;
+        Some(row(error_caption(&t_args(
+            "net-radios-error",
+            &[("error", error.as_str().into())],
+        ))))
     }
 
     /// The hotspot's page: its switch, name, password and band, the QR
     /// code that shares it and (while it runs) the devices on it.
     fn hotspot_card(&self) -> SettingsSection {
-        let mut hotspot_rows: Vec<Item> = vec![
-            self.hotspot_status_row(),
+        let mut hotspot_rows: Vec<Item> = self.hotspot_error_row().into_iter().collect();
+        hotspot_rows.extend([
             field_row(
                 &t("net-hotspot-name"),
                 Box::new(
@@ -812,7 +821,7 @@ impl Page<'_> {
                     )))
                     .push(Box::new(Spacer::new())),
             )),
-        ];
+        ]);
         if self.hotspot_code_shown
             && let Ok(payload) = self
                 .hotspot(None, None, None)

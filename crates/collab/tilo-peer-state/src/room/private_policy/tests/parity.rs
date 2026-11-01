@@ -58,10 +58,10 @@ fn original(doc: &AutoCommit, peer: &crate::StatePeer) -> Result<(String, Vec<u6
     }
     let owner = owners[0].0.as_str().ok_or("invalid canonical owner")?;
     let expected = collab_types::caps::Principal::person_from_key(
-        collab_types::Ed25519PublicKey::from_bytes(peer.authority().user_public_key),
+        collab_types::Ed25519PublicKey::from_bytes(peer.owner()),
     );
     if owner != expected.id() {
-        return Err("owner differs from pinned authority root".into());
+        return Err("owner differs from the room's owner root".into());
     }
     let mut grants = BTreeMap::new();
     let mut members = BTreeMap::new();
@@ -128,7 +128,7 @@ fn original(doc: &AutoCommit, peer: &crate::StatePeer) -> Result<(String, Vec<u6
     let media = (tag, fingerprints.into_iter().collect::<Vec<_>>());
     let bytes = postcard::to_allocvec(&(
         peer.room(),
-        peer.authority(),
+        &peer.owner(),
         owner.to_owned(),
         members,
         grants,
@@ -158,7 +158,7 @@ fn compare(doc: &AutoCommit, peer: &crate::StatePeer) -> Result<(String, Vec<u64
         &LegacyRead(doc),
         Metadata {
             room: peer.room(),
-            authority: peer.authority(),
+            owner: &peer.owner(),
             certificates: certificates.iter(),
             revocations: revocations.iter(),
         },

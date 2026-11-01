@@ -6,7 +6,7 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Rect, Stroke};
+use vello::kurbo::{Affine, BezPath, Rect, Shape, Stroke};
 use vello::peniko::{
     BlendMode, Brush as VelloBrush, ColorStop, Extend, Fill, Gradient, ImageBrush, ImageData,
     ImageQuality,
@@ -204,6 +204,9 @@ fn tokens_hash(tokens: &PartTokens) -> u64 {
         param.name.hash(&mut hasher);
         param.value.to_bits().hash(&mut hasher);
     }
+    // A theme's surface shader draws the part: another program is another
+    // picture, whatever else is the same.
+    tokens.shader.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -240,7 +243,11 @@ fn encode(
                         out,
                         transform,
                         path,
-                        (*blur, lens.refraction, f64::from(tokens.radius)),
+                        crate::backdrop::Sample {
+                            blur: *blur,
+                            lens: *lens,
+                            radius: f64::from(tokens.radius),
+                        },
                         theme,
                         tokens.fill,
                     );
@@ -252,6 +259,23 @@ fn encode(
                 if shown {
                     crate::backdrop::hold_in_band(out, transform, path, theme, tokens.fill);
                 }
+            }
+            Op::Fill {
+                path,
+                brush: Brush::Shader { source, fallback },
+                brush_transform,
+            } => {
+                let image = super::shader::evaluate(source, path.bounding_box(), tokens, *fallback);
+                let brush = ImageBrush::new(image)
+                    .with_extend(Extend::Pad)
+                    .with_quality(ImageQuality::Medium);
+                out.fill(
+                    Fill::NonZero,
+                    transform,
+                    &brush,
+                    Some(*brush_transform),
+                    path,
+                );
             }
             Op::Fill {
                 path,
@@ -353,7 +377,9 @@ fn vello_brush(brush: &Brush) -> (VelloBrush, Affine) {
                 Affine::scale(f64::from(scale.max(f32::MIN_POSITIVE))),
             )
         }
-        Brush::Backdrop { fallback, .. } => (VelloBrush::Solid(*fallback), Affine::IDENTITY),
+        Brush::Backdrop { fallback, .. } | Brush::Shader { fallback, .. } => {
+            (VelloBrush::Solid(*fallback), Affine::IDENTITY)
+        }
     }
 }
 

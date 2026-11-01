@@ -19,7 +19,7 @@ fn on_touch_a_step_done_is_a_fingers_target_and_a_pointers_by_mouse() {
             "Send".to_owned(),
         ])
         .current(2usize)
-        .on_station(|_| {})
+        .on_station_view(|_| {})
     };
     for (input, want) in [
         (InteractionEnvironment::default(), false),

@@ -147,6 +147,12 @@ impl BoolControl {
             return Ok(None);
         }
         self.is_checked = set.value;
+        // A control following a process-local value takes the set value into
+        // it, as a flip did before the press was published; a binding into a
+        // shared model ignores it and the app's own edit lands.
+        if let Some(binding) = &mut self.binding {
+            binding.publish(&set.value);
+        }
         if let Some(handler) = self.on_change.as_mut() {
             handler(set.value);
         }

@@ -1,6 +1,7 @@
+use crate::BrokerError;
 // Signed private-worker RPC fixtures shared by the owner, lazy, reliable and
 // durable invocation tests: a revocable current-host policy, real directory
-// endpoints and actual Unix-socket Cap'n Proto connections.
+// endpoints and actual Unix-socket collaboration wire connections.
 use super::*;
 use std::sync::atomic::AtomicUsize;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
@@ -79,40 +80,44 @@ pub struct HeldHostDirectory {
     pub row: runtime_collab::ActionDirectoryRow,
 }
 
-impl action_directory::Server for HeldHostDirectory {
+impl wire::DirectorySource for HeldHostDirectory {
     fn query(
-        self: Rc<Self>,
-        _params: action_directory::QueryParams,
-        mut results: action_directory::QueryResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            self.entered.send("query").unwrap();
-            self.release.notified().await;
-            runtime_collab::write_action_directory_page(
-                results.get().init_page(),
-                &runtime_collab::ActionDirectoryPage {
-                    revision: "directory-r1".into(),
-                    rows: vec![self.row.clone()],
-                    next_cursor: vec![],
-                    exhausted: true,
-                    stale_cursor: false,
-                    budget_exhausted: false,
-                },
-            )
+        &self,
+        _query: runtime_collab::ActionDirectoryQuery,
+        _max_bytes: u32,
+    ) -> wire::Asked<runtime_collab::ActionDirectoryPage> {
+        let entered = self.entered.clone();
+        let release = Rc::clone(&self.release);
+        let row = self.row.clone();
+        Box::pin(async move {
+            entered.send("query").unwrap();
+            release.notified().await;
+            Ok(runtime_collab::ActionDirectoryPage {
+                revision: "directory-r1".into(),
+                rows: vec![row],
+                next_cursor: vec![],
+                exhausted: true,
+                stale_cursor: false,
+                budget_exhausted: false,
+            })
         })
     }
     fn resolve(
-        self: Rc<Self>,
-        _params: action_directory::ResolveParams,
-        mut results: action_directory::ResolveResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            self.entered.send("resolve").unwrap();
-            self.release.notified().await;
-            runtime_collab::write_action_directory_row(
-                results.get().init_resolution().init_found(),
-                &self.row,
-            )
+        &self,
+        _target: (&str, &str, &str),
+        _local_document: bool,
+        _max_bytes: u32,
+    ) -> wire::Asked<runtime_collab::ActionDirectoryResolution> {
+        let entered = self.entered.clone();
+        let release = Rc::clone(&self.release);
+        let row = self.row.clone();
+        Box::pin(async move {
+            entered.send("resolve").unwrap();
+            release.notified().await;
+            Ok(runtime_collab::ActionDirectoryResolution::Found {
+                row: Box::new(row),
+                revision: None,
+            })
         })
     }
 }
@@ -122,28 +127,29 @@ pub struct DurableDirectory {
     pub state: Rc<RefCell<TestActionDirectory>>,
 }
 
-impl action_directory::Server for DurableDirectory {
+impl wire::DirectorySource for DurableDirectory {
+    fn query(
+        &self,
+        _query: runtime_collab::ActionDirectoryQuery,
+        _max_bytes: u32,
+    ) -> wire::Asked<runtime_collab::ActionDirectoryPage> {
+        Box::pin(std::future::ready(Err(
+            "this directory only resolves".into()
+        )))
+    }
+
     fn resolve(
-        self: Rc<Self>,
-        params: action_directory::ResolveParams,
-        mut results: action_directory::ResolveResults,
-    ) -> Promise<(), capnp::Error> {
-        let request = match params.get() {
-            Ok(request) => request,
-            Err(error) => return Promise::err(error),
-        };
-        let revision = match request
-            .get_revision()
-            .and_then(|text| text.to_str().map_err(capnp::Error::from))
-        {
-            Ok(value) => value,
-            Err(error) => return Promise::err(error),
-        };
+        &self,
+        (revision, _, _): (&str, &str, &str),
+        _local_document: bool,
+        _max_bytes: u32,
+    ) -> wire::Asked<runtime_collab::ActionDirectoryResolution> {
         let mut state = self.state.borrow_mut();
         state.resolve_count += 1;
         if revision != state.revision {
-            results.get().init_resolution().set_stale_revision(());
-            return Promise::ok(());
+            return Box::pin(std::future::ready(Ok(
+                runtime_collab::ActionDirectoryResolution::StaleRevision,
+            )));
         }
         let mut row = state.row();
         let contract = tilo_actions::ActionContract {
@@ -158,12 +164,12 @@ impl action_directory::Server for DurableDirectory {
         let visibility = row.visibility.as_mut().unwrap();
         visibility.contract = contract;
         visibility.governing_kind = Some(descriptor.operation_kind);
-        runtime_collab::write_action_directory_row(
-            results.get().init_resolution().init_found(),
-            &row,
-        )
-        .expect("test directory row encodes");
-        Promise::ok(())
+        Box::pin(std::future::ready(Ok(
+            runtime_collab::ActionDirectoryResolution::Found {
+                row: Box::new(row),
+                revision: None,
+            },
+        )))
     }
 }
 
@@ -180,10 +186,13 @@ pub fn directory_state(revision: &str) -> Rc<RefCell<TestActionDirectory>> {
     }))
 }
 
-pub fn directory_server(state: &Rc<RefCell<TestActionDirectory>>) -> action_directory::Client {
-    capnp_rpc::new_client(TestActionDirectoryServer {
+/// The app answering for the directory `state` describes.
+pub fn directory_server(
+    state: &Rc<RefCell<TestActionDirectory>>,
+) -> runtime_collab::wire::client::Answerer {
+    wire_answerer(Rc::new(TestActionDirectoryServer {
         state: state.clone(),
-    })
+    }))
 }
 
 pub fn empty_directories() -> Rc<LocalActionDirectoryRegistry> {
@@ -207,7 +216,7 @@ pub fn presentation(room: &str, cert: &DeviceCert, key: &SigningKey) -> Vec<u8> 
 
 /// Drive the broker side of `server` and bootstrap a real RPC client over `client`.
 pub fn rpc_pair(
-    state: Arc<CapnpBrokerState>,
+    state: Arc<AppBrokerState>,
     peer: u64,
     server: std::os::unix::net::UnixStream,
     client: std::os::unix::net::UnixStream,
@@ -215,7 +224,7 @@ pub fn rpc_pair(
     directories: Rc<LocalActionDirectoryRegistry>,
 ) -> (
     runtime_collab::CollabClient,
-    tokio::task::JoinHandle<Result<(), capnp::Error>>,
+    tokio::task::JoinHandle<Result<(), BrokerError>>,
     tokio::task::JoinHandle<()>,
 ) {
     server.set_nonblocking(true).unwrap();
@@ -230,28 +239,15 @@ pub fn rpc_pair(
     let (r, w) = tokio::net::UnixStream::from_std(client)
         .unwrap()
         .into_split();
-    let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(r.compat()),
-        futures::io::BufWriter::new(w.compat_write()),
-        rpc_twoparty_capnp::Side::Client,
-        capnp::message::ReaderOptions::default(),
-    ));
-    let mut rpc = RpcSystem::new(network, None);
-    let client = rpc.bootstrap(rpc_twoparty_capnp::Side::Server);
-    let client_task = tokio::task::spawn_local(async move {
-        let _ = rpc.await;
-    });
-    (
-        runtime_collab::CollabClient::from_raw(client),
-        server_task,
-        client_task,
-    )
+    let (client, carry) = runtime_collab::CollabClient::over(r, w);
+    let client_task = tokio::task::spawn_local(carry);
+    (client, server_task, client_task)
 }
 
 /// A joined channel whose connection tasks stop when it is dropped.
 pub struct Connection {
     pub handle: runtime_collab::ChannelHandle,
-    pub server: tokio::task::JoinHandle<Result<(), capnp::Error>>,
+    pub server: tokio::task::JoinHandle<Result<(), BrokerError>>,
     pub client: tokio::task::JoinHandle<()>,
 }
 
@@ -265,7 +261,7 @@ impl Drop for Connection {
 /// Register a private host worker for `route`, connect it as `peer` and join
 /// with the signed presentation. Returns the connection and its lease authorizer.
 pub async fn join_worker(
-    state: &Arc<CapnpBrokerState>,
+    state: &Arc<AppBrokerState>,
     directories: &Rc<LocalActionDirectoryRegistry>,
     route: &CrdtRoute,
     cert: &DeviceCert,
@@ -333,7 +329,7 @@ pub struct OriginalRoom {
     pub time_control: crate::peer_actions::PolicyClockTestControl,
     pub route: CrdtRoute,
     pub membership: WorkspaceTreeHandle,
-    pub state: Arc<CapnpBrokerState>,
+    pub state: Arc<AppBrokerState>,
     pub authority: Arc<CurrentHost>,
     pub directories: Rc<LocalActionDirectoryRegistry>,
     _clock: crate::peer_actions::OwnerPolicyClock,
@@ -458,7 +454,7 @@ impl OriginalRoom {
             PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
         let mut services = membership.services();
         services.record_content = record_content;
-        let (state, bridge_rx) = CapnpBrokerState::new_configured(
+        let (state, bridge_rx) = AppBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             publisher,
@@ -503,4 +499,108 @@ impl OriginalRoom {
         )
         .await
     }
+}
+
+/// An invocation of `provider`'s `resource`/`action`, as an app asks it.
+pub fn invoke_request(
+    provider: &str,
+    resource: &str,
+    action: &str,
+    argument: Option<serde_json::Value>,
+) -> tilo_actions::remote::InvokeRequest {
+    tilo_actions::remote::InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        on_behalf_of: None,
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: provider.into(),
+            address: tilo_actions::ActionAddress::new(resource, action),
+        },
+        argument: match argument {
+            Some(serde_json::Value::Object(object)) => {
+                tilo_actions::remote::InvokeArgument::Json(object)
+            }
+            Some(serde_json::Value::String(text)) => {
+                tilo_actions::remote::InvokeArgument::Text(text)
+            }
+            Some(other) => panic!("an argument is an object or text, not {other}"),
+            None => tilo_actions::remote::InvokeArgument::None,
+        },
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+    }
+}
+
+/// Send `message` over `handle`'s channel the way an app reaches actions,
+/// and the message that answers it.
+pub async fn ask(
+    handle: &runtime_collab::ChannelHandle,
+    message: tilo_actions::remote::RemoteActionMessage,
+) -> Result<tilo_actions::remote::RemoteActionMessage, runtime_portal::NotAvailable> {
+    use tilo_actions::remote::RemoteActionFrame;
+    let frame = RemoteActionFrame::new(message).encode().unwrap();
+    let reply = tilo_test_env::within(
+        "the app's request is answered",
+        handle.remote_action(&frame),
+    )
+    .await?;
+    Ok(RemoteActionFrame::decode(&reply).unwrap().message)
+}
+
+/// The receipt an invoke answered with.
+pub fn receipt(
+    answer: tilo_actions::remote::RemoteActionMessage,
+) -> tilo_actions::remote::InvocationReceipt {
+    match answer {
+        tilo_actions::remote::RemoteActionMessage::Receipt(receipt) => receipt,
+        other => panic!("an invoke is answered with a receipt, not {other:?}"),
+    }
+}
+
+/// Cancel `invocation` over `handle`'s channel; the host's answer.
+pub async fn cancel(
+    handle: &runtime_collab::ChannelHandle,
+    invocation: tilo_actions::InvocationId,
+) -> Result<(), String> {
+    match ask(
+        handle,
+        tilo_actions::remote::RemoteActionMessage::Cancel { invocation },
+    )
+    .await
+    {
+        Ok(tilo_actions::remote::RemoteActionMessage::CancelResponse { result, .. }) => {
+            result.map_err(|error| format!("{error:?}"))
+        }
+        Ok(other) => Err(format!("a cancel answered with {other:?}")),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// The native seat of the host `0` serves: it vouches for that host's own
+/// person in its room, while its certificate lasts.
+pub struct NativePerson(pub Arc<CurrentHost>);
+impl crate::services::LocalPersonServices for NativePerson {
+    fn certificate(&self, room: &str, person: &str) -> Result<DeviceCert, String> {
+        let certificate = self
+            .0
+            .certificate
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or("native identity retired")?;
+        if room != self.0.route.cluster_id
+            || person != principal_id_for_root(certificate.user_public_key)
+        {
+            return Err("native person mismatch".into());
+        }
+        Ok(certificate)
+    }
+}
+
+/// The host's own person, invoking through its native seat.
+pub fn native_person(room: &CrdtRoute, cert: &DeviceCert) -> tilo_actions::remote::Caller {
+    tilo_actions::remote::Caller::local_person(principal_id_for_root(cert.user_public_key))
+        .in_room(room.cluster_id.clone())
 }

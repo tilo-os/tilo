@@ -37,7 +37,7 @@ mod view;
 
 pub use effect::QsEffect;
 pub use faces::subline;
-pub use now_playing::{MediaOutput, MediaPlayer, NowPlaying};
+pub use now_playing::{MediaOffer, MediaOutput, MediaPlayer, NowPlaying, PlayingSource};
 pub use prepare::prepare;
 pub use resource::{Page, QuickSettings, QuickSettingsApp};
 
@@ -204,6 +204,37 @@ pub struct SoundOutput {
     pub current: bool,
 }
 
+/// The microphone sound records from, as the Sound section shows it: its
+/// level and its mute are the panel's controls for it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundInput {
+    /// The audio graph's node: what the microphone's actions name.
+    pub node: u32,
+    /// The microphone's name, as the audio service reads it.
+    pub name: String,
+    /// Its level from 0 to 1, whether or not muted.
+    pub level: f32,
+    pub muted: bool,
+}
+
+/// One application's stream, as the Sound section lists it: what it plays,
+/// where that goes now, how loud.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundStream {
+    /// The stream's audio node: what routing it, its level and its mute
+    /// name.
+    pub node: u32,
+    /// The application, and what it plays.
+    pub label: String,
+    /// Whether it plays (`true`) or records.
+    pub playback: bool,
+    /// The output (or input) it is linked to now.
+    pub target: Option<u32>,
+    /// Its level from 0 to 1, whether or not muted.
+    pub level: f32,
+    pub muted: bool,
+}
+
 /// A `WiFi` entry in the drill-in list. `signal` is a strength bucket
 /// `[0, 4]` (mapped to bar-count); `secure` shows the lock icon;
 /// `connected` flags the active-radio dot. `security` is the scanned
@@ -218,6 +249,18 @@ pub struct WifiNetwork {
     pub connected: bool,
     /// This machine has joined it before: it connects without asking.
     pub known: bool,
+}
+
+/// A network profile `NetworkManager` keeps, so the machine joins it again
+/// without a password typed and without being asked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedNetwork {
+    pub name: String,
+    /// The profile's `NetworkManager` UUID: what forgetting it, or turning
+    /// its autoconnect off, names.
+    pub profile: String,
+    /// It joins by itself whenever it is in reach.
+    pub autoconnect: bool,
 }
 
 /// An in-flight "join this protected network" prompt. `connect_wifi(ssid,
@@ -263,6 +306,43 @@ impl WifiPasswordPrompt {
     }
 }
 
+/// The form for joining a network that broadcasts no name: only its name
+/// and its password find it. Neither is chrome state: the fields hold them
+/// while the form is up, and the machine saves them with the profile.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HiddenNetworkPrompt {
+    /// Tells this form from any other, so nothing typed into one is ever
+    /// shown in the next.
+    pub id: u64,
+    /// The name being joined, once the machine is.
+    pub ssid: String,
+    /// Set after a failed attempt, so a wrong password says so instead of
+    /// the form reopening empty.
+    pub error: Option<String>,
+    /// True while the machine is associating, so the form stays inert
+    /// instead of looking unresponsive.
+    pub connecting: bool,
+}
+
+impl HiddenNetworkPrompt {
+    #[must_use]
+    pub fn new() -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            ssid: String::new(),
+            error: None,
+            connecting: false,
+        }
+    }
+}
+
+impl Default for HiddenNetworkPrompt {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A Bluetooth device entry in the drill-in list. `connected` flags the active-radio dot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BtDevice {
@@ -272,6 +352,17 @@ pub struct BtDevice {
     pub address: String,
     pub battery: u8,
     pub connected: bool,
+}
+
+/// A Bluetooth device in reach that is not paired yet, as the Bluetooth
+/// section lists it while it looks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtNearby {
+    pub name: String,
+    /// `BlueZ`'s address: what pairing it names.
+    pub address: String,
+    /// Signal while it is in reach, in dBm.
+    pub signal: Option<i16>,
 }
 
 /// The three canonical profiles `powerprofilesctl` exposes on Linux.

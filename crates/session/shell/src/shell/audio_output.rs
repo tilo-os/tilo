@@ -1,5 +1,5 @@
 //! Device-local, launcher-attested app PCM. Output ownership and capture authority are separate.
-use super::collab_broker_capnp::{LocalSessionLifecycle, LocalSessionPermit};
+use super::collab_app_broker::{LocalSessionLifecycle, LocalSessionPermit};
 use media::pw_stream::{PlaybackSource, PlaybackStream};
 use runtime_collab::audio_output::{CHANNELS, Command, MAX_SAMPLES, Snapshot};
 use std::collections::{BTreeMap, VecDeque};
@@ -599,7 +599,7 @@ impl AudioOutputServices for AudioOutputService {
 
 #[cfg(test)]
 mod tests {
-    use super::super::collab_broker_capnp::LocalSessionAuthority;
+    use super::super::collab_app_broker::LocalSessionAuthority;
     use super::*;
     use media::pw_stream::DeviceTiming;
 

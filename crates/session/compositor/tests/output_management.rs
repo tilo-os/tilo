@@ -106,7 +106,7 @@ fn pump(compositor: &mut Compositor, client: &mut Client, mut done: impl FnMut(&
 fn two_outputs() -> Compositor {
     let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
     compositor
-        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480).at(0, 0))
         .expect("output");
     compositor
         .add_output(&OutputConfig::new("HEADLESS-2", 800, 600).at(640, 0))

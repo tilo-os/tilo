@@ -118,6 +118,10 @@ where
     clippy::significant_drop_tightening,
     reason = "the session context, the loop context and the writer's queues are borrowed by the concurrent reader and writer futures, and teardown reads the session context again; the lint does not see those uses"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one connection's lifetime in order: the session context every handler borrows, the reader and writer it runs, and the teardown that must follow both; splitting it means threading that borrowed context through more signatures"
+)]
 pub(super) async fn run_peer_stream<R, W>(
     peer: AuthenticatedPeer,
     read: R,
@@ -137,6 +141,7 @@ where
         trust_policy,
         own_user_public_key,
         own_device_cert,
+        own_device_signing_key,
         metrics,
         own_device_public_key,
         app_serving,
@@ -180,6 +185,7 @@ where
         connection_live: Some(&connection_live.0),
         own_user_public_key: &own_user_public_key,
         own_device_cert: &own_device_cert,
+        own_device_signing_key: Some(&own_device_signing_key),
         metrics: &metrics,
         trust_policy: &trust_policy,
         disconnect: &disconnect_tx,
@@ -371,11 +377,10 @@ pub(super) fn private_may_overtake<'a>(
     if matches!(frame, EnvelopeV2::State(Envelope::Ping)) {
         return true;
     }
-    let action = match frame {
-        EnvelopeV2::Directed(action) => action,
-        EnvelopeV2::SignedDirected(signed) => signed.action(),
-        _ => return false,
+    let EnvelopeV2::SignedDirected(signed) = frame else {
+        return false;
     };
+    let action = signed.action();
     let Ok(room) = crate::room_workspace_id(&action.room.to_string()) else {
         return false;
     };

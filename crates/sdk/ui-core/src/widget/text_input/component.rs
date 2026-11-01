@@ -88,7 +88,7 @@ impl Described for TextInput {
         let edits = value.clone();
         let mut input = Self::from_state(&value.state)
             .with_presence_path(value.path.clone())
-            .on_change(move |text| edits.edited(Value::Text(text.to_owned())))
+            .on_change_view(move |text| edits.edited(Value::Text(text.to_owned())))
             .with_id(key)
             .with_accessible_name(&name)
             .with_placeholder(&placeholder)
@@ -108,7 +108,7 @@ impl Described for TextInput {
                 .with_enter_submits(true);
         }
         if !submit.is_none() {
-            input = input.on_submit(move |_| submit.fire(None));
+            input = input.on_submit_view(move |_| submit.fire(None));
         }
         input
     }

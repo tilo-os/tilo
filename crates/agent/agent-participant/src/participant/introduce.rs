@@ -5,7 +5,7 @@
 //! messages by the label its person gave it rather than as someone the
 //! room has not named.
 
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::AgentParticipant;
 

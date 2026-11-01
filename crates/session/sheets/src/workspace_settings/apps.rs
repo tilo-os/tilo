@@ -76,7 +76,7 @@ fn app_row(apps: &Apps, row: &AppRow, parts: &Parts) -> Element {
             .with_accessible_name(&format!("{}, {whose}: {chosen}", row.label))
             .tooltip(whose.to_owned())
             .control_size(ControlSize::Small)
-            .on_click(move || press.ask(effect.clone()))
+            .on_effect(move || press.ask(effect.clone()))
     };
     let captioned = |whose: &str, button: Button| -> Element {
         Box::new(

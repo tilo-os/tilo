@@ -35,6 +35,7 @@ fs_root=${TILO_PAYLOAD_ROOT:-}
 # directory) are not listed: a host that adds its own unit beside them does not
 # collide, and the packaged payload is what dist/verify-payload.sh asserts.
 payload=(
+    /usr/bin/tilo-session
     /usr/bin/tilo-shell
     /usr/bin/tilo
     /usr/bin/tilo-launcher
@@ -47,6 +48,7 @@ payload=(
     /etc/pam.d/tilo-unlock
     /usr/share/applications/tilo-import-folders.desktop
     /usr/share/wayland-sessions/tilo.desktop
+    /usr/share/wayland-sessions/tilo-shell.desktop
     /usr/share/xdg-desktop-portal/portals/tilo.portal
     /usr/share/xdg-desktop-portal/tilo-portals.conf
     /usr/share/pipewire/tilo-echo-cancel.conf

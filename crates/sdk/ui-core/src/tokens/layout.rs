@@ -15,8 +15,14 @@ use super::Metrics;
 /// Reference geometry (unscaled) for the shell's hand-composed chrome.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {
-    /// How far from a timeline event's edge a pointer can grab to resize it.
+    /// How far from an edge a pointer can grab to resize it: a timeline
+    /// event's, or the free side of a desk card.
     pub resize_grip: f32,
+    /// How far from a floating window's edge a pointer can grab to resize it.
+    pub window_grip: f32,
+    /// The same band under touch: wider, because a finger covers more than a
+    /// pointer.
+    pub window_touch_grip: f32,
     pub jump_px_per_detent: f32,
     /// A pinned participant's face on the desk.
     pub pin: f32,
@@ -41,12 +47,39 @@ pub struct Layout {
     pub display_brightness_step: f32,
     /// One line-stepping wheel notch.
     pub wheel_step: f32,
+    /// How far below a bar its own drawing reaches: the focus ring, the
+    /// hairline and the shadow of what floats on it.
+    pub bar_reach: f32,
+    /// The resize handle in a desk card's free corner.
+    pub desk_grip: f32,
+    /// The compact music card's artwork.
+    pub desk_art: f32,
+    /// The remove badge on a hovered desk glance.
+    pub desk_badge: f32,
+    /// The widest an identify card's name runs before it is elided.
+    pub identify_name_width: f32,
+    /// The desktop's search card at its widest: the launcher's card when no
+    /// host gives it a room.
+    pub search_card_width: f32,
+    /// Above a confirmation sheet's detail: the title and who asks.
+    pub sheet_title_band: f32,
+    /// One line of a confirmation sheet's detail, before it is measured.
+    pub sheet_detail_line: f32,
+    /// Below a confirmation sheet's answers: the line a refusal fills, and
+    /// the buttons under it.
+    pub sheet_footer: f32,
+    /// A field's label line above its control, on a confirmation sheet.
+    pub field_label_height: f32,
+    /// A prose field's control: room for about three lines.
+    pub field_prose_height: f32,
 }
 
 impl Layout {
     /// The unscaled reference geometry.
     pub const BASE: Self = Self {
         resize_grip: 6.0,
+        window_grip: 8.0,
+        window_touch_grip: 22.0,
         jump_px_per_detent: 50.0,
         pin: 26.0,
         avatar_step: 22.0,
@@ -61,6 +94,17 @@ impl Layout {
         pairing_qr_side: 232.0,
         display_brightness_step: 10.0,
         wheel_step: 15.0,
+        bar_reach: 28.0,
+        desk_grip: 18.0,
+        desk_art: 48.0,
+        desk_badge: 20.0,
+        identify_name_width: 200.0,
+        search_card_width: 640.0,
+        sheet_title_band: 74.0,
+        sheet_detail_line: 20.0,
+        sheet_footer: 84.0,
+        field_label_height: 22.0,
+        field_prose_height: 88.0,
     };
 }
 

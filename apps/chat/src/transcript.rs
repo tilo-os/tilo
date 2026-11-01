@@ -1,9 +1,9 @@
-//! Messages from outside the room, and a channel's transcript as content.
+//! Messages from outside the workspace, and a channel's transcript as content.
 //!
 //! `deliver-message` ([`crate::parts::ChatPart::deliver_message`]) adds a
 //! line someone wrote elsewhere (a seeded scenario, an import, an
 //! integration relaying it) shown under their name: the message stays the
-//! deliverer's, as a bridge's post does, so who put it in the room is never
+//! deliverer's, as a bridge's post does, so who put it in the workspace is never
 //! lost. Given the time it was written, its id derives from what it says
 //! ([`delivered_id`]), so delivering it again changes nothing.
 //!
@@ -112,7 +112,7 @@ pub fn transcript(
 }
 
 /// What `export-content` answers once the transcript is kept as `hash`:
-/// its content address (also as the operation's resource, so the room
+/// its content address (also as the operation's resource, so the workspace
 /// keeps it), the format and how much it holds.
 #[must_use]
 pub fn exported(

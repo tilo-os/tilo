@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use automerge::{AutoCommit, ReadDoc as _};
 use tilo_automerge_isolate::{Dependencies, Rejected};
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 /// The route of a room's shared browser desktop (`tilo-browser-runtime`'s
 /// replication): its `desktop` value names each tab's record.
@@ -812,7 +812,15 @@ mod tests {
             most <= document.saturating_mul(2).saturating_add(largest),
             "held up to {most} bytes for a {document}-byte document"
         );
-        assert!(most.saturating_mul(4) < received, "{most} of {received}");
+        // The bound is not vacuous: one pass of the log alone outweighs it,
+        // so a record that kept what arrived would break it. (Each merge
+        // folds changes into the document, which is what keeps the peak far
+        // below the log; the second pass is the room replayed on reconnect.)
+        assert!(
+            received / 2 > document.saturating_mul(2).saturating_add(largest),
+            "a {}-byte log's bound is {most} bytes held",
+            received / 2
+        );
         let seed = unopened.seed(&notes).unwrap().unwrap();
         assert_seeds(&seed, &mut doc);
     }

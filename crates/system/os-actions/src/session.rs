@@ -13,8 +13,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilo_power_mgmt::LogindManager;
 
-use crate::process::run;
-
 const LOGOUT_REQUEST_ENV: &str = "TILO_SESSION_LOGOUT_REQUEST";
 /// The only display manager with a user-switch call Tilo can make: GDM's
 /// local display factory, which it permits to ordinary local users.
@@ -37,7 +35,54 @@ pub enum SessionAction {
 /// per process: the display manager does not change under a running session.
 pub fn user_switching_supported() -> bool {
     static SUPPORTED: OnceLock<bool> = OnceLock::new();
-    *SUPPORTED.get_or_init(|| run("busctl", &["--system", "status", GDM_BUS_NAME]).is_ok())
+    *SUPPORTED.get_or_init(|| {
+        bus_name_owned(GDM_BUS_NAME).unwrap_or_else(|error| {
+            tracing::debug!(target: "tilo::session", %error, "cannot ask the bus for a greeter");
+            false
+        })
+    })
+}
+
+/// Whether a name currently has an owner on the system bus.
+fn bus_name_owned(name: &str) -> Result<bool, String> {
+    crate::block_on(async {
+        let bus = zbus::Connection::system()
+            .await
+            .map_err(|e| format!("cannot reach the system bus: {e}"))?;
+        let reply = bus
+            .call_method(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                Some("org.freedesktop.DBus"),
+                "NameHasOwner",
+                &name,
+            )
+            .await
+            .map_err(|e| format!("NameHasOwner {name}: {e}"))?;
+        reply
+            .body()
+            .deserialize::<bool>()
+            .map_err(|e| format!("NameHasOwner {name}: {e}"))
+    })
+}
+
+/// Ask GDM's local display factory for a greeter session.
+fn open_greeter() -> Result<(), String> {
+    crate::block_on(async {
+        let bus = zbus::Connection::system()
+            .await
+            .map_err(|e| format!("cannot reach the system bus: {e}"))?;
+        bus.call_method(
+            Some(GDM_BUS_NAME),
+            "/org/gnome/DisplayManager/LocalDisplayFactory",
+            Some("org.gnome.DisplayManager.LocalDisplayFactory"),
+            "CreateTransientDisplay",
+            &(),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("{GDM_BUS_NAME} refused to open a greeter: {e}"))
+    })
 }
 
 /// Perform `action`.
@@ -64,16 +109,7 @@ pub fn perform_session_action(action: SessionAction) -> Result<(), String> {
         SessionAction::SwitchUser if !user_switching_supported() => {
             Err("This computer's login screen cannot switch users".into())
         }
-        SessionAction::SwitchUser => run(
-            "busctl",
-            &[
-                "call",
-                GDM_BUS_NAME,
-                "/org/gnome/DisplayManager/LocalDisplayFactory",
-                "org.gnome.DisplayManager.LocalDisplayFactory",
-                "CreateTransientDisplay",
-            ],
-        ),
+        SessionAction::SwitchUser => open_greeter(),
         // Interactive, as `systemctl` asks: polkit may prompt the person.
         SessionAction::Suspend => crate::block_on(async {
             logind()

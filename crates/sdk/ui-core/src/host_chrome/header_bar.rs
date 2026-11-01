@@ -117,7 +117,7 @@ impl HeaderBar {
         let open_menu = menu_requested.clone();
         let history_button = control("host-header-history", Icon::History, "host-menu-history")
             .with_enabled(!history.is_empty())
-            .on_click(move || *open_menu.borrow_mut() = true);
+            .on_view(move || *open_menu.borrow_mut() = true);
         let mut row = Row::new().no_wrap().push(Box::new(history_button));
         row = row
             .push(Box::new(Spacer::new()))
@@ -133,7 +133,7 @@ impl HeaderBar {
                     "host-search-placeholder",
                 )
                 .with_enabled(search.enabled && invocation.is_some())
-                .on_click(move || {
+                .on_effect(move || {
                     if let Some(invocation) = invocation.clone() {
                         queue
                             .borrow_mut()
@@ -164,7 +164,7 @@ impl HeaderBar {
         ] {
             let queue = requests.clone();
             row = row
-                .push(Box::new(control(id, icon, key).on_click(move || {
+                .push(Box::new(control(id, icon, key).on_effect(move || {
                     queue.borrow_mut().push_back(request.clone())
                 })));
         }
@@ -242,6 +242,17 @@ impl HeaderBar {
         self.menu.open_anchored(self.history_button, self.viewport);
     }
 
+    /// Open the menu the History control asked for, once. The bar answers
+    /// that press itself when it is hosted apart from an app's tree; a bar
+    /// that is the root of a tree some host owns is answered in that host's
+    /// tick instead, after the event, so the request is also taken on the
+    /// next frame's sync.
+    fn take_menu_request(&mut self) {
+        if std::mem::take(&mut *self.menu_requested.borrow_mut()) {
+            self.open_menu();
+        }
+    }
+
     fn drain_menu(&mut self) {
         let chosen = self
             .menu
@@ -279,6 +290,15 @@ fn control(id: &str, icon: Icon, key: &str) -> Button {
 }
 
 impl Widget for HeaderBar {
+    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        // A press the host's tick answered after the event that made it
+        // reaches the bar here, in the frame that press asks for.
+        self.take_menu_request();
+        for child in self.children_mut() {
+            child.sync(state, path);
+        }
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -361,9 +381,12 @@ impl Widget for HeaderBar {
             return;
         }
         self.row.handle_event(event, ctx);
-        if std::mem::take(&mut *self.menu_requested.borrow_mut()) {
-            self.open_menu();
-        }
+        // The row's controls publish their press; the bar is drawn apart
+        // from the app's tree, so it answers the press here, before the
+        // menu it asks for opens.
+        let path = ctx.path;
+        crate::widget::controls::start_pending_control_invocations(self, &mut ctx.edits(), path);
+        self.take_menu_request();
         if !*ctx.handled
             && matches!(
                 event,

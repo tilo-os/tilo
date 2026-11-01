@@ -14,7 +14,8 @@
     clippy::cast_sign_loss,
     clippy::cast_precision_loss,
     clippy::arithmetic_side_effects,
-    reason = "test fixtures: a failed step is the assertion"
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
 use std::collections::HashMap;
@@ -37,6 +38,7 @@ fn options() -> Options {
     Options {
         presentation: ui::headless::fixture_runner_inputs,
         person: PERSON.to_owned(),
+        shell_bar: true,
         ..Options::default()
     }
 }
@@ -395,6 +397,7 @@ fn an_apps_notification_is_counted_on_the_bar() {
             &wake.handle(),
             std::sync::Arc::new(tilo_portal::NoCapture),
             &side,
+            None,
         )
         .unwrap(),
     );

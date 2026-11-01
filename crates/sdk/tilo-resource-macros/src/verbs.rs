@@ -20,6 +20,9 @@ pub(crate) struct ResourceOptions {
     search: Option<syn::Path>,
     scopes: Option<syn::Path>,
     children: Option<syn::Path>,
+    /// The resource beyond the published page of `children`:
+    /// `fn(&Self, &str) -> Option<ResourceSpec>`.
+    child: Option<syn::Path>,
     initialize: Option<syn::Path>,
     seed: Option<syn::Path>,
     available: Option<syn::Path>,
@@ -44,7 +47,7 @@ pub(crate) struct ResourceOptions {
 }
 
 const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `app = \"...\"`, `params = name`, `search = path`, \
-     `scopes = path`, `children = path`, `initialize = path`, `seed = path`, `available = path`, \
+     `scopes = path`, `children = path`, `child = path`, `initialize = path`, `seed = path`, `available = path`, \
      `read_content = path`, `read_content_in_doc = path`, `document_child = path`, `facts = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
      `locate = path`, `lands = path`, `queue = path`, `effects = Type`, `answer = path` or \
      `item_views = path`";
@@ -70,6 +73,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
         search: None,
         scopes: None,
         children: None,
+        child: None,
         initialize: None,
         seed: None,
         available: None,
@@ -115,6 +119,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
             ("search", Expr::Path(path)) => options.search = Some(path.path.clone()),
             ("scopes", Expr::Path(path)) => options.scopes = Some(path.path.clone()),
             ("children", Expr::Path(path)) => options.children = Some(path.path.clone()),
+            ("child", Expr::Path(path)) => options.child = Some(path.path.clone()),
             ("initialize", Expr::Path(path)) => options.initialize = Some(path.path.clone()),
             ("seed", Expr::Path(path)) => options.seed = Some(path.path.clone()),
             ("available", Expr::Path(path)) => options.available = Some(path.path.clone()),
@@ -1499,6 +1504,17 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             return ::core::option::Option::Some(found);
         }
     };
+    // The record's own resolution of a child beyond the published page.
+    let addressed_child = options.child.as_ref().map_or_else(
+        || quote!(),
+        |path| {
+            quote! {
+                if let ::core::option::Option::Some(found) = #path(state, id) {
+                    return ::core::option::Option::Some(found);
+                }
+            }
+        },
+    );
     // Items are published when an item verb or effect is offered on them
     // or they carry a label; addressed one by one beyond the page.
     let item_child = quote! {
@@ -2160,6 +2176,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 id: &str,
             ) -> ::core::option::Option<#krate::__private::ResourceSpec> {
                 let _ = (state, id);
+                #addressed_child
                 #derived_child
                 #item_child
             }

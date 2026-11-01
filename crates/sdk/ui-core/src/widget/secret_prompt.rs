@@ -462,8 +462,8 @@ pub struct SecretPrompt {
     /// field ([`Self::with_field_buffers`]).
     field_buffers: Vec<Arc<Mutex<String>>>,
     /// The host's default action, run by Enter in a dialog body's last
-    /// field ([`Self::on_submit`]).
-    on_submit: Option<Rc<dyn Fn()>>,
+    /// field ([`Self::on_enter_default`]).
+    enter_default: Option<Rc<dyn Fn()>>,
     /// What the prompt showed around its fields when it was last painted:
     /// while that holds, only what a field repaints is damage.
     painted: Option<Chrome>,
@@ -528,7 +528,7 @@ impl SecretPrompt {
             theme: Theme::dark(),
             secret_buffer: None,
             field_buffers: Vec::new(),
-            on_submit: None,
+            enter_default: None,
             painted: None,
             answer: answer::Answer::default(),
         };
@@ -822,10 +822,12 @@ impl SecretPrompt {
 
     /// Run `submit` when Enter is pressed in a dialog body's last field: for
     /// a host with no dialog around the body whose default action would
-    /// take that Enter.
+    /// take that Enter. This is the surrounding dialog's default action
+    /// reaching the host, not a control of the prompt's own: the prompt's
+    /// own answer stays the published one.
     #[must_use]
-    pub fn on_submit(mut self, submit: impl Fn() + 'static) -> Self {
-        self.on_submit = Some(Rc::new(submit));
+    pub fn on_enter_default(mut self, submit: impl Fn() + 'static) -> Self {
+        self.enter_default = Some(Rc::new(submit));
         self
     }
 
@@ -1812,7 +1814,7 @@ impl SecretPrompt {
                         let last = index.saturating_add(1) >= self.fields.len();
                         if last && dialog {
                             // The dialog's default action answers.
-                            return match &self.on_submit {
+                            return match &self.enter_default {
                                 Some(submit) if self.busy.is_none() => {
                                     submit();
                                     true

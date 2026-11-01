@@ -355,6 +355,11 @@ pub enum Response {
     State {
         /// Serialised once, straight from the tree, and written into the reply as it is.
         workspace_tree: RawJson,
+        /// Which workspaces this device's native owner holds: one
+        /// `{"workspace": id, "room": room}` row per workspace whose room's
+        /// replica is installed here. A workspace whose enrollment is still
+        /// in flight is not in it yet.
+        held_workspaces: serde_json::Value,
         chrome: serde_json::Value,
         /// The peers this session would paint, straight off the `PresenceCtx` the overlay reads.
         peers: serde_json::Value,
@@ -642,6 +647,13 @@ pub trait ControlState {
     /// JSON view of the persisted `WorkspaceTree` — the persisted shape, less the workspaces' history unless `include_history` (see [`Command::StateDump`]). Defaults to `null` so mock fixtures that only need `widget_registry` don't have to spell out a tree.
     fn workspace_tree_json(&self, _include_history: bool) -> RawJson {
         RawJson::null()
+    }
+    /// The workspaces this device's native owner holds, one `{"workspace",
+    /// "room"}` row each, in the state dump beside the tree. Defaults to an
+    /// empty list: a control state without a live tree has no owner record to
+    /// report.
+    fn held_workspaces_json(&self) -> serde_json::Value {
+        serde_json::Value::Array(Vec::new())
     }
     /// The open windows, one row per tab ([`Command::Windows`]), from the live tree. Default impl refuses: "no tree" must not read as "no windows".
     ///
@@ -1689,7 +1701,8 @@ fn foreign_frames<S: ControlState>(state: &S) -> (Response, Vec<PlannedAction>) 
     )
 }
 
-/// [`Command::StateDump`]: the persisted tree, chrome state and peers, read-only.
+/// [`Command::StateDump`]: the persisted tree, the workspaces held here, chrome
+/// state and peers, read-only.
 ///
 /// The chrome carries `in_transition`, the same fact a press is refused with
 /// (`desktop_in_transition`), so a caller waits on the desktop settling
@@ -1702,6 +1715,7 @@ fn state_dump<S: ControlState>(state: &S, include_history: bool) -> (Response, V
     (
         Response::State {
             workspace_tree: state.workspace_tree_json(include_history),
+            held_workspaces: state.held_workspaces_json(),
             chrome,
             peers: state.peers_json(),
             sharing: state.sharing_json(),

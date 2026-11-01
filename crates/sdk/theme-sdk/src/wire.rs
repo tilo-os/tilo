@@ -32,7 +32,7 @@ use peniko::Color;
 
 use crate::{
     Brush, Easing, Lens, Op, PaintedPart, Param, ParamSpec, Part, PartImage, PartScene, PartState,
-    PartTokens, States, Stop, Transition,
+    PartTokens, Sampling, ShaderSource, States, Stop, Transition,
 };
 
 /// A paint request.
@@ -62,7 +62,9 @@ pub struct PaintRequest {
 /// A request, decoded.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
-    Paint(PaintRequest),
+    /// Boxed: a paint request carries the part's tokens, a theme's shader
+    /// among them, and the other requests are a few bytes.
+    Paint(Box<PaintRequest>),
     Transition {
         part: Part,
         from: States,
@@ -108,7 +110,7 @@ pub fn params_request() -> Vec<u8> {
 pub fn request(bytes: &[u8]) -> Option<Request> {
     let mut input = Reader(bytes);
     let request = match input.u8()? {
-        PAINT => Request::Paint(PaintRequest {
+        PAINT => Request::Paint(Box::new(PaintRequest {
             part: Part::from_index(input.u8()?)?,
             size: Size::new(input.f64()?, input.f64()?),
             state: PartState {
@@ -117,7 +119,7 @@ pub fn request(bytes: &[u8]) -> Option<Request> {
             },
             progress: input.f32()?,
             tokens: input.tokens()?,
-        }),
+        })),
         TRANSITION => Request::Transition {
             part: Part::from_index(input.u8()?)?,
             from: States::from_bits(input.u16()?),
@@ -408,7 +410,15 @@ impl Writer {
                 self.f32(*blur);
                 self.f32(lens.refraction);
                 self.color(*fallback);
+                self.u8(u8::from(lens.sampling == Sampling::Blocky));
+                self.f32(lens.cell);
                 self.ops(glaze);
+            }
+            Brush::Shader { source, fallback } => {
+                self.u8(5);
+                self.u32(source.time_centis);
+                self.bytes(source.wgsl.as_bytes());
+                self.color(*fallback);
             }
         }
     }
@@ -471,6 +481,10 @@ impl Writer {
         // Appended after the parameter list so a shorter, older encoding
         // still reads: see the module note.
         self.color(tokens.light);
+        // A theme's surface shader (`crate::Brush::Shader`), empty for a set
+        // that draws without one.
+        self.bytes(tokens.shader.wgsl.as_bytes());
+        self.u32(tokens.shader.time_centis);
     }
 }
 
@@ -592,13 +606,34 @@ impl Reader<'_> {
                     scale: self.f32()?,
                 }
             }
-            4 if !glazed => Brush::Backdrop {
-                blur: self.f32()?,
-                lens: Lens {
-                    refraction: self.f32()?,
+            4 if !glazed => {
+                let blur = self.f32()?;
+                let refraction = self.f32()?;
+                let fallback = self.color()?;
+                let sampling = match self.u8()? {
+                    0 => Sampling::Smooth,
+                    1 => Sampling::Blocky,
+                    _ => return None,
+                };
+                let cell = self.f32()?;
+                let lens = Lens {
+                    refraction,
+                    sampling,
+                    cell,
+                };
+                Brush::Backdrop {
+                    blur,
+                    lens,
+                    fallback,
+                    glaze: self.ops(true)?,
+                }
+            }
+            5 => Brush::Shader {
+                source: ShaderSource {
+                    time_centis: self.u32()?,
+                    wgsl: String::from_utf8(self.bytes()?.to_vec()).ok()?,
                 },
                 fallback: self.color()?,
-                glaze: self.ops(true)?,
             },
             _ => return None,
         })
@@ -676,6 +711,17 @@ impl Reader<'_> {
         } else {
             self.color()?
         };
+        // The set's surface shader came after the light: bytes that end
+        // before it are an encoding from before a set could carry one.
+        let shader = if self.0.is_empty() {
+            ShaderSource::default()
+        } else {
+            let wgsl = String::from_utf8(self.bytes()?.to_vec()).ok()?;
+            ShaderSource {
+                wgsl,
+                time_centis: self.u32()?,
+            }
+        };
         Some(PartTokens {
             fill,
             ink,
@@ -693,6 +739,7 @@ impl Reader<'_> {
             reduce_transparency,
             backdrop,
             params,
+            shader,
         })
     }
 }
@@ -735,7 +782,11 @@ mod tests {
             },
             Brush::Backdrop {
                 blur: 12.0,
-                lens: Lens { refraction: 3.0 },
+                lens: Lens {
+                    refraction: 3.0,
+                    sampling: Sampling::Blocky,
+                    cell: 8.0,
+                },
                 fallback: Color::WHITE,
                 glaze: vec![Op::Fill {
                     path: Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.1),
@@ -785,9 +836,16 @@ mod tests {
         // A theme's light is not the stock one: the round trip would hold
         // with a constant, so the encoding is checked to carry the value.
         assert_ne!(light, PartTokens::default().light);
-        // Bytes from before the field existed (here: the same request with
-        // the trailing colour cut) read as the stock white.
-        let older = &bytes[..bytes.len() - 16];
+        // The fields after the light: an empty shader (its length and its
+        // time). Bytes from before a set carried a shader read as none.
+        let shader_tail = 4 + 4;
+        let Some(Request::Paint(unshaded)) = request(&bytes[..bytes.len() - shader_tail]) else {
+            panic!("a request without the shader does not decode");
+        };
+        assert_eq!(unshaded.tokens, tokens);
+        // Bytes from before the light existed (here: the same request with
+        // the trailing colour and shader cut) read as the stock white.
+        let older = &bytes[..bytes.len() - 16 - shader_tail];
         let Some(Request::Paint(before)) = request(older) else {
             panic!("a request without the light does not decode");
         };
@@ -825,7 +883,7 @@ mod tests {
         };
         assert_eq!(
             request(&paint_request(&request_in)),
-            Some(Request::Paint(request_in))
+            Some(Request::Paint(Box::new(request_in)))
         );
         assert_eq!(
             request(&transition_request(

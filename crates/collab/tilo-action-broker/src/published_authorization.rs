@@ -26,7 +26,7 @@ pub(crate) fn canonical_record(route_record: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::collab_broker_capnp::{BrokerActor, PublishedAction, PublishedSurface};
+    use crate::collab_app_broker::{BrokerActor, PublishedAction, PublishedSurface};
     use crate::route::CrdtRoute;
     use crate::test_support::{Workspace, WorkspaceId};
     use tilo_action_policy::{Grant, KindSet, Lifetime, Role, Subject};
@@ -80,7 +80,7 @@ mod tests {
             params: vec![],
             contract: tilo_actions::ActionContract::default(),
             view: None,
-            input: crate::collab_broker_capnp::PublishedInput::None,
+            input: crate::collab_app_broker::PublishedInput::None,
         }
     }
 

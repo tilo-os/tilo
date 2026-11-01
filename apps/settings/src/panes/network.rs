@@ -55,13 +55,17 @@ use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 
 mod asking;
+mod enterprise;
 mod labels;
 pub(crate) mod mobile;
 mod order;
 mod page;
+mod usage;
 pub(crate) mod values;
 mod view;
 pub(crate) mod vpn;
+
+use enterprise::{EnterpriseForm, EnterpriseGiven, join_enterprise};
 
 use view::Page;
 pub(crate) use view::view;
@@ -130,6 +134,14 @@ pub enum NetworkEffect {
     /// Show mobile data and the SIM: the modem's whole page.
     #[effect(view, label = "Mobile")]
     ShowMobile,
+    /// Show the wired connection's page: how it stands, its addresses and
+    /// waking this machine over it.
+    #[effect(view, label = "Wired connection settings")]
+    ShowWired,
+    /// Show the data each connection used, day by day.
+    #[effect(view, label = "Data usage")]
+    #[effect(keywords = "data usage, traffic, bandwidth, network statistics")]
+    ShowDataUsage,
     /// Ask for the name and password of a network that does not broadcast
     /// its name, to join it.
     #[effect(view, label = "Other network")]
@@ -375,6 +387,10 @@ pub(crate) const PAGE_HOTSPOT: &str = "hotspot";
 pub(crate) const PAGE_ADVANCED: &str = "advanced";
 /// The modem's page: mobile data and the SIM.
 pub(crate) const PAGE_MOBILE: &str = "mobile";
+/// The wired connection's page.
+pub(crate) const PAGE_WIRED: &str = "wired";
+/// The data each connection used.
+pub(crate) const PAGE_USAGE: &str = "usage";
 /// A network's page: `wifi:<ssid>`.
 const PAGE_WIFI: &str = "wifi:";
 
@@ -1074,9 +1090,7 @@ impl NetworkService for DeviceNetwork {
             NetworkChange::JoinHidden { ssid, password } => {
                 nm::connect_hidden_wifi(ssid, password.as_deref().map(String::as_str))
             }
-            NetworkChange::Enterprise { config, password } => {
-                os_actions::connect_enterprise_wifi(config, password)
-            }
+            NetworkChange::Enterprise { config, password } => join_enterprise(config, password),
             NetworkChange::Vpn { uuid, on, .. } => os_actions::set_vpn_connection_uuid(uuid, *on),
             NetworkChange::VpnProfile { uuid, patch, .. } => nm::configure_vpn_profile(uuid, patch),
             NetworkChange::VpnDelete { uuid, .. } => os_actions::delete_vpn_connection_uuid(uuid),
@@ -1446,49 +1460,6 @@ struct IdentityForm {
     ca: LocalState<String>,
 }
 
-/// What an enterprise connection was given; the setup form fills the rest.
-#[derive(Clone)]
-struct EnterpriseGiven {
-    profile: Option<String>,
-    ssid: Option<String>,
-    identity: Option<String>,
-    anonymous_identity: Option<String>,
-    ca_certificate: Option<String>,
-    method: Option<String>,
-    inner_auth: Option<String>,
-    client_certificate: Option<String>,
-    private_key: Option<String>,
-}
-
-/// The enterprise network setup form.
-struct EnterpriseForm {
-    profile: LocalState<String>,
-    ssid: LocalState<String>,
-    identity: LocalState<String>,
-    anonymous: LocalState<String>,
-    ca: LocalState<String>,
-    client_certificate: LocalState<String>,
-    private_key: LocalState<String>,
-    method: LocalState<String>,
-    inner_auth: LocalState<String>,
-}
-
-impl EnterpriseForm {
-    fn new() -> Self {
-        Self {
-            profile: LocalState::new(String::new()),
-            ssid: LocalState::new(String::new()),
-            identity: LocalState::new(String::new()),
-            anonymous: LocalState::new(String::new()),
-            ca: LocalState::new(String::new()),
-            client_certificate: LocalState::new(String::new()),
-            private_key: LocalState::new(String::new()),
-            method: LocalState::new("PEAP".into()),
-            inner_auth: LocalState::new("MSCHAPv2".into()),
-        }
-    }
-}
-
 /// The form that joins a network that does not broadcast its name.
 /// A secret shown on a network's page, for the profile or network it
 /// belongs to; zeroed when it goes.
@@ -1795,6 +1766,8 @@ pub struct NetworkModel {
     hotspot_name: LocalState<String>,
     hotspot_password: Arc<Mutex<String>>,
     hotspot_band: LocalState<String>,
+    /// The span the data usage chart shows ([`usage::Span`]).
+    usage_span: LocalState<usize>,
     ipv4_forms: HashMap<String, Ipv4Form>,
     ipv6_forms: HashMap<String, Ipv6Form>,
     proxy_forms: HashMap<String, ProxyForm>,
@@ -1902,6 +1875,10 @@ impl NetworkModel {
     fn sample(reach: Reach, wanted: Option<crate::scenarios::NetworkSample>) -> Self {
         use crate::scenarios::NetworkSample;
         let mut model = Self::loaded_from(reach, Arc::new(SampleNetwork));
+        // A capture's own profile shows counted data usage.
+        if wanted.is_some() {
+            usage::sample(&model.reach.storage);
+        }
         match wanted {
             Some(NetworkSample::WifiOff) => {
                 model.wifi_enabled = false;
@@ -1916,6 +1893,8 @@ impl NetworkModel {
                 model.scanned_at = Some(ui::time::now());
             }
             Some(NetworkSample::Known) => model.open_page(PAGE_KNOWN, t("net-known")),
+            Some(NetworkSample::Wired) => model.open_page(PAGE_WIRED, t("net-wired")),
+            Some(NetworkSample::Usage) => model.open_page(PAGE_USAGE, t("net-usage")),
             Some(NetworkSample::AllNetworks) => {
                 model.open_page(PAGE_ALL, t("net-all-networks"));
             }
@@ -2034,6 +2013,7 @@ impl NetworkModel {
             hotspot_name: LocalState::new(DEFAULT_HOTSPOT_NAME.into()),
             hotspot_password: Arc::new(Mutex::new(String::new())),
             hotspot_band: LocalState::new(band_shown("Automatic")),
+            usage_span: LocalState::new(usage::Span::FIRST),
             ipv4_forms: HashMap::new(),
             ipv6_forms: HashMap::new(),
             proxy_forms: HashMap::new(),
@@ -2641,6 +2621,14 @@ impl NetworkModel {
                 self.open_page(PAGE_MOBILE, t("net-mobile"));
                 Begun::Done
             }
+            NetworkEffect::ShowWired => {
+                self.open_page(PAGE_WIRED, t("net-wired"));
+                Begun::Done
+            }
+            NetworkEffect::ShowDataUsage => {
+                self.open_page(PAGE_USAGE, t("net-usage"));
+                Begun::Done
+            }
             NetworkEffect::ShowHiddenNetwork => {
                 self.ask_hidden();
                 Begun::Done
@@ -3087,7 +3075,7 @@ impl NetworkModel {
                 if let Some(password) = password.map(Zeroizing::new) {
                     self.connect_enterprise(given, password)
                 } else {
-                    let config = self.enterprise_config(given.clone());
+                    let config = self.enterprise.config(given.clone());
                     self.ask_enterprise(given, &config.ssid, &config.identity);
                     Begun::Done
                 }
@@ -3176,7 +3164,7 @@ impl NetworkModel {
     /// Save the enterprise network `given` asks for and connect with
     /// `password`.
     fn connect_enterprise(&mut self, given: EnterpriseGiven, password: Zeroizing<String>) -> Begun {
-        let config = self.enterprise_config(given);
+        let config = self.enterprise.config(given);
         self.change(
             NetworkChange::Enterprise { config, password },
             Some(t("net-notice-enterprise-connecting")),
@@ -3188,48 +3176,6 @@ impl NetworkModel {
         let notice = t_args("net-notice-connecting", &[("ssid", ssid.as_str().into())]);
         self.connecting.push(ssid.clone());
         self.change(NetworkChange::JoinHidden { ssid, password }, Some(notice))
-    }
-
-    /// The enterprise network `given` asks for, completed from the setup
-    /// form.
-    fn enterprise_config(&self, given: EnterpriseGiven) -> EnterpriseWifiConfiguration {
-        let EnterpriseGiven {
-            profile,
-            ssid,
-            identity,
-            anonymous_identity,
-            ca_certificate,
-            method,
-            inner_auth,
-            client_certificate,
-            private_key,
-        } = given;
-        let form = &self.enterprise;
-        EnterpriseWifiConfiguration {
-            profile_name: profile.unwrap_or_else(|| form.profile.get()),
-            ssid: ssid.unwrap_or_else(|| form.ssid.get()),
-            identity: identity.unwrap_or_else(|| form.identity.get()),
-            anonymous_identity: anonymous_identity
-                .or_else(|| Some(form.anonymous.get()))
-                .and_then(non_blank),
-            ca_certificate: ca_certificate.unwrap_or_else(|| form.ca.get()),
-            method: match method.unwrap_or_else(|| form.method.get()).as_str() {
-                "TTLS" => os_actions::EnterpriseEapMethod::Ttls,
-                "TLS" => os_actions::EnterpriseEapMethod::Tls,
-                _ => os_actions::EnterpriseEapMethod::Peap,
-            },
-            phase2_auth: Some(
-                inner_auth
-                    .unwrap_or_else(|| form.inner_auth.get())
-                    .to_ascii_lowercase(),
-            ),
-            client_certificate: client_certificate
-                .or_else(|| Some(form.client_certificate.get()))
-                .and_then(non_blank),
-            private_key: private_key
-                .or_else(|| Some(form.private_key.get()))
-                .and_then(non_blank),
-        }
     }
 
     /// A VPN turned on: one carrying all traffic leaves the route through

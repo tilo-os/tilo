@@ -10,6 +10,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tilo_lock::MutexRecover;
 
 use ed25519_dalek::SigningKey;
 use iroh::address_lookup::{AddressLookup, EndpointData, EndpointInfo, Error, Item};
@@ -246,9 +247,7 @@ impl LanDiscovery {
             return;
         }
         let now = Instant::now();
-        let Ok(mut state) = self.inner.state.lock() else {
-            return;
-        };
+        let mut state = self.inner.state.lock_recover();
         let recent = state
             .last_probe
             .is_some_and(|at| now.saturating_duration_since(at) < PROBE_INTERVAL);
@@ -337,16 +336,15 @@ impl LanDiscovery {
     }
 
     fn within_budget(&self, now: Instant) -> bool {
-        let Ok(mut state) = self.inner.state.lock() else {
-            return false;
-        };
-        let (since, used) = &mut state.budget;
-        if now.saturating_duration_since(*since) >= Duration::from_secs(1) {
-            *since = now;
-            *used = 0;
+        let mut state = self.inner.state.lock_recover();
+        let budget = &mut state.budget;
+        if now.saturating_duration_since(budget.0) >= Duration::from_secs(1) {
+            *budget = (now, 0);
         }
-        *used = used.saturating_add(1);
-        *used <= PROBES_PER_SECOND
+        budget.1 = budget.1.saturating_add(1);
+        let within = budget.1 <= PROBES_PER_SECOND;
+        drop(state);
+        within
     }
 
     fn on_probe(&self, datagram: &[u8], from: SocketAddr) {
@@ -363,7 +361,8 @@ impl LanDiscovery {
         {
             return;
         }
-        let fresh = self.inner.state.lock().is_ok_and(|mut state| {
+        let fresh = {
+            let mut state = self.inner.state.lock_recover();
             let fresh = state
                 .freshness
                 .accept(asker, probe.epoch, probe.salt, clock_epoch(), now);
@@ -372,17 +371,12 @@ impl LanDiscovery {
                 state.retry.remove(&asker);
             }
             fresh
-        });
+        };
         if !fresh {
             tracing::debug!("ignoring a stale or repeated LAN discovery probe");
             return;
         }
-        let addrs = self
-            .inner
-            .addrs
-            .lock()
-            .map(|addrs| addrs.clone())
-            .unwrap_or_default();
+        let addrs = self.inner.addrs.lock_recover().clone();
         if !addrs.is_empty() {
             match wire::reply(&self.inner.device, &probe, &addrs) {
                 Ok(answer) => self.send(Role::Listener, answer, from),
@@ -393,17 +387,22 @@ impl LanDiscovery {
     }
 
     fn on_reply(&self, datagram: &[u8]) {
-        let Some(reply) = self.inner.state.lock().ok().and_then(|mut state| {
-            let reply = state.sent.iter().rev().find_map(|(at, sent)| {
-                (at.elapsed() < ANSWER_WINDOW)
-                    .then(|| wire::open_reply(&self.inner.device, sent, datagram))
-                    .flatten()
-            })?;
-            state.retry.remove(&reply.device);
-            Some(reply)
-        }) else {
+        let Some(reply) =
+            self.inner
+                .state
+                .lock_recover()
+                .sent
+                .iter()
+                .rev()
+                .find_map(|(at, sent)| {
+                    (at.elapsed() < ANSWER_WINDOW)
+                        .then(|| wire::open_reply(&self.inner.device, sent, datagram))
+                        .flatten()
+                })
+        else {
             return;
         };
+        self.inner.state.lock_recover().retry.remove(&reply.device);
         let Ok(id) = EndpointId::from_bytes(&reply.device) else {
             return;
         };
@@ -420,9 +419,7 @@ impl AddressLookup for LanDiscovery {
             .filter(|addr| !addr.ip().is_loopback())
             .copied()
             .collect();
-        if let Ok(mut current) = self.inner.addrs.lock() {
-            *current = addrs;
-        }
+        *self.inner.addrs.lock_recover() = addrs;
     }
 
     fn resolve(&self, endpoint_id: EndpointId) -> Option<BoxStream<Result<Item, Error>>> {

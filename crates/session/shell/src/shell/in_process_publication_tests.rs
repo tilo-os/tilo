@@ -9,7 +9,7 @@ fn authorized_person_session(
     std::fs::create_dir_all(profile).unwrap();
     let session = crate::runtime_host::Session::start(profile).unwrap();
     let room = session.room.clone();
-    let socket = session.broker.capnp_socket().to_path_buf();
+    let socket = session.broker.app_socket().to_path_buf();
     let identity = session.identity_socket().to_path_buf();
     let apps = InProcessApps::at(
         &profile.join("apps"),

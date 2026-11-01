@@ -8,16 +8,52 @@ use tilo_actions::{DoorError, ResourceSpec};
 use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, reading};
 
-use super::{Device, SOUND, Sound, SoundAction, VOLUME_STEP, resource};
+use super::{Card, Device, Profile, SOUND, Sound, SoundAction, Stream, VOLUME_STEP, resource};
 
 impl From<&AudioDevice> for Device {
     fn from(device: &AudioDevice) -> Self {
         Self {
             node: device.id,
+            name: device.name.clone(),
             label: device.description.clone(),
             chosen: device.is_default,
             volume: device.volume,
             muted: device.muted.unwrap_or(false),
+            channels: device.channels,
+            codec: device.codec.clone(),
+        }
+    }
+}
+
+impl From<&media::audio::AudioStream> for Stream {
+    fn from(stream: &media::audio::AudioStream) -> Self {
+        Self {
+            node: stream.id,
+            app: stream.app.clone(),
+            media: stream.media_name.clone(),
+            playback: stream.playback,
+            target: stream.target_id,
+            volume: stream.volume,
+            muted: stream.muted.unwrap_or(false),
+        }
+    }
+}
+
+impl From<&media::audio::AudioHardwareDevice> for Card {
+    fn from(card: &media::audio::AudioHardwareDevice) -> Self {
+        Self {
+            node: card.id,
+            label: card.description.clone(),
+            profile: card.active_profile,
+            profiles: card
+                .profiles
+                .iter()
+                .map(|profile| Profile {
+                    index: profile.index,
+                    label: profile.description.clone(),
+                    available: profile.available,
+                })
+                .collect(),
         }
     }
 }
@@ -33,6 +69,7 @@ impl Sound {
             volume: output.and_then(|device| device.volume),
             muted: output.and_then(|device| device.muted).unwrap_or(false),
             input: input.map(|device| device.id),
+            input_volume: input.and_then(|device| device.volume),
             input_muted: input.and_then(|device| device.muted).unwrap_or(false),
             // A speaker group's sink is where its set plays, not an output
             // of its own: the speaker groups list the set.
@@ -43,6 +80,13 @@ impl Sound {
                 .map(Device::from)
                 .collect(),
             inputs: graph.sources.iter().map(Device::from).collect(),
+            streams: graph
+                .playback_streams
+                .iter()
+                .chain(&graph.record_streams)
+                .map(Stream::from)
+                .collect(),
+            hardware: graph.hardware.iter().map(Card::from).collect(),
             pending: Vec::new(),
             problem: None,
         }
@@ -79,11 +123,35 @@ impl Graph for SystemGraph {
 /// A change to make on the graph.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Change {
-    Volume(f32),
+    Volume {
+        level: f32,
+        /// Raising the sound out of silence is the person asking to hear
+        /// it, so the change unmutes as well.
+        unmute: bool,
+    },
     Mute(bool),
     Output(u32),
     Input(u32),
     InputMute(bool),
+    InputVolume(f32),
+    StreamRoute {
+        stream: u32,
+        /// The output (or input) it plays through; `None` follows the
+        /// default again.
+        device: Option<u32>,
+    },
+    StreamVolume {
+        stream: u32,
+        level: f32,
+    },
+    StreamMute {
+        stream: u32,
+        muted: bool,
+    },
+    Profile {
+        device: u32,
+        profile: u32,
+    },
 }
 
 impl Change {
@@ -91,10 +159,26 @@ impl Change {
     fn make(self, graph: &AudioGraph, control: &dyn GraphControl) -> Result<(), String> {
         let output = || graph.default_sink().ok_or("there is no sound output");
         let input = || graph.default_source().ok_or("there is no sound input");
+        let node_of = |node: u32| {
+            graph
+                .playback_streams
+                .iter()
+                .chain(&graph.record_streams)
+                .find(|stream| stream.id == node)
+                .ok_or_else(|| "that application's stream has ended".to_string())
+        };
         match self {
-            Self::Volume(level) => control.set_node_volume(output()?.id, level.clamp(0.0, 1.0)),
+            Self::Volume { level, unmute } => {
+                let node = output()?;
+                control.set_node_volume(node.id, level.clamp(0.0, 1.0))?;
+                if unmute && node.muted == Some(true) {
+                    control.set_node_mute(node.id, false)?;
+                }
+                Ok(())
+            }
             Self::Mute(muted) => control.set_node_mute(output()?.id, muted),
             Self::InputMute(muted) => control.set_node_mute(input()?.id, muted),
+            Self::InputVolume(level) => control.set_node_volume(input()?.id, level.clamp(0.0, 1.0)),
             Self::Output(node) => {
                 graph.sink_by_id(node).ok_or("that output is gone")?;
                 control.set_default_sink(node)?;
@@ -115,6 +199,23 @@ impl Change {
                 }
                 Ok(())
             }
+            Self::StreamRoute { stream, device } => {
+                let known = node_of(stream)?;
+                let Some(device) = device else {
+                    return control.unroute_stream(known.id);
+                };
+                let target = if known.playback {
+                    graph.sink_by_id(device)
+                } else {
+                    graph.sources.iter().find(|source| source.id == device)
+                };
+                control.route_stream(known.id, target.ok_or("that device is gone")?.serial)
+            }
+            Self::StreamVolume { stream, level } => {
+                control.set_node_volume(node_of(stream)?.id, level.clamp(0.0, 1.0))
+            }
+            Self::StreamMute { stream, muted } => control.set_node_mute(node_of(stream)?.id, muted),
+            Self::Profile { device, profile } => control.set_device_profile(device, profile),
         }
     }
 }
@@ -212,6 +313,20 @@ fn refresh(jobs: &Jobs<dyn Graph, Landed>) {
     jobs.run(|graph| Landed::Read(Sound::of(&graph.read())));
 }
 
+/// The level a `f64` argument names, from 0 to 1.
+fn level_of(level: f64) -> Result<f32, DoorError> {
+    if !(0.0..=1.0).contains(&level) {
+        return Err(DoorError::InvalidArguments(format!(
+            "a level is from 0 to 1, not {level}"
+        )));
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a level from 0 to 1 fits a f32"
+    )]
+    Ok(level as f32)
+}
+
 impl Service for SoundService {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![resource(&self.sound)]
@@ -231,25 +346,36 @@ impl Service for SoundService {
         let id = action.id();
         let change = match action {
             SoundAction::SetVolume { level } => {
-                if !(0.0..=1.0).contains(&level) {
-                    return Err(DoorError::InvalidArguments(format!(
-                        "a volume is from 0 to 1, not {level}"
-                    )));
+                let level = level_of(level)?;
+                // A slider still at or above the level it reads, moved up,
+                // is the person turning the sound back on.
+                Change::Volume {
+                    level,
+                    unmute: level > 0.0 && level >= self.sound.volume.unwrap_or(0.0),
                 }
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "a level from 0 to 1 fits a f32"
-                )]
-                Change::Volume(level as f32)
             }
-            SoundAction::VolumeUp => Change::Volume(self.stepped(VOLUME_STEP)),
-            SoundAction::VolumeDown => Change::Volume(self.stepped(-VOLUME_STEP)),
+            SoundAction::VolumeUp => Change::Volume {
+                level: self.stepped(VOLUME_STEP),
+                unmute: true,
+            },
+            SoundAction::VolumeDown => Change::Volume {
+                level: self.stepped(-VOLUME_STEP),
+                unmute: false,
+            },
             SoundAction::SetMuted { muted } => Change::Mute(muted),
             SoundAction::ToggleMuted => Change::Mute(!self.sound.muted),
             SoundAction::RouteOutput { node } => Change::Output(node),
             SoundAction::SelectInput { node } => Change::Input(node),
             SoundAction::SetInputMuted { muted } => Change::InputMute(muted),
             SoundAction::ToggleInputMuted => Change::InputMute(!self.sound.input_muted),
+            SoundAction::SetInputVolume { level } => Change::InputVolume(level_of(level)?),
+            SoundAction::RouteStream { stream, device } => Change::StreamRoute { stream, device },
+            SoundAction::SetStreamVolume { stream, level } => Change::StreamVolume {
+                stream,
+                level: level_of(level)?,
+            },
+            SoundAction::SetStreamMuted { stream, muted } => Change::StreamMute { stream, muted },
+            SoundAction::SetProfile { device, profile } => Change::Profile { device, profile },
         };
         Ok(self.start(id, change))
     }

@@ -382,30 +382,25 @@ fn item_bytes<T: IndexValue>(path: &Path, fact: &T) -> io::Result<Vec<u8>> {
 }
 fn write_item<T: IndexValue>(writer: &mut impl Write, path: &Path, fact: &T) -> io::Result<()> {
     let bytes = item_bytes(path, fact)?;
-    let length = u32::try_from(bytes.len()).map_err(io::Error::other)?;
-    writer.write_all(&length.to_le_bytes())?;
-    writer.write_all(&bytes)
+    wire_frame::Framing::little_endian(T::RECORD_BYTES)
+        .reject_empty()
+        .write(writer, &bytes)
+        .map_err(|error| match error {
+            wire_frame::FrameError::Io(error) => error,
+            _ => changed("Inventory record exceeds bound"),
+        })
 }
 fn read_bytes(reader: &mut impl Read, record_limit: usize) -> io::Result<Option<Vec<u8>>> {
-    let mut length = [0u8; 4];
-    let first = length
-        .first_mut()
-        .ok_or_else(|| changed("Inventory length missing"))?;
-    if reader.read(std::slice::from_mut(first))? == 0 {
-        return Ok(None);
-    }
-    reader.read_exact(
-        length
-            .get_mut(1..)
-            .ok_or_else(|| changed("Inventory length missing"))?,
-    )?;
-    let count = usize::try_from(u32::from_le_bytes(length)).map_err(io::Error::other)?;
-    if count == 0 || count > record_limit {
-        return Err(changed("Inventory record length invalid"));
-    }
-    let mut bytes = vec![0; count];
-    reader.read_exact(&mut bytes)?;
-    Ok(Some(bytes))
+    wire_frame::Framing::little_endian(record_limit)
+        .reject_empty()
+        .read(reader)
+        .map_err(|error| match error {
+            wire_frame::FrameError::Io(error) => error,
+            wire_frame::FrameError::Truncated => {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "Inventory record truncated")
+            }
+            _ => changed("Inventory record length invalid"),
+        })
 }
 fn read_item<T: IndexValue>(reader: &mut impl Read) -> io::Result<Option<Item<T>>> {
     read_bytes(reader, T::RECORD_BYTES)?

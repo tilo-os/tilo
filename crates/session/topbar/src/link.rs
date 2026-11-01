@@ -56,25 +56,9 @@ pub struct BarFeed {
     pub profile: ProfileModel,
 }
 
-/// One display's bar.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BarPlace {
-    /// The display, by the desktop's id for it.
-    pub display: u32,
-    /// The display's whole rectangle: the bar stands on its top edge.
-    pub rect: Rect,
-    /// The full bar (the display in use); the others carry the compact one.
-    pub full: bool,
-}
-
-/// Where the bars go, in the bar's own coordinates.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Placement {
-    /// One per display. Empty: one full bar along the bar's own area.
-    pub bars: Vec<BarPlace>,
-    /// The displays a fullscreen window owns: their bar steps aside.
-    pub fullscreen: Vec<u32>,
-}
+/// One display's bar, and where the bars go: the desktop places them, the
+/// bar draws them (see [`tilo_desktop::topbar`]).
+pub use tilo_desktop::topbar::{BarPlace, Placement};
 
 /// A media transport command for what is playing on this machine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

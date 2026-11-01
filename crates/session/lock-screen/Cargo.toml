@@ -1,0 +1,25 @@
+[package]
+name = "tilo-lock-screen"
+description = "The session's lock screen as a process of its own: an ordinary Tilo app whose surface is the session's lock, shown on every output and taking every input."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tilo-lock-screen"
+path = "src/main.rs"
+
+[dependencies]
+tilo-sheets = { path = "../sheets" }
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+image = { workspace = true, features = ["png"] }
+libc.workspace = true
+tempfile.workspace = true
+tilo-compositor = { path = "../compositor" }
+
+[lints]
+workspace = true

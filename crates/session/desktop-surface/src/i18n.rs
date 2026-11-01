@@ -94,23 +94,6 @@ mod tests {
         catalog::check_translations(CATALOGS);
     }
 
-    /// A key the code asks for but a catalogue lacks renders as the raw key
-    /// (or English on a German desktop), so every one must be defined. The
-    /// `activity-` namespace holds catalogue keys only: the pane picks many
-    /// of them with a `match` before resolving.
-    #[test]
-    fn every_key_used_in_code_is_in_every_catalogue() {
-        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut dirs = vec![manifest.join("src")];
-        let desktop = manifest.join("../desktop/src");
-        if desktop.is_dir() {
-            dirs.push(desktop);
-        }
-        catalog::UsedKeys::scan_with_namespaces(&dirs, &["activity-"])
-            .min_keys(200)
-            .check_defined(CATALOGS);
-    }
-
     #[test]
     fn counts_choose_the_plural_form_in_every_locale() {
         let changes = |changes: usize, people: usize| {

@@ -177,7 +177,16 @@ pub(crate) fn section_of(
     state: &QuickSettingsState,
 ) -> Option<QsSection> {
     match control {
-        QuickSettingsControl::Wifi if state.radios.wifi_available => Some(QsSection::Wifi),
+        // The wired link is listed here too, on a machine without a radio.
+        QuickSettingsControl::Wifi
+            if state.radios.wifi_available
+                || state
+                    .wired
+                    .as_ref()
+                    .is_some_and(|wired| wired.device.is_some()) =>
+        {
+            Some(QsSection::Wifi)
+        }
         QuickSettingsControl::Bluetooth => Some(QsSection::Bluetooth),
         QuickSettingsControl::Vpn => Some(QsSection::Vpn),
         // The one place the power mode is chosen.
@@ -601,6 +610,9 @@ pub(crate) struct NetworkFace {
     pub press: Option<QsEffect>,
     /// The password prompt opens under it.
     pub asking: Option<crate::WifiPasswordPrompt>,
+    /// The saved profile this network is, when the machine joins it by
+    /// itself.
+    pub profile: Option<String>,
 }
 
 /// One item of an open section.
@@ -608,13 +620,28 @@ pub(crate) struct NetworkFace {
 pub(crate) enum Item {
     /// A sentence standing for an empty or unavailable list.
     Message(String),
-    /// "Turn on" under a radio that is off.
-    TurnOn {
-        label: String,
-        effect: QsEffect,
-    },
     Network(NetworkFace),
+    /// A saved network this machine cannot see now; it can still be
+    /// forgotten, or kept from joining by itself.
+    Saved(crate::SavedNetwork),
+    /// The way into a network that broadcasts no name: the row that asks
+    /// for its name and password, or the form itself once it is up.
+    Hidden {
+        prompt: Option<crate::HiddenNetworkPrompt>,
+    },
+    /// The wired link, when this machine has an ethernet device.
+    Wired {
+        connected: bool,
+        /// The cable's address while it is up, else the device's name.
+        detail: Option<String>,
+    },
     Accessory(crate::BtDevice),
+    /// "Look for devices", or "Stop looking" while the panel is looking.
+    LookForDevices {
+        looking: bool,
+    },
+    /// A Bluetooth device in reach, which a press pairs.
+    Nearby(crate::BtNearby),
     Profile {
         name: String,
         active: bool,
@@ -637,6 +664,10 @@ pub(crate) enum Item {
     },
     Awake(String),
     Output(crate::SoundOutput),
+    /// The microphone that records, with its own level and mute.
+    Microphone(crate::SoundInput),
+    /// One application's stream, and the outputs it can move to.
+    Stream(StreamFace),
     /// A Devices row, which the desktop describes.
     Device(crate::hosted::HostedRow),
     /// The clipboard's copies, which the section filters as the person
@@ -646,6 +677,18 @@ pub(crate) enum Item {
         label: String,
         link: &'static str,
     },
+}
+
+/// One application's stream as the Sound section lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StreamFace {
+    pub stream: crate::SoundStream,
+    /// Where it goes now, in words: the output it plays on or the
+    /// microphone it records from.
+    pub goes: String,
+    /// The outputs it can move to, the one it plays on marked: empty for a
+    /// stream that records.
+    pub outputs: Vec<crate::SoundOutput>,
 }
 
 /// What `section` holds.
@@ -664,7 +707,19 @@ pub(crate) fn section(section: QsSection, state: &QuickSettingsState) -> Vec<Ite
 
 fn wifi(state: &QuickSettingsState) -> Vec<Item> {
     let mut items = Vec::new();
-    if state.radio_change_pending {
+    if let Some(wired) = &state.wired {
+        items.push(Item::Wired {
+            connected: wired.connected,
+            detail: if wired.connected {
+                wired.ipv4.clone().or_else(|| wired.device.clone())
+            } else {
+                wired.device.clone()
+            },
+        });
+    }
+    if !state.radios.wifi_available {
+        // A machine on a cable: there is no radio to switch.
+    } else if state.radio_change_pending {
         let on = matches!(
             state.radio_change,
             Some(os_actions::RadioChange::Wifi(true) | os_actions::RadioChange::Airplane(false))
@@ -675,62 +730,93 @@ fn wifi(state: &QuickSettingsState) -> Vec<Item> {
             "qs-turning-off"
         })));
     } else if !state.wifi {
+        // The tile the section opens under turns the radio on.
         items.push(Item::Message(wifi_off_message(state)));
-        if !state.radios.wifi_hardware_blocked {
-            items.push(Item::TurnOn {
-                label: t("qs-wifi-turn-on"),
-                effect: QsEffect::SetWifi { on: true },
-            });
-        }
     } else {
-        for network in ordered_networks(&state.wifi_networks) {
-            let joining = state.wifi_joining.as_deref() == Some(network.ssid.as_str());
-            let value = if joining {
-                Some(t("qs-connecting"))
-            } else if network.connected {
-                Some(t("qs-connected"))
-            } else if network.known {
-                Some(t("qs-wifi-known"))
-            } else {
-                None
-            };
-            let press = (!network.connected && state.wifi_joining.is_none()).then(|| {
-                if network.secure && !network.known {
-                    QsEffect::AskWifiPassword {
-                        network: network.ssid.clone(),
-                    }
-                } else {
-                    QsEffect::JoinWifi {
-                        network: network.ssid.clone(),
-                    }
-                }
-            });
-            items.push(Item::Network(NetworkFace {
-                ssid: network.ssid.clone(),
-                signal: network.signal,
-                secure: network.secure,
-                connected: network.connected,
-                value,
-                press,
-                asking: state
-                    .wifi_password
-                    .clone()
-                    .filter(|prompt| prompt.ssid == network.ssid),
-            }));
-        }
-        if state.wifi_networks.is_empty() {
-            items.push(Item::Message(t(if state.wifi_scanning {
-                "qs-wifi-scanning"
-            } else if state.wifi_scan_error.is_some() {
-                "qs-wifi-scan-failed"
-            } else {
-                "qs-wifi-none"
-            })));
-        }
+        items.extend(wifi_on(state));
     }
     items.push(Item::Settings {
-        label: t("qs-wifi-settings"),
+        label: t(if state.radios.wifi_available {
+            "qs-wifi-settings"
+        } else {
+            "qs-network-settings"
+        }),
         link: "settings://network",
+    });
+    items
+}
+
+/// What the section lists while the radio is on: the networks in reach, the
+/// saved ones this machine cannot see, and the way to join one whose name is
+/// hidden.
+fn wifi_on(state: &QuickSettingsState) -> Vec<Item> {
+    let mut items = Vec::new();
+    for network in ordered_networks(&state.wifi_networks) {
+        let joining = state.wifi_joining.as_deref() == Some(network.ssid.as_str());
+        let value = if joining {
+            Some(t("qs-connecting"))
+        } else if network.connected {
+            Some(t("qs-connected"))
+        } else if network.known {
+            Some(t("qs-wifi-known"))
+        } else {
+            None
+        };
+        let press = (!network.connected && state.wifi_joining.is_none()).then(|| {
+            if network.secure && !network.known {
+                QsEffect::AskWifiPassword {
+                    network: network.ssid.clone(),
+                }
+            } else {
+                QsEffect::JoinWifi {
+                    network: network.ssid.clone(),
+                }
+            }
+        });
+        items.push(Item::Network(NetworkFace {
+            ssid: network.ssid.clone(),
+            signal: network.signal,
+            secure: network.secure,
+            connected: network.connected,
+            value,
+            press,
+            asking: state
+                .wifi_password
+                .clone()
+                .filter(|prompt| prompt.ssid == network.ssid),
+            profile: state
+                .saved_networks
+                .iter()
+                .find(|saved| saved.name == network.ssid)
+                .map(|saved| saved.profile.clone()),
+        }));
+    }
+    if state.wifi_networks.is_empty() {
+        items.push(Item::Message(t(if state.wifi_scanning {
+            "qs-wifi-scanning"
+        } else if state.wifi_scan_error.is_some() {
+            "qs-wifi-scan-failed"
+        } else {
+            "qs-wifi-none"
+        })));
+    }
+    // Saved networks this machine cannot see: the only place they can be
+    // forgotten from, or kept from joining by themselves.
+    let mut unseen: Vec<crate::SavedNetwork> = state
+        .saved_networks
+        .iter()
+        .filter(|saved| {
+            !state
+                .wifi_networks
+                .iter()
+                .any(|network| network.ssid == saved.name)
+        })
+        .cloned()
+        .collect();
+    unseen.sort_by_key(|saved| saved.name.to_lowercase());
+    items.extend(unseen.into_iter().map(Item::Saved));
+    items.push(Item::Hidden {
+        prompt: state.wifi_hidden.clone(),
     });
     items
 }
@@ -746,16 +832,16 @@ fn bluetooth(state: &QuickSettingsState) -> Vec<Item> {
                 .cmp(&a.connected)
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
-        if devices.is_empty() {
+        if devices.is_empty() && state.bt_nearby.is_empty() {
             items.push(Item::Message(t("qs-bluetooth-empty")));
         }
         items.extend(devices.into_iter().map(Item::Accessory));
+        items.push(Item::LookForDevices {
+            looking: state.bt_scanning,
+        });
+        items.extend(state.bt_nearby.iter().cloned().map(Item::Nearby));
     } else {
         items.push(Item::Message(t("qs-bluetooth-off")));
-        items.push(Item::TurnOn {
-            label: t("qs-bluetooth-turn-on"),
-            effect: QsEffect::SetBluetooth { on: true },
-        });
     }
     items.push(Item::Settings {
         label: t("qs-bluetooth-pair"),
@@ -834,17 +920,77 @@ fn power_mode(state: &QuickSettingsState) -> Vec<Item> {
 }
 
 fn sound(state: &QuickSettingsState) -> Vec<Item> {
-    let mut items: Vec<Item> = state
-        .sound_outputs
-        .iter()
-        .cloned()
-        .map(Item::Output)
-        .collect();
+    let mut items: Vec<Item> = Vec::new();
+    // The microphone first and the outputs next, so where sound goes stays
+    // put however many applications come and go below them.
+    if let Some(microphone) = &state.microphone {
+        items.push(Item::Microphone(microphone.clone()));
+    }
+    items.extend(state.sound_outputs.iter().cloned().map(Item::Output));
+    items.extend(
+        state
+            .sound_streams
+            .iter()
+            .map(|stream| Item::Stream(stream_face(state, stream))),
+    );
     items.push(Item::Settings {
         label: t("qs-sound-settings"),
         link: "settings://sound",
     });
     items
+}
+
+/// One application's stream: where it goes now, and the outputs it can
+/// move to when it plays.
+fn stream_face(state: &QuickSettingsState, stream: &crate::SoundStream) -> StreamFace {
+    StreamFace {
+        stream: stream.clone(),
+        goes: stream_destination(state, stream),
+        outputs: if stream.playback {
+            state
+                .sound_outputs
+                .iter()
+                .map(|output| crate::SoundOutput {
+                    node: output.node,
+                    name: output.name.clone(),
+                    current: stream.target == Some(output.node),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+/// Where a stream goes, in words: the output it plays on, the microphone it
+/// records from, or the default it follows.
+fn stream_destination(state: &QuickSettingsState, stream: &crate::SoundStream) -> String {
+    if stream.playback {
+        let output = stream
+            .target
+            .and_then(|target| {
+                state
+                    .sound_outputs
+                    .iter()
+                    .find(|output| output.node == target)
+            })
+            .map_or_else(|| t("qs-default-output"), |output| output.name.clone());
+        t_args("qs-stream-plays-on", &[("output", output.into())])
+    } else {
+        let input = stream
+            .target
+            .and_then(|target| {
+                state
+                    .microphone
+                    .as_ref()
+                    .filter(|microphone| microphone.node == target)
+            })
+            .map_or_else(
+                || t("qs-default-input"),
+                |microphone| microphone.name.clone(),
+            );
+        t_args("qs-stream-records-from", &[("input", input.into())])
+    }
 }
 
 fn devices(state: &QuickSettingsState) -> Vec<Item> {
@@ -899,6 +1045,7 @@ pub(crate) fn copies_caption(query: &str, matches: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{SoundInput, SoundOutput, SoundStream};
 
     fn network(ssid: &str, signal: u8, connected: bool, known: bool) -> WifiNetwork {
         WifiNetwork {
@@ -1043,5 +1190,89 @@ mod tests {
         assert_eq!(titles("noon laptop"), ["Meeting at noon"]);
         assert!(titles("nothing").is_empty());
         assert_eq!(copies_caption("phone", 1), "One copy matches “phone”");
+    }
+
+    #[test]
+    fn the_sound_section_keeps_the_microphone_and_the_outputs_above_the_streams() {
+        let mut state = QuickSettingsState::fixture();
+        state.microphone = Some(SoundInput {
+            node: 50,
+            name: "Microphone".into(),
+            level: 0.5,
+            muted: false,
+        });
+        state.sound_outputs = vec![
+            SoundOutput {
+                node: 40,
+                name: "Speakers".into(),
+                current: true,
+            },
+            SoundOutput {
+                node: 41,
+                name: "Headphones".into(),
+                current: false,
+            },
+        ];
+        state.sound_streams = vec![
+            SoundStream {
+                node: 60,
+                label: "Music — Clair de lune".into(),
+                playback: true,
+                target: Some(41),
+                level: 0.3,
+                muted: false,
+            },
+            SoundStream {
+                node: 61,
+                label: "Browser — Recording".into(),
+                playback: false,
+                target: Some(50),
+                level: 0.8,
+                muted: false,
+            },
+        ];
+
+        let listed: Vec<String> = sound(&state)
+            .into_iter()
+            .map(|item| match item {
+                Item::Microphone(microphone) => format!("input:{}", microphone.node),
+                Item::Output(output) => format!("output:{}", output.node),
+                Item::Stream(stream) => format!("stream:{}:{}", stream.stream.node, stream.goes),
+                Item::Settings { .. } => "settings".to_owned(),
+                _ => "other".to_owned(),
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                "input:50",
+                "output:40",
+                "output:41",
+                "stream:60:Playing on Headphones",
+                "stream:61:Recording from Microphone",
+                "settings",
+            ],
+            "the microphone, the outputs, then every stream and the way to the settings"
+        );
+
+        let Item::Stream(playing) = &sound(&state)[3] else {
+            panic!("the playing stream's row");
+        };
+        assert_eq!(
+            playing
+                .outputs
+                .iter()
+                .map(|output| (output.name.as_str(), output.current))
+                .collect::<Vec<_>>(),
+            [("Speakers", false), ("Headphones", true)],
+            "the output it plays on is the one marked"
+        );
+        let Item::Stream(recording) = &sound(&state)[4] else {
+            panic!("the recording stream's row");
+        };
+        assert!(
+            recording.outputs.is_empty(),
+            "a stream that records does not move between outputs"
+        );
     }
 }

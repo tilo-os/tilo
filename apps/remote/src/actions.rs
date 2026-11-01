@@ -339,7 +339,14 @@ mod tests {
             ("local_path".to_owned(), serde_json::json!("log.txt")),
         ]);
         let refused = RemoteEffect::decode("fetch-file", &arguments).unwrap_err();
-        assert!(refused.contains("absolute"), "{refused}");
+        assert!(
+            matches!(
+                &refused,
+                ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                    if name == "local_path" && source.to_string().contains("absolute")
+            ),
+            "{refused}"
+        );
         let mut desktop = sample(Uuid::new_v4(), "Desktop");
         desktop.kind = ConnectionKind::Vnc;
         let (_, actions) = session_actions(&desktop, None);

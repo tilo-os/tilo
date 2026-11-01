@@ -11,8 +11,8 @@ use super::{
 use tilo_lock::MutexRecover as _;
 
 /// Handle an inbound `Delta`: validate the author, fan out to every
-/// other subscriber via the same path a federated peer relay uses,
-/// and account it in the metrics.
+/// other subscriber via the same path a change from an attached host
+/// takes, and account it in the metrics.
 #[derive(Clone)]
 pub(crate) struct StateSession {
     pub(crate) peer: AuthenticatedPeer,
@@ -101,15 +101,15 @@ pub struct StateSource {
     pub(super) policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     pub(super) own_user: [u8; 32],
     pub(super) agents: AgentRegistry,
-    pub(super) federation: Option<Arc<std::sync::atomic::AtomicBool>>,
+    pub(super) lease: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub(super) session_live: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 impl StateSource {
-    /// The source of an outbound federation lease. Its trust is the
-    /// relay's own user only — not the live handshake policy, which may admit
-    /// collaborators' roots — and it carries no agent delegations: a peer
-    /// relay is never an agent.
-    pub fn federated(
+    /// The source of an outbound lease to a host attached to the workspace.
+    /// Its trust is this host's own user only — not the live handshake policy,
+    /// which may admit collaborators' roots — and it carries no agent
+    /// delegations: a host carrying this one's changes is never an agent.
+    pub fn leased(
         peer: AuthenticatedPeer,
         tx: mpsc::Sender<Envelope>,
         disconnect: mpsc::Sender<()>,
@@ -127,7 +127,7 @@ impl StateSource {
             )),
             own_user,
             agents: AgentRegistry::default(),
-            federation: Some(lease),
+            lease: Some(lease),
             session_live: None,
         }
     }
@@ -150,7 +150,7 @@ impl StateSource {
             policy: session.trust_policy.clone(),
             own_user: *session.own_user_public_key,
             agents: session.agents.clone(),
-            federation: None,
+            lease: None,
             session_live: session.connection_live.cloned(),
         }
     }
@@ -188,11 +188,11 @@ impl StateSource {
     ) -> bool {
         self.alive()
             && room_access::decide(runtime, &self.trust(), &self.peer, op).admitted()
-            && match &self.federation {
+            && match &self.lease {
                 Some(lease) => {
                     lease.load(std::sync::atomic::Ordering::SeqCst)
                         && runtime
-                            .outbound_federation
+                            .outbound_leases
                             .get(&self.peer.device_public_key)
                             .is_some_and(|current| Arc::ptr_eq(current, lease))
                 }
@@ -352,13 +352,11 @@ impl StateDelivery {
             return false;
         };
         self.cleanup.is_none()
-            && peer.role == crate::auth::PeerRole::Device
             && self.live.load(std::sync::atomic::Ordering::SeqCst)
             && fanned.holds()
             && session.trust().principal(peer, workspace_id, now).is_ok()
             && self.source.as_ref().is_none_or(|source| {
-                source.federation.is_none()
-                    && source.peer.role == crate::auth::PeerRole::Device
+                source.lease.is_none()
                     && source.alive()
                     && source
                         .trust()
@@ -486,9 +484,10 @@ pub(super) async fn handle_delta(
             reason: "workspace not bound on this relay".into(),
         }));
     };
-    if peer.role == crate::auth::PeerRole::Device
-        && author_device_public_key != &peer.device_public_key
-    {
+    // A host attached to the workspace carries its members' changes under
+    // their keys; every other device writes only its own.
+    let attached = ws.lock().await.attached(&peer.device_public_key);
+    if author_device_public_key != &peer.device_public_key && !attached {
         return Err(PeerError::Protocol(
             "author does not match authenticated device".into(),
         ));
@@ -531,6 +530,7 @@ pub(super) async fn handle_delta(
         &ws,
         deciding_author(
             peer,
+            attached,
             session.own_device_public_key,
             author_device_public_key,
         ),
@@ -554,14 +554,14 @@ pub(super) async fn handle_delta(
     // it is taken after the workspace lock is released.
     let governor_tap = {
         let mut runtime = ws.lock().await;
-        if peer.role == crate::auth::PeerRole::Device {
+        if !attached {
             // The caret and typing this device sends next wait for this delta.
             runtime.note_delta(peer.device_public_key, tokio::time::Instant::now());
         }
         runtime.governor_tap.clone()
     };
     let governor = governor_tap.and_then(|tap| Some((tap, governor_notice(&env)?)));
-    enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
+    enqueue_state(&ws, env, Some(source), session.metrics.clone()).await?;
     if let Some((tap, body)) = governor {
         tell_governor(&tap, peer.device_public_key, body).await;
     }
@@ -591,17 +591,18 @@ pub(crate) async fn tell_governor(
 
 /// Whose standing decides `claimed`'s change that came over `peer`'s
 /// session. A device's session writes only its own (checked before). A
-/// peer relay carries its members' changes under their own keys, so each is
-/// decided as that member's, never as the relay's that carried it; one
-/// claiming this host's own device is decided as the carrying relay's: what
-/// this host's device writes, the room's governor's own, never reaches it
-/// from another host to be taken in.
+/// host attached to the workspace carries its members' changes under their
+/// own keys, so each is decided as that member's, never as that of the host
+/// that carried it; one claiming this host's own device is decided as the
+/// carrying host's: what this host's device writes, the room's governor's
+/// own, never reaches it from another host to be taken in.
 pub(super) fn deciding_author(
     peer: &AuthenticatedPeer,
+    attached: bool,
     own_device: &[u8; 32],
     claimed: &[u8; 32],
 ) -> [u8; 32] {
-    if peer.role == crate::auth::PeerRole::Device || claimed == own_device {
+    if !attached || claimed == own_device {
         peer.device_public_key
     } else {
         *claimed
@@ -684,8 +685,8 @@ pub(super) async fn handle_delta_prefix(
             reason: "workspace not bound on this relay".into(),
         }));
     };
-    if peer.role == crate::auth::PeerRole::Device
-        && author_device_public_key != &peer.device_public_key
+    if author_device_public_key != &peer.device_public_key
+        && !workspace.lock().await.attached(&peer.device_public_key)
     {
         return Err(PeerError::Protocol(
             "author does not match authenticated device".into(),
@@ -717,6 +718,7 @@ pub(super) async fn handle_delta_prefix(
         };
         let author = deciding_author(
             peer,
+            workspace.lock().await.attached(&peer.device_public_key),
             session.own_device_public_key,
             author_device_public_key,
         );
@@ -743,7 +745,6 @@ pub(super) async fn handle_delta_prefix(
             &workspace,
             envelope,
             Some(source.clone()),
-            peer.role,
             session.metrics.clone(),
         )
         .await?;

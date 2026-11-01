@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::NOTHING_LEFT;
 use super::obligations::{Checklist, OBLIGATIONS_LEFT};

@@ -2386,7 +2386,7 @@ fn assert_same_name_inline_wrapper_refused() {
     let clicked = std::rc::Rc::new(Cell::new(false));
     let observer = clicked.clone();
     let wrapper = Box::new(SameNameUnregisteredWrapper(
-        Button::new("ambiguous-child", "Child").on_click(move || observer.set(true)),
+        Button::new("ambiguous-child", "Child").on_effect(move || observer.set(true)),
     ));
     assert_eq!(
         std::ptr::from_ref(wrapper.as_ref()).cast::<()>(),

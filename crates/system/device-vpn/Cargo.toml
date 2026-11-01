@@ -36,6 +36,10 @@ default = ["service"]
 service = ["dep:tilo-seat-peer", "dep:tilo-files"]
 # The tunnel between two of a person's devices, over their iroh connection.
 tunnel = ["dep:iroh", "dep:tokio", "dep:bytes", "dep:postcard", "dep:tracing"]
+# What the session runs: the route through another device decided, and the
+# kill switch of the person's VPN profiles followed from the settings and
+# `NetworkManager`.
+session = ["tunnel", "dep:settings-store", "dep:tilo-nm", "dep:os-actions", "dep:hex", "tokio/rt", "tokio/sync"]
 # An in-memory packet device for tests of code that runs a tunnel.
 test-support = ["tunnel"]
 
@@ -50,6 +54,10 @@ tokio = { workspace = true, features = ["rt", "net", "sync", "time", "macros"], 
 bytes = { workspace = true, optional = true }
 postcard = { workspace = true, features = ["alloc"], optional = true }
 tracing = { workspace = true, optional = true }
+settings-store = { path = "../settings-store", features = ["watch"], optional = true }
+tilo-nm = { path = "../tilo-nm", optional = true }
+os-actions = { path = "../os-actions", optional = true }
+hex = { workspace = true, optional = true }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

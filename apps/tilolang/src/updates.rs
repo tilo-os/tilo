@@ -9,7 +9,7 @@
 //! A thread watches the directory, reads each new generation as a [`Bundle`] and wakes the
 //! windows, which take it over on their own thread ([`crate::window::Window`]): in place when
 //! the new build reads the state the old one wrote, and otherwise by starting the app over on the
-//! room record, as its next start would.
+//! workspace record, as its next start would.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};

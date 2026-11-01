@@ -5,6 +5,12 @@
 
 ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
+/// Load the palette's catalogue on this thread, so the rows it builds read in
+/// the desktop's language without reading a language pack there.
+pub fn ensure() {
+    CATALOG.ensure();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

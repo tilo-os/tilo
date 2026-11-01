@@ -345,7 +345,7 @@ fn a_comment_is_marked_on_its_cell_opens_from_it_and_names_its_author() {
         "the open thread offers Reply on its card"
     );
 
-    // The author by name: the room's name for their id, never the id.
+    // The author by name: the workspace's name for their id, never the id.
     let author = "4f1c9a7be0d23c58a6e1f0b9d7c4a2e85b3f6d1a9c0e7b2d4f8a1c3e5b7d9f0a";
     let stranger = "9e8d7c6b5a49382716051f2e3d4c5b6a79881726354f4e3d2c1b0a9f8e7d6c5b";
     app.attach_people(ui::framework::People::named(
@@ -356,7 +356,7 @@ fn a_comment_is_marked_on_its_cell_opens_from_it_and_names_its_author() {
     assert_eq!(
         app.author_name(stranger),
         "Someone",
-        "someone the room has not named yet is never shown by id"
+        "someone the workspace has not named yet is never shown by id"
     );
     assert_ne!(app.author_name("me"), "me", "the reader is not shown by id");
     assert_eq!(app.author_name(""), "Someone");

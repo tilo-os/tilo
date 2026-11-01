@@ -10,7 +10,7 @@
 //! one record of their app.
 
 use tilo_actions::door::ActionDescriptor;
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::AgentParticipant;
 use super::unopened::Reading;

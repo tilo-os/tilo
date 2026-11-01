@@ -14,6 +14,7 @@ use super::ShellNetwork;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::{HostIdentity, native_ingress};
+use tilo_peer_state::owner::session::Admitted;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -161,17 +162,6 @@ enum Slot {
 /// the owner's state file is published once for all of them.
 pub(super) const MAX_BATCH: usize = 256;
 
-/// An admission of a batch, for the loop to complete.
-pub(super) struct Admitted {
-    /// Each input, in the order it came, with what its admission decided.
-    pub(super) inputs: Vec<(
-        native_ingress::Input,
-        Result<tilo_peer_state::AdmissionReport, String>,
-    )>,
-    /// Whether the admission committed a new owner generation.
-    pub(super) changed: bool,
-}
-
 /// Where the admission handed off the loop stands.
 pub(super) enum Lane {
     /// None is in flight.
@@ -180,29 +170,6 @@ pub(super) enum Lane {
     Busy,
     /// One finished: complete it before any later event.
     Finished(Box<Admitted>),
-}
-
-/// Admit `inputs`, all of one relay session, as this device in one commit,
-/// and whether the owner's generation moved, read right after: what the
-/// loop-side remainder needs.
-pub(super) fn admit(inputs: Vec<native_ingress::Input>, identity: &HostIdentity) -> Admitted {
-    let Some(first) = inputs.first() else {
-        return Admitted {
-            inputs: Vec::new(),
-            changed: false,
-        };
-    };
-    let before = first.generation().ok();
-    let reports = native_ingress::Input::admit_all(&inputs, identity);
-    let changed = before != first.generation().ok();
-    let inputs = match reports {
-        Ok(reports) => inputs.into_iter().zip(reports).collect(),
-        Err(error) => inputs
-            .into_iter()
-            .map(|input| (input, Err(error.clone())))
-            .collect(),
-    };
-    Admitted { inputs, changed }
 }
 
 fn locked(slot: &Mutex<Slot>) -> MutexGuard<'_, Slot> {
@@ -322,10 +289,10 @@ impl ShellNetwork {
                                         on_sync();
                                     }
                                 },
-                                || admit(inputs, &identity),
+                                || native_ingress::Input::admit_batch(inputs, &identity),
                             );
                         }
-                        admit(inputs, &identity)
+                        native_ingress::Input::admit_batch(inputs, &identity)
                     }))
                     .map_or_else(
                         |_| {

@@ -46,6 +46,8 @@ export type DesktopNavigationCommand = {generation: string} & (
   {kind: "pan"; workspace: string; strip: string; offset: number} |
   {kind: "history"; route: DesktopRoute; target: "back" | "forward"} |
   {kind: "close"; route: DesktopRoute} |
+  /** Bring back the window closed last in the shown workspace, where it was. */
+  {kind: "reopen"} |
   {kind: "select"; route: DesktopRoute} |
   {kind: "strip"; workspace: string; strip: string} |
   {kind: "width"; route: DesktopRoute; permille: number} |

@@ -13,6 +13,7 @@ pub use crate::platform_impl::platform::{OsError, WindowId};
 pub use event_loop::sink::delivered_input_serial;
 pub use event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 pub use output::{MonitorHandle, VideoModeHandle};
+pub use window::layer::{Anchor, KeyboardInteractivity, Layer, LayerSurfaceAttributes};
 pub use window::Window;
 
 mod event_loop;

@@ -1,10 +1,12 @@
 //! Permissioned peer adapter for the ordinary native action broker.
 //! Only inert authenticated requests cross into its bounded `LocalSet` queue.
 use std::sync::Arc;
-use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
+use tilo_delivery_protocol::peer_actions::{ActionMessage, ActionSignatureError, DirectedAction};
 use tilo_relay_session::client::{CertifiedAction, CertifiedActionEvent};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use uuid::Uuid;
+
+use crate::collab_app_broker::peer_action_broker::PeerRefusal;
 
 /// Host-owned current certificate/revocation authority. Implementations read
 /// the owner's explicit identity store on every check; this is never supplied
@@ -351,22 +353,17 @@ impl PeerActionQueue {
         }
     }
 
-    /// Admit a freshly delivered signed action once: within its freshness
-    /// window and not delivered before. The broker still verifies the
-    /// signature, and refuses any effect that carries none.
-    fn admit_delivery(
-        &self,
-        evidence: &CertifiedAction,
-    ) -> Result<(), tilo_delivery_protocol::peer_actions::ActionSignatureError> {
-        let Some(signed) = evidence.signed() else {
-            return Ok(());
-        };
+    /// Admit a freshly delivered action once: within its freshness window and
+    /// not delivered before. A delivery without its source device's signature
+    /// is refused outright, whatever it asks for: a relay can forward an
+    /// action but never author one, so its word is not evidence.
+    fn admit_delivery(&self, evidence: &CertifiedAction) -> Result<(), PeerRefusal> {
+        let signed = signed_delivery(evidence.signed())?;
         self.replay
             .lock()
-            .map_err(|_| {
-                tilo_delivery_protocol::peer_actions::ActionSignatureError::ReplayCapacity
-            })?
+            .map_err(|_| PeerRefusal::Signature(ActionSignatureError::ReplayCapacity))?
             .admit(signed, tilo_clock::unix_now_ns())
+            .map_err(PeerRefusal::Signature)
     }
 
     /// The schedule of [`Self::liveness_due`]: its first probe one
@@ -404,6 +401,16 @@ impl PeerActionQueue {
             .map_err(effect_free_failure)
     }
 }
+
+/// The signature a delivery must carry. A relay can forward an action but
+/// never author one, so a delivery without its source device's signature is
+/// refused before anything looks at what it asks for.
+fn signed_delivery(
+    signed: Option<&tilo_delivery_protocol::peer_actions::SignedDirectedAction>,
+) -> Result<&tilo_delivery_protocol::peer_actions::SignedDirectedAction, PeerRefusal> {
+    signed.ok_or(PeerRefusal::SignatureRequired)
+}
+
 fn sequence(update: &tilo_actions::InvocationUpdate) -> Option<u64> {
     match update {
         tilo_actions::InvocationUpdate::Progress { sequence, .. }
@@ -418,7 +425,7 @@ fn send(
     message: ActionMessage,
 ) -> Result<(), tilo_relay_session::client::ClientError> {
     let request = evidence.action();
-    session.send_action(bounded_reply(request, message))
+    session.send_action(&bounded_reply(request, message))
 }
 
 pub(crate) fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAction {
@@ -431,12 +438,7 @@ pub(crate) fn bounded_reply(request: &DirectedAction, message: ActionMessage) ->
     };
     // Reject locally with the original correlation ID. Letting the relay reject
     // an invalid response reports only to us and leaves the caller waiting.
-    if !reply.validate()
-        || tilo_delivery_protocol::transport_v2::encode(
-            &tilo_delivery_protocol::transport_v2::EnvelopeV2::Directed(reply.clone()),
-        )
-        .is_err()
-    {
+    if !reply.validate() || !reply.wire_fits() {
         let diagnostics = reply_limit_diagnostics(&reply);
         tracing::warn!(
             message_kind = diagnostics.message_kind,
@@ -447,8 +449,8 @@ pub(crate) fn bounded_reply(request: &DirectedAction, message: ActionMessage) ->
             json_bytes_within_limit = diagnostics.json_bytes_within_limit,
             surface_count = ?diagnostics.surface_count,
             action_count = ?diagnostics.action_count,
-            envelope_encoded = diagnostics.envelope_encoded,
-            envelope_bytes = ?diagnostics.envelope_bytes,
+            action_fits = diagnostics.action_fits,
+            action_bytes = ?diagnostics.action_bytes,
             "native action reply exceeded transport limits"
         );
         reply.message = ActionMessage::Rejected {
@@ -471,8 +473,8 @@ struct ReplyLimitDiagnostics {
     json_bytes_within_limit: bool,
     surface_count: Option<usize>,
     action_count: Option<usize>,
-    envelope_encoded: bool,
-    envelope_bytes: Option<usize>,
+    action_fits: bool,
+    action_bytes: Option<usize>,
 }
 
 fn reply_limit_diagnostics(reply: &DirectedAction) -> ReplyLimitDiagnostics {
@@ -489,6 +491,7 @@ fn reply_limit_diagnostics(reply: &DirectedAction) -> ReplyLimitDiagnostics {
         ActionMessage::Update { .. } => "update",
         ActionMessage::Cancel { .. } => "cancel",
         ActionMessage::CancellationRequested { .. } => "cancellation_requested",
+        ActionMessage::Remote { .. } => "remote",
     };
     let catalogue = match message {
         ActionMessage::Catalogue { catalogue }
@@ -513,9 +516,7 @@ fn reply_limit_diagnostics(reply: &DirectedAction) -> ReplyLimitDiagnostics {
     let json_bytes_within_limit = json
         .as_ref()
         .is_ok_and(|bytes| bytes.len() <= tilo_delivery_protocol::peer_actions::MAX_PRIVATE_BYTES);
-    let encoded = tilo_delivery_protocol::transport_v2::encode(
-        &tilo_delivery_protocol::transport_v2::EnvelopeV2::Directed(reply.clone()),
-    );
+    let action_bytes = reply.wire_len();
     ReplyLimitDiagnostics {
         message_kind,
         route_valid: !reply.room.is_nil() && !reply.request_id.is_nil(),
@@ -525,8 +526,8 @@ fn reply_limit_diagnostics(reply: &DirectedAction) -> ReplyLimitDiagnostics {
         json_bytes_within_limit,
         surface_count,
         action_count,
-        envelope_encoded: encoded.is_ok(),
-        envelope_bytes: encoded.as_ref().ok().map(Vec::len),
+        action_fits: reply.wire_fits(),
+        action_bytes,
     }
 }
 
@@ -562,6 +563,29 @@ fn effect_free_failure(failure: RequestFailure) -> PeerActionAttachmentError {
 mod tests {
     use super::*;
 
+    /// No frame carries an unsigned action; the broker still refuses a
+    /// delivery without its source device's signature before it looks at
+    /// what the delivery asks for.
+    #[test]
+    fn an_unsigned_delivery_is_refused() {
+        assert_eq!(signed_delivery(None), Err(PeerRefusal::SignatureRequired));
+        let device = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let action = DirectedAction {
+            room: Uuid::new_v4(),
+            request_id: Uuid::new_v4(),
+            source: device.verifying_key().to_bytes(),
+            target: [2; 32],
+            message: ActionMessage::CatalogueRefresh { scope: None },
+        };
+        let signed = tilo_delivery_protocol::peer_actions::SignedDirectedAction::sign(
+            &action,
+            tilo_clock::unix_now_ns(),
+            &device,
+        )
+        .unwrap();
+        assert_eq!(signed_delivery(Some(&signed)).unwrap(), &signed);
+    }
+
     #[test]
     fn oversized_reply_returns_a_correlated_rejection_instead_of_disappearing() {
         let request = DirectedAction {
@@ -585,12 +609,7 @@ mod tests {
             (reply.source, reply.target),
             (request.target, request.source)
         );
-        assert!(
-            tilo_delivery_protocol::transport_v2::encode(
-                &tilo_delivery_protocol::transport_v2::EnvelopeV2::Directed(reply)
-            )
-            .is_ok()
-        );
+        assert!(reply.wire_fits());
     }
 
     #[test]
@@ -624,7 +643,7 @@ mod tests {
         assert!(diagnostics.json_bytes > tilo_delivery_protocol::peer_actions::MAX_PRIVATE_BYTES);
         assert_eq!(diagnostics.surface_count, Some(1));
         assert_eq!(diagnostics.action_count, Some(2));
-        assert!(!diagnostics.envelope_encoded);
+        assert!(!diagnostics.action_fits);
     }
 
     /// A heartbeat the broker never answers ends the attachment as

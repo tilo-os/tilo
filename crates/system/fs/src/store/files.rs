@@ -108,14 +108,6 @@ impl ContentStore {
     pub async fn blob_hashes(&self) -> Result<Vec<Hash>> {
         Ok(self.store().blobs().list().hashes().await?)
     }
-
-    /// Flush and close the store so another process may open the same
-    /// directory. Pending writes are durable once this returns.
-    pub async fn close(self) -> Result<()> {
-        self.store().sync_db().await?;
-        self.store().shutdown().await?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
