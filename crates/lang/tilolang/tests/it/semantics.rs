@@ -56,6 +56,34 @@ fn an_action_cannot_call_a_foreign_action() {
 }
 
 #[test]
+fn a_view_presses_a_foreign_action_on_a_resource_named_by_its_id() {
+    let got = crate::common::codes_with(
+        "use so.tilo.todo as todo\ntype S {\n    key: Text\n}\nview v(s: S) {\n    \
+         ui.Button(\"Done\") {\n        on press: todo.toggle(resource(s.key, of: todo.Todo))\n    }\n}",
+        &[todo_meta()],
+    );
+    assert_eq!(got, Vec::<String>::new());
+}
+
+#[test]
+fn resource_of_takes_another_packages_type() {
+    let own = crate::common::codes_with(
+        "type S {\n    key: Text\n}\nfn f(s: S) -> S {\n    return resource(s.key, of: S)\n}",
+        &[],
+    );
+    assert_eq!(own, vec!["E022"]);
+    let typed = crate::common::codes_with(
+        "use so.tilo.todo as todo\nfn f(id: Text) -> todo.TodoList {\n    return resource(id, of: todo.Todo)\n}",
+        &[todo_meta()],
+    );
+    assert_eq!(
+        typed,
+        vec!["E020"],
+        "a `todo.Todo` is not a `todo.TodoList`"
+    );
+}
+
+#[test]
 fn an_action_may_call_its_own_actions() {
     let src = "type C {\n    n: Int merge counter\n}\naction inner(c: C) {\n    c.n += 1\n}\naction outer(c: C) {\n    inner(c)\n    inner(c)\n}";
     let c = compile(src);

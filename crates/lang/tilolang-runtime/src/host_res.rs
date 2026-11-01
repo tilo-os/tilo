@@ -847,8 +847,11 @@ impl Core {
             return trap(format!("`{id}` is not a reference id"));
         };
         self.type_of_ref(&ty)?;
-        // A root nobody opened yet is still the root: it reads as it would start.
-        if !target.is_unmade_root() || self.store.borrow().type_of(&target).is_ok() {
+        // Another app's resource is its app's to know (`resource(id, of: T)`); a root nobody
+        // opened yet is still the root: it reads as it would start.
+        if !crate::foreign::is_foreign(&target)
+            && (!target.is_unmade_root() || self.store.borrow().type_of(&target).is_ok())
+        {
             self.verify_ref(&target)?;
         }
         let author = Some(self.module_of_frame()?);

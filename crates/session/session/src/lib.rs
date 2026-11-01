@@ -94,6 +94,7 @@ mod records;
 mod rotation;
 pub mod run;
 mod search;
+pub mod session_package;
 mod setup;
 mod sheets;
 pub mod shell;

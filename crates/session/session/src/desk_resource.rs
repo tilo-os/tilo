@@ -658,13 +658,15 @@ impl Desk {
     }
 }
 
+/// The desk's resource, named `label`: what it publishes, and what the session's package
+/// describes of it ([`crate::session_package`]).
+pub(crate) fn desk_spec(label: String) -> ResourceSpec {
+    offer::<DeskEffect>(ResourceSpec::new(DESK_RESOURCE, DESK_KIND, label))
+}
+
 impl Service for Desk {
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![offer::<DeskEffect>(ResourceSpec::new(
-            DESK_RESOURCE,
-            DESK_KIND,
-            self.person.clone(),
-        ))]
+        vec![desk_spec(self.person.clone())]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {

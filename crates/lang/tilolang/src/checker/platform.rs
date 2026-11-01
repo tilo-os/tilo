@@ -236,12 +236,24 @@ impl Checker<'_> {
     /// shell reads that resource — its actions, its title — without knowing the type ahead.
     /// `.none` for text that names no resource this store holds. A view that reads it runs
     /// again when the resource changes.
+    ///
+    /// `resource(id, of: alias.T)`: the resource of another package's type `T` at that id, as a
+    /// `T` — what an id another app gave names, read as the type its app says it is (a window
+    /// of the session's, by its address). Its fields read from what that app publishes, and its
+    /// actions go to that app, which refuses an id it holds no such resource at.
     pub(super) fn builtin_resource(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if let [a, of] = args
+            && a.name.is_none()
+            && of.name.as_ref().is_some_and(|n| n.name == "of")
+        {
+            return self.resource_of(a, of);
+        }
         let [a] = args else {
             self.err(
                 "E022",
                 span,
-                "`resource` takes the id of one resource: `resource(p.record)`",
+                "`resource` takes the id of one resource: `resource(p.record)`, \
+                 or `resource(id, of: alias.T)` for one of another package's type",
             );
             return Ex::error();
         };
@@ -257,6 +269,32 @@ impl Checker<'_> {
             Imp::ResourceRef,
             vec![id],
             Ty::Option(Box::new(Ty::Record(super::resource_key()))),
+        )
+    }
+
+    /// `resource(id, of: alias.T)` ([`Self::builtin_resource`]).
+    fn resource_of(&mut self, a: &ast::Arg, of: &ast::Arg) -> Ex {
+        let key = match self.type_named(&of.value) {
+            Some(Ty::Record(key)) if key.app != self.env.app => key,
+            _ => {
+                self.err(
+                    "E022",
+                    of.value.span,
+                    "`of:` names a type of a package this one uses (`of: session.Window`); \
+                     a resource of this package's own is read from the record that holds it",
+                );
+                return Ex::error();
+            }
+        };
+        let id = self.expr_as(&a.value, &Ty::Text);
+        Ex::host(
+            Imp::RefLit,
+            vec![
+                Ex::str(&key.app),
+                Ex::str(&format!("{}#{}", key.app, key.name)),
+                id,
+            ],
+            Ty::Record(key),
         )
     }
 

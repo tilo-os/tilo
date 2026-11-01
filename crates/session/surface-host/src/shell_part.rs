@@ -189,6 +189,30 @@ const SHELL_USES: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// What the session publishes, described as the package `so.tilo.session`
+/// (`tilo_session::session_package`): the shell calls the session's actions through it.
+const SESSION_DESCRIPTION: &str = include_str!("../../../../apps/tl/session/surface.toml");
+
+/// The package id of the session's description.
+pub const SESSION_APP: &str = "so.tilo.session";
+
+/// The session's package: its resources' types and actions, which the shell's views call as
+/// any package's (`session.show_surface(surface: "launcher")`).
+///
+/// # Errors
+/// The description does not read.
+pub fn session_package() -> Result<tilolang_tilo::tilolang::PackageMeta, String> {
+    tilolang_tilo::catalogue::described(SESSION_APP, "Session", SESSION_DESCRIPTION)
+}
+
+/// The resource each of the session's loose actions is published on, by the action's id.
+fn session_addresses() -> BTreeMap<String, String> {
+    tilolang_tilo::catalogue::addresses(SESSION_DESCRIPTION).unwrap_or_else(|error| {
+        tracing::error!(%error, "the session's description gives no addresses");
+        BTreeMap::new()
+    })
+}
+
 /// The shell package's ids lock, as it ships.
 #[must_use]
 pub const fn shell_ids() -> &'static str {
@@ -217,6 +241,7 @@ pub fn bar_layer() -> RootView {
 /// # Errors
 /// The packages' diagnostics, rendered with their file names.
 pub fn compile_shell() -> Result<Vec<Compiled>, String> {
+    let session = session_package()?;
     let mut out: Vec<Compiled> = Vec::new();
     for (dir, source, ids) in SHELL_USES {
         let lock = tilolang_tilo::tilolang::IdsLock::parse(ids).map_err(|e| e.to_string())?;
@@ -239,8 +264,11 @@ pub fn compile_shell() -> Result<Vec<Compiled>, String> {
             .iter()
             .map(|(path, text)| (format!("apps/tl/shell/{path}"), (*text).to_owned())),
     );
-    let imports: Vec<tilolang_tilo::tilolang::PackageMeta> =
-        out.iter().map(|c| c.meta.clone()).collect();
+    let imports: Vec<tilolang_tilo::tilolang::PackageMeta> = out
+        .iter()
+        .map(|c| c.meta.clone())
+        .chain([session])
+        .collect();
     let shell = tilolang_tilo::tilolang::compile_package_source(&source, &lock, &imports).map_err(
         |diagnostics| {
             diagnostics
@@ -1899,6 +1927,15 @@ impl Platform for ShellPlatform {
         let Some((shell, uses)) = self.packages.split_last() else {
             return 0;
         };
+        // The session's own package is a description: its actions run at the session's door.
+        match session_package() {
+            Ok(session) => {
+                if let Err(error) = host.runtime().load_foreign(session) {
+                    tracing::error!(%error, "the session's package did not load");
+                }
+            }
+            Err(error) => tracing::error!(%error, "the session's description does not read"),
+        }
         for compiled in uses {
             if let Err(error) = host.load_foreign_package(&compiled.wasm, &compiled.meta) {
                 tracing::error!(app = compiled.meta.app, %error, "a package the shell uses did not load");
@@ -1909,6 +1946,7 @@ impl Platform for ShellPlatform {
         }
         host.runtime().set_invoker(PlaceInvoker {
             link: Rc::clone(&self.link),
+            session: session_addresses(),
         });
         0
     }
