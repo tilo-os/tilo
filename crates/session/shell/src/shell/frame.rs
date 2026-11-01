@@ -2316,6 +2316,7 @@ impl FrameBuilder {
         self.peer_windows_quiet_at = (!pending).then_some(revisions);
         let epoch = revisions.room_epoch;
         let owed = pending
+            || crate::shell::peer_windows::launch_refused()
             || crate::shell::peer_windows::retry_requested()
             || crate::shell::peer_windows::install_requested()
             || crate::shell::record_hydration::any_waiting();
