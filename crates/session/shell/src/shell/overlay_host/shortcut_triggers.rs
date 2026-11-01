@@ -316,7 +316,7 @@ impl ShellOverlayHost {
             {
                 chrome.borrow().tree_mut().claim_schedule(room, claim);
             }
-            let caller = Caller::local_person(person).in_room(firing.room.clone());
+            let caller = Caller::local_person(person).in_workspace(firing.room.clone());
             match broker.start_triggered_shortcut_run(
                 &caller,
                 &firing.room,
@@ -463,7 +463,7 @@ impl ShellOverlayHost {
             };
             let caller = workspace.map(|workspace| {
                 Caller::local_person(state.local_user_for_room(&workspace.room()))
-                    .in_room(workspace.room().to_string())
+                    .in_workspace(workspace.room().to_string())
             });
             drop(tree);
             caller

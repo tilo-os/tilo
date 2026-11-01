@@ -23,6 +23,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use serde_json::{Value, json};
@@ -258,7 +259,7 @@ impl Desktop {
             .envs(env.iter().copied())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .expect("spawn the compositor under test");
 
         let log = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -743,7 +744,7 @@ impl Desktop {
             .env("WAYLAND_DISPLAY", self.display_name())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .unwrap_or_else(|e| panic!("start {}: {e}", binary.display()));
         let output = Arc::new(Mutex::new(String::new()));
         let stdout = child.stdout.take().expect("client stdout");
@@ -1255,7 +1256,7 @@ impl Pressure {
             .arg(busy.to_string())
             .arg(bytes.to_string())
             .stdin(Stdio::null())
-            .spawn()
+            .spawn_locked()
             .expect("start the pressure process");
         Self { child }
     }

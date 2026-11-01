@@ -761,7 +761,7 @@ impl Workspace {
     /// so this machine answers for nothing it does not own.
     pub fn surrender_governance(&mut self) -> bool {
         let had_owner = self.policy.owner.take().is_some();
-        let governance = roles::room_resource(&self.policy.workspace);
+        let governance = roles::workspace_resource(&self.policy.workspace);
         let dropped = self.revoke_grants_matching(|grant| {
             matches!(grant.subject, Subject::Person(_))
                 && grant.answer != Answer::Deny
@@ -988,7 +988,7 @@ impl Workspace {
         // A grant set is kept below no workspace in particular: assigning it
         // places it in this one.
         for rule in &mut preset.rules {
-            rule.node = rule.node.within_room();
+            rule.node = rule.node.within_workspace();
         }
         if let Some(existing) = self
             .presets
@@ -1096,7 +1096,7 @@ impl Workspace {
             })
             .collect();
         for grant in &grants {
-            if grant.node.room_id() != Some(room.as_str()) {
+            if grant.node.workspace_id() != Some(room.as_str()) {
                 return Err(Refusal::OutsideWorkspace(grant.node.clone()).into());
             }
             WorkspacePolicy::check_within(authority, grant, &cx)?;
@@ -1111,7 +1111,7 @@ impl Workspace {
 /// lets someone assign that one set.
 #[must_use]
 pub fn preset_assign_node(room: &str, name: &str) -> TreePath {
-    roles::room_resource(room)
+    roles::workspace_resource(room)
         .field("presets")
         .item(name.trim().to_lowercase())
         .action("assign")

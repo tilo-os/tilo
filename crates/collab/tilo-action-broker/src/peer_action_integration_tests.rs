@@ -22,7 +22,7 @@ fn a_device(fixture: &LocalDirectoryFixture, seed: u8) -> Caller {
             .verifying_key()
             .to_bytes(),
     )
-    .in_room(fixture.cluster_id.clone())
+    .in_workspace(fixture.cluster_id.clone())
 }
 
 fn device_door(

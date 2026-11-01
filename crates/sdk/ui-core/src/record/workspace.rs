@@ -48,7 +48,7 @@ impl WorkspaceRecords {
     /// The records of `workspace` that `owners` keep: one writer per app and
     /// workspace, shared with the owner's own windows in this process.
     #[must_use]
-    pub fn in_room(owners: RecordOwners, workspace: String, author: UserId) -> Self {
+    pub fn in_workspace(owners: RecordOwners, workspace: String, author: UserId) -> Self {
         Self::new(author, move |owner| {
             owners.clone().open_beside(owner, &workspace)
         })
@@ -111,7 +111,7 @@ mod tests {
     use super::*;
 
     fn records(store: &Rc<durable_store::MemoryStore>, author: &str) -> WorkspaceRecords {
-        WorkspaceRecords::in_room(
+        WorkspaceRecords::in_workspace(
             RecordOwners::with_store(Rc::clone(store) as Rc<dyn durable_store::DurableStore>),
             "00000000-0000-4000-8000-0000000000aa".into(),
             UserId(author.into()),
@@ -160,8 +160,8 @@ mod tests {
             RecordOwners::with_store(Rc::clone(&store) as Rc<dyn durable_store::DurableStore>);
         let workspace = "00000000-0000-4000-8000-0000000000aa".to_owned();
         let notes =
-            WorkspaceRecords::in_room(owners.clone(), workspace.clone(), UserId("a".into()));
-        let chat = WorkspaceRecords::in_room(owners, workspace, UserId("a".into()));
+            WorkspaceRecords::in_workspace(owners.clone(), workspace.clone(), UserId("a".into()));
+        let chat = WorkspaceRecords::in_workspace(owners, workspace, UserId("a".into()));
         let written = notes
             .open_record("so.tilo.chat", "tilo.workspace.emoji", &|_| Ok(()))
             .unwrap();

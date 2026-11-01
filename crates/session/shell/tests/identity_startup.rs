@@ -10,6 +10,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tempfile::TempDir;
 
@@ -65,7 +66,7 @@ fn provision_identity_fails_closed_without_replacing_metadata_when_secret_servic
         .env("TILO_STARTUP_WARM_VELLO", "1")
         .env("TILO_STARTUP_METRICS_PATH", &startup_metrics)
         .env("PATH", &bin)
-        .output()
+        .output_locked()
         .expect("run production shell binary");
     assert!(
         !status.status.success(),

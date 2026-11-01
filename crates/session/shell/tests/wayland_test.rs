@@ -8,6 +8,7 @@ use smithay::{
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tokio::sync::mpsc;
 
 /// Kills and reaps the sandboxed client on drop, so a panicking `.expect()`
@@ -108,7 +109,7 @@ fn test_wayland_handshake_fixed() {
     cmd.stdout(std::process::Stdio::from(log_file.try_clone().unwrap()));
     cmd.stderr(std::process::Stdio::from(log_file));
 
-    let mut child = ChildGuard(cmd.spawn().expect("Failed to spawn the test client"));
+    let mut child = ChildGuard(cmd.spawn_locked().expect("Failed to spawn the test client"));
 
     let mut event_received = false;
     let timeout = tilo_test_env::hang_deadline();

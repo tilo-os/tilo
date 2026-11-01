@@ -183,11 +183,11 @@ pub struct ChannelState {
     pub artifacts: HashMap<ArtifactId, ArtifactKind>,
 
     /// The app that owns each artifact, if known: the artifact's place in
-    /// the room's tree is `room › app › resource`.
+    /// the workspace's tree is `workspace › app › resource`.
     pub artifact_apps: HashMap<ArtifactId, String>,
 
     /// The record each artifact is, if known: the artifact's node is
-    /// `room › app › record`; otherwise the artifact id stands in.
+    /// `workspace › app › record`; otherwise the artifact id stands in.
     pub artifact_records: HashMap<ArtifactId, String>,
 
     /// The record kind each artifact is, if known: which of its app's
@@ -252,7 +252,7 @@ impl Default for ChannelState {
             artifact_kinds: HashMap::new(),
             room: DEFAULT_ROOM.to_owned(),
             surfaces: crate::receipt::Surfaces::default(),
-            grants: roles::room_role_grants(DEFAULT_ROOM, &Subject::Role(Role::Owner)),
+            grants: roles::workspace_role_grants(DEFAULT_ROOM, &Subject::Role(Role::Owner)),
             artifact_classifications: HashMap::new(),
             channel_min_clearance: None,
             last_seq_per_author: HashMap::new(),
@@ -492,7 +492,7 @@ pub fn validate_inbound_op(
     let grants = channel_state.grants.clone();
     let mut author = Party::new(subjects.to_vec(), &grants);
     if ra.role == Role::Owner {
-        author = author.owning(TreePath::room(&channel_state.room));
+        author = author.owning(TreePath::workspace(&channel_state.room));
     }
     validate_authorized_op(op, &Authority::person(author), channel_state)
 }
@@ -655,13 +655,13 @@ fn verify_attestation_chain(
     Ok(ra)
 }
 
-/// The node of a collaborative record: `room › app › resource`.
+/// The node of a collaborative record: `workspace › app › resource`.
 #[must_use]
 pub fn document_node(room: &str, app: &str, record: &str) -> TreePath {
-    TreePath::room(room).app(app).resource(record)
+    TreePath::workspace(room).app(app).resource(record)
 }
 
-/// Every record `room › app › resource` one of `grants` names (at the record
+/// Every record `workspace › app › resource` one of `grants` names (at the record
 /// or anywhere below it), as `(app, record)`, in grant order and possibly
 /// repeated.
 ///
@@ -679,7 +679,7 @@ pub fn named_records<'g>(
     use tilo_action_policy::{Level, Segment};
     grants.into_iter().filter_map(move |grant| {
         let [
-            Segment::Name(Level::Room, named_room),
+            Segment::Name(Level::Workspace, named_room),
             Segment::Name(Level::App, app),
             Segment::Name(Level::Resource, record),
             ..,

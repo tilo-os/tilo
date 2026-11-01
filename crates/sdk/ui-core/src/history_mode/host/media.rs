@@ -160,7 +160,7 @@ mod tests {
             generation: u64::MAX,
             resource: crate::history_mode::HistoryResource::new(
                 "profile",
-                "room",
+                "workspace",
                 "app",
                 crate::RecordId::for_tab(1),
             ),

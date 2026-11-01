@@ -15,6 +15,11 @@ pub struct Network {
     pub airplane_mode: bool,
     /// What `NetworkManager` found when it last checked the internet.
     pub connectivity: Connectivity,
+    /// The connection this machine's traffic leaves on: what the top bar
+    /// draws in its network glyph. `None` when the device could not be read,
+    /// which is not the same as offline.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<Link>,
     /// The networks this device keeps, in the order it lists them.
     pub saved: Vec<SavedNetwork>,
     /// Actions taken and not yet answered by the device, by id.
@@ -57,6 +62,44 @@ pub struct WifiNetwork {
     /// This device has joined it before and joins without asking.
     pub known: bool,
     pub connected: bool,
+}
+
+/// The connection this machine's traffic leaves on.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct Link {
+    pub kind: LinkKind,
+    /// What the connection is called: the network's name on Wi-Fi, the
+    /// profile's on a cable. `None` while nothing is connected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Signal strength from 0 to 4 on Wi-Fi, `0` on a cable and offline.
+    pub signal: u8,
+}
+
+/// What kind of connection it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LinkKind {
+    /// Nothing is connected.
+    #[default]
+    Offline,
+    Wired,
+    Wifi,
+}
+
+impl From<&os_actions::LinkStatus> for Link {
+    fn from(link: &os_actions::LinkStatus) -> Self {
+        Self {
+            kind: match link.kind {
+                os_actions::LinkKind::Offline => LinkKind::Offline,
+                os_actions::LinkKind::Wired => LinkKind::Wired,
+                os_actions::LinkKind::Wifi => LinkKind::Wifi,
+            },
+            name: link.name.clone(),
+            signal: link.signal,
+        }
+    }
 }
 
 /// The wired link.
@@ -437,4 +480,41 @@ pub fn ordered(mut networks: Vec<WifiNetwork>) -> Vec<WifiNetwork> {
     let mut seen = std::collections::BTreeSet::new();
     networks.retain(|network| !network.name.is_empty() && seen.insert(network.name.clone()));
     networks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_link_says_which_connection_the_traffic_leaves_on() {
+        let wifi = os_actions::LinkStatus {
+            kind: os_actions::LinkKind::Wifi,
+            name: Some("Home".to_owned()),
+            signal: 3,
+        };
+        assert_eq!(
+            Link::from(&wifi),
+            Link {
+                kind: LinkKind::Wifi,
+                name: Some("Home".to_owned()),
+                signal: 3,
+            }
+        );
+        let offline = Link::from(&os_actions::LinkStatus::offline());
+        assert_eq!(offline.kind, LinkKind::Offline);
+        assert_eq!(
+            offline.name, None,
+            "nothing is connected, so nothing is named"
+        );
+    }
+
+    #[test]
+    fn a_reading_published_before_the_link_existed_still_opens() {
+        let reading = serde_json::json!({ "wifi": { "on": true }, "airplane-mode": true });
+        let network: Network = serde_json::from_value(reading).expect("the older reading opens");
+        assert_eq!(network.link, None, "nothing read is not offline");
+        assert!(network.wifi.on);
+        assert!(network.airplane_mode);
+    }
 }

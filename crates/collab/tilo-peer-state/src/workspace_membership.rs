@@ -626,7 +626,7 @@ mod tests {
     fn presets_are_closed_admission_markers_without_admin_authority() {
         use tilo_action_policy::{ActionKind, Authority, Context, Party, WorkspacePolicy};
         let workspace = WorkspacePolicy::new("room", "owner");
-        let content = TreePath::room("room").app("notes").resource("page");
+        let content = TreePath::workspace("room").app("notes").resource("page");
         let comment = content.clone().field(roles::COMMENTS_FIELD).action("add");
         let invite = roles::governance_action("room", roles::governance::INVITE);
         for (id, read, undoable, comments, outside) in [
@@ -778,13 +778,13 @@ mod tests {
             (
                 WorkspaceMembershipCommand::RetiredGrantForTask {
                     task: "t".into(),
-                    node: TreePath::room("r"),
+                    node: TreePath::workspace("r"),
                     kinds: KindSet::READ,
                     answer: Answer::Allow,
                 },
                 [
-                    &[0x03, 0x01, b't', 0x06][..],
-                    b"room:r",
+                    &[0x03, 0x01, b't', 0x0b][..],
+                    b"workspace:r",
                     &[0x01, 0x00, 0x02],
                 ]
                 .concat(),
@@ -818,6 +818,25 @@ mod tests {
                 command
             );
         }
+    }
+
+    /// A grant command stored while the level was named `room` still reads, and
+    /// reads as the grant it was: the node it names is the workspace's.
+    #[test]
+    fn a_grant_command_stored_under_the_old_path_name_still_reads() {
+        let held = [
+            0x03, 0x01, b't', 0x06, b'r', b'o', b'o', b'm', b':', b'r', 0x01, 0x00, 0x02,
+        ];
+        let command = postcard::from_bytes::<WorkspaceMembershipCommand>(&held).unwrap();
+        assert_eq!(
+            command,
+            WorkspaceMembershipCommand::RetiredGrantForTask {
+                task: "t".into(),
+                node: TreePath::workspace("r"),
+                kinds: KindSet::READ,
+                answer: Answer::Allow,
+            }
+        );
     }
 
     #[test]

@@ -382,7 +382,7 @@ async fn mount_ranged_read_under_remote_apply_performance_gate() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn document_media_cold_range_performance_gate() {
     let dir = tempfile::tempdir().expect("media store tempdir");
-    let photos = BlobScope::new("room-1", "so.tilo.photos").expect("media scope");
+    let photos = BlobScope::new("workspace-1", "so.tilo.photos").expect("media scope");
     let len = usize::try_from(MAX_BLOB_BYTES).expect("media limit fits usize");
     let chunk = MAX_READ_CHUNK as usize;
     let data = deterministic_bytes(len);

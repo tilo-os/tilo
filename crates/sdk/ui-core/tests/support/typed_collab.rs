@@ -149,7 +149,7 @@ impl TypedBroker {
         (peer, client.into_raw_fd())
     }
 
-    /// Connect a production `CollaborationManager` to the shared test room.
+    /// Connect a production `CollaborationManager` to the shared test workspace.
     ///
     /// Returns once the manager's route is admitted and this service holds
     /// its document and presence subscriptions, so traffic sent from then on
@@ -173,7 +173,7 @@ impl TypedBroker {
     }
 
     /// Wait until `peer` holds document and presence subscriptions on the
-    /// `app_id` room.
+    /// `app_id` workspace.
     fn wait_subscribed(&self, app_id: &str, peer: u64, user_id: &str) {
         let channel =
             tilo_ui::collaboration::channel_key::format(app_id, &Uuid::nil().to_string(), "");
@@ -185,15 +185,15 @@ impl TypedBroker {
                     .lock()
                     .unwrap()
                     .get(&channel)
-                    .is_some_and(|room| {
-                        room.ops.iter().any(|sub| sub.peer == peer)
-                            && room.presence.iter().any(|sub| sub.peer == peer)
+                    .is_some_and(|workspace| {
+                        workspace.ops.iter().any(|sub| sub.peer == peer)
+                            && workspace.presence.iter().any(|sub| sub.peer == peer)
                     })
             },
         );
     }
 
-    /// Connect a production `CollaborationManager` to its own `app_id` room,
+    /// Connect a production `CollaborationManager` to its own `app_id` workspace,
     /// returning once this service holds its subscriptions there.
     pub fn route_manager(&self, user_id: &str, app_id: &str) -> CollaborationManager {
         let (peer, fd) = self.connect_peer(user_id);
@@ -210,7 +210,7 @@ impl TypedBroker {
     }
 }
 
-/// One endpoint's connection to the shared room.
+/// One endpoint's connection to the shared workspace.
 struct Connection {
     hub: Arc<Hub>,
     peer: u64,
@@ -384,11 +384,11 @@ impl Connection {
             });
         };
         let mut channels = self.hub.channels.lock().unwrap();
-        let room = channels.entry(channel.to_owned()).or_default();
+        let state = channels.entry(channel.to_owned()).or_default();
         let task = match topic {
             Topic::Ops => {
                 let (tx, mut rx) = mpsc::unbounded_channel();
-                room.ops.push(Subscription {
+                state.ops.push(Subscription {
                     peer: self.peer,
                     tx,
                 });
@@ -404,7 +404,7 @@ impl Connection {
             }
             Topic::Presence => {
                 let (tx, mut rx) = mpsc::unbounded_channel();
-                room.presence.push(Subscription {
+                state.presence.push(Subscription {
                     peer: self.peer,
                     tx,
                 });
@@ -421,7 +421,7 @@ impl Connection {
             // permission snapshots to publish.
             Topic::Context => {
                 let (tx, mut rx) = mpsc::unbounded_channel();
-                room.snapshot_requests.push(Subscription {
+                state.snapshot_requests.push(Subscription {
                     peer: self.peer,
                     tx,
                 });

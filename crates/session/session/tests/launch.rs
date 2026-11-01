@@ -42,7 +42,7 @@ fn host_app_declaring(
     desktop_id: &str,
     lines: &str,
     body: &str,
-) -> std::path::PathBuf {
+) -> PathBuf {
     let applications = home.data().join("applications");
     fs::create_dir_all(&applications).unwrap();
     let program = home.home().join("probe");
@@ -66,14 +66,14 @@ fn host_app_claiming(
     desktop_id: &str,
     body: &str,
     mime: Option<&str>,
-) -> std::path::PathBuf {
+) -> PathBuf {
     let claim = mime.map_or_else(String::new, |mime| format!("MimeType={mime}\n"));
     host_app_declaring(home, desktop_id, &claim, body)
 }
 
 /// A home of its own with `body` as the desktop entry `desktop_id` starts,
 /// and the path that body was written to.
-fn host_app(home: &tilo_test_env::TestHome, desktop_id: &str, body: &str) -> std::path::PathBuf {
+fn host_app(home: &tilo_test_env::TestHome, desktop_id: &str, body: &str) -> PathBuf {
     host_app_claiming(home, desktop_id, body, None)
 }
 
@@ -380,13 +380,13 @@ fn probe_session(
     started: &Path,
 ) -> (Session, Rc<Apps>, Arc<Launches>, tilo_test_env::StandIn) {
     let socket = home.runtime().join("wayland-7");
-    let launcher = installed_probe(home, started);
+    let probe = installed_probe(home, started);
     let mut environment = tilo_app_launch::SessionEnvironment::from_process();
     environment.wayland_socket = Some(socket);
     let apps = Rc::new(Apps::with_launcher(
         environment,
         None,
-        Some(launcher.path().to_owned()),
+        Some(probe.path().to_owned()),
     ));
     let launches = Arc::new(Launches::default());
     let session = Session::headless(
@@ -400,7 +400,7 @@ fn probe_session(
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
     )
     .expect("session");
-    (session, apps, launches, launcher)
+    (session, apps, launches, probe)
 }
 
 /// The window groups of the workspace in front, each with its tabs' titles in

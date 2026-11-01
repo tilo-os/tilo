@@ -29,9 +29,9 @@ fn operation() -> ExternalModerationOperation {
 
 #[tokio::test]
 async fn external_moderation_bridge_preserves_exact_record_invocation_operation_and_reply() {
-    let room = uuid::Uuid::new_v4();
-    let first_route = RouteSpec::record("so.tilo.store", room, "first");
-    let second_route = RouteSpec::record("so.tilo.store", room, "second");
+    let workspace = uuid::Uuid::new_v4();
+    let first_route = RouteSpec::record("so.tilo.store", workspace, "first");
+    let second_route = RouteSpec::record("so.tilo.store", workspace, "second");
     let (first, mut first_receive) = admit_for_test(first_route.channel_id()).unwrap();
     let (_second, mut second_receive) = admit_for_test(second_route.channel_id()).unwrap();
     let operation = operation();
@@ -86,7 +86,7 @@ async fn external_moderation_bridge_scoped_custody_rejects_changed_parameters_an
     use crate::invocation_scope::{
         PublishedInvocationLease, PublishedInvocationRequest, ResourceInvocationScope,
     };
-    let fixture = crate::history_mode::owner::RecordOwnerFixture::in_room(
+    let fixture = crate::history_mode::owner::RecordOwnerFixture::in_workspace(
         1980,
         "77777777-7777-4777-8777-777777777777",
     );

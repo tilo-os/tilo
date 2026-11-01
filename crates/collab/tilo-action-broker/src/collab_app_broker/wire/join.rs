@@ -96,11 +96,11 @@ impl AppConnection {
         // read a record whose kinds it declared it reads.
         let route_access = match self.lease.local_media.as_ref() {
             Some(app) => {
-                let person_room = verified_identity
+                let personal_cluster = verified_identity
                     .verified
-                    .owns_person_room(&route.cluster_id);
+                    .owns_personal_cluster(&route.cluster_id);
                 let now = state.policy_now_ns().map_err(BrokerError::failed)? / 1_000_000_000;
-                attested_route_access(&app.app_id, &route, person_room, || {
+                attested_route_access(&app.app_id, &route, personal_cluster, || {
                     identity_reads_record(
                         state.membership.as_ref(),
                         &verified_identity,

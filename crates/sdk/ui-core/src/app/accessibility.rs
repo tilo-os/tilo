@@ -819,6 +819,7 @@ impl App {
         }
         if self.focused_node != Some(node) {
             self.focused_node = Some(node);
+            self.focus_anchor = self.answer_name(node);
             self.layout.layout_dirty = true;
             self.needs_sync = true;
         }
@@ -855,6 +856,7 @@ impl App {
                 let _ = self.mutate_node(old, |widget| widget.set_focus(false));
             }
             self.focused_node = new_id;
+            self.focus_anchor = new_id.and_then(|node| self.answer_name(node));
             if let Some(node) = new_id {
                 let _ = self.mutate_node(node, |widget| widget.set_focus(true));
                 if self.accessibility.screen_reader.is_some() {

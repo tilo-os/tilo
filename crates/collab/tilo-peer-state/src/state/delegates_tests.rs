@@ -225,7 +225,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     );
     // Its person owns the workspace; the delegation bounds it to an Editor's
     // grants: it changes the workspace's records, and governs nothing.
-    let workspace_node = tilo_action_policy::TreePath::room(&workspace);
+    let workspace_node = tilo_action_policy::TreePath::workspace(&workspace);
     let governance = tilo_action_policy::roles::governance_action(
         &workspace,
         tilo_action_policy::roles::governance::SET_ROLE,

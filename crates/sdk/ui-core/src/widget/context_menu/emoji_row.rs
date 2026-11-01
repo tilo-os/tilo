@@ -130,8 +130,11 @@ impl ContextMenu {
             point.x >= cell.x0 - Self::cell_inset() / 2.0
                 && point.x < cell.x1 + Self::cell_inset() / 2.0
         });
-        if let Some(cell) = under {
+        if let Some(cell) = under
+            && self.emoji_cell != cell
+        {
             self.emoji_cell = cell;
+            self.dirty = true;
         }
     }
 
@@ -153,6 +156,7 @@ impl ContextMenu {
                 .checked_sub(1)
                 .unwrap_or(count.saturating_sub(1))
         };
+        self.dirty = true;
         true
     }
 

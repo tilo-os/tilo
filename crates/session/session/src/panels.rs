@@ -54,35 +54,6 @@ fn placement(x: i32, y: i32, w: i32, h: i32, scale: f64) -> Placement {
     }
 }
 
-/// Quick settings' host, with its readings kept where the session reads
-/// them too (a readout shows the level a key just changed).
-pub(crate) struct Tap {
-    pub(crate) inner: Rc<dyn tilo_quick_settings::host::PanelHost>,
-    pub(crate) feed: Readings,
-}
-
-/// The readings quick settings was lent, once it attached.
-pub(crate) type Readings = Rc<std::cell::RefCell<Option<tilo_quick_settings::host::Feed>>>;
-
-impl tilo_quick_settings::host::PanelHost for Tap {
-    fn attach(&self, feed: tilo_quick_settings::host::Feed) {
-        *self.feed.borrow_mut() = Some(feed.clone());
-        self.inner.attach(feed);
-    }
-
-    fn showing(&self, showing: &tilo_quick_settings::host::Showing) {
-        self.inner.showing(showing);
-    }
-
-    fn run(&self, effect: tilo_quick_settings::QsEffect) -> Result<(), String> {
-        self.inner.run(effect)
-    }
-
-    fn laid_out(&self, height: f64) {
-        self.inner.laid_out(height);
-    }
-}
-
 /// An app the bar opens under its right end, or beside the caret that asked
 /// for it: it shows while the stack has its surface up, stands where the
 /// stack places it, and a press anywhere else closes it — the session's
@@ -197,6 +168,10 @@ impl SurfaceHost for Popover {
         self.host.prepare_frame()
     }
 
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.host.next_deadline()
+    }
+
     fn cursor(&self) -> tilo_compositor::CursorIcon {
         self.host.cursor()
     }
@@ -285,6 +260,10 @@ impl SurfaceHost for Banners {
         self.host.prepare_frame()
     }
 
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.host.next_deadline()
+    }
+
     fn cursor(&self) -> tilo_compositor::CursorIcon {
         self.host.cursor()
     }
@@ -370,6 +349,10 @@ impl SurfaceHost for Readout {
 
     fn prepare_frame(&mut self) -> bool {
         self.host.prepare_frame()
+    }
+
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.host.next_deadline()
     }
 
     fn cursor(&self) -> tilo_compositor::CursorIcon {
@@ -463,6 +446,10 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
 
     fn prepare_frame(&mut self) -> bool {
         self.0.borrow_mut().prepare_frame()
+    }
+
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.0.borrow().next_deadline()
     }
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {

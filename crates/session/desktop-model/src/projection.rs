@@ -262,7 +262,7 @@ pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::Works
     let grants = blob_map_of(doc, ROOM_GRANTS_KEY)
         .into_iter()
         .map(|(_, grant): (String, tilo_action_policy::Grant)| grant)
-        .filter(|grant| grant.node.room_id() == Some(room))
+        .filter(|grant| grant.node.workspace_id() == Some(room))
         .collect();
     tilo_action_policy::WorkspacePolicy {
         workspace: room.to_owned(),
@@ -859,7 +859,7 @@ mod tests {
         let grant = Grant::new(
             "bob-mail",
             Subject::person("bob"),
-            TreePath::room("r")
+            TreePath::workspace("r")
                 .app("mail")
                 .any(Level::Resource)
                 .any(Level::Action),

@@ -218,7 +218,7 @@ pub fn view_of(block: &tilo_ui_graph::rich::Block, id: String) -> BlockView {
 }
 
 /// What a reference reads as for the person reading, by how the text says it reads
-/// ([`tilo_ui_graph::rich::InlineView`]): a person as `@` and what the room calls them, a
+/// ([`tilo_ui_graph::rich::InlineView`]): a person as `@` and what the workspace calls them, a
 /// resource by its title now (after what its type shows beside it, a task's number), one kept
 /// elsewhere as its run, and one the reader cannot read as only that something is there.
 #[must_use]

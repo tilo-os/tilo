@@ -1,4 +1,5 @@
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[cfg(test)]
 mod tests {
@@ -32,7 +33,7 @@ mod tests {
             .arg("-c")
             .arg("echo 'Hello from Sandbox'; ls /usr/lib64/libwayland-client.so.0");
 
-        let output = cmd.output().expect("Failed to execute bwrap");
+        let output = cmd.output_locked().expect("Failed to execute bwrap");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("Hello from Sandbox"));
         assert!(stdout.contains("libwayland-client.so.0"));
@@ -86,7 +87,7 @@ mod tests {
             .arg("-c")
             .arg(format!("ls {node}"));
 
-        let output = cmd.output().expect("Failed to execute bwrap");
+        let output = cmd.output_locked().expect("Failed to execute bwrap");
         assert!(
             output.status.success(),
             "{node} was bound into the sandbox but is not visible inside it: {}",

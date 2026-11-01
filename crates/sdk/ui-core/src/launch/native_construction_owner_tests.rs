@@ -16,14 +16,14 @@ mod construction_owner {
         args: &LaunchArgs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
         let root = std::path::PathBuf::from(args.value("--fixture-root").unwrap());
-        let room = args.value("--fixture-room").unwrap();
+        let workspace = args.value("--fixture-workspace").unwrap();
         let id = crate::record::RecordId::parse(args.value("--fixture-record").unwrap()).unwrap();
         let mut owners = crate::record::RecordOwners::new(root.clone());
         let records = owners
-            .open(definition.app_id(), room)
+            .open(definition.app_id(), workspace)
             .map_err(LaunchError::Record)?;
         let views = std::rc::Rc::new(
-            crate::application_view::InstanceViewStore::new(root, probe::DEVICE, room)
+            crate::application_view::InstanceViewStore::new(root, probe::DEVICE, workspace)
                 .map_err(LaunchError::Restore)?,
         );
         let target = LaunchTarget::Record {
@@ -147,7 +147,7 @@ mod construction_owner {
 
     fn fixture_args(
         environment: &LaunchFixtureEnv,
-        room: uuid::Uuid,
+        workspace: uuid::Uuid,
         id: &crate::record::RecordId,
     ) -> LaunchArgs {
         let raw = vec![
@@ -159,8 +159,8 @@ mod construction_owner {
                 .join("component")
                 .display()
                 .to_string(),
-            "--fixture-room".into(),
-            room.to_string(),
+            "--fixture-workspace".into(),
+            workspace.to_string(),
             "--fixture-record".into(),
             id.as_str().into(),
         ];
@@ -169,7 +169,7 @@ mod construction_owner {
             &[],
             &[],
             &[],
-            &["--fixture-root", "--fixture-room", "--fixture-record"],
+            &["--fixture-root", "--fixture-workspace", "--fixture-record"],
             0,
         )
         .unwrap()
@@ -179,15 +179,15 @@ mod construction_owner {
         FACTORIES.set(0);
         RETIRED.set(retired);
         let environment = LaunchFixtureEnv::new();
-        let room = uuid::Uuid::new_v4();
+        let workspace = uuid::Uuid::new_v4();
         let id = crate::record::RecordId::minted();
         let mut history = automerge::AutoCommit::new();
         assert!(crate::record::init_scoped(
             &mut history,
             &id,
             &crate::record::RecordKind::new("probe"),
-            &room.to_string(),
-            Some(&room.to_string())
+            &workspace.to_string(),
+            Some(&workspace.to_string())
         ));
         history
             .put(automerge::ROOT, "body", "original before factory")
@@ -200,8 +200,8 @@ mod construction_owner {
                 &mut history,
                 &crate::record::RecordId::minted(),
                 &crate::record::RecordKind::new("probe"),
-                &room.to_string(),
-                Some(&room.to_string()),
+                &workspace.to_string(),
+                Some(&workspace.to_string()),
             );
         }
         history
@@ -211,7 +211,7 @@ mod construction_owner {
         let (manager, probe) =
             crate::collaboration::CollaborationManager::native_refresh_fixture_for_test(
                 probe::APP,
-                room,
+                workspace,
                 original,
             );
         let mut changed = Some(history.save());
@@ -229,8 +229,8 @@ mod construction_owner {
         let spec = LaunchSpec::from_definition(definition)
             .component_host(prepare)
             .native_services()
-            .allowed_live_options(&["--fixture-root", "--fixture-room", "--fixture-record"]);
-        let args = fixture_args(&environment, room, &id);
+            .allowed_live_options(&["--fixture-root", "--fixture-workspace", "--fixture-record"]);
+        let args = fixture_args(&environment, workspace, &id);
         let result = dispatch_definition_with_manager(
             &spec,
             &args,

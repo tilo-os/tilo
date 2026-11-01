@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(caps.len(), 2, "reading the workspace, and no governing it");
         assert_eq!(
             caps[0].node,
-            tilo_action_policy::TreePath::room(crate::owner::testing::WORKSPACE)
+            tilo_action_policy::TreePath::workspace(crate::owner::testing::WORKSPACE)
         );
         assert_eq!(caps[0].kinds, tilo_action_policy::KindSet::READ);
         assert_eq!(caps[0].answer, tilo_action_policy::Answer::Allow);

@@ -57,7 +57,7 @@ pub(crate) enum OwnerKind {
         lifetime: Weak<RecordOwnerLifetime>,
         /// Whether this app publishes the record's changes: the identity
         /// service signs a change on a route only for the app of that
-        /// route, or for one of the room's workspace records
+        /// route, or for one of the workspace's workspace records
         /// ([`StoredRecord::publishes`](crate::record::StoredRecord::publishes)).
         /// A record this app only reads is merged from its route, never
         /// published on it.
@@ -195,7 +195,7 @@ impl HistoryOwner {
                     .id,
             ),
         };
-        let (storage, package, room) = store
+        let (storage, package, workspace) = store
             .history_namespace(&checkout.id)
             .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
         if !package.is_empty() && package != app_id {
@@ -203,10 +203,10 @@ impl HistoryOwner {
         }
         Ok(HistoryResource::new(
             storage.unwrap_or_else(|| format!("memory:{lifetime}")),
-            if room.is_empty() {
+            if workspace.is_empty() {
                 format!("lifetime:{lifetime}")
             } else {
-                room
+                workspace
             },
             app_id,
             checkout.id.clone(),
@@ -497,12 +497,12 @@ pub(crate) struct RecordOwnerFixture {
 
 #[cfg(test)]
 impl RecordOwnerFixture {
-    /// Record `id` of `so.tilo.controlled` in `room`, holding `value: 1` and
+    /// Record `id` of `so.tilo.controlled` in `workspace`, holding `value: 1` and
     /// `owner: id`, with invocation provenance required.
-    pub(crate) fn in_room(id: u64, room: &str) -> Self {
+    pub(crate) fn in_workspace(id: u64, workspace: &str) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::record::RecordOwners::new(temp.path().join("profile"));
-        let store = owners.open("so.tilo.controlled", room).unwrap();
+        let store = owners.open("so.tilo.controlled", workspace).unwrap();
         let checkout = RecordCheckout::new(
             crate::RecordId::for_tab(id),
             crate::record::RecordKind::new("controlled"),

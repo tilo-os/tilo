@@ -379,3 +379,90 @@ fn a_trapped_modal_keeps_the_keyboard_where_the_person_put_it_when_what_it_shows
         "the keyboard stays on the answer the person tabbed to"
     );
 }
+
+/// A dialog that builds its answers afresh every time its tree is built, like
+/// a sheet that draws itself again from what it now says: none of the nodes
+/// the person was on survive, and nothing is left holding the focus flag.
+struct FreshAnswers {
+    kids: Vec<Box<dyn Widget>>,
+}
+impl FreshAnswers {
+    fn new() -> Self {
+        Self { kids: Vec::new() }
+    }
+    /// The answers drawn again where they stand, as a sheet does when the text
+    /// it shows changes: the widgets the person was on are gone before the
+    /// next tree is built.
+    fn drawn_again(&mut self) {
+        self.kids = Self::answers();
+    }
+    fn answers() -> Vec<Box<dyn Widget>> {
+        vec![
+            Box::new(Button::new("ok", "OK")),
+            Box::new(Button::new("cancel", "Cancel")),
+        ]
+    }
+}
+impl Widget for FreshAnswers {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.kids = Self::answers();
+        let kids: Vec<_> = self
+            .kids
+            .iter_mut()
+            .map(|c| c.build_layout(taffy, theme, node_map))
+            .collect();
+        taffy.widget_node(taffy::Style::default(), &kids, node_map, self)
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.kids.iter().map(Box::as_ref).collect()
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.kids
+            .iter_mut()
+            .map(|c| &mut **c as &mut (dyn Widget + '_))
+            .collect()
+    }
+    fn name(&self) -> &'static str {
+        "fresh-answers"
+    }
+}
+
+#[test]
+fn a_dialog_that_draws_itself_again_keeps_the_keyboard_on_the_answer_chosen() {
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(ModalDialog::new("Keep this change?", FreshAnswers::new()).open(true)),
+    );
+    app.init_layout();
+    assert!(app.accessibility.focus_trap_active);
+    let named = |app: &App, id| {
+        app.inspect_node(id, |widget| widget.test_id().map(str::to_owned))
+            .unwrap()
+    };
+    let cancel = app.focusable_order[1];
+    app.set_focused_node(Some(cancel));
+    assert_eq!(named(&app, cancel).as_deref(), Some("cancel"));
+
+    // What the dialog says changes between one frame and the next, so it draws
+    // its answers again where they stand: the widgets the person was on are
+    // gone, and with them the focus they held, before the tree is built again.
+    app.root_widget
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<ModalDialog<FreshAnswers>>())
+        .expect("the dialog is the tree")
+        .content_mut()
+        .drawn_again();
+    app.layout.request_rebuild();
+    app.rebuild_structure();
+    assert!(app.accessibility.focus_trap_active);
+    assert_eq!(
+        app.focused_node.and_then(|id| named(&app, id)),
+        Some("cancel".to_owned()),
+        "the keyboard stays on the answer the person chose"
+    );
+}

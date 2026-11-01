@@ -180,7 +180,7 @@ fn certificate_less_local_origin_is_compatible_only_without_identity_authority()
         admitted: Box::new(admitted),
         time: None,
     };
-    let caller = Caller::local_person(actor).in_room(&workspace_id);
+    let caller = Caller::local_person(actor).in_workspace(&workspace_id);
     for configured in [false, true] {
         let mut services = membership.services();
         if configured {

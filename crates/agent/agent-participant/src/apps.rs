@@ -854,7 +854,7 @@ fn seeded(
 ) -> Result<(RecordCheckout, Vec<u8>, bool), AppError> {
     let (checkout, bytes, created) = match seed {
         Seed::New => {
-            let checkout = if definition.keeps_room_record() {
+            let checkout = if definition.keeps_workspace_record() {
                 RecordCheckout::package_primary(definition.record_kind.clone())
             } else {
                 RecordCheckout::new(RecordId::minted(), definition.record_kind.clone())
@@ -863,7 +863,7 @@ fn seeded(
             (checkout, bytes, true)
         }
         Seed::NewAt(record) => {
-            if definition.keeps_room_record() != record.is_package_primary() {
+            if definition.keeps_workspace_record() != record.is_package_primary() {
                 return Err(AppError::Merge(
                     "record route does not match the app's workspace scope".into(),
                 ));
@@ -873,7 +873,7 @@ fn seeded(
             (checkout, bytes, true)
         }
         Seed::Existing { record, changes } => {
-            if definition.keeps_room_record() != record.is_package_primary() {
+            if definition.keeps_workspace_record() != record.is_package_primary() {
                 return Err(AppError::Merge(
                     "record route does not match the app's workspace scope".into(),
                 ));

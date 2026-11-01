@@ -3774,7 +3774,7 @@ async fn drive_shovel(
         participant_kind,
         mut signer,
     } = identity;
-    let person = person_room_presentation(&presentation, &mut signer).await;
+    let person = personal_cluster_presentation(&presentation, &mut signer).await;
     let media_routes = native_media::Routes::default();
     let _media_worker = native_media::start(media_rx, media_routes.clone());
     // Every route of a certified endpoint is an encrypted channel whose keys
@@ -4331,7 +4331,7 @@ async fn install_sdk_encryption(
     clippy::future_not_send,
     reason = "the host identity transport is constructed and retained only on the shovel LocalSet"
 )]
-async fn person_room_presentation(
+async fn personal_cluster_presentation(
     presentation: &[u8],
     signer: &mut LocalSdkDocumentSigner,
 ) -> Option<(String, Vec<u8>)> {
@@ -4363,7 +4363,7 @@ async fn person_room_presentation(
             return None;
         }
     };
-    let room = collab_types::person_room(&root.user_public_key).to_string();
+    let room = collab_types::personal_cluster(&root.user_public_key).to_string();
     if room == launch.workspace_id {
         return None;
     }

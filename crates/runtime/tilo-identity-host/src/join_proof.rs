@@ -1,15 +1,15 @@
-//! This device's signed collaboration-join proof for a room, minted once
-//! while nothing that decides it changed.
+//! This device's signed collaboration-join proof for a workspace, minted
+//! once while nothing that decides it changed.
 //!
-//! A join proof is this device's signature over the room's join bytes,
+//! A join proof is this device's signature over the workspace's join bytes,
 //! presented with its certificate. Ed25519 signatures are deterministic, so
-//! the proof for a room changes only when the identity the room selects, the
+//! the proof for a workspace changes only when the identity it selects, the
 //! device key, the device certificate or the device fleet changes, and each
 //! of those lives in a file. A proof is served from memory while one `stat`
 //! of every such file matches the stamp taken when it was minted:
 //!
-//! * the identity directory and its registry file: which identity the room
-//!   selects (a selection change, an imported or removed identity);
+//! * the identity directory and its registry file: which identity the
+//!   workspace selects (a selection change, an imported or removed identity);
 //! * the device key file: key rotation. A key in the macOS Keychain has no
 //!   file to stamp, so its proofs are never cached;
 //! * the selected identity's device certificate: certificate rotation;
@@ -37,19 +37,19 @@ use tilo_user_identity::{DeviceCert, IdentityPaths};
 use crate::device_fleet::{DeviceFleetStore, FileStamp, FleetStamps};
 use crate::registry::{DirStamp, IdentityRegistryStore};
 
-/// This device's certificate and its signed join proof for one room.
+/// This device's certificate and its signed join proof for one workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CurrentDeviceJoinProof {
     pub certificate: DeviceCert,
     pub proof: [u8; 64],
 }
 
-/// Everything a room's join proof is derived from, as of one `stat` of each
+/// Everything a workspace's join proof is derived from, as of one `stat` of each
 /// file. While two settled stamps are equal, so are the proofs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CurrentDeviceStamp {
     registry: RegistryStamp,
-    /// `None` while the room selects no identity.
+    /// `None` while the workspace selects no identity.
     device: Option<DeviceStamp>,
 }
 
@@ -122,7 +122,7 @@ impl DeviceStamp {
     }
 }
 
-/// The identity a room selected when its registry had one stamp.
+/// The identity a workspace selected when its registry had one stamp.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Selected {
     id: String,
@@ -131,7 +131,7 @@ struct Selected {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CacheKey {
-    room: String,
+    workspace: String,
     identity_dir: PathBuf,
     device_key: PathBuf,
     device_cert: PathBuf,
@@ -146,8 +146,8 @@ struct Entry {
 static CACHE: LazyLock<Mutex<HashMap<CacheKey, Entry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// A desktop holds a handful of rooms; the bound only stops a caller that
-/// names ever new rooms or roots from growing the cache without limit.
+/// A desktop holds a handful of workspaces; the bound only stops a caller
+/// that names ever new ones or roots from growing the cache without limit.
 const CACHE_LIMIT: usize = 256;
 
 #[cfg(test)]
@@ -180,9 +180,9 @@ impl Files {
         })
     }
 
-    fn key(&self, room: &str) -> CacheKey {
+    fn key(&self, workspace: &str) -> CacheKey {
         CacheKey {
-            room: room.to_owned(),
+            workspace: workspace.to_owned(),
             identity_dir: self.registry.identity_dir().to_path_buf(),
             device_key: self.paths.device_privkey.clone(),
             device_cert: self.paths.device_cert.clone(),
@@ -218,10 +218,10 @@ impl Files {
         Some(CurrentDeviceStamp { registry, device })
     }
 
-    /// The identity `room` selects now, read from the registry.
-    fn selected(room: &str) -> io::Result<Option<Selected>> {
+    /// The identity `workspace` selects now, read from the registry.
+    fn selected(workspace: &str) -> io::Result<Option<Selected>> {
         Ok(
-            crate::registry::selected_identity_profile(room)?.map(|profile| Selected {
+            crate::registry::selected_identity_profile(workspace)?.map(|profile| Selected {
                 id: profile.id,
                 user_public_key: profile.user_public_key,
             }),
@@ -249,13 +249,13 @@ fn remember(key: CacheKey, entry: Entry) {
     }
 }
 
-/// The stamp of everything `room`'s join proof is derived from: equal
+/// The stamp of everything `workspace`'s join proof is derived from: equal
 /// settled stamps mean an unchanged proof, including whether there is one.
-/// One `stat` per file once the room's selection is known; `None` when a
+/// One `stat` per file once its selection is known; `None` when a
 /// file can't be examined or the device key has no file, so the caller must
 /// treat the proof as changed.
 #[must_use]
-pub fn current_device_stamp(room: &str) -> Option<CurrentDeviceStamp> {
+pub fn current_device_stamp(workspace: &str) -> Option<CurrentDeviceStamp> {
     // An environment that names no identity directory names none on every
     // call: no identity, and nothing to change.
     let Ok(files) = Files::from_env() else {
@@ -268,7 +268,7 @@ pub fn current_device_stamp(room: &str) -> Option<CurrentDeviceStamp> {
         });
     };
     let registry = files.registry_stamp()?;
-    let key = files.key(room);
+    let key = files.key(workspace);
     let known = CACHE.lock().ok().and_then(|cache| {
         cache
             .get(&key)
@@ -280,7 +280,7 @@ pub fn current_device_stamp(room: &str) -> Option<CurrentDeviceStamp> {
     } else {
         let selected = match registry.dir {
             None => None,
-            Some(_) => Files::selected(room).ok()?,
+            Some(_) => Files::selected(workspace).ok()?,
         };
         if registry.settled() && files.registry_stamp() == Some(registry) {
             remember(
@@ -298,17 +298,17 @@ pub fn current_device_stamp(room: &str) -> Option<CurrentDeviceStamp> {
 }
 
 /// This device's certificate and its signed join proof for the identity
-/// selected in `room`, only while that certificate is valid, enrolled and not
-/// revoked. Served from memory while every file it is derived from is
+/// selected in `workspace`, only while that certificate is valid, enrolled
+/// and not revoked. Served from memory while every file it is derived from is
 /// unchanged (see the module documentation); otherwise derived and signed
 /// again through [`crate::broker::trusted_current_device`].
 ///
 /// # Errors
 ///
 /// As [`crate::broker::trusted_current_device`].
-pub fn trusted_current_join_proof(room: &str) -> io::Result<CurrentDeviceJoinProof> {
+pub fn trusted_current_join_proof(workspace: &str) -> io::Result<CurrentDeviceJoinProof> {
     let files = Files::from_env()?;
-    let key = files.key(room);
+    let key = files.key(workspace);
     let registry = files.registry_stamp();
     if let Some(registry) = registry {
         let cached = CACHE.lock().ok().and_then(|cache| {
@@ -322,15 +322,14 @@ pub fn trusted_current_join_proof(room: &str) -> io::Result<CurrentDeviceJoinPro
             return Ok(proof);
         }
     }
-    let selected = Files::selected(room)?;
+    let selected = Files::selected(workspace)?;
     let before = registry.and_then(|registry| files.stamp(registry, selected.as_ref()));
-    let (device, certificate) = crate::broker::trusted_current_device(room)?;
+    let (device, certificate) = crate::broker::trusted_current_device(workspace)?;
     #[cfg(test)]
     MINTS.with(|mints| mints.set(mints.get().saturating_add(1)));
+    let signed = runtime_identity::collaboration_join_signing_bytes(workspace);
     let proof = CurrentDeviceJoinProof {
-        proof: device
-            .sign(&runtime_identity::collaboration_join_signing_bytes(room))
-            .to_bytes(),
+        proof: device.sign(&signed).to_bytes(),
         certificate,
     };
     drop(device);
@@ -373,7 +372,7 @@ pub(crate) mod tests {
         paths: IdentityPaths,
         pub(crate) identity_id: String,
         pub(crate) user_public_key: [u8; 32],
-        pub(crate) room: String,
+        pub(crate) workspace: String,
         _env: tilo_test_env::ScopedEnv,
         _root: tempfile::TempDir,
     }
@@ -395,8 +394,8 @@ pub(crate) mod tests {
                 crate::provisioning::IdentityStorage::Files,
             )
             .expect("provision");
-            let room = uuid_like_room();
-            let profile = crate::registry::selected_identity_profile(&room)
+            let workspace = uuid_like_workspace();
+            let profile = crate::registry::selected_identity_profile(&workspace)
                 .expect("registry")
                 .expect("selected identity");
             let fixture = Self {
@@ -404,7 +403,7 @@ pub(crate) mod tests {
                 paths,
                 identity_id: profile.id,
                 user_public_key: profile.user_public_key,
-                room,
+                workspace,
                 _env: env,
                 _root: temp,
             };
@@ -448,7 +447,7 @@ pub(crate) mod tests {
         mints_on_this_thread().saturating_sub(before)
     }
 
-    fn uuid_like_room() -> String {
+    fn uuid_like_workspace() -> String {
         tilo_desktop_model::RoomId::new().to_string()
     }
 
@@ -465,7 +464,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn proof_issued_at(fixture: &Fixture) -> u64 {
-        trusted_current_join_proof(&fixture.room)
+        trusted_current_join_proof(&fixture.workspace)
             .expect("trusted device")
             .certificate
             .issued_at_ns
@@ -478,7 +477,8 @@ pub(crate) mod tests {
         let fleet_loads = crate::device_fleet::loads_on_this_thread();
         let mints = mints(|| {
             for _ in 0..3 {
-                proofs.push(trusted_current_join_proof(&fixture.room).expect("trusted device"));
+                proofs
+                    .push(trusted_current_join_proof(&fixture.workspace).expect("trusted device"));
             }
         });
         assert_eq!(mints, 1, "one mint serves every later call");
@@ -491,27 +491,30 @@ pub(crate) mod tests {
         ed25519_dalek::VerifyingKey::from_bytes(&proof.certificate.device_public_key)
             .expect("device key")
             .verify_strict(
-                &runtime_identity::collaboration_join_signing_bytes(&fixture.room),
+                &runtime_identity::collaboration_join_signing_bytes(&fixture.workspace),
                 &ed25519_dalek::Signature::from_bytes(&proof.proof),
             )
-            .expect("the proof is this device's signature for this room");
-        let other = uuid_like_room();
-        let other_proof = trusted_current_join_proof(&other).expect("another room");
-        assert_ne!(other_proof.proof, proof.proof, "a proof binds its room");
+            .expect("the proof is this device's signature for this workspace");
+        let other = uuid_like_workspace();
+        let other_proof = trusted_current_join_proof(&other).expect("another workspace");
+        assert_ne!(
+            other_proof.proof, proof.proof,
+            "a proof binds its workspace"
+        );
     }
 
     #[test]
     fn revocation_fails_the_very_next_call() {
         let fixture = Fixture::new();
-        trusted_current_join_proof(&fixture.room).expect("trusted device");
-        let stamp = current_device_stamp(&fixture.room).expect("stamp");
+        trusted_current_join_proof(&fixture.workspace).expect("trusted device");
+        let stamp = current_device_stamp(&fixture.workspace).expect("stamp");
         assert_eq!(
             mints(|| {
-                trusted_current_join_proof(&fixture.room).expect("cached");
+                trusted_current_join_proof(&fixture.workspace).expect("cached");
             }),
             0
         );
-        let device = trusted_current_join_proof(&fixture.room)
+        let device = trusted_current_join_proof(&fixture.workspace)
             .expect("trusted device")
             .certificate
             .device_public_key;
@@ -524,38 +527,38 @@ pub(crate) mod tests {
                 proof_issued_at(&fixture).saturating_add(1),
             )
             .expect("revoke");
-        let refused =
-            trusted_current_join_proof(&fixture.room).expect_err("a revoked device has no proof");
+        let refused = trusted_current_join_proof(&fixture.workspace)
+            .expect_err("a revoked device has no proof");
         assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
-        assert_ne!(current_device_stamp(&fixture.room), Some(stamp));
+        assert_ne!(current_device_stamp(&fixture.workspace), Some(stamp));
         // Even once the revoked fleet settles, nothing was cached.
         fixture.settle();
-        assert!(trusted_current_join_proof(&fixture.room).is_err());
+        assert!(trusted_current_join_proof(&fixture.workspace).is_err());
     }
 
     #[test]
     fn rewritten_certificate_or_key_mints_again() {
         let fixture = Fixture::new();
-        trusted_current_join_proof(&fixture.room).expect("trusted device");
+        trusted_current_join_proof(&fixture.workspace).expect("trusted device");
         for path in [fixture.cert_file(), fixture.paths.device_privkey.clone()] {
             let bytes = std::fs::read(&path).expect("read");
             std::fs::write(&path, &bytes).expect("rewrite");
             assert_eq!(
                 mints(|| {
-                    trusted_current_join_proof(&fixture.room).expect("still trusted");
+                    trusted_current_join_proof(&fixture.workspace).expect("still trusted");
                 }),
                 1,
                 "{} changed",
                 path.display()
             );
             fixture.settle();
-            trusted_current_join_proof(&fixture.room).expect("re-cached");
+            trusted_current_join_proof(&fixture.workspace).expect("re-cached");
         }
         std::fs::write(fixture.cert_file(), b"malformed").expect("break certificate");
-        assert!(trusted_current_join_proof(&fixture.room).is_err());
+        assert!(trusted_current_join_proof(&fixture.workspace).is_err());
     }
 
-    /// Wall time of re-deriving a room's proof from disk as every action
+    /// Wall time of re-deriving a workspace's proof from disk as every action
     /// call did before (registry, key, certificate, an uncached fleet load,
     /// a signature) against serving it from its stamps. Prints the numbers
     /// (`--nocapture`); the mint counts above are the regression guard.
@@ -563,14 +566,14 @@ pub(crate) mod tests {
     fn join_proof_cost() {
         const ROUNDS: u32 = 200;
         let fixture = Fixture::new();
-        trusted_current_join_proof(&fixture.room).expect("warm");
+        trusted_current_join_proof(&fixture.workspace).expect("warm");
         let started = std::time::Instant::now();
         for _ in 0..ROUNDS {
             let (key, _) =
-                crate::broker::trusted_current_device(&fixture.room).expect("trusted device");
+                crate::broker::trusted_current_device(&fixture.workspace).expect("trusted device");
             fixture.store().load(&fixture.identity_id).expect("fleet");
             let proof = key.sign(&runtime_identity::collaboration_join_signing_bytes(
-                &fixture.room,
+                &fixture.workspace,
             ));
             assert_eq!(proof.to_bytes().len(), 64);
         }
@@ -579,7 +582,7 @@ pub(crate) mod tests {
         let mints = mints(|| {
             let started = std::time::Instant::now();
             for _ in 0..ROUNDS {
-                trusted_current_join_proof(&fixture.room).expect("cached proof");
+                trusted_current_join_proof(&fixture.workspace).expect("cached proof");
             }
             cached = started.elapsed();
         });
@@ -600,11 +603,11 @@ pub(crate) mod tests {
         env.set("XDG_CONFIG_HOME", &config)
             .set("TILO_IDENTITY_ROOT", &system)
             .set(crate::provisioning::FILE_SECRETS_ENV, "1");
-        let room = uuid_like_room();
-        let stamp = current_device_stamp(&room).expect("no identity is a known state");
+        let workspace = uuid_like_workspace();
+        let stamp = current_device_stamp(&workspace).expect("no identity is a known state");
         assert!(stamp.settled());
-        assert_eq!(current_device_stamp(&room), Some(stamp));
-        assert!(trusted_current_join_proof(&room).is_err());
+        assert_eq!(current_device_stamp(&workspace), Some(stamp));
+        assert!(trusted_current_join_proof(&workspace).is_err());
     }
 
     #[test]
@@ -616,12 +619,12 @@ pub(crate) mod tests {
         )
         .expect("touch fleet");
         let mints = mints(|| {
-            trusted_current_join_proof(&fixture.room).expect("trusted");
-            trusted_current_join_proof(&fixture.room).expect("trusted");
+            trusted_current_join_proof(&fixture.workspace).expect("trusted");
+            trusted_current_join_proof(&fixture.workspace).expect("trusted");
         });
         assert_eq!(mints, 2, "a fleet written just now is read on every call");
         assert!(
-            !current_device_stamp(&fixture.room)
+            !current_device_stamp(&fixture.workspace)
                 .expect("stamp")
                 .settled()
         );

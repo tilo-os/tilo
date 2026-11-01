@@ -469,7 +469,7 @@ impl Widget for HistoryHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Authors are named by the room's participants; a name that arrived
+        // Authors are named by the workspace's participants; a name that arrived
         // or changed shows on the next refresh.
         if self
             .controller

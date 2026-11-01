@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
@@ -154,7 +155,7 @@ impl Desktop {
             .env_remove("DISPLAY")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .expect("spawn the compositor under test");
         let log: Log = Arc::default();
         for pipe in [

@@ -518,23 +518,23 @@ async fn capabilities_grant_exactly_their_path_verb_and_lifetime() {
         );
         f.shutdown().await;
     }
-    // Phase `a_grant_to_another_room_does_not_authorise_a_path`.
-    // A room is not a key to the filesystem unless the mount proves it is in
-    // that room: a grant to a room's members doesn't cover a mount actor
-    // that presents no such room.
+    // Phase `a_grant_to_another_workspace_does_not_authorise_a_path`.
+    // A workspace is not a key to the filesystem unless the mount proves it
+    // is in that workspace: a grant to a workspace's members doesn't cover a
+    // mount actor that presents no such workspace.
     {
-        let room_cap = CapOverride::new(
-            Subject::workspace("another-room"),
+        let workspace_cap = CapOverride::new(
+            Subject::workspace("another-workspace"),
             Scope::FsPath("/w/docs".into()),
             Effect::Grant,
             CapAccess::Write,
         );
-        let f = cap_fixture(ALICE, &[room_cap], Some(1_000)).await;
+        let f = cap_fixture(ALICE, &[workspace_cap], Some(1_000)).await;
 
         assert_eq!(
             f.fs.check_access(f.docs_child, Access::Read),
             Err(libc::ENOENT),
-            "a grant to another room's members must not authorise a path for this mount"
+            "a grant to another workspace's members must not authorise a path for this mount"
         );
         f.shutdown().await;
     }

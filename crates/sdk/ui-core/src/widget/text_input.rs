@@ -468,7 +468,7 @@ pub struct TextInput {
     /// What the field offers inline. `None` follows the field's kind: prose
     /// offers both, a field whose `:` and `@` are syntax offers neither.
     completion_setting: Option<TextCompletion>,
-    /// People an app knows of that the room's presence does not, offered
+    /// People an app knows of that the workspace's presence does not, offered
     /// after the roster for `@` completion.
     mention_candidates: Vec<MentionCandidate>,
     /// What picking "Create …" in a drawer runs.
@@ -6073,7 +6073,7 @@ impl Widget for TextInput {
         }
         self.gutter_text_scale = f64::from(self.scale_for(theme.text_scale));
         self.prepare_theme(theme);
-        // The room's roster arrives with the frame; a field completes from
+        // The workspace's roster arrives with the frame; a field completes from
         // what this window last saw, plus any people its app supplied.
         // Fields that are not collecting a mention read no roster at all.
         if self.is_focused && self.completion().mentions() {

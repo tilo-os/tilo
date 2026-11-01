@@ -60,7 +60,7 @@ impl EarlierIds {
         self.by_app.get(app).map_or(&[], Vec::as_slice)
     }
 
-    /// The id whose record and channel `app` keeps using (`<room>#app:<id>`): its earliest id,
+    /// The id whose record and channel `app` keeps using (`<workspace>#app:<id>`): its earliest id,
     /// the first it lists, else its own. A renamed app opens the record it had, wherever and
     /// under whatever it was written; nothing is copied to a record of its new id.
     #[must_use]
@@ -239,12 +239,12 @@ mod tests {
     #[test]
     fn a_node_of_the_renamed_app_reads_under_its_earlier_id() {
         let ids = tasks();
-        let node = TreePath::room("r")
+        let node = TreePath::workspace("r")
             .app("so.tilo.lang.tasks")
             .kind("tl.so.tilo.lang.tasks.TodoItem")
             .resource("i1")
             .action("check");
-        let old = TreePath::room("r").app("so.tilo.lang.todo");
+        let old = TreePath::workspace("r").app("so.tilo.lang.todo");
         assert!(ids.covers(&old.clone().rest(), &node));
         assert!(
             ids.covers(
@@ -255,15 +255,15 @@ mod tests {
             )
         );
         // Another app's kind, or a kind that only starts like it, stays as written.
-        let other = TreePath::room("r")
+        let other = TreePath::workspace("r")
             .app("so.tilo.lang.tasks")
             .kind("tl.so.tilo.lang.tasksx.Item");
         assert!(!ids.covers(&old.kind("tl.so.tilo.lang.todox.Item").rest(), &other));
         // The earlier app's node is not the renamed one's: a grant on Tasks says nothing of an
         // app still called Todo elsewhere.
         assert!(!ids.covers(
-            &TreePath::room("r").app("so.tilo.lang.tasks"),
-            &TreePath::room("r").app("so.tilo.lang.todo")
+            &TreePath::workspace("r").app("so.tilo.lang.tasks"),
+            &TreePath::workspace("r").app("so.tilo.lang.todo")
         ));
     }
 
@@ -313,14 +313,14 @@ mod tests {
     #[test]
     fn a_decision_without_a_table_reads_what_the_process_registered() {
         use crate::{ActionKind, Answer, Context, Grant, KindSet, decide};
-        let node = TreePath::room("r")
+        let node = TreePath::workspace("r")
             .app("so.tilo.lang.tasks")
             .kind("tl.so.tilo.lang.tasks.TodoItem")
             .action("check");
         let grant = Grant::new(
             "todo",
             Subject::person("ada"),
-            TreePath::room("r").app("so.tilo.lang.todo").rest(),
+            TreePath::workspace("r").app("so.tilo.lang.todo").rest(),
             KindSet::ALL,
             Answer::Allow,
             Subject::person("ada"),

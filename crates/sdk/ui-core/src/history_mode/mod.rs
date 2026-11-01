@@ -216,11 +216,11 @@ pub struct HistoryController {
     window: usize,
     /// The projected history holds changes older than the window.
     has_earlier: bool,
-    /// For an app's own history, which of the session's lists of its rooms'
-    /// verified agents ([`crate::history_source::set_room_agents`]) the
+    /// For an app's own history, which of the session's lists of its workspaces'
+    /// verified agents ([`crate::history_source::set_workspace_agents`]) the
     /// source names; a newer list is named on the next refresh.
-    room_agents: Option<u64>,
-    /// The room's participants by id and name, as presence last named them:
+    workspace_agents: Option<u64>,
+    /// The workspace's participants by id and name, as presence last named them:
     /// the authors the source resolves besides registered identities.
     roster: Vec<(String, String)>,
 }
@@ -263,12 +263,12 @@ impl HistoryController {
     /// against a document does it.
     pub(crate) fn unprojected(resource: HistoryResource, live_heads: Vec<ChangeHash>) -> Self {
         // An app's own history names the agents the session verified for
-        // its rooms, as the workspace's Activity does.
-        let revision = crate::history_source::room_agents_revision();
+        // its workspaces, as the workspace's Activity does.
+        let revision = crate::history_source::workspace_agents_revision();
         let source = HistorySource::new()
-            .with_authors(crate::history_source::AuthorDirectory::with_room_agents());
+            .with_authors(crate::history_source::AuthorDirectory::with_workspace_agents());
         let mut controller = Self::unprojected_with_source(resource, source, live_heads);
-        controller.room_agents = Some(revision);
+        controller.workspace_agents = Some(revision);
         controller
     }
 
@@ -293,7 +293,7 @@ impl HistoryController {
             snapshots: HashMap::new(),
             window: HISTORY_PAGE,
             has_earlier: false,
-            room_agents: None,
+            workspace_agents: None,
         }
     }
 
@@ -370,17 +370,17 @@ impl HistoryController {
             .as_ref()
             .is_some_and(|selected| selected.after.heads != live_heads);
         self.observed_live_heads.clone_from(&live_heads);
-        if let Some(named) = self.room_agents {
-            let current = crate::history_source::room_agents_revision();
+        if let Some(named) = self.workspace_agents {
+            let current = crate::history_source::workspace_agents_revision();
             if current != named {
-                let mut authors = crate::history_source::AuthorDirectory::with_room_agents();
+                let mut authors = crate::history_source::AuthorDirectory::with_workspace_agents();
                 authors.register_roster(
                     self.roster
                         .iter()
                         .map(|(id, name)| (id.as_str(), name.as_str())),
                 );
                 *self.source.authors_mut() = authors;
-                self.room_agents = Some(current);
+                self.workspace_agents = Some(current);
                 self.projected_heads = None;
             }
         }

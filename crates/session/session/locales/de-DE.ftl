@@ -135,3 +135,15 @@ device-wake-failed-body = In seinem Netzwerk konnte kein Aufwecksignal gesendet 
 ## Was ein Screenreader über einen Zeiger sagt: wem er gehört und über
 ## welchem Fenster er steht.
 people-pointer-where = { $who } ist in { $where }
+
+## Was die Statusanzeige über die Maschine in einer Zeile sagt, für einen
+## Reader, der sie hört statt ihre Symbole zu sehen.
+status-battery = Akku { $percent } %
+status-battery-charging = Akku { $percent } %, wird geladen
+status-muted = Stummgeschaltet
+status-offline = Offline
+status-volume = Lautstärke { $percent } %
+status-wifi = WLAN
+status-wifi-named = WLAN: { $name }
+status-wired = Kabelgebunden
+status-wired-named = Kabelgebunden: { $name }

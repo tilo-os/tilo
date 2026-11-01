@@ -1708,7 +1708,7 @@ mod tests {
             let action = grant_view(&Grant::new(
                 "shortcuts-freeform",
                 ui::tilo_actions::policy::Subject::App("so.tilo.shortcuts".into()),
-                ui::tilo_actions::policy::TreePath::room("studio")
+                ui::tilo_actions::policy::TreePath::workspace("studio")
                     .app("so.tilo.agent")
                     .any(Level::Kind)
                     .resource("agent.transform:freeform")
@@ -1799,7 +1799,7 @@ mod tests {
             let person = Grant::new(
                 "alice",
                 ui::tilo_actions::policy::Subject::person("alice"),
-                ui::tilo_actions::policy::TreePath::room("room-1"),
+                ui::tilo_actions::policy::TreePath::workspace("room-1"),
                 ui::tilo_actions::policy::KindSet::ALL,
                 ui::tilo_actions::policy::Answer::Allow,
                 ui::tilo_actions::policy::Subject::person("owner"),

@@ -317,7 +317,7 @@ impl HistorySource for Activity {
 /// that is read when a session reads the history again.
 fn record_directories(store: &Path, room: &str) -> Vec<PathBuf> {
     let device: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(store));
-    let indexes = match device.room_indexes() {
+    let indexes = match device.workspace_indexes() {
         Ok(indexes) => indexes,
         Err(error) => {
             tracing::warn!(%error, "the room indexes of this device are not listed");
@@ -329,7 +329,8 @@ fn record_directories(store: &Path, room: &str) -> Vec<PathBuf> {
         if index_room != room {
             continue;
         }
-        let Ok(directory) = app_state::room_index_directory(store, &package, &index_room) else {
+        let Ok(directory) = app_state::workspace_index_directory(store, &package, &index_room)
+        else {
             continue;
         };
         for record in named_in(device.as_ref(), &package, &index_room) {
@@ -345,7 +346,7 @@ fn record_directories(store: &Path, room: &str) -> Vec<PathBuf> {
 /// the workspace may open, so it is not read here.
 fn read_room_records(store: &Path, room: &str) -> Vec<DetachedRecordHistory> {
     let device: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(store));
-    let indexes = match device.room_indexes() {
+    let indexes = match device.workspace_indexes() {
         Ok(indexes) => indexes,
         Err(error) => {
             tracing::warn!(%error, "the room indexes of this device are not listed");
@@ -376,7 +377,7 @@ fn read_room_records(store: &Path, room: &str) -> Vec<DetachedRecordHistory> {
 
 /// The records `package`'s index for `room` names, as the store holds it.
 fn named_in(store: &dyn DurableStore, package: &str, room: &str) -> Vec<RecordCheckout> {
-    let Ok(Some(stored)) = store.read(&StorageKey::room_index(package, room)) else {
+    let Ok(Some(stored)) = store.read(&StorageKey::workspace_index(package, room)) else {
         return Vec::new();
     };
     if stored.bytes.is_empty() {
@@ -579,7 +580,7 @@ mod tests {
 
     /// The person at this desk.
     fn person() -> Caller {
-        Caller::local_person("ada").in_room("room")
+        Caller::local_person("ada").in_workspace("room")
     }
 
     /// A desk of one workspace with Notes open, its activity served from

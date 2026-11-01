@@ -139,7 +139,7 @@ const STATUS_READ_PEAK: usize = 64 * 1024;
 const RANGE_READ_OVERHEAD: usize = 1024 * 1024;
 
 /// Daemon heap a stored attachment may leave behind once `store` returned:
-/// the room's reference and the store's bookkeeping, none of the content.
+/// the workspace's reference and the store's bookkeeping, none of the content.
 /// Before, the content store cached every stored blob whole, 64 MiB for the
 /// largest attachment. Measured at 0 B.
 const STORE_RETAINED_HEAP_SLO: usize = 256 * 1024;
@@ -166,7 +166,7 @@ const UPLOAD_RETAINED: usize = 1024 * 1024;
 const CACHE_RETAINED_HEAP_SLO: usize = 33 * 1024 * 1024;
 const _: () = assert!(CACHE_RETAINED_HEAP_SLO as u64 == BLOB_CACHE_BYTES + 1024 * 1024);
 
-const PHOTOS: (&str, &str) = ("room-1", "so.tilo.photos");
+const PHOTOS: (&str, &str) = ("workspace-1", "so.tilo.photos");
 
 fn photos() -> BlobScope {
     BlobScope::new(PHOTOS.0, PHOTOS.1).unwrap()

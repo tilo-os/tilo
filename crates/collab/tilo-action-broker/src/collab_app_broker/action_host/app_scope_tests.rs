@@ -228,7 +228,7 @@ fn fixture(keys: Vec<CatalogueRow>) -> Fixture {
             ..Default::default()
         },
     );
-    let caller = Caller::local_person(hex::encode(user)).in_room(workspace_id.clone());
+    let caller = Caller::local_person(hex::encode(user)).in_workspace(workspace_id.clone());
     Fixture {
         state,
         governance,
@@ -372,7 +372,8 @@ fn an_app_filter_applies_before_the_page_bound() {
 #[test]
 fn an_app_scoped_query_still_refuses_a_stranger() {
     let fixture = fixture(vec![row("so.tilo.settings", "keyboard-shortcuts", "list")]);
-    let stranger = Caller::authenticated([99; 32], [98; 32]).in_room(fixture.workspace.clone());
+    let stranger =
+        Caller::authenticated([99; 32], [98; 32]).in_workspace(fixture.workspace.clone());
     let page = page(
         &fixture,
         &stranger,
@@ -541,7 +542,7 @@ fn directory_fixture(app_id: &str) -> DirectoryFixture {
         state,
         directories,
         asked,
-        caller: Caller::local_person(hex::encode(user)).in_room(workspace_id),
+        caller: Caller::local_person(hex::encode(user)).in_workspace(workspace_id),
         provider: provider.to_string(),
         app_id: app_id.into(),
     }

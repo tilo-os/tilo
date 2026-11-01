@@ -102,7 +102,7 @@ fn the_owners_own_grants_never_restrict_their_app_delegation() {
                 &[tilo_action_policy::Grant::new(
                     "app-open-read-only-person",
                     tilo_action_policy::Subject::Person(person.clone()),
-                    tilo_action_policy::TreePath::room(testing::WORKSPACE),
+                    tilo_action_policy::TreePath::workspace(testing::WORKSPACE),
                     tilo_action_policy::KindSet::UNDOABLE
                         .union(tilo_action_policy::KindSet::OUTSIDE),
                     tilo_action_policy::Answer::Deny,

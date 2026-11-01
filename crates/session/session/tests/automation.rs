@@ -225,8 +225,8 @@ fn pass(session: &mut Session, span: Duration) {
 /// Save `rows` (`(id, kind)`) as `package`'s index of `room` holds them, the
 /// way the app of a workspace writes it: published in one rename.
 fn write_index(home: &tilo_test_env::TestHome, rows: &[(&str, &str)]) {
-    let directory =
-        app_state::room_index_directory(home.data(), PACKAGE, ROOM).expect("an index directory");
+    let directory = app_state::workspace_index_directory(home.data(), PACKAGE, ROOM)
+        .expect("an index directory");
     let staged = directory.with_file_name("staging-chat");
     for old in [&staged, &directory] {
         if old.exists() {
@@ -248,7 +248,7 @@ fn write_index(home: &tilo_test_env::TestHome, rows: &[(&str, &str)]) {
 
 /// Where the record document lives.
 fn record_path(home: &tilo_test_env::TestHome) -> std::path::PathBuf {
-    app_state::DocStore::room_record_dir_at(home.data(), PACKAGE, ROOM, RECORD)
+    app_state::DocStore::workspace_record_dir_at(home.data(), PACKAGE, ROOM, RECORD)
         .expect("the record's directory")
         .join(app_state::DOCUMENT_FILE)
 }
@@ -295,18 +295,16 @@ fn post_a_message(home: &tilo_test_env::TestHome) {
 /// Step the session until it started a shortcut `wanted` run.
 #[track_caller]
 fn until_a_run(session: &mut Session, wanted: usize) -> Vec<String> {
-    let started = std::time::Instant::now();
-    loop {
+    let mut seen = Vec::new();
+    // A firing waits for the ledger that records it to be on disk, and a
+    // writer busy with the rest of the suite is what makes it take a while:
+    // the bound is the suite's own, not a second count.
+    tilo_test_env::wait_for("a shortcut run to start", || {
         session.step(Duration::from_millis(2)).expect("step");
-        let runs = session.take_finished_shortcut_runs();
-        if runs.len() >= wanted {
-            return runs.iter().map(|run| run.shortcut.id.clone()).collect();
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "no shortcut run started"
-        );
-    }
+        seen.extend(session.take_finished_shortcut_runs());
+        (seen.len() >= wanted).then_some(())
+    });
+    seen.iter().map(|run| run.shortcut.id.clone()).collect()
 }
 
 #[test]

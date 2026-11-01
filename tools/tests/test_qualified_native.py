@@ -22,9 +22,9 @@ class QualifiedNativeTests(unittest.TestCase):
         # CI merges newer main inputs before running policy tests. Qualify a
         # bounded copy, then change an actual input: the production fingerprint
         # and admission must agree without assuming main remains frozen.
-        parent = ROOT / ".task-tmp"
-        parent.mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="native-binding-", dir=parent) as temporary:
+        # Outside the checkout: the snapshot carries Cargo.toml files, which the
+        # policy walkers would otherwise audit while this test deletes them.
+        with tempfile.TemporaryDirectory(prefix="native-binding-") as temporary:
             root = Path(temporary)
             for name in qualified_native.INPUTS:
                 destination = root / name

@@ -33,6 +33,9 @@ pub const MAX_LEGACY_IMPORT_LIFETIME: Duration = Duration::from_secs(120);
 
 /// Canonical action arguments. Source identity is host-configured, never a path
 /// supplied by a scoped caller. Hashes are exact, unique and bounded, not a scan.
+///
+/// The two workspaces were called rooms when a request was first written, so a
+/// request stored under those names still reads.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LegacyImportRequest {

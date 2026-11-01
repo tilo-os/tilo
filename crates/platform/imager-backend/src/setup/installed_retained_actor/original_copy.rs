@@ -74,7 +74,7 @@ impl ReviewedInstalledOriginalCopy {
             return Err(refused());
         }
         let person = manifest.identity_public_key;
-        if request.room() != runtime_collab::retained_person::personal_room(&person) {
+        if request.room() != runtime_collab::retained_person::personal_cluster(&person) {
             return Err(refused());
         }
         let mut proof = ProofClient::connect(stream, &request, cancel)?;

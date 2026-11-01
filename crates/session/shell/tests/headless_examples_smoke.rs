@@ -20,6 +20,7 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn repo_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is `<repo>/crates/session/shell`.
@@ -75,7 +76,7 @@ fn run_script_with(script_name: &str, env: &[(&str, PathBuf)]) -> std::process::
         )
         .envs(env.iter().map(|(key, value)| (*key, value)))
         .current_dir(repo_root())
-        .output()
+        .output_locked()
         .expect("spawn python3")
 }
 

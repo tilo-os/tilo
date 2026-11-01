@@ -24,7 +24,7 @@ impl PartialEq for ActionAuthoritySampler {
 impl Eq for ActionAuthoritySampler {}
 
 impl ActionAuthoritySampler {
-    /// Whether `node` (below the room) is one of this app's actions.
+    /// Whether `node` (below the workspace) is one of this app's actions.
     pub(super) fn matches(&self, node: &TreePath) -> bool {
         TreePath::root().app(self.app_id.clone()).covers(node)
     }

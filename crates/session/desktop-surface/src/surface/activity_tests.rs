@@ -176,7 +176,7 @@ impl Served {
 
     /// The windows' door to the session, as `caller`.
     fn door(&self, caller: Caller) -> RemoteActions {
-        RemoteActions::with_host(self.session.clone(), caller.in_room(ROOM))
+        RemoteActions::with_host(self.session.clone(), caller.in_workspace(ROOM))
     }
 
     /// One pass of the desktop: what the windows asked is answered.

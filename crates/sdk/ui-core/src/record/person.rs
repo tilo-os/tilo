@@ -606,5 +606,10 @@ mod record_id_tests {
             crate::record::RecordId::window_default(0),
             "the person's record of a kind is no window's"
         );
+        assert_eq!(
+            super::record_id(&kind).as_str(),
+            collab_types::person_record_id("terminal.history"),
+            "the broker admits a person record by the id apps open it under"
+        );
     }
 }

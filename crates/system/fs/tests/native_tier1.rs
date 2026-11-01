@@ -1,6 +1,6 @@
-//! The Tier 1 data plane end to end: real `fs` daemons serving native room
-//! trees from dedicated Btrfs store volumes, syncing through the record
-//! plane.
+//! The Tier 1 data plane end to end: real `fs` daemons serving native
+//! workspace trees from dedicated Btrfs store volumes, syncing through the
+//! record plane.
 //!
 //! These tests need two dedicated Btrfs store volumes and `CAP_SYS_ADMIN`
 //! (fanotify filesystem marks, pre-content events, bind mounts). Name the
@@ -38,7 +38,7 @@ use tilo_user_identity::{
 
 const TIMEOUT: Duration = Duration::from_secs(180);
 
-/// The local person who owns each room (as the installer would set it up).
+/// The local person who owns each workspace (as the installer would set it up).
 /// The daemons run as root; everything they materialise must belong to
 /// this account, never to root or to the author's uid.
 const LOCAL_OWNER: (u32, u32) = (4242, 4242);
@@ -135,7 +135,7 @@ struct Daemon {
     lines: Receiver<String>,
     logs: Arc<Mutex<Vec<String>>>,
     mount: PathBuf,
-    /// The room's live subvolume, from the startup line.
+    /// The workspace's live subvolume, from the startup line.
     live: Option<PathBuf>,
 }
 
@@ -323,13 +323,15 @@ impl Drop for Daemon {
     }
 }
 
-/// Removes a room's subvolume and its capture snapshots.
-fn remove_room(live: &Path) {
-    let Some(room) = live.file_name() else { return };
+/// Removes a workspace's subvolume and its capture snapshots.
+fn remove_workspace(live: &Path) {
+    let Some(workspace) = live.file_name() else {
+        return;
+    };
     let Some(store) = live.parent().and_then(Path::parent) else {
         return;
     };
-    let epochs = store.join(".epochs").join(room);
+    let epochs = store.join(".epochs").join(workspace);
     if let Ok(entries) = std::fs::read_dir(&epochs) {
         for e in entries.flatten() {
             let _ = fs_native::btrfs::delete_subvolume(&e.path());
@@ -339,12 +341,12 @@ fn remove_room(live: &Path) {
     let _ = fs_native::btrfs::delete_subvolume(live);
 }
 
-struct Rooms(Vec<PathBuf>);
+struct LiveWorkspaces(Vec<PathBuf>);
 
-impl Drop for Rooms {
+impl Drop for LiveWorkspaces {
     fn drop(&mut self) {
         for live in &self.0 {
-            remove_room(live);
+            remove_workspace(live);
         }
     }
 }
@@ -399,11 +401,11 @@ fn mtime_ms(path: &Path) -> i64 {
 /// Two devices of one person, each on its own store volume.
 struct Pair {
     // Dropped in this order: the daemons stop (and unmount) before their
-    // rooms are removed, and only then does the temporary directory holding
+    // workspaces are removed, and only then does the temporary directory holding
     // the mount points go.
     host: Daemon,
     peer: Daemon,
-    _rooms: Rooms,
+    _workspaces: LiveWorkspaces,
     ticket: String,
     dir: PathBuf,
     _dir: Option<tempfile::TempDir>,
@@ -458,7 +460,7 @@ fn start_pair_with(store_a: &Path, store_b: &Path, extra: &[&str], env: &[(&str,
     );
     peer.wait_line("Joined workspace");
     peer.wait_serving();
-    let rooms = Rooms(vec![host.live.clone().unwrap(), peer.live.clone().unwrap()]);
+    let workspaces = LiveWorkspaces(vec![host.live.clone().unwrap(), peer.live.clone().unwrap()]);
     Pair {
         _dir: if std::env::var_os("TILO_KEEP_TEST_DIR").is_some() {
             eprintln!("keeping {}", temp.keep().display());
@@ -469,7 +471,7 @@ fn start_pair_with(store_a: &Path, store_b: &Path, extra: &[&str], env: &[(&str,
         dir,
         host,
         peer,
-        _rooms: rooms,
+        _workspaces: workspaces,
         ticket,
     }
 }
@@ -1040,7 +1042,7 @@ fn a_crashed_daemon_resumes_from_its_last_epoch_and_publishes_only_what_changed(
 
     let dir = pair.dir.clone();
     let mut host = Daemon::spawn("host2", "host", &dir, &a, &["serve"], &m1);
-    // The first epoch compares the room against the last persisted one
+    // The first epoch compares the workspace against the last persisted one
     // before the tree is exposed again.
     let comparison = host.wait_line("full comparison");
     assert!(
@@ -1048,7 +1050,11 @@ fn a_crashed_daemon_resumes_from_its_last_epoch_and_publishes_only_what_changed(
         "only the three changes made while down are published: {comparison}"
     );
     host.wait_serving();
-    assert_eq!(host.live.as_ref(), Some(&live), "the same room is resumed");
+    assert_eq!(
+        host.live.as_ref(),
+        Some(&live),
+        "the same workspace is resumed"
+    );
     wait_for(
         &mut [&mut host, &mut pair.peer],
         "the offline changes on the peer",
@@ -1164,7 +1170,11 @@ fn a_daemon_killed_while_publishing_a_changeset_leaves_peers_all_of_it_or_none()
     // peer takes all of it in one projection.
     let mut host = Daemon::spawn("host2", "host", &dir, &a, &["serve"], &m1);
     host.wait_serving();
-    assert_eq!(host.live.as_ref(), Some(&live), "the same room is resumed");
+    assert_eq!(
+        host.live.as_ref(),
+        Some(&live),
+        "the same workspace is resumed"
+    );
     let before = pair.peer.logs.lock().unwrap().len();
     wait_for(
         &mut [&mut host, &mut pair.peer],

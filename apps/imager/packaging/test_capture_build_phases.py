@@ -33,26 +33,23 @@ class CaptureBuildPhases(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             calls = [json.loads(line) for line in log.read_text().splitlines()]
-            self.assertEqual(len(calls), 3)
-            engines, thin, tools = calls
-            # The engines' check binaries go first, in the same graph (same
-            # packages and features), because Cargo cannot order the engine
-            # library an app links by name behind that app's package.
-            engine_bins = [engines[i + 1] for i, value in enumerate(engines) if value == '--bin']
-            self.assertTrue(engine_bins)
-            self.assertTrue(all(binary.endswith('-check') for binary in engine_bins), engine_bins)
-            self.assertEqual(engines[:4], ['build', '--locked', '--profile', 'thin-app'])
-            self.assertEqual(engines[engines.index('--features') + 1],
-                             thin[thin.index('--features') + 1])
-            self.assertEqual([engines[i + 1] for i, value in enumerate(engines) if value == '-p'],
-                             [thin[i + 1] for i, value in enumerate(thin) if value == '-p'])
+            # The worker, the apps the collection carries and the engines build
+            # in one graph, each engine through its check binary so its library
+            # is built too; the tools that stage the result build after.
+            self.assertEqual(len(calls), 2)
+            thin, tools = calls
             self.assertEqual(thin[:4], ['build', '--locked', '--profile', 'thin-app'])
+            bins = [thin[i + 1] for i, value in enumerate(thin) if value == '--bin']
+            engine_bins = [binary for binary in bins if binary.endswith('-check')]
+            self.assertTrue(engine_bins)
+            selected = [thin[i + 1] for i, value in enumerate(thin) if value == '-p']
+            for engine_bin in engine_bins:
+                self.assertIn(engine_bin.removesuffix('-check'), selected)
             features = thin[thin.index('--features') + 1].split(',')
             self.assertIn('imager/thin', features)
             self.assertIn('imager/capture-worker', features)
             self.assertIn('browser/thin', features)
             self.assertIn('chat/thin', features)
-            bins = [thin[i + 1] for i, value in enumerate(thin) if value == '--bin']
             self.assertEqual(bins.count('tilo-runtime-account-capability'), 1)
             self.assertEqual(bins.count('tilo-home-export'), 1)
             self.assertNotIn('imager', bins)

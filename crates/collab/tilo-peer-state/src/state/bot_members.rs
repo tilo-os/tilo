@@ -372,7 +372,7 @@ impl StatePeer {
             }
         }
         for grant in &write.grant {
-            if grant.node.room_id() != Some(self.core.workspace.as_str()) {
+            if grant.node.workspace_id() != Some(self.core.workspace.as_str()) {
                 return Err(format!("grant {:?} names another workspace", grant.id));
             }
             doc.put(

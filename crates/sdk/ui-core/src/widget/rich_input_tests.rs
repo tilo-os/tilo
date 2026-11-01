@@ -14,7 +14,7 @@ fn topic(name: &str) -> InlineView {
     }
 }
 
-/// A composer whose system sources offer two topics for `#`, and the room's Ada for `@`.
+/// A composer whose system sources offer two topics for `#`, and the workspace's Ada for `@`.
 fn field(edits: &crate::Intents<Fired>) -> RichInput {
     let props = RichInputProps {
         value: Bound {
@@ -90,7 +90,7 @@ fn a_picked_reference_goes_in_as_a_reference_with_how_it_reads() {
 }
 
 #[test]
-fn a_person_from_the_room_goes_in_as_a_mention_of_their_participant_id() {
+fn a_person_from_the_workspace_goes_in_as_a_mention_of_their_participant_id() {
     let _settled = crate::motion::testing::settled();
     let edits = crate::Intents::default();
     let mut input = field(&edits);

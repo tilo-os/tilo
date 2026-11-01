@@ -80,3 +80,44 @@ fn a_hosted_frame_its_host_fills_row_by_row_draws_the_same_way_up() {
         "blue below the middle: {below:?}"
     );
 }
+
+/// A surface that says it needs a frame now wakes the loop for it: what a
+/// host animates is drawn at the pace it asks, not at the loop's idle wait.
+#[test]
+fn a_host_that_needs_a_frame_now_shortens_the_loops_wait() {
+    use std::time::{Duration, Instant};
+
+    struct Animated;
+
+    impl SurfaceHost for Animated {
+        fn layers(&self) -> Vec<HostLayer> {
+            Vec::new()
+        }
+
+        fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+            false
+        }
+
+        fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+        fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+        fn next_deadline(&self) -> Option<Instant> {
+            Some(Instant::now())
+        }
+    }
+
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+        .expect("output");
+    assert!(
+        compositor.next_wait() >= Duration::from_millis(100),
+        "an idle loop waits for its own idle"
+    );
+    compositor.add_host(Box::new(Animated));
+    assert!(
+        compositor.next_wait() <= Duration::from_millis(1),
+        "a frame a host asks for now is drawn now"
+    );
+}

@@ -81,7 +81,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_custody() 
                 env.cert.user_public_key,
                 env.cert.device_public_key,
             )
-            .in_room(&env.route.cluster_id)
+            .in_workspace(&env.route.cluster_id)
             .in_new_execution();
             let evidence = presentation(&env.route.cluster_id, &env.cert, &env.key);
             let native = rig
@@ -162,7 +162,7 @@ async fn keyless_certified_host_steps_require_a_verified_native_projection() {
                 .unwrap();
             assert!(!original.native_projection_verified);
             let person = original.admitted.principal_id.clone();
-            let projected = Caller::local_person(&person).in_room(&env.route.cluster_id);
+            let projected = Caller::local_person(&person).in_workspace(&env.route.cluster_id);
             let origin = |caller, foreign_restriction| InvocationCaller::Certified {
                 caller: Box::new(caller),
                 foreign_restriction,
@@ -184,8 +184,8 @@ async fn keyless_certified_host_steps_require_a_verified_native_projection() {
                 Some(&origin(checked.clone(), false))
             ));
             for caller in [
-                Caller::local_person("other-person").in_room(&env.route.cluster_id),
-                Caller::local_person(&person).in_room("other-workspace"),
+                Caller::local_person("other-person").in_workspace(&env.route.cluster_id),
+                Caller::local_person(&person).in_workspace("other-workspace"),
                 projected.clone().from_foreign_device(true),
                 projected.clone().delegated_to("agent"),
             ] {
@@ -289,7 +289,7 @@ async fn signed_native_facade_preserves_physical_intent_without_lending_it_to_ot
                 env.cert.user_public_key,
                 env.cert.device_public_key,
             )
-            .in_room(&env.route.cluster_id)
+            .in_workspace(&env.route.cluster_id)
             .in_new_execution();
             let evidence = presentation(&env.route.cluster_id, &env.cert, &env.key);
             let ordinary = rig

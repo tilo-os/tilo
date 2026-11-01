@@ -1334,10 +1334,10 @@ fn record_loan_matches(
     })
 }
 
-/// The record a disclosed read names: its room when it is shared in one.
+/// The record a disclosed read names: its workspace when it is shared in one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RecordStamp {
-    pub(crate) room: Option<uuid::Uuid>,
+    pub(crate) workspace: Option<uuid::Uuid>,
     pub(crate) app_id: String,
     pub(crate) record_id: String,
 }
@@ -1345,7 +1345,7 @@ pub(crate) struct RecordStamp {
 impl From<&RouteSpec> for RecordStamp {
     fn from(route: &RouteSpec) -> Self {
         Self {
-            room: Some(route.cluster_id),
+            workspace: Some(route.cluster_id),
             app_id: route.app_id.clone(),
             record_id: route.record.clone().unwrap_or_default(),
         }
@@ -1411,7 +1411,7 @@ pub(crate) fn with_loaned_record<R>(
     let stamp = record_loan_matches(store, checkout, document).then(|| {
         route.as_ref().map_or_else(
             || RecordStamp {
-                room: None,
+                workspace: None,
                 app_id: app_id.to_string(),
                 record_id: checkout.id.as_str().to_string(),
             },

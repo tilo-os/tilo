@@ -198,7 +198,7 @@ impl TaskRunHost {
     ) -> Self {
         let person = admitted.principal_id.clone();
         let caller = Caller::local_person(person.clone())
-            .in_room(&route.cluster_id)
+            .in_workspace(&route.cluster_id)
             .in_new_execution()
             .delegated_to(agent.clone());
         Self(Arc::new(Inner {

@@ -885,11 +885,11 @@ fn the_bridge_field_edits_only_chats_messages() {
         .collect();
     assert_eq!(
         field_edits,
-        ["room:*/app:so.tilo.chat/kind:chat.messages/resource:*/**/action:field-edit"]
+        ["workspace:*/app:so.tilo.chat/kind:chat.messages/resource:*/**/action:field-edit"]
     );
     // Where the bot's own door offers and admits the field edit (the
     // resource), and where the workspace decides a reaction (its field).
-    let messages = ui::permissions::TreePath::room("workspace")
+    let messages = ui::permissions::TreePath::workspace("workspace")
         .app(CHAT_APP)
         .kind(MESSAGES_KIND)
         .resource("part-0");

@@ -286,13 +286,13 @@ fn agent_answer(app: &mut HeadlessApp<VideoEditor>, action: &str) -> ui::permiss
 
 #[test]
 fn an_agent_is_asked_first_before_a_file_is_read_or_written() {
-    use ui::permissions::{Answer, LOCAL_ROOM, LOCAL_USER, PermissionContext, Role, policy};
+    use ui::permissions::{Answer, LOCAL_USER, LOCAL_WORKSPACE, PermissionContext, Role, policy};
     const AGENT: &str = "renderer";
 
     let mut app = with_sample();
     // An agent admitted as an Operator, with no answer of the person's yet.
     let grants = policy::roles::AgentPreset::Operator.grants(
-        LOCAL_ROOM,
+        LOCAL_WORKSPACE,
         AGENT,
         &policy::Subject::person(LOCAL_USER),
     );

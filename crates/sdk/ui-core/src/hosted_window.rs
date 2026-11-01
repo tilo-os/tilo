@@ -262,9 +262,9 @@ impl HostedWindow {
         self.state().session = session;
     }
 
-    /// Put the window in the workspace `room` (a workspace id).
-    pub fn set_workspace(&self, room: Option<String>) {
-        self.state().workspace = room;
+    /// Put the window in `workspace` (a workspace id).
+    pub fn set_workspace(&self, workspace: Option<String>) {
+        self.state().workspace = workspace;
     }
 
     /// The workspace the window is in, when its host said.

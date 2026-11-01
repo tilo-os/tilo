@@ -76,7 +76,7 @@ async fn invoke(rooms: &Rooms, device: &DeviceCert, ask: Ask) -> Result<Value, S
 
 /// An item of Notes' own record of `room`, by its id.
 fn note(room: &str, id: &str) -> String {
-    tilo_action_policy::TreePath::room(room)
+    tilo_action_policy::TreePath::workspace(room)
         .app("so.tilo.notes")
         .kind("notes.notebook")
         .any(tilo_action_policy::Level::Resource)
@@ -195,7 +195,7 @@ async fn a_share_grants_the_room_one_item_until_its_sharer_ends_it() {
         .await;
     assert_eq!(shared, RoomsReply::Shared(4));
     assert!(bo_writes(&p1).await);
-    let every = tilo_action_policy::TreePath::room(&room)
+    let every = tilo_action_policy::TreePath::workspace(&room)
         .app("so.tilo.notes")
         .kind("notes.notebook")
         .any(tilo_action_policy::Level::Resource)

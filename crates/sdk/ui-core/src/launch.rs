@@ -969,7 +969,7 @@ fn run_parsed(
         if waits {
             (*app).run();
         } else {
-            // Later windows of this app in its room open here
+            // Later windows of this app in its workspace open here
             // (`crate::window_door`), built as the first was.
             let mut open = |pending| crate::window_door::open_window(spec, &args, pending);
             let open: &mut dyn FnMut(_) -> Option<App> = &mut open;
@@ -1335,7 +1335,7 @@ fn native_launch_manager(
     args: &LaunchArgs,
 ) -> Result<crate::collaboration::CollaborationManager, LaunchError> {
     // A surface app is handed the actions of the desktop that places its
-    // window, in place of a room it never joins: it needs no workspace of
+    // window, in place of a workspace it never joins: it needs no workspace of
     // its own, selected or not.
     if let Some(peer) = surface_peer() {
         return Ok(crate::collaboration::CollaborationManager::with_peer_transport(peer));
@@ -2222,9 +2222,9 @@ mod tests {
     fn native_initial_launch_canonical_cache_reads_existing_history_before_defaults() {
         use automerge::{ReadDoc, transaction::Transactable};
         let environment = LaunchFixtureEnv::new();
-        let room = uuid::Uuid::new_v4();
+        let workspace = uuid::Uuid::new_v4();
         let mut _env_override = tilo_test_env::ScopedEnv::new();
-        _env_override.set("TILO_WORKSPACE_ID", room.to_string());
+        _env_override.set("TILO_WORKSPACE_ID", workspace.to_string());
         let want = crate::record::RecordCheckout::new(
             crate::record::RecordId::minted(),
             crate::record::RecordKind::new("note"),
@@ -2234,8 +2234,8 @@ mod tests {
             &mut history,
             &want.id,
             &want.kind,
-            &room.to_string(),
-            Some(&room.to_string())
+            &workspace.to_string(),
+            Some(&workspace.to_string())
         ));
         history
             .put(
@@ -2249,7 +2249,7 @@ mod tests {
         let (manager, joined) =
             crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
                 "so.tilo.launch-fixture",
-                room,
+                workspace,
                 history.save(),
             );
         let construction =
@@ -2258,7 +2258,7 @@ mod tests {
             environment._directory.path().join("native-canonical"),
         );
         let records = owners
-            .open("so.tilo.launch-fixture", &room.to_string())
+            .open("so.tilo.launch-fixture", &workspace.to_string())
             .unwrap();
         records
             .open_existing_record_checked(&want)
@@ -2293,9 +2293,9 @@ mod tests {
     fn native_initial_launch_record_entry_legacy_cache_uses_actual_history() {
         use automerge::{ReadDoc, transaction::Transactable};
         let _environment = LaunchFixtureEnv::new();
-        let room = uuid::Uuid::new_v4();
+        let workspace = uuid::Uuid::new_v4();
         let mut _env_override = tilo_test_env::ScopedEnv::new();
-        _env_override.set("TILO_WORKSPACE_ID", room.to_string());
+        _env_override.set("TILO_WORKSPACE_ID", workspace.to_string());
         let want = crate::record::RecordCheckout::new(
             crate::record::RecordId::minted(),
             crate::record::RecordKind::new("note"),
@@ -2305,8 +2305,8 @@ mod tests {
             &mut history,
             &want.id,
             &want.kind,
-            &room.to_string(),
-            Some(&room.to_string())
+            &workspace.to_string(),
+            Some(&workspace.to_string())
         ));
         history
             .put(automerge::ROOT, "retained", "original history")
@@ -2316,7 +2316,7 @@ mod tests {
         let (manager, _) =
             crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
                 "so.tilo.launch-fixture",
-                room,
+                workspace,
                 history.save(),
             );
         let _construction =
@@ -2348,9 +2348,9 @@ mod tests {
     fn native_initial_launch_record_entry_primary_keeps_admitted_route() {
         use automerge::transaction::Transactable;
         let environment = LaunchFixtureEnv::new();
-        let room = uuid::Uuid::new_v4();
+        let workspace = uuid::Uuid::new_v4();
         let mut _env_override = tilo_test_env::ScopedEnv::new();
-        _env_override.set("TILO_WORKSPACE_ID", room.to_string());
+        _env_override.set("TILO_WORKSPACE_ID", workspace.to_string());
         let want = crate::record::RecordCheckout::package_primary(crate::record::RecordKind::new(
             "primary",
         ));
@@ -2359,15 +2359,15 @@ mod tests {
             &mut history,
             &want.id,
             &want.kind,
-            &room.to_string(),
-            Some(&room.to_string())
+            &workspace.to_string(),
+            Some(&workspace.to_string())
         ));
         history.put(automerge::ROOT, "retained", "primary").unwrap();
         history.commit();
         let (manager, joined) =
             crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
                 "so.tilo.launch-fixture",
-                room,
+                workspace,
                 history.save(),
             );
         let _construction =
@@ -2375,7 +2375,7 @@ mod tests {
         let mut owners =
             crate::record::RecordOwners::new(environment._directory.path().join("primary"));
         let records = owners
-            .open("so.tilo.launch-fixture", &room.to_string())
+            .open("so.tilo.launch-fixture", &workspace.to_string())
             .unwrap();
         records.open_existing_record_checked(&want).unwrap();
         assert_eq!(
@@ -2401,16 +2401,16 @@ mod tests {
             args: &LaunchArgs,
         ) -> Result<PreparedComponentInputs, LaunchError> {
             let root = std::path::PathBuf::from(args.value("--fixture-root").unwrap());
-            let room = args.value("--fixture-room").unwrap();
+            let workspace = args.value("--fixture-workspace").unwrap();
             let id =
                 crate::record::RecordId::parse(args.value("--fixture-record").unwrap()).unwrap();
             let want = crate::record::RecordCheckout::new(id, definition.record_kind.clone());
             let mut owners = crate::record::RecordOwners::new(root.clone());
             let records = owners
-                .open(definition.app_id(), room)
+                .open(definition.app_id(), workspace)
                 .map_err(LaunchError::Record)?;
             let views = std::rc::Rc::new(
-                crate::application_view::InstanceViewStore::new(root, probe::DEVICE, room)
+                crate::application_view::InstanceViewStore::new(root, probe::DEVICE, workspace)
                     .map_err(LaunchError::Restore)?,
             );
             let target = LaunchTarget::Record {
@@ -2457,15 +2457,15 @@ mod tests {
             })
         }
         let environment = LaunchFixtureEnv::new();
-        let room = uuid::Uuid::new_v4();
+        let workspace = uuid::Uuid::new_v4();
         let id = crate::record::RecordId::minted();
         let mut history = automerge::AutoCommit::new();
         assert!(crate::record::init_scoped(
             &mut history,
             &id,
             &crate::record::RecordKind::new("probe"),
-            &room.to_string(),
-            Some(&room.to_string())
+            &workspace.to_string(),
+            Some(&workspace.to_string())
         ));
         history
             .put(automerge::ROOT, "body", "existing before component factory")
@@ -2476,14 +2476,14 @@ mod tests {
         let (manager, joined) =
             crate::collaboration::CollaborationManager::native_initial_fixture_gated_for_test(
                 probe::APP,
-                room,
+                workspace,
                 history.save(),
                 gate,
             );
         let spec = LaunchSpec::from_definition(probe::runner_probe_definition())
             .component_host(prepare)
             .native_services()
-            .allowed_live_options(&["--fixture-root", "--fixture-room", "--fixture-record"]);
+            .allowed_live_options(&["--fixture-root", "--fixture-workspace", "--fixture-record"]);
         let raw = vec![
             "app".into(),
             "--fixture-root".into(),
@@ -2493,8 +2493,8 @@ mod tests {
                 .join("component")
                 .display()
                 .to_string(),
-            "--fixture-room".into(),
-            room.to_string(),
+            "--fixture-workspace".into(),
+            workspace.to_string(),
             "--fixture-record".into(),
             id.as_str().into(),
         ];
@@ -2503,7 +2503,7 @@ mod tests {
             &[],
             &[],
             &[],
-            &["--fixture-root", "--fixture-room", "--fixture-record"],
+            &["--fixture-root", "--fixture-workspace", "--fixture-record"],
             0,
         )
         .unwrap();
@@ -2551,15 +2551,15 @@ mod tests {
             args: &LaunchArgs,
         ) -> Result<PreparedComponentInputs, LaunchError> {
             let root = std::path::PathBuf::from(args.value("--fixture-root").unwrap());
-            let room = args.value("--fixture-room").unwrap();
+            let workspace = args.value("--fixture-workspace").unwrap();
             let id =
                 crate::record::RecordId::parse(args.value("--fixture-record").unwrap()).unwrap();
             let mut owners = crate::record::RecordOwners::new(root.clone());
             let records = owners
-                .open(definition.app_id(), room)
+                .open(definition.app_id(), workspace)
                 .map_err(LaunchError::Record)?;
             let views = std::rc::Rc::new(
-                crate::application_view::InstanceViewStore::new(root, probe::DEVICE, room)
+                crate::application_view::InstanceViewStore::new(root, probe::DEVICE, workspace)
                     .map_err(LaunchError::Restore)?,
             );
             // A fresh profile: the default record is only reserved here, and
@@ -2585,16 +2585,16 @@ mod tests {
             })
         }
         let environment = LaunchFixtureEnv::new();
-        let room = uuid::Uuid::new_v4();
+        let workspace = uuid::Uuid::new_v4();
         let id = crate::record::RecordId::minted();
         let manager = crate::collaboration::CollaborationManager::connected_fixture_for_test(
             probe::APP,
-            room,
+            workspace,
         );
         let spec = LaunchSpec::from_definition(probe::runner_probe_definition())
             .component_host(prepare)
             .native_services()
-            .allowed_live_options(&["--fixture-root", "--fixture-room", "--fixture-record"]);
+            .allowed_live_options(&["--fixture-root", "--fixture-workspace", "--fixture-record"]);
         let raw = vec![
             "app".into(),
             "--fixture-root".into(),
@@ -2604,8 +2604,8 @@ mod tests {
                 .join("component")
                 .display()
                 .to_string(),
-            "--fixture-room".into(),
-            room.to_string(),
+            "--fixture-workspace".into(),
+            workspace.to_string(),
             "--fixture-record".into(),
             id.as_str().into(),
         ];
@@ -2614,7 +2614,7 @@ mod tests {
             &[],
             &[],
             &[],
-            &["--fixture-root", "--fixture-room", "--fixture-record"],
+            &["--fixture-root", "--fixture-workspace", "--fixture-record"],
             0,
         )
         .unwrap();
@@ -2647,7 +2647,7 @@ mod tests {
     fn native_initial_launch_creation_requires_governor_before_reservation() {
         use automerge::transaction::Transactable;
         let environment = LaunchFixtureEnv::new();
-        let room = uuid::Uuid::new_v4();
+        let workspace = uuid::Uuid::new_v4();
         let want = crate::record::RecordCheckout::new(
             crate::record::RecordId::minted(),
             crate::record::RecordKind::new("note"),
@@ -2658,7 +2658,7 @@ mod tests {
         let (manager, _) =
             crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
                 "so.tilo.launch-fixture",
-                room,
+                workspace,
                 history.save(),
             );
         let _construction =
@@ -2666,12 +2666,12 @@ mod tests {
         let root = environment._directory.path().join("native-new");
         let mut owners = crate::record::RecordOwners::new(root.clone());
         let records = owners
-            .open("so.tilo.launch-fixture", &room.to_string())
+            .open("so.tilo.launch-fixture", &workspace.to_string())
             .unwrap();
-        let directory = app_state::DocStore::room_record_dir_at(
+        let directory = app_state::DocStore::workspace_record_dir_at(
             &root,
             "so.tilo.launch-fixture",
-            &room.to_string(),
+            &workspace.to_string(),
             &want.id.storage_key(),
         )
         .unwrap();
@@ -2800,9 +2800,9 @@ mod prepared_launch_tests {
         PREPARES.set(PREPARES.get().saturating_add(1));
         let root = PathBuf::from(args.value("--fixture-root").expect("explicit test root"));
         let mut owners = crate::record::RecordOwners::new(root.clone());
-        let records = owners.open(APP, ROOM).map_err(LaunchError::Record)?;
+        let records = owners.open(APP, WORKSPACE).map_err(LaunchError::Record)?;
         let views = Rc::new(
-            crate::application_view::InstanceViewStore::new(root, DEVICE, ROOM)
+            crate::application_view::InstanceViewStore::new(root, DEVICE, WORKSPACE)
                 .map_err(LaunchError::Restore)?,
         );
         let context = HostContext::prepare(
@@ -3202,18 +3202,21 @@ mod prepared_launch_tests {
                 close_component_capture(&mut driver).unwrap();
                 drop(driver);
                 let root = temp.path().join("state");
-                let saved =
-                    crate::application_view::InstanceViewStore::new(root.clone(), DEVICE, ROOM)
-                        .unwrap()
-                        .load(11)
-                        .unwrap()
-                        .unwrap();
+                let saved = crate::application_view::InstanceViewStore::new(
+                    root.clone(),
+                    DEVICE,
+                    WORKSPACE,
+                )
+                .unwrap()
+                .load(11)
+                .unwrap()
+                .unwrap();
                 let checkout = crate::record::RecordCheckout::new(
                     crate::record::RecordId::parse(&saved.record_id).unwrap(),
                     runner_probe_definition().record_kind.clone(),
                 );
                 let records = crate::record::RecordOwners::new(root)
-                    .open(APP, ROOM)
+                    .open(APP, WORKSPACE)
                     .unwrap();
                 records.try_open_record(&checkout).unwrap();
                 assert_eq!(
@@ -3285,17 +3288,18 @@ mod prepared_launch_tests {
             assert!(!temp.path().join("never.png").exists());
             std::fs::remove_file(root.join("instance-views")).unwrap();
             failed.retry_view().unwrap();
-            let saved = crate::application_view::InstanceViewStore::new(root.clone(), DEVICE, ROOM)
-                .unwrap()
-                .load(11)
-                .unwrap()
-                .unwrap();
+            let saved =
+                crate::application_view::InstanceViewStore::new(root.clone(), DEVICE, WORKSPACE)
+                    .unwrap()
+                    .load(11)
+                    .unwrap()
+                    .unwrap();
             let checkout = crate::record::RecordCheckout::new(
                 crate::record::RecordId::parse(&saved.record_id).unwrap(),
                 runner_probe_definition().record_kind.clone(),
             );
             let records = crate::record::RecordOwners::new(root)
-                .open(APP, ROOM)
+                .open(APP, WORKSPACE)
                 .unwrap();
             records.try_open_record(&checkout).unwrap();
             assert_eq!(body(&records, &checkout), "edited");
@@ -3345,10 +3349,10 @@ mod prepared_launch_tests {
         {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("state");
-            let path = app_state::DocStore::room_record_dir_at(
+            let path = app_state::DocStore::workspace_record_dir_at(
                 &root,
                 APP,
-                ROOM,
+                WORKSPACE,
                 &corrupt_checkout().id.storage_key(),
             )
             .unwrap()
@@ -3424,7 +3428,7 @@ mod prepared_launch_tests {
             assert_eq!(saved.app_id, APP);
             assert_eq!(saved.instance_id, 11);
             assert_eq!(saved.device_id, DEVICE);
-            assert_eq!(saved.workspace_id, ROOM);
+            assert_eq!(saved.workspace_id, WORKSPACE);
             drop(driver);
             std::fs::remove_dir(&path).unwrap();
             reports[0].retry_view().unwrap();

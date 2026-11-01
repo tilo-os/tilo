@@ -98,13 +98,16 @@ collab-types = { path = "../../crates/collab/collab-types" }
 tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
-# Mounts Notes in the desktop surface the browser desktop hosts apps in.
-tilo-desktop-model = { path = "../../crates/session/desktop-model" }
-tilo-desktop-surface = { path = "../../crates/session/desktop-surface" }
 
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+# The tests that mount Notes in the desktop surface only run on a desktop:
+# the surface links the GStreamer stack, which an Android build cannot.
+[target.'cfg(not(target_os = "android"))'.dev-dependencies]
+tilo-desktop-model = { path = "../../crates/session/desktop-model" }
+tilo-desktop-surface = { path = "../../crates/session/desktop-surface" }
 
 [lints]
 workspace = true

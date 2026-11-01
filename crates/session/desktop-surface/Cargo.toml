@@ -64,13 +64,13 @@ workspace-hack = { version = "0.1" }
 # turns its units into pictures, the colour that tone-maps an HDR stream to
 # this display, and the share's own rule for the input a viewer sends back.
 # All four run the media stack, which has no wasm32 build.
-neighbour-wire = { path = "../../collab/neighbour-wire" }
-tilo-callstream = { path = "../../collab/tilo-callstream", features = ["surface-decoder"] }
-tilo-media = { path = "../../platform/tilo-media", features = ["realtime"] }
-tilo-color-pipeline = { path = "../color-pipeline" }
+neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
+tilo-callstream = { version = "0.1.0", path = "../../collab/tilo-callstream", features = ["surface-decoder"] }
+tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", features = ["realtime"] }
+tilo-color-pipeline = { version = "0.1.0", path = "../color-pipeline" }
 # The share's registry and input vocabulary; the owner side's dmabuf staging
 # (the one part that holds a host graphics stack) is not a viewer's.
-tilo-window-share = { path = "../window-share", default-features = false }
+tilo-window-share = { version = "0.1.0", path = "../window-share", default-features = false }
 # The input a viewer sends back is the wire's own encoding.
 postcard.workspace = true
 

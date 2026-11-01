@@ -516,7 +516,7 @@ pub(crate) mod signed_test_support {
             };
             Self {
                 state,
-                caller: Caller::local_person(person).in_room(workspace_id.clone()),
+                caller: Caller::local_person(person).in_workspace(workspace_id.clone()),
                 origin,
                 authority,
                 workspace: workspace_id,
@@ -556,7 +556,7 @@ pub(crate) mod signed_test_support {
             .unwrap();
             fixture.caller =
                 Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
-                    .in_room(&fixture.workspace)
+                    .in_workspace(&fixture.workspace)
                     .from_foreign_device(foreign)
                     .in_new_execution();
             fixture.certified_host = Some(
@@ -874,12 +874,12 @@ mod identity_admin_tests {
                 ..Default::default()
             },
         );
-        let agent = Caller::local_agent("planner").in_room(workspace_id.clone());
+        let agent = Caller::local_agent("planner").in_workspace(workspace_id.clone());
         assert!(
             invoked(&state, &agent, &request(identity_admin::LIST, None)).is_err(),
             "an agent outside any run takes no host step"
         );
-        let person = Caller::local_person(owner).in_room(workspace_id);
+        let person = Caller::local_person(owner).in_workspace(workspace_id);
         assert!(
             invoked(&state, &person, &request(identity_admin::LIST, None)).is_err(),
             "a person reaches a native host's steps only with the seat's custody"
@@ -957,7 +957,7 @@ mod identity_admin_tests {
     fn a_host_service_is_listed_when_only_publishers_are_asked() {
         let host = Arc::new(Host::default());
         let (state, owner, workspace) = broker(host);
-        let caller = Caller::local_person(owner).in_room(workspace.clone());
+        let caller = Caller::local_person(owner).in_workspace(workspace.clone());
         let ask = |query: tilo_actions::remote::CatalogueQuery| {
             state
                 .action_query(&caller, &query)
@@ -1360,7 +1360,7 @@ mod identity_admin_tests {
     fn identity_admin_is_offered_to_settings_as_its_person_and_removal_asks_first() {
         let host = Arc::new(Host::default());
         let (state, owner, workspace) = broker(Arc::clone(&host));
-        let person = Caller::local_person(owner.clone()).in_room(workspace.clone());
+        let person = Caller::local_person(owner.clone()).in_workspace(workspace.clone());
 
         let rows = state
             .eager_catalogue(&person, RowScope::Provider(identity_admin::PROVIDER))
@@ -1442,7 +1442,7 @@ mod identity_admin_tests {
         // A person the workspace's policy grants nothing is offered no step that
         // changes the identity, and the broker refuses one before the host
         // hears of it.
-        let stranger = Caller::local_person(hex::encode([7; 32])).in_room(workspace.clone());
+        let stranger = Caller::local_person(hex::encode([7; 32])).in_workspace(workspace.clone());
         let offered = state
             .eager_catalogue(&stranger, RowScope::Provider(identity_admin::PROVIDER))
             .0;
@@ -1474,7 +1474,7 @@ mod identity_admin_tests {
 
         // A remote device, or a caller confined to no workspace, is never offered
         // this machine's identity store.
-        let remote = Caller::authenticated([41; 32], [42; 32]).in_room(workspace);
+        let remote = Caller::authenticated([41; 32], [42; 32]).in_workspace(workspace);
         assert!(
             state
                 .eager_catalogue(&remote, RowScope::Provider(identity_admin::PROVIDER))
@@ -1658,8 +1658,8 @@ mod settings_records_tests {
                 ..Default::default()
             },
         );
-        let person = Caller::local_person(owner).in_room(workspace_id.clone());
-        let agent = Caller::local_agent("scribe").in_room(workspace_id);
+        let person = Caller::local_person(owner).in_workspace(workspace_id.clone());
+        let agent = Caller::local_agent("scribe").in_workspace(workspace_id);
         let minutes = || *host.minutes.lock().unwrap();
 
         invoked(&state, &person, &lock_after(1, None)).expect("locking sooner asks nothing");

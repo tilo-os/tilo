@@ -3,9 +3,9 @@
 //! Two questions, each answered by the one model that owns it:
 //!
 //! - **May this person (or their agent) perform this action?** Decided by
-//!   `tilo-action-policy` over the room's grants: a [`Standing`] names the
-//!   person, the room's policy and any delegation bounding them, and
-//!   [`PermissionScope::Action`] names a node below the room and the action's
+//!   `tilo-action-policy` over the workspace's grants: a [`Standing`] names the
+//!   person, the workspace's policy and any delegation bounding them, and
+//!   [`PermissionScope::Action`] names a node below the workspace and the action's
 //!   kind.
 //! - **May this app's code reach this path, device or host?** Decided by the
 //!   sandbox capabilities of [`collab_types::caps`]
@@ -63,9 +63,9 @@ pub use tilo_action_policy::{ActionKind, Answer, KindSet, Standing, TreePath};
 /// [`PermissionContext::permissive`].
 pub const LOCAL_USER: &str = "local";
 
-/// The room [`PermissionContext::permissive`] and [`PermissionContext::member`]
+/// The workspace [`PermissionContext::permissive`] and [`PermissionContext::member`]
 /// decide in, when no host names one.
-pub const LOCAL_ROOM: &str = "local";
+pub const LOCAL_WORKSPACE: &str = "local";
 
 /// Which system app a presence key or a permission scope refers to.
 pub use collab_types::presence::AppKind;
@@ -76,8 +76,8 @@ pub use collab_types::presence::UserId;
 /// What a widget or a launch asks permission for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PermissionScope {
-    /// An action of `kind` at `node`, a path below the room (beginning at the
-    /// app, or empty for the room itself).
+    /// An action of `kind` at `node`, a path below the workspace (beginning at the
+    /// app, or empty for the workspace itself).
     Action { node: TreePath, kind: ActionKind },
     /// Reaching a sandboxed resource (a path, a device, a host) with `access`.
     Sandbox {
@@ -87,7 +87,7 @@ pub enum PermissionScope {
 }
 
 impl PermissionScope {
-    /// An action of `kind` on the room itself.
+    /// An action of `kind` on the workspace itself.
     pub fn workspace(kind: ActionKind) -> Self {
         Self::Action {
             node: TreePath::root(),
@@ -123,7 +123,7 @@ impl PermissionScope {
         }
     }
 
-    /// One of the room's governance actions (inviting, granting, settings).
+    /// One of the workspace's governance actions (inviting, granting, settings).
     pub fn governance(action: &str) -> Self {
         Self::Action {
             node: TreePath::root()
@@ -137,7 +137,7 @@ impl PermissionScope {
         Self::app(app.app_id(), kind)
     }
 
-    /// Reaching a filesystem path. Room roles carry no authority over the
+    /// Reaching a filesystem path. Workspace roles carry no authority over the
     /// filesystem, so this always needs an explicit sandbox capability.
     pub fn path(path: impl Into<String>, access: Access) -> Self {
         Self::Sandbox {
@@ -147,7 +147,7 @@ impl PermissionScope {
     }
 }
 
-/// The node below the room of action `action_id` on resource `resource_id`
+/// The node below the workspace of action `action_id` on resource `resource_id`
 /// (of kind `resource_kind`) published by `app_id`.
 #[must_use]
 pub fn action_node(
@@ -163,7 +163,7 @@ pub fn action_node(
         .action(action_id)
 }
 
-/// A grant to `subject` of `kinds` at `relative` in [`LOCAL_ROOM`].
+/// A grant to `subject` of `kinds` at `relative` in [`LOCAL_WORKSPACE`].
 fn local_grant(
     subject: policy::Subject,
     relative: &TreePath,
@@ -173,7 +173,7 @@ fn local_grant(
     let grant = policy::Grant::new(
         "local-grant",
         subject,
-        TreePath::room(LOCAL_ROOM).join(relative),
+        TreePath::workspace(LOCAL_WORKSPACE).join(relative),
         kinds,
         Answer::Allow,
         policy::Subject::person(LOCAL_USER),
@@ -187,7 +187,7 @@ fn local_grant(
 /// A refused permission check, with the reason people and agents read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Denial {
-    /// The room's grants do not allow the action; carries the explanation.
+    /// The workspace's grants do not allow the action; carries the explanation.
     NotGranted(String),
     /// The sandbox does not reach the resource.
     Sandbox(CapDecision),
@@ -205,7 +205,7 @@ pub struct PermissionContext {
     /// Who reaches sandboxed resources.
     actor: Actor,
     sandbox: Vec<CapOverride>,
-    /// Who acts in the room and what bounds them. Shared, so a frame's
+    /// Who acts in the workspace and what bounds them. Shared, so a frame's
     /// copies of the context and its directory witness copy no policy.
     standing: Arc<Standing>,
     /// The instant grants and capabilities are judged at, Unix seconds, for
@@ -229,14 +229,14 @@ pub(crate) struct DirectoryPermissionWitness {
     actor: Actor,
     sandbox: Vec<CapOverride>,
     standing: Arc<Standing>,
-    /// Which grants (room, then each bound's own) and sandbox capabilities
+    /// Which grants (workspace, then each bound's own) and sandbox capabilities
     /// were live: time matters only where it changes an answer.
     live: Vec<bool>,
     action_authority: Option<(String, Box<DirectoryPermissionWitness>)>,
 }
 
 impl PermissionContext {
-    /// Decide with `standing` in the room and `sandbox` for the app's code,
+    /// Decide with `standing` in the workspace and `sandbox` for the app's code,
     /// reached as `actor`.
     pub fn new(actor: Actor, sandbox: Vec<CapOverride>, standing: Standing) -> Self {
         Self {
@@ -252,10 +252,10 @@ impl PermissionContext {
         }
     }
 
-    /// The **unrestricted local user**: the owner of [`LOCAL_ROOM`] holding
+    /// The **unrestricted local user**: the owner of [`LOCAL_WORKSPACE`] holding
     /// one explicit sandbox capability over the whole filesystem.
     ///
-    /// Not a bypass flag — ownership is the room's structural rule and the
+    /// Not a bypass flag — ownership is the workspace's structural rule and the
     /// sandbox reach is a real [`CapOverride`], both evaluated like any other.
     /// Right for a solo install, `--shots`, and any session the compositor
     /// has not handed a narrower one. **Wrong** for anything acting on a
@@ -277,33 +277,33 @@ impl PermissionContext {
             })
             .collect(),
             Standing::person(
-                policy::WorkspacePolicy::new(LOCAL_ROOM, LOCAL_USER),
+                policy::WorkspacePolicy::new(LOCAL_WORKSPACE, LOCAL_USER),
                 LOCAL_USER,
             ),
         )
     }
 
-    /// `person` holding `role` in [`LOCAL_ROOM`] (owning it for
+    /// `person` holding `role` in [`LOCAL_WORKSPACE`] (owning it for
     /// [`Role::Owner`]), with no sandbox reach.
     pub fn member(person: impl Into<String>, role: Role) -> Self {
         let person = person.into();
-        Self::member_of(LOCAL_ROOM, person, role)
+        Self::member_of(LOCAL_WORKSPACE, person, role)
     }
 
-    /// `person` holding `role` in `room` (owning it for [`Role::Owner`]), with
+    /// `person` holding `role` in `workspace` (owning it for [`Role::Owner`]), with
     /// no sandbox reach.
-    pub fn member_of(room: &str, person: impl Into<String>, role: Role) -> Self {
+    pub fn member_of(workspace: &str, person: impl Into<String>, role: Role) -> Self {
         let person = person.into();
         let policy = if role == Role::Owner {
-            policy::WorkspacePolicy::new(room, person.clone())
+            policy::WorkspacePolicy::new(workspace, person.clone())
         } else {
             let mut policy =
-                policy::WorkspacePolicy::unowned(room, &policy::Subject::Role(Role::Owner));
+                policy::WorkspacePolicy::unowned(workspace, &policy::Subject::Role(Role::Owner));
             policy.members.insert(person.clone(), role);
             policy
         };
         Self::new(
-            Actor::person(person.clone()).in_workspace(room),
+            Actor::person(person.clone()).in_workspace(workspace),
             Vec::new(),
             Standing::person(policy, person),
         )
@@ -312,29 +312,32 @@ impl PermissionContext {
     /// The permissions of a whole standing a host built (an installer
     /// bounded by a bot's grants), decided exactly as that standing says.
     #[must_use]
-    pub fn from_standing(room: &str, standing: Standing) -> Self {
+    pub fn from_standing(workspace: &str, standing: Standing) -> Self {
         Self::new(
-            Actor::person(standing.person.clone()).in_workspace(room),
+            Actor::person(standing.person.clone()).in_workspace(workspace),
             Vec::new(),
             standing,
         )
     }
 
-    /// `person`, who is no member of [`LOCAL_ROOM`]: nothing is allowed.
+    /// `person`, who is no member of [`LOCAL_WORKSPACE`]: nothing is allowed.
     pub fn stranger(person: impl Into<String>) -> Self {
         let person = person.into();
         Self::new(
-            Actor::person(person.clone()).in_workspace(LOCAL_ROOM),
+            Actor::person(person.clone()).in_workspace(LOCAL_WORKSPACE),
             Vec::new(),
             Standing::person(
-                policy::WorkspacePolicy::unowned(LOCAL_ROOM, &policy::Subject::Role(Role::Owner)),
+                policy::WorkspacePolicy::unowned(
+                    LOCAL_WORKSPACE,
+                    &policy::Subject::Role(Role::Owner),
+                ),
                 person,
             ),
         )
     }
 
-    /// `person`, no member of [`LOCAL_ROOM`], granted exactly `kinds` at
-    /// `relative` (a path below the room), until Unix second `until` if given.
+    /// `person`, no member of [`LOCAL_WORKSPACE`], granted exactly `kinds` at
+    /// `relative` (a path below the workspace), until Unix second `until` if given.
     pub fn granted(
         person: impl Into<String>,
         relative: &TreePath,
@@ -351,14 +354,14 @@ impl PermissionContext {
         Self::stranger(person).with_grant(grant)
     }
 
-    /// The owner of [`LOCAL_ROOM`] acting through agent `agent`, which is
+    /// The owner of [`LOCAL_WORKSPACE`] acting through agent `agent`, which is
     /// granted exactly `kinds` at `relative`.
     pub fn agent_granted(agent: &str, relative: &TreePath, kinds: policy::KindSet) -> Self {
         Self::agent_granted_at(agent, std::slice::from_ref(relative), kinds)
     }
 
-    /// The owner of [`LOCAL_ROOM`] acting through agent `agent`, which is
-    /// granted exactly `kinds` at each of `nodes` (paths below the room):
+    /// The owner of [`LOCAL_WORKSPACE`] acting through agent `agent`, which is
+    /// granted exactly `kinds` at each of `nodes` (paths below the workspace):
     /// the scope an invitation gave it.
     pub fn agent_granted_at(agent: &str, nodes: &[TreePath], kinds: policy::KindSet) -> Self {
         let subject = policy::Subject::agent(agent);
@@ -369,10 +372,10 @@ impl PermissionContext {
         Self::member(LOCAL_USER, Role::Owner).acting_as(subject, grants)
     }
 
-    /// This person, as their room told them it permits `kinds` at
-    /// `relative` (a path below the room): what a share of one item gave
-    /// them, mirrored so their window lets them do what the room keeps.
-    /// The room still decides every change.
+    /// This person, as their workspace told them it permits `kinds` at
+    /// `relative` (a path below the workspace): what a share of one item gave
+    /// them, mirrored so their window lets them do what the workspace keeps.
+    /// The workspace still decides every change.
     #[must_use]
     pub fn permitted_at(self, relative: &TreePath, kinds: policy::KindSet) -> Self {
         let grant = local_grant(
@@ -402,7 +405,8 @@ impl PermissionContext {
     /// version offers whoever holds it.
     #[must_use]
     pub fn read_only(&self) -> Self {
-        let mut context = Self::member_of(self.standing.room(), self.user.0.clone(), Role::Viewer);
+        let mut context =
+            Self::member_of(self.standing.workspace(), self.user.0.clone(), Role::Viewer);
         context.actor = self.actor.clone();
         context.now = self.now;
         context.policy_time.clone_from(&self.policy_time);
@@ -488,7 +492,7 @@ impl PermissionContext {
         Some(next)
     }
 
-    /// The same context with the room's policy replaced, for a host that
+    /// The same context with the workspace's policy replaced, for a host that
     /// learned of a change.
     #[must_use]
     pub fn with_standing(mut self, standing: Standing) -> Self {
@@ -612,7 +616,7 @@ impl PermissionContext {
         &self.actor
     }
 
-    /// The role the person holds in the room, if any.
+    /// The role the person holds in the workspace, if any.
     pub fn role(&self) -> Option<Role> {
         self.standing.policy.active_role(&self.standing.person)
     }
@@ -634,7 +638,7 @@ impl PermissionContext {
         }
     }
 
-    /// The answer for an action of `kind` at `node` below the room.
+    /// The answer for an action of `kind` at `node` below the workspace.
     pub fn answer(&self, node: &TreePath, kind: ActionKind) -> Answer {
         self.verdict_for(node, kind, false, false, |verdict| verdict.answer)
             .unwrap_or(Answer::Deny)
@@ -864,7 +868,7 @@ impl PermissionContext {
             (None, std::borrow::Cow::Borrowed(standing)) => {
                 self.policy_now().ok().map(|now| PublishedAnswers {
                     authority: standing.authority(),
-                    room: standing.policy.node(),
+                    workspace: standing.policy.node(),
                     cx: policy::Context::at_secs(now.unwrap_or(0)),
                 })
             }
@@ -891,7 +895,7 @@ impl PermissionContext {
         let standing = self.usable(&self.standing, false);
         let answers = PublishedAnswers {
             authority: standing.authority(),
-            room: standing.policy.node(),
+            workspace: standing.policy.node(),
             cx: policy::Context::at_secs(now.unwrap_or(0)),
         };
         Ok(decide(&answers))
@@ -940,17 +944,17 @@ impl ActionDecider<'_> {
     }
 }
 
-/// One authority's answers for the actions a room's apps publish.
+/// One authority's answers for the actions a workspace's apps publish.
 struct PublishedAnswers<'s> {
     authority: policy::Authority<'s>,
-    room: TreePath,
+    workspace: TreePath,
     cx: policy::Context<'static>,
 }
 
 impl PublishedAnswers<'_> {
-    /// The node of a published resource in this room.
+    /// The node of a published resource in this workspace.
     fn resource(&self, app_id: &str, kind: &str, id: &str) -> TreePath {
-        self.room.clone().app(app_id).kind(kind).resource(id)
+        self.workspace.clone().app(app_id).kind(kind).resource(id)
     }
 
     /// The answer for `action` (of `need`) on the resource `node` names, as
@@ -1018,7 +1022,7 @@ fn keep_permitted(
 
 /// The permissions a host shares with what it hosts (an app, its components,
 /// a worker) and changes while they run: a role changed by the record's
-/// owner, a grant revoked, a room's participation. Every change goes through
+/// owner, a grant revoked, a workspace's participation. Every change goes through
 /// [`Self::set`], which moves [`shared_revision`] on, so whatever derives
 /// something from shared permissions (which controls may run) derives it
 /// again only after a change, not on every frame.
@@ -1193,14 +1197,14 @@ impl LivePermissions {
         self.0.borrow().check(scope)
     }
 
-    /// The answer for an action of `kind` at `node` below the room, as of now.
+    /// The answer for an action of `kind` at `node` below the workspace, as of now.
     pub fn answer(&self, node: &TreePath, kind: ActionKind) -> Answer {
         self.0.borrow().answer(node, kind)
     }
 
-    /// Whether anyone besides the participant belongs to the room, its owner
-    /// or a member, here now or not: what the room holds is shared with them.
-    pub fn room_has_others(&self) -> bool {
+    /// Whether anyone besides the participant belongs to the workspace, its owner
+    /// or a member, here now or not: what the workspace holds is shared with them.
+    pub fn workspace_has_others(&self) -> bool {
         let context = self.0.borrow();
         let standing = context.standing();
         standing.policy.has_others(&standing.person)
@@ -1296,7 +1300,7 @@ mod tests {
             assert_eq!(ctx.capabilities()[0].scope, Scope::FsPath("/".into()));
             assert!(ctx.check(&PermissionScope::app("notes", ActionKind::Outside)));
 
-            // The same owner, no capability: a room role confers no reach over
+            // The same owner, no capability: a workspace role confers no reach over
             // paths.
             let stripped = PermissionContext::member(LOCAL_USER, Role::Owner);
             assert!(!stripped.check(&PermissionScope::path(
@@ -1316,13 +1320,13 @@ mod tests {
                         .bounded_by(policy::Subject::agent("scribe"), grants),
                 )
             };
-            let room = TreePath::room(LOCAL_ROOM);
+            let workspace = TreePath::workspace(LOCAL_WORKSPACE);
             let open = |page: &str, action: &str| {
                 PermissionScope::action("notes", "notes.page", page, action, ActionKind::Read)
             };
             let narrow = agent(vec![grant(
                 policy::Subject::agent("scribe"),
-                room.join(&action_node(
+                workspace.join(&action_node(
                     "notes",
                     "notes.page",
                     "notes.page:1",
@@ -1339,7 +1343,7 @@ mod tests {
 
             let broad = agent(vec![grant(
                 policy::Subject::agent("scribe"),
-                room.clone().app("notes"),
+                workspace.clone().app("notes"),
                 policy::KindSet::READ,
             )]);
             assert!(broad.check(&open("notes.page:2", "note.delete")));
@@ -1385,7 +1389,7 @@ mod tests {
             ActionSpec::operation("edit", "Edit", OperationKind::Effect, "test.edit", &()).unwrap();
         assert_eq!(action.contract.kind, ActionKind::Outside);
         let owner = PermissionContext::member("owner", Role::Owner);
-        let node = TreePath::room(LOCAL_ROOM).join(&action_node(
+        let node = TreePath::workspace(LOCAL_WORKSPACE).join(&action_node(
             "notes",
             "notes.page",
             "notes.page:1",
@@ -1420,7 +1424,7 @@ mod tests {
         {
             let ctx = PermissionContext::member("u_guest", Role::Viewer);
             let write = PermissionScope::app("notes", ActionKind::Undoable);
-            assert!(!ctx.check(&write), "a Viewer must not change the room");
+            assert!(!ctx.check(&write), "a Viewer must not change the workspace");
             assert!(matches!(
                 ctx.check_with_denied_feedback(&write),
                 Some(Denial::NotGranted(_))
@@ -1434,7 +1438,7 @@ mod tests {
             standing.policy.grants.push(policy::Grant::new(
                 "terminal-read-only",
                 policy::Subject::Role(Role::Editor),
-                TreePath::room(LOCAL_ROOM).app(AppKind::Terminal.app_id()),
+                TreePath::workspace(LOCAL_WORKSPACE).app(AppKind::Terminal.app_id()),
                 policy::KindSet::UNDOABLE,
                 Answer::Deny,
                 policy::Subject::person("owner"),

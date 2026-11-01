@@ -444,6 +444,15 @@ impl SurfaceHost for AppHost {
         self.pointer_leave();
     }
 
+    /// A wake the app took has not drawn yet, or it says a frame is due now
+    /// while something moves; else the earliest deadline its content sets.
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        if self.wants || self.app.wake_pending() {
+            return Some(std::time::Instant::now());
+        }
+        self.app.surface_next_frame()
+    }
+
     fn prepare_frame(&mut self) -> bool {
         if self.door.has_queued() {
             self.serve_door();
