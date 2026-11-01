@@ -337,9 +337,10 @@ pub mod snap;
 pub mod state;
 pub mod strip_layers;
 pub mod surface;
-/// The actions socket a session hands a surface app is a descriptor: only a
-/// Unix process receives one.
-#[cfg(unix)]
+/// The actions socket a session hands a surface app is a descriptor of a
+/// native process: a browser page is no surface, and no session places its
+/// window.
+#[cfg(feature = "native")]
 pub mod surface_peer;
 pub mod surface_services;
 pub mod sysdirs;

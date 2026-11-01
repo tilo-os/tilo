@@ -14,7 +14,8 @@
 //! surface's connection is its host connection in all but the descriptor it
 //! arrives on.
 //!
-//! A surface process finds the socket in [`ACTIONS_FD_ENV`]; without it the
+//! A surface process finds the socket in
+//! [`ACTIONS_FD_ENV`](crate::surface_services::ACTIONS_FD_ENV); without it the
 //! app is an ordinary app with no host in reach, as before.
 //!
 //! What a surface reads of the session is no action: it reads what the
@@ -55,10 +56,6 @@ pub fn publish(resources: &[tilo_actions::ResourceSpec]) {
     }
 }
 
-/// The environment variable naming the descriptor on which a surface app
-/// talks to the session that places it.
-pub const ACTIONS_FD_ENV: &str = "TILO_SURFACE_ACTIONS_FD";
-
 /// Both directions' framing: one length-prefixed frame per message, as the
 /// collaboration wire frames the same protocol's frames.
 pub const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(64 << 20);
@@ -93,7 +90,8 @@ pub struct SurfacePeer {
 
 impl SurfacePeer {
     /// The peer on the already connected socket handed over as
-    /// [`ACTIONS_FD_ENV`]'s number; `None` when the number names no socket.
+    /// [`ACTIONS_FD_ENV`](crate::surface_services::ACTIONS_FD_ENV)'s number;
+    /// `None` when the number names no socket.
     #[must_use]
     pub fn from_descriptor(number: i32) -> Option<Self> {
         // SAFETY: the session wrote this number into the environment of the

@@ -53,8 +53,12 @@ pub const URI_LIST_MIME: &str = "text/uri-list";
 /// is left out.
 pub fn uri_list(paths: &[PathBuf]) -> String {
     let mut out = String::new();
-    for uri in paths.iter().filter_map(|p| file_uri(p)) {
-        out.push_str(uri.as_str());
+    for uri in paths
+        .iter()
+        .filter(|path| path.is_absolute())
+        .filter_map(|path| media::source::path_to_file_uri(path).ok())
+    {
+        out.push_str(&uri);
         out.push_str("\r\n");
     }
     out
@@ -69,35 +73,6 @@ pub fn copied_files_list(paths: &[PathBuf], cut: bool) -> String {
     body.push_str("\r\n");
     body.push_str(&uri_list(paths));
     body
-}
-
-/// A path's `file://` URI. `url` has none on a target without a file system
-/// (`wasm32-unknown-unknown`), where no path is a local file.
-fn file_uri(path: &Path) -> Option<url::Url> {
-    #[cfg(any(unix, windows, target_os = "wasi"))]
-    {
-        url::Url::from_file_path(path).ok()
-    }
-    #[cfg(not(any(unix, windows, target_os = "wasi")))]
-    {
-        let _ = path;
-        None
-    }
-}
-
-/// The path a `file://` URI names, on a target that has a file system and the
-/// local paths `url` converts to one; `None` on a target without either
-/// (`wasm32-unknown-unknown`), where no URI names a local file.
-fn file_path(url: &url::Url) -> Option<PathBuf> {
-    #[cfg(any(unix, windows, target_os = "wasi"))]
-    {
-        url.to_file_path().ok()
-    }
-    #[cfg(not(any(unix, windows, target_os = "wasi")))]
-    {
-        let _ = url;
-        None
-    }
 }
 
 /// The mime type a file manager's copy of files travels as when it also says
@@ -142,7 +117,7 @@ pub fn copied_files(mime: &str, body: &str) -> CopiedFiles {
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .filter_map(|line| file_path(&url::Url::parse(line).ok()?))
+            .filter_map(|line| media::source::file_uri_to_path(line).ok())
             .collect(),
         cut,
     }
