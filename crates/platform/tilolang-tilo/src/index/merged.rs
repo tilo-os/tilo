@@ -284,7 +284,7 @@ struct Scanned {
 /// not the run's length.
 ///
 /// Its length is the run's own, read from the column's counts: a list that has to size itself
-/// before showing a row costs a directory read, not the room. Until the whole run is checked
+/// before showing a row costs a directory read, not the workspace. Until the whole run is checked
 /// the length is the most the listing can have, a kept entry per entry of the run, and
 /// [`PagedItems::len_is_exact`] says so; once every entry is checked it is the count.
 pub struct Filtered {

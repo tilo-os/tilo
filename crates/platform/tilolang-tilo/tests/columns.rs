@@ -508,10 +508,10 @@ view main(m: Mail) {
 "#;
 const INBOX_APP: &str = "so.tilo.inbox";
 
-/// A room whose `threads` collection holds `n` conversations, every fifth snoozed far ahead:
+/// A workspace whose `threads` collection holds `n` conversations, every fifth snoozed far ahead:
 /// what the paging test reads.
-fn inbox_room(n: usize) -> (Replica, Meta, ResourceRef) {
-    inbox_room_of(SNOOZED, n, |i, item, meta| {
+fn inbox_workspace(n: usize) -> (Replica, Meta, ResourceRef) {
+    inbox_workspace_of(SNOOZED, n, |i, item, meta| {
         use serde_json::json;
         use tilolang_tilo::record::DynValue;
         if let Some(DynValue::Register(snoozed)) =
@@ -526,10 +526,10 @@ fn inbox_room(n: usize) -> (Replica, Meta, ResourceRef) {
     })
 }
 
-/// A room of `source`'s package whose `threads` collection holds `n` conversations, all in the
+/// A workspace of `source`'s package whose `threads` collection holds `n` conversations, all in the
 /// inbox, each set up by `shape`. Made by one change that creates the root whole, as the bench
-/// seeds a room, so the size costs one write.
-fn inbox_room_of(
+/// seeds a workspace, so the size costs one write.
+fn inbox_workspace_of(
     source: &str,
     n: usize,
     shape: impl Fn(usize, &mut tilolang_tilo::DynRecord, &Meta),
@@ -608,7 +608,7 @@ fn inbox_listing(
         .unwrap()
 }
 
-/// The inbox filter's first page of `room`, and how many conversations it checked one by one
+/// The inbox filter's first page of `workspace`, and how many conversations it checked one by one
 /// to fill it.
 fn inbox_page(ada: &Replica, meta: &Meta, mail: &ResourceRef) -> (Vec<String>, u64) {
     let thread = meta.types.iter().find(|t| t.name == "Thread").unwrap();
@@ -637,9 +637,9 @@ fn inbox_page(ada: &Replica, meta: &Meta, mail: &ResourceRef) -> (Vec<String>, u
 
 #[test]
 fn a_filter_of_a_run_and_a_clock_conjunct_pages_at_the_first_page_and_lists_what_holds() {
-    // The room of 10k conversations: the inbox run, and the two conjuncts checked as its
-    // pages fill, cost the page read, not the room.
-    let (ada, meta, mail) = inbox_room(10_000);
+    // The workspace of 10k conversations: the inbox run, and the two conjuncts checked as its
+    // pages fill, cost the page read, not the workspace.
+    let (ada, meta, mail) = inbox_workspace(10_000);
     let (items, checked) = inbox_page(&ada, &meta, &mail);
     assert_eq!(items.len(), 40, "a first page of the 10k");
     assert!(
@@ -711,15 +711,15 @@ fn texts(tree: &tilolang_runtime::UiNode) -> Vec<String> {
 }
 
 #[test]
-fn a_snooze_ending_moves_its_thread_into_the_inbox_without_reading_the_room_again() {
+fn a_snooze_ending_moves_its_thread_into_the_inbox_without_reading_the_workspace_again() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    // A room of 1,000 conversations in the inbox, the first snoozed until 2027: the view
+    // A workspace of 1,000 conversations in the inbox, the first snoozed until 2027: the view
     // starts with the other 999.
     let clock = Rc::new(RefCell::new("2026-06-29T09:00:00Z".to_owned()));
     let read = Rc::clone(&clock);
-    let (ada, _meta, _mail) = inbox_room_of(INBOX_VIEW, 1_000, |i, item, meta| {
+    let (ada, _meta, _mail) = inbox_workspace_of(INBOX_VIEW, 1_000, |i, item, meta| {
         use serde_json::json;
         use tilolang_tilo::record::DynValue;
         // The first conversation is snoozed until 2027, and comes back once it is there.
@@ -740,14 +740,14 @@ fn a_snooze_ending_moves_its_thread_into_the_inbox_without_reading_the_room_agai
     );
 
     // The clock reaches the snooze's end: the view runs again, and the conversation moves in,
-    // its row built (one item read), not the room read again.
+    // its row built (one item read), not the workspace read again.
     *clock.borrow_mut() = "2027-06-01T00:00:00Z".to_owned();
     assert!(view.is_stale(), "the snooze's end opened the inbox");
     let before = ada.host.store().read_stats().evaluated;
     view.poll_patches().unwrap();
     assert_eq!(texts(view.tree()).len(), 1_000);
     // The listing's first page was filled again, and the item that came in checked: the
-    // entries read are the page's, not the room's.
+    // entries read are the page's, not the workspace's.
     let filled = ada
         .host
         .store()

@@ -1,15 +1,16 @@
-//! A room's tilolang records as a session service: every record and item a loaded package holds
-//! is a session resource, read through [`Service::read`] and changed through its actions.
+//! A workspace's tilolang records as a session service: every record and item a loaded package
+//! holds is a session resource, read through [`Service::read`] and changed through its actions.
 //!
-//! Nothing here is per app. The catalogue is the room's published trees, kept by the incremental
-//! republisher ([`Publications`]), with each package's own actions beside them, exactly as an
-//! app's instance publishes them on its connection. A resource's reading is its fields as the
-//! runtime reads them, each by its field id, encoded as the runtime encodes a value
-//! ([`tilolang_runtime::value::to_json`]); a reference in it names the resource it points at by
-//! its published id (`tl:<app>:<id>`) and its type as `<app>#<Type>`. That is what a runtime
-//! that loads the package as another app's ([`tilolang_runtime::Runtime::load_foreign_package`])
-//! reads back ([`tilolang_runtime::Runtime::set_reading`]): the shell composes a note's own
-//! view over the note's reading, and the reading is the record the notes app shows.
+//! Nothing here is per app. The catalogue is the workspace's published trees, kept by the
+//! incremental republisher ([`Publications`]), with each package's own actions beside them,
+//! exactly as an app's instance publishes them on its connection. A resource's reading is its
+//! fields as the runtime reads them, each by its field id, encoded as the runtime encodes a
+//! value ([`tilolang_runtime::value::to_json`]); a reference in it names the resource it points
+//! at by its published id (`tl:<app>:<id>`) and its type as `<app>#<Type>`. That is what a
+//! runtime that loads the package as another app's
+//! ([`tilolang_runtime::Runtime::load_foreign_package`]) reads back
+//! ([`tilolang_runtime::Runtime::set_reading`]): the shell composes a note's own view over the
+//! note's reading, and the reading is the record the notes app shows.
 //!
 //! An invocation is the published action's own: the door builds it through the action's spec,
 //! which plans it in the runtime, and it is committed to the record as a step of the person
@@ -26,7 +27,7 @@ use crate::action::{ACTION_TYPE, DynAction, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
 use crate::host::Host;
 use crate::publish::{Planner, Publications, edit_action, publish_package, resource_id};
 
-/// The room record's tilolang records, published to the session.
+/// The workspace record's tilolang records, published to the session.
 pub struct RecordService {
     record: tilo_resource::Doc,
     host: Host,
@@ -59,7 +60,7 @@ impl RecordService {
         }
     }
 
-    /// The room record as it is here.
+    /// The workspace record as it is here.
     #[must_use]
     pub fn record(&self) -> &tilo_resource::Doc {
         &self.record
@@ -71,7 +72,7 @@ impl RecordService {
         &self.host
     }
 
-    /// Take in what another replica of the room record holds.
+    /// Take in what another replica of the workspace record holds.
     ///
     /// # Errors
     /// The changes do not apply to the record.
@@ -161,6 +162,8 @@ impl RecordService {
     fn commit(&mut self, action: &DynAction) -> Result<(), String> {
         let encoded = action.encode().map_err(|error| error.to_string())?;
         let context = ActionContext::for_resource(
+            // The workspace root's path, as a grant's tree path names it (`room/app:todo/**`),
+            // for an action that wrote no resource of its own.
             action.resources().first().copied().unwrap_or("room"),
             &action.kind,
             &action.kind,
