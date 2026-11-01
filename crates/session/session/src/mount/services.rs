@@ -100,9 +100,32 @@ impl Published for ServiceDoor {
 pub(crate) struct Collaboration<'a> {
     pub revocations: crate::engine::Revocations,
     pub sync: Option<&'a crate::sync::Client>,
+    /// This session's own workspaces, as its engine holds them, when it has an
+    /// identity to hold them with: what a change to a workspace's people is
+    /// written through, whatever the session's collaboration plane.
+    pub engine: Option<std::sync::Arc<crate::engine::Engine>>,
     pub sealed: Sealed,
     /// The records' content this session keeps and asks the workspaces for.
     pub content: Option<std::sync::Arc<crate::content::Plane>>,
+}
+
+/// Where this session's apps reach its services, when it serves them: the
+/// socket the launcher hands them, or the one it was told to serve.
+///
+/// # Errors
+///
+/// The services root the launcher hands apps could not be made this user's.
+fn action_plane_path(options: &Options) -> Result<Option<std::path::PathBuf>, Error> {
+    Ok(match &options.action_plane {
+        ActionPlane::Off => return Ok(None),
+        ActionPlane::Launcher => {
+            // The launcher hands an app the socket under the services root,
+            // which only its owner may reach.
+            launcher::services::ensure_services_root()?;
+            Some(launcher::services::collab_socket())
+        }
+        ActionPlane::At(path) => Some(path.clone()),
+    })
 }
 
 /// The plane the apps read and invoke this session's services on, when it
@@ -124,18 +147,12 @@ pub(crate) fn start_action_plane(
     let Collaboration {
         revocations,
         sync,
+        engine,
         sealed,
         content,
     } = collaboration;
-    let path = match &options.action_plane {
-        ActionPlane::Off => return Ok(None),
-        ActionPlane::Launcher => {
-            // The launcher hands an app the socket under the services root,
-            // which only its owner may reach.
-            launcher::services::ensure_services_root()?;
-            launcher::services::collab_socket()
-        }
-        ActionPlane::At(path) => path.clone(),
+    let Some(path) = action_plane_path(options)? else {
+        return Ok(None);
     };
     let link = plane::Link::new(options.wake.handle());
     // What the broker decides against, from this pass on: the desk as it is
@@ -228,9 +245,13 @@ pub(crate) fn start_action_plane(
             agent_runs: Some(agent_runs),
             sealed,
             own_device,
-            engine: sync.and_then(crate::sync::Client::engine).cloned(),
             record_content: content,
             action_offload,
+            // What the broker writes a workspace's people through, and where
+            // it keeps what it admits: this session's own workspaces, else the
+            // ones its collaboration plane holds.
+            engine: engine.or_else(|| sync.and_then(crate::sync::Client::engine).cloned()),
+            journal_root: options.state.as_deref().map(plane::journal_root),
         },
     )?;
     // What arrives on this device's action plane is answered by the broker

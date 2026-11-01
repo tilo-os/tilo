@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use runtime_collab::wire::{Event, Receipt};
 use serde_json::Map;
+use tilo_action_broker::NativePeerBrokerConfig;
 use tilo_action_broker::channel_encryption::ChannelKeyProvider;
 use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
 use tilo_action_broker::collab_outbound::PeerPublisher;
@@ -28,6 +29,7 @@ use tilo_action_broker::services::{
     Caller, ContentStoreServices, Granted, HostServices, HostStepServices, PublishedResources,
     Reading, ResourceWatch, SearchIndexServices, ShortcutLibraryRequest, ShortcutLibraryServices,
     ShortcutStore, SpeakerChange, SpeakerServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
+    WorkspaceMemberships,
 };
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
@@ -321,10 +323,12 @@ pub struct Hosted {
     /// How an app on this device runs one of its actions on another of the
     /// person's devices: what the collaboration plane reaches them through.
     pub own_device: Option<std::sync::Arc<dyn tilo_action_broker::services::OwnDeviceActions>>,
-    /// This device's rooms, whose owner is the canonical copy of what the
-    /// apps record in them: an app's write in a room the owner commits is
-    /// committed there before anyone hears of it, and leaves for the room's
-    /// peers from there. `None` when the session holds no rooms.
+    /// This device's workspaces, whose owner is the canonical copy of what
+    /// the apps record in them: an app's write in a workspace the owner
+    /// commits is committed there before anyone hears of it, and leaves for
+    /// the workspace's peers from there. A change to a workspace's people is
+    /// written through it too, and its person is who the broker admits them
+    /// as. `None` when the session holds no workspaces.
     pub engine: Option<std::sync::Arc<crate::engine::Engine>>,
     /// The content the workspaces' records reference: where an app keeps
     /// what its record names, and the route an app asks the workspace's other
@@ -334,6 +338,16 @@ pub struct Hosted {
     /// the workspace's other devices, when it holds a workspace to ask them
     /// in.
     pub action_offload: Option<std::sync::Arc<dyn tilo_actions::offload::ActionOffload>>,
+    /// Where the broker keeps what it admits, under this session's state: a
+    /// change is recorded before it runs, and answered from its record when it
+    /// is asked again.
+    pub journal_root: Option<PathBuf>,
+}
+
+/// Where a session keeping its state at `state` keeps what its broker admits.
+#[must_use]
+pub fn journal_root(state: &std::path::Path) -> PathBuf {
+    state.join("tilo").join("invocations")
 }
 
 /// Serve the session's published resources to the apps on `socket`: the
@@ -360,13 +374,36 @@ pub fn serve(
 ) -> std::io::Result<BrokerHandle> {
     let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.desk) as _;
     let channels = std::sync::Arc::clone(&hosted.sealed.broker);
-    let publisher = owner_publisher(hosted.engine.clone());
-    let services = host_services(link, launches, fabric, hosted);
+    // The identity store's device-certificate checks, on this session's one
+    // policy origin: the broker decides a join and a retained action against
+    // them, and the services answer an app's question about a device with them.
+    let certificates = std::sync::Arc::new(tilo_identity_authority::NativeCertificates::default());
+    let memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>> = hosted
+        .engine
+        .clone()
+        .map(|engine| std::sync::Arc::new(SessionMemberships { engine }) as _);
+    // A session with an identity and a state to keep its workspaces in is the
+    // person's device itself: what its broker admits is recorded before it runs
+    // and answered from that record, so a change survives the session stopping
+    // mid-run. A session with neither keeps the doors that need no identity.
+    let config =
+        hosted
+            .engine
+            .as_ref()
+            .zip(hosted.journal_root.clone())
+            .map(|(_, journal_root)| NativePeerBrokerConfig {
+                journal_root,
+                certificate_authority: std::sync::Arc::clone(&certificates) as _,
+            });
+    let engine = hosted.engine.clone();
+    let mut services = host_services(link, launches, fabric, hosted, Some(certificates));
+    services.workspace_memberships = memberships;
+    let publisher = owner_publisher(engine);
     tilo_action_broker::collab_broker::spawn_with_services(
         socket,
         Some(membership),
         publisher,
-        None,
+        config.as_ref(),
         services,
         channels,
         std::sync::Arc::new(FanoutState::new()),
@@ -517,6 +554,46 @@ impl WorkspaceAuthority for DeskAuthority {
     }
 }
 
+/// A workspace's people as this session's engine writes them: the change goes
+/// into the workspace's own record, signed with this device's key, and every
+/// device of the workspace admits it as it admits every member's change.
+struct SessionMemberships {
+    engine: std::sync::Arc<crate::engine::Engine>,
+}
+
+impl WorkspaceMemberships for SessionMemberships {
+    /// A workspace this session's engine holds is one whose people change
+    /// here.
+    fn requires_workspace(&self, workspace: &str) -> bool {
+        tilo_desktop_model::RoomId::parse(workspace).is_some_and(|room| self.engine.holds(room))
+    }
+
+    /// The engine keeps no checkpoints of a workspace's records: its owner
+    /// commits them, and a member's changes travel as the changes they are.
+    fn keeps_checkpoints(&self, _workspace: &str) -> bool {
+        false
+    }
+
+    fn health(&self) -> Result<(), String> {
+        self.engine.owner().health()
+    }
+
+    fn execute(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        let engine = std::sync::Arc::clone(&self.engine);
+        Box::pin(async move {
+            let identity = engine.identity();
+            engine.owner().commit_workspace_membership_command(
+                request,
+                &identity.device_signing_key,
+                std::time::SystemTime::now(),
+            )
+        })
+    }
+}
+
 /// What the apps this session runs reach of it: the resources its services
 /// publish, the launcher that started them, and — when this session runs on a
 /// device fabric — the speaker groups Settings asks that fabric for.
@@ -525,6 +602,7 @@ fn host_services(
     launches: std::sync::Arc<Launches>,
     fabric: Option<tilo_device_fabric::link::SharedLink>,
     hosted: Hosted,
+    certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
 ) -> HostServices {
     let Hosted {
         live_activities,
@@ -539,6 +617,7 @@ fn host_services(
         engine: _,
         record_content,
         action_offload,
+        journal_root: _,
     } = hosted;
     let speakers: Option<std::sync::Arc<dyn SpeakerServices>> = fabric.map(|fabric| {
         std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
@@ -547,6 +626,12 @@ fn host_services(
         std::sync::Arc::new(ContentIndex(content)) as std::sync::Arc<dyn SearchIndexServices>
     });
     let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
+    // The certificate checks this session's broker decides a join and a
+    // retained action against: the session's own, or one of the tests'.
+    let certificates: std::sync::Arc<dyn tilo_action_broker::CertificateAuthority> = certificates
+        .unwrap_or_else(|| {
+            std::sync::Arc::new(tilo_identity_authority::NativeCertificates::default())
+        });
     HostServices {
         published: Some(link),
         launcher: Some(launches),
@@ -588,9 +673,7 @@ fn host_services(
         record_content: record_content.map(|content| content.route()),
         // Which devices this person's identity certifies now: what the broker
         // admits a join with, and what it decides a retained action against.
-        native_certificates: Some(std::sync::Arc::new(
-            tilo_identity_authority::NativeCertificates::default(),
-        )),
+        native_certificates: Some(certificates),
         // The certificate this device acts under when the person starts
         // something here themselves — a shortcut's press, a schedule's fire
         // time — rather than an app or a peer asking for it. The broker takes
@@ -825,6 +908,7 @@ mod tests {
             std::sync::Arc::new(Launches::default()),
             fabric,
             hosted(None),
+            None,
         )
     }
 
@@ -851,6 +935,7 @@ mod tests {
             engine: None,
             record_content: None,
             action_offload: None,
+            journal_root: None,
         }
     }
 
@@ -882,6 +967,7 @@ mod tests {
             std::sync::Arc::new(Launches::default()),
             None,
             hosted(Some(std::sync::Arc::clone(&content))),
+            None,
         );
         let search_index = services
             .search_index
@@ -935,6 +1021,7 @@ mod tests {
                 record_content: Some(kept),
                 ..hosted(None)
             },
+            None,
         );
         assert!(
             with.record_content.is_some(),

@@ -325,6 +325,9 @@ impl AppBrokerState {
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<super::StagedJob, String> {
         let route = CrdtRoute::record(APP, workspace, RECORD);
+        // The workspace publishes its own changes and its governance on one
+        // route: which surface a command goes to is the one that offers the
+        // resource and action it names, not the surface it was filed under.
         let peers = self
             .surfaces
             .lock()
@@ -332,7 +335,6 @@ impl AppBrokerState {
             .values()
             .filter(|surface| {
                 surface.live
-                    && surface.app_id == APP
                     && surface.route == route
                     && surface.actions.iter().any(|candidate| {
                         candidate.resource == resource && candidate.action == action

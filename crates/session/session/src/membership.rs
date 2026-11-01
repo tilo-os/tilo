@@ -754,6 +754,442 @@ mod tests {
         );
     }
 
+    /// This computer provisioned as one of its person's devices: where the
+    /// session reads the device it signs with, and the fleet that admits it.
+    fn provisioned_identity(
+        home: &mut tilo_test_env::TestHome,
+    ) -> (
+        tempfile::TempDir,
+        tilo_user_identity::DeviceCert,
+        SigningKey,
+    ) {
+        let root = tempfile::tempdir().expect("a root for this computer's device");
+        let paths = tilo_user_identity::IdentityPaths::under(root.path());
+        home.env()
+            .set("TILO_IDENTITY_ROOT", root.path())
+            .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+        tilo_identity_host::provisioning::ensure_collaboration_identity(
+            &home.config().join("tilo").join("identity"),
+            &paths,
+            tilo_identity_host::provisioning::IdentityStorage::Files,
+        )
+        .expect("this computer is provisioned as a device");
+        let key =
+            tilo_user_identity::persist::load_device_key(&paths).expect("this computer's key");
+        let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+            .expect("this computer's certificate");
+        (root, cert, key)
+    }
+
+    /// A directory for the session's socket that only this user reaches: the
+    /// broker refuses to serve one anybody else could open.
+    fn private_directory() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().expect("a directory to serve the broker in");
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("the broker's directory is this user's");
+        root
+    }
+
+    /// The session this computer runs, keeping `state` and serving its broker
+    /// on `socket`: where its person changes a workspace's people.
+    fn session_serving(state: &std::path::Path, socket: &std::path::Path) -> crate::Session {
+        crate::Session::headless(
+            crate::Options {
+                presentation: ui::headless::fixture_runner_inputs,
+                collab: false,
+                state: Some(state.to_path_buf()),
+                action_plane: crate::ActionPlane::At(socket.to_path_buf()),
+                ..crate::Options::default()
+            },
+            &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
+        )
+        .expect("a session")
+    }
+
+    /// Wait for `broker` to publish the workspace's people actions, on the
+    /// clock it re-reads what this device may change.
+    #[track_caller]
+    fn wait_for_people(broker: &tilo_action_broker::collab_broker::AppActionBroker, room: RoomId) {
+        let resource = tilo_actions::remote::workspace_governance_resource(&room.to_string());
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let published = broker.surfaces().into_iter().any(|surface| {
+                surface.route.cluster_id == room.to_string()
+                    && surface
+                        .actions
+                        .iter()
+                        .any(|action| action.resource == resource && action.action == "set-role")
+            });
+            if published {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the workspace's people actions are not published"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// The workspace this computer's desk opens when it has none of its own:
+    /// the id the session's engine and the test's other devices act on.
+    fn a_workspace_on_the_desk(state: &std::path::Path) -> RoomId {
+        let mut session = session_keeping(state);
+        session
+            .step(std::time::Duration::from_millis(1))
+            .expect("a frame");
+        session
+            .handle()
+            .read(|tree| tree.workspaces.first().map(Workspace::room))
+            .expect("a workspace on the desk")
+    }
+
+    /// Another person the workspace admits, on a device of her own: her
+    /// engine on `her_state`, her certificate and key, and the id the
+    /// workspace knows her by.
+    fn a_second_device(
+        state: &std::path::Path,
+        her_state: &std::path::Path,
+        room: RoomId,
+        cert: &tilo_user_identity::DeviceCert,
+        key: &SigningKey,
+        now: std::time::SystemTime,
+    ) -> (Engine, tilo_user_identity::DeviceCert, SigningKey, String) {
+        let her_key = SigningKey::from_bytes(&[0x72; 32]);
+        let her = testing::certificate(&SigningKey::from_bytes(&[0x71; 32]), &her_key, "ada");
+        let hers = Engine::open(
+            identity(&her, &her_key),
+            Some(her_state),
+            [(WorkspaceId::of_room(room), room)],
+        )
+        .expect("her engine opens");
+        // This computer's device governs the workspace, and admits her.
+        let mine = Engine::open(
+            identity(cert, key),
+            Some(state),
+            [(WorkspaceId::of_room(room), room)],
+        )
+        .expect("this computer's engine opens");
+        let governor =
+            TestGovernor::empty_interactive(cert.clone(), key.clone(), &room.to_string())
+                .expect("this computer's device governs the workspace");
+        let mut governor = testing::enroll_into(governor, mine.owner(), key, cert)
+            .expect("the workspace is this computer's");
+        governor = testing::enroll_into(governor, hers.owner(), &her_key, &her)
+            .expect("the workspace admits her device");
+        let person = hex::encode(her.user_public_key);
+        for (bytes, _) in governor.outgoing() {
+            for engine in [&mine, &hers] {
+                engine
+                    .owner()
+                    .receive(
+                        room,
+                        tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                            cert.device_public_key,
+                        ),
+                        postcard::from_bytes(bytes).expect("a workspace change"),
+                        now,
+                    )
+                    .expect("the workspace's change is taken");
+            }
+        }
+        (hers, her, her_key, person)
+    }
+
+    /// This computer's device as the workspace's governor, as a session of
+    /// its own took it: what the workspace this desk keeps has of its own.
+    fn this_computer_governs(
+        state: &std::path::Path,
+        room: RoomId,
+        cert: &tilo_user_identity::DeviceCert,
+        key: &SigningKey,
+        now: std::time::SystemTime,
+    ) {
+        let mine = Engine::open(
+            identity(cert, key),
+            Some(state),
+            [(WorkspaceId::of_room(room), room)],
+        )
+        .expect("this computer's engine opens");
+        let governor =
+            TestGovernor::empty_interactive(cert.clone(), key.clone(), &room.to_string())
+                .expect("this computer's device governs the workspace");
+        let governor = testing::enroll_into(governor, mine.owner(), key, cert)
+            .expect("the workspace is this computer's");
+        for (bytes, _) in governor.outgoing() {
+            mine.owner()
+                .receive(
+                    room,
+                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
+                    postcard::from_bytes(bytes).expect("a workspace change"),
+                    now,
+                )
+                .expect("the workspace's change is taken");
+        }
+    }
+
+    /// This session's broker changes the workspace's people as this
+    /// computer's own device asks it, and the change answers as taken.
+    #[track_caller]
+    fn change_people(
+        session: &crate::Session,
+        room: RoomId,
+        cert: &tilo_user_identity::DeviceCert,
+        change: &Change,
+    ) {
+        let broker = session
+            .action_plane
+            .as_ref()
+            .and_then(crate::Plane::action_broker)
+            .expect("the session serves its broker");
+        wait_for_people(&broker, room);
+        let job = broker
+            .change_workspace_membership(
+                &room.to_string(),
+                &WorkspaceMembershipCommand::Member {
+                    change: change.clone(),
+                },
+                cert,
+            )
+            .expect("this device's person may change the workspace's people");
+        let completed = job
+            .completion
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("the invocation answers");
+        assert!(completed.code.is_empty(), "{}", completed.message);
+    }
+
+    /// Run frames until the desk shows `person` in `expected`'s part of the
+    /// workspace.
+    #[track_caller]
+    fn the_desk_shows(session: &mut crate::Session, person: &str, expected: Option<Role>) {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let shown = session
+                .handle()
+                .read(|tree| tree.workspaces.first().and_then(|ws| ws.role_of(person)));
+            if shown == expected {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the desk never showed the change: {shown:?}"
+            );
+            session
+                .step(std::time::Duration::from_millis(1))
+                .expect("a frame");
+        }
+    }
+
+    /// What her device holds of `person` once it took the changes this
+    /// computer's engine wrote.
+    fn her_device_takes(
+        state: &std::path::Path,
+        room: RoomId,
+        cert: &tilo_user_identity::DeviceCert,
+        key: &SigningKey,
+        hers: &Engine,
+        person: &str,
+        now: std::time::SystemTime,
+    ) -> Option<MemberRole> {
+        let mine = Engine::open(
+            identity(cert, key),
+            Some(state),
+            [(WorkspaceId::of_room(room), room)],
+        )
+        .expect("this computer's engine opens");
+        let written = mine
+            .owner()
+            .with_outgoing(room, now, |_, outgoing| {
+                outgoing
+                    .entries()
+                    .map(|entry| {
+                        postcard::from_bytes(entry.bytes()).map_err(|error| error.to_string())
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+            .expect("this computer's device published the change");
+        assert!(!written.is_empty(), "the change is the workspace's to send");
+        for message in written {
+            hers.owner()
+                .receive(
+                    room,
+                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
+                    message,
+                    now,
+                )
+                .expect("her device takes the workspace's change");
+        }
+        hers.people(&room.to_string())
+            .expect("the workspace's people")
+            .into_iter()
+            .find(|held| held.person == person && !held.removed)
+            .map(|held| held.role)
+    }
+
+    /// A person's own device changes a workspace's people through the session
+    /// this computer runs: the role they give and the member they remove are
+    /// the workspace's own change, signed with this device's key, so the
+    /// workspace the session's engine holds has them, and the person's other
+    /// device takes them as it takes any change of the workspace.
+    #[test]
+    fn a_person_changes_a_workspaces_people_through_the_session_this_computer_runs() {
+        let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
+        let (_identity, cert, key) = provisioned_identity(&mut home);
+        let me = crate::sync::device_identity().expect("this computer is a device");
+        assert_eq!(
+            me.device_cert, cert,
+            "the session reads this computer's own device"
+        );
+        let state = tempfile::tempdir().expect("a state directory");
+        let room = a_workspace_on_the_desk(state.path());
+        let now = std::time::SystemTime::now();
+        let her_state = tempfile::tempdir().expect("her state directory");
+        let (hers, _her, _her_key, her_person) =
+            a_second_device(state.path(), her_state.path(), room, &cert, &key, now);
+        let socket_dir = private_directory();
+        let socket = socket_dir.path().join("collab.sock");
+        // The role the person gives her, and then the member they remove: each
+        // through this session's broker, as the person's own device asks it.
+        for change in [
+            Change::SetRole {
+                person: her_person.clone(),
+                role: Role::Moderator,
+            },
+            Change::RemoveMember {
+                person: her_person.clone(),
+            },
+        ] {
+            let expected = match &change {
+                Change::SetRole { .. } => Some(Role::Moderator),
+                _ => None,
+            };
+            let mut session = session_serving(state.path(), &socket);
+            session
+                .step(std::time::Duration::from_millis(1))
+                .expect("a frame");
+            change_people(&session, room, &cert, &change);
+            // What the desk shows is the workspace the session's engine holds:
+            // the role is hers, or she is gone from it.
+            the_desk_shows(&mut session, &her_person, expected);
+            drop(session);
+            // The change this computer's device wrote, carried to her device
+            // as the workspace's host carries every change.
+            assert_eq!(
+                her_device_takes(state.path(), room, &cert, &key, &hers, &her_person, now),
+                expected.map(|role| match role {
+                    Role::Moderator => MemberRole::Moderator,
+                    other => panic!("the test set {other:?}"),
+                }),
+                "her device has her as the workspace does"
+            );
+        }
+    }
+
+    /// Whether asking this session's broker to re-role someone as `scribe` is
+    /// refused: the person's device handed the session to an agent, and a
+    /// workspace's people change at its person's device only.
+    #[track_caller]
+    fn an_agent_is_refused_a_role(
+        broker: &tilo_action_broker::collab_broker::AppActionBroker,
+        cert: &tilo_user_identity::DeviceCert,
+        room: RoomId,
+        person: &str,
+    ) -> bool {
+        let agent = tilo_actions::remote::Caller::authenticated(
+            cert.user_public_key,
+            cert.device_public_key,
+        )
+        .in_workspace(room.to_string())
+        .in_new_execution()
+        .delegated_to("scribe");
+        let answer = broker
+            .device_host()
+            .invoke(
+                &agent,
+                tilo_actions::remote::InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    on_behalf_of: None,
+                    target: tilo_actions::remote::RemoteActionTarget {
+                        provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.into(),
+                        address: tilo_actions::ActionAddress::new(
+                            tilo_actions::remote::workspace_governance_resource(&room.to_string()),
+                            "set-role",
+                        ),
+                    },
+                    argument: tilo_actions::remote::InvokeArgument::Json(
+                        serde_json::json!({
+                            "person": person,
+                            "role": "moderator",
+                        })
+                        .as_object()
+                        .expect("an object")
+                        .clone(),
+                    ),
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    wait_ms: None,
+                    appearance: None,
+                },
+            )
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()
+            .expect("the host answers");
+        matches!(
+            answer,
+            Err(tilo_actions::remote::ActionHostError::NotPermitted)
+        )
+    }
+
+    /// An agent the person's device handed its session to cannot change a
+    /// workspace's people: that is the person's own act at their device.
+    #[test]
+    fn an_agent_cannot_change_a_workspaces_people() {
+        let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
+        let (_identity, cert, key) = provisioned_identity(&mut home);
+        let state = tempfile::tempdir().expect("a state directory");
+        let room = a_workspace_on_the_desk(state.path());
+        let now = std::time::SystemTime::now();
+        this_computer_governs(state.path(), room, &cert, &key, now);
+        let stranger = SigningKey::from_bytes(&[0x73; 32])
+            .verifying_key()
+            .to_bytes();
+        let socket_dir = private_directory();
+        let socket = socket_dir.path().join("collab.sock");
+        let mut session = session_serving(state.path(), &socket);
+        session
+            .step(std::time::Duration::from_millis(1))
+            .expect("a frame");
+        let broker = session
+            .action_plane
+            .as_ref()
+            .and_then(crate::Plane::action_broker)
+            .expect("the session serves its broker");
+        wait_for_people(&broker, room);
+        assert!(
+            an_agent_is_refused_a_role(&broker, &cert, room, &hex::encode(stranger)),
+            "an agent is refused the workspace's people"
+        );
+        // And nobody was added to the workspace it asked for.
+        drop((session, broker));
+        let mine = Engine::open(
+            crate::sync::device_identity().expect("this computer is a device"),
+            Some(state.path()),
+            [(WorkspaceId::of_room(room), room)],
+        )
+        .expect("this computer's engine opens");
+        assert!(
+            mine.people(&room.to_string())
+                .expect("the workspace's people")
+                .iter()
+                .all(|held| held.person != hex::encode(stranger)),
+            "the agent's change is not the workspace's"
+        );
+    }
+
     /// An invitation this device's person makes into `room` from their own
     /// device: the workspace's record has it, and the link it signed.
     fn invite_from_this_device(

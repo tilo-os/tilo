@@ -345,8 +345,7 @@ struct Shared {
     /// Who is here: this session's membership of each workspace's room,
     /// when it takes part in the collaboration plane.
     sync: Option<Rc<sync::Client>>,
-    /// This device's rooms: what every workspace of the desk shows, and what
-    /// a join takes in.
+    /// This device's workspaces: what every workspace of the desk shows, and what a join takes in.
     engine: Option<std::sync::Arc<engine::Engine>>,
     /// The engine revision the desk's copy of each workspace's people was
     /// last taken from: what nothing new of a workspace's governance has
@@ -1561,6 +1560,7 @@ impl Session {
             mount::services::Collaboration {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
+                engine: engine.as_ref().map(std::sync::Arc::clone),
                 sealed: plane::Sealed {
                     broker: std::sync::Arc::clone(&channels_broker),
                     keys: engine.as_ref().map(|engine| engine.keys()),
