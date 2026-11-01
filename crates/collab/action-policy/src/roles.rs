@@ -904,6 +904,15 @@ pub fn is_device_panel(grant: &Grant) -> bool {
         && matches!(&grant.subject, Subject::App(app) if app == DEVICE_PANEL)
 }
 
+/// Whether `grant` is one the code defines and every read of a stored policy
+/// restores ([`crate::WorkspacePolicy::with_current_roles`]): a built-in
+/// role's, or part of the room's make-up ([`session_app`], [`device_panel`]).
+/// Whatever narrows a policy and reads it back narrows these again.
+#[must_use]
+pub fn is_code_defined(grant: &Grant) -> bool {
+    is_role_grant(grant) || is_session_app(grant) || is_device_panel(grant)
+}
+
 /// The app a person's device shows the session's own state in: quick
 /// settings, which is a panel of the session's rather than an app of its own.
 pub const DEVICE_PANEL: &str = "so.tilo.quick-settings";
