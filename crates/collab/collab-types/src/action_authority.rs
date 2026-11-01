@@ -43,17 +43,21 @@ struct StoredProjection {
 }
 
 impl From<StoredProjection> for AppActionAuthorityProjection {
-    /// The built-in roles' grants are the code's, so they are narrowed to the
-    /// app here as [`AppActionAuthorityProjection::project`] narrowed them:
-    /// a projection reads back as the projection of the current policy.
-    /// Grants given in the room stay as written, for
+    /// The grants the code makes — the built-in roles' and the session's own
+    /// app and device panel — are narrowed to the app here as
+    /// [`AppActionAuthorityProjection::project`] narrowed them, so a
+    /// projection reads back as the projection of the current policy. Grants
+    /// given in the room stay as written, for
     /// [`AppActionAuthorityProjection::validate`] to judge.
     fn from(stored: StoredProjection) -> Self {
         let mut policy = stored.policy;
         let app = policy.node().app(&stored.app_id);
-        policy
-            .grants
-            .retain(|grant| !roles::is_role_grant(grant) || grant.node.overlaps(&app));
+        policy.grants.retain(|grant| {
+            let code_made = roles::is_role_grant(grant)
+                || roles::is_session_app(grant)
+                || roles::is_device_panel(grant);
+            !code_made || grant.node.overlaps(&app)
+        });
         Self {
             schema_version: stored.schema_version,
             room: stored.room,
