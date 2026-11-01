@@ -5,6 +5,49 @@
 use super::*;
 use crate::shell::installed_registry::registry_stamps;
 
+/// The compositor's loop never reads the registries or starts a launch itself: it is served
+/// the apps the registry's watch keeps, and a launch it asks for is resolved again and started
+/// on a launch worker. One the worker cannot start (here, its package went away) arrives as a
+/// launch event, which wakes the loop.
+#[test]
+#[serial_test::serial(process_env)]
+fn the_loop_is_served_the_kept_apps_and_starts_its_launches_on_a_worker() {
+    let tmp = tempfile::tempdir().unwrap();
+    install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_APPS_DATA_DIR", tmp.path());
+    invalidate_app_cache();
+    let (woke, wakes) = std::sync::mpsc::channel::<()>();
+    wake_with(std::sync::Arc::new(move || {
+        let _ = woke.send(());
+    }));
+    let dir = tmp.path().to_path_buf();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            mark_loop_thread();
+            std::fs::rename(dir.join("registry.toml"), dir.join("registry.gone")).unwrap();
+            assert!(
+                find_installed(&installed_apps().unwrap(), "dev.tilo.calculator").is_some(),
+                "the loop is served the kept list, not the registry on the disk"
+            );
+            let launched = launch("dev.tilo.calculator", RoomId::new()).expect("handed off");
+            assert_eq!(launched.package_id, "dev.tilo.calculator");
+            let refused = loop {
+                tilo_test_env::recv("the launch worker's report", &wakes);
+                if let Some(event) = drain_events()
+                    .into_iter()
+                    .find(|event| matches!(event.kind, LaunchEventKind::SpawnFailed { .. }))
+                {
+                    break event;
+                }
+            };
+            assert_eq!(refused.package_id, "dev.tilo.calculator");
+        });
+    });
+    env.remove("TILO_APPS_DATA_DIR");
+    invalidate_app_cache();
+}
+
 /// The compositor loop asks for installed apps while building tiles and
 /// naming apps in Activity. It is served the last enumeration, stale or
 /// not, and never reads the registry itself: a stale list is refreshed
