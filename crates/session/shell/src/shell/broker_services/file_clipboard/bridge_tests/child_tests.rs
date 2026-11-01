@@ -1,5 +1,6 @@
 use super::*;
 use serde::{Deserialize, Serialize};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const TEST: &str = "shell::broker_services::file_clipboard::bridge_tests::child_tests::clipboard_bridge_runs_in_a_real_sandboxed_child";
 const CHILD: &str = "TILO_CLIPBOARD_PROOF_CHILD";
@@ -229,7 +230,9 @@ fn run_sandbox(info: &ChildInfo) -> std::process::ExitStatus {
             Ok(())
         });
     }
-    command.status().expect("production sandbox must execute")
+    command
+        .status_locked()
+        .expect("production sandbox must execute")
 }
 async fn inherited_connection(info: &ChildInfo, record: &str) -> Connection {
     // The production SDK connection over the inherited descriptor, including

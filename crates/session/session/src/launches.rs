@@ -318,6 +318,8 @@ fn start_time(pid: u32) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// A window's own connection is spent by the one connection naming its
     /// app, room and instance, and only the session's own process makes one:
@@ -396,7 +398,7 @@ mod tests {
         let room = "room-ended";
         let mut child = std::process::Command::new("sleep")
             .arg("30")
-            .spawn()
+            .spawn_locked()
             .expect("a process to launch");
         launches.started(child.id(), app, room, true);
         launches.window(app, room, 7, Some(child.id()));
@@ -422,7 +424,7 @@ mod tests {
         let launches = Launches::default();
         let mut child = std::process::Command::new("sleep")
             .arg("30")
-            .spawn()
+            .spawn_locked()
             .expect("a process to launch");
         launches.started(child.id(), "so.tilo.sandboxed", "room-sandboxed", true);
         launches.started(std::process::id(), "so.tilo.host", "room-sandboxed", false);
@@ -446,7 +448,7 @@ mod tests {
         let launches = Launches::default();
         let mut child = std::process::Command::new("sleep")
             .arg("30")
-            .spawn()
+            .spawn_locked()
             .expect("a process to launch");
         assert_eq!(launches.app_of_descendant(child.id()), None, "no launch");
 

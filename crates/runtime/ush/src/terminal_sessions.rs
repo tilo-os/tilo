@@ -141,6 +141,7 @@ pub fn proc_stat(pid: u32) -> Option<(u32, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn a_process_in_a_session_finds_it_and_loses_it_when_it_ends() {
@@ -155,7 +156,7 @@ mod tests {
             .args(["-c", "exec 3<&0; cat <&3 >/dev/null & echo $!; wait"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .expect("shell");
         let leader = shell.id();
         mark(&records, leader, std::process::id(), "s1").expect("mark");

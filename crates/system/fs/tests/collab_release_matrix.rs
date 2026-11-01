@@ -16,6 +16,7 @@ use std::sync::{
     mpsc::{self, Receiver},
 };
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use fs::{Namespace, ROOT_INO};
@@ -93,7 +94,7 @@ impl MountProcess {
         let _ = Command::new("fusermount3")
             .args(["-u", "-z"])
             .arg(&self.mount)
-            .status();
+            .status_locked();
         tilo_test_env::wait_for("the unmounted daemon to exit", || {
             self.child.try_wait().unwrap().map(|_| ())
         });
@@ -204,7 +205,7 @@ fn spawn_fs(
             "partitioned",
         );
     }
-    let mut child = command.spawn().unwrap();
+    let mut child = command.spawn_locked().unwrap();
     let (lines, logs) = capture(&mut child);
     MountProcess {
         child,
@@ -251,7 +252,7 @@ fn export_home_peer_bundle(
             "--relay-workspace-id",
             "42",
         ])
-        .status()
+        .status_locked()
         .unwrap();
     assert!(status.success(), "home-peer bundle export failed: {status}");
 }
@@ -264,7 +265,7 @@ fn publish_authority(binary: &Path, identity: &Path, workspace_cache: &Path, acl
             authority_sockets(workspace_cache),
         )
         .args(["publish-authority", "--acl", acl.to_str().unwrap()])
-        .status()
+        .status_locked()
         .unwrap();
     assert!(status.success(), "authority publication failed: {status}");
 }
@@ -275,7 +276,7 @@ fn spawn_replica(binary: &Path, identity: &Path, config: &Path) -> ReplicaProces
         .args(["replica", "--config", config.to_str().unwrap()])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let (_lines, logs) = capture(&mut child);
     ReplicaProcess { child, logs }
@@ -333,7 +334,7 @@ fn real_fuse_available(scenario: &str) -> bool {
         .is_ok_and(|fuse| std::os::unix::fs::FileTypeExt::is_char_device(&fuse.file_type()))
         && Command::new("fusermount3")
             .arg("--version")
-            .status()
+            .status_locked()
             .is_ok_and(|status| status.success());
     if available {
         return true;

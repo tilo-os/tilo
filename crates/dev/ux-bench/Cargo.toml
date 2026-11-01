@@ -28,3 +28,6 @@ workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tilo-test-env = { path = "../test-env" }

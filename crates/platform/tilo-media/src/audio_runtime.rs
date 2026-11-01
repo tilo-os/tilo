@@ -840,6 +840,8 @@ mod tests {
     use super::*;
     use crate::audio::{AudioDevice, AudioGraph};
     use std::sync::Mutex;
+    #[cfg(unix)]
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[cfg(not(unix))]
     #[test]
@@ -1188,7 +1190,7 @@ mod tests {
         let child = Command::new("sh")
             .args(["-c", "exec sleep 30"])
             .process_group(0)
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let pid = child.id();
         {

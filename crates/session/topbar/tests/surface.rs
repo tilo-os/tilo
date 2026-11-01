@@ -17,6 +17,7 @@ use std::os::fd::AsRawFd as _;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
 
@@ -143,7 +144,7 @@ fn open() -> (Compositor, Child, tempfile::TempDir) {
         });
     }
     command.env("WAYLAND_SOCKET", "3");
-    let bar = command.spawn().expect("bar process");
+    let bar = command.spawn_locked().expect("bar process");
     // The child has its own copy: this one would only keep the connection's
     // other end open after the bar is gone.
     drop(client);

@@ -1,6 +1,7 @@
 //! A real helper in a root with no host /usr or system libraries. This
 //! observes the dynamic loader failure that an argv-only test cannot see.
 use std::path::{Path, PathBuf};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn plan(root: &Path) -> std::io::Result<ush::guest::GuestPlan> {
     let runtime_bin = tilo_test_env::package_binary!("tilo-ush");
@@ -67,7 +68,7 @@ fn dynamic_helper_starts_from_private_closure_without_host_usr_and_keeps_shim_di
     );
     let output = std::process::Command::new(&argv[0])
         .args(&argv[1..])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),

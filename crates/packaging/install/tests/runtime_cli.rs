@@ -17,6 +17,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn install_bin() -> PathBuf {
     // Cargo compiles the binary before running integration tests and
@@ -57,7 +58,7 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
             .arg(host.path())
             .env("XDG_DATA_HOME", xdg.path())
             .env("HOME", xdg.path())
-            .output()
+            .output_locked()
             .unwrap();
         assert!(out.status.success());
 
@@ -67,7 +68,7 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
             .arg(host.path())
             .env("XDG_DATA_HOME", xdg.path())
             .env("HOME", xdg.path())
-            .output()
+            .output_locked()
             .unwrap();
         assert!(!out.status.success());
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -79,7 +80,7 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
             .arg(host.path())
             .env("XDG_DATA_HOME", xdg.path())
             .env("HOME", xdg.path())
-            .output()
+            .output_locked()
             .unwrap();
         assert!(out.status.success());
     }
@@ -95,7 +96,7 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
             .arg(host.path())
             .env("XDG_DATA_HOME", xdg.path())
             .env("HOME", xdg.path())
-            .output()
+            .output_locked()
             .expect("run tilo-install");
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -116,7 +117,7 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
             .args(["runtime", "list"])
             .env("XDG_DATA_HOME", xdg.path())
             .env("HOME", xdg.path())
-            .output()
+            .output_locked()
             .unwrap();
         assert!(out.status.success());
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -127,7 +128,7 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
             .args(["runtime", "verify", "test-1.0.0"])
             .env("XDG_DATA_HOME", xdg.path())
             .env("HOME", xdg.path())
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             out.status.success(),
@@ -140,7 +141,7 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
             .args(["runtime", "path", "--version", "test-1.0.0"])
             .env("XDG_DATA_HOME", xdg.path())
             .env("HOME", xdg.path())
-            .output()
+            .output_locked()
             .unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.trim().ends_with("tilo-runtime/test-1.0.0"));
@@ -150,7 +151,7 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
             .args(["runtime", "remove", "test-1.0.0"])
             .env("XDG_DATA_HOME", xdg.path())
             .env("HOME", xdg.path())
-            .output()
+            .output_locked()
             .unwrap();
         assert!(out.status.success());
         assert!(
@@ -170,7 +171,7 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
             .arg(host.path())
             .env("XDG_DATA_HOME", xdg.path())
             .env("HOME", xdg.path())
-            .output()
+            .output_locked()
             .unwrap();
         assert!(out.status.success());
 
@@ -183,7 +184,7 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
             .args(["runtime", "verify", "vv"])
             .env("XDG_DATA_HOME", xdg.path())
             .env("HOME", xdg.path())
-            .output()
+            .output_locked()
             .unwrap();
         assert!(!out.status.success());
         let stderr = String::from_utf8_lossy(&out.stderr);

@@ -488,6 +488,7 @@ impl Drop for Handoff<'_> {
 mod tests {
     use super::*;
     use std::os::fd::FromRawFd;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     struct OwnedChild(Child);
     impl Drop for OwnedChild {
@@ -520,7 +521,7 @@ mod tests {
         let mut child = OwnedChild(
             std::process::Command::new("/usr/bin/sleep")
                 .arg("30")
-                .spawn()
+                .spawn_locked()
                 .unwrap(),
         );
         let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, child.0.id(), 0) };

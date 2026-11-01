@@ -21,6 +21,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use app_cli::config::{RegistriesFile, RegistryConfig};
 use ed25519_dalek::SigningKey;
@@ -420,7 +421,7 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     assert!(!app_cli::runtime_installed(&needed));
     let absent = std::process::Command::new(tilo_test_env::package_binary!("app"))
         .args(["runtime", "install", &needed, "--repo", "local"])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         !absent.status.success(),
@@ -460,7 +461,7 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
 
     let explicit = std::process::Command::new(tilo_test_env::package_binary!("app"))
         .args(["runtime", "install", &needed, "--repo", "local"])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         explicit.status.success(),
@@ -496,7 +497,7 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     );
     let repeat = std::process::Command::new(tilo_test_env::package_binary!("app"))
         .args(["runtime", "install", &needed, "--repo", "local"])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         repeat.status.success(),
@@ -676,7 +677,7 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     served.put("/entries", serde_json::to_vec(&newer).unwrap());
     let update = std::process::Command::new(tilo_test_env::package_binary!("app"))
         .args(["runtime", "install", &new_needed, "--repo", "local"])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         update.status.success(),
@@ -710,7 +711,7 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     .unwrap();
     let damaged = std::process::Command::new(tilo_test_env::package_binary!("app"))
         .args(["runtime", "install", &new_needed, "--repo", "local"])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         !damaged.status.success(),

@@ -2,6 +2,7 @@ use super::*;
 use browser_continuity_core::engine_host::exclude_migration_from_engine;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::symlink;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const CHILD_ROOT: &str = "TILO_TEST_ENGINE_READ_EXCLUSION_ROOT";
 #[test]
@@ -48,7 +49,7 @@ fn native_engine_command_cannot_read_migration_files_even_through_aliases() {
         .arg("webview::chromium::engine_exclusion_tests::native_engine_command_cannot_read_migration_files_even_through_aliases")
         .arg("--nocapture").env(CHILD_ROOT, root.path())
         .env("TILO_TEST_ENGINE_READ_EXCLUSION_PROC", format!("/proc/{}/fd/{}/Bookmarks", std::process::id(), held.as_raw_fd()))
-        .output().unwrap();
+        .output_locked().unwrap();
         assert!(
             output.status.success(),
             "actual child confinement failed: {}{}",
@@ -74,7 +75,7 @@ fn absent_projection_preserves_engine_spawn_and_redirected_projection_is_refused
     exclude_migration_from_engine(&mut command, &root.path().join("absent")).unwrap();
     let output = command
         .args(["-c", "printf engine-ready"])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(output.status.success());
     assert_eq!(output.stdout, b"engine-ready");

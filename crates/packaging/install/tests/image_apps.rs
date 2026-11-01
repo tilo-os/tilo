@@ -16,6 +16,7 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -125,7 +126,10 @@ impl Machine {
     }
 
     fn run(mut command: Command, args: &[&str]) -> (bool, String) {
-        let out = command.args(args).output().expect("spawn tilo-install");
+        let out = command
+            .args(args)
+            .output_locked()
+            .expect("spawn tilo-install");
         (
             out.status.success(),
             format!(

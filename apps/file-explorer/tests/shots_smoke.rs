@@ -10,6 +10,8 @@
 
 use std::fs;
 
+use tilo_test_env::SpawnUnderEnvLock as _;
+
 const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
 /// The default `--shots` render writes a PNG; on a host without extended
@@ -31,7 +33,7 @@ fn unavailable_projection_scenarios_fail_instead_of_producing_misleading_images(
             .arg("--shots")
             .arg(&output)
             .args(["--scenario", scenario])
-            .output()
+            .output_locked()
             .unwrap();
         assert!(!result.status.success());
         assert!(!output.exists());
@@ -49,7 +51,7 @@ fn file_explorer_shots_flag_writes_png() {
     let status = crate::common::app_command()
         .arg("--shots")
         .arg(&out)
-        .status()
+        .status_locked()
         .expect("spawn file-explorer --shots");
     assert!(
         status.success(),

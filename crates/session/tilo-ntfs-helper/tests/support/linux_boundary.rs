@@ -1,4 +1,5 @@
 use tilo_ntfs_helper as _;
+use tilo_test_env::SpawnUnderEnvLock as _;
 // Uninstalled Linux-only opt-in tests. Coordinator supplies an already disposable block fixture.
 use std::{
     fs::OpenOptions,
@@ -33,7 +34,7 @@ fn production_claim_busy_mounted_alias() {
     let id = std::env::var("TILO_NTFS_NATIVE_INVENTORY_ID").unwrap();
     let out = Command::new(tilo_test_env::package_binary!("tilo-ntfs-probe"))
         .args(["inspect-selected", "--inventory-id", &id, "--root-mft", "5"])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(!out.status.success());
     assert!(out.stdout.is_empty());
@@ -131,7 +132,7 @@ fn native_coordinator(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
     });
     let output = Command::new("python3")
         .args([&script, "--probe", &probe, "--mode", mode])
-        .output()?;
+        .output_locked()?;
     if !output.status.success() {
         return Err(format!(
             "native coordinator failed: {}",
@@ -205,7 +206,7 @@ fn production_retained_read_session() {
         .args([
             &script, "--probe", &probe, "--client", &client, "--mode", &mode,
         ])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),

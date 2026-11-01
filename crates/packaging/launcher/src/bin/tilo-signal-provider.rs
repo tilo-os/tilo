@@ -172,6 +172,7 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
     #[test]
     fn runtime_requires_one_exact_native_build_path() {
         let root = tempfile::tempdir().unwrap();
@@ -230,7 +231,7 @@ mod tests {
                 "--nocapture",
             ])
             .env(FIXTURE, root.path())
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             result.status.success(),
@@ -245,7 +246,7 @@ mod tests {
         let child = Command::new("/bin/sh")
             .args(["-c", script, "fixture"])
             .arg(&ready)
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let child = Java(child);
         tilo_test_env::wait_until("the fixture to observe the live child", || ready.exists());
@@ -266,7 +267,7 @@ mod tests {
         let child = Java(
             Command::new("/bin/sh")
                 .args(["-c", "exit 143"])
-                .spawn()
+                .spawn_locked()
                 .unwrap(),
         );
         assert!(
@@ -276,7 +277,7 @@ mod tests {
         let child = Java(
             Command::new("/bin/sh")
                 .args(["-c", "kill -TERM $$"])
-                .spawn()
+                .spawn_locked()
                 .unwrap(),
         );
         assert!(

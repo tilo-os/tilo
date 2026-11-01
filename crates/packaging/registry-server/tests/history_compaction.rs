@@ -16,6 +16,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use app_cli::client::RegistryError;
 use app_cli::config::RegistryConfig;
@@ -122,7 +123,7 @@ impl Registry {
             .arg("--owner-key-file")
             .arg(&self.key_path)
             .args(["--valid-for-seconds", "86400"])
-            .output()
+            .output_locked()
             .unwrap()
     }
 

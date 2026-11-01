@@ -2,6 +2,7 @@ use super::*;
 use ed25519_dalek::{Signer as _, SigningKey};
 use package_store::{Catalog, InstalledPackage, Layout};
 use tilo_app_package::{BlobHash, Collection, SignedRoot};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const WORKSPACE: &str = "0b7c7a52-6f7e-4a55-9a51-1c2f4b3f7e10";
 const VIEWER: &str = "so.tilo.viewer";
@@ -506,7 +507,7 @@ fn a_payload_that_does_not_verify_is_refused() {
 fn attestation_holds_only_for_the_launched_process_itself() {
     let mut child = std::process::Command::new("/bin/sleep")
         .arg("30")
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let pid = child.id();
     let launched = Launched::default();
@@ -545,7 +546,7 @@ fn a_connecting_process_names_the_launch_that_started_it() {
     let apps = Apps::new(None, &root, WORKSPACE, PathBuf::new(), Vec::new());
     let mut child = std::process::Command::new("/bin/sleep")
         .arg("30")
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let ours = std::process::id();
     assert!(apps.launched.record(ours, VIEWER, WORKSPACE, None));
@@ -620,11 +621,11 @@ int main(void) {
             .arg("-o")
             .arg(&binary)
             .arg(&source)
-            .status(),
+            .status_locked(),
         Command::new("/usr/bin/codesign")
             .args(["--force", "--sign", "-"])
             .arg(&binary)
-            .status(),
+            .status_locked(),
     ] {
         assert!(command.unwrap().success());
     }

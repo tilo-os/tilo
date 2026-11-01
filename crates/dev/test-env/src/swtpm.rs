@@ -12,6 +12,7 @@
     reason = "test support: failing to set up the fixture is the test's answer"
 )]
 
+use crate::SpawnUnderEnvLock as _;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
@@ -19,7 +20,7 @@ fn have(tool: &str) -> bool {
     Command::new("sh")
         .arg("-c")
         .arg(format!("command -v {tool} >/dev/null 2>&1"))
-        .status()
+        .status_locked()
         .is_ok_and(|s| s.success())
 }
 
@@ -122,7 +123,7 @@ impl Swtpm {
                     .open(&setup_log)
                     .expect("setup log"),
             ))
-            .status();
+            .status_locked();
         let log = state.path().join("swtpm.log");
         let wire = record.then(|| state.path().join("wire.log"));
         let mut swtpm = Command::new("swtpm");
@@ -145,7 +146,7 @@ impl Swtpm {
                     .open(&log)
                     .expect("swtpm log"),
             ))
-            .spawn()
+            .spawn_locked()
             .expect("spawning swtpm");
         let mut tpm = Swtpm {
             _state: state,
@@ -168,7 +169,7 @@ impl Swtpm {
             match Command::new("tpm2_getcap")
                 .arg("properties-fixed")
                 .env("TPM2TOOLS_TCTI", tpm.tcti())
-                .output()
+                .output_locked()
             {
                 Ok(o) if o.status.success() => return Ok(tpm),
                 Ok(o) => last = String::from_utf8_lossy(&o.stderr).into_owned(),

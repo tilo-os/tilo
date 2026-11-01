@@ -15,12 +15,14 @@
 )]
 
 use std::fs;
+
 use std::io::Write as _;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_actions::ResourceSpec;
 use tilo_app_launch::Connects as _;
@@ -717,7 +719,7 @@ fn a_session_dropped_while_its_app_runs_leaves_no_launcher_behind() {
         .script()
         .command()
         .stdin(std::process::Stdio::null())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     std::thread::spawn(move || {
         let _ = orphan.wait();

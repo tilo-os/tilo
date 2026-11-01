@@ -16,6 +16,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const VERSION: &str = "1+native.fixture";
 
@@ -32,7 +33,7 @@ fn executable(path: &Path, contents: &[u8]) {
 }
 
 fn compile(arguments: &[&std::ffi::OsStr]) {
-    let output = Command::new("cc").args(arguments).output().unwrap();
+    let output = Command::new("cc").args(arguments).output_locked().unwrap();
     assert!(
         output.status.success(),
         "{}",
@@ -94,7 +95,7 @@ impl Runtime {
         let report = Command::new("ldd")
             .arg(&probe)
             .env("LD_LIBRARY_PATH", &lib)
-            .output()
+            .output_locked()
             .unwrap();
         for word in String::from_utf8(report.stdout).unwrap().split_whitespace() {
             let candidate = Path::new(word.trim_matches(|c| c == '(' || c == ')'));

@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -87,7 +88,7 @@ fn run(home: &Path, key: &SigningKey, args: &[&std::ffi::OsStr]) -> (bool, Strin
         .env("XDG_DATA_HOME", home.join("data"))
         .args(args)
         .args(["--require-publisher", publisher.as_str()])
-        .output()
+        .output_locked()
         .expect("spawn tilo-install");
     (
         out.status.success(),

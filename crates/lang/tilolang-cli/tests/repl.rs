@@ -17,6 +17,7 @@
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixListener;
 use std::process::{Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use serde_json::{Value, json};
 
@@ -64,7 +65,7 @@ fn repl(args: &[&str], input: &str) -> std::process::Output {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     child
         .stdin

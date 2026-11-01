@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::HashSet;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn request(dir: PathBuf) -> NewAppRequest {
     NewAppRequest {
@@ -5825,7 +5826,7 @@ while true; do sleep 0.2; done\n",
     let child = KillOnDrop(
         std::process::Command::new(&script)
             .arg(&state)
-            .spawn()
+            .spawn_locked()
             .expect("app process"),
     );
     let ready = state.with_extension("ready");
@@ -6001,7 +6002,7 @@ fn seal_script(path: &Path) {
         .arg("755")
         .arg(&draft)
         .arg(path)
-        .status()
+        .status_locked()
         .unwrap();
     assert!(status.success(), "install {}", path.display());
     std::fs::remove_file(&draft).unwrap();

@@ -22,6 +22,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::{Signer, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -184,7 +185,7 @@ impl TestEnv {
 }
 
 fn run(mut cmd: Command) -> (bool, String, String) {
-    let out = cmd.output().expect("spawn tilo-install");
+    let out = cmd.output_locked().expect("spawn tilo-install");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     (out.status.success(), stdout, stderr)

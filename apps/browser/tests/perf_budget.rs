@@ -21,6 +21,8 @@
 
 use std::path::Path;
 use std::time::Instant;
+#[cfg(unix)]
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ui::framework::testing::TestApp;
 
@@ -47,7 +49,7 @@ fn starting_host(dir: &Path) -> std::path::PathBuf {
     assert!(
         std::process::Command::new(&host)
             .arg("--warm")
-            .status()
+            .status_locked()
             .unwrap()
             .success()
     );

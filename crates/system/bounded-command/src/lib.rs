@@ -622,6 +622,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::os::unix::fs::PermissionsExt as _;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// For tests of anything but the timeout: long enough that a loaded
     /// machine never turns the expected error into `Error::Timeout`.
@@ -773,7 +774,7 @@ mod tests {
         {
             let mut command = Command::new("sh");
             command.args(["-c", "trap '' TERM; sleep 3600"]);
-            let child = own_process_tree(&mut command).spawn().unwrap();
+            let child = own_process_tree(&mut command).spawn_locked().unwrap();
             let mut child = returns("the escalation to kill the tree", move || {
                 let mut child = child;
                 terminate_tree(&mut child, Duration::from_millis(50));
@@ -786,13 +787,13 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_bounded_wait_reaps_an_exited_child_and_kills_only_on_request() {
-        let mut quick = Command::new("true").spawn().unwrap();
+        let mut quick = Command::new("true").spawn_locked().unwrap();
         assert!(
             wait_or_kill(&mut quick, UNTESTED_TIMEOUT)
                 .unwrap()
                 .is_some_and(|status| status.success())
         );
-        let mut slow = Command::new("sleep").arg("60").spawn().unwrap();
+        let mut slow = Command::new("sleep").arg("60").spawn_locked().unwrap();
         assert_eq!(
             wait_timeout(&mut slow, Duration::from_millis(50)).unwrap(),
             None

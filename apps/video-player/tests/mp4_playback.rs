@@ -11,6 +11,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::time::Duration;
 
 use media::gst::prelude::*;
@@ -77,7 +78,7 @@ fn h264_aac_mp4_plays_pauses_seeks_and_resumes_through_app_actions() {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
-    let result = command.output().expect("run isolated MP4 playback");
+    let result = command.output_locked().expect("run isolated MP4 playback");
     std::fs::remove_dir_all(&root).expect("release the MP4 and isolated state");
     assert!(
         result.status.success(),

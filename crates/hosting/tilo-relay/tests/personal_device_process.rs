@@ -20,6 +20,7 @@
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::process::{Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use tilo_relay::daemon::RelayIdentity;
@@ -215,7 +216,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         .arg(requester.start_time().to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     wait_for_file(&status_file, "recipient pairing status");
 
@@ -236,7 +237,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         .arg(enrollment_window())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     both_succeed(recipient_process, approval);
     assert_eq!(
@@ -392,7 +393,7 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
         .arg(&status_file)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     wait_for_file(&status_file, "recipient pairing status");
     let approval = Command::new(&enroll)
@@ -410,7 +411,7 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
         .arg(enrollment_window())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     both_succeed(recipient_process, approval);
 
@@ -492,7 +493,7 @@ fn privileged_helper_preserves_user_owned_personal_device_projection() {
         let ownership = Command::new("chown")
             .args(["-R", &format!("{REQUEST_UID}:{REQUEST_UID}")])
             .arg(scope.path())
-            .status()
+            .status_locked()
             .unwrap();
         assert!(ownership.success(), "prepare non-root identity ownership");
 
@@ -560,7 +561,7 @@ wait "$approval"
             )
             .env("TILO_RECIPIENT_ID", &recipient_id)
             .env("TILO_RECIPIENT_SERVICE", &recipient_service)
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             output.status.success(),
@@ -643,7 +644,7 @@ fn a_named_person_s_identity_directory_is_never_written_through_a_link() {
             .args(["--person-uid", &person, "--device", &device])
             .arg("--out")
             .arg(work.path().join("device.cert"))
-            .output()
+            .output_locked()
             .unwrap()
     };
 
