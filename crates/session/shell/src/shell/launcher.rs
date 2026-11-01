@@ -6602,6 +6602,30 @@ pub fn expire_pending_placements() -> Vec<String> {
     expire_pending_placements_at(Instant::now())
 }
 
+/// When [`expire_pending_placements`] next has a launch to retire: the
+/// earliest deadline of a launch still waiting for its window, or of one
+/// whose parent exited. A launch held for its room is not late, and its
+/// room's arrival wakes the loop. The frame loop sleeps until then, so a
+/// window that never comes is answered on time on an idle desktop too.
+pub fn next_placement_expiry() -> Option<Instant> {
+    let session = LaunchSession::current();
+    lock(&session.pending)
+        .iter()
+        .filter_map(|note| {
+            #[cfg(any(test, target_os = "linux"))]
+            let waiting = note.claimed_by.is_none() && room_hold::waits(&session, &note.key);
+            #[cfg(not(any(test, target_os = "linux")))]
+            let waiting = false;
+            let presentation =
+                (note.claimed_by.is_none() && !waiting).then_some(note.present_before);
+            [presentation, note.retire_after]
+                .into_iter()
+                .flatten()
+                .min()
+        })
+        .min()
+}
+
 fn expire_pending_placements_at(now: Instant) -> Vec<String> {
     let session = LaunchSession::current();
     let mut expired = Vec::new();
