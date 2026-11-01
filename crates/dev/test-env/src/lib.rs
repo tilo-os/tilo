@@ -1066,7 +1066,7 @@ mod tests {
             let output = std::process::Command::new(shell)
                 .arg(arg)
                 .arg("once")
-                .output()
+                .output_locked()
                 .unwrap();
             assert!(output.status.success());
             assert_eq!(output.stdout, b"ran once");
@@ -1084,7 +1084,11 @@ mod tests {
                         for round in 0..25 {
                             let path = dir.path().join(format!("fixture-{thread_index}-{round}"));
                             let body = format!("#!/bin/sh\nprintf '{thread_index}-{round}'\n");
-                            let output = script(&path, &body).unwrap().command().output().unwrap();
+                            let output = script(&path, &body)
+                                .unwrap()
+                                .command()
+                                .output_locked()
+                                .unwrap();
                             assert!(output.status.success());
                             assert_eq!(output.stdout, format!("{thread_index}-{round}").as_bytes());
                         }

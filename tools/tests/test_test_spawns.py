@@ -53,6 +53,10 @@ class TestSpawns(unittest.TestCase):
         source = 'fn run() { Command::new("x").spawn(); }\n#[cfg(test)]\nmod tests { fn t() { Command::new("y").status(); } }'
         self.assertEqual(found(source, "crates/x/src/lib.rs"), ["status"])
 
+    def test_the_shared_test_support_crate_is_test_code(self):
+        source = 'pub fn bus() { Command::new("dbus-daemon").arg("--nofork").spawn(); }'
+        self.assertEqual(found(source, "crates/dev/test-env/src/bus.rs"), ["spawn"])
+
 
 if __name__ == "__main__":
     unittest.main()

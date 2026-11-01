@@ -11,8 +11,8 @@ at a recording stand-in, and the two tests read each other's effects.
 starts a command under that lock: `spawn_locked`, `output_locked`,
 `status_locked`.
 
-This check finds, in test code (files under `tests/` or `benches/`, and
-`#[cfg(test)]`/`#[test]` items elsewhere), every `.spawn()`, `.output()` and
+This check finds, in test code (files under `tests/` or `benches/`, the
+sources of `tilo-test-env`, and `#[cfg(test)]`/`#[test]` items elsewhere), every `.spawn()`, `.output()` and
 `.status()` on a `Command`: a call chained onto `Command::new` or onto a
 builder method only a command has (`.arg`, `.args`, `.env`, `.stdin`, ...),
 or on a variable bound to or typed as a `Command`, or on a call of a
@@ -30,8 +30,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rust_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-# Where the lock is taken: the trait's own implementation calls `spawn`.
-HELPER = Path("crates/dev/test-env/src/lib.rs")
+# Test support: every source of the crate tests share is test code, as the
+# files under `tests/` are. The trait's own implementation calls `spawn` on
+# `self`, which is not a command this check can name.
+SUPPORT = (Path("crates/dev/test-env/src"),)
 SCANNED = ("apps", "crates", "examples", "fuzz", "os", "tools")
 START = re.compile(r"\.\s*(spawn|output|status)\s*\(\s*\)")
 COMMAND_TYPE = r"(?:(?:std|tokio)\s*::\s*process\s*::\s*)?Command\b"
@@ -154,7 +156,9 @@ def is_command(expression: str, code: str, commands: set[str]) -> bool:
 
 
 def test_code(relative: Path, code: str) -> str:
-    if rust_source.is_test_file(relative):
+    if rust_source.is_test_file(relative) or any(
+        support in relative.parents for support in SUPPORT
+    ):
         return code
     production = rust_source.blank_test_items(code)
     return "".join(
@@ -177,7 +181,7 @@ def sources(root: Path):
     ).stdout
     for name in sorted(set(names.split(b"\0")) - {b""}):
         relative = Path(os.fsdecode(name))
-        if relative.suffix != ".rs" or relative == HELPER:
+        if relative.suffix != ".rs":
             continue
         if any(part in {"target", "vendor"} for part in relative.parts):
             continue
