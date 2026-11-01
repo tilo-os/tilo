@@ -55,6 +55,10 @@ impl Core {
             }
             Imp::StrLen => ret_i64(len_to_i64(self.text(a.h(0)?)?.chars().count())),
             Imp::IntToStr => self.ret_h(Value::Text(a.long(0)?.to_string())),
+            Imp::StrToInt => {
+                let number = self.text(a.h(0)?)?.trim().parse::<i64>().ok();
+                self.ret_h(Value::Opt(number.map(|n| Box::new(Value::Int(n)))))
+            }
             Imp::FloatToStr => self.ret_h(Value::Text(a.float(0)?.to_string())),
             Imp::StrCmp => {
                 let o = self.text(a.h(0)?)?.cmp(&self.text(a.h(1)?)?);

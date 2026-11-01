@@ -6,7 +6,7 @@
 /// The session holds it in `tilo_desktop_model::own_arrangement`'s `Strips` — a row across a
 /// workspace, a strip of places in a row, a place showing a resource through a view — and
 /// publishes its reading as `session.arrangement`. The shell's views read it (§9) and change it
-/// only through the arranging actions on `shell:arrangement` (`arranging.tl`), so a person, an
+/// only through the arranging actions on `shell:arrangement` (`so.tilo.session`'s), so a person, an
 /// agent and a script arrange the same way, attributed and undoable.
 ///
 /// Every entry names the shell that made it (`shell`): a shell that does not know an entry

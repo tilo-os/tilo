@@ -291,23 +291,10 @@ fn imports_are_found_among_sibling_packages_and_compiled_first() {
     );
 }
 
-#[test]
-fn every_example_package_builds_from_its_directory_with_its_committed_ids() {
-    for dir in example_dirs() {
-        let order = dependency_order(&dir, &[]).unwrap();
-        let built = compile_dirs(&order, &[], &mut SeededEntropy(1))
-            .unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
-        for b in &built {
-            let committed = std::fs::read_to_string(b.dir.join("app.ids")).unwrap();
-            assert_eq!(
-                b.compiled.ids.to_text(),
-                committed,
-                "{}: app.ids is out of date",
-                b.dir.display()
-            );
-        }
-    }
-}
+// Every example package building from its directory with its committed ids is
+// `tilolang-cli`'s `native_types::every_example_package_builds_from_its_directory_with_its_committed_ids`:
+// a package may `use` a native app (the shell calls the session's actions), whose described
+// package only the catalogue reads.
 
 #[test]
 fn a_missing_import_names_the_app_and_where_it_looked() {

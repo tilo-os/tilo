@@ -54,9 +54,44 @@ fn room() -> Replica {
                 include_str!("../../../../apps/tl/tasks/app.tl"),
                 include_str!("../../../../apps/tl/tasks/app.ids"),
             ),
-            (source.as_str(), IDS),
         ],
     );
+    // It calls the session's actions (`use so.tilo.session as session`) and reads the device's
+    // and Settings' published resources (the quick settings): packages the platform describes,
+    // loaded as the session loads them.
+    let session = tilolang_tilo::catalogue::described(
+        "so.tilo.session",
+        "Session",
+        include_str!("../../../../apps/tl/session/surface.toml"),
+    )
+    .expect("the session's description reads");
+    let mut imports: Vec<_> = [
+        "so.tilo.lang.chat",
+        "so.tilo.lang.notes",
+        "so.tilo.lang.tasks",
+    ]
+    .iter()
+    .map(|app| replica.host.package(app).unwrap().meta)
+    .collect();
+    for meta in
+        std::iter::once(session).chain(tilolang_tilo::platform_apps::platform_packages().unwrap())
+    {
+        replica.host.runtime().load_foreign(meta.clone()).unwrap();
+        imports.push(meta);
+    }
+    let lock = tilolang_tilo::tilolang::IdsLock::parse(IDS).unwrap();
+    let compiled = tilolang_tilo::tilolang::compile_package(&source, &lock, &imports)
+        .unwrap_or_else(|diagnostics| {
+            panic!(
+                "{}",
+                diagnostics
+                    .iter()
+                    .map(|diagnostic| diagnostic.render("shell"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        });
+    replica.host.load_compiled(&compiled).unwrap();
     // The person's shell record, made as the session makes it, and the package's migration
     // seeding it: the bar's parts and the dock's items, on a shell never arranged.
     let meta = replica.host.package(APP).unwrap().meta;
@@ -456,6 +491,46 @@ fn a_bar_that_hides_when_a_window_overlaps_it_hides_only_while_one_does() {
         says(&desk_view(&r), "Launcher"),
         "and shows once it is clear"
     );
+}
+
+/// The desk's quick settings stand over the desk with every tile, read from the device's and
+/// Settings' published resources: here none is published, so each reads as absent (off, empty).
+#[test]
+fn the_quick_settings_stand_over_the_desk() {
+    let mut r = room();
+    let root = r.host.root_record(APP, "4jk2lkpt").unwrap();
+    let meta = r.host.package(APP).unwrap().meta;
+    let id = crate::fixtures::field_id(&meta, "Desk", "here");
+    r.host
+        .runtime()
+        .apply_origin(
+            "session",
+            vec![OriginWrite::Set {
+                target: root,
+                fields: vec![(id, Value::text("quick-settings"))],
+            }],
+            None,
+        )
+        .expect("the desk's surface is the session's to write");
+    for (resource, ty) in tilolang_tilo::platform_apps::platform_roots() {
+        let target = tilolang_tilo::runtime::ResourceRef::parse_id(resource, ty).unwrap();
+        r.host.runtime().set_reading(&target, "{}").unwrap();
+    }
+    r.commit();
+    let view = desk_view(&r);
+    for words in [
+        "Quick settings",
+        "Bluetooth",
+        "Dark mode",
+        "Do not disturb",
+        "Lock",
+    ] {
+        assert!(
+            says(&view, words),
+            "the panel shows {words}: {:?}",
+            view.tree()
+        );
+    }
 }
 
 /// The session writes what the screen says of its edges, as it does every turn: one fact on

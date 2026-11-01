@@ -73,6 +73,10 @@ pub struct PackageMeta {
 pub struct NamedRootMeta {
     pub name: String,
     pub ty: String,
+    /// The resource the session publishes it as, for a root of an app this runtime does not
+    /// run (`sound`, `settings:settings.appearance`): what `device.sound` names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published: Option<String>,
 }
 
 /// `type Name = T`: the name and the type it names, as metadata writes types.

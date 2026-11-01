@@ -1,6 +1,6 @@
 //! The surface the desk shows over its windows, as the person left it: at rest, or one of the
 //! shell's overlays (`overview`, `switcher`, `launcher`, `centre`, `workspaces`, `composer`,
-//! `conversation`).
+//! `quick-settings`, `conversation`).
 //! The session keeps it, so the desk's reading says which one is up (`session.desk.here`) and
 //! the shell's views re-run only when it changes.
 //!
@@ -29,6 +29,9 @@ pub enum Overlay {
     Workspaces,
     /// The agent composer.
     Composer,
+    /// The device's quick settings: its connections, its sound and light, the appearance,
+    /// do not disturb, the battery and power.
+    QuickSettings,
     /// The conversation with the session's agent: its latest run, steps and words, and the
     /// one input the person types a program or a sentence into (shell.md §8.1).
     Conversation,
@@ -46,6 +49,7 @@ impl Overlay {
             "centre" => Self::Centre,
             "workspaces" => Self::Workspaces,
             "composer" => Self::Composer,
+            "quick-settings" => Self::QuickSettings,
             "conversation" => Self::Conversation,
             _ => return None,
         })
@@ -62,6 +66,7 @@ impl Overlay {
             Self::Centre => "centre",
             Self::Workspaces => "workspaces",
             Self::Composer => "composer",
+            Self::QuickSettings => "quick-settings",
             Self::Conversation => "conversation",
         }
     }
@@ -212,6 +217,7 @@ mod tests {
             "centre",
             "workspaces",
             "composer",
+            "quick-settings",
             "conversation",
         ] {
             let surface = Overlay::named(name).unwrap_or_else(|| panic!("{name} is a surface"));

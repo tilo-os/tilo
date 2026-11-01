@@ -59,6 +59,25 @@ impl Windows {
         }
     }
 
+    /// Read the person's settings again when they changed, with `person` sitting at this
+    /// machine: the desk's theme as the changed settings make it (dark mode in the quick
+    /// settings, a theme chosen in Settings), for everything the session draws to wear.
+    /// Nothing reads the document on a pass where it did not change.
+    pub(crate) fn follow_settings(&mut self, person: &str) -> Option<Theme> {
+        // The document was read when the desk started (`new`), so only a stamp that moved
+        // since says it changed.
+        let stamp = settings_store::stamp();
+        if !settings_store::document_changed(true, self.stamp, stamp) {
+            return None;
+        }
+        self.stamp = stamp;
+        self.document = settings_store::load();
+        self.warmth
+            .set_your_colour(colour_in(&self.document, person));
+        self.theme = desk_theme(&self.document);
+        Some(self.theme.clone())
+    }
+
     /// Give every open window its appearance, and look at the temperatures
     /// when they are due (a workspace switch, a new wallpaper, or the few
     /// seconds between looks), with `person` sitting at this machine,
@@ -73,16 +92,6 @@ impl Windows {
         network: HostNetworkStatus,
         now: Instant,
     ) {
-        // A colour or theme chosen in Settings reaches the windows; nothing
-        // reads the document on a pass where it did not change.
-        let stamp = settings_store::stamp();
-        if settings_store::document_changed(self.stamp.is_some(), self.stamp, stamp) {
-            self.stamp = stamp;
-            self.document = settings_store::load();
-            self.theme = desk_theme(&self.document);
-            self.warmth
-                .set_your_colour(colour_in(&self.document, person));
-        }
         handle.read(|tree| {
             let active = Some(tree.active);
             if self.warmth.due(active, now) {

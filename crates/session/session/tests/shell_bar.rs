@@ -39,7 +39,7 @@ fn options() -> Options {
     Options {
         presentation: ui::headless::fixture_runner_inputs,
         person: PERSON.to_owned(),
-        shell_bar: true,
+        shell: Some(tilo_surface_host::shell_part::ShellLayer::Bar),
         ..Options::default()
     }
 }
@@ -770,29 +770,343 @@ fn a_persons_presence_opens_their_menu() {
         .borrow_mut()
         .set_members(None, Some(vec![member]));
     until(&mut session, |session| says(session, "Mia Clayton"));
-    // Their presence opens their menu: follow, message, and what they are working on.
+    let shown = |session: &Session| {
+        session
+            .accessible_labels()
+            .iter()
+            .filter(|label| label.as_str() == "Mia Clayton")
+            .count()
+    };
+    let before = shown(&session);
+    // Their presence calls the session's own `show-person`: the roster opens at them, and
+    // names them there too.
     press(&mut session, "Mia Clayton");
+    until(&mut session, |session| shown(session) > before);
+    keep(&mut session, "shell-person-menu");
+}
+
+/// An action host that keeps what it was asked to run: where the session starts an app.
+#[derive(Default)]
+struct Apps {
+    invoked: std::cell::RefCell<Vec<tilo_actions::remote::RemoteActionTarget>>,
+}
+
+impl tilo_session::AppActions for Apps {
+    fn published(&self) -> Vec<tilo_desktop_search::providers::PublishedActions> {
+        Vec::new()
+    }
+
+    fn jobs(&self) -> Vec<tilo_desktop_search::providers::jobs::JobEntry> {
+        Vec::new()
+    }
+
+    fn invoke(
+        &self,
+        target: tilo_actions::remote::RemoteActionTarget,
+        _: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        self.invoked.borrow_mut().push(target);
+        Ok(())
+    }
+
+    fn cancel(&self, _: &str, _: &str, _: &str) -> Result<(), tilo_actions::DoorError> {
+        Ok(())
+    }
+
+    fn open_uri(&self, _: &str, _: &str) -> Result<(), tilo_actions::DoorError> {
+        Ok(())
+    }
+
+    fn start_host_app(&self, _: &str) -> Result<(), tilo_actions::DoorError> {
+        Ok(())
+    }
+}
+
+/// A sound card in memory: the speakers, at 40%.
+struct Card {
+    graph: std::sync::Mutex<media::audio::AudioGraph>,
+}
+
+impl tilo_audio_service::sound::Graph for Card {
+    fn read(&self) -> tilo_audio_service::sound::Read {
+        tilo_audio_service::sound::Read {
+            graph: self.graph.lock().unwrap().clone(),
+            uses: Vec::new(),
+        }
+    }
+
+    fn control(&self) -> &dyn media::audio::GraphControl {
+        self
+    }
+}
+
+impl media::audio::GraphControl for Card {
+    fn set_default_sink(&self, _node_id: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_default_source(&self, _node_id: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn route_stream(&self, _stream_id: u32, _target_serial: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn unroute_stream(&self, _stream_id: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_node_volume(&self, node_id: u32, perceptual: f32) -> Result<(), String> {
+        for sink in &mut self.graph.lock().unwrap().sinks {
+            if sink.id == node_id {
+                sink.volume = Some(perceptual);
+            }
+        }
+        Ok(())
+    }
+
+    fn set_node_mute(&self, _node_id: u32, _muted: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_device_profile(&self, _device_id: u32, _profile_index: u32) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// An app's own `open` the shell calls (`session.open(app)`, a dock's press) starts the app
+/// in the workspace in front, as the launcher's row of it does. (The press making that call is
+/// `tilo-surface-host`'s `a_press_on_a_dock_app_asks_the_session_to_open_it`.)
+#[test]
+fn an_apps_open_the_shell_calls_starts_it() {
+    let _settled = ui::motion::testing::settled();
+    let apps = Rc::new(Apps::default());
+    let mut session = Session::headless(
+        Options {
+            apps: Some(Rc::clone(&apps) as Rc<dyn tilo_session::AppActions>),
+            ..options()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    until(&mut session, |session| says(session, &desk(session).clock));
+    session
+        .shell_link()
+        .expect("the shell runs")
+        .ask(tilo_surface_host::shell_part::Ask {
+            resource: "app.so.tilo.sheets".to_owned(),
+            action: "open".to_owned(),
+            arguments: std::collections::BTreeMap::new(),
+        });
+    until(&mut session, |_| !apps.invoked.borrow().is_empty());
+    assert_eq!(
+        apps.invoked.borrow()[0].address,
+        tilo_actions::ActionAddress::new("app.so.tilo.sheets", "open"),
+        "the app opens by the workspace's address for it"
+    );
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// A session of `width` by `height` with the shell's bar, the person's settings and a sound
+/// card: what the quick settings read and change.
+fn session_with_devices(width: i32, height: i32) -> Session {
+    use tilo_session::Service as _;
+    let card = Card {
+        graph: std::sync::Mutex::new(media::audio::AudioGraph {
+            sinks: vec![media::audio::AudioDevice {
+                id: 40,
+                serial: 40,
+                name: "node-40".to_owned(),
+                description: "Speakers".to_owned(),
+                is_default: true,
+                volume: Some(0.4),
+                muted: Some(false),
+                channels: 2,
+                codec: None,
+            }],
+            ..media::audio::AudioGraph::default()
+        }),
+    };
+    let mut sound =
+        tilo_audio_service::sound::SoundService::new(std::sync::Arc::new(card), None).unwrap();
+    sound.settle();
+    Session::headless(
+        Options {
+            services: vec![
+                Box::new(tilo_settings_service::SettingsService::new()),
+                Box::new(sound),
+            ],
+            collab: false,
+            ..options()
+        },
+        &[OutputConfig::new("HEADLESS-1", width, height)],
+    )
+    .expect("session")
+}
+
+/// Run frames, taking in what the services report, until `done` holds.
+#[track_caller]
+fn until_settled(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
+    for _ in 0..2000 {
+        session.settle_services();
+        session.step(Duration::from_millis(1)).expect("step");
+        if done(session) {
+            return;
+        }
+    }
+    panic!(
+        "condition not reached; the session says: {:?}; the shell refused: {:?}",
+        session.accessible_labels(),
+        session.shell_refusals()
+    );
+}
+
+/// A press on the dock's launcher calls the desk's own `show-surface`: the launcher comes up.
+#[test]
+fn a_press_on_the_docks_launcher_shows_the_launcher() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
     until(&mut session, |session| {
-        session.shell_control("Follow").is_some()
+        session.shell_control("Launcher").is_some()
+    });
+    press(&mut session, "Launcher");
+    until(&mut session, |session| desk(session).here == "launcher");
+}
+
+/// Press the control named `name` once the bar stands still: what the services report while
+/// the session starts (the workspace, who is here) adds controls beside it and moves it, and a
+/// person presses the control where they see it at rest.
+fn press_at_rest(session: &mut Session, name: &str) {
+    until_settled(session, |session| {
+        let before = (
+            session.shell_control(name),
+            session.shell_work().map(|w| w.turns),
+        );
+        session.settle_services();
+        session.step(Duration::from_millis(1)).expect("step");
+        let after = (
+            session.shell_control(name),
+            session.shell_work().map(|w| w.turns),
+        );
+        before.0.is_some() && before == after
+    });
+    press(session, name);
+}
+
+/// The person's appearance mode, as the session publishes their settings.
+fn appearance_mode(session: &Session) -> serde_json::Value {
+    session
+        .read("settings:settings.appearance")
+        .map(|section| section["mode"].clone())
+        .unwrap_or_default()
+}
+
+/// The bar's quick settings open the panel over the desk, and its Dark mode tile runs the
+/// appearance settings' own published action: the published mode turns from what it was to the
+/// other, as Settings and an agent turn it.
+fn dark_mode_from_quick_settings_at(width: i32, height: i32) {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with_devices(width, height);
+    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    press_at_rest(&mut session, "Quick settings");
+    until_settled(&mut session, |session| here(session) == "quick-settings");
+    until_settled(&mut session, |session| says(session, "Dark mode"));
+    until_settled(&mut session, |session| says(session, "Volume"));
+    let dark = serde_json::json!("dark");
+    let was_dark = appearance_mode(&session) == dark;
+    let name = |dark: bool| {
+        format!(
+            "shell-quick-settings-{width}-{}",
+            if dark { "dark" } else { "light" }
+        )
+    };
+    keep(&mut session, &name(was_dark));
+    press_at_rest(&mut session, "Dark mode");
+    until_settled(&mut session, |session| {
+        (appearance_mode(session) == dark) != was_dark
     });
     assert!(
-        session.shell_control("Message").is_some(),
-        "the menu offers a message: {:?}",
-        session.accessible_labels()
+        session.shell_refusals().is_empty(),
+        "the tile's press reached the settings: {:?}",
+        session.shell_refusals()
     );
+    for _ in 0..20 {
+        session.settle_services();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    keep(&mut session, &name(!was_dark));
+}
+
+#[test]
+fn quick_settings_dark_mode_changes_the_published_appearance() {
+    dark_mode_from_quick_settings_at(WIDTH, HEIGHT);
+}
+
+#[test]
+fn quick_settings_dark_mode_changes_the_published_appearance_on_a_phone() {
+    dark_mode_from_quick_settings_at(390, 844);
+}
+
+/// The volume slider shows the sound's published volume, and pressing its track runs the
+/// sound's own `set-volume`: the published volume follows.
+#[test]
+fn quick_settings_volume_slider_sets_the_published_volume() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with_devices(WIDTH, HEIGHT);
+    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    let volume = |session: &Session| {
+        session
+            .read("sound")
+            .and_then(|sound| sound["volume"].as_f64())
+            .unwrap_or_default()
+    };
     assert!(
-        session.shell_control("What they are working on").is_some(),
-        "the menu offers what they are on: {:?}",
-        session.accessible_labels()
+        (volume(&session) - 0.4).abs() < 0.01,
+        "the card starts at 40%"
     );
-    keep(&mut session, "shell-person-menu");
+    press_at_rest(&mut session, "Quick settings");
+    until_settled(&mut session, |session| {
+        session.shell_control("Volume").is_some()
+    });
+    // Press the track near its end.
+    let (x, y, w, h) = session.shell_control("Volume").unwrap();
+    let (x, y) = (x + w * 0.9, y + h / 2.0);
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x, y })
+        .unwrap();
+    session.step(Duration::from_millis(1)).unwrap();
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed,
+            })
+            .unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    until_settled(&mut session, |session| volume(session) > 0.7);
+    assert!(
+        session.shell_refusals().is_empty(),
+        "the slider's change reached the sound: {:?}",
+        session.shell_refusals()
+    );
 }
 
 // ---- each press of the shell's reaches the session ------------------------------------------
 //
-// Every `session.run` and `session.notify` the shell hands the session is an invocation on the
-// session's door, `(resource, action, [(argument, value)…])`: each test below presses the shell's
-// own view and reads the session's state, so a payload the door cannot run fails here.
+// Every call of the session's actions the shell makes (`session.focus(window(w))`) is an
+// invocation on the session's door: each test below presses the shell's own view and reads the
+// session's state, so a call the door cannot run fails here.
 
 /// Bring the desk's surface `surface` up, as the bar's own buttons do.
 fn show(session: &mut Session, surface: &str) {

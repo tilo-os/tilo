@@ -35,11 +35,15 @@ pub struct Options {
     pub person: String,
     /// The theme and fonts surface apps draw with.
     pub presentation: fn() -> ComponentRunnerInputs,
-    /// The tilolang shell package's bar (`apps/tl/shell`) is shown as a layer over the
-    /// desktop: one bar per display, standing on its own display's rectangle and stepping
-    /// aside where a fullscreen window owns one, as the desktop's own bar does. Off by default
-    /// until the desktop's own bar and its tests move onto it.
-    pub shell_bar: bool,
+    /// What the tilolang shell package (`apps/tl/shell`) shows, one part per display, each on
+    /// its own display's rectangle and stepping aside where a fullscreen window owns one:
+    /// its bar as a layer over the desktop
+    /// ([`ShellLayer::Bar`](tilo_surface_host::shell_part::ShellLayer::Bar)), or the whole
+    /// screen under the windows ([`ShellLayer::Screen`](tilo_surface_host::shell_part::ShellLayer::Screen)),
+    /// its bar, dock and the person's arrangement as their preset shows it, every window in
+    /// the well its place leaves it. `None`, the default, until the desktop's own bar and its
+    /// tests move onto it.
+    pub shell: Option<tilo_surface_host::shell_part::ShellLayer>,
     /// What quick settings reads of the device and carries out on it;
     /// without it, the bar's status cluster opens nothing.
     pub quick_settings: Option<QuickSettings>,
@@ -288,7 +292,7 @@ impl Default for Options {
             device: "this-device".into(),
             person: "person".into(),
             presentation: ComponentRunnerInputs::from_native_process,
-            shell_bar: false,
+            shell: None,
             sync: None,
             quick_settings: None,
             controllers: None,

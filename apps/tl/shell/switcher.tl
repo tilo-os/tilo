@@ -32,6 +32,6 @@ view window_tile(w: Win) {
             ui.Text(w.title, role: .label, lines: 1, truncate)
             ui.Text(w.origin_app, role: .caption, secondary: true, lines: 1)
         }
-        on activate: focus_window(w)
+        on activate: session.focus(window(w))
     }
 }

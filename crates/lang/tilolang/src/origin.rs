@@ -65,60 +65,14 @@ const fn people(name: &'static str, ty: &'static str, doc: &'static str) -> Orig
 }
 
 /// The capabilities an action may hand an outside effect to with `outside(capability, ...)`:
-/// `post`, the development log, and each origin's own.
+/// `post`, the development log, and each origin's own. The session takes none: a shell calls
+/// its actions as an app's (`use so.tilo.session as session`).
 pub const CAPABILITIES: &[(&str, &str)] = &[
     ("post", "Posts a payload; the development sink logs it."),
     (
         "smtp.send",
         "Sends a message from a mail account of the workspace's settings: (account, to, cc, \
          subject, body, the Message-ID it answers, the References it continues).",
-    ),
-    (
-        "session.switch_workspace",
-        "Brings a workspace of this device's desk to the front: the `key` of its \
-         `session.workspace`.",
-    ),
-    (
-        "session.act",
-        "Asks the session for one of the desktop's own actions that take nothing (the \
-         `desktop:chrome` resource's: `toggle-tilo-menu`, `toggle-quick-settings`, \
-         `show-strips`, `toggle-overview`, `new-workspace`, `join-workspace`, \
-         `workspace-settings`), by its id.",
-    ),
-    (
-        "session.arrange",
-        "Arranges the person's own desk: one of the arranging actions the session publishes on \
-         `shell:arrangement` (`open-into`, `move-place`, `resize-strip`, `close-place`, \
-         `pin-place`), by its id, with its arguments as one line of JSON: `move-place \
-         {\"place\":3,\"row\":7}`.",
-    ),
-    (
-        "session.run",
-        "Asks the session to run one of its own actions, addressed as every action is: \
-         `(resource, action, [(argument, value)…])`, the resource and the action as the door \
-         publishes them (a window's `focus` on `desktop:tab:7`, the chrome's \
-         `move-tab-to-strip`, the desk's `show-surface`) and each argument by the name the \
-         action's own field has.",
-    ),
-    (
-        "session.notify",
-        "The same as `session.run`, for the notification centre's actions on the desk: \
-         `clear-notices`, `dismiss-notice` and `act-on-notice`.",
-    ),
-    (
-        "session.launch",
-        "Opens an app, or goes to what a dock item stands for: the item's `key` — an app id, \
-         or a resource's reference.",
-    ),
-    (
-        "session.set",
-        "Sets one of the device's settings the shell's Quick Settings shows, by the setting's \
-         key and the value: `(key, value)`.",
-    ),
-    (
-        "session.tray",
-        "Opens or closes a running application's tray item, by its key: its window, or its \
-         menu when the item is one.",
     ),
 ];
 
@@ -696,54 +650,6 @@ pub const KINDS: &[OriginKind] = &[
         ],
     },
     OriginKind {
-        name: "session.control",
-        doc: "A device control the person's shell shows in Quick Settings: sound, brightness, \
-              the network, Bluetooth, the power, the theme and the do-not-disturb state. The \
-              session writes what the device says; the person changes it, as the system's own \
-              panel does.",
-        derived: true,
-        fields: &[
-            field(
-                "key",
-                "Text",
-                "Which control: `volume`, `brightness`, `network`, `bluetooth`, `wifi`, \
-                 `power`, `theme`, `quiet`.",
-            ),
-            field(
-                "label",
-                "Text",
-                "What it is called, in the person's language.",
-            ),
-            field("icon", "Text", "Its glyph, by the platform icon's name."),
-            field(
-                "on",
-                "Bool",
-                "Whether it is on: Bluetooth, Wi-Fi, do-not-disturb.",
-            ),
-            field(
-                "value",
-                "Int",
-                "Its level, 0 to 100 (sound, brightness); 0 when it has none.",
-            ),
-            field(
-                "detail",
-                "Text",
-                "What it stands at in words: the network's name, the theme's name, the \
-                 battery's charge.",
-            ),
-            field(
-                "available",
-                "Bool",
-                "Whether the device has it, or it can be changed now.",
-            ),
-            field(
-                "has_level",
-                "Bool",
-                "Whether it is a level the person sets (sound, brightness).",
-            ),
-        ],
-    },
-    OriginKind {
         name: "imap.account",
         doc: "What the IMAP server of one of the workspace's mail accounts holds. The account itself \
               (its address, servers and signature) is the settings', and its credentials stay in \
@@ -874,32 +780,6 @@ pub fn kind_names() -> String {
 #[must_use]
 pub fn is_capability(capability: &str) -> bool {
     CAPABILITIES.iter().any(|(name, _)| *name == capability)
-}
-
-/// The payload `capability` reads, when the platform's reader of it reads one shape: the
-/// checker holds every `outside(capability, payload)` to it, so a payload its reader cannot
-/// read never compiles. `None` for a capability whose payload is the receiver's own business
-/// (`post`, the development log).
-///
-/// `session.run` and `session.notify` take an action invocation as every caller of the action
-/// protocol addresses one: `(resource, action, [(argument, value)…])`. The session's other
-/// capabilities take one text.
-#[must_use]
-pub fn payload_type(capability: &str) -> Option<crate::types::Ty> {
-    use crate::types::Ty;
-    match capability {
-        "session.run" | "session.notify" => Some(Ty::Tuple(vec![
-            Ty::Text,
-            Ty::Text,
-            Ty::List(Box::new(Ty::Tuple(vec![Ty::Text, Ty::Text]))),
-        ])),
-        "session.switch_workspace"
-        | "session.act"
-        | "session.arrange"
-        | "session.launch"
-        | "session.tray" => Some(Ty::Text),
-        _ => None,
-    }
 }
 
 impl OriginKind {

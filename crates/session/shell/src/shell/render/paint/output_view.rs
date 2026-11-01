@@ -277,6 +277,7 @@ pub(super) fn backdrop_through(
                     sampling: region.sampling,
                     cell_px: region.cell_px,
                     refraction: region.refraction,
+                    legible: region.legible,
                     below,
                     ground: region.ground,
                 }

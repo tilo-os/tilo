@@ -204,6 +204,13 @@ scenario "the notification centre, all read" {
     d.notice_actions.insert(NoticeAction(notice: "n1", key: "later", label: "Later"))
 }
 
+/// The quick settings over the desk, on a computer that publishes no sound, display or
+/// battery: the tiles stand, and the sliders and the battery line wait for what is there.
+scenario "the quick settings" {
+    let d = root Desk
+    d.here = "quick-settings"
+}
+
 /// The centre with nothing in it: what a person sees after Clear all.
 scenario "an empty notification centre" {
     let d = root Desk
@@ -615,9 +622,7 @@ scenario "the agents on the bar" {
     d.agents.insert(Agent(key: "claude", name: "Claude", state: "done", doing: "Tidied the launch notes"))
     seed(shell)
     let s = shell
-    if let part = s.bar_parts.find(p -> p.slot == Slot.agent) {
-        show_part(s, part, true)
-    }
+    if let part = s.bar_parts.find(p -> p.slot == Slot.agent) { show_part(s, part, true) }
 }
 
 /// The text channel named `name` in the chat's sidebar, standing alone or in a category.

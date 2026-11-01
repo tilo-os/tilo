@@ -22,7 +22,7 @@ pub use desktop::{
 };
 pub use door::{Doors, Published, Shared, through_door};
 pub use shell_part::{DeskReading, SessionLink, ShellPart, ShellWork};
-pub use well_policy::{DeskHost, WellPolicy, well_policy};
+pub use well_policy::{DeskHost, WellDesk, WellPolicy, well_policy};
 pub use widget::WidgetHost;
 
 use std::cell::Cell;
