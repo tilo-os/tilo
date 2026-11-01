@@ -485,7 +485,7 @@ mod tests {
         for desk in [doc, peer] {
             let mut snapshot = ActivitySnapshot::of_desktop(tree.clone(), desk);
             let authors = authors_of(&mut snapshot.doc);
-            let mut pane = RoomActivityPane::new();
+            let mut pane = WorkspaceActivityPane::new();
             register_authors(pane.authors_mut(), &authors, &|_| None);
             pane.begin_view(snapshot.active.raw());
             pane.refresh(&mut snapshot);
