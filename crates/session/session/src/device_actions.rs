@@ -25,7 +25,9 @@ use tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
 use tilo_desktop_model::RoomId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::StatePeer;
-use tilo_peer_state::actions::{ActionPlane, FOLLOW_DEADLINE, Offering, RemoteDevice, Workspaces};
+use tilo_peer_state::actions::{
+    ActionPlane, FOLLOW_DEADLINE, Offering, ReadFuture, RemoteDevice, Workspaces,
+};
 
 use crate::engine::Engine;
 use neighbour_wire::offer::{Answer, Power, Route, State, Work};
@@ -257,17 +259,25 @@ impl ActionHost for DeviceDispatch {
 struct Rooms(Option<Arc<Engine>>);
 
 impl Workspaces for Rooms {
-    fn read(&self, workspace: &str, read: &mut dyn FnMut(&StatePeer)) -> bool {
+    fn read<'a>(
+        &'a self,
+        workspace: &'a str,
+        read: &'a mut (dyn FnMut(&StatePeer) + Send),
+    ) -> ReadFuture<'a> {
         let (Some(engine), Some(room)) = (&self.0, RoomId::parse(workspace)) else {
-            return false;
+            return Box::pin(std::future::ready(false));
         };
-        engine
-            .owner()
-            .with_current(room, |view| {
-                read(view.peer());
-                Ok(())
-            })
-            .is_ok()
+        // This session's workspace is its own store: the read takes the
+        // engine's lock for as long as it runs, never across an await.
+        Box::pin(async move {
+            engine
+                .owner()
+                .with_current(room, |view| {
+                    read(view.peer());
+                    Ok(())
+                })
+                .is_ok()
+        })
     }
 }
 

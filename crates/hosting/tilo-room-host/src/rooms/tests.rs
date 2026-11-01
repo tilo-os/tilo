@@ -2914,3 +2914,61 @@ async fn a_crowd_joining_adds_to_the_room_rather_than_starting_it_over() {
     drop(rooms);
     relay.shutdown().await;
 }
+
+/// A device of a workspace asks the host, over the devices' own plane, whether
+/// it would run a piece of work; the host answers as one of the workspace's
+/// member devices, with what it knows of itself.
+#[tokio::test]
+async fn a_member_device_asks_the_host_whether_it_would_run_work() {
+    use neighbour_wire::offer::{Decline, Route, Work};
+    use tilo_peer_state::actions::{ActionPlane, OFFER_DEADLINE};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms();
+    let created = rooms.create("Demo").await.unwrap();
+    let (member_key, member_cert) = guest_device();
+    door_join(rooms, &cert, &created.room, (&member_key, &member_cert), 9).await;
+
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&member_key.to_bytes()))
+        .bind()
+        .await
+        .unwrap();
+    let plane = ActionPlane::new(
+        member_key.clone(),
+        Arc::new(tilo_actions::remote::TestHost::new()),
+    );
+    let choice = tokio::time::timeout(
+        Duration::from_secs(20),
+        plane.offers(
+            &endpoint,
+            [relay.node_addr()],
+            &created.room,
+            &Route::new("so.tilo.notes", "notes.root", "insert"),
+            &Work::none(),
+            OFFER_DEADLINE,
+        ),
+    )
+    .await
+    .expect("the round finishes")
+    .expect("the round completes");
+
+    // The host answered as itself: it holds the workspace, and it runs no app
+    // actions on this plane, so it claims none.
+    assert_eq!(choice.considered.len(), 1, "the host was asked: {choice}");
+    assert_eq!(
+        choice.considered[0].device, cert.device_public_key,
+        "the answer came from the host's own device: {choice}"
+    );
+    assert_eq!(
+        choice.considered[0].verdict,
+        Err(Decline::AppNotInstalled),
+        "the host answered with what it knows of itself, not as away: {choice}"
+    );
+    assert!(choice.is_local(), "nothing runs there: {choice}");
+
+    endpoint.close().await;
+    relay.shutdown().await;
+}
