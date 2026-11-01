@@ -37,6 +37,7 @@ mod publication;
 #[cfg(feature = "record")]
 mod record;
 mod records;
+mod records_service;
 mod reflection;
 mod rich_text;
 mod scenarios;

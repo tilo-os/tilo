@@ -1,0 +1,249 @@
+//! A room's tilolang records as a session service: every record and item a loaded package holds
+//! is a session resource, read through [`Service::read`] and changed through its actions.
+//!
+//! Nothing here is per app. The catalogue is the room's published trees, kept by the incremental
+//! republisher ([`Publications`]), with each package's own actions beside them, exactly as an
+//! app's instance publishes them on its connection. A resource's reading is its fields as the
+//! runtime reads them, each by its field id, encoded as the runtime encodes a value
+//! ([`tilolang_runtime::value::to_json`]); a reference in it names the resource it points at by
+//! its published id (`tl:<app>:<id>`) and its type as `<app>#<Type>`. That is what a runtime
+//! that loads the package as another app's ([`tilolang_runtime::Runtime::load_foreign_package`])
+//! reads back ([`tilolang_runtime::Runtime::set_reading`]): the shell composes a note's own
+//! view over the note's reading, and the reading is the record the notes app shows.
+//!
+//! An invocation is the published action's own: the door builds it through the action's spec,
+//! which plans it in the runtime, and it is committed to the record as a step of the person
+//! seated here.
+
+use std::sync::Arc;
+
+use serde_json::{Map, Value as Json};
+use tilo_actions::{ActionAddress, ActionContext, ActionOutput, DoorError, ResourceSpec};
+use tilo_service::{Service, Started};
+use tilolang_runtime::value::ResourceRef;
+
+use crate::action::{ACTION_TYPE, DynAction};
+use crate::host::Host;
+use crate::publish::{Planner, Publications, publish_package, resource_id};
+
+/// The room record's tilolang records, published to the session.
+pub struct RecordService {
+    record: tilo_resource::Doc,
+    host: Host,
+    planner: Arc<dyn Planner>,
+    publications: Publications,
+    /// Every field change since the last poll: a reading moves with any field of its resource,
+    /// also one no published tree shows (a note's body).
+    watch: crate::store::Watch,
+    /// Who the changes made here are steps of.
+    person: String,
+}
+
+impl RecordService {
+    /// The records `host` runs over `record`, its packages loaded, published for `person`.
+    #[must_use]
+    pub fn new(record: tilo_resource::Doc, host: Host, person: impl Into<String>) -> Self {
+        host.sync_from(&record);
+        let planner: Arc<dyn Planner> = Arc::new(host.handle());
+        let mut publications = Publications::new(&host);
+        let watch = host.store().watch();
+        publications.settle(&host, &planner);
+        let _ = watch.take();
+        Self {
+            record,
+            host,
+            planner,
+            publications,
+            watch,
+            person: person.into(),
+        }
+    }
+
+    /// The room record as it is here.
+    #[must_use]
+    pub fn record(&self) -> &tilo_resource::Doc {
+        &self.record
+    }
+
+    /// The runtime the records are read through.
+    #[must_use]
+    pub fn host(&self) -> &Host {
+        &self.host
+    }
+
+    /// Take in what another replica of the room record holds.
+    ///
+    /// # Errors
+    /// The changes do not apply to the record.
+    pub fn take_in(&mut self, other: &mut tilo_resource::Doc) -> Result<(), String> {
+        use tilo_automerge::ApplyIncoming as _;
+        self.record
+            .merge_incoming(other)
+            .map_err(|error| error.to_string())?;
+        self.host.sync_from(&self.record);
+        Ok(())
+    }
+
+    /// Have `wake` called (from another thread) when records built off the frame are ready for
+    /// the next [`Service::poll`] to publish.
+    pub fn set_waker(&mut self, wake: crate::background::Waker) {
+        self.publications.set_waker(wake);
+    }
+
+    /// Whether a field of any record changed since the last call.
+    fn moved(&self) -> bool {
+        let changes = self.watch.take();
+        changes.everything || !changes.whole.is_empty() || !changes.docs.is_empty()
+    }
+
+    /// The reading of the record or item `path` of `app`.
+    fn reading(&self, app: &str, path: &str) -> Option<Json> {
+        use tilolang_runtime::store::Store as _;
+        let probe = ResourceRef::parse_id(path, String::new())?;
+        let ty = self.host.store().type_of(&probe).ok()?;
+        let schema = crate::schema::lookup(&ty)?;
+        if schema.app != app {
+            return None;
+        }
+        let at = ResourceRef::parse_id(path, ty)?;
+        let runtime = self.host.runtime();
+        let mut fields = Map::new();
+        for field in &schema.fields {
+            let Ok(value) = runtime.read(&at, &field.id) else {
+                continue;
+            };
+            let Ok(mut json) = tilolang_runtime::value::to_json(&value) else {
+                continue;
+            };
+            published_refs(&mut json);
+            fields.insert(field.id.clone(), json);
+        }
+        Some(Json::Object(fields))
+    }
+
+    /// Commit `action` to the record as a step of the person seated here.
+    fn commit(&mut self, action: &DynAction) -> Result<(), String> {
+        let encoded = action.encode().map_err(|error| error.to_string())?;
+        let context = ActionContext::for_resource(
+            action.resources().first().copied().unwrap_or("room"),
+            &action.kind,
+            &action.kind,
+        )
+        .with_invoker(tilo_actions::ActionInvoker::actor(self.person.clone()));
+        let record = &mut self.record;
+        let person = self.person.as_bytes();
+        self.host
+            .with_schemas(|| {
+                tilo_actions::apply_local_with_context(
+                    record,
+                    action,
+                    encoded,
+                    Some(person),
+                    context,
+                )
+            })
+            .map_err(|error| error.to_string())?;
+        self.record.commit();
+        self.host.sync_from(&self.record);
+        Ok(())
+    }
+}
+
+/// Each reference in `json` named as the session publishes it: by its published id, and its
+/// type as `<app>#<Type>`.
+fn published_refs(json: &mut Json) {
+    match json {
+        Json::Object(fields) => {
+            let named = fields
+                .get("ref")
+                .and_then(Json::as_str)
+                .zip(fields.get("ty").and_then(Json::as_str))
+                .and_then(|(id, ty)| {
+                    let schema = crate::schema::lookup(ty)?;
+                    Some((
+                        resource_id(&schema.app, id),
+                        format!("{}#{}", schema.app, schema.name),
+                    ))
+                });
+            if let Some((id, ty)) = named {
+                fields.insert("ref".into(), Json::String(id));
+                fields.insert("ty".into(), Json::String(ty));
+            }
+            for nested in fields.values_mut() {
+                published_refs(nested);
+            }
+        }
+        Json::Array(items) => items.iter_mut().for_each(published_refs),
+        _ => {}
+    }
+}
+
+impl Service for RecordService {
+    fn seated(&mut self, person: &str, _earlier: &[String]) {
+        person.clone_into(&mut self.person);
+    }
+
+    fn resources(&self) -> Vec<ResourceSpec> {
+        let mut out: Vec<ResourceSpec> = self
+            .publications
+            .trees()
+            .values()
+            .map(|tree| (**tree).clone())
+            .collect();
+        for package in self.host.packages() {
+            let resource = publish_package(&package.meta, &self.planner);
+            if !resource.actions.is_empty() {
+                out.push(resource);
+            }
+        }
+        out
+    }
+
+    fn read(&self, resource: &str) -> Option<Json> {
+        let (app, path) = resource.strip_prefix("tl:")?.split_once(':')?;
+        self.host.package(app)?;
+        self.reading(app, path)
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Json>,
+    ) -> Result<Started, DoorError> {
+        let address = ActionAddress::new(resource, action);
+        let encoded = tilo_actions::door::encode_json(&self.resources(), &address, arguments)?;
+        if encoded.type_id != ACTION_TYPE {
+            return Err(DoorError::Unknown(address));
+        }
+        let planned: DynAction = serde_json::from_slice(&encoded.payload)
+            .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+        self.commit(&planned).map_err(DoorError::Failed)?;
+        let made = self
+            .host
+            .take_returned(&planned.action_id)
+            .map(|made| resource_id(&planned.app, &made.id_string()));
+        Ok(Started::Done(ActionOutput {
+            value: None,
+            resources: made.into_iter().collect(),
+        }))
+    }
+
+    fn poll(&mut self) -> bool {
+        let touched = self.publications.update(&self.host, &self.planner);
+        self.moved() || !touched.is_empty()
+    }
+
+    fn settle(&mut self) {
+        self.publications.settle(&self.host, &self.planner);
+    }
+}
+
+/// The type a resource of the kind `kind` (`tl.<app>.<Type>`, as [`RecordService`] publishes
+/// it) is, as a runtime that loads its package as another app's names it: `<app>#<Type>`.
+/// `None` for a kind no tilolang record has.
+#[must_use]
+pub fn reading_type(kind: &str) -> Option<String> {
+    let (app, ty) = kind.strip_prefix("tl.")?.rsplit_once('.')?;
+    Some(format!("{app}#{ty}"))
+}
