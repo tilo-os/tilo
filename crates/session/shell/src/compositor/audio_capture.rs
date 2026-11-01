@@ -356,6 +356,7 @@ fn default_target(source: AudioSource) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -447,7 +448,7 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .process_group(0)
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let pid = libc::pid_t::try_from(child.id()).unwrap();
         assert!(child.try_wait().unwrap().is_none());

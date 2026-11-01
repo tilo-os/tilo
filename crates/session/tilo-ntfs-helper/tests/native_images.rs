@@ -1,6 +1,7 @@
 #![cfg(unix)]
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, process::Command};
+use tilo_test_env::SpawnUnderEnvLock as _;
 fn fixtures() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(PathBuf::from(
         std::env::var_os("TILO_NTFS_FIXTURES")
@@ -23,7 +24,7 @@ fn probe(name: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     }
     let output = Command::new(tilo_test_env::package_binary!("tilo-ntfs-image-test"))
         .arg(&path)
-        .output()?;
+        .output_locked()?;
     let unchanged = before == Sha256::digest(fs::read(&path)?);
     if !unchanged {
         return Err("complete image changed".into());
@@ -83,7 +84,7 @@ fn native_probe_classifies_each_image_without_mutating_it() {
     let out = Command::new(tilo_test_env::package_binary!("tilo-ntfs-image-test"))
         .arg(&path)
         .args(["--read-limit", "512"])
-        .output()
+        .output_locked()
         .unwrap();
     let r: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(r["status"], 6);

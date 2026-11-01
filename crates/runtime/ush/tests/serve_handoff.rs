@@ -22,6 +22,7 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_environment::{DEFAULT_RECORD, Environment, PackageId, Target};
 use ush::records::Records;
@@ -304,7 +305,7 @@ pub fn guest_unavailable() -> Option<String> {
         .args(["--symlink", "usr/lib64", "/lib64"])
         .args(["--proc", "/proc", "--dev", "/dev"])
         .args(["/usr/bin/bash", "-c", "exit 0"])
-        .output();
+        .output_locked();
     match probe {
         Ok(o) if o.status.success() => namespace_entry()
             .err()
@@ -555,7 +556,7 @@ fn the_public_ush_alias_creates_default_and_runs_a_confined_command() {
         .env_remove("TILO_USH_BIN")
         .env("TILO_USH_IMAGES", &images)
         .env("SHELL", "/usr/bin/bash")
-        .output().unwrap();
+        .output_locked().unwrap();
     assert!(
         output.status.success(),
         "public ush failed: {}",
@@ -894,7 +895,7 @@ fn a_sandbox_that_cannot_be_built_is_explained() {
         .env(ush::store::STORE_ENV, dir.path().join("store"))
         .env("TILO_USH_IMAGES", &images)
         .stdin(std::process::Stdio::null())
-        .output()
+        .output_locked()
         .expect("tilo-ush runs");
     let stderr = String::from_utf8_lossy(&out.stderr);
     let explained = stderr.contains("sandbox could not be set up");
@@ -1086,7 +1087,7 @@ fn start_reexec_supervisor(
             .env("TILO_USH_IMAGES", images)
             .env("SHELL", "/usr/bin/bash")
             .stdout(std::process::Stdio::null())
-            .spawn()
+            .spawn_locked()
             .unwrap(),
     )
 }

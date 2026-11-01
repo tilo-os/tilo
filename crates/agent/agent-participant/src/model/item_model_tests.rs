@@ -10,6 +10,7 @@ use crate::profile::{
     DECOMPOSE_ITEM_API_KEY_ENV, DECOMPOSE_ITEM_API_KEY_FILE_ENV, DECOMPOSE_ITEM_MODEL_ENV,
     DECOMPOSE_ITEM_URL_ENV,
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// A model that plans nothing and says which it is.
 struct Named(&'static str);
@@ -262,7 +263,7 @@ fn the_host_planner_routes_items_and_logs_each_model() {
         .env_remove(DECOMPOSE_ITEM_API_KEY_ENV)
         .env_remove(DECOMPOSE_ITEM_API_KEY_FILE_ENV)
         .env_remove(crate::profile::HEDGE_ENV)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     // The child ran the test, not a filter that matched nothing.

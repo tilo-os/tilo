@@ -891,6 +891,7 @@ fn bind_private_display(prefix: &str) -> Result<(ListeningSocketSource, PathBuf)
 mod tests {
     use super::*;
     use std::io::Write as _;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     struct InstalledServiceFixture {
         methods: InputMethodServices,
@@ -1389,7 +1390,7 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .process_group(0);
-        let mut child = command.spawn().expect("spawn process-group probe");
+        let mut child = command.spawn_locked().expect("spawn process-group probe");
         let pid = child.id() as libc::pid_t;
         // SAFETY: `pid` names the live child above.
         assert_eq!(unsafe { libc::getpgid(pid) }, pid);

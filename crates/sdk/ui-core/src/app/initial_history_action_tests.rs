@@ -1,5 +1,6 @@
 // Socket-backed original history must precede public operation admission.
 use automerge::ReadDoc as _;
+use tilo_test_env::SpawnUnderEnvLock as _;
 struct InitialHistoryProbe(
     std::rc::Rc<std::cell::Cell<usize>>,
     std::rc::Rc<std::cell::Cell<bool>>,
@@ -907,7 +908,7 @@ fn ordinary_native_pump_exports_admission_before_any_action() {
             .env("TILO_STARTUP_METRICS_PATH", temp.path().join("startup.json"))
             .env("TILO_PROFILE_PRESENTATION", if case == "enabled" { "1" } else { "0" })
             .env_remove("TILO_NATIVE_SCENARIO")
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             output.status.success(),

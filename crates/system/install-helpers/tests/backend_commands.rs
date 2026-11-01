@@ -12,6 +12,7 @@ use std::io::Write as _;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use serde_json::{Value, json};
 
@@ -21,7 +22,7 @@ fn helper(args: &[&str], stdin: &[u8]) -> Output {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     // A command refusing its arguments exits before it reads stdin.
     if let Err(error) = child.stdin.take().unwrap().write_all(stdin) {

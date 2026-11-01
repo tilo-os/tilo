@@ -2729,6 +2729,7 @@ impl Widget for OnboardingView {
 
 #[cfg(test)]
 mod tests {
+    use tilo_test_env::SpawnUnderEnvLock as _;
     #[cfg(all(target_os = "linux", feature = "native-current-device-qualification"))]
     mod current_identity {
         include!("view/current_identity_tests.rs");
@@ -3242,7 +3243,7 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .process_group(0)
-            .spawn()
+            .spawn_locked()
             .expect("spawn pairing-shaped process tree");
         let pgid = i32::try_from(child.id()).expect("test process ID");
         // The descendant that used to survive when only its leader was killed.
@@ -4978,7 +4979,7 @@ mod tests {
                     Ok(())
                 });
             }
-            let child = command.spawn().unwrap();
+            let child = command.spawn_locked().unwrap();
             let mut owned = OwnedChild {
                 child: Some(child),
                 fixture: Some(fixture),

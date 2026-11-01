@@ -144,6 +144,7 @@ fn credentials(uid: u32) -> io::Result<Credentials> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn native_host_does_not_inherit_privileged_paths_or_loader_overrides() {
@@ -162,7 +163,7 @@ mod tests {
                 "-c",
                 "test \"$PWD\" = / && test -z \"${TMPDIR+x}${HOME+x}${XDG_RUNTIME_DIR+x}${LD_PRELOAD+x}${LD_LIBRARY_PATH+x}\" && /usr/bin/mktemp -d",
             ])
-            .output()
+            .output_locked()
             .unwrap();
         assert!(output.status.success(), "{output:?}");
         assert!(output.stderr.is_empty(), "loader overrides reached child");

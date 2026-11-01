@@ -607,10 +607,14 @@ pub enum Preset {
     /// Square and bordered, every surface shown as coarse pixels of what
     /// lies below it (`themes/pixelated.json`).
     Pixelated,
+    /// Every surface a lens of glass: what lies below bent along its
+    /// rounded edge, straight in the middle, with a specular rim
+    /// (`themes/liquid-glass.json`).
+    LiquidGlass,
 }
 
 /// The shipped themes that are plain documents, by preset.
-const SHIPPED_DOCUMENTS: [(Preset, &str); 5] = [
+const SHIPPED_DOCUMENTS: [(Preset, &str); 6] = [
     (Preset::Glass, include_str!("../themes/glass.json")),
     (
         Preset::GlassLight,
@@ -622,10 +626,14 @@ const SHIPPED_DOCUMENTS: [(Preset, &str); 5] = [
         include_str!("../themes/block-light.json"),
     ),
     (Preset::Pixelated, include_str!("../themes/pixelated.json")),
+    (
+        Preset::LiquidGlass,
+        include_str!("../themes/liquid-glass.json"),
+    ),
 ];
 
 impl Preset {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Dark,
         Self::DarkCool,
         Self::DarkGraphite,
@@ -638,6 +646,7 @@ impl Preset {
         Self::Block,
         Self::BlockLight,
         Self::Pixelated,
+        Self::LiquidGlass,
     ];
 
     /// The stored id (`appearance.dark_theme`, `appearance.light_theme`).
@@ -656,6 +665,7 @@ impl Preset {
             Self::Block => "block",
             Self::BlockLight => "block-light",
             Self::Pixelated => "pixelated",
+            Self::LiquidGlass => "liquid-glass",
         }
     }
 
@@ -675,13 +685,16 @@ impl Preset {
             Self::Block => "Block",
             Self::BlockLight => "Block light",
             Self::Pixelated => "Pixelated",
+            Self::LiquidGlass => "Liquid Glass",
         }
     }
 
     #[must_use]
     pub const fn palette(self) -> Palette {
         match self {
-            Self::Dark | Self::Glass | Self::Block | Self::Pixelated => Palette::dark(),
+            Self::Dark | Self::Glass | Self::Block | Self::Pixelated | Self::LiquidGlass => {
+                Palette::dark()
+            }
             Self::DarkCool => Palette::dark_cool(),
             Self::DarkGraphite => Palette::dark_graphite(),
             Self::DarkSoft => Palette::dark_soft(),
@@ -744,6 +757,7 @@ impl Preset {
             "block" | "blockdark" => Self::Block,
             "blocklight" => Self::BlockLight,
             "pixelated" | "pixel" => Self::Pixelated,
+            "liquidglass" | "liquid" => Self::LiquidGlass,
             _ => return None,
         })
     }
@@ -808,6 +822,58 @@ mod tests {
             serde_json::from_value::<ThemeDocument>(legacy).is_err(),
             "roles this schema does not have are not admitted"
         );
+    }
+
+    /// The Liquid Glass document round-trips with its lens: the set's name
+    /// and every parameter it states come back, a band, light angle or
+    /// dispersion out of its admitted range is refused, and the theme built
+    /// from it hands the lens to every role's parts.
+    #[test]
+    fn the_liquid_glass_document_round_trips_with_its_lens() {
+        use crate::tokens::SurfaceRole;
+        let mut doc = Preset::LiquidGlass.document();
+        doc.material.floating = Finish::named(
+            "liquid",
+            [
+                ("tint", 0.2),
+                ("refraction", 10.0),
+                ("band", 16.0),
+                ("dispersion", 0.25),
+                ("light_angle", 60.0),
+            ],
+        )
+        .unwrap();
+        let json = serde_json::to_value(&doc).unwrap();
+        assert_eq!(json["material"]["floating"]["painter"], "liquid");
+        assert_eq!(json["material"]["floating"]["band"], 16.0);
+        assert_eq!(json["material"]["floating"]["dispersion"], 0.25);
+        let back: ThemeDocument = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(back, doc);
+        assert_eq!(back.validate(), Ok(()));
+        let theme = crate::theme::Theme::from_document(&back).unwrap();
+        for role in [
+            SurfaceRole::Window,
+            SurfaceRole::Control,
+            SurfaceRole::Floating,
+            SurfaceRole::Bar,
+        ] {
+            assert_eq!(theme.finish(role).painter(), "liquid", "{role:?}");
+        }
+        assert_eq!(
+            theme.finish(SurfaceRole::Floating).param("band"),
+            Some(16.0)
+        );
+        assert_eq!(
+            theme.finish(SurfaceRole::Floating).param("light_angle"),
+            Some(60.0)
+        );
+        for (name, value) in [("band", 80.0), ("light_angle", 400.0), ("dispersion", 0.9)] {
+            let mut out = json.clone();
+            out["material"]["floating"][name] = serde_json::json!(value);
+            let refused = serde_json::from_value::<ThemeDocument>(out)
+                .map_or(true, |doc| doc.validate().is_err());
+            assert!(refused, "{name} {value} was admitted");
+        }
     }
 
     #[test]

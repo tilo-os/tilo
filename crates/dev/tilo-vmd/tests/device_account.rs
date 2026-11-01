@@ -15,6 +15,7 @@
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use clap::Parser as _;
 use tilo_vm::app::App;
@@ -278,7 +279,7 @@ fn repeated_remote_swap_reuses_verified_component_without_archive_transfer() {
             std::process::Command::new("git")
                 .args(args)
                 .current_dir(&source)
-                .status()
+                .status_locked()
                 .unwrap()
                 .success()
         );

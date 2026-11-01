@@ -17,8 +17,10 @@
 )]
 
 use std::path::PathBuf;
+
 use std::sync::Arc;
 use std::time::Duration;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_relay::environment_host::MemberArea;
 use tilo_relay::legacy_vm_host::TiloLegacyHost;
@@ -308,9 +310,9 @@ async fn a_relay_launched_legacy_app_streams_from_a_kvm_guest() {
     let typed = host
         .tilo_legacy(&area)
         .args(["run", "--no-window", "--", "cat", "/tmp/typed"])
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&typed.stdout).trim(), TYPED);
-    let _ = host.tilo_legacy(&area).arg("stop").output();
+    let _ = host.tilo_legacy(&area).arg("stop").output_locked();
     worker.serving.abort();
 }

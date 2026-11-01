@@ -13,20 +13,12 @@ view person_chip(d: Desk, p: Person) {
 
 /// An agent here, as its presence: a chip that opens its menu.
 view agent_chip(d: Desk, a: Agent) {
-    ui.MenuButton(a.name, icon: .bot, role: .plain) {
+    ui.MenuButton(a.name, icon: .bot, role: .bar) {
         if a.state != "done" {
             ui.MenuItem("Stop", icon: .square, destructive: true) {
                 on choose: session.stop_run(run(a.key))
             }
         }
-    }
-}
-
-/// Someone here with what they are on: their face, their name, and the resource they are
-/// looking at, which opens there.
-view person_line(p: Person, doing: Text) {
-    ui.ListRow(p.name, secondary: .some(doing), icon: .user) {
-        on activate: session.show_person(person: p.key)
     }
 }
 

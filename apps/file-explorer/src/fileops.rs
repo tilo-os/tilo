@@ -1238,6 +1238,8 @@ fn copy_capability_entry(
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(windows)]
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn system_errors_read_as_copy() {
@@ -1761,7 +1763,7 @@ mod tests {
                 .args(["/c", "mklink", "/J"])
                 .arg(&junction)
                 .arg(&outside)
-                .output()
+                .output_locked()
                 .unwrap();
             assert!(result.status.success(), "{result:?}");
             assert!(copy_into(&source, &destination).is_err());

@@ -515,6 +515,7 @@ pub fn spawn(
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     // A subprocess isolates opt-in environment and descriptor ownership from
     // concurrently running tests. This is the real public load/spawn path.
@@ -607,7 +608,7 @@ mod tests {
                     Ok(())
                 });
             }
-            let child = command.spawn().unwrap();
+            let child = command.spawn_locked().unwrap();
             drop(inherited);
             Self {
                 child,

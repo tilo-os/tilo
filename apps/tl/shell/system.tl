@@ -12,9 +12,3 @@ type Control (origin: session.control) {
     available: Bool
     has_level: Bool
 }
-
-/// One menu of the focused app, as the bar shows it after the system's.
-type AppMenu {
-    title: Text (title)
-    entries: List<Text>
-}

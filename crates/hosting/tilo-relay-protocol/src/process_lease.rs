@@ -104,6 +104,7 @@ fn process_start_time(pid: u32) -> io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use std::process::Command;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     use super::*;
 
@@ -127,7 +128,7 @@ mod tests {
         {
             let mut child = Command::new("/bin/sh")
                 .args(["-c", "while :; do sleep 1; done"])
-                .spawn()
+                .spawn_locked()
                 .unwrap();
             let lease = ProcessLease::capture(child.id()).unwrap();
             lease.validate().unwrap();

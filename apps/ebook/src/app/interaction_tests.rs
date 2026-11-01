@@ -6,6 +6,7 @@ use super::*;
 use crate::content::load_sample_library;
 use crate::model::{AnnoKind, LibraryPrefs, Progress};
 use serial_test::serial;
+use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::presence::PresenceCtx;
 use ui::testing::Dispatch;
 use ui::time::Duration;
@@ -2221,7 +2222,7 @@ fn reader_typography_baseline(filename: &str) -> std::path::PathBuf {
         )
         .arg(root.join("tests/fixtures/typography/artifacts.json"))
         .args(["--file", filename])
-        .output()
+        .output_locked()
         .expect("run pinned reader typography asset resolver");
     assert!(
         result.status.success(),

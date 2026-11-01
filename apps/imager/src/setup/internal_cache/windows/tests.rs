@@ -70,6 +70,7 @@ mod native {
         },
     };
     use std::{fs, io::Write, os::windows::ffi::OsStringExt, sync::atomic::AtomicBool};
+    use tilo_test_env::SpawnUnderEnvLock as _;
     fn selected() -> SelectedManifest {
         let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
         let release = InternalRelease::transport_fixture(
@@ -369,7 +370,7 @@ mod native {
                         "--ignored",
                     ])
                     .env("TILO_CACHE_LOCK_PROBE", dir.path())
-                    .output()
+                    .output_locked()
                     .unwrap();
                 assert!(
                     output.status.success(),

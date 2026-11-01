@@ -7,6 +7,7 @@
     reason = "in a test these are the assertion, not a hazard; the restart child exits on purpose"
 )]
 use std::{fs, path::Path};
+use tilo_test_env::SpawnUnderEnvLock as _;
 #[cfg(target_os = "linux")]
 #[path = "support/posix_acl.rs"]
 mod posix_acl;
@@ -610,7 +611,7 @@ fn process_restart_replays_existing_ancestors_without_prior_authority() {
             .args(["--exact", "restart_child", "--nocapture"])
             .env("ATOMIC_PROVISION_RESTART_FIXTURE", physical(root.path()))
             .env("ATOMIC_PROVISION_RESTART_PHASE", phase)
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             output.status.success(),
@@ -627,7 +628,10 @@ fn process_restart_replays_existing_ancestors_without_prior_authority() {
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_creation_preflight_checks_inheritable_acl_before_mkdir() {
-    let user = Command::new("/usr/bin/id").arg("-un").output().unwrap();
+    let user = Command::new("/usr/bin/id")
+        .arg("-un")
+        .output_locked()
+        .unwrap();
     assert!(user.status.success());
     let user = String::from_utf8(user.stdout).unwrap();
     for (rule, accepted) in [
@@ -649,7 +653,7 @@ fn macos_creation_preflight_checks_inheritable_acl_before_mkdir() {
             Command::new("/bin/chmod")
                 .args(["+a", &rule])
                 .arg(root.path())
-                .status()
+                .status_locked()
                 .unwrap()
                 .success()
         );

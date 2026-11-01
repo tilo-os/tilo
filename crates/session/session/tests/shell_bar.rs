@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::io::BufRead as _;
 use std::rc::Rc;
 use std::time::Duration;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
@@ -375,7 +376,7 @@ impl SessionBus {
                 directory.path().join("bus").display()
             ))
             .stdout(std::process::Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .expect("the session bus needs dbus-daemon, which the builder image installs");
         let mut address = String::new();
         std::io::BufReader::new(daemon.stdout.take().unwrap())

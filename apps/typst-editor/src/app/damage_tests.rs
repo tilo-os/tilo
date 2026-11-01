@@ -5,6 +5,7 @@
 //! against a full render of the same scene.
 
 use std::time::Duration;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ui::widget::Widget as _;
 
@@ -395,7 +396,7 @@ fn pin_to_two_cpus() {
             &format!("{first},{}", first + 1),
             &std::process::id().to_string(),
         ])
-        .status()
+        .status_locked()
         .is_ok_and(|status| status.success());
     let pinned = pinned
         || std::process::Command::new("taskset")
@@ -406,7 +407,7 @@ fn pin_to_two_cpus() {
                 &first.to_string(),
                 &std::process::id().to_string(),
             ])
-            .status()
+            .status_locked()
             .is_ok_and(|status| status.success());
     assert!(pinned, "the process is pinned");
 }

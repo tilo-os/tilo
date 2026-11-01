@@ -45,6 +45,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::door::ActionAddress;
@@ -677,7 +678,7 @@ fn ran_isolated() -> bool {
     let status = std::process::Command::new(&script)
         .arg(std::env::current_exe().unwrap())
         .args(std::env::args_os().skip(1))
-        .status()
+        .status_locked()
         .unwrap_or_else(|error| panic!("{}: {error}", script.display()));
     #[allow(
         clippy::exit,

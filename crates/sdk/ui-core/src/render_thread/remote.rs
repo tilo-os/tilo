@@ -923,6 +923,10 @@ fn encode(session: &mut Session, job: &FrameJob<'_>, sequence: u64) -> Result<Ve
             blur_px: region.blur_px as f32,
             sampling: u8::from(region.sampling == crate::part_paint::Sampling::Blocky),
             cell_px: region.cell_px as f32,
+            refraction: {
+                let lens = region.refraction;
+                [lens.strength, lens.band, lens.radius, lens.dispersion].map(|value| value as f32)
+            },
             ground: region.ground.components,
             below: region.below.encoding().clone(),
         };

@@ -201,6 +201,7 @@ mod tests {
     use super::super::desktop_install::{DesktopInstallEvent, DesktopInstallRequest};
     use super::*;
     use std::process::{Command, Stdio};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// Elevation request, protocol validation, disconnection and log locator.
     #[test]
@@ -234,7 +235,7 @@ mod tests {
                 let child = Command::new("/bin/sh")
                     .args(["-c", script])
                     .stdout(Stdio::piped())
-                    .spawn()
+                    .spawn_locked()
                     .unwrap();
                 let (tx, rx) = std::sync::mpsc::channel();
                 assert!(track_helper(child, &tx).is_err());
@@ -248,7 +249,7 @@ mod tests {
         {
             let directory = tempfile::tempdir().unwrap();
             let marker = directory.path().join("finished");
-            let child = Command::new("/bin/sh").args(["-c", "printf '%s\\n' '{\"phase\":\"Preparing\"}' '{\"phase\":\"Installing\"}'; sleep 0.05; touch \"$1\"; printf '%s\\n' '{\"phase\":\"Verifying\"}' '{\"phase\":\"Failed\",\"detail\":\"fixture failure\"}'", "recording-helper"]).arg(&marker).stdout(Stdio::piped()).spawn().unwrap();
+            let child = Command::new("/bin/sh").args(["-c", "printf '%s\\n' '{\"phase\":\"Preparing\"}' '{\"phase\":\"Installing\"}'; sleep 0.05; touch \"$1\"; printf '%s\\n' '{\"phase\":\"Verifying\"}' '{\"phase\":\"Failed\",\"detail\":\"fixture failure\"}'", "recording-helper"]).arg(&marker).stdout(Stdio::piped()).spawn_locked().unwrap();
             let (tx, rx) = std::sync::mpsc::channel();
             drop(rx);
             assert!(track_helper(child, &tx).is_err());
@@ -256,7 +257,7 @@ mod tests {
         }
 
         {
-            let child = Command::new("/bin/sh").args(["-c", "printf '%s\\n' '{\"phase\":\"Preparing\"}' '{\"phase\":\"Installing\"}' '{\"phase\":\"DiagnosticLog\",\"detail\":\"/var/tmp/tilo-desktop-fixture/native.log\"}' '{\"phase\":\"Verifying\"}' '{\"phase\":\"Complete\",\"detail\":{\"version\":\"1\",\"session_entry\":\"/usr/share/wayland-sessions/tilo.desktop\"}}'"]).stdout(Stdio::piped()).spawn().unwrap();
+            let child = Command::new("/bin/sh").args(["-c", "printf '%s\\n' '{\"phase\":\"Preparing\"}' '{\"phase\":\"Installing\"}' '{\"phase\":\"DiagnosticLog\",\"detail\":\"/var/tmp/tilo-desktop-fixture/native.log\"}' '{\"phase\":\"Verifying\"}' '{\"phase\":\"Complete\",\"detail\":{\"version\":\"1\",\"session_entry\":\"/usr/share/wayland-sessions/tilo.desktop\"}}'"]).stdout(Stdio::piped()).spawn_locked().unwrap();
             let (tx, rx) = std::sync::mpsc::channel();
             track_helper(child, &tx).unwrap();
             let events: Vec<_> = rx.try_iter().collect();

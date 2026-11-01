@@ -2428,8 +2428,14 @@ impl ShellPart {
         &self.refusals
     }
 
-    fn due(&self) -> bool {
-        self.input || self.again || self.origin.borrow().due()
+    /// Whether the part owes a turn: input, a turn that ran out of exchanges, the session's
+    /// work, or its window holding something for the instance — a layout at a new size (its
+    /// display told after it settled) gave the bar a new space, which the views read.
+    fn due(&mut self) -> bool {
+        self.input
+            || self.again
+            || self.origin.borrow().due()
+            || self.window().is_some_and(|window| window.telling())
     }
 }
 

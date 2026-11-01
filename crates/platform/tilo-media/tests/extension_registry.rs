@@ -20,6 +20,7 @@
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use gstreamer as gst;
 use tilo_media::extensions::{decode_stamp, extension_stamp, refresh_registry_at};
@@ -27,7 +28,7 @@ use tilo_media::extensions::{decode_stamp, extension_stamp, refresh_registry_at}
 fn system_plugin(name: &str) -> Option<PathBuf> {
     let from_pkg_config = std::process::Command::new("pkg-config")
         .args(["--variable=pluginsdir", "gstreamer-1.0"])
-        .output()
+        .output_locked()
         .ok()
         .filter(|output| output.status.success())
         .map(|output| PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()));

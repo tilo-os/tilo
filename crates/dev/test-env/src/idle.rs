@@ -627,6 +627,7 @@ pub fn idle_wakeups(root: u32, settle: Duration, window: Duration) -> io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SpawnUnderEnvLock as _;
 
     #[test]
     fn status_counts_both_kinds_of_switch() {
@@ -726,7 +727,7 @@ mod tests {
     fn the_tree_includes_children() {
         let mut child = std::process::Command::new("sleep")
             .arg("5")
-            .spawn()
+            .spawn_locked()
             .expect("spawn sleep");
         let tree = process_tree(std::process::id()).expect("this process's tree");
         let _ = child.kill();

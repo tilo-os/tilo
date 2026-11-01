@@ -272,18 +272,3 @@ view control_reading(control: Control) {
         ui.BarGauge(value: control.value, label: control.detail, compact: true)
     }
 }
-
-/// The focused app's menus on the bar: what the app in front can do now, on its resource, as
-/// the app publishes them. A resource's actions are what the app offers, so the bar shows the
-/// same menu its own window does.
-view app_menus(menus: Collection<AppMenu>) {
-    row(gap: .tight, align: .center) {
-        for menu in menus {
-            ui.MenuButton(menu.title, role: .bar) {
-                for entry in menu.entries {
-                    ui.MenuItem(entry)
-                }
-            }
-        }
-    }
-}

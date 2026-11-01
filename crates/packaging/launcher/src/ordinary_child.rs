@@ -774,6 +774,7 @@ impl Drop for OrdinaryChildSupervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     // These are ownership failure tests of a real controlled process. They
     // do not construct installed source, person, package or namespace grants.
@@ -783,7 +784,7 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .expect("controlled child");
         let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, child.id(), 0u32) };
         assert!(raw >= 0, "actual pidfd required");

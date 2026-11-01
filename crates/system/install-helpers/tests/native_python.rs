@@ -4,6 +4,7 @@
 
 use std::path::Path;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// Report a fixture namespace the host cannot create, or fail under
 /// `TILO_REQUIRE_USERNS=1`. Returns whether the caller should skip.
@@ -55,7 +56,7 @@ fn suite(script: &str, args: &[&str]) -> std::io::Result<()> {
             "TILO_FIRSTBOOT_FILES_BINARY",
             tilo_test_env::package_binary!("install-test-firstboot-files"),
         )
-        .output()?;
+        .output_locked()?;
     if !output.status.success() {
         return Err(std::io::Error::other(format!(
             "{script}: {}\nstdout:\n{}\nstderr:\n{}",
