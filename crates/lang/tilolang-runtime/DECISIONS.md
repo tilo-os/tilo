@@ -194,9 +194,9 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   type: beside the root's list, or in place of the root's content with Back; a narrow window
   pushes it (`tilolang_tilo::instance` opens it, `tilo_ui_host::window` composes it). Opening never creates a second window for a
   resource: there are no windows yet.
-- **Roots.** The host opens `roots[0]` of a package through its default view, over the per-room
-  resource of that type (`tilolang_tilo::host::Package::main`), replacing the old `view main`
-  convention.
+- **Roots.** The host opens `roots[0]` of a package through its default view, over the
+  per-workspace resource of that type (`tilolang_tilo::host::Package::main`), replacing the old
+  `view main` convention.
 
 ## Performance by default
 
@@ -249,7 +249,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   opens at its newest row and follows it while it shows it (`following_end`), its rows the
   view's own, shown and forgotten as the list column's are, so a conversation of 10k messages
   costs the messages on screen. A list inside a page is drawn whole, its rows rendered as they
-  appear; one in a card shows its preview. What the room publishes (`Publications`) and what
+  appear; one in a card shows its preview. What the workspace publishes (`Publications`) and what
   search finds (`SearchIndex`) are kept by the live window and updated from the store's
   changes, read off the frame the first time.
 - **Patches outside a list apply to single widgets.** The reconciler (`tilo_ui_host::
@@ -304,7 +304,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   again only when a change is at or before what names it. These replace re-indexing and
   re-publishing every record per frame (`search::refresh` and `published()` in the window), which
   cost 322 ms and 393 ms at 10k items.
-- **No needless commit.** The host commits the room record when the executor wrote something.
+- **No needless commit.** The host commits the workspace record when the executor wrote something.
   An empty `commit()` on automerge used to add and remove the actor (6.6 ms at 10k items); the
   vendored patch makes it free, but the call is still not needed.
 - **One engine per process.** All runtimes share one `wasmi::Engine` and a module cache keyed by
@@ -370,7 +370,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   input (a conversation's draft, when the window edits no title); a package with no text input
   gets `press` (its first button). `peer_edit` retitles an
   item, or bumps the root's counter. `memory_anon` is measured in a process of its own that loads
-  the saved room and opens it, as an app process does (the bench's own process keeps what
+  the saved workspace and opens it, as an app process does (the bench's own process keeps what
   seeding allocated). `--budgets` holds the records to the budgets on the
   machine it runs on (open p95 300 ms; keystroke, press and peer p95 2 ms; scroll p50 1 ms; no
   idle wakeups, at 10k items; memory 60 MiB at 1k) and fails when one is over: a recorded local
@@ -452,7 +452,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   type's actions). Memory, before and after (release, aarch64, `memory_anon`): notes 19.9 to
   12.1 MiB at 1k and 175.6 to 112.8 MiB at 10k; todo 16.7 to 12.9 and 147.5 to 114.5; chat
   19.3 to 12.7 and 167.2 to 105.1; the board 49.9 to 34.9 and 486.6 to 327.2. What is left per
-  item is the view (1.9 KB per row even unrendered), the room and the mirror (1.5 KB), search
+  item is the view (1.9 KB per row even unrendered), the workspace and the mirror (1.5 KB), search
   (0.4 KB), the published resources themselves (a 24-byte spec per action) and what the
   allocator keeps after the first read.
 - **Both together** (the split, the store's read cache, card previews and republication at its
@@ -476,13 +476,13 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   action, a flow, a lambda that reads anything else) the loop runs. A collection's listing
   reads each entry's order key and map and none of the item's fields; a row's first read of a
   register or counter reads the item's others in the same walk. Search and publication read the
-  whole room from a snapshot that shares the mirror (`Arc`) rather than copying it on the frame;
-  the store copies the mirror only when it changes while a snapshot is still being read.
+  whole workspace from a snapshot that shares the mirror (`Arc`) rather than copying it on the
+  frame; the store copies the mirror only when it changes while a snapshot is still being read.
 - **Counted, not timed.** The bench records, beside each time, the work the scenario did in
   counts that do not depend on the machine (`bench::Work`): boundaries rendered, item references
   built, patches sent, resources located and fields read one by one, collections listed, their
   entries read, item fields read for a filter, items a filter evaluated, allocations. A scenario
-  that changes the room records its first change apart: it is the first change of a writer new
+  that changes the workspace records its first change apart: it is the first change of a writer new
   to the record, and Automerge numbers a new actor through the whole record (13k allocations at
   100k todo items against 1k for a steady keystroke). `tests/budgets.rs` runs the bench at 1k and
   10k items for notes, chat, todo and the board and fails when what a scenario shows or changes
@@ -496,7 +496,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   30 / 394; chat 6.2 / 17 / 162 to 7.2 / 14 / 147. Memory: board 24.5 / 237 / 1998 MiB to 22.9 /
   207 / 1722; notes 11.7 / 113 / 1070 to 10.8 / 102 / 883; todo 11.5 / 113 / 1024 to 11.4 / 103 /
   836; chat 12.6 / 98 / 915 to 10.8 / 98 / 819. What the first frame builds no longer grows with
-  the room (the board renders 11 boundaries and builds 10 item references at every size), but
+  the workspace (the board renders 11 boundaries and builds 10 item references at every size), but
   opening is still linear: the store lists each collection it shows, an Automerge seek per entry
   (and per item for a filter's field), 30k entries and 20k filter reads for the board at 10k, all
   of its open time. Answering a count or a preview without that needs an index of each

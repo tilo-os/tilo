@@ -14,9 +14,9 @@ mod cases {
     use tilolang_runtime::members::Member;
     use tilolang_runtime::{AmStore, Principal, ResourceRef, Runtime, SimpleAuthority, Value};
 
-    const SOURCE: &str = r#"app so.tilo.rooms "Rooms"
+    const SOURCE: &str = r#"app so.tilo.workspaces "Workspaces"
 
-type Room {
+type Workspace {
     topic: Text
     lines: Collection<Line>
 }
@@ -26,9 +26,9 @@ type Line {
     author: Principal
 }
 
-default view room for Room
+default view workspace for Workspace
 
-action say(r: Room, text: Text) {
+action say(r: Workspace, text: Text) {
     r.lines.insert(Line(text: text, author: invoker))
 }
 
@@ -36,7 +36,7 @@ fn kind_of(p: Principal) -> Text {
     if p.kind() == .agent { "agent" } else { "person" }
 }
 
-view room(r: Room) {
+view workspace(r: Workspace) {
     lens draft: RichText = RichText("")
     page {
         for p in workspace.members {
@@ -63,7 +63,7 @@ view room(r: Room) {
     }
 
     /// Two people and an agent, as a workspace's membership records them.
-    fn workspace() -> Vec<Member> {
+    fn membership() -> Vec<Member> {
         vec![
             Member::person("ada", "owner"),
             Member::person("bo", "editor"),
@@ -75,8 +75,8 @@ view room(r: Room) {
         let app = App::compile(SOURCE, &[]);
         let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
         app.load(&rt);
-        let open = rt.create("Room").unwrap();
-        let private = rt.create("Room").unwrap();
+        let open = rt.create("Workspace").unwrap();
+        let private = rt.create("Workspace").unwrap();
         (rt, app, open, private)
     }
 
@@ -106,9 +106,9 @@ view room(r: Room) {
     #[test]
     fn the_workspaces_members_are_its_people_and_agents_with_their_kind_and_role() {
         let (rt, app, open, _) = setup();
-        rt.set_members(workspace(), None);
+        rt.set_members(membership(), None);
         let v = rt
-            .open_view(&ada(), &app.view("room"), vec![Value::resource(&open)])
+            .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
             .unwrap();
         assert_eq!(
             texts(&v, "in "),
@@ -130,13 +130,13 @@ view room(r: Room) {
         let (rt, app, open, private) = setup();
         let hidden = private.clone();
         rt.set_members(
-            workspace(),
+            membership(),
             Some(Rc::new(move |who: &Principal, r: &ResourceRef| {
                 *r != hidden || who.0 == "ada"
             })),
         );
         let on = |r: &ResourceRef| {
-            rt.open_view(&ada(), &app.view("room"), vec![Value::resource(r)])
+            rt.open_view(&ada(), &app.view("workspace"), vec![Value::resource(r)])
                 .unwrap()
         };
         assert_eq!(texts(&on(&open), "reads ").len(), 3);
@@ -151,16 +151,16 @@ view room(r: Room) {
     #[test]
     fn a_view_follows_membership_as_it_changes() {
         let (rt, app, open, _) = setup();
-        rt.set_members(workspace()[..1].to_vec(), None);
+        rt.set_members(membership()[..1].to_vec(), None);
         let mut v = rt
-            .open_view(&ada(), &app.view("room"), vec![Value::resource(&open)])
+            .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
             .unwrap();
         assert_eq!(texts(&v, "in "), ["in ada person owner"]);
-        rt.set_members(workspace(), None);
+        rt.set_members(membership(), None);
         v.poll_patches().unwrap();
         assert_eq!(texts(&v, "in ").len(), 3, "a member admitted shows at once");
         assert_eq!(people(&v, "people"), ["ada", "bo", "agent:planner"]);
-        let mut changed = workspace();
+        let mut changed = membership();
         changed.remove(1);
         if let Some(ada) = changed.first_mut() {
             ada.role = Some("editor".to_owned());
@@ -177,10 +177,10 @@ view room(r: Room) {
     #[test]
     fn the_drawer_offers_who_spoke_last_first() {
         let (rt, app, open, _) = setup();
-        rt.set_members(workspace(), None);
+        rt.set_members(membership(), None);
         let say = app.action("say");
         let mut v = rt
-            .open_view(&ada(), &app.view("room"), vec![Value::resource(&open)])
+            .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
             .unwrap();
         for who in [bo(), planner(), ada(), bo()] {
             rt.invoke_action(
@@ -214,23 +214,23 @@ view room(r: Room) {
         let app = App::compile(SOURCE, &[]);
         let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
         app.load(&rt);
-        let room = rt.create("Room").unwrap();
+        let workspace = rt.create("Workspace").unwrap();
         let say = app.action("say");
         for who in [planner(), ada(), bo()] {
             rt.invoke_action(
                 &who,
                 (
                     say.as_str(),
-                    vec![Value::resource(&room), Value::text("hello")],
+                    vec![Value::resource(&workspace), Value::text("hello")],
                 ),
             )
             .unwrap();
         }
         assert_eq!(
-            store.recent_authors(&room, 5, 2).unwrap(),
+            store.recent_authors(&workspace, 5, 2).unwrap(),
             ["bo", "ada"],
             "only the last two changes are looked at, however long the history"
         );
-        assert_eq!(store.recent_authors(&room, 1, 10).unwrap(), ["bo"]);
+        assert_eq!(store.recent_authors(&workspace, 1, 10).unwrap(), ["bo"]);
     }
 }
