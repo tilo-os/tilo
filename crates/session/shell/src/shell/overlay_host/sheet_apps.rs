@@ -135,6 +135,7 @@ impl<S: Seat> SheetHost<S> {
     /// Give `event` to the app, for a sheet the host routes itself rather
     /// than through the overlay stack.
     pub(crate) fn route(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.follow_keyboard();
         if let Some(app) = self.app.as_mut() {
             let node = self.node.unwrap_or(ctx.node_id);
             let path = ctx.path;
@@ -218,7 +219,20 @@ impl<S: Seat> SheetHost<S> {
     /// on screen or not: an agent may invoke a sheet's action while it is
     /// down. Whether that changed what it shows.
     pub(crate) fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
+        self.follow_keyboard();
         self.app.as_mut().is_some_and(|app| app.update(doc, path)) && self.is_drawn()
+    }
+
+    /// A sheet is modal: while it is up its app holds the keyboard, so its
+    /// focus starts on its first control and is the one a reader is told
+    /// of; once it is down the keyboard is the desktop's again.
+    fn follow_keyboard(&mut self) {
+        let up = ShellLayer::is_open(self);
+        if let Some(app) = self.app.as_mut()
+            && app.is_focused() != up
+        {
+            app.set_focus(up);
+        }
     }
 
     /// Where the sheet stands: the display area it was laid out over.
@@ -235,6 +249,7 @@ impl<S: Seat> SheetHost<S> {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
+        self.follow_keyboard();
         let moved = matches!(event, WindowEvent::CursorMoved { .. });
         let was = *ctx.handled;
         // The pointer's moves always reach it, so it knows where a press
@@ -295,6 +310,7 @@ impl<S: Seat> ShellLayer for SheetHost<S> {
     fn handle_event(&mut self, event: &WindowEvent, cx: &mut LayerCx<'_, '_>) -> Routed {
         // A key that follows the opening at once reaches the app before the
         // host has laid it out; the app keeps no node of its own.
+        self.follow_keyboard();
         if let Some(app) = self.app.as_mut() {
             let (path, node) = (cx.event.path, self.node.unwrap_or(cx.event.node_id));
             app.handle_event(event, &mut cx.event.reborrow(path, node));

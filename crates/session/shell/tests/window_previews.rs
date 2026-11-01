@@ -80,6 +80,14 @@ fn desktop(clients: &[(u64, &str)]) -> FrameBuilder {
     fb
 }
 
+/// A tab holding the place of an app that has no process here.
+fn holds_no_process(tile: &TileContent) -> bool {
+    matches!(
+        tile,
+        TileContent::AppPlaceholder { .. } | TileContent::LocalApp { .. }
+    )
+}
+
 fn tab_of(fb: &FrameBuilder, surface: u64) -> u64 {
     let chrome = fb.chrome();
     let tree = chrome.tree();
@@ -94,8 +102,10 @@ fn tab_of(fb: &FrameBuilder, surface: u64) -> u64 {
         .expect("the client's tab is in the rendered tree")
 }
 
-/// Turn one of the demo room's placeholder cards into a window the shell
-/// draws itself, shown in its group, and return its tab.
+/// Turn one of the demo room's app windows that have no process yet (the
+/// demo's apps each run as their own process, so their tabs hold the place
+/// as local app tabs until one starts) into a window the shell draws
+/// itself, shown in its group, and return its tab.
 fn make_shell_drawn(fb: &mut FrameBuilder) -> u64 {
     let id = {
         let chrome = fb.chrome();
@@ -108,19 +118,14 @@ fn make_shell_drawn(fb: &mut FrameBuilder) -> u64 {
             .filter(|ws| ws.id == active)
             .flat_map(|ws| ws.strips.iter_mut())
             .flat_map(|strip| strip.window_groups.iter_mut())
-            .find(|group| {
-                group
-                    .tabs
-                    .iter()
-                    .any(|tab| matches!(tab.tile, TileContent::AppPlaceholder { .. }))
-            })
-            .expect("the demo room has a placeholder window");
+            .find(|group| group.tabs.iter().any(|tab| holds_no_process(&tab.tile)))
+            .expect("the demo room has an app window with no process");
         let tab = group
             .tabs
             .iter_mut()
             .rev()
-            .find(|tab| matches!(tab.tile, TileContent::AppPlaceholder { .. }))
-            .expect("a placeholder tab");
+            .find(|tab| holds_no_process(&tab.tile))
+            .expect("a tab with no process");
         tab.tile = TileContent::Stub {
             kind: shell::shell::state::AppKind::Terminal,
             label: "Terminal".into(),
@@ -314,6 +319,10 @@ fn super_tab_draws_the_flying_overview_on_the_next_frame_with_no_work_in_the_key
         fb.host().overview_row_drawn().is_empty(),
         "the key itself must not lay out or draw the overview"
     );
+    // The frame as the compositor makes it: the layout it owes (the
+    // overview is an app with a place in the desktop's layout), then the
+    // paint.
+    let _ = fb.relayout_if_owed();
     let frame = fb.paint_with_damage();
     let first_frame = pressed.elapsed();
     eprintln!(
@@ -405,10 +414,12 @@ fn a_password_manager_never_gets_a_preview_and_the_switcher_says_so() {
     drop(fb);
     assert_eq!(dump["open"], true);
     let windows = dump["windows"].as_array().expect("windows");
+    // A tab's id travels as its decimal text: it can be past what a JSON
+    // integer holds.
     let preview_of = |tab: u64| {
         windows
             .iter()
-            .find(|window| window["tab"] == tab)
+            .find(|window| window["tab"] == tab.to_string())
             .map(|window| window["preview"].clone())
             .expect("the window is listed")
     };

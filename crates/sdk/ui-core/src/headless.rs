@@ -13127,6 +13127,12 @@ impl Drop for FrameHarness {
         self.control_domain.close();
         self.bindings.clear();
         self.node_map.clear();
+        // Its widgets go for good: they leave no motion for a rebuild.
+        let _closing = crate::motion::closing_window();
+        drop(std::mem::replace(
+            &mut self.root,
+            Box::new(crate::widget::Container::new()),
+        ));
     }
 }
 

@@ -3,9 +3,9 @@
   "assets": [
     {
       "file": "e2e-open-close-overview-settled.png",
-      "sha256": "47fb5f859f9cfc1008ef28508365a58ff7b0c44b350eede21f9ebddccb97afb8",
-      "bytes": 79982,
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/47fb5f859f9cfc1008ef28508365a58ff7b0c44b350eede21f9ebddccb97afb8/e2e-open-close-overview-settled.png"
+      "sha256": "4e9b5a952c389ea9bf7db4e82431f7625fd10313889e2bc49db0b51eba170151",
+      "bytes": 76213,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/4e9b5a952c389ea9bf7db4e82431f7625fd10313889e2bc49db0b51eba170151/e2e-open-close-overview-settled.png"
     },
     {
       "file": "e2e-tab-drag-reorder-settled.png",
