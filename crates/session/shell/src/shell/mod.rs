@@ -702,7 +702,11 @@ pub(crate) fn workspace_surface_chrome(
     let standing = chrome.clone();
     let topbar = tilo_desktop::topbar::BarSpace::new(std::rc::Rc::new(move || {
         let state = standing.borrow();
-        (state.fullscreen_covers_primary(), state.top_bar_presence())
+        if state.fullscreen_covers_primary() {
+            tilo_desktop::chrome::TopBarPresence::Hidden
+        } else {
+            state.top_bar_presence()
+        }
     }));
     // Full-screen layer under the translucent top bar, so the bar picks up
     // the gradient tint behind it.

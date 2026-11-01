@@ -354,6 +354,9 @@ struct Shared {
     /// The monitors of the displays a fullscreen window owns, which the
     /// bars read.
     fullscreen: Rc<RefCell<Vec<String>>>,
+    /// The person's "hide the top bar until the pointer is near it", as the
+    /// settings watch last read it.
+    hide_top_bar: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The controller the person last drove the desktop with: the guide
     /// leads with its buttons until a key of their own is pressed.
     controller: Rc<Cell<Option<ui::ControllerFamily>>>,
@@ -990,6 +993,12 @@ impl Session {
         let media = fabric::MediaContinuity::default();
         media.read(&settings_store::load());
         let watched_media = media.clone();
+        // The bar's own setting, read on the same watch: it changes what the
+        // desk's band takes and when the bars show.
+        let hide_top_bar = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            settings_store::desktop_controls::DesktopControlsConfig::load().hide_top_bar,
+        ));
+        let watched_hide = std::sync::Arc::clone(&hide_top_bar);
         // Artwork the session resolves off the loop wakes it when it is
         // ready, so the frame that painted the letter repaints with it; the
         // apps installed here are the lists' to resolve, on their worker.
@@ -1002,6 +1011,11 @@ impl Session {
             watched_wallpapers.follow(&document);
             desk::follow_prefs(&watched_widgets, &document);
             watched_media.read(&document);
+            watched_hide.store(
+                settings_store::desktop_controls::DesktopControlsConfig::from_document(&document)
+                    .hide_top_bar,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             woken();
         })
         .map_err(|error| tracing::debug!(%error, "settings are not watched"))
@@ -1028,15 +1042,22 @@ impl Session {
             options.search.records.as_ref().map(records::Records::root),
             options.search.lists.clone(),
         );
+        // When each display's bar shows over the window covering it: the desk's
+        // band, the chrome and the input that reaches for the bar read the one
+        // model.
+        let reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>> = Rc::default();
         let (desktop, mut policy, asks) = desk::desk(
             &options,
             &activity,
             notices.clone(),
             std::sync::Arc::clone(&wallpapers),
-            widget_prefs,
-            fold.clone(),
-            overview.open_flag(),
-            music.clone(),
+            desk::DeskLook {
+                widgets: widget_prefs,
+                fold: fold.clone(),
+                overview: overview.open_flag(),
+                music: music.clone(),
+                reveals: Rc::clone(&reveals),
+            },
         );
         desktop.set_gestures(options.config.gestures);
         // What each open window is told of the desk it stands on, from the
@@ -1204,6 +1225,7 @@ impl Session {
                     tray: tray.clone(),
                     fullscreen: Rc::clone(&fullscreen),
                     shares: Rc::clone(&window_shares),
+                    reveals: Rc::clone(&reveals),
                 },
             },
             sync.clone(),
@@ -1307,6 +1329,7 @@ impl Session {
                     .map(|seat| tilo_sheets::Seat::presentation(seat).clone()),
                 fold,
                 overlays: overlays.clone(),
+                reveals: Rc::clone(&reveals),
             },
             options.scale,
         );
@@ -1574,6 +1597,7 @@ impl Session {
             chrome,
             people,
             fullscreen,
+            hide_top_bar,
             controller,
             controller_keys,
             app_sheets,
@@ -2658,6 +2682,7 @@ impl Session {
             .step(&mut || Some(compositor.activation_token()));
         self.shared.open_notifications();
         self.settle()?;
+        self.follow_bars();
         self.follow_shell()?;
         // The toolkit's clock, which a capture pins the frame's instant on.
         let now = ui::time::now();

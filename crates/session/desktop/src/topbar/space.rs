@@ -4,27 +4,27 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use taffy::{NodeId, TaffyTree};
+use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use super::{BarStanding, bar_style};
+use super::topbar_height;
 use crate::chrome::TopBarPresence;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
-/// Whether a fullscreen window owns the bar's display, and how the bar
-/// stands: what its room in the column follows.
-pub type Standing = Rc<dyn Fn() -> (bool, TopBarPresence)>;
+/// How the bar stands on its display, which its room in the column
+/// follows.
+pub type Standing = Rc<dyn Fn() -> TopBarPresence>;
 
 /// Takes the room [`super::TopBarChrome`] takes in the desktop's column
 /// (none under a fullscreen window, none while the person hides the bar,
 /// else the bar's height) and draws nothing.
 pub struct BarSpace {
     standing: Standing,
-    laid_out: Option<(bool, BarStanding)>,
+    laid_out: Option<TopBarPresence>,
     rect: Rect,
 }
 
@@ -38,16 +38,31 @@ impl BarSpace {
         }
     }
 
-    fn now(&self) -> (bool, BarStanding) {
-        let (fullscreen, presence) = (self.standing)();
-        (
-            fullscreen,
-            BarStanding::of(!fullscreen && presence.overlays()),
-        )
+    fn now(&self) -> TopBarPresence {
+        (self.standing)()
     }
 
     fn stale(&self) -> bool {
         self.laid_out != Some(self.now())
+    }
+}
+
+/// The strip this room takes while the bar is docked, and none while the
+/// bar is hidden or shown over the window covering its display: either
+/// way the window takes the whole display.
+fn space_style(presence: TopBarPresence, theme: &Theme) -> Style {
+    Style {
+        display: if presence == TopBarPresence::Docked {
+            Display::Flex
+        } else {
+            Display::None
+        },
+        size: Size {
+            width: Dimension::percent(1.0),
+            height: Dimension::length(topbar_height(theme)),
+        },
+        flex_shrink: 0.0,
+        ..Default::default()
     }
 }
 
@@ -72,8 +87,7 @@ impl Widget for BarSpace {
     ) -> NodeId {
         let now = self.now();
         self.laid_out = Some(now);
-        let (fullscreen, standing) = now;
-        let style = bar_style(fullscreen, standing == BarStanding::OverColumn, theme);
+        let style = space_style(now, theme);
         let node = match taffy.new_leaf(style) {
             Ok(node) => node,
             Err(err) => {
@@ -122,8 +136,8 @@ mod tests {
     use std::cell::Cell;
 
     #[test]
-    fn the_room_follows_fullscreen_and_presence() {
-        let standing = Rc::new(Cell::new((false, TopBarPresence::Docked)));
+    fn the_room_follows_the_bar_showing_over_a_window() {
+        let standing = Rc::new(Cell::new(TopBarPresence::Docked));
         let read = standing.clone();
         let mut space = BarSpace::new(Rc::new(move || read.get()));
         let theme = Theme::default();
@@ -131,17 +145,27 @@ mod tests {
         let mut nodes = HashMap::new();
         let node = space.build_layout(&mut taffy, &theme, &mut nodes);
         let style = taffy.style(node).unwrap().clone();
-        assert_eq!(style.display, taffy::Display::Flex);
+        assert_eq!(style.display, Display::Flex);
+        assert_eq!(
+            style.size.height,
+            Dimension::length(topbar_height(&theme)),
+            "docked, it takes the bar's strip"
+        );
         assert!(!space.take_structure_dirty());
-        standing.set((false, TopBarPresence::Hidden));
-        assert!(space.take_structure_dirty(), "hiding moves the windows");
+        // Shown over a fullscreen window: the window keeps its whole size.
+        standing.set(TopBarPresence::Shown);
+        assert!(space.take_structure_dirty(), "showing moves the windows");
         let node = space.build_layout(&mut taffy, &theme, &mut nodes);
         assert_eq!(
-            taffy.style(node).unwrap().position,
-            taffy::style::Position::Absolute
+            taffy.style(node).unwrap().display,
+            Display::None,
+            "shown over the window, the strip is the window's"
         );
-        standing.set((true, TopBarPresence::Hidden));
+        standing.set(TopBarPresence::Hidden);
         let node = space.build_layout(&mut taffy, &theme, &mut nodes);
-        assert_eq!(taffy.style(node).unwrap().display, taffy::Display::None);
+        assert_eq!(taffy.style(node).unwrap().display, Display::None);
+        standing.set(TopBarPresence::Docked);
+        let node = space.build_layout(&mut taffy, &theme, &mut nodes);
+        assert_eq!(taffy.style(node).unwrap().display, Display::Flex);
     }
 }

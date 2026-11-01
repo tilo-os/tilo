@@ -109,8 +109,8 @@ pub use input::{
 pub use keys::{KeyClaim, KeyRepeat};
 pub use output::{ModeRequest, OutputChange, OutputConfig, OutputInfo};
 pub use policy::{
-    Arrangement, LayoutPoint, LayoutRect, ResizeEdges, StackPolicy, WindowInfo, WindowPolicy,
-    WindowRequest,
+    Arrangement, LayoutPoint, LayoutRect, ResizeEdges, StackPolicy, TouchSample, WindowInfo,
+    WindowPolicy, WindowRequest,
 };
 pub use selection::{Selection, TEXT_MIME};
 pub use share_stream::ShareStream;
