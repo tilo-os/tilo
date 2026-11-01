@@ -103,12 +103,12 @@ async fn join_v2(relay: &TestRelay, device: &TestDevice, room: Uuid) -> RelayCli
         .unwrap();
     assert!(matches!(next_state(&client).await, Envelope::Ready { .. }));
     client
-        .send_action(EnvelopeV2::EnableActions { room })
+        .send_action(EnvelopeV2::EnableActions { workspace: room })
         .unwrap();
     assert_eq!(
         next_action(&client).await,
         EnvelopeV2::ActionsReady {
-            room,
+            workspace: room,
             capability: ActionCapability::TransportOnly
         }
     );
@@ -116,7 +116,7 @@ async fn join_v2(relay: &TestRelay, device: &TestDevice, room: Uuid) -> RelayCli
 }
 fn refresh(room: Uuid, sender: &TestDevice, target: &TestDevice) -> DirectedAction {
     DirectedAction {
-        room,
+        workspace: room,
         request_id: Uuid::from_u128(100),
         source: sender.device_pubkey(),
         target: target.device_pubkey(),
@@ -188,26 +188,26 @@ async fn exact_relay_device_can_register_its_durable_broker() {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     assert!(matches!(next_state(&client).await, Envelope::Ready { .. }));
     client
-        .send_action(EnvelopeV2::EnableActions { room })
+        .send_action(EnvelopeV2::EnableActions { workspace: room })
         .unwrap();
     assert_eq!(
         next_action(&client).await,
         EnvelopeV2::ActionsReady {
-            room,
+            workspace: room,
             capability: ActionCapability::TransportOnly,
         }
     );
     let broker_host = Uuid::from_u128(7);
     client
         .send_action(EnvelopeV2::RegisterBroker {
-            room,
+            workspace: room,
             host: broker_host,
         })
         .unwrap();
     assert_eq!(
         next_action(&client).await,
         EnvelopeV2::ActionsReady {
-            room,
+            workspace: room,
             capability: ActionCapability::DurableBroker { host: broker_host },
         }
     );
@@ -268,7 +268,7 @@ async fn local_broker_exception_rejects_every_non_exact_host_and_unlisted_guest(
         client.send(Envelope::Subscribe { workspace_id }).unwrap();
         assert!(matches!(next_state(&client).await, Envelope::Ready { .. }));
         client
-            .send_action(EnvelopeV2::EnableActions { room })
+            .send_action(EnvelopeV2::EnableActions { workspace: room })
             .unwrap();
         assert!(
             tilo_test_env::within("client to close", client.recv_action())
@@ -378,7 +378,7 @@ async fn addressed_actions_are_private_live_and_demultiplexed_from_v1_state() {
     let invocation =
         tilo_actions::InvocationId(Uuid::from_u128(0x0012_3456_789a_bcde_f123_4567_89ab_cdef));
     let update = DirectedAction {
-        room,
+        workspace: room,
         request_id: Uuid::from_u128(101),
         source: b.device_pubkey(),
         target: a.device_pubkey(),
@@ -550,7 +550,7 @@ async fn addressed_actions_reject_source_forgery_and_external_effect_admission()
             ..
         }
     ));
-    wrong_room.room = room;
+    wrong_room.workspace = room;
     wrong_room.message = ActionMessage::Update {
         update: tilo_actions::InvocationUpdate::Progress {
             invocation: tilo_actions::InvocationId(Uuid::from_u128(55)),

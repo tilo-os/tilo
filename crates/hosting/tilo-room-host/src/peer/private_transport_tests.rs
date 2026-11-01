@@ -520,8 +520,10 @@ async fn pipelined_private_requests_backpressure_instead_of_disconnecting() {
         reader.read_next().await.unwrap(),
         Some(EnvelopeV2::State(Envelope::Ready { .. }))
     ));
-    let enable =
-        tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::EnableActions { room }).unwrap();
+    let enable = tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::EnableActions {
+        workspace: room,
+    })
+    .unwrap();
     for _ in 0..REQUESTS {
         requests.write_all(&enable).await.unwrap();
     }
@@ -622,8 +624,10 @@ async fn refusal_queued_as_the_session_ends(held: usize) {
         reader.read_next().await.unwrap(),
         Some(EnvelopeV2::State(Envelope::Ready { .. }))
     ));
-    let enable =
-        tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::EnableActions { room }).unwrap();
+    let enable = tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::EnableActions {
+        workspace: room,
+    })
+    .unwrap();
     for _ in 0..held {
         requests.write_all(&enable).await.unwrap();
     }
@@ -778,8 +782,10 @@ async fn paused_state_private_roundtrip(
         ));
         write
             .write_all(
-                &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::EnableActions { room })
-                    .unwrap(),
+                &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::EnableActions {
+                    workspace: room,
+                })
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -1083,7 +1089,7 @@ async fn paused_state_private_roundtrip(
         "state published before commit"
     );
     let request = DirectedAction {
-        room,
+        workspace: room,
         request_id: uuid::Uuid::from_u128(8),
         source: a.device_public_key,
         target: b.device_public_key,
@@ -1296,7 +1302,7 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
                 write
                     .write_all(
                         &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::EnableActions {
-                            room: *room,
+                            workspace: *room,
                         })
                         .unwrap(),
                     )
@@ -1312,7 +1318,7 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
             write
                 .write_all(
                     &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::RegisterBroker {
-                        room: rooms[0],
+                        workspace: rooms[0],
                         host,
                     })
                     .unwrap(),
@@ -1352,7 +1358,7 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
             .unwrap();
         assert!(store.load_retained().unwrap().is_empty());
         let request = DirectedAction {
-            room: rooms[1],
+            workspace: rooms[1],
             request_id: uuid::Uuid::from_u128(77),
             source: a.device_public_key,
             target: b.device_public_key,
@@ -1361,7 +1367,7 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
         if gated {
             aw.write_all(
                 &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::EnableActions {
-                    room: rooms[0],
+                    workspace: rooms[0],
                 })
                 .unwrap(),
             )
@@ -1435,7 +1441,7 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
         );
         if gated {
             assert!(
-                matches!(ready, Some(EnvelopeV2::ActionsReady { room, .. }) if room == rooms[0]),
+                matches!(ready, Some(EnvelopeV2::ActionsReady { workspace: room, .. }) if room == rooms[0]),
                 "the capability control lost its reply: {ready:?}"
             );
         }
@@ -1488,22 +1494,26 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
         }
     }
     let capability = match control {
-        0 => EnvelopeV2::EnableActions { room: rooms[0] },
-        1 => EnvelopeV2::EnableBrokerClient { room: rooms[0] },
+        0 => EnvelopeV2::EnableActions {
+            workspace: rooms[0],
+        },
+        1 => EnvelopeV2::EnableBrokerClient {
+            workspace: rooms[0],
+        },
         _ => EnvelopeV2::RegisterBroker {
-            room: rooms[0],
+            workspace: rooms[0],
             host,
         },
     };
     let dependent = DirectedAction {
-        room: rooms[0],
+        workspace: rooms[0],
         request_id: uuid::Uuid::from_u128(75),
         source: a.device_public_key,
         target: b.device_public_key,
         message: ActionMessage::CatalogueRefresh { scope: None },
     };
     let unrelated = DirectedAction {
-        room: rooms[1],
+        workspace: rooms[1],
         request_id: uuid::Uuid::from_u128(76),
         ..dependent.clone()
     };
@@ -1888,7 +1898,7 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
         ..session
     };
     let action = DirectedAction {
-        room,
+        workspace: room,
         request_id: uuid::Uuid::from_u128(8),
         source: a.device_public_key,
         target: b.device_public_key,
@@ -2013,7 +2023,7 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
         ..session
     };
     let action = DirectedAction {
-        room,
+        workspace: room,
         request_id: uuid::Uuid::from_u128(8),
         source: a.device_public_key,
         target: b.device_public_key,
@@ -2058,15 +2068,19 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
                 authorize_delivery(&delivery, &b, &receiver).await
                     == Err(UnavailableReason::NotAuthorised)
             }
-            2 => handle_private(EnvelopeV2::EnableActions { room }, &a, &session)
+            2 => handle_private(EnvelopeV2::EnableActions { workspace: room }, &a, &session)
                 .await
                 .is_err(),
-            3 => handle_private(EnvelopeV2::EnableBrokerClient { room }, &a, &session)
-                .await
-                .is_err(),
+            3 => handle_private(
+                EnvelopeV2::EnableBrokerClient { workspace: room },
+                &a,
+                &session,
+            )
+            .await
+            .is_err(),
             _ => handle_private(
                 EnvelopeV2::RegisterBroker {
-                    room,
+                    workspace: room,
                     host: uuid::Uuid::from_u128(99),
                 },
                 &a,
@@ -2174,9 +2188,13 @@ async fn replacement_action_capability_requires_enable_then_durable_registration
         lag: Box::leak(Box::default()),
     };
     assert!(matches!(
-        handle_private(EnvelopeV2::EnableActions { room }, &source, &source_session)
-            .await
-            .unwrap(),
+        handle_private(
+            EnvelopeV2::EnableActions { workspace: room },
+            &source,
+            &source_session
+        )
+        .await
+        .unwrap(),
         Some(EnvelopeV2::ActionsReady {
             capability: ActionCapability::TransportOnly,
             ..
@@ -2184,7 +2202,7 @@ async fn replacement_action_capability_requires_enable_then_durable_registration
     ));
     assert!(
         handle_private(
-            EnvelopeV2::EnableBrokerClient { room },
+            EnvelopeV2::EnableBrokerClient { workspace: room },
             &source,
             &source_session
         )
@@ -2205,7 +2223,7 @@ async fn replacement_action_capability_requires_enable_then_durable_registration
         ..source_session
     };
     let action = DirectedAction {
-        room,
+        workspace: room,
         request_id: uuid::Uuid::from_u128(8),
         source: source.device_public_key,
         target: broker.device_public_key,
@@ -2232,14 +2250,14 @@ async fn replacement_action_capability_requires_enable_then_durable_registration
 
     assert_eq!(
         handle_private(
-            EnvelopeV2::EnableActions { room },
+            EnvelopeV2::EnableActions { workspace: room },
             &broker,
             &replacement_session
         )
         .await
         .unwrap(),
         Some(EnvelopeV2::ActionsReady {
-            room,
+            workspace: room,
             capability: ActionCapability::TransportOnly,
         })
     );
@@ -2253,14 +2271,17 @@ async fn replacement_action_capability_requires_enable_then_durable_registration
 
     assert_eq!(
         handle_private(
-            EnvelopeV2::RegisterBroker { room, host },
+            EnvelopeV2::RegisterBroker {
+                workspace: room,
+                host
+            },
             &broker,
             &replacement_session
         )
         .await
         .unwrap(),
         Some(EnvelopeV2::ActionsReady {
-            room,
+            workspace: room,
             capability: ActionCapability::DurableBroker { host },
         })
     );
@@ -2393,7 +2414,7 @@ async fn bounded_private_queue_for_room_namespace() {
         ..session
     };
     let action = DirectedAction {
-        room,
+        workspace: room,
         request_id: uuid::Uuid::from_u128(8),
         source: a.device_public_key,
         target: b.device_public_key,
@@ -2931,7 +2952,7 @@ async fn retired_unsigned_deliveries_are_refused() {
         lag: Box::leak(Box::default()),
     };
     let action = DirectedAction {
-        room: uuid::Uuid::from_u128(5),
+        workspace: uuid::Uuid::from_u128(5),
         request_id: uuid::Uuid::from_u128(6),
         source: source.device_public_key,
         target: [9; 32],

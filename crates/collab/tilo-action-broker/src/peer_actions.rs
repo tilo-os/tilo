@@ -312,7 +312,7 @@ impl PeerActionQueue {
             tokio::select! {
                 event = session.recv_certified_action() => match event {
                     Some(CertifiedActionEvent::Delivered(evidence)) => {
-                        if evidence.action().room != workspace { return Err(PeerActionAttachmentError::Failed); }
+                        if evidence.action().workspace != workspace { return Err(PeerActionAttachmentError::Failed); }
                         let response = match self.admit_delivery(&evidence) {
                             Err(error) => ActionMessage::Rejected { code: error.code().into() },
                             Ok(()) => self.request("delivered_action", Some(evidence.clone()), None, None).await.map_err(|_| PeerActionAttachmentError::Failed)?,
@@ -336,7 +336,7 @@ impl PeerActionQueue {
                 transition = transitions.recv() => {
                     let (source, update) = transition.map_err(|_| PeerActionAttachmentError::Failed)?;
                     let update = update.ok_or(PeerActionAttachmentError::Failed)?;
-                    if source.action().room != workspace { continue; }
+                    if source.action().workspace != workspace { continue; }
                     if let Some((evidence, invocation, previous)) = watches.iter_mut().find(|(evidence, invocation, _)| evidence.action().source == source.action().source && *invocation == update.invocation()) {
                         if let ActionMessage::Observation { update: Some(prior), .. } = previous
                             && sequence(&update).zip(sequence(prior)).is_some_and(|(next, old)| next <= old) { continue; }
@@ -430,7 +430,7 @@ fn send(
 
 pub(crate) fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAction {
     let mut reply = DirectedAction {
-        room: request.room,
+        workspace: request.workspace,
         request_id: request.request_id,
         source: request.target,
         target: request.source,
@@ -519,7 +519,7 @@ fn reply_limit_diagnostics(reply: &DirectedAction) -> ReplyLimitDiagnostics {
     let action_bytes = reply.wire_len();
     ReplyLimitDiagnostics {
         message_kind,
-        route_valid: !reply.room.is_nil() && !reply.request_id.is_nil(),
+        route_valid: !reply.workspace.is_nil() && !reply.request_id.is_nil(),
         structural_valid: message.validate(),
         json_serialized,
         json_bytes,
@@ -571,7 +571,7 @@ mod tests {
         assert_eq!(signed_delivery(None), Err(PeerRefusal::SignatureRequired));
         let device = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
         let action = DirectedAction {
-            room: Uuid::new_v4(),
+            workspace: Uuid::new_v4(),
             request_id: Uuid::new_v4(),
             source: device.verifying_key().to_bytes(),
             target: [2; 32],
@@ -589,7 +589,7 @@ mod tests {
     #[test]
     fn oversized_reply_returns_a_correlated_rejection_instead_of_disappearing() {
         let request = DirectedAction {
-            room: Uuid::new_v4(),
+            workspace: Uuid::new_v4(),
             request_id: Uuid::new_v4(),
             source: [1; 32],
             target: [2; 32],
@@ -615,7 +615,7 @@ mod tests {
     #[test]
     fn oversized_reply_diagnostics_distinguish_json_bytes_from_structure() {
         let request = DirectedAction {
-            room: Uuid::new_v4(),
+            workspace: Uuid::new_v4(),
             request_id: Uuid::new_v4(),
             source: [1; 32],
             target: [2; 32],
@@ -630,7 +630,7 @@ mod tests {
             }),
         };
         let reply = DirectedAction {
-            room: request.room,
+            workspace: request.workspace,
             request_id: request.request_id,
             source: request.target,
             target: request.source,

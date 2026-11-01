@@ -647,8 +647,12 @@ impl OwnerCommitService for Joined {
 impl GovernanceTransport for Joined {
     fn publish(&self, message: NeighbourMsg) -> bool {
         let workspace = match &message {
-            NeighbourMsg::MlsGovernance { room, .. }
-            | NeighbourMsg::MlsAccessRequest { room, .. }
+            NeighbourMsg::MlsGovernance {
+                workspace: room, ..
+            }
+            | NeighbourMsg::MlsAccessRequest {
+                workspace: room, ..
+            }
             | NeighbourMsg::MlsRoutedAccessRequest { room, .. } => RoomId::parse(room),
             _ => None,
         };

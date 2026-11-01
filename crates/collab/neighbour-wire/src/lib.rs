@@ -367,13 +367,13 @@ pub enum NeighbourMsg {
     /// receivers refuse it ([`NeighbourMsg::is_retired`]); it stays only so
     /// every later Postcard discriminant keeps its value.
     IdentityAnnouncement {
-        room: String,
+        workspace: String,
         device_cert: Box<tilo_user_identity::DeviceCert>,
     },
     /// V2 identity announcement carrying additive root-signed revocations.
     /// Appended rather than changing V1's Postcard payload layout.
     IdentityAnnouncementV2 {
-        room: String,
+        workspace: String,
         device_cert: Box<tilo_user_identity::DeviceCert>,
         /// Additive root-signed revocations for the certificate's human root.
         /// The room governor verifies and retains them independently of the
@@ -403,7 +403,7 @@ pub enum NeighbourMsg {
         hardware_encode: Vec<String>,
         software_encode: Vec<String>,
     },
-    /// One governance frame of a channel in `room`, published by the
+    /// One governance frame of a channel in `workspace`, published by the
     /// participant that wrote its commit. Its Welcome, commit and key-history
     /// bytes are opaque MLS material: sealed to their recipients, never
     /// content. Receivers apply it only when its signer is a participant and
@@ -411,7 +411,7 @@ pub enum NeighbourMsg {
     /// harmless. Appended
     /// to preserve every existing Postcard discriminant.
     MlsGovernance {
-        room: String,
+        workspace: String,
         frame: Box<collab_types::MlsGovernanceFrame>,
         /// Chosen by the sender for each delivery attempt. Redelivering the
         /// same content with a new value keeps transports that drop
@@ -423,7 +423,7 @@ pub enum NeighbourMsg {
     /// package signed by the device's certified key. Appended to preserve
     /// every existing Postcard discriminant.
     MlsAccessRequest {
-        room: String,
+        workspace: String,
         request: Box<collab_types::MlsAccessRequestV1>,
         /// Chosen by the sender for each delivery attempt. Redelivering the
         /// same content with a new value keeps transports that drop
@@ -758,7 +758,7 @@ mod tests {
             (
                 "channel governance frame",
                 NeighbourMsg::MlsGovernance {
-                    room: ROOM.into(),
+                    workspace: ROOM.into(),
                     frame: Box::new(MlsGovernanceFrame {
                         version: 2,
                         channel,
@@ -780,7 +780,7 @@ mod tests {
             (
                 "channel access request",
                 NeighbourMsg::MlsAccessRequest {
-                    room: ROOM.into(),
+                    workspace: ROOM.into(),
                     request: Box::new(MlsAccessRequestV1 {
                         version: 1,
                         channel,
@@ -955,14 +955,14 @@ mod tests {
             (
                 "identity announcement",
                 NeighbourMsg::IdentityAnnouncement {
-                    room: ROOM.into(),
+                    workspace: ROOM.into(),
                     device_cert: device_cert(),
                 },
             ),
             (
                 "identity announcement v2",
                 NeighbourMsg::IdentityAnnouncementV2 {
-                    room: ROOM.into(),
+                    workspace: ROOM.into(),
                     device_cert: device_cert(),
                     revocations: Vec::new(),
                 },

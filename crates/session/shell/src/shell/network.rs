@@ -2438,12 +2438,20 @@ impl ShellNetwork {
 
     fn explicit_topic_for_message(msg: &NeighbourMsg) -> Option<u64> {
         let room = match msg {
-            NeighbourMsg::IdentityAnnouncement { room, .. }
-            | NeighbourMsg::IdentityAnnouncementV2 { room, .. }
+            NeighbourMsg::IdentityAnnouncement {
+                workspace: room, ..
+            }
+            | NeighbourMsg::IdentityAnnouncementV2 {
+                workspace: room, ..
+            }
             | NeighbourMsg::SyncReq { room, .. }
             | NeighbourMsg::SyncResp { room, .. }
-            | NeighbourMsg::MlsGovernance { room, .. }
-            | NeighbourMsg::MlsAccessRequest { room, .. }
+            | NeighbourMsg::MlsGovernance {
+                workspace: room, ..
+            }
+            | NeighbourMsg::MlsAccessRequest {
+                workspace: room, ..
+            }
             | NeighbourMsg::MlsRoutedAccessRequest { room, .. } => Some(room.as_str()),
             NeighbourMsg::AppDocument { cluster_id, .. }
             | NeighbourMsg::AppPresenceV2 { cluster_id, .. }
@@ -11216,7 +11224,7 @@ mod tests {
         )
         .expect("signed request");
         let message = NeighbourMsg::MlsAccessRequest {
-            room: room.to_string(),
+            workspace: room.to_string(),
             request: Box::new(request),
             delivery: 1,
         };

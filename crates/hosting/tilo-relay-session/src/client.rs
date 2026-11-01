@@ -177,20 +177,26 @@ fn action_in_scope(scope: &InteractiveWorkspaceScope, envelope: &EnvelopeV2) -> 
         EnvelopeV2::State(state) => state_in_scope(scope, state),
         EnvelopeV2::UnsignedDelta { workspace_id, .. }
         | EnvelopeV2::PresenceBatch { workspace_id, .. } => *workspace_id == scope.workspace_id,
-        EnvelopeV2::EnableActions { room }
-        | EnvelopeV2::ActionsReady { room, .. }
-        | EnvelopeV2::Unavailable { room, .. }
-        | EnvelopeV2::EnableBrokerClient { room }
-        | EnvelopeV2::RegisterBroker { room, .. } => *room == scope.room,
+        EnvelopeV2::EnableActions { workspace: room }
+        | EnvelopeV2::ActionsReady {
+            workspace: room, ..
+        }
+        | EnvelopeV2::Unavailable {
+            workspace: room, ..
+        }
+        | EnvelopeV2::EnableBrokerClient { workspace: room }
+        | EnvelopeV2::RegisterBroker {
+            workspace: room, ..
+        } => *room == scope.room,
         EnvelopeV2::SignedDirected(signed)
         | EnvelopeV2::CertifiedSignedDelivered { action: signed, .. } => {
-            signed.action().room == scope.room
+            signed.action().workspace == scope.room
         }
         // Nothing sends a retired unsigned delivery; naming its room keeps
         // the check total without treating one as deliverable.
         EnvelopeV2::RetiredDirected(action)
         | EnvelopeV2::RetiredDelivered { action, .. }
-        | EnvelopeV2::RetiredCertifiedDelivered { action, .. } => action.room == scope.room,
+        | EnvelopeV2::RetiredCertifiedDelivered { action, .. } => action.workspace == scope.room,
         // The session reader rebuilds a coded delta into `State`; one that
         // reached this check whole names no scope.
         EnvelopeV2::CodedDelta { .. } => false,
@@ -1741,7 +1747,7 @@ mod scheduling_tests {
         started_rx.await.unwrap();
         assert_eq!(written.lock().unwrap().len(), 1);
         let response = EnvelopeV2::ActionsReady {
-            room: uuid::Uuid::from_u128(7),
+            workspace: uuid::Uuid::from_u128(7),
             capability: tilo_delivery_protocol::transport_v2::ActionCapability::TransportOnly,
         };
         relay_write
@@ -1790,7 +1796,7 @@ mod scheduling_tests {
         state_tx
             .try_send(Envelope::Subscribe { workspace_id })
             .unwrap();
-        let enable = EnvelopeV2::EnableActions { room };
+        let enable = EnvelopeV2::EnableActions { workspace: room };
         action_tx.try_send(enable.clone()).unwrap();
 
         let (enable_seen_tx, enable_seen_rx) = tokio::sync::oneshot::channel();
@@ -1818,7 +1824,7 @@ mod scheduling_tests {
         });
 
         let response = EnvelopeV2::ActionsReady {
-            room,
+            workspace: room,
             capability: tilo_delivery_protocol::transport_v2::ActionCapability::TransportOnly,
         };
         relay_write
@@ -1990,7 +1996,7 @@ mod scheduling_tests {
         EnvelopeV2::SignedDirected(
             tilo_delivery_protocol::peer_actions::SignedDirectedAction::sign(
                 &DirectedAction {
-                    room: Uuid::from_u128(1),
+                    workspace: Uuid::from_u128(1),
                     request_id: Uuid::from_u128(2),
                     source: ed25519_dalek::SigningKey::from_bytes(&[1; 32])
                         .verifying_key()
@@ -2162,7 +2168,7 @@ mod scheduling_tests {
             .try_send(Envelope::Subscribe { workspace_id })
             .unwrap();
         action_tx
-            .try_send(EnvelopeV2::EnableActions { room })
+            .try_send(EnvelopeV2::EnableActions { workspace: room })
             .unwrap();
         let mut schedule = V2WriteSchedule::default();
         let mut subscribed = false;
@@ -2176,7 +2182,7 @@ mod scheduling_tests {
                     state_tx.try_send(Envelope::Ping).unwrap();
                 }
                 ClientEvent::Action(Some(action)) => {
-                    let EnvelopeV2::EnableActions { room: got } = *action else {
+                    let EnvelopeV2::EnableActions { workspace: got } = *action else {
                         panic!("an unexpected private frame");
                     };
                     assert!(subscribed, "private enable overtook its state subscription");
@@ -2690,22 +2696,22 @@ mod session_carrier_tests {
         } = fixture(true);
         let room = uuid::Uuid::from_u128(1);
         client
-            .send_action(EnvelopeV2::EnableActions { room })
+            .send_action(EnvelopeV2::EnableActions { workspace: room })
             .unwrap();
         assert!(matches!(
-            client.send_action(EnvelopeV2::EnableActions { room }),
+            client.send_action(EnvelopeV2::EnableActions { workspace: room }),
             Err(ClientError::Codec(_))
         ));
         drop(actions);
         assert!(matches!(
-            client.send_action(EnvelopeV2::EnableActions { room }),
+            client.send_action(EnvelopeV2::EnableActions { workspace: room }),
             Err(ClientError::PrivateTransportClosed)
         ));
         let state_only = fixture(false);
         assert!(matches!(
             state_only
                 .client
-                .send_action(EnvelopeV2::EnableActions { room }),
+                .send_action(EnvelopeV2::EnableActions { workspace: room }),
             Err(ClientError::Codec(_))
         ));
         assert!(state_only.client.recv_action().await.is_none());
@@ -2739,7 +2745,7 @@ mod session_carrier_tests {
         let fixture = fixture(true);
         let cert = certificate(40, DeviceCapabilities::primary());
         let action = tilo_delivery_protocol::peer_actions::DirectedAction {
-            room: uuid::Uuid::from_u128(1),
+            workspace: uuid::Uuid::from_u128(1),
             request_id: uuid::Uuid::from_u128(2),
             source: cert.device_public_key,
             target: [30; 32],
@@ -2796,7 +2802,7 @@ mod session_carrier_tests {
         source: [u8; 32],
     ) -> tilo_delivery_protocol::peer_actions::SignedDirectedAction {
         let action = tilo_delivery_protocol::peer_actions::DirectedAction {
-            room: uuid::Uuid::from_u128(1),
+            workspace: uuid::Uuid::from_u128(1),
             request_id: uuid::Uuid::from_u128(2),
             source: ed25519_dalek::SigningKey::from_bytes(&[by; 32])
                 .verifying_key()
@@ -2856,7 +2862,7 @@ mod session_carrier_tests {
         fixture
             .incoming
             .send(EnvelopeV2::Unavailable {
-                room: uuid::Uuid::from_u128(1),
+                workspace: uuid::Uuid::from_u128(1),
                 request_id: uuid::Uuid::from_u128(2),
                 target: [30; 32],
                 invocation: None,

@@ -59,10 +59,10 @@ pub enum ActionCapability {
 pub enum EnvelopeV2 {
     State(Envelope),
     EnableActions {
-        room: Uuid,
+        workspace: Uuid,
     },
     ActionsReady {
-        room: Uuid,
+        workspace: Uuid,
         capability: ActionCapability,
     },
     /// Retired: an action a source device sent unsigned, before a delivery
@@ -71,7 +71,7 @@ pub enum EnvelopeV2 {
     /// refuses it ([`EnvelopeV2::retired_unsigned_action`]).
     RetiredDirected(DirectedAction),
     Unavailable {
-        room: Uuid,
+        workspace: Uuid,
         request_id: Uuid,
         target: [u8; 32],
         invocation: Option<InvocationId>,
@@ -85,10 +85,10 @@ pub enum EnvelopeV2 {
         source_user: [u8; 32],
     },
     EnableBrokerClient {
-        room: Uuid,
+        workspace: Uuid,
     },
     RegisterBroker {
-        room: Uuid,
+        workspace: Uuid,
         host: Uuid,
     },
     /// Retired: [`Self::RetiredDelivered`] carrying the source's certificate.
@@ -154,7 +154,7 @@ impl EnvelopeV2 {
 
     pub fn unavailable(action: &DirectedAction, reason: UnavailableReason) -> Self {
         Self::Unavailable {
-            room: action.room,
+            workspace: action.workspace,
             request_id: action.request_id,
             target: action.target,
             invocation: action.message.invocation(),
@@ -668,12 +668,12 @@ mod tests {
         let cases = [
             (EnvelopeV2::State(Envelope::Ping), vec![0, 6]),
             (
-                EnvelopeV2::EnableActions { room },
+                EnvelopeV2::EnableActions { workspace: room },
                 [vec![1], room_wire.clone()].concat(),
             ),
             (
                 EnvelopeV2::ActionsReady {
-                    room,
+                    workspace: room,
                     capability: ActionCapability::TransportOnly,
                 },
                 [vec![2], room_wire.clone(), vec![0]].concat(),
@@ -682,7 +682,7 @@ mod tests {
                 // A retired unsigned delivery keeps the bytes it had: an old
                 // build's frame decodes here and is then refused.
                 EnvelopeV2::RetiredDirected(DirectedAction {
-                    room,
+                    workspace: room,
                     request_id,
                     source: [1; 32],
                     target: [2; 32],
@@ -701,7 +701,7 @@ mod tests {
             ),
             (
                 EnvelopeV2::Unavailable {
-                    room,
+                    workspace: room,
                     request_id,
                     target: [2; 32],
                     invocation: None,
@@ -719,7 +719,7 @@ mod tests {
             (
                 EnvelopeV2::RetiredDelivered {
                     action: DirectedAction {
-                        room,
+                        workspace: room,
                         request_id,
                         source: [1; 32],
                         target: [2; 32],
@@ -759,7 +759,7 @@ mod tests {
         let request_wire = [vec![16], vec![0; 15], vec![8]].concat();
         let frame = EnvelopeV2::RetiredCertifiedDelivered {
             action: DirectedAction {
-                room,
+                workspace: room,
                 request_id,
                 source: [1; 32],
                 target: [2; 32],
@@ -793,7 +793,7 @@ mod tests {
     fn every_retired_delivery_names_the_action_it_carries() {
         let room = Uuid::from_u128(7);
         let action = DirectedAction {
-            room,
+            workspace: room,
             request_id: Uuid::from_u128(8),
             source: [1; 32],
             target: [2; 32],
@@ -822,7 +822,7 @@ mod tests {
                 .is_none()
         );
         assert!(
-            EnvelopeV2::EnableActions { room }
+            EnvelopeV2::EnableActions { workspace: room }
                 .retired_unsigned_action()
                 .is_none()
         );
@@ -836,16 +836,19 @@ mod tests {
         let host_bytes = [vec![16], vec![0; 15], vec![9]].concat();
         for (frame, frozen) in [
             (
-                EnvelopeV2::EnableBrokerClient { room },
+                EnvelopeV2::EnableBrokerClient { workspace: room },
                 [vec![6], room_bytes.clone()].concat(),
             ),
             (
-                EnvelopeV2::RegisterBroker { room, host },
+                EnvelopeV2::RegisterBroker {
+                    workspace: room,
+                    host,
+                },
                 [vec![7], room_bytes.clone(), host_bytes.clone()].concat(),
             ),
             (
                 EnvelopeV2::ActionsReady {
-                    room,
+                    workspace: room,
                     capability: ActionCapability::DurableBroker { host },
                 },
                 [vec![2], room_bytes, vec![1], host_bytes].concat(),
@@ -887,7 +890,7 @@ mod tests {
         let (mut writer, read) = tokio::io::duplex(1024);
         let mut reader = SessionReader::new(read);
         let wire = encode(&EnvelopeV2::EnableActions {
-            room: Uuid::from_u128(7),
+            workspace: Uuid::from_u128(7),
         })
         .unwrap();
         // Each read takes in what has arrived, finds the frame incomplete
@@ -905,7 +908,7 @@ mod tests {
         assert_eq!(
             reader.read_next().await.unwrap(),
             Some(EnvelopeV2::EnableActions {
-                room: Uuid::from_u128(7)
+                workspace: Uuid::from_u128(7)
             })
         );
     }
@@ -953,7 +956,7 @@ mod tests {
     fn private_codec_rejects_oversize_and_trailing_bytes() {
         assert!(decode(&[0, 6, 1]).is_err());
         let action = DirectedAction {
-            room: Uuid::from_u128(7),
+            workspace: Uuid::from_u128(7),
             request_id: Uuid::from_u128(8),
             source: [1; 32],
             target: [2; 32],

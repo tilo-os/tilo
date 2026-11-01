@@ -801,7 +801,7 @@ fn invocation_journal_old_apps_wrong_workspaces_and_silence_fail_safely() {
         };
         let host = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
         let cancel = DirectedAction {
-            room: uuid::Uuid::parse_str(&caller.workspace).unwrap(),
+            workspace: uuid::Uuid::parse_str(&caller.workspace).unwrap(),
             request_id: uuid::Uuid::new_v4(),
             source: [52; 32],
             target: host.verifying_key().to_bytes(),
@@ -820,7 +820,7 @@ fn invocation_journal_old_apps_wrong_workspaces_and_silence_fail_safely() {
         assert_eq!(
             acknowledgement,
             DirectedAction {
-                room: cancel.room,
+                workspace: cancel.workspace,
                 request_id: cancel.request_id,
                 source: cancel.target,
                 target: cancel.source,

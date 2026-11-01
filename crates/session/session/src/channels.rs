@@ -259,8 +259,12 @@ impl ChannelLink {
 impl GovernanceTransport for ChannelLink {
     fn publish(&self, message: NeighbourMsg) -> bool {
         let room = match &message {
-            NeighbourMsg::MlsGovernance { room, .. }
-            | NeighbourMsg::MlsAccessRequest { room, .. }
+            NeighbourMsg::MlsGovernance {
+                workspace: room, ..
+            }
+            | NeighbourMsg::MlsAccessRequest {
+                workspace: room, ..
+            }
             | NeighbourMsg::MlsRoutedAccessRequest { room, .. } => RoomId::parse(room),
             _ => None,
         };
@@ -593,7 +597,7 @@ mod tests {
         );
         let room = RoomId::new();
         link.heard(&NeighbourMsg::MlsGovernance {
-            room: room.to_string(),
+            workspace: room.to_string(),
             frame: Box::new(collab_types::MlsGovernanceFrame {
                 version: collab_types::MLS_GOVERNANCE_VERSION,
                 channel: ChannelId::new(),

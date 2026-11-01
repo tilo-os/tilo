@@ -282,8 +282,12 @@ mod tests {
         source
             .install_seed(
                 SeedState {
-                    workspace_changes: tilo_peer_state::seed_workspace(workspace, &certificate, &roster)
-                        .unwrap(),
+                    workspace_changes: tilo_peer_state::seed_workspace(
+                        workspace,
+                        &certificate,
+                        &roster,
+                    )
+                    .unwrap(),
                     documents: vec![SeedDocument {
                         app_id: "test.app".into(),
                         record_id: String::new(),

@@ -2977,7 +2977,11 @@ impl Task {
     ) {
         let now = tilo_clock::unix_now_ms();
         match message {
-            neighbour_wire::NeighbourMsg::MlsGovernance { room, frame, .. } => {
+            neighbour_wire::NeighbourMsg::MlsGovernance {
+                workspace: room,
+                frame,
+                ..
+            } => {
                 let replicas = &self.replicas;
                 let changes = self.channels.receive_frame(
                     &room,

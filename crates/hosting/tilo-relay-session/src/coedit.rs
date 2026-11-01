@@ -249,8 +249,9 @@ impl RelayCoeditSession {
                 "action room differs from co-edit room".into(),
             ));
         }
-        self.client
-            .send_action(tilo_delivery_protocol::transport_v2::EnvelopeV2::EnableActions { room })
+        self.client.send_action(
+            tilo_delivery_protocol::transport_v2::EnvelopeV2::EnableActions { workspace: room },
+        )
     }
 
     /// Negotiate client access to an attached durable broker on this same lane.
@@ -266,7 +267,9 @@ impl RelayCoeditSession {
             ));
         }
         self.client.send_action(
-            tilo_delivery_protocol::transport_v2::EnvelopeV2::EnableBrokerClient { room },
+            tilo_delivery_protocol::transport_v2::EnvelopeV2::EnableBrokerClient {
+                workspace: room,
+            },
         )
     }
 
@@ -280,7 +283,7 @@ impl RelayCoeditSession {
         &self,
         action: &tilo_delivery_protocol::peer_actions::DirectedAction,
     ) -> Result<(), crate::client::ClientError> {
-        if !crate::room_workspace_id_matches(&action.room.to_string(), self.workspace_id) {
+        if !crate::room_workspace_id_matches(&action.workspace.to_string(), self.workspace_id) {
             return Err(crate::client::ClientError::Codec(
                 "action room differs from co-edit room".into(),
             ));
@@ -310,7 +313,10 @@ impl RelayCoeditSession {
             ));
         }
         self.client.send_action(
-            tilo_delivery_protocol::transport_v2::EnvelopeV2::RegisterBroker { room, host },
+            tilo_delivery_protocol::transport_v2::EnvelopeV2::RegisterBroker {
+                workspace: room,
+                host,
+            },
         )
     }
     /// Receive opaque source evidence using this connection's authenticated demultiplexer.

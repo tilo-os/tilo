@@ -87,7 +87,7 @@ impl AppBrokerState {
         submitted: Option<&crate::peer_actions::PolicyTime>,
     ) -> Result<VerifiedActionCaller, String> {
         let cert = evidence.certificate();
-        let workspace_id = evidence.action().room.to_string();
+        let workspace_id = evidence.action().workspace.to_string();
         let (policy_time, now) = self.checked_policy_time(submitted)?;
         tilo_user_identity::verify_device_cert_at(cert, now).map_err(|_| "certificate rejected")?;
         if cert.capabilities.can_act_as_host || evidence.action().source != cert.device_public_key {
@@ -99,9 +99,13 @@ impl AppBrokerState {
         if let Some(authority) = self.certificate_authority.get() {
             match &policy_time {
                 Some(time) => {
-                    authority.authorize_with_policy_time(evidence.action().room, cert, time)?;
+                    authority.authorize_with_policy_time(
+                        evidence.action().workspace,
+                        cert,
+                        time,
+                    )?;
                 }
-                None => authority.authorize(evidence.action().room, cert)?,
+                None => authority.authorize(evidence.action().workspace, cert)?,
             }
         } else if let Some(devices) = &self.trusted_devices {
             if !devices.contains(&cert.device_public_key) {

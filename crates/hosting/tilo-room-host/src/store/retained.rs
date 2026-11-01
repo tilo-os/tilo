@@ -2372,7 +2372,7 @@ pub(super) mod tests {
         let device = collab_types::Ed25519PublicKey::from_bytes([3; 32]);
         let ack = |through: u8, timestamp: u64| {
             let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
-                room: "room".into(),
+                workspace: "room".into(),
                 request: Box::new(collab_types::MlsAccessRequestV1::unsigned(
                     channel,
                     device,
@@ -2439,7 +2439,7 @@ pub(super) mod tests {
         through: u8,
     ) -> ([u8; 32], Vec<u8>) {
         let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
-            room: "room".into(),
+            workspace: "room".into(),
             request: Box::new(collab_types::MlsAccessRequestV1::unsigned(
                 channel,
                 collab_types::Ed25519PublicKey::from_bytes([author; 32]),
@@ -2696,7 +2696,7 @@ pub(super) mod tests {
         let device = collab_types::Ed25519PublicKey::from_bytes([3; 32]);
         let ack = |through: u8| {
             let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
-                room: "room".into(),
+                workspace: "room".into(),
                 request: Box::new(collab_types::MlsAccessRequestV1::unsigned(
                     channel,
                     device,

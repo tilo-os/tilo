@@ -180,11 +180,14 @@ pub(super) async fn handle_private(
 ) -> Result<Option<EnvelopeV2>, PeerError> {
     match frame {
         EnvelopeV2::State(Envelope::Ping) => Ok(Some(EnvelopeV2::State(Envelope::Pong))),
-        EnvelopeV2::EnableActions { room } => enable_actions(room, peer, session).await,
-        EnvelopeV2::EnableBrokerClient { room } => enable_broker_client(room, peer, session).await,
-        EnvelopeV2::RegisterBroker { room, host } => {
-            register_broker(room, host, peer, session).await
+        EnvelopeV2::EnableActions { workspace: room } => enable_actions(room, peer, session).await,
+        EnvelopeV2::EnableBrokerClient { workspace: room } => {
+            enable_broker_client(room, peer, session).await
         }
+        EnvelopeV2::RegisterBroker {
+            workspace: room,
+            host,
+        } => register_broker(room, host, peer, session).await,
         EnvelopeV2::SignedDirected(signed) => route_signed_directed(&signed, peer, session).await,
         // An unsigned delivery, in its retired shape or any other, is
         // refused rather than routed: the host has no device signature to

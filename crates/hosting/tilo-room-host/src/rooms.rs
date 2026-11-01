@@ -1827,7 +1827,7 @@ impl Rooms {
         }
         match message {
             neighbour_wire::NeighbourMsg::MlsAccessRequest {
-                room: named,
+                workspace: named,
                 request,
                 ..
             } if named == room => {
@@ -1843,7 +1843,9 @@ impl Rooms {
                 (author, ChannelNoticeKind::Request(request, Some(route))),
             ),
             neighbour_wire::NeighbourMsg::MlsGovernance {
-                room: named, frame, ..
+                workspace: named,
+                frame,
+                ..
             } if named == room => {
                 self.channel_notice(room, (author, ChannelNoticeKind::Frame(frame)))
             }

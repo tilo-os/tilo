@@ -373,7 +373,7 @@ fn serve_private_locally(
     }
     let reply = plane.serve_certified(workspace_id, &caller, &peer.cert, (**message).clone())?;
     let replies = session.private_tx.clone();
-    let (room, request_id) = (action.room, action.request_id);
+    let (room, request_id) = (action.workspace, action.request_id);
     let (target, source) = (peer.device_public_key, *session.own_device_public_key);
     let source_certificate = serde_json::to_vec(session.own_device_cert).ok()?;
     let key = key.clone();
@@ -387,7 +387,7 @@ fn serve_private_locally(
         // This device answers as itself: its own signature travels with the
         // answer, so the asker verifies a caller and not a relay's word.
         let answer = DirectedAction {
-            room,
+            workspace: room,
             request_id,
             source,
             target,
@@ -551,7 +551,7 @@ pub(super) async fn enable_actions(
     );
     drop(wr);
     Ok(Some(EnvelopeV2::ActionsReady {
-        room,
+        workspace: room,
         capability: ActionCapability::TransportOnly,
     }))
 }
@@ -604,7 +604,7 @@ pub(super) async fn register_broker(
     target.broker_protocol = true;
     drop(wr);
     Ok(Some(EnvelopeV2::ActionsReady {
-        room,
+        workspace: room,
         capability: ActionCapability::DurableBroker { host },
     }))
 }
@@ -717,7 +717,8 @@ pub(super) async fn route_private_signed(
         private_phase(action, "route_rejected_encoding");
         return Ok(Some(U::InvalidRequest));
     }
-    let Some((workspace_id, ws)) = private_workspace_binding(action.room, peer, session).await?
+    let Some((workspace_id, ws)) =
+        private_workspace_binding(action.workspace, peer, session).await?
     else {
         return Ok(Some(U::NotAuthorised));
     };
@@ -730,7 +731,7 @@ pub(super) async fn route_private_signed(
             .action_targets
             .get(&peer.device_public_key)
             .is_some_and(|target| {
-                target.room == action.room && target.state_tx.same_channel(session.outbound)
+                target.room == action.workspace && target.state_tx.same_channel(session.outbound)
             })
     {
         return Ok(Some(U::NotAuthorised));
@@ -747,7 +748,7 @@ pub(super) async fn route_private_signed(
         return Ok(Some(U::UnsupportedPeer));
     };
     if action_peer_admitted(&wr, &target.peer, session).is_err()
-        || target.room != action.room
+        || target.room != action.workspace
         || !target.state_tx.same_channel(&sub.tx)
     {
         return Ok(Some(U::NotAuthorised));
@@ -864,7 +865,7 @@ pub(super) async fn authorize_delivery(
     }
     trace.phase("delivery_registry_wait");
     let (workspace_id, ws) =
-        match private_workspace_binding(delivery.action.room, recipient, session).await {
+        match private_workspace_binding(delivery.action.workspace, recipient, session).await {
             Ok(Some(binding)) => binding,
             Ok(None) => {
                 return trace.reject("delivery_rejected_workspace_missing", U::NotAuthorised);
@@ -906,7 +907,8 @@ pub(super) async fn authorize_delivery(
         .action_targets
         .get(&delivery.source.device_public_key)
         .is_some_and(|target| {
-            target.room == delivery.action.room && target.state_tx.same_channel(&delivery.source_tx)
+            target.room == delivery.action.workspace
+                && target.state_tx.same_channel(&delivery.source_tx)
         })
     {
         return trace.reject("delivery_rejected_source_action_target", U::NotAuthorised);
@@ -918,7 +920,8 @@ pub(super) async fn authorize_delivery(
         .action_targets
         .get(&recipient.device_public_key)
         .is_some_and(|target| {
-            target.room == delivery.action.room && target.state_tx.same_channel(session.outbound)
+            target.room == delivery.action.workspace
+                && target.state_tx.same_channel(session.outbound)
         })
     {
         return trace.reject(

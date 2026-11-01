@@ -356,11 +356,11 @@ fn control_room(frame: &EnvelopeV2) -> Option<u64> {
             | Envelope::SubscribeFrom { workspace_id, .. }
             | Envelope::Unsubscribe { workspace_id },
         ) => Some(*workspace_id),
-        EnvelopeV2::EnableActions { room }
-        | EnvelopeV2::EnableBrokerClient { room }
-        | EnvelopeV2::RegisterBroker { room, .. } => {
-            crate::room_workspace_id(&room.to_string()).ok()
-        }
+        EnvelopeV2::EnableActions { workspace: room }
+        | EnvelopeV2::EnableBrokerClient { workspace: room }
+        | EnvelopeV2::RegisterBroker {
+            workspace: room, ..
+        } => crate::room_workspace_id(&room.to_string()).ok(),
         _ => None,
     }
 }
@@ -381,7 +381,7 @@ pub(super) fn private_may_overtake<'a>(
         return false;
     };
     let action = signed.action();
-    let Ok(room) = crate::room_workspace_id(&action.room.to_string()) else {
+    let Ok(room) = crate::room_workspace_id(&action.workspace.to_string()) else {
         return false;
     };
     active_control != Some(room) && queued.all(|frame| control_room(frame) != Some(room))

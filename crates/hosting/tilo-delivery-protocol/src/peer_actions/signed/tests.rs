@@ -11,7 +11,7 @@ fn key(seed: u8) -> ed25519_dalek::SigningKey {
 
 fn invoke(source: &ed25519_dalek::SigningKey, argument: &str) -> DirectedAction {
     DirectedAction {
-        room: Uuid::from_u128(1),
+        workspace: Uuid::from_u128(1),
         request_id: Uuid::from_u128(2),
         source: source.verifying_key().to_bytes(),
         target: [9; 32],

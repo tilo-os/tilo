@@ -15217,7 +15217,7 @@ pub mod tests {
             "scope cannot add a launcher hidden by another live record of that app"
         );
         let directed = tilo_delivery_protocol::peer_actions::DirectedAction {
-            room: uuid::Uuid::parse_str(&cluster).unwrap(),
+            workspace: uuid::Uuid::parse_str(&cluster).unwrap(),
             request_id: uuid::Uuid::new_v4(),
             source: [1; 32],
             target: [2; 32],

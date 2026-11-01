@@ -1648,7 +1648,7 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
             .collect::<Vec<_>>();
         let (private_tx, mut private_rx) = mpsc::channel(1);
         let reply = EnvelopeV2::ActionsReady {
-            room: uuid::Uuid::new_v4(),
+            workspace: uuid::Uuid::new_v4(),
             capability: tilo_delivery_protocol::transport_v2::ActionCapability::TransportOnly,
         };
         private_tx
@@ -1789,7 +1789,7 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
     let (private_tx, mut private_rx) = mpsc::channel(1);
     let (reply, _reply_rx) = mpsc::channel(1);
     let action = DirectedAction {
-        room,
+        workspace: room,
         request_id: uuid::Uuid::from_u128(8),
         source: fixture.source.peer.device_public_key,
         target: fixture.recipient.device_public_key,
@@ -1933,7 +1933,7 @@ async fn replay_direct_wait_finishes_active_private_frame_before_replay_error() 
     let fixture = Arc::new(Fixture::new());
     let (private_tx, mut private_rx) = mpsc::channel(1);
     let frame = EnvelopeV2::ActionsReady {
-        room: uuid::Uuid::from_u128(9),
+        workspace: uuid::Uuid::from_u128(9),
         capability: tilo_delivery_protocol::transport_v2::ActionCapability::TransportOnly,
     };
     private_tx
@@ -2659,7 +2659,7 @@ async fn dropped_ticket_reclaims_without_abort_admission_on_full_owner_queue() {
 
 fn access_request_frame(fixture: &Fixture, authored_at_ns: u64) -> Envelope {
     let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
-        room: "room".into(),
+        workspace: "room".into(),
         request: Box::new(
             collab_types::MlsAccessRequestV1::signed(
                 collab_types::ChannelId::new(),

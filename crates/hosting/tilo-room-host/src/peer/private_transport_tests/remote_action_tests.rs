@@ -343,7 +343,7 @@ async fn route_private_refuses_an_agent_whose_delegation_expired() {
         lag: Box::leak(Box::default()),
     };
     let action = DirectedAction {
-        room,
+        workspace: room,
         request_id: uuid::Uuid::from_u128(8),
         source: a.device_public_key,
         target: b.device_public_key,

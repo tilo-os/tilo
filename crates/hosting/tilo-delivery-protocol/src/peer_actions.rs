@@ -29,7 +29,7 @@ pub const MAX_CONFIRMATION_BYTES: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DirectedAction {
-    pub room: Uuid,
+    pub workspace: Uuid,
     pub request_id: Uuid,
     pub source: [u8; 32],
     pub target: [u8; 32],
@@ -329,7 +329,7 @@ const _: fn(&mut serde_json::Map<String, serde_json::Value>, &str) -> Option<ser
 
 impl DirectedAction {
     pub fn validate(&self) -> bool {
-        !self.room.is_nil()
+        !self.workspace.is_nil()
             && !self.request_id.is_nil()
             && self.message.validate()
             && serde_json::to_vec(&self.message).is_ok_and(|bytes| bytes.len() <= MAX_PRIVATE_BYTES)
@@ -421,7 +421,7 @@ mod catalogue_bounds_tests {
             },
         ] {
             let directed = DirectedAction {
-                room: Uuid::new_v4(),
+                workspace: Uuid::new_v4(),
                 request_id: Uuid::new_v4(),
                 source: [1; 32],
                 target: [2; 32],
@@ -476,7 +476,7 @@ mod catalogue_bounds_tests {
             }
         }
         let action = DirectedAction {
-            room: Uuid::new_v4(),
+            workspace: Uuid::new_v4(),
             request_id: Uuid::new_v4(),
             source: [1; 32],
             target: [2; 32],

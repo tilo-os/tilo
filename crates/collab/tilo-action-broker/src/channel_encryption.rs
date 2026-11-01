@@ -140,14 +140,10 @@ impl InboundChannelGovernance {
     pub fn from_message(message: NeighbourMsg) -> Option<Self> {
         match message {
             NeighbourMsg::MlsGovernance {
-                room: workspace,
-                frame,
-                ..
+                workspace, frame, ..
             } => RoomId::parse(&workspace).map(|workspace| Self::Frame { workspace, frame }),
             NeighbourMsg::MlsAccessRequest {
-                room: workspace,
-                request,
-                ..
+                workspace, request, ..
             } => RoomId::parse(&workspace).map(|workspace| Self::AccessRequest {
                 workspace,
                 request,
@@ -994,7 +990,7 @@ impl ChannelEncryption {
         for frame in entry.peer.outbox() {
             self.delivery = self.delivery.wrapping_add(1);
             accepted &= transport.publish(NeighbourMsg::MlsGovernance {
-                room: entry.workspace.to_string(),
+                workspace: entry.workspace.to_string(),
                 frame: Box::new(frame.clone()),
                 delivery: self.delivery,
             });
@@ -1053,7 +1049,7 @@ impl ChannelEncryption {
                 delivery: self.delivery,
             },
             None => NeighbourMsg::MlsAccessRequest {
-                room: entry.workspace.to_string(),
+                workspace: entry.workspace.to_string(),
                 request: Box::new(request),
                 delivery: self.delivery,
             },

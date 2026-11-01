@@ -98,14 +98,14 @@ async fn client(relay: &Relay, seed: u8, workspace: Uuid) -> RelayClient {
     })
     .await;
     client
-        .send_action(EnvelopeV2::EnableActions { room: workspace })
+        .send_action(EnvelopeV2::EnableActions { workspace })
         .unwrap();
     assert!(matches!(
         tilo_test_env::within("`client.recv_action()`", client.recv_action()).await,
         Some(EnvelopeV2::ActionsReady { .. })
     ));
     client
-        .send_action(EnvelopeV2::EnableBrokerClient { room: workspace })
+        .send_action(EnvelopeV2::EnableBrokerClient { workspace })
         .unwrap();
     client
 }
@@ -131,7 +131,7 @@ fn send(client: &RelayClient, workspace: Uuid, seed: u8, message: ActionMessage)
     let request_id = Uuid::new_v4();
     client
         .send_directed(&DirectedAction {
-            room: workspace,
+            workspace,
             request_id,
             source: device(seed, false).1.device_public_key,
             target: device(54, false).1.device_public_key,
@@ -554,7 +554,7 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
             let recipient = client(&relay, 54, workspace).await;
             recipient
                 .send_action(EnvelopeV2::RegisterBroker {
-                    room: workspace,
+                    workspace,
                     host: request.host,
                 })
                 .unwrap();
@@ -720,16 +720,14 @@ impl RawSession {
                 matches!(frame, EnvelopeV2::State(Envelope::Ready { .. })).then_some(())
             })
             .await;
-        session
-            .write(EnvelopeV2::EnableActions { room: workspace })
-            .await;
+        session.write(EnvelopeV2::EnableActions { workspace }).await;
         session
             .until("the raw private lane", |frame| {
                 matches!(frame, EnvelopeV2::ActionsReady { .. }).then_some(())
             })
             .await;
         session
-            .write(EnvelopeV2::EnableBrokerClient { room: workspace })
+            .write(EnvelopeV2::EnableBrokerClient { workspace })
             .await;
         session
     }
@@ -770,7 +768,7 @@ type Answer = Result<ActionMessage, tilo_delivery_protocol::peer_actions::Unavai
 
 fn directed(workspace: Uuid, seed: u8, message: ActionMessage) -> DirectedAction {
     DirectedAction {
-        room: workspace,
+        workspace,
         request_id: Uuid::new_v4(),
         source: device(seed, false).1.device_public_key,
         target: device(54, false).1.device_public_key,
